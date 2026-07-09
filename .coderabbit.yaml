@@ -1,0 +1,48 @@
+# CodeRabbit configuration for Musaeus
+# https://docs.coderabbit.ai/getting-started/configure-coderabbit
+
+language: "en-US"
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+
+  path_instructions:
+    - path: "musaeus/hasher.py"
+      instructions: |
+        This is the core content-addressed hashing module. Key concerns:
+        - ffmpeg subprocess must never hang (120s timeout enforced via threading.Timer)
+        - audio_hash() hashes PCM stream only (no tags) — this is intentional
+        - audio_hash_safe() wraps it and never raises
+        - file_hash() is for change-detection (whole file including tags)
+    - path: "musaeus/stages/sentinel.py"
+      instructions: |
+        Sentinel hashes PENDING files. Key invariants:
+        - Periodic commits every 50 files (_COMMIT_EVERY = 50) — do not remove
+        - HASH_FAILED events keep file at PENDING (not ERROR) for retry
+        - Exact duplicate detection uses audio_hash matching
+    - path: "musaeus/stages/scholar.py"
+      instructions: |
+        Scholar extracts metadata from HASHED files → CATALOGUED.
+        - Periodic commits every 50 files — do not remove
+        - Uses mutagen for tag reading
+    - path: "musaeus/db.py"
+      instructions: |
+        SQLite WAL mode. upsert_archive() is idempotent.
+        Never bypass record_stage() — it's the commit point.
+    - path: "tests/**"
+      instructions: |
+        Tests use tmp_path fixtures and in-memory SQLite where possible.
+        No real audio files in tests.
+
+chat:
+  auto_reply: true
