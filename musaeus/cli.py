@@ -6,26 +6,33 @@ Usage:
     musaeus [command] [options]
 
 Pipeline commands:
-    run        Run the default pipeline (Ingest → Sentinel → Scholar)
-    run --full Run the full pipeline  (+ Forge → Tagger)
-    dry-run    Preview the full pipeline without any mutations
-    ingest     Run Ingest stage only
-    sentinel   Run Sentinel stage only
-    scholar    Run Scholar stage only
-    forge      Measure EBU R128 loudness + write ReplayGain tags
-    tagger     Write normalised DB metadata back to file tags
-    curator    Build car-library export (requires --export-root)
+    run              Run the default pipeline (Ingest → Sentinel → Scholar)
+    run --full       Run the full pipeline  (+ Forge → Tagger)
+    run --maintain   Run the maintenance pipeline (Ghost→Health→Enrich→NearDupe)
+    dry-run          Preview the default pipeline without any mutations
+    ingest           Run Ingest stage only
+    sentinel         Run Sentinel stage only
+    scholar          Run Scholar stage only
+    forge            Measure EBU R128 loudness + write ReplayGain tags
+    tagger           Write normalised DB metadata back to file tags
+    curator          Build car-library export (requires --export-root)
+    ghost            Sweep for archive entries missing from disk
+    health           Run library consistency + quality checks
+    enrich           Last.fm genre enrichment for tracks with missing genre
+    neardupe         Metadata-based near-duplicate detection
 
 Review commands:
-    dedupe     Interactive duplicate review console
-    status     Show library status
-    runs       List recent pipeline runs
+    dedupe           Interactive duplicate review console
+    health-report    Show validation issues summary
+    status           Show library status
+    runs             List recent pipeline runs
 
 Options:
     --dry-run        Preview mode (no mutations)
     --verbose / -v   Enable DEBUG logging
     --force          Re-process already-done files (forge, curator)
     --full           Include Forge + Tagger in `run` pipeline
+    --maintain       Run Ghost + Health + Enrich + NearDupe in `run`
     --auto           Auto-resolve duplicates (dedupe command)
     --export-root    Target path for curator export
     --noise          Noise profile for curator: clean|pink|brown|white|dual
@@ -33,11 +40,17 @@ Options:
 Examples:
     musaeus run
     musaeus run --full
+    musaeus run --maintain
     musaeus forge --dry-run
     musaeus tagger
     musaeus curator --export-root /mnt/USB --noise dual
+    musaeus ghost
+    musaeus health
+    musaeus enrich --dry-run
+    musaeus neardupe --dry-run
     musaeus dedupe
     musaeus dedupe --auto
+    musaeus health-report
     musaeus status
 """
 
@@ -56,9 +69,14 @@ from .db import open_db
 from .stages import (
     DEFAULT_PIPELINE,
     FULL_PIPELINE,
+    MAINTAIN_PIPELINE,
     CuratorStage,
+    EnrichStage,
     ForgeStage,
+    GhostStage,
+    HealthStage,
     IngestStage,
+    NearDupeStage,
     ScholarStage,
     SentinelStage,
     TaggerStage,
@@ -229,6 +247,72 @@ def _cmd_dedupe(auto: bool = False, report_only: bool = False) -> int:
     return 0
 
 
+# ── Health report command ─────────────────────────────────────────────────────
+
+def _cmd_health_report() -> int:
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    conn = open_db(cfg.db_path)
+    try:
+        # Overall counts
+        total_issues = conn.execute(
+            "SELECT COUNT(*) FROM validation_issues"
+        ).fetchone()[0]
+        error_count = conn.execute(
+            "SELECT COUNT(*) FROM validation_issues WHERE severity='error'"
+        ).fetchone()[0]
+        warn_count = conn.execute(
+            "SELECT COUNT(*) FROM validation_issues WHERE severity='warning'"
+        ).fetchone()[0]
+
+        # Issue breakdown
+        rows = conn.execute(
+            """
+            SELECT issue, severity, COUNT(*) as cnt
+            FROM validation_issues
+            GROUP BY issue, severity
+            ORDER BY severity DESC, cnt DESC
+            """
+        ).fetchall()
+
+        # Files with most issues
+        bad_files = conn.execute(
+            """
+            SELECT file_path, COUNT(*) as cnt
+            FROM validation_issues
+            GROUP BY file_path
+            ORDER BY cnt DESC
+            LIMIT 10
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    print(f"\nMusaeus Health Report")
+    print(f"  Total issues : {total_issues:,}")
+    print(f"    Errors     : {error_count:,}")
+    print(f"    Warnings   : {warn_count:,}")
+
+    if rows:
+        print(f"\n  Issue breakdown:")
+        for row in rows:
+            sev_icon = "✗" if row["severity"] == "error" else "⚠"
+            print(f"    {sev_icon} {row['issue']:<28} {row['cnt']:>6}")
+
+    if bad_files:
+        print(f"\n  Files with most issues (top 10):")
+        for row in bad_files:
+            from pathlib import Path
+            print(f"    [{row['cnt']}] {Path(row['file_path']).name}")
+
+    print()
+    return 0
+
+
 # ── Argument parser ───────────────────────────────────────────────────────────
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -246,7 +330,8 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── run ──────────────────────────────────────────────────────────────────
     run_p = sub.add_parser("run", help="Run pipeline (Ingest→Sentinel→Scholar)")
     run_p.add_argument("--dry-run", action="store_true", help="Preview only, no mutations")
-    run_p.add_argument("--full",    action="store_true", help="Also run Forge + Tagger stages")
+    run_p.add_argument("--full",     action="store_true", help="Also run Forge + Tagger stages")
+    run_p.add_argument("--maintain", action="store_true", help="Run Ghost + Health + Enrich + NearDupe")
 
     # dry-run shortcut
     sub.add_parser("dry-run", help="Alias for: run --dry-run")
@@ -264,6 +349,25 @@ def _build_parser() -> argparse.ArgumentParser:
     # tagger
     tagger_p = sub.add_parser("tagger", help="Write normalised DB metadata back to file tags")
     tagger_p.add_argument("--dry-run", action="store_true", help="Preview only")
+
+    # ghost
+    ghost_p = sub.add_parser("ghost", help="Sweep archive for files missing from disk")
+    ghost_p.add_argument("--dry-run", action="store_true", help="Report only, no DB changes")
+
+    # health
+    health_p = sub.add_parser("health", help="Library consistency and quality checks")
+    health_p.add_argument("--dry-run", action="store_true", help="Report only, no DB writes")
+
+    # enrich
+    enrich_p = sub.add_parser("enrich", help="Last.fm genre enrichment for missing genres")
+    enrich_p.add_argument("--dry-run", action="store_true", help="Show what would change")
+
+    # neardupe
+    neardupe_p = sub.add_parser("neardupe", help="Metadata-based near-duplicate detection")
+    neardupe_p.add_argument("--dry-run", action="store_true", help="Show matches without staging")
+
+    # health-report
+    sub.add_parser("health-report", help="Print validation issues summary")
 
     # curator
     curator_p = sub.add_parser("curator", help="Build car-library export")
@@ -314,7 +418,12 @@ def main() -> None:
         # ── pipeline commands ─────────────────────────────────────────────────
 
         if command == "run":
-            pipeline = FULL_PIPELINE if getattr(args, "full", False) else DEFAULT_PIPELINE
+            if getattr(args, "maintain", False):
+                pipeline = MAINTAIN_PIPELINE
+            elif getattr(args, "full", False):
+                pipeline = FULL_PIPELINE
+            else:
+                pipeline = DEFAULT_PIPELINE
             sys.exit(_run_pipeline(pipeline, dry_run=dry_run))
 
         elif command == "dry-run":
@@ -337,6 +446,21 @@ def main() -> None:
 
         elif command == "tagger":
             sys.exit(_run_pipeline([TaggerStage], dry_run=dry_run))
+
+        elif command == "ghost":
+            sys.exit(_run_pipeline([GhostStage], dry_run=dry_run))
+
+        elif command == "health":
+            sys.exit(_run_pipeline([HealthStage], dry_run=dry_run))
+
+        elif command == "enrich":
+            sys.exit(_run_pipeline([EnrichStage], dry_run=dry_run))
+
+        elif command == "neardupe":
+            sys.exit(_run_pipeline([NearDupeStage], dry_run=dry_run))
+
+        elif command == "health-report":
+            sys.exit(_cmd_health_report())
 
         elif command == "curator":
             stash = {}

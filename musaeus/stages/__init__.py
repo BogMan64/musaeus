@@ -8,14 +8,22 @@ Available stages:
   ForgeStage     — measure EBU R128 loudness, write ReplayGain tags
   TaggerStage    — write normalised metadata from DB back to file tags
   CuratorStage   — build car-library export with optional noise profiles
+  GhostStage     — mark archive entries whose files no longer exist on disk
+  HealthStage    — library-wide consistency and quality checks
+  EnrichStage    — Last.fm genre enrichment for tracks with missing genre
+  NearDupeStage  — metadata-based near-duplicate detection (fuzzy title match)
 
 Run order: Ingest → Sentinel → Scholar → Forge → Tagger
-(Curator is on-demand; run separately with `musaeus curator`)
+On-demand: Curator, Ghost, Health, Enrich, NearDupe
 """
 
 from .curator import CuratorStage
+from .enrich import EnrichStage
 from .forge import ForgeStage
+from .ghost import GhostStage
+from .health import HealthStage
 from .ingest import IngestStage
+from .neardupe import NearDupeStage
 from .scholar import ScholarStage
 from .sentinel import SentinelStage
 from .tagger import TaggerStage
@@ -27,6 +35,10 @@ __all__ = [
     "ForgeStage",
     "TaggerStage",
     "CuratorStage",
+    "GhostStage",
+    "HealthStage",
+    "EnrichStage",
+    "NearDupeStage",
 ]
 
 # Canonical run order for the default pipeline
@@ -43,4 +55,12 @@ FULL_PIPELINE: list[type] = [
     ScholarStage,
     ForgeStage,
     TaggerStage,
+]
+
+# Maintenance pipeline (run with `musaeus run --maintain`)
+MAINTAIN_PIPELINE: list[type] = [
+    GhostStage,
+    HealthStage,
+    EnrichStage,
+    NearDupeStage,
 ]

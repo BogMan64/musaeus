@@ -76,17 +76,26 @@ Files move through these states:
 ```
 INBOX file dropped
       ↓
-  INGEST   → PENDING     (registered in DB)
+  INGEST    → PENDING      (registered in DB)
       ↓
-  SENTINEL → HASHED      (audio hash computed, exact dupes detected)
+  SENTINEL  → HASHED       (audio hash computed, exact dupes detected)
       ↓
-  SCHOLAR  → CATALOGUED  (ffprobe metadata extracted)
+  SCHOLAR   → CATALOGUED   (ffprobe metadata extracted)
       ↓
-  FORGE    → rg_tagged   (EBU R128 LUFS measured, ReplayGain tags written)
+  FORGE     → rg_tagged    (EBU R128 LUFS measured, ReplayGain tags written)
       ↓
-  TAGGER               (DB metadata written back to file tags)
+  TAGGER                   (DB metadata written back to file tags)
       ↓
-  CURATOR  → car_export  (car-library copy built)
+  CURATOR   → car_export   (car-library copy built)
+```
+
+**On-demand maintenance stages** (run separately or via `musaeus run --maintain`):
+
+```
+  GHOST     → status=GHOST  (archive rows whose files no longer exist)
+  HEALTH    → validation_issues table  (missing tags, bad bitrate, etc.)
+  ENRICH    → genre filled  (Last.fm top tag → GenreCanon resolution)
+  NEARDUPE  → duplicates table  (fuzzy title match within artist group)
 ```
 
 Each stage is idempotent — re-running skips already-processed files.
@@ -100,6 +109,7 @@ Each stage is idempotent — re-running skips already-processed files.
 ```bash
 musaeus run              # Ingest → Sentinel → Scholar
 musaeus run --full       # + Forge → Tagger
+musaeus run --maintain   # Ghost + Health + Enrich + NearDupe
 musaeus run --dry-run    # Preview only, no changes
 
 musaeus ingest           # Register new INBOX files
@@ -111,14 +121,32 @@ musaeus tagger           # Write normalised DB metadata back to tags
 musaeus curator --export-root /mnt/USB --noise dual
 ```
 
+### Maintenance Commands
+
+```bash
+musaeus ghost            # Sweep archive for files missing from disk
+musaeus ghost --dry-run  # Report missing files without marking them
+
+musaeus health           # Run consistency + quality checks
+musaeus health --dry-run # Show issues without writing to DB
+musaeus health-report    # Print validation issues summary table
+
+musaeus enrich           # Fill missing genres via Last.fm
+musaeus enrich --dry-run # Preview what genres would be assigned
+
+musaeus neardupe         # Detect near-duplicate tracks (fuzzy title match)
+musaeus neardupe --dry-run  # Report without staging in DB
+```
+
 ### Review Commands
 
 ```bash
-musaeus status           # Library overview
+musaeus status           # Library overview (+ ghost/health counts)
 musaeus runs             # List recent pipeline runs
-musaeus dedupe           # Interactive duplicate review
+musaeus dedupe           # Interactive duplicate review (EXACT + NEAR)
 musaeus dedupe --auto    # Auto-resolve: keep highest quality
 musaeus dedupe --report  # Show duplicate summary (no changes)
+musaeus health-report    # Print issue breakdown by type + worst files
 ```
 
 ### Noise Profiles (Curator)
@@ -172,12 +200,21 @@ musaeus          # launches the console
 
 ## Duplicate Detection
 
-The Scholar stage detects duplicate audio by comparing content-addressed hashes
+### Exact Duplicates (Sentinel stage)
+The Sentinel stage detects exact duplicates by comparing content-addressed hashes
 (SHA-256 of the decoded PCM stream — format-agnostic).
+Re-tagging a file changes its full_hash but not its audio_hash — no false positive.
+
+### Near Duplicates (NearDupe stage)
+The NearDupe stage finds tracks from the same artist with very similar titles:
+- Groups tracks by canonical artist name (ArtistCanon fuzzy ≥88)
+- Normalises titles: lowercase, strip punctuation, collapse whitespace, strip "The"
+- Flags pairs with `fuzz.ratio ≥ 88` — conservative to avoid false positives
+- Stages results in `duplicates` table with `type='NEAR'` and a confidence score
 
 Groups are stored in the `duplicates` table with types:
 - `EXACT` — identical audio stream (different file, container, or tags)
-- `NEAR` — very similar (near-duplicate detection via hash prefix)
+- `NEAR` — very similar title from same artist (NearDupe stage)
 - `CROSS_FORMAT` — same audio in different formats (e.g. FLAC + M4A)
 
 **Resolve duplicates:**
@@ -294,12 +331,16 @@ musaeus/
 │   └── genre.py        GenreCanon (allowed list + map + fuzzy)
 └── stages/
     ├── base.py         BaseStage ABC
-    ├── ingest.py       IngestStage
-    ├── sentinel.py     SentinelStage
-    ├── scholar.py      ScholarStage
-    ├── forge.py        ForgeStage
-    ├── tagger.py       TaggerStage
-    └── curator.py      CuratorStage
+    ├── ingest.py       IngestStage      — scan inbox, register files
+    ├── sentinel.py     SentinelStage    — hash, exact dupe detection
+    ├── scholar.py      ScholarStage     — ffprobe metadata extraction
+    ├── forge.py        ForgeStage       — EBU R128 loudness + ReplayGain
+    ├── tagger.py       TaggerStage      — write DB metadata back to tags
+    ├── curator.py      CuratorStage     — car-library export + noise
+    ├── ghost.py        GhostStage       — mark files missing from disk
+    ├── health.py       HealthStage      — consistency + quality checks
+    ├── enrich.py       EnrichStage      — Last.fm genre enrichment
+    └── neardupe.py     NearDupeStage    — fuzzy title near-dupe detection
 ```
 
 **Design principles:**
