@@ -1,240 +1,335 @@
-# MUSAEUS
+# Musaeus
 
-**Music Library Pipeline Framework** — clean-room reference implementation of ORPHEUS/NexusII principles.
+**Music Library Pipeline** — the student of Orpheus, keeper of sacred knowledge.
 
-> *Musaeus was the student of Orpheus — keeper of sacred knowledge, translator of the master's wisdom into written form.*
-
----
-
-## Philosophy
-
-Musaeus is what happens when you take the best ideas from ORPHEUS and NexusII, throw away the accumulated cruft, and build from first principles:
-
-| Principle | Implementation |
-|-----------|---------------|
-| **One RunContext** | Single shared state object per run. No global vars. |
-| **Event log first** | Every mutation is appended to `events`. DB is derived, always rebuildable. |
-| **Content-addressed audio** | Hash only the PCM stream — re-tagging never changes identity. |
-| **Config via env** | Zero hardcoded paths. Move vault → change one env var. |
-| **dry_run is mandatory** | Every stage MUST implement `dry_run()`. No exceptions. |
-| **No module-level side effects** | No `mkdir`, `basicConfig`, or I/O at import time. |
+Musaeus is a clean-room music library management system built as a successor to ORPHEUS.
+It ingests audio files, hashes them content-addressably, extracts metadata, measures loudness,
+writes ReplayGain tags, exports a car library, and helps you resolve duplicates — all from a
+single `musaeus` command.
 
 ---
 
 ## Quick Start
 
 ```bash
-# 1. Set your vault location
-export MUSAEUS_VAULT_ROOT=/path/to/your/music/vault
+# 1. Drop audio files into your inbox
+cp ~/Downloads/*.flac /mnt/FORGE2TB/Projects/MUSAEUS_VAULT/INBOX/
 
-# (or add to ~/.config/musaeus/settings.env)
-echo "MUSAEUS_VAULT_ROOT=/path/to/your/music/vault" >> ~/.config/musaeus/settings.env
-
-# 2. Install
-pip install -e ".[fuzzy]"         # includes rapidfuzz
-
-# 3. Drop files into the inbox
-mkdir -p /path/to/your/music/vault/INBOX
-cp *.flac /path/to/your/music/vault/INBOX/
-
-# 4. Preview what will happen (safe — no mutations)
-musaeus dry-run
-
-# 5. Run for real
+# 2. Run the full pipeline
 musaeus run
 
-# 6. Or use the interactive console
-musaeus console
+# 3. Check status
+musaeus status
+
+# 4. Launch the interactive console
+musaeus
 ```
 
 ---
 
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MUSAEUS_VAULT_ROOT` | **(required)** | Root of your music vault |
-| `MUSAEUS_DB_PATH` | `{VAULT}/musaeus.db` | Override DB location |
-| `MUSAEUS_INBOX` | `{VAULT}/INBOX` | New files arrive here |
-| `MUSAEUS_STAGING` | `{VAULT}/STAGING` | Pre-vault staging area |
-| `MUSAEUS_QUARANTINE` | `{VAULT}/QUARANTINE` | Bad files go here |
-| `MUSAEUS_RUNS_ROOT` | `{VAULT}/RUNS` | Run logs and reports |
-| `MUSAEUS_META_DIR` | `{VAULT}/MetaData` | Canon CSVs |
-| `GROQ_API_KEY` | *(optional)* | Groq AI inference |
-| `LASTFM_API_KEY` | *(optional)* | Last.fm genre enrichment |
-| `OPENROUTER_API_KEY` | *(optional)* | OpenRouter API |
-
-Config files (loaded in priority order, env vars always win):
-1. `~/.config/musaeus/settings.env`
-2. `~/.config/musaeus/credentials.env`
-3. `{project_root}/.env`
-
----
-
-## Pipeline Stages
-
-```
-INBOX  →  [Ingest]  →  [Sentinel]  →  [Scholar]  →  CATALOGUED
-```
-
-### Stage 1: Ingest
-Scans `INBOX` recursively. Registers new audio files in the `archive` table with `status=PENDING`. Idempotent — re-running is always safe.
-
-### Stage 2: Sentinel
-Computes two hashes per file:
-- **`audio_hash`** — SHA-256 of the raw PCM audio stream (tags irrelevant)
-- **`full_hash`** — SHA-256 of the entire file (for change detection)
-
-Detects `EXACT` duplicates (same `audio_hash`). Stages them in `duplicates` for review.
-
-### Stage 3: Scholar
-Runs `ffprobe` on each `HASHED` file. Extracts title, artist, album, genre, year, track, duration, bitrate (always `INTEGER`), sample rate, channels, codec. Stores raw JSON in `metadata_cache`. Advances status to `CATALOGUED`.
-
----
-
-## CLI
+## Installation
 
 ```bash
-musaeus run              # full pipeline, live
-musaeus dry-run          # full pipeline, preview only
-musaeus ingest           # ingest stage only
-musaeus ingest --dry-run # preview ingest
-musaeus sentinel         # hash + dupe detect
-musaeus scholar          # metadata extraction
-musaeus status           # library statistics
-musaeus runs             # list recent pipeline runs
-musaeus console          # interactive TUI console
-musaeus --version        # print version
+cd /mnt/FORGE2TB/Projects/MUSAEUS
+pip3 install --user -e .
 ```
+
+**Dependencies:**
+- Python 3.10+
+- `ffmpeg` + `ffprobe` (required for hashing and loudness)
+- `mutagen` — tag writing (`pip install mutagen`)
+- `rapidfuzz` — fuzzy canon matching (`pip install rapidfuzz`) *(optional)*
+
+**Configuration** (`~/.config/musaeus/settings.env`):
+```env
+MUSAEUS_VAULT_ROOT=/mnt/FORGE2TB/Projects/MUSAEUS_VAULT
+MUSAEUS_DB_PATH=/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db
+GROQ_API_KEY=gsk_...          # optional — AI features
+```
+
+---
+
+## Vault Layout
+
+```
+MUSAEUS_VAULT/
+├── INBOX/          ← drop audio files here
+├── STAGING/        ← temporary working area
+├── QUARANTINE/     ← files moved here by problem detection
+├── RUNS/           ← per-run logs and reports
+├── Noise/          ← optional noise tracks for car export
+│   ├── Pink_Noise_30min.m4a
+│   └── Brown_Noise_60min.m4a
+├── MetaData/
+│   ├── artist_canon.tsv     ← artist name normalisation map
+│   ├── genre_allowed.txt    ← allowed genre list
+│   └── genre_map.tsv        ← raw genre → canonical genre
+└── musaeus.db      ← SQLite database (WAL mode)
+```
+
+---
+
+## Pipeline
+
+Files move through these states:
+
+```
+INBOX file dropped
+      ↓
+  INGEST   → PENDING     (registered in DB)
+      ↓
+  SENTINEL → HASHED      (audio hash computed, exact dupes detected)
+      ↓
+  SCHOLAR  → CATALOGUED  (ffprobe metadata extracted)
+      ↓
+  FORGE    → rg_tagged   (EBU R128 LUFS measured, ReplayGain tags written)
+      ↓
+  TAGGER               (DB metadata written back to file tags)
+      ↓
+  CURATOR  → car_export  (car-library copy built)
+```
+
+Each stage is idempotent — re-running skips already-processed files.
+
+---
+
+## CLI Reference
+
+### Pipeline Commands
+
+```bash
+musaeus run              # Ingest → Sentinel → Scholar
+musaeus run --full       # + Forge → Tagger
+musaeus run --dry-run    # Preview only, no changes
+
+musaeus ingest           # Register new INBOX files
+musaeus sentinel         # Hash files, detect exact duplicates
+musaeus scholar          # Extract ffprobe metadata
+musaeus forge            # Measure LUFS + write ReplayGain tags
+musaeus forge --force    # Re-tag already-forged files
+musaeus tagger           # Write normalised DB metadata back to tags
+musaeus curator --export-root /mnt/USB --noise dual
+```
+
+### Review Commands
+
+```bash
+musaeus status           # Library overview
+musaeus runs             # List recent pipeline runs
+musaeus dedupe           # Interactive duplicate review
+musaeus dedupe --auto    # Auto-resolve: keep highest quality
+musaeus dedupe --report  # Show duplicate summary (no changes)
+```
+
+### Noise Profiles (Curator)
+
+| Mode    | Tracks included                    |
+|---------|------------------------------------|
+| `clean` | No noise tracks                    |
+| `pink`  | Pink_Noise_*.m4a                   |
+| `brown` | Brown_Noise_*.m4a                  |
+| `white` | White_Noise_*.m4a                  |
+| `dual`  | Pink + Brown  *(default)*          |
+
+Place noise files in `<vault>/Noise/` before running curator.
 
 ---
 
 ## Interactive Console
 
+```bash
+musaeus          # launches the console
 ```
-musaeus console
-```
-
-The console provides a numbered menu for all pipeline operations:
 
 ```
 ╔══════════════════════════════════════════════════════════╗
 ║  MUSAEUS  v0.1.0  —  Music Library Pipeline              ║
 ╚══════════════════════════════════════════════════════════╝
 
-  ▸ System Check
-  ──────────────────────────────────────────────────────────
-  ✓ Vault     : /vault
-  ✓ Inbox     : /vault/INBOX
-  ✓ DB        : /vault/musaeus.db
-  ✓ ffmpeg    : found
-  ✓ ffprobe   : found
-
-  0  Status
-  1  Run full pipeline  [DRY RUN]
-  2  Run full pipeline  [LIVE]
-  3  Run single stage…
-  4  View recent runs
-  5  Inspect a run
-  6  View duplicates
-  7  Configuration
-  8  Quit
+    0  Status
+    1  Run full pipeline  [DRY RUN]
+    2  Run full pipeline  [LIVE]
+    3  Run single stage…       ← Ingest/Sentinel/Scholar/Forge/Tagger/Curator
+    4  Dedupe review           ← Interactive / Auto / Report
+    5  View recent runs
+    6  Inspect a run           ← shows run IDs before prompting
+    7  View duplicates
+    8  Configuration
+    9  Reset / fresh start     ← Soft reset or Hard reset
+   10  Quit
 ```
 
----
+### Reset Options (option 9)
 
-## Database Schema
+| Mode         | What it does                                                  | Confirmation |
+|--------------|---------------------------------------------------------------|--------------|
+| Soft reset   | Re-queues all files as PENDING, keeps event log and history   | Type `YES`   |
+| Hard reset   | Deletes the entire database (blank slate)                     | Type `DELETE` twice |
 
-All tables in `musaeus.db`:
-
-| Table | Purpose |
-|-------|---------|
-| `events` | **Immutable event log** — source of truth |
-| `archive` | Materialized state of every known file |
-| `duplicates` | Staged duplicate pairs awaiting review |
-| `validation_issues` | Issues flagged by validation (UNIQUE per file+issue+run) |
-| `metadata_cache` | Raw ffprobe JSON + parsed fields |
-
-The DB is **always rebuildable** from the event log. Treat it as a derived artifact.
+> Files in INBOX are **never deleted** by either reset — only the database is affected.
 
 ---
 
-## Architecture Notes
+## Duplicate Detection
 
-### Content-addressed hashing
+The Scholar stage detects duplicate audio by comparing content-addressed hashes
+(SHA-256 of the decoded PCM stream — format-agnostic).
 
-Musaeus hashes the *decoded PCM audio stream*, not the container file. This means:
+Groups are stored in the `duplicates` table with types:
+- `EXACT` — identical audio stream (different file, container, or tags)
+- `NEAR` — very similar (near-duplicate detection via hash prefix)
+- `CROSS_FORMAT` — same audio in different formats (e.g. FLAC + M4A)
 
-- Re-tagging a file (changing ID3 tags) → `full_hash` changes, `audio_hash` unchanged → **not a duplicate**
-- Same audio in FLAC vs AAC → different `audio_hash` → **correctly identified as different quality**
-- Exact copy with different filename → same `audio_hash` → **EXACT duplicate detected**
-
-### Stage protocol
-
-Every stage implements three methods:
-
-```python
-class MyStage(BaseStage):
-    NAME = "my_stage"
-
-    def validate(self, ctx):  # pre-flight, raise StageError if bad
-    def run(self, ctx):       # real work, may mutate files/DB
-    def dry_run(self, ctx):   # preview only, ZERO mutations
-```
-
-`dry_run()` is **never** a no-op. If a stage genuinely can't preview, that's a design smell.
-
-### Lessons from ORPHEUS/NexusII
-
-Issues avoided by design:
-
-- ✗ `NEXUS_ROOT = Path("/mnt/FORGE2TB/NexusII")` hardcoded in 15 scripts → ✓ `MUSAEUS_VAULT_ROOT` env var
-- ✗ `bitrate` stored as string → ✓ always `INTEGER` in schema
-- ✗ `--dry-run` flag declared but ignored → ✓ mandatory `dry_run()` in ABC
-- ✗ `loudnorm` single-pass (wrong EBU R128) → ✓ documented 2-pass requirement
-- ✗ Hash entire file including tags → ✓ audio-stream-only PCM hash
-- ✗ `logging.basicConfig()` at module level → ✓ only in entry points
-- ✗ `shell=True` in subprocess → ✓ always list args, never shell
-- ✗ No `UNIQUE` constraint on validation issues → ✓ `UNIQUE(file_path, issue, run_id)`
-
----
-
-## Development
-
+**Resolve duplicates:**
 ```bash
-pip install -e ".[dev,fuzzy]"
-pytest
-ruff check musaeus/
-ruff format musaeus/
+musaeus dedupe           # interactive: type 1k to keep item 1, 2a to archive item 2
+musaeus dedupe --auto    # keeps highest bitrate/size, archives rest
+musaeus dedupe --report  # summary table only
 ```
 
 ---
 
-## Project Structure
+## Canon System
+
+Musaeus normalises raw metadata strings to canonical forms.
+
+### Artist Canon (`MetaData/artist_canon.tsv`)
+
+```tsv
+# raw_name<TAB>canonical_name
+the beatles	The Beatles
+portishead 	Portishead
+```
+
+- Exact match (case-insensitive) → first lookup
+- Fuzzy match (rapidfuzz ratio ≥ 88) → fallback
+- Unmatched → returned as-is
+
+### Genre Canon
+
+**`MetaData/genre_allowed.txt`** — one allowed genre per line:
+```
+Alternative
+Electronic
+Hip-Hop
+Jazz
+```
+
+**`MetaData/genre_map.tsv`** — raw → canonical overrides:
+```tsv
+Hip-Hop/Rap	Hip-Hop
+Trip Hop	Electronic
+```
+
+Resolution order: exact allowed-list match → explicit map → fuzzy match (≥82) → `None`
+
+---
+
+## Database
+
+SQLite with WAL mode. Path: `$MUSAEUS_DB_PATH` or `<vault>/musaeus.db`.
+
+**Key tables:**
+
+| Table              | Purpose                                              |
+|--------------------|------------------------------------------------------|
+| `archive`          | One row per known file — current state               |
+| `events`           | Immutable append-only event log (source of truth)    |
+| `duplicates`       | Detected duplicate groups pending review             |
+| `validation_issues`| Issues flagged during processing                     |
+| `metadata_cache`   | Raw ffprobe JSON output                              |
+
+**Archive columns include:**
+`file_path`, `audio_hash`, `full_hash`, `artist`, `album`, `title`, `genre`, `year`,
+`track`, `duration`, `bitrate`, `codec`, `status`,
+`lufs`, `lufs_tp`, `rg_gain`, `rg_peak`, `rg_tagged_at`,
+`car_export_path`, `noise_profile`
+
+**Live migrations** — new columns are added automatically on `open_db()`.
+You never need to run manual migrations.
+
+---
+
+## ReplayGain / Loudness
+
+Forge uses **EBU R128** via `ffmpeg loudnorm`:
+
+- Reference: **−18 LUFS** (home listening middle-ground)
+- Apple Music target: −16 LUFS
+- Spotify target: −14 LUFS
+- EBU R128 broadcast: −23 LUFS
+
+Tags written per format:
+
+| Format | Tag                              |
+|--------|----------------------------------|
+| M4A    | `com.apple.iTunes.R128_TRACK_GAIN` (Q7.8 fixed-point) |
+| FLAC   | `REPLAYGAIN_TRACK_GAIN` + `REPLAYGAIN_TRACK_PEAK` |
+| MP3    | `replaygain_track_gain` (EasyID3) |
+| AIFF   | `TXXX:replaygain_track_gain` (ID3)|
+| WAV    | DB-only (no standard tag container) |
+
+Forge has a 120-second per-file timeout (threading timer) to prevent hung ffmpeg processes.
+Already-forged files are skipped unless you run `musaeus forge --force`.
+
+---
+
+## Architecture
 
 ```
-MUSAEUS/
-├── musaeus/
-│   ├── __init__.py       — package + version
-│   ├── config.py         — MusicConfig, env loading, zero hardcodes
-│   ├── context.py        — RunContext, StageResult
-│   ├── db.py             — SQLite schema, open_db(), log_event(), upsert_archive()
-│   ├── hasher.py         — audio_hash() (PCM SHA-256), file_hash()
-│   ├── fuzzy.py          — normalize(), similarity(), is_match()
-│   ├── console.py        — interactive TUI console
-│   ├── cli.py            — CLI entry point (musaeus command)
-│   ├── stages/
-│   │   ├── __init__.py   — DEFAULT_PIPELINE
-│   │   ├── base.py       — BaseStage ABC, StageError
-│   │   ├── ingest.py     — Stage 1: register inbox files
-│   │   ├── sentinel.py   — Stage 2: hash + dupe detect
-│   │   └── scholar.py    — Stage 3: ffprobe metadata
-│   └── canon/            — reserved for canon CSV management
-├── tests/
-│   ├── test_fuzzy.py
-│   ├── test_hasher.py
-│   ├── test_ingest.py
-│   └── fixture/          — tiny test audio files
-├── pyproject.toml
-└── README.md
+musaeus/
+├── __init__.py         version
+├── __main__.py         python -m musaeus entry point
+├── cli.py              argparse CLI
+├── console.py          interactive terminal UI
+├── config.py           MusicConfig — paths, env vars
+├── context.py          RunContext — shared run state
+├── db.py               open_db(), schema, live migrations
+├── hasher.py           content-addressed audio hashing (ffmpeg PCM)
+├── fuzzy.py            fuzzy match helpers
+├── loudness.py         EBU R128 measurement (ffmpeg loudnorm)
+├── dedupe.py           duplicate review console
+├── canon/
+│   ├── artist.py       ArtistCanon (TSV + fuzzy)
+│   └── genre.py        GenreCanon (allowed list + map + fuzzy)
+└── stages/
+    ├── base.py         BaseStage ABC
+    ├── ingest.py       IngestStage
+    ├── sentinel.py     SentinelStage
+    ├── scholar.py      ScholarStage
+    ├── forge.py        ForgeStage
+    ├── tagger.py       TaggerStage
+    └── curator.py      CuratorStage
 ```
+
+**Design principles:**
+- One `RunContext` per pipeline run — no global state
+- Event log as source of truth — DB is always rebuildable
+- Every stage implements `run()`, `dry_run()`, `validate()`
+- Stages never commit the DB — `ctx.record_stage()` does
+- Periodic commits every N files (crash resilience)
+- `dry_run=True` is first-class — never a no-op
+
+---
+
+## Run IDs
+
+Every pipeline run gets a unique ID: `run_20260710T062121Z_b7e4d2`
+
+Find yours:
+```bash
+musaeus runs           # list last 20
+```
+Or in the console: option 5 (View recent runs) or option 6 (Inspect a run — shows list automatically).
+
+---
+
+## GitHub
+
+```
+https://github.com/BogMan64/musaeus  (private)
+```
+
+---
+
+*Named for Musaeus of Athens — student of Orpheus, mythological keeper of sacred songs.*
