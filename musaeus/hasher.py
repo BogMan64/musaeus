@@ -25,7 +25,9 @@ Usage:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import math
 import subprocess
 from pathlib import Path
 
@@ -40,7 +42,52 @@ class HasherError(Exception):
     """Raised when hashing fails unrecoverably."""
 
 
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+
+def _probe_audio_meta(path: Path) -> tuple[int, float]:
+    """Return (sample_rate_hz, duration_secs) for the first audio stream.
+
+    Falls back to (48000, 0.0) on any probe failure so callers can still
+    compute a conservative timeout rather than crashing.
+    """
+    cmd = [
+        _FFPROBE_CMD,
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=sample_rate:format=duration",
+        "-of",
+        "json",
+        str(path),
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        data = json.loads(result.stdout)
+        streams = data.get("streams", [])
+        sample_rate = int(streams[0]["sample_rate"]) if streams else 48000
+        duration = float(data.get("format", {}).get("duration", 0.0))
+        return sample_rate, duration
+    except Exception:
+        return 48000, 0.0
+
+
+def _audio_hash_timeout(sample_rate: int, duration: float) -> int:
+    """Compute a per-file ffmpeg timeout that scales with resolution and length.
+
+    Baseline: 120 s covers any standard-rate (≤48 kHz) file up to ~10 min.
+    High-res files (96/176.4/192 kHz) decode proportionally more samples,
+    so the timeout scales linearly with sample_rate / 48000. A 30 s flat
+    margin absorbs startup overhead and I/O jitter.
+    """
+    rate_factor = max(1.0, sample_rate / 48_000)
+    return max(120, math.ceil(duration * rate_factor) + 30)
+
+
 # ── Audio-stream hash ─────────────────────────────────────────────────────────
+
 
 def audio_hash(path: Path) -> str:
     """
@@ -55,17 +102,22 @@ def audio_hash(path: Path) -> str:
     """
     cmd = [
         _FFMPEG_CMD,
-        "-v", "error",          # suppress info noise
-        "-i", str(path),
-        "-vn",                  # no video
-        "-map", "0:a:0",        # first audio stream only
-        "-c:a", "pcm_f32le",    # decode to raw 32-bit float PCM
-        "-f", "data",           # raw binary output
-        "pipe:1",               # stdout
+        "-v",
+        "error",  # suppress info noise
+        "-i",
+        str(path),
+        "-vn",  # no video
+        "-map",
+        "0:a:0",  # first audio stream only
+        "-c:a",
+        "pcm_f32le",  # decode to raw 32-bit float PCM
+        "-f",
+        "data",  # raw binary output
+        "pipe:1",  # stdout
     ]
 
-    # Per-file timeout: most audio files decode in <30s; allow 120s for huge files
-    _TIMEOUT_SECS = 120
+    sample_rate, duration = _probe_audio_meta(path)
+    _TIMEOUT_SECS = _audio_hash_timeout(sample_rate, duration)
 
     try:
         proc = subprocess.Popen(
@@ -74,9 +126,7 @@ def audio_hash(path: Path) -> str:
             stderr=subprocess.PIPE,
         )
     except FileNotFoundError as exc:
-        raise HasherError(
-            f"ffmpeg not found — cannot compute audio hash for {path}"
-        ) from exc
+        raise HasherError(f"ffmpeg not found — cannot compute audio hash for {path}") from exc
 
     import threading
 
@@ -102,12 +152,8 @@ def audio_hash(path: Path) -> str:
     if rc != 0:
         stderr = proc.stderr.read().decode("utf-8", errors="replace").strip()
         if rc == -9:  # SIGKILL from timeout
-            raise HasherError(
-                f"ffmpeg timed out (>{_TIMEOUT_SECS}s) for {path}"
-            )
-        raise HasherError(
-            f"ffmpeg exited {rc} for {path}: {stderr[:200]}"
-        )
+            raise HasherError(f"ffmpeg timed out (>{_TIMEOUT_SECS}s) for {path}")
+        raise HasherError(f"ffmpeg exited {rc} for {path}: {stderr[:200]}")
 
     return h.hexdigest()
 
@@ -126,6 +172,7 @@ def audio_hash_safe(path: Path) -> tuple[str | None, str | None]:
 
 # ── Full-file hash ────────────────────────────────────────────────────────────
 
+
 def file_hash(path: Path) -> str:
     """
     SHA-256 of the entire file (tags included).
@@ -142,6 +189,7 @@ def file_hash(path: Path) -> str:
 
 
 # ── Probe check ───────────────────────────────────────────────────────────────
+
 
 def ffmpeg_available() -> bool:
     """Return True if ffmpeg is on PATH and functional."""

@@ -58,7 +58,14 @@ CREATE TABLE IF NOT EXISTS archive (
     status          TEXT DEFAULT 'PENDING',
     date_added      TEXT DEFAULT (datetime('now')),
     last_seen       TEXT DEFAULT (datetime('now')),
-    last_modified   TEXT
+    last_modified   TEXT,
+    lufs            REAL,           -- integrated loudness (EBU R128)
+    lufs_tp         REAL,           -- true peak dBTP
+    rg_gain         REAL,           -- ReplayGain track gain dB
+    rg_peak         REAL,           -- ReplayGain track peak (linear)
+    rg_tagged_at    TEXT,           -- ISO timestamp of last RG tag write
+    car_export_path TEXT,           -- path in the car-export library
+    noise_profile   TEXT            -- noise variant used in car export
 );
 CREATE INDEX IF NOT EXISTS idx_archive_hash     ON archive(audio_hash);
 CREATE INDEX IF NOT EXISTS idx_archive_artist   ON archive(artist);
@@ -109,6 +116,33 @@ CREATE TABLE IF NOT EXISTS metadata_cache (
 """
 
 
+# ── Live migrations ───────────────────────────────────────────────────────────
+
+# Each entry: (table, column_name, column_def)
+# Applied in order every time open_db() is called — idempotent.
+_MIGRATIONS: list[tuple[str, str, str]] = [
+    ("archive", "lufs",            "REAL"),
+    ("archive", "lufs_tp",         "REAL"),
+    ("archive", "rg_gain",         "REAL"),
+    ("archive", "rg_peak",         "REAL"),
+    ("archive", "rg_tagged_at",    "TEXT"),
+    ("archive", "car_export_path", "TEXT"),
+    ("archive", "noise_profile",   "TEXT"),
+]
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    """Add new columns to existing tables when the schema evolves."""
+    for table, col, coltype in _MIGRATIONS:
+        existing = {
+            row[1]
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if col not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
+    conn.commit()
+
+
 # ── Connection factory ────────────────────────────────────────────────────────
 
 def open_db(db_path: Path) -> sqlite3.Connection:
@@ -117,6 +151,7 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     - WAL mode for crash safety + concurrent reads
     - Row factory for dict-style access
     - Schema applied on first open
+    - Live column migrations applied on every open (idempotent)
     Returns an open connection. Caller is responsible for closing.
     """
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -125,6 +160,7 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=10000")
     conn.executescript(_SCHEMA)
     conn.commit()
+    _apply_migrations(conn)
     return conn
 
 
