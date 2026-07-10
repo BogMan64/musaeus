@@ -33,7 +33,15 @@ from .config import MusicConfig, get_config
 from .context import RunContext
 from .db import open_db
 from .hasher import ffmpeg_available, ffprobe_available
-from .stages import DEFAULT_PIPELINE, IngestStage, ScholarStage, SentinelStage
+from .stages import (
+    DEFAULT_PIPELINE,
+    CuratorStage,
+    ForgeStage,
+    IngestStage,
+    ScholarStage,
+    SentinelStage,
+    TaggerStage,
+)
 from .stages.base import BaseStage
 
 logger = logging.getLogger(__name__)
@@ -227,10 +235,19 @@ class Console:
                 "SELECT MAX(ts) FROM events WHERE event_type='RUN_START'"
             ).fetchone()[0]
 
+            forged = conn.execute(
+                "SELECT COUNT(*) FROM archive WHERE rg_tagged_at IS NOT NULL"
+            ).fetchone()[0]
+            car_exported = conn.execute(
+                "SELECT COUNT(*) FROM archive WHERE car_export_path IS NOT NULL"
+            ).fetchone()[0]
+
             _info(f"Total files   : {_c(str(total), _BOLD)}")
             _info(f"  PENDING     : {pending}")
             _info(f"  HASHED      : {hashed}")
             _info(f"  CATALOGUED  : {catalogued}")
+            _info(f"  FORGED      : {forged}  (RG tagged)")
+            _info(f"  CAR EXPORT  : {car_exported}")
             _info(f"Dupe groups   : {_c(str(dupes), _YELLOW) if dupes else '0'}")
             _info(f"Issues        : {_c(str(issues), _YELLOW) if issues else '0'}")
             _info(f"Last run      : {last_run or 'never'}")
@@ -361,6 +378,23 @@ class Console:
         if conn is None:
             return
         try:
+            # Show recent runs first so user can pick without going back to menu 4
+            rows_recent = conn.execute(
+                """
+                SELECT run_id, ts, note FROM events
+                WHERE event_type='RUN_START'
+                ORDER BY id DESC LIMIT 10
+                """
+            ).fetchall()
+            if rows_recent:
+                _section("Recent Runs  (copy a Run ID below)")
+                for row in rows_recent:
+                    note = row["note"] or ""
+                    is_dry = "dry_run=True" in note
+                    mode = _c(" [DRY]", _DIM) if is_dry else ""
+                    print(f"    {_c(row['run_id'], _CYAN)}{mode}  {row['ts']}")
+                print()
+
             run_id = _prompt("Run ID (or partial)")
             if not run_id:
                 return
@@ -429,15 +463,81 @@ class Console:
         else:
             _warn("Config not loaded.")
 
+    # ── Dedupe review ─────────────────────────────────────────────────────────
+
+    def _run_dedupe(self) -> None:
+        _section("Dedupe Review")
+        conn = self._open_db()
+        if conn is None:
+            return
+        try:
+            opts = [
+                "Interactive review  (manual keep/archive per group)",
+                "Auto-resolve        (keep highest quality, archive rest)",
+                "Report only         (show summary, no changes)",
+                "Back",
+            ]
+            choice = _choose("Dedupe mode", opts)
+            try:
+                idx = int(choice)
+            except ValueError:
+                return
+            from .dedupe import print_dedupe_report, run_dedupe_console
+            if idx == 0:
+                run_dedupe_console(conn, auto_mode=False)
+            elif idx == 1:
+                run_dedupe_console(conn, auto_mode=True)
+            elif idx == 2:
+                print_dedupe_report(conn)
+        finally:
+            conn.close()
+
     # ── Stage submenu ─────────────────────────────────────────────────────────
 
+    def _run_stage_with_stash(
+        self, stage_cls: type, dry_run: bool, stash: dict | None = None
+    ) -> None:
+        """Like _run_stage but pre-loads ctx stash keys (for curator, forge --force, etc.)."""
+        mode = "DRY RUN" if dry_run else "LIVE RUN"
+        assert self._config is not None
+        conn = self._open_db()
+        if conn is None:
+            return
+        try:
+            ctx = RunContext.new(self._config, conn, dry_run=dry_run)
+            if stash:
+                for k, v in stash.items():
+                    ctx.set(k, v)
+            stage = stage_cls()
+            _section(f"{stage.NAME.upper()}  [{mode}]")
+            result = stage.execute(ctx)
+            if result.success:
+                _ok(result.summarise())
+            else:
+                _err(result.summarise())
+            for note in result.notes:
+                _info(note)
+            for err_msg in result.errors:
+                _err(f"  ERROR: {err_msg}")
+            ctx.finish()
+        except Exception:
+            _err("Stage crashed — see traceback below")
+            traceback.print_exc()
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     def _stage_menu(self) -> None:
-        stages = [
-            ("Ingest  — register new files from inbox", IngestStage),
-            ("Sentinel — hash files + detect exact dupes", SentinelStage),
-            ("Scholar  — extract ffprobe metadata", ScholarStage),
+        stages: list[tuple[str, type, dict]] = [
+            ("Ingest   — register new files from inbox",      IngestStage,   {}),
+            ("Sentinel — hash files + detect exact dupes",    SentinelStage, {}),
+            ("Scholar  — extract ffprobe metadata",           ScholarStage,  {}),
+            ("Forge    — measure LUFS + write ReplayGain tags", ForgeStage,  {}),
+            ("Tagger   — write normalised DB metadata to files", TaggerStage, {}),
+            ("Curator  — build car-library export",           CuratorStage,  {}),
         ]
-        opts = [label for label, _ in stages] + ["Back"]
+        opts = [label for label, _, _ in stages] + ["Back"]
         choice = _choose("Select stage", opts)
         try:
             idx = int(choice)
@@ -445,7 +545,28 @@ class Console:
             return
         if idx >= len(stages):
             return
-        label, cls = stages[idx]
+        label, cls, default_stash = stages[idx]
+
+        stash: dict = dict(default_stash)
+
+        # Curator needs an export root
+        if cls is CuratorStage:
+            export_raw = _prompt("Export root path (e.g. /mnt/USB)")
+            if not export_raw:
+                _warn("No export root — cancelled.")
+                return
+            stash["curator_export_root"] = Path(export_raw)
+            noise_choice = _choose(
+                "Noise profile",
+                ["clean (none)", "pink", "brown", "white", "dual (pink+brown)  [default]"],
+                default="4",
+            )
+            noise_map = {0: "clean", 1: "pink", 2: "brown", 3: "white", 4: "dual"}
+            try:
+                stash["curator_noise"] = noise_map.get(int(noise_choice), "dual")
+            except ValueError:
+                stash["curator_noise"] = "dual"
+
         mode_opts = ["Dry run  (preview only)", "Live run (real changes)", "Back"]
         mode_choice = _choose("Mode", mode_opts)
         try:
@@ -453,23 +574,24 @@ class Console:
         except ValueError:
             return
         if mode_idx == 0:
-            self._run_stage(cls, dry_run=True)
+            self._run_stage_with_stash(cls, dry_run=True, stash=stash)
         elif mode_idx == 1:
-            self._run_stage(cls, dry_run=False)
+            self._run_stage_with_stash(cls, dry_run=False, stash=stash)
 
     # ── Main menu ─────────────────────────────────────────────────────────────
 
     def _main_menu(self) -> None:
         options = [
-            ("Status",              self._show_status),
+            ("Status",                        self._show_status),
             ("Run full pipeline  [DRY RUN]",  lambda: self._run_pipeline(dry_run=True)),
-            ("Run full pipeline  [LIVE]",      lambda: self._run_pipeline(dry_run=False)),
-            ("Run single stage…",  self._stage_menu),
-            ("View recent runs",   self._show_runs),
-            ("Inspect a run",      self._show_run_detail),
-            ("View duplicates",    self._show_duplicates),
-            ("Configuration",      self._show_config),
-            ("Quit",               self._quit),
+            ("Run full pipeline  [LIVE]",     lambda: self._run_pipeline(dry_run=False)),
+            ("Run single stage…",             self._stage_menu),
+            ("Dedupe review",                 self._run_dedupe),
+            ("View recent runs",              self._show_runs),
+            ("Inspect a run",                 self._show_run_detail),
+            ("View duplicates",               self._show_duplicates),
+            ("Configuration",                 self._show_config),
+            ("Quit",                          self._quit),
         ]
 
         _header(f"MUSAEUS  v{self.VERSION}")
@@ -519,7 +641,7 @@ class Console:
                 self._main_menu()
             except KeyboardInterrupt:
                 print()
-                _warn("Use option 8 (Quit) to exit cleanly.")
+                _warn("Use option 9 (Quit) to exit cleanly.")
             except Exception:
                 _err("Unexpected error in console loop:")
                 traceback.print_exc()
