@@ -463,6 +463,91 @@ class Console:
         else:
             _warn("Config not loaded.")
 
+    # ── Reset / fresh-start ───────────────────────────────────────────────────
+
+    def _reset_menu(self) -> None:
+        _section("Reset / Fresh Start")
+        _warn("This will mark all files for re-processing or wipe the database.")
+        _info("Files in INBOX are never deleted — only the DB records change.")
+        print()
+
+        opts = [
+            "Soft reset  — re-queue all CATALOGUED files (keeps event log, re-runs pipeline)",
+            "Hard reset  — delete the entire database (true blank slate, irreversible)",
+            "Back",
+        ]
+        choice = _choose("Reset mode", opts)
+        try:
+            idx = int(choice)
+        except ValueError:
+            return
+
+        if idx == 2:
+            return
+
+        assert self._config is not None
+
+        # ── Soft reset ────────────────────────────────────────────────────────
+        if idx == 0:
+            conn = self._open_db()
+            if conn is None:
+                return
+            try:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM archive WHERE status != 'PENDING'"
+                ).fetchone()[0]
+                _warn(f"This will mark {count:,} file(s) back to PENDING.")
+                confirm = _prompt("Type YES to confirm")
+                if confirm != "YES":
+                    _info("Cancelled.")
+                    return
+                conn.execute(
+                    """
+                    UPDATE archive
+                       SET status       = 'PENDING',
+                           audio_hash   = NULL,
+                           full_hash    = NULL,
+                           rg_tagged_at = NULL
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO events (run_id, event_type, note)
+                    VALUES ('manual', 'SOFT_RESET', 'console soft-reset: all files → PENDING')
+                    """
+                )
+                conn.commit()
+                _ok(f"Soft reset complete — {count:,} file(s) queued for re-processing.")
+                _info("Run the full pipeline to re-hash and re-catalogue.")
+            finally:
+                conn.close()
+
+        # ── Hard reset ────────────────────────────────────────────────────────
+        elif idx == 1:
+            db_path = self._config.db_path
+            _warn(f"This will PERMANENTLY DELETE: {db_path}")
+            _warn("All run history, hashes, metadata, and duplicate decisions will be lost.")
+            confirm1 = _prompt("Type DELETE to confirm")
+            if confirm1 != "DELETE":
+                _info("Cancelled.")
+                return
+            confirm2 = _prompt("Type DELETE again to be sure")
+            if confirm2 != "DELETE":
+                _info("Cancelled.")
+                return
+            try:
+                # Also remove WAL/SHM sidecar files
+                for suffix in ("", "-wal", "-shm"):
+                    p = db_path.parent / (db_path.name + suffix)
+                    if p.exists():
+                        p.unlink()
+                _ok(f"Database deleted: {db_path}")
+                _info("Restart musaeus to begin fresh — Ingest will re-register all inbox files.")
+                # Stop the console — DB is gone
+                self._running = False
+            except OSError as exc:
+                _err(f"Delete failed: {exc}")
+
     # ── Dedupe review ─────────────────────────────────────────────────────────
 
     def _run_dedupe(self) -> None:
@@ -591,6 +676,7 @@ class Console:
             ("Inspect a run",                 self._show_run_detail),
             ("View duplicates",               self._show_duplicates),
             ("Configuration",                 self._show_config),
+            ("Reset / fresh start",           self._reset_menu),
             ("Quit",                          self._quit),
         ]
 
@@ -641,7 +727,7 @@ class Console:
                 self._main_menu()
             except KeyboardInterrupt:
                 print()
-                _warn("Use option 9 (Quit) to exit cleanly.")
+                _warn("Use option 10 (Quit) to exit cleanly.")
             except Exception:
                 _err("Unexpected error in console loop:")
                 traceback.print_exc()
