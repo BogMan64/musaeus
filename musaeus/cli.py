@@ -345,6 +345,14 @@ def _build_parser() -> argparse.ArgumentParser:
     forge_p = sub.add_parser("forge", help="Measure LUFS + write ReplayGain tags")
     forge_p.add_argument("--dry-run", action="store_true", help="Measure but don't write tags")
     forge_p.add_argument("--force",   action="store_true", help="Re-tag already-forged files")
+    forge_p.add_argument(
+        "--target-lufs",
+        type=float,
+        default=None,
+        metavar="LUFS",
+        help="ReplayGain reference level in LUFS (default: -18.0). "
+             "Common values: -18 (home), -16 (Apple Music), -14 (car/Spotify).",
+    )
 
     # tagger
     tagger_p = sub.add_parser("tagger", help="Write normalised DB metadata back to file tags")
@@ -442,6 +450,9 @@ def main() -> None:
             stash: dict = {}
             if getattr(args, "force", False):
                 stash["forge_force"] = True
+            target_lufs = getattr(args, "target_lufs", None)
+            if target_lufs is not None:
+                stash["forge_target_lufs"] = float(target_lufs)
             sys.exit(_run_pipeline([ForgeStage], dry_run=dry_run, stash=stash))
 
         elif command == "tagger":

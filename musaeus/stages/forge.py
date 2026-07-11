@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..context import RunContext, StageResult
-from ..loudness import dbtp_to_linear, lufs_to_rg, measure_loudness
+from ..loudness import R128_REFERENCE, dbtp_to_linear, lufs_to_rg, measure_loudness
 from .base import BaseStage, StageError
 
 logger = logging.getLogger(__name__)
@@ -186,7 +186,7 @@ class ForgeStage(BaseStage):
         return [(r["file_path"], r["ext"] or "") for r in rows]
 
     def _process_one(
-        self, ctx: RunContext, file_path: str, dry_run: bool
+        self, ctx: RunContext, file_path: str, dry_run: bool, target_lufs: float
     ) -> str:
         """
         Measure + tag one file.
@@ -198,8 +198,8 @@ class ForgeStage(BaseStage):
         if reason != "ok":
             return reason
 
-        rg_gain = lufs_to_rg(lufs)           # type: ignore[arg-type]
-        rg_peak = dbtp_to_linear(tp)         # type: ignore[arg-type]
+        rg_gain = lufs_to_rg(lufs, reference=target_lufs)  # type: ignore[arg-type]
+        rg_peak = dbtp_to_linear(tp)                        # type: ignore[arg-type]
 
         tagged = False
         if not dry_run:
@@ -213,11 +213,13 @@ class ForgeStage(BaseStage):
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)
         force: bool = ctx.get("forge_force", False)
+        target_lufs: float = ctx.get("forge_target_lufs", R128_REFERENCE)
 
         pending = self._get_pending(ctx, force)
 
         total = len(pending)
         result.notes.append(f"files to forge: {total}")
+        result.notes.append(f"target LUFS: {target_lufs}")
         if not total:
             result.notes.append("nothing to do — all CATALOGUED files already forged")
             ctx.record_stage(result)
@@ -229,7 +231,7 @@ class ForgeStage(BaseStage):
         }
 
         for i, (fp, _ext) in enumerate(pending, 1):
-            status = self._process_one(ctx, fp, dry_run=False)
+            status = self._process_one(ctx, fp, dry_run=False, target_lufs=target_lufs)
             counters[status] = counters.get(status, 0) + 1
             result.files_processed += 1
 
@@ -262,12 +264,14 @@ class ForgeStage(BaseStage):
     def dry_run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=True)
         force: bool = ctx.get("forge_force", False)
+        target_lufs: float = ctx.get("forge_target_lufs", R128_REFERENCE)
 
         pending = self._get_pending(ctx, force)
         total = len(pending)
 
         result.files_processed = total
         result.notes.append(f"[DRY RUN] would measure {total} file(s)")
+        result.notes.append(f"[DRY RUN] target LUFS: {target_lufs}")
         result.notes.append("  no tags will be written, no DB changes")
 
         # Peek at a sample to show what LUFS values look like
@@ -275,7 +279,7 @@ class ForgeStage(BaseStage):
         for fp, _ in sample:
             lufs, tp, reason = measure_loudness(Path(fp))
             if reason == "ok":
-                rg = lufs_to_rg(lufs)   # type: ignore[arg-type]
+                rg = lufs_to_rg(lufs, reference=target_lufs)   # type: ignore[arg-type]
                 result.notes.append(f"  {Path(fp).name[:60]}  {lufs:.1f} LUFS → RG {rg:+.1f} dB")
             else:
                 result.notes.append(f"  {Path(fp).name[:60]}  [{reason}]")
