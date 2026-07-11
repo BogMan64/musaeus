@@ -86,7 +86,7 @@ class NearDupeStage(BaseStage):
         result = self._make_result(dry_run=dry_run)
 
         cfg = get_config()
-        artist_canon = ArtistCanon(cfg)
+        artist_canon = ArtistCanon(cfg.meta_dir / "artist_canon.tsv")
 
         # Load all catalogued rows
         rows = ctx.conn.execute(

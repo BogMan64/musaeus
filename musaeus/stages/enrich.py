@@ -107,7 +107,10 @@ class EnrichStage(BaseStage):
             ctx.record_stage(result)
             return result
 
-        genre_canon = GenreCanon(cfg)
+        genre_canon = GenreCanon(
+            cfg.meta_dir / "genre_allowed.txt",
+            cfg.meta_dir / "genre_map.tsv",
+        )
 
         rows = ctx.conn.execute(
             """
