@@ -109,6 +109,8 @@ class IngestStage(BaseStage):
         known = _known_paths(ctx.conn)
         candidates = _scan_inbox(ctx.inbox)
 
+        _COMMIT_EVERY = 100
+
         for path in candidates:
             result.files_processed += 1
             path_str = str(path)
@@ -142,6 +144,10 @@ class IngestStage(BaseStage):
                 result.files_errored += 1
                 result.errors.append(f"{path.name}: {exc}")
                 logger.warning("ingest error: %s — %s", path.name, exc)
+
+            if result.files_processed % _COMMIT_EVERY == 0:
+                ctx.conn.commit()
+                logger.info("[ingest] checkpoint %d files", result.files_processed)
 
         if result.files_errored > 0:
             result.success = False

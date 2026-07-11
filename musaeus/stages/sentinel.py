@@ -37,7 +37,7 @@ def _get_pending(conn) -> list[dict]:  # type: ignore[type-arg]
     rows = conn.execute(
         """
         SELECT file_path, audio_hash FROM archive
-        WHERE status IN ('PENDING', 'HASHED')
+        WHERE status = 'PENDING'
            OR audio_hash IS NULL
         ORDER BY file_path
         """

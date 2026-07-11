@@ -143,24 +143,6 @@ def _save_loudness(
     )
 
 
-def _migrate_columns(ctx: RunContext) -> None:
-    """Add new loudness columns to archive if missing (idempotent live migration)."""
-    cur = ctx.conn.execute("PRAGMA table_info(archive)")
-    existing = {row[1] for row in cur.fetchall()}
-    new_cols = {
-        "lufs":         "REAL",
-        "lufs_tp":      "REAL",
-        "rg_gain":      "REAL",
-        "rg_peak":      "REAL",
-        "rg_tagged_at": "TEXT",
-    }
-    for col, coltype in new_cols.items():
-        if col not in existing:
-            ctx.conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {coltype}")
-            logger.info("forge: added column archive.%s", col)
-    ctx.conn.commit()
-
-
 # ── Forge Stage ───────────────────────────────────────────────────────────────
 
 class ForgeStage(BaseStage):
@@ -232,7 +214,6 @@ class ForgeStage(BaseStage):
         result = self._make_result(dry_run=False)
         force: bool = ctx.get("forge_force", False)
 
-        _migrate_columns(ctx)
         pending = self._get_pending(ctx, force)
 
         total = len(pending)
@@ -282,7 +263,6 @@ class ForgeStage(BaseStage):
         result = self._make_result(dry_run=True)
         force: bool = ctx.get("forge_force", False)
 
-        _migrate_columns(ctx)
         pending = self._get_pending(ctx, force)
         total = len(pending)
 
