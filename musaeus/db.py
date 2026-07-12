@@ -14,10 +14,6 @@ from pathlib import Path
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 _SCHEMA = """
-PRAGMA journal_mode=WAL;
-PRAGMA foreign_keys=ON;
-PRAGMA synchronous=NORMAL;
-
 -- Immutable event log: every mutation appended, never updated.
 CREATE TABLE IF NOT EXISTS events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,29 +117,27 @@ CREATE TABLE IF NOT EXISTS metadata_cache (
 # Each entry: (table, column_name, column_def)
 # Applied in order every time open_db() is called — idempotent.
 _MIGRATIONS: list[tuple[str, str, str]] = [
-    ("archive", "lufs",            "REAL"),
-    ("archive", "lufs_tp",         "REAL"),
-    ("archive", "rg_gain",         "REAL"),
-    ("archive", "rg_peak",         "REAL"),
-    ("archive", "rg_tagged_at",    "TEXT"),
+    ("archive", "lufs", "REAL"),
+    ("archive", "lufs_tp", "REAL"),
+    ("archive", "rg_gain", "REAL"),
+    ("archive", "rg_peak", "REAL"),
+    ("archive", "rg_tagged_at", "TEXT"),
     ("archive", "car_export_path", "TEXT"),
-    ("archive", "noise_profile",   "TEXT"),
+    ("archive", "noise_profile", "TEXT"),
 ]
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
     """Add new columns to existing tables when the schema evolves."""
     for table, col, coltype in _MIGRATIONS:
-        existing = {
-            row[1]
-            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-        }
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if col not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
     conn.commit()
 
 
 # ── Connection factory ────────────────────────────────────────────────────────
+
 
 def open_db(db_path: Path) -> sqlite3.Connection:
     """
@@ -157,6 +151,13 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row
+    # Apply PRAGMAs via individual execute() calls BEFORE executescript() so
+    # that busy_timeout is active when DDL tries to acquire the write lock.
+    # executescript() bypasses the normal busy-timeout machinery and also
+    # issues an implicit COMMIT, so PRAGMAs inside the script body are too late.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=10000")
     conn.executescript(_SCHEMA)
     conn.commit()
@@ -165,6 +166,7 @@ def open_db(db_path: Path) -> sqlite3.Connection:
 
 
 # ── Event log helpers ─────────────────────────────────────────────────────────
+
 
 def log_event(
     conn: sqlite3.Connection,
@@ -196,13 +198,30 @@ def get_file_history(conn: sqlite3.Connection, file_path: str) -> list[sqlite3.R
 
 # ── Archive helpers ───────────────────────────────────────────────────────────
 
+
 def upsert_archive(conn: sqlite3.Connection, row: dict) -> None:
     """Insert or update an archive row."""
     fields = [
-        "file_path", "audio_hash", "full_hash", "filename", "ext", "size_bytes",
-        "artist", "album", "title", "genre", "year", "track",
-        "duration", "bitrate", "sample_rate", "channels", "codec",
-        "status", "last_seen", "last_modified",
+        "file_path",
+        "audio_hash",
+        "full_hash",
+        "filename",
+        "ext",
+        "size_bytes",
+        "artist",
+        "album",
+        "title",
+        "genre",
+        "year",
+        "track",
+        "duration",
+        "bitrate",
+        "sample_rate",
+        "channels",
+        "codec",
+        "status",
+        "last_seen",
+        "last_modified",
     ]
     placeholders = ", ".join("?" for _ in fields)
     updates = ", ".join(f"{f}=excluded.{f}" for f in fields if f != "file_path")
