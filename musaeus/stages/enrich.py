@@ -25,11 +25,11 @@ Graceful degradation:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from urllib.parse import urlencode
 from urllib.request import urlopen
-import json
 
 from ..canon import GenreCanon
 from ..config import get_config
@@ -62,6 +62,9 @@ def _lastfm_top_tags(
     url = _LASTFM_URL + "?" + urlencode(params)
     with urlopen(url, timeout=_TIMEOUT_S) as resp:
         data = json.loads(resp.read().decode("utf-8"))
+
+    if "error" in data:
+        raise ValueError(f"Last.fm error {data['error']}: {data.get('message', '')}")
 
     tags_obj = data.get("toptags", {})
     tags = tags_obj.get("tag", [])

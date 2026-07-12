@@ -24,8 +24,9 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-R128_REFERENCE: float = -18.0   # dB LUFS target
-_SILENCE_FLOOR: float = -70.0   # below this → treat as silence/unmeasurable
+R128_REFERENCE: float = -18.0        # ReplayGain 2 target for FLAC/MP3 tags
+R128_APPLE_REFERENCE: float = -23.0  # EBU R128 reference; required by Apple R128_TRACK_GAIN
+_SILENCE_FLOOR: float = -70.0        # below this → treat as silence/unmeasurable
 
 # Per-file ffmpeg timeout: cap at 600s for very long files (30s minimum)
 _TIMEOUT_MIN  = 30
@@ -44,7 +45,8 @@ def _get_duration(path: Path) -> float | None:
             capture_output=True, text=True, timeout=10, check=False,
         )
         return float(json.loads(r.stdout)["format"]["duration"])
-    except Exception:
+    except Exception as exc:
+        logger.debug("_get_duration failed for %s: %s", path, exc)
         return None
 
 

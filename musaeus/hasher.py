@@ -70,7 +70,8 @@ def _probe_audio_meta(path: Path) -> tuple[int, float]:
         sample_rate = int(streams[0]["sample_rate"]) if streams else 48000
         duration = float(data.get("format", {}).get("duration", 0.0))
         return sample_rate, duration
-    except Exception:
+    except Exception as exc:
+        logger.debug("ffprobe metadata probe failed for %s: %s", path, exc)
         return 48000, 0.0
 
 

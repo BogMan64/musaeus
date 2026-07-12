@@ -39,13 +39,16 @@ def _read_tags(path: Path) -> dict[str, str]:
             def _g(key: str) -> str:
                 v = tags.get(key, [])
                 return str(v[0]) if v else ""
+            # trkn is stored as [(track_num, total)] — extract the number directly.
+            _trkn = tags.get("trkn", [])
+            track_str = str(_trkn[0][0]) if _trkn and _trkn[0] else ""
             return {
                 "artist": _g("\xa9ART"),
                 "album":  _g("\xa9alb"),
                 "title":  _g("\xa9nam"),
                 "genre":  _g("\xa9gen"),
                 "year":   _g("\xa9day"),
-                "track":  str(_g("trkn")[0]) if _g("trkn") else "",
+                "track":  track_str,
             }
 
         if ext == ".flac":
@@ -134,7 +137,7 @@ def _write_tags(path: Path, changes: dict[str, str]) -> bool:
             try:
                 audio = EasyID3(str(path))
             except Exception:
-                from mutagen.id3 import ID3, ID3NoHeaderError  # type: ignore[import-untyped]
+                from mutagen.id3 import ID3  # type: ignore[import-untyped]
                 audio = ID3()
             _map_m = {
                 "artist": "artist",

@@ -20,7 +20,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..context import RunContext, StageResult
-from ..loudness import R128_REFERENCE, dbtp_to_linear, lufs_to_rg, measure_loudness
+from ..loudness import (
+    R128_APPLE_REFERENCE,
+    R128_REFERENCE,
+    dbtp_to_linear,
+    lufs_to_rg,
+    measure_loudness,
+)
 from .base import BaseStage, StageError
 
 logger = logging.getLogger(__name__)
@@ -95,11 +101,18 @@ def _write_tags_aiff(path: Path, rg_gain: float, rg_peak: float) -> bool:
         return False
 
 
-def write_rg_tags(path: Path, rg_gain: float, rg_peak: float) -> bool:
-    """Dispatch to the right tag writer based on file extension."""
+def write_rg_tags(
+    path: Path, rg_gain: float, rg_peak: float, r128_gain: float | None = None
+) -> bool:
+    """Dispatch to the right tag writer based on file extension.
+
+    r128_gain — gain referenced to -23 LUFS (EBU R128), used for Apple M4A tags.
+                Falls back to rg_gain if not supplied.
+    """
     ext = path.suffix.lower()
     if ext in (".m4a", ".alac"):
-        return _write_tags_m4a(path, rg_gain, rg_peak)
+        # Apple com.apple.iTunes.R128_TRACK_GAIN must reference -23 LUFS.
+        return _write_tags_m4a(path, r128_gain if r128_gain is not None else rg_gain, rg_peak)
     if ext == ".flac":
         return _write_tags_flac(path, rg_gain, rg_peak)
     if ext == ".mp3":
@@ -198,12 +211,13 @@ class ForgeStage(BaseStage):
         if reason != "ok":
             return reason
 
-        rg_gain = lufs_to_rg(lufs, reference=target_lufs)  # type: ignore[arg-type]
-        rg_peak = dbtp_to_linear(tp)                        # type: ignore[arg-type]
+        rg_gain = lufs_to_rg(lufs, reference=target_lufs)       # type: ignore[arg-type]
+        r128_gain = lufs_to_rg(lufs, reference=R128_APPLE_REFERENCE)  # type: ignore[arg-type]
+        rg_peak = dbtp_to_linear(tp)                                   # type: ignore[arg-type]
 
         tagged = False
         if not dry_run:
-            tagged = write_rg_tags(path, rg_gain, rg_peak)
+            tagged = write_rg_tags(path, rg_gain, rg_peak, r128_gain=r128_gain)
             _save_loudness(ctx, file_path, lufs, tp, rg_gain, rg_peak, tagged)   # type: ignore[arg-type]
 
         return "ok" if tagged or dry_run else "tag_fail"
