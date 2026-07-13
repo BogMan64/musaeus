@@ -118,6 +118,17 @@ def audio_hash(path: Path) -> str:
     ]
 
     sample_rate, duration = _probe_audio_meta(path)
+
+    # Hi-res audio (≥96 kHz) decodes 2-4× more PCM data per second than 48 kHz.
+    # On spinning disk this reliably exceeds any sane timeout, so fall back to
+    # a full-file SHA-256 which is O(read) and finishes in seconds.
+    if sample_rate >= 96000:
+        logger.info("hi-res audio (%d Hz) — full-file hash fallback: %s", sample_rate, path.name)
+        try:
+            return file_hash(path)
+        except OSError as exc:
+            raise HasherError(f"full-file hash fallback failed for {path}: {exc}") from exc
+
     _TIMEOUT_SECS = _audio_hash_timeout(sample_rate, duration)
 
     try:

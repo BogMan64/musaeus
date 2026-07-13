@@ -8,13 +8,14 @@ Available stages:
   ForgeStage     — measure EBU R128 loudness, write ReplayGain tags
   TaggerStage    — write normalised metadata from DB back to file tags
   CuratorStage   — build car-library export with optional noise profiles
+  PlaylistStage  — build per-genre M3U8 playlists from the archive
   GhostStage     — mark archive entries whose files no longer exist on disk
   HealthStage    — library-wide consistency and quality checks
   EnrichStage    — Last.fm genre enrichment for tracks with missing genre
   NearDupeStage  — metadata-based near-duplicate detection (fuzzy title match)
 
 Run order: Ingest → Sentinel → Scholar → Forge → Tagger
-On-demand: Curator, Ghost, Health, Enrich, NearDupe
+On-demand: Curator, Playlist, Ghost, Health, Enrich, NearDupe
 """
 
 from .curator import CuratorStage
@@ -24,6 +25,7 @@ from .ghost import GhostStage
 from .health import HealthStage
 from .ingest import IngestStage
 from .neardupe import NearDupeStage
+from .playlist import PlaylistStage
 from .scholar import ScholarStage
 from .sentinel import SentinelStage
 from .tagger import TaggerStage
@@ -35,6 +37,7 @@ __all__ = [
     "ForgeStage",
     "TaggerStage",
     "CuratorStage",
+    "PlaylistStage",
     "GhostStage",
     "HealthStage",
     "EnrichStage",

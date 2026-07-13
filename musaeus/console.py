@@ -38,6 +38,7 @@ from .stages import (
     CuratorStage,
     ForgeStage,
     IngestStage,
+    PlaylistStage,
     ScholarStage,
     SentinelStage,
     TaggerStage,
@@ -615,12 +616,13 @@ class Console:
 
     def _stage_menu(self) -> None:
         stages: list[tuple[str, type, dict]] = [
-            ("Ingest   — register new files from inbox",      IngestStage,   {}),
-            ("Sentinel — hash files + detect exact dupes",    SentinelStage, {}),
-            ("Scholar  — extract ffprobe metadata",           ScholarStage,  {}),
-            ("Forge    — measure LUFS + write ReplayGain tags", ForgeStage,  {}),
-            ("Tagger   — write normalised DB metadata to files", TaggerStage, {}),
-            ("Curator  — build car-library export",           CuratorStage,  {}),
+            ("Ingest    — register new files from inbox",       IngestStage,   {}),
+            ("Sentinel  — hash files + detect exact dupes",     SentinelStage, {}),
+            ("Scholar   — extract ffprobe metadata",            ScholarStage,  {}),
+            ("Forge     — measure LUFS + write ReplayGain tags", ForgeStage,  {}),
+            ("Tagger    — write normalised DB metadata to files", TaggerStage, {}),
+            ("Curator   — build car-library export",            CuratorStage,  {}),
+            ("Playlists — build per-genre M3U8 playlists",     PlaylistStage, {}),
         ]
         opts = [label for label, _, _ in stages] + ["Back"]
         choice = _choose("Select stage", opts)
