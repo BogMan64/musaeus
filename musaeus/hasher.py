@@ -65,13 +65,19 @@ def _probe_audio_meta(path: Path) -> tuple[int, float]:
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode != 0 or not result.stdout.strip():
+            logger.warning(
+                "ffprobe probe returned rc=%d with empty stdout for %s",
+                result.returncode, path,
+            )
+            return 48000, 0.0
         data = json.loads(result.stdout)
         streams = data.get("streams", [])
         sample_rate = int(streams[0]["sample_rate"]) if streams else 48000
         duration = float(data.get("format", {}).get("duration", 0.0))
         return sample_rate, duration
     except Exception as exc:
-        logger.debug("ffprobe metadata probe failed for %s: %s", path, exc)
+        logger.warning("ffprobe metadata probe failed for %s: %s", path, exc)
         return 48000, 0.0
 
 

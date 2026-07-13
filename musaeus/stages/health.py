@@ -80,9 +80,10 @@ def _check_row(row: dict) -> list[tuple[str, str]]:
             issues.append(("LOW_QUALITY", "warning"))
 
     # Lossless format but low bitrate
+    # .m4a is AAC (lossy) — only flag .flac extension and alac/flac codec explicitly
     ext = (row.get("ext") or "").lower()
     codec = (row.get("codec") or "").lower()
-    if ext in (".flac", ".m4a") or codec in ("alac", "flac"):
+    if ext == ".flac" or codec in ("alac", "flac"):
         if br is not None and int(br) < 300_000:
             issues.append(("LOSSLESS_EXPECTED", "warning"))
 
