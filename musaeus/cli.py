@@ -98,6 +98,7 @@ from .stages import (
     FULL_PIPELINE,
     MAINTAIN_PIPELINE,
     AcousticIDStage,
+    AlbumArtStage,
     AuditorStage,
     CuratorStage,
     EnrichStage,
@@ -105,6 +106,7 @@ from .stages import (
     GhostStage,
     HealthStage,
     IngestStage,
+    IntegrityStage,
     MBEnrichStage,
     NearDupeStage,
     NormalizeStage,
@@ -429,6 +431,65 @@ def _cmd_review_report() -> int:
     return 0
 
 
+# ── DB-tune command ───────────────────────────────────────────────────────────
+
+
+def _cmd_db_tune() -> int:
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    import os
+
+    conn = open_db(cfg.db_path)
+    try:
+        # Enable WAL mode
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA mmap_size=268435456")  # 256 MB
+        conn.commit()
+
+        # Stats before
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+        freelist = conn.execute("PRAGMA freelist_count").fetchone()[0]
+        wal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+
+        print("\nMusaeus DB Tune")
+        print(f"  DB        : {cfg.db_path}")
+        print(f"  Size      : {os.path.getsize(cfg.db_path) / 1024 / 1024:.1f} MB")
+        print(f"  Pages     : {page_count:,}  (page size: {page_size})")
+        print(
+            f"  Freelist  : {freelist:,} pages ({freelist * page_size / 1024:.0f} KB recoverable)"
+        )
+        print(f"  WAL mode  : {wal_mode}")
+
+        print("\n  Running ANALYZE... ", end="", flush=True)
+        conn.execute("ANALYZE")
+        conn.commit()
+        print("done.")
+
+        if freelist > 100:
+            print(f"  Running VACUUM ({freelist} free pages)... ", end="", flush=True)
+            conn.execute("VACUUM")
+            conn.commit()
+            new_size = os.path.getsize(cfg.db_path)
+            print(f"done.  New size: {new_size / 1024 / 1024:.1f} MB")
+        else:
+            print("  VACUUM skipped (freelist < 100 pages — DB is clean).")
+
+        # Archive row count
+        total = conn.execute("SELECT COUNT(*) FROM archive").fetchone()[0]
+        print(f"\n  Archive rows: {total:,}")
+        print("  DB tuning complete.\n")
+    finally:
+        conn.close()
+    return 0
+
+
 # ── Upgrade check command ─────────────────────────────────────────────────────
 
 
@@ -449,6 +510,65 @@ def _cmd_upgrade_check(write_csv: bool = False, min_gap: int = 0) -> int:
 
     candidates = _analyse(rows)
     _print_report(candidates, cfg, write_csv=write_csv, min_gap=min_gap)
+    return 0
+
+
+# ── Spec scout command ────────────────────────────────────────────────────────
+
+
+def _cmd_spec_scout(write_csv: bool = False, min_bitrate: int = 0, max_bitrate: int = 0) -> int:
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    conn = open_db(cfg.db_path)
+    try:
+        from scripts.musaeus_spec_scout import _analyse, _gather, _print_report
+
+        rows = _gather(conn)
+    finally:
+        conn.close()
+
+    print(f"Loaded {len(rows):,} catalogued tracks.")
+    issues = _analyse(rows, min_bitrate=min_bitrate, max_bitrate=max_bitrate)
+    _print_report(issues, cfg, write_csv=write_csv)
+    return 0
+
+
+# ── Canon review command ──────────────────────────────────────────────────────
+
+
+def _cmd_canon_review(
+    mode: str,
+    csv_path: str | None = None,
+    fixes_path: str | None = None,
+    dry_run: bool = False,
+) -> int:
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    conn = open_db(cfg.db_path)
+    try:
+        from scripts.musaeus_canon_review import _apply, _report
+
+        if mode == "report":
+            cp = Path(csv_path) if csv_path else None
+            _report(conn, cfg, cp)
+        elif mode == "apply":
+            if not fixes_path:
+                print("ERROR: --fixes required for apply mode", file=sys.stderr)
+                return 1
+            _apply(conn, cfg, Path(fixes_path), dry_run=dry_run)
+        else:
+            print(f"ERROR: unknown canon-review mode '{mode}'", file=sys.stderr)
+            return 1
+    finally:
+        conn.close()
     return 0
 
 
@@ -614,6 +734,58 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Only report if lossless exceeds lossy by at least N kbps",
     )
 
+    # integrity
+    integrity_p = sub.add_parser(
+        "integrity", help="Detect corrupt/truncated files via ffprobe decode-test"
+    )
+    integrity_p.add_argument("--dry-run", action="store_true", help="Count, no DB writes")
+    integrity_p.add_argument(
+        "--max-files",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Cap files checked per run (default: no cap)",
+    )
+
+    # albumart
+    albumart_p = sub.add_parser(
+        "albumart", help="Audit missing embedded art + embed sidecar images"
+    )
+    albumart_p.add_argument("--dry-run", action="store_true", help="Audit only, no embedding")
+    albumart_p.add_argument("--force", action="store_true", help="Re-check all files")
+    albumart_p.add_argument(
+        "--no-embed", action="store_true", help="Audit only, skip sidecar embedding"
+    )
+
+    # overnight
+    overnight_p = sub.add_parser(
+        "overnight",
+        help="Automated nightly self-heal: Ghost→Health→Normalize→Enrich→MBEnrich→NearDupe→Reviewer",
+    )
+    overnight_p.add_argument("--dry-run", action="store_true", help="Preview only")
+
+    # db-tune
+    sub.add_parser("db-tune", help="VACUUM, ANALYZE, WAL mode + DB stats")
+
+    # spec-scout
+    spec_p = sub.add_parser(
+        "spec-scout", help="Find audio spec outliers (bitrate/codec/sample-rate)"
+    )
+    spec_p.add_argument("--csv", action="store_true", help="Also write CSV report")
+    spec_p.add_argument("--min-bitrate", type=int, default=0, metavar="KBPS")
+    spec_p.add_argument("--max-bitrate", type=int, default=0, metavar="KBPS")
+
+    # canon-review
+    canon_p = sub.add_parser(
+        "canon-review", help="Audit genre/artist/album canons and apply approved fixes"
+    )
+    canon_sub = canon_p.add_subparsers(dest="canon_mode", metavar="mode")
+    canon_rep = canon_sub.add_parser("report", help="Generate canon review report")
+    canon_rep.add_argument("--csv", metavar="PATH", help="Also write CSV")
+    canon_appl = canon_sub.add_parser("apply", help="Apply approved fixes from CSV")
+    canon_appl.add_argument("--fixes", required=True, metavar="PATH")
+    canon_appl.add_argument("--dry-run", action="store_true")
+
     # ── review commands ───────────────────────────────────────────────────────
 
     # dedupe
@@ -773,6 +945,59 @@ def main() -> None:
                 _cmd_upgrade_check(
                     write_csv=getattr(args, "csv", False),
                     min_gap=getattr(args, "min_gap", 0),
+                )
+            )
+
+        elif command == "integrity":
+            stash = {}
+            mf = getattr(args, "max_files", None)
+            if mf is not None:
+                stash["integrity_max_files"] = int(mf)
+            sys.exit(_run_pipeline([IntegrityStage], dry_run=dry_run, stash=stash))
+
+        elif command == "albumart":
+            stash = {}
+            if getattr(args, "force", False):
+                stash["albumart_force"] = True
+            if getattr(args, "no_embed", False):
+                stash["albumart_embed"] = False
+            sys.exit(_run_pipeline([AlbumArtStage], dry_run=dry_run, stash=stash))
+
+        elif command == "overnight":
+            overnight_pipeline = [
+                GhostStage,
+                HealthStage,
+                NormalizeStage,
+                EnrichStage,
+                MBEnrichStage,
+                NearDupeStage,
+                ReviewerStage,
+            ]
+            sys.exit(_run_pipeline(overnight_pipeline, dry_run=dry_run))
+
+        elif command == "db-tune":
+            sys.exit(_cmd_db_tune())
+
+        elif command == "spec-scout":
+            sys.exit(
+                _cmd_spec_scout(
+                    write_csv=getattr(args, "csv", False),
+                    min_bitrate=getattr(args, "min_bitrate", 0),
+                    max_bitrate=getattr(args, "max_bitrate", 0),
+                )
+            )
+
+        elif command == "canon-review":
+            canon_mode = getattr(args, "canon_mode", None)
+            if not canon_mode:
+                print("Usage: musaeus canon-review {report|apply}", file=sys.stderr)
+                sys.exit(1)
+            sys.exit(
+                _cmd_canon_review(
+                    mode=canon_mode,
+                    csv_path=getattr(args, "csv", None),
+                    fixes_path=getattr(args, "fixes", None),
+                    dry_run=getattr(args, "dry_run", False),
                 )
             )
 

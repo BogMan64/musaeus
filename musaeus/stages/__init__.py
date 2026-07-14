@@ -26,6 +26,7 @@ On-demand: Auditor, Curator, Playlist, Ghost, Health, Enrich, MBEnrich,
 """
 
 from .acousticid import AcousticIDStage
+from .albumart import AlbumArtStage
 from .auditor import AuditorStage
 from .curator import CuratorStage
 from .enrich import EnrichStage
@@ -33,6 +34,7 @@ from .forge import ForgeStage
 from .ghost import GhostStage
 from .health import HealthStage
 from .ingest import IngestStage
+from .integrity import IntegrityStage
 from .mb_enrich import MBEnrichStage
 from .neardupe import NearDupeStage
 from .normalize import NormalizeStage
@@ -61,6 +63,8 @@ __all__ = [
     "AcousticIDStage",
     "TranscodeStage",
     "ReviewerStage",
+    "IntegrityStage",
+    "AlbumArtStage",
 ]
 
 # Canonical run order for the default pipeline
