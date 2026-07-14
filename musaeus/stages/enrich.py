@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from urllib.parse import urlencode
 from urllib.request import urlopen
@@ -39,14 +40,61 @@ from .base import BaseStage
 logger = logging.getLogger(__name__)
 
 _LASTFM_URL = "https://ws.audioscrobbler.com/2.0/"
-_RATE_LIMIT_DELAY = 0.2   # 5 req/s
-_TIMEOUT_S       = 10
-_COMMIT_EVERY    = 50
+_RATE_LIMIT_DELAY = 0.2  # 5 req/s
+_TIMEOUT_S = 10
+_COMMIT_EVERY = 50
+
+# Article suffixes stored in DB as  "Beatles, The"  →  " (the)"  bracket form.
+# Strip these before querying Last.fm which expects plain "The Beatles".
+_ARTICLE_SUFFIX_RE = re.compile(
+    r"""
+    ,?\s*               # optional comma + whitespace
+    \(\s*               # opening paren (with optional inner space)
+    (the|a|an|le|la|les|el|los|las|de|het|een|die|das|ein|eine)
+    \s*\)               # closing paren
+    \s*$                # end of string
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+# Bracket-free suffix variant: "Beatles, The"
+_ARTICLE_COMMA_RE = re.compile(
+    r",\s*(the|a|an|le|la|les|el|los|las|de|het|een|die|das|ein|eine)\s*$",
+    re.IGNORECASE,
+)
 
 
-def _lastfm_top_tags(
-    artist: str, api_key: str, limit: int = 5
-) -> list[str]:
+def _clean_artist_for_lookup(artist: str) -> str:
+    """
+    Convert stored article-suffix form to natural form for Last.fm.
+
+    Examples
+    --------
+    "Beatles, The (the)"  → "The Beatles"
+    "Rolling Stones ( the )" → "The Rolling Stones"
+    "Beatles, The"        → "The Beatles"
+    "Cranberries, The"    → "The Cranberries"
+    "Refused"             → "Refused"  (unchanged)
+    """
+    name = artist.strip()
+
+    # Strip the parenthesised article suffix first
+    m = _ARTICLE_SUFFIX_RE.search(name)
+    if m:
+        article = m.group(1).strip().capitalize()
+        base = name[: m.start()].strip().rstrip(",").strip()
+        return f"{article} {base}"
+
+    # Comma-article suffix without parens: "Beatles, The"
+    m2 = _ARTICLE_COMMA_RE.search(name)
+    if m2:
+        article = m2.group(1).strip().capitalize()
+        base = name[: m2.start()].strip()
+        return f"{article} {base}"
+
+    return name
+
+
+def _lastfm_top_tags(artist: str, api_key: str, limit: int = 5) -> list[str]:
     """
     Query Last.fm artist.getTopTags.
     Returns a list of tag names (lowercase), most popular first.
@@ -141,9 +189,12 @@ class EnrichStage(BaseStage):
             if artist_lower in artist_cache:
                 resolved = artist_cache[artist_lower]
             else:
+                lookup_name = _clean_artist_for_lookup(artist)
+                if lookup_name != artist:
+                    logger.debug("article-strip: %r → %r for Last.fm lookup", artist, lookup_name)
                 time.sleep(_RATE_LIMIT_DELAY)
                 try:
-                    tags = _lastfm_top_tags(artist, api_key)
+                    tags = _lastfm_top_tags(lookup_name, api_key)
                 except Exception as exc:
                     logger.warning("Last.fm error for %r: %s", artist, exc)
                     artist_cache[artist_lower] = None
@@ -159,9 +210,7 @@ class EnrichStage(BaseStage):
                         break
 
                 artist_cache[artist_lower] = resolved
-                logger.debug(
-                    "Last.fm %r → tags=%r → resolved=%r", artist, tags[:3], resolved
-                )
+                logger.debug("Last.fm %r → tags=%r → resolved=%r", artist, tags[:3], resolved)
 
             if resolved is None:
                 skipped_no_tag += 1
@@ -198,9 +247,7 @@ class EnrichStage(BaseStage):
         prefix = "Would set" if dry_run else "Set"
         result.notes.append(f"{prefix} genre for {enriched} track(s).")
         if skipped_no_tag:
-            result.notes.append(
-                f"{skipped_no_tag} artist(s) had no resolvable Last.fm tag."
-            )
+            result.notes.append(f"{skipped_no_tag} artist(s) had no resolvable Last.fm tag.")
         if skipped_api_err:
             result.notes.append(f"{skipped_api_err} Last.fm API error(s) — skipped.")
 
