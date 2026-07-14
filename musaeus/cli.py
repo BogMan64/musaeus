@@ -7,19 +7,23 @@ Usage:
 
 Pipeline commands:
     run              Run the default pipeline (Ingest → Sentinel → Scholar)
-    run --full       Run the full pipeline  (+ Forge → Tagger)
-    run --maintain   Run the maintenance pipeline (Ghost→Health→Enrich→NearDupe)
+    run --full       Run the full pipeline  (+ Normalize → Forge → Tagger)
+    run --maintain   Run the maintenance pipeline (Ghost→Health→Normalize→Enrich→MBEnrich→NearDupe)
     dry-run          Preview the default pipeline without any mutations
     ingest           Run Ingest stage only
     sentinel         Run Sentinel stage only
     scholar          Run Scholar stage only
+    normalize        Article-suffix fix + ALL-CAPS repair on archived metadata
     forge            Measure EBU R128 loudness + write ReplayGain tags
     tagger           Write normalised DB metadata back to file tags
+    auditor          Pre-forge LUFS audit (flags out-of-window files)
     curator          Build car-library export (requires --export-root)
     ghost            Sweep for archive entries missing from disk
     health           Run library consistency + quality checks
     enrich           Last.fm genre enrichment for tracks with missing genre
+    mb-enrich        MusicBrainz artist + release MBID enrichment
     neardupe         Metadata-based near-duplicate detection
+    report           Dashboard: library stats, genre/bitrate breakdown
 
 Review commands:
     dedupe           Interactive duplicate review console
@@ -46,8 +50,13 @@ Examples:
     musaeus curator --export-root /mnt/USB --noise dual
     musaeus ghost
     musaeus health
+    musaeus normalize --dry-run
+    musaeus auditor --dry-run
     musaeus enrich --dry-run
+    musaeus mb-enrich --dry-run
     musaeus neardupe --dry-run
+    musaeus report
+    musaeus report --json
     musaeus dedupe
     musaeus dedupe --auto
     musaeus health-report
@@ -70,21 +79,24 @@ from .stages import (
     DEFAULT_PIPELINE,
     FULL_PIPELINE,
     MAINTAIN_PIPELINE,
+    AuditorStage,
     CuratorStage,
     EnrichStage,
     ForgeStage,
     GhostStage,
     HealthStage,
     IngestStage,
+    MBEnrichStage,
     NearDupeStage,
+    NormalizeStage,
     ScholarStage,
     SentinelStage,
     TaggerStage,
 )
 from .stages.base import BaseStage
 
-
 # ── Logging setup ─────────────────────────────────────────────────────────────
+
 
 def _setup_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
@@ -96,6 +108,7 @@ def _setup_logging(verbose: bool) -> None:
 
 
 # ── Pipeline runner ───────────────────────────────────────────────────────────
+
 
 def _run_pipeline(
     stages: list[type[BaseStage]],
@@ -115,7 +128,7 @@ def _run_pipeline(
         return 1
 
     conn = open_db(cfg.db_path)
-    ctx  = RunContext.new(cfg, conn, dry_run=dry_run)
+    ctx = RunContext.new(cfg, conn, dry_run=dry_run)
     if stash:
         for k, v in stash.items():
             ctx.set(k, v)
@@ -125,7 +138,7 @@ def _run_pipeline(
 
     exit_code = 0
     for cls in stages:
-        stage  = cls()
+        stage = cls()
         result = stage.execute(ctx)
         status = "✓" if result.success else "✗"
         print(f"  {status}  {result.summarise()}")
@@ -149,6 +162,7 @@ def _run_pipeline(
 
 # ── Status command ────────────────────────────────────────────────────────────
 
+
 def _cmd_status() -> int:
     try:
         cfg = get_config()
@@ -158,18 +172,28 @@ def _cmd_status() -> int:
 
     conn = open_db(cfg.db_path)
     try:
-        total      = conn.execute("SELECT COUNT(*) FROM archive").fetchone()[0]
-        pending    = conn.execute("SELECT COUNT(*) FROM archive WHERE status='PENDING'").fetchone()[0]
-        hashed     = conn.execute("SELECT COUNT(*) FROM archive WHERE status='HASHED'").fetchone()[0]
-        catalogued = conn.execute("SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'").fetchone()[0]
-        forged     = conn.execute("SELECT COUNT(*) FROM archive WHERE rg_tagged_at IS NOT NULL").fetchone()[0]
-        tagged_car = conn.execute("SELECT COUNT(*) FROM archive WHERE car_export_path IS NOT NULL").fetchone()[0]
-        dupes      = conn.execute("SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE status='pending'").fetchone()[0]
-        last_run   = conn.execute("SELECT MAX(ts) FROM events WHERE event_type='RUN_START'").fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM archive").fetchone()[0]
+        pending = conn.execute("SELECT COUNT(*) FROM archive WHERE status='PENDING'").fetchone()[0]
+        hashed = conn.execute("SELECT COUNT(*) FROM archive WHERE status='HASHED'").fetchone()[0]
+        catalogued = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'"
+        ).fetchone()[0]
+        forged = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE rg_tagged_at IS NOT NULL"
+        ).fetchone()[0]
+        tagged_car = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE car_export_path IS NOT NULL"
+        ).fetchone()[0]
+        dupes = conn.execute(
+            "SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE status='pending'"
+        ).fetchone()[0]
+        last_run = conn.execute(
+            "SELECT MAX(ts) FROM events WHERE event_type='RUN_START'"
+        ).fetchone()[0]
     finally:
         conn.close()
 
-    print(f"\nMusaeus Library Status")
+    print("\nMusaeus Library Status")
     print(f"  Vault       : {cfg.vault_root}")
     print(f"  DB          : {cfg.db_path}")
     print(f"  Total       : {total:,}")
@@ -182,6 +206,7 @@ def _cmd_status() -> int:
     print(f"  Last run    : {last_run or 'never'}")
 
     from .config import AUDIO_EXTENSIONS
+
     inbox = cfg.inbox
     if inbox.exists():
         n = sum(1 for f in inbox.rglob("*") if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS)
@@ -193,6 +218,7 @@ def _cmd_status() -> int:
 
 
 # ── Runs command ──────────────────────────────────────────────────────────────
+
 
 def _cmd_runs() -> int:
     try:
@@ -228,6 +254,7 @@ def _cmd_runs() -> int:
 
 # ── Dedupe command ────────────────────────────────────────────────────────────
 
+
 def _cmd_dedupe(auto: bool = False, report_only: bool = False) -> int:
     try:
         cfg = get_config()
@@ -238,6 +265,7 @@ def _cmd_dedupe(auto: bool = False, report_only: bool = False) -> int:
     conn = open_db(cfg.db_path)
     try:
         from .dedupe import print_dedupe_report, run_dedupe_console
+
         if report_only:
             print_dedupe_report(conn)
         else:
@@ -249,6 +277,7 @@ def _cmd_dedupe(auto: bool = False, report_only: bool = False) -> int:
 
 # ── Health report command ─────────────────────────────────────────────────────
 
+
 def _cmd_health_report() -> int:
     try:
         cfg = get_config()
@@ -259,9 +288,7 @@ def _cmd_health_report() -> int:
     conn = open_db(cfg.db_path)
     try:
         # Overall counts
-        total_issues = conn.execute(
-            "SELECT COUNT(*) FROM validation_issues"
-        ).fetchone()[0]
+        total_issues = conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
         error_count = conn.execute(
             "SELECT COUNT(*) FROM validation_issues WHERE severity='error'"
         ).fetchone()[0]
@@ -292,21 +319,22 @@ def _cmd_health_report() -> int:
     finally:
         conn.close()
 
-    print(f"\nMusaeus Health Report")
+    print("\nMusaeus Health Report")
     print(f"  Total issues : {total_issues:,}")
     print(f"    Errors     : {error_count:,}")
     print(f"    Warnings   : {warn_count:,}")
 
     if rows:
-        print(f"\n  Issue breakdown:")
+        print("\n  Issue breakdown:")
         for row in rows:
             sev_icon = "✗" if row["severity"] == "error" else "⚠"
             print(f"    {sev_icon} {row['issue']:<28} {row['cnt']:>6}")
 
     if bad_files:
-        print(f"\n  Files with most issues (top 10):")
+        print("\n  Files with most issues (top 10):")
         for row in bad_files:
             from pathlib import Path
+
             print(f"    [{row['cnt']}] {Path(row['file_path']).name}")
 
     print()
@@ -314,6 +342,7 @@ def _cmd_health_report() -> int:
 
 
 # ── Argument parser ───────────────────────────────────────────────────────────
+
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -330,8 +359,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── run ──────────────────────────────────────────────────────────────────
     run_p = sub.add_parser("run", help="Run pipeline (Ingest→Sentinel→Scholar)")
     run_p.add_argument("--dry-run", action="store_true", help="Preview only, no mutations")
-    run_p.add_argument("--full",     action="store_true", help="Also run Forge + Tagger stages")
-    run_p.add_argument("--maintain", action="store_true", help="Run Ghost + Health + Enrich + NearDupe")
+    run_p.add_argument("--full", action="store_true", help="Also run Forge + Tagger stages")
+    run_p.add_argument(
+        "--maintain", action="store_true", help="Run Ghost + Health + Enrich + NearDupe"
+    )
 
     # dry-run shortcut
     sub.add_parser("dry-run", help="Alias for: run --dry-run")
@@ -341,17 +372,21 @@ def _build_parser() -> argparse.ArgumentParser:
         sp = sub.add_parser(name, help=f"Run {name} stage only")
         sp.add_argument("--dry-run", action="store_true", help="Preview only")
 
+    # normalize
+    normalize_p = sub.add_parser("normalize", help="Article-suffix fix + ALL-CAPS repair")
+    normalize_p.add_argument("--dry-run", action="store_true", help="Preview only, no DB changes")
+
     # forge
     forge_p = sub.add_parser("forge", help="Measure LUFS + write ReplayGain tags")
     forge_p.add_argument("--dry-run", action="store_true", help="Measure but don't write tags")
-    forge_p.add_argument("--force",   action="store_true", help="Re-tag already-forged files")
+    forge_p.add_argument("--force", action="store_true", help="Re-tag already-forged files")
     forge_p.add_argument(
         "--target-lufs",
         type=float,
         default=None,
         metavar="LUFS",
         help="ReplayGain reference level in LUFS (default: -18.0). "
-             "Common values: -18 (home), -16 (Apple Music), -14 (car/Spotify).",
+        "Common values: -18 (home), -16 (Apple Music), -14 (car/Spotify).",
     )
 
     # tagger
@@ -366,13 +401,40 @@ def _build_parser() -> argparse.ArgumentParser:
     health_p = sub.add_parser("health", help="Library consistency and quality checks")
     health_p.add_argument("--dry-run", action="store_true", help="Report only, no DB writes")
 
+    # auditor
+    auditor_p = sub.add_parser("auditor", help="Pre-forge LUFS audit — flag out-of-window files")
+    auditor_p.add_argument("--dry-run", action="store_true", help="Measure + report, no DB writes")
+    auditor_p.add_argument(
+        "--target-lufs",
+        type=float,
+        default=None,
+        metavar="LUFS",
+        help="Target integrated LUFS (default: -18.0)",
+    )
+    auditor_p.add_argument(
+        "--max-files",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Cap files per run (default: 200; 0 = no cap)",
+    )
+
     # enrich
     enrich_p = sub.add_parser("enrich", help="Last.fm genre enrichment for missing genres")
     enrich_p.add_argument("--dry-run", action="store_true", help="Show what would change")
 
+    # mb-enrich
+    mb_p = sub.add_parser("mb-enrich", help="MusicBrainz artist + release MBID enrichment")
+    mb_p.add_argument("--dry-run", action="store_true", help="Show what would change, no DB writes")
+
     # neardupe
     neardupe_p = sub.add_parser("neardupe", help="Metadata-based near-duplicate detection")
     neardupe_p.add_argument("--dry-run", action="store_true", help="Show matches without staging")
+
+    # report
+    report_p = sub.add_parser("report", help="Dashboard: library stats, genre/bitrate breakdown")
+    report_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    report_p.add_argument("--wide", action="store_true", help="Use wider terminal columns (100)")
 
     # health-report
     sub.add_parser("health-report", help="Print validation issues summary")
@@ -387,14 +449,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Noise profile to include (default: dual = pink+brown)",
     )
     curator_p.add_argument("--dry-run", action="store_true", help="Preview only")
-    curator_p.add_argument("--force",   action="store_true", help="Re-copy already-exported files")
+    curator_p.add_argument("--force", action="store_true", help="Re-copy already-exported files")
 
     # ── review commands ───────────────────────────────────────────────────────
 
     # dedupe
     dedupe_p = sub.add_parser("dedupe", help="Interactive duplicate review console")
-    dedupe_p.add_argument("--auto",   action="store_true", help="Auto-resolve: keep highest quality")
-    dedupe_p.add_argument("--report", action="store_true", help="Show report only, no interactive review")
+    dedupe_p.add_argument("--auto", action="store_true", help="Auto-resolve: keep highest quality")
+    dedupe_p.add_argument(
+        "--report", action="store_true", help="Show report only, no interactive review"
+    )
 
     # status
     sub.add_parser("status", help="Show library status")
@@ -412,6 +476,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     parser = _build_parser()
@@ -446,6 +511,9 @@ def main() -> None:
         elif command == "scholar":
             sys.exit(_run_pipeline([ScholarStage], dry_run=dry_run))
 
+        elif command == "normalize":
+            sys.exit(_run_pipeline([NormalizeStage], dry_run=dry_run))
+
         elif command == "forge":
             stash: dict = {}
             if getattr(args, "force", False):
@@ -464,11 +532,41 @@ def main() -> None:
         elif command == "health":
             sys.exit(_run_pipeline([HealthStage], dry_run=dry_run))
 
+        elif command == "auditor":
+            stash: dict = {}
+            tl = getattr(args, "target_lufs", None)
+            if tl is not None:
+                stash["auditor_target_lufs"] = float(tl)
+            mf = getattr(args, "max_files", None)
+            if mf is not None:
+                stash["auditor_max_files"] = int(mf)
+            sys.exit(_run_pipeline([AuditorStage], dry_run=dry_run, stash=stash))
+
         elif command == "enrich":
             sys.exit(_run_pipeline([EnrichStage], dry_run=dry_run))
 
+        elif command == "mb-enrich":
+            sys.exit(_run_pipeline([MBEnrichStage], dry_run=dry_run))
+
         elif command == "neardupe":
             sys.exit(_run_pipeline([NearDupeStage], dry_run=dry_run))
+
+        elif command == "report":
+            import json as _json
+
+            from scripts.musaeus_report import _gather, _print_report
+
+            cfg = get_config()
+            conn = open_db(cfg.db_path)
+            try:
+                data = _gather(conn)
+            finally:
+                conn.close()
+            if getattr(args, "json", False):
+                print(_json.dumps(data, indent=2, default=str))
+            else:
+                _print_report(data, cfg, wide=getattr(args, "wide", False))
+            sys.exit(0)
 
         elif command == "health-report":
             sys.exit(_cmd_health_report())
@@ -486,10 +584,12 @@ def main() -> None:
         # ── review commands ───────────────────────────────────────────────────
 
         elif command == "dedupe":
-            sys.exit(_cmd_dedupe(
-                auto=getattr(args, "auto", False),
-                report_only=getattr(args, "report", False),
-            ))
+            sys.exit(
+                _cmd_dedupe(
+                    auto=getattr(args, "auto", False),
+                    report_only=getattr(args, "report", False),
+                )
+            )
 
         elif command == "status":
             sys.exit(_cmd_status())
@@ -499,6 +599,7 @@ def main() -> None:
 
         elif command == "console":
             from .console import Console
+
             Console().run()
 
         elif command == "version":

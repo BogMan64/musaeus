@@ -1,0 +1,332 @@
+#!/usr/bin/env python3
+"""
+MUSAEUS — Stage: MBEnrich
+MusicBrainz metadata enrichment for CATALOGUED archive rows.
+
+What it does:
+  - Finds CATALOGUED rows where mb_artist_id IS NULL (not yet enriched)
+  - Queries MusicBrainz search API for artist MBID and canonical name
+  - Queries MusicBrainz release API for album MBID when artist is found
+  - Writes back to archive: mb_artist_id, mb_artist_name, mb_release_id
+    (columns auto-added on first run via _ensure_columns)
+  - Caches per-artist results in memory (avoids repeat queries)
+  - Rate-limits to 1 request/second (MusicBrainz free tier requirement)
+  - Logs MB_ARTIST_FOUND / MB_ARTIST_NOT_FOUND / MB_RELEASE_FOUND per file
+  - dry_run() reports what would be found without any DB changes
+
+Requirements:
+  - Network access to musicbrainz.org
+  - No API key required (MusicBrainz is free/open)
+  - User-Agent header sent per MB guidelines
+
+Graceful degradation:
+  - Network errors → artist skipped, run continues
+  - Artist not found → mb_artist_id left NULL, run continues
+  - MusicBrainz rate-limit (503) → backs off 5 s and retries once
+
+ORPHEUS equivalent: SCRIPTS/orpheus_mb_enricher.py
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+import urllib.error
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
+
+from ..context import RunContext, StageResult
+from .base import BaseStage
+
+logger = logging.getLogger(__name__)
+
+_MB_BASE = "https://musicbrainz.org/ws/2"
+_USER_AGENT = "Musaeus/1.0 (music-library-manager; contact@musaeus.local)"
+_RATE_LIMIT_S = 1.1  # MB requires ≤ 1 req/s for unauthenticated access
+_TIMEOUT_S = 15
+_RETRY_WAIT_S = 5
+_COMMIT_EVERY = 50
+_ARTIST_SCORE = 85  # minimum MB score to accept an artist match (0-100)
+
+
+# ── Column migration ──────────────────────────────────────────────────────────
+
+
+def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
+    """Add MB columns to archive if they don't exist yet (auto-migrate)."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
+    for col, typedef in (
+        ("mb_artist_id", "TEXT"),
+        ("mb_artist_name", "TEXT"),
+        ("mb_release_id", "TEXT"),
+        ("mb_enriched_at", "TEXT"),
+    ):
+        if col not in existing:
+            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
+    conn.commit()
+
+
+# ── MB API helpers ────────────────────────────────────────────────────────────
+
+
+def _mb_get(path: str, params: dict[str, str]) -> dict:
+    """
+    Perform a GET request to the MusicBrainz JSON API.
+    Retries once on 503 (rate-limit).  Raises on other errors.
+    """
+    url = f"{_MB_BASE}/{path}?{urlencode({**params, 'fmt': 'json'})}"
+    req = Request(url, headers={"User-Agent": _USER_AGENT})
+
+    for attempt in range(2):
+        try:
+            with urlopen(req, timeout=_TIMEOUT_S) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 503 and attempt == 0:
+                logger.warning("[mb_enrich] rate-limited, backing off %ds", _RETRY_WAIT_S)
+                time.sleep(_RETRY_WAIT_S)
+                continue
+            raise
+    return {}  # unreachable but satisfies type checker
+
+
+def _search_artist(artist_name: str) -> tuple[str, str] | None:
+    """
+    Search MusicBrainz for an artist by name.
+    Returns (mbid, canonical_name) or None if not found / score too low.
+    """
+    try:
+        data = _mb_get(
+            "artist",
+            {"query": f'artist:"{quote(artist_name)}"', "limit": "3"},
+        )
+    except Exception as exc:
+        logger.warning("[mb_enrich] artist search error for %r: %s", artist_name, exc)
+        return None
+
+    artists = data.get("artists", [])
+    for artist in artists:
+        score = int(artist.get("score", 0))
+        if score >= _ARTIST_SCORE:
+            return artist["id"], artist["name"]
+
+    return None
+
+
+def _search_release(artist_mbid: str, album_name: str) -> str | None:
+    """
+    Search MusicBrainz for a release by artist MBID + album title.
+    Returns release MBID or None.
+    """
+    if not album_name:
+        return None
+    try:
+        data = _mb_get(
+            "release",
+            {
+                "query": f'artist:"{artist_mbid}" AND release:"{quote(album_name)}"',
+                "limit": "1",
+            },
+        )
+    except Exception as exc:
+        logger.warning(
+            "[mb_enrich] release search error for mbid=%s album=%r: %s",
+            artist_mbid,
+            album_name,
+            exc,
+        )
+        return None
+
+    releases = data.get("releases", [])
+    if releases:
+        score = int(releases[0].get("score", 0))
+        if score >= 70:
+            return releases[0]["id"]
+    return None
+
+
+# ── Stage ─────────────────────────────────────────────────────────────────────
+
+
+class MBEnrichStage(BaseStage):
+    """
+    MBEnrich — MusicBrainz artist + release MBID lookup for CATALOGUED files.
+    """
+
+    NAME = "mb_enrich"
+
+    # ── Validate ──────────────────────────────────────────────────────────────
+
+    def validate(self, ctx: RunContext) -> None:
+        # Check connectivity (lightweight HEAD to MB)
+        try:
+            req = Request(
+                "https://musicbrainz.org/",
+                headers={"User-Agent": _USER_AGENT},
+                method="HEAD",
+            )
+            urlopen(req, timeout=5)
+        except Exception as exc:
+            from .base import StageError
+
+            raise StageError(
+                f"MusicBrainz not reachable: {exc}. Check network connectivity."
+            ) from exc
+
+        # Count work to do (columns may not exist yet — use try/except)
+        try:
+            count = ctx.conn.execute(
+                "SELECT COUNT(*) FROM archive "
+                "WHERE status='CATALOGUED' AND mb_artist_id IS NULL "
+                "AND artist IS NOT NULL AND trim(artist) != ''"
+            ).fetchone()[0]
+        except Exception:
+            count = ctx.conn.execute(
+                "SELECT COUNT(*) FROM archive "
+                "WHERE status='CATALOGUED' "
+                "AND artist IS NOT NULL AND trim(artist) != ''"
+            ).fetchone()[0]
+
+        logger.info("[mb_enrich] %d track(s) need MusicBrainz enrichment", count)
+
+    # ── Shared logic ──────────────────────────────────────────────────────────
+
+    def _enrich(self, ctx: RunContext, dry_run: bool) -> StageResult:
+        result = self._make_result(dry_run=dry_run)
+
+        if not dry_run:
+            _ensure_columns(ctx.conn)
+
+        # Fetch rows that need enrichment
+        try:
+            rows = ctx.conn.execute(
+                """
+                SELECT file_path, artist, album
+                FROM archive
+                WHERE status = 'CATALOGUED'
+                  AND mb_artist_id IS NULL
+                  AND artist IS NOT NULL AND trim(artist) != ''
+                ORDER BY artist, album
+                """
+            ).fetchall()
+        except Exception:
+            # mb_artist_id column doesn't exist yet (dry-run before first real run)
+            rows = ctx.conn.execute(
+                """
+                SELECT file_path, artist, album
+                FROM archive
+                WHERE status = 'CATALOGUED'
+                  AND artist IS NOT NULL AND trim(artist) != ''
+                ORDER BY artist, album
+                """
+            ).fetchall()
+
+        # Per-artist cache: artist_lower → (mbid, mb_name) | None
+        artist_cache: dict[str, tuple[str, str] | None] = {}
+        # Per-artist+album cache: (artist_mbid, album_lower) → release_mbid | None
+        release_cache: dict[tuple[str, str], str | None] = {}
+
+        found_artists = 0
+        found_releases = 0
+        not_found = 0
+
+        from datetime import datetime, timezone
+
+        now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+
+        for row in rows:
+            result.files_processed += 1
+            fp = row["file_path"]
+            artist = (row["artist"] or "").strip()
+            album = (row["album"] or "").strip()
+            artist_lower = artist.lower()
+
+            # ── Artist lookup ──────────────────────────────────────────────
+            if artist_lower not in artist_cache:
+                time.sleep(_RATE_LIMIT_S)
+                match = _search_artist(artist)
+                artist_cache[artist_lower] = match
+                if match:
+                    logger.info(
+                        "[mb_enrich] artist found: %r → %r  mbid=%s",
+                        artist,
+                        match[1],
+                        match[0],
+                    )
+                else:
+                    logger.debug("[mb_enrich] artist not found: %r", artist)
+
+            artist_match = artist_cache[artist_lower]
+
+            if artist_match is None:
+                not_found += 1
+                result.files_skipped += 1
+                if not dry_run:
+                    ctx.log_event(
+                        "MB_ARTIST_NOT_FOUND",
+                        file_path=fp,
+                        stage=self.NAME,
+                        note=f"artist={artist!r}",
+                    )
+                continue
+
+            mb_artist_id, mb_artist_name = artist_match
+            found_artists += 1
+
+            # ── Release lookup ─────────────────────────────────────────────
+            release_key = (mb_artist_id, album.lower())
+            if album and release_key not in release_cache:
+                time.sleep(_RATE_LIMIT_S)
+                mb_release_id = _search_release(mb_artist_id, album)
+                release_cache[release_key] = mb_release_id
+                if mb_release_id:
+                    logger.info("[mb_enrich] release found: %r → %s", album, mb_release_id)
+            mb_release_id = release_cache.get(release_key) if album else None
+
+            if mb_release_id:
+                found_releases += 1
+
+            result.files_changed += 1
+
+            if not dry_run:
+                ctx.conn.execute(
+                    """
+                    UPDATE archive
+                       SET mb_artist_id=?,
+                           mb_artist_name=?,
+                           mb_release_id=?,
+                           mb_enriched_at=?
+                     WHERE file_path=?
+                    """,
+                    (mb_artist_id, mb_artist_name, mb_release_id, now, fp),
+                )
+                ctx.log_event(
+                    "MB_ARTIST_FOUND",
+                    file_path=fp,
+                    new_value=mb_artist_id,
+                    stage=self.NAME,
+                    note=f"name={mb_artist_name!r} release={mb_release_id}",
+                )
+
+            if result.files_processed % _COMMIT_EVERY == 0 and not dry_run:
+                ctx.conn.commit()
+                logger.info("[mb_enrich] checkpoint %d", result.files_processed)
+
+        prefix = "Would enrich" if dry_run else "Enriched"
+        result.notes.append(f"{prefix} {found_artists} artist(s) with MusicBrainz MBID.")
+        if found_releases:
+            result.notes.append(f"  {found_releases} release MBID(s) found.")
+        if not_found:
+            result.notes.append(f"  {not_found} artist(s) not found on MusicBrainz.")
+
+        ctx.record_stage(result)
+        return result
+
+    # ── Dry run / Run ─────────────────────────────────────────────────────────
+
+    def dry_run(self, ctx: RunContext) -> StageResult:
+        return self._enrich(ctx, dry_run=True)
+
+    def run(self, ctx: RunContext) -> StageResult:
+        return self._enrich(ctx, dry_run=False)
