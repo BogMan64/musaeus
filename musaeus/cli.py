@@ -110,6 +110,7 @@ from .stages import (
     MBEnrichStage,
     NearDupeStage,
     NormalizeStage,
+    PlaylistStage,
     ReviewerStage,
     ScholarStage,
     SentinelStage,
@@ -764,6 +765,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     overnight_p.add_argument("--dry-run", action="store_true", help="Preview only")
 
+    # playlist
+    playlist_p = sub.add_parser(
+        "playlist",
+        help="Build M3U8 playlists (genre + All) with relative paths — works on Android & Apple",
+    )
+    playlist_p.add_argument("--dry-run", action="store_true", help="Preview only, no files written")
+
     # db-tune
     sub.add_parser("db-tune", help="VACUUM, ANALYZE, WAL mode + DB stats")
 
@@ -974,6 +982,9 @@ def main() -> None:
                 ReviewerStage,
             ]
             sys.exit(_run_pipeline(overnight_pipeline, dry_run=dry_run))
+
+        elif command == "playlist":
+            sys.exit(_run_pipeline([PlaylistStage], dry_run=dry_run))
 
         elif command == "db-tune":
             sys.exit(_cmd_db_tune())
