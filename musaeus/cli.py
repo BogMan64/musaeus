@@ -9,6 +9,7 @@ Pipeline commands:
     run              Run the default pipeline (Ingest → Sentinel → Scholar)
     run --full       Run the full pipeline  (+ Normalize → Forge → Tagger)
     run --maintain   Run the maintenance pipeline (Ghost→Health→Normalize→Enrich→MBEnrich→NearDupe)
+    run --enrich     Run the enrichment pipeline (Enrich→MBEnrich→AcousticID→Reviewer)
     dry-run          Preview the default pipeline without any mutations
     ingest           Run Ingest stage only
     sentinel         Run Sentinel stage only
@@ -23,7 +24,12 @@ Pipeline commands:
     enrich           Last.fm genre enrichment for tracks with missing genre
     mb-enrich        MusicBrainz artist + release MBID enrichment
     neardupe         Metadata-based near-duplicate detection
+    acousticid       Acoustic fingerprint dedup via fpcalc + AcousticID API
+    transcode        Lossless → 256k AAC export via ffmpeg
+    reviewer         Groq AI metadata quality review
     report           Dashboard: library stats, genre/bitrate breakdown
+    review-report    Show AI reviewer issues summary
+    upgrade-check    Find lossy tracks where a lossless version exists
 
 Review commands:
     dedupe           Interactive duplicate review console
@@ -34,17 +40,20 @@ Review commands:
 Options:
     --dry-run        Preview mode (no mutations)
     --verbose / -v   Enable DEBUG logging
-    --force          Re-process already-done files (forge, curator)
+    --force          Re-process already-done files (forge, curator, transcode)
     --full           Include Forge + Tagger in `run` pipeline
     --maintain       Run Ghost + Health + Enrich + NearDupe in `run`
+    --enrich         Run Enrich + MBEnrich + AcousticID + Reviewer in `run`
     --auto           Auto-resolve duplicates (dedupe command)
-    --export-root    Target path for curator export
+    --export-root    Target path for curator/transcode export
     --noise          Noise profile for curator: clean|pink|brown|white|dual
+    --max-files      Cap files processed per run (auditor, reviewer)
 
 Examples:
     musaeus run
     musaeus run --full
     musaeus run --maintain
+    musaeus run --enrich
     musaeus forge --dry-run
     musaeus tagger
     musaeus curator --export-root /mnt/USB --noise dual
@@ -55,8 +64,16 @@ Examples:
     musaeus enrich --dry-run
     musaeus mb-enrich --dry-run
     musaeus neardupe --dry-run
+    musaeus acousticid --dry-run
+    musaeus transcode --dry-run
+    musaeus transcode --export-root /mnt/USB/AAC
+    musaeus reviewer --dry-run
+    musaeus reviewer --max-files 100
     musaeus report
     musaeus report --json
+    musaeus review-report
+    musaeus upgrade-check
+    musaeus upgrade-check --csv
     musaeus dedupe
     musaeus dedupe --auto
     musaeus health-report
@@ -77,8 +94,10 @@ from .context import RunContext
 from .db import open_db
 from .stages import (
     DEFAULT_PIPELINE,
+    ENRICH_PIPELINE,
     FULL_PIPELINE,
     MAINTAIN_PIPELINE,
+    AcousticIDStage,
     AuditorStage,
     CuratorStage,
     EnrichStage,
@@ -89,9 +108,11 @@ from .stages import (
     MBEnrichStage,
     NearDupeStage,
     NormalizeStage,
+    ReviewerStage,
     ScholarStage,
     SentinelStage,
     TaggerStage,
+    TranscodeStage,
 )
 from .stages.base import BaseStage
 
@@ -341,6 +362,96 @@ def _cmd_health_report() -> int:
     return 0
 
 
+# ── Review report command ─────────────────────────────────────────────────────
+
+
+def _cmd_review_report() -> int:
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    conn = open_db(cfg.db_path)
+    try:
+        try:
+            total = conn.execute("SELECT COUNT(*) FROM review_issues").fetchone()[0]
+        except Exception:
+            print("\nNo review_issues table yet — run `musaeus reviewer` first.")
+            return 0
+
+        rows = conn.execute(
+            """
+            SELECT issue_type, COUNT(*) as cnt,
+                   AVG(confidence) as avg_conf
+            FROM review_issues
+            GROUP BY issue_type
+            ORDER BY cnt DESC
+            """
+        ).fetchall()
+
+        recent = conn.execute(
+            """
+            SELECT ri.issue_type, ri.detail, ri.confidence,
+                   a.artist, a.title
+            FROM review_issues ri
+            LEFT JOIN archive a ON a.file_path = ri.file_path
+            ORDER BY ri.id DESC
+            LIMIT 20
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    print("\nMusaeus Review Report")
+    print(f"  Total issues : {total:,}")
+
+    if rows:
+        print("\n  By issue type:")
+        for row in rows:
+            print(
+                f"    {row['issue_type']:<28}  "
+                f"{row['cnt']:>5}  "
+                f"(avg confidence {row['avg_conf']:.0%})"
+            )
+
+    if recent:
+        print("\n  Most recent issues (up to 20):")
+        for row in recent:
+            artist = row["artist"] or "?"
+            title = row["title"] or "?"
+            print(
+                f"    [{row['issue_type']}] {artist} — {title}  "
+                f"({row['confidence']:.0%})  {row['detail'] or ''}"
+            )
+
+    print()
+    return 0
+
+
+# ── Upgrade check command ─────────────────────────────────────────────────────
+
+
+def _cmd_upgrade_check(write_csv: bool = False, min_gap: int = 0) -> int:
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    conn = open_db(cfg.db_path)
+    try:
+        from scripts.musaeus_upgrade_check import _analyse, _gather, _print_report
+
+        rows = _gather(conn)
+    finally:
+        conn.close()
+
+    candidates = _analyse(rows)
+    _print_report(candidates, cfg, write_csv=write_csv, min_gap=min_gap)
+    return 0
+
+
 # ── Argument parser ───────────────────────────────────────────────────────────
 
 
@@ -362,6 +473,11 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--full", action="store_true", help="Also run Forge + Tagger stages")
     run_p.add_argument(
         "--maintain", action="store_true", help="Run Ghost + Health + Enrich + NearDupe"
+    )
+    run_p.add_argument(
+        "--enrich",
+        action="store_true",
+        help="Run Enrich + MBEnrich + AcousticID + Reviewer pipeline",
     )
 
     # dry-run shortcut
@@ -451,6 +567,53 @@ def _build_parser() -> argparse.ArgumentParser:
     curator_p.add_argument("--dry-run", action="store_true", help="Preview only")
     curator_p.add_argument("--force", action="store_true", help="Re-copy already-exported files")
 
+    # acousticid
+    acousticid_p = sub.add_parser(
+        "acousticid", help="Acoustic fingerprint dedup via fpcalc + AcousticID API"
+    )
+    acousticid_p.add_argument(
+        "--dry-run", action="store_true", help="Fingerprint + report, no DB writes"
+    )
+
+    # transcode
+    transcode_p = sub.add_parser("transcode", help="Lossless → 256k AAC export via ffmpeg")
+    transcode_p.add_argument(
+        "--dry-run", action="store_true", help="Report what would be transcoded"
+    )
+    transcode_p.add_argument("--force", action="store_true", help="Re-transcode already-done files")
+    transcode_p.add_argument(
+        "--export-root",
+        metavar="PATH",
+        help="Output directory for transcoded files (default: vault/Transcoded)",
+    )
+
+    # reviewer
+    reviewer_p = sub.add_parser("reviewer", help="Groq AI metadata quality review")
+    reviewer_p.add_argument("--dry-run", action="store_true", help="Show what would be reviewed")
+    reviewer_p.add_argument(
+        "--max-files",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Cap tracks reviewed per run (default: 50)",
+    )
+
+    # review-report
+    sub.add_parser("review-report", help="Show AI reviewer issues summary")
+
+    # upgrade-check
+    upgrade_p = sub.add_parser(
+        "upgrade-check", help="Find lossy tracks where a lossless version exists"
+    )
+    upgrade_p.add_argument("--csv", action="store_true", help="Also write CSV report")
+    upgrade_p.add_argument(
+        "--min-gap",
+        type=int,
+        default=0,
+        metavar="KBPS",
+        help="Only report if lossless exceeds lossy by at least N kbps",
+    )
+
     # ── review commands ───────────────────────────────────────────────────────
 
     # dedupe
@@ -495,6 +658,8 @@ def main() -> None:
                 pipeline = MAINTAIN_PIPELINE
             elif getattr(args, "full", False):
                 pipeline = FULL_PIPELINE
+            elif getattr(args, "enrich", False):
+                pipeline = ENRICH_PIPELINE
             else:
                 pipeline = DEFAULT_PIPELINE
             sys.exit(_run_pipeline(pipeline, dry_run=dry_run))
@@ -580,6 +745,36 @@ def main() -> None:
             if getattr(args, "force", False):
                 stash["curator_force"] = True
             sys.exit(_run_pipeline([CuratorStage], dry_run=dry_run, stash=stash))
+
+        elif command == "acousticid":
+            sys.exit(_run_pipeline([AcousticIDStage], dry_run=dry_run))
+
+        elif command == "transcode":
+            stash = {}
+            export_root = getattr(args, "export_root", None)
+            if export_root:
+                stash["transcode_root"] = Path(export_root)
+            if getattr(args, "force", False):
+                stash["transcode_force"] = True
+            sys.exit(_run_pipeline([TranscodeStage], dry_run=dry_run, stash=stash))
+
+        elif command == "reviewer":
+            stash = {}
+            mf = getattr(args, "max_files", None)
+            if mf is not None:
+                stash["reviewer_max_files"] = int(mf)
+            sys.exit(_run_pipeline([ReviewerStage], dry_run=dry_run, stash=stash))
+
+        elif command == "review-report":
+            sys.exit(_cmd_review_report())
+
+        elif command == "upgrade-check":
+            sys.exit(
+                _cmd_upgrade_check(
+                    write_csv=getattr(args, "csv", False),
+                    min_gap=getattr(args, "min_gap", 0),
+                )
+            )
 
         # ── review commands ───────────────────────────────────────────────────
 

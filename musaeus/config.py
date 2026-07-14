@@ -82,6 +82,7 @@ class MusicConfig:
     groq_api_key: Optional[str] = field(default=None, repr=False)
     lastfm_api_key: Optional[str] = field(default=None, repr=False)
     openrouter_api_key: Optional[str] = field(default=None, repr=False)
+    acousticid_api_key: Optional[str] = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls) -> "MusicConfig":
@@ -117,6 +118,7 @@ class MusicConfig:
             groq_api_key=os.environ.get("GROQ_API_KEY") or None,
             lastfm_api_key=os.environ.get("LASTFM_API_KEY") or None,
             openrouter_api_key=os.environ.get("OPENROUTER_API_KEY") or None,
+            acousticid_api_key=os.environ.get("ACOUSTICID_API_KEY") or None,
         )
 
     def ensure_dirs(self) -> None:
@@ -145,6 +147,8 @@ class MusicConfig:
             f"  DB        : {self.db_path}",
             f"  Groq key  : {'✓ set' if self.groq_api_key else '✗ not set'}",
             f"  Last.fm   : {'✓ set' if self.lastfm_api_key else '✗ not set'}",
+            f"  AcousticID: {'✓ set' if self.acousticid_api_key else '✗ not set'}",
+            f"  Groq      : {'✓ set' if self.groq_api_key else '✗ not set'}",
         ]
         return "\n".join(lines)
 

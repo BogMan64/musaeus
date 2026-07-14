@@ -234,7 +234,7 @@ class AuditorStage(BaseStage):
         tolerance: float,
     ) -> None:
         """Write a text report of flagged files to RUNS_ROOT."""
-        cfg = ctx.cfg
+        cfg = ctx.config
         report_dir = cfg.runs_root
         report_dir.mkdir(parents=True, exist_ok=True)
         report_path = report_dir / "auditor_report.txt"

@@ -16,11 +16,16 @@ Available stages:
   EnrichStage    — Last.fm genre enrichment for tracks with missing genre
   MBEnrichStage  — MusicBrainz artist + release MBID enrichment
   NearDupeStage  — metadata-based near-duplicate detection (fuzzy title match)
+  AcousticIDStage — acoustic fingerprint dedup via fpcalc + AcousticID API
+  TranscodeStage  — lossless → 256k AAC export via ffmpeg
+  ReviewerStage   — Groq AI metadata quality review
 
 Run order: Ingest → Sentinel → Scholar → Normalize → Forge → Tagger
-On-demand: Auditor, Curator, Playlist, Ghost, Health, Enrich, MBEnrich, NearDupe
+On-demand: Auditor, Curator, Playlist, Ghost, Health, Enrich, MBEnrich,
+           NearDupe, AcousticID, Transcode, Reviewer
 """
 
+from .acousticid import AcousticIDStage
 from .auditor import AuditorStage
 from .curator import CuratorStage
 from .enrich import EnrichStage
@@ -32,9 +37,11 @@ from .mb_enrich import MBEnrichStage
 from .neardupe import NearDupeStage
 from .normalize import NormalizeStage
 from .playlist import PlaylistStage
+from .reviewer import ReviewerStage
 from .scholar import ScholarStage
 from .sentinel import SentinelStage
 from .tagger import TaggerStage
+from .transcode import TranscodeStage
 
 __all__ = [
     "IngestStage",
@@ -51,6 +58,9 @@ __all__ = [
     "EnrichStage",
     "MBEnrichStage",
     "NearDupeStage",
+    "AcousticIDStage",
+    "TranscodeStage",
+    "ReviewerStage",
 ]
 
 # Canonical run order for the default pipeline
@@ -78,4 +88,12 @@ MAINTAIN_PIPELINE: list[type] = [
     EnrichStage,
     MBEnrichStage,
     NearDupeStage,
+]
+
+# Enrichment pipeline (run with `musaeus run --enrich`)
+ENRICH_PIPELINE: list[type] = [
+    EnrichStage,
+    MBEnrichStage,
+    AcousticIDStage,
+    ReviewerStage,
 ]
