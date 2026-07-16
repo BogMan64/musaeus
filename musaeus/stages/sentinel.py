@@ -115,9 +115,11 @@ class SentinelStage(BaseStage):
             result.files_processed += 1
 
             if not path.exists():
-                logger.warning("file gone: %s", path_str)
-                result.files_errored += 1
-                result.errors.append(f"Missing: {path_str}")
+                logger.warning("file gone (stale DB record — removing): %s", path_str)
+                ctx.conn.execute(
+                    "DELETE FROM archive WHERE file_path = ?", (path_str,)
+                )
+                result.files_skipped += 1
                 continue
 
             # Full-file hash (always, cheap)
