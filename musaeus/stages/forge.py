@@ -287,16 +287,7 @@ class ForgeStage(BaseStage):
         result.notes.append(f"[DRY RUN] would measure {total} file(s)")
         result.notes.append(f"[DRY RUN] target LUFS: {target_lufs}")
         result.notes.append("  no tags will be written, no DB changes")
-
-        # Peek at a sample to show what LUFS values look like
-        sample = pending[:5]
-        for fp, _ in sample:
-            lufs, tp, reason = measure_loudness(Path(fp))
-            if reason == "ok":
-                rg = lufs_to_rg(lufs, reference=target_lufs)   # type: ignore[arg-type]
-                result.notes.append(f"  {Path(fp).name[:60]}  {lufs:.1f} LUFS → RG {rg:+.1f} dB")
-            else:
-                result.notes.append(f"  {Path(fp).name[:60]}  [{reason}]")
+        result.notes.append("  (LUFS values shown on live run only — dry_run skips ffmpeg)")
 
         ctx.record_stage(result)
         return result

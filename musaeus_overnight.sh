@@ -101,6 +101,7 @@ run_stage ingest
 run_stage sentinel
 run_stage scholar
 run_stage forge
+run_stage tagger
 
 # Optional stages
 if [[ "${WITH_ENRICH}" -eq 1 ]]; then
