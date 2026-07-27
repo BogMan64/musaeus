@@ -36,8 +36,12 @@ from .hasher import ffmpeg_available, ffprobe_available
 from .stages import (
     DEFAULT_PIPELINE,
     CuratorStage,
+    EnrichStage,
     ForgeStage,
+    GhostStage,
+    HealthStage,
     IngestStage,
+    NearDupeStage,
     ScholarStage,
     SentinelStage,
     TaggerStage,
@@ -621,6 +625,10 @@ class Console:
             ("Forge    — measure LUFS + write ReplayGain tags", ForgeStage,  {}),
             ("Tagger   — write normalised DB metadata to files", TaggerStage, {}),
             ("Curator  — build car-library export",           CuratorStage,  {}),
+            ("Ghost    — sweep for files missing from disk",  GhostStage,    {}),
+            ("Health   — consistency + quality checks",       HealthStage,   {}),
+            ("Enrich   — Last.fm genre enrichment",           EnrichStage,   {}),
+            ("NearDupe — fuzzy title duplicate detection",    NearDupeStage, {}),
         ]
         opts = [label for label, _, _ in stages] + ["Back"]
         choice = _choose("Select stage", opts)

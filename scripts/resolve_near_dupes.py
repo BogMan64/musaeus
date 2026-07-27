@@ -29,11 +29,21 @@ import argparse
 import os
 import re
 import sqlite3
+import sys
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DB_PATH = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db")
+# Use Musaeus config system for DB path instead of hardcoding
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+try:
+    from musaeus.config import get_config
+    DB_PATH = get_config().db_path
+except (ImportError, ValueError):
+    # Fallback if config not loadable (e.g. MUSAEUS_VAULT_ROOT not set)
+    DB_PATH = Path(
+        os.environ.get("MUSAEUS_DB_PATH", "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db")
+    )
 
 # ── Heuristics ────────────────────────────────────────────────────────────────
 
