@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# MUSAEUS — Overnight Pipeline Runner
-# Runs: Ingest → Sentinel → Scholar → Forge
-# Skips: Curator (copies files — only run when space is confirmed)
+# MUSAEUS — Overnight Pipeline Runner (v2)
+# Default: full pipeline (Ingest → Sentinel → Scholar → Forge → Tagger →
+#          Ghost → Health → Enrich → NearDupe)
+# Curator only runs when disk space is confirmed.
 #
 # Usage:
-#   ./musaeus_overnight.sh              # default run
-#   ./musaeus_overnight.sh --with-enrich  # also run enrich (Last.fm)
-#   ./musaeus_overnight.sh --with-neardupe # also run neardupe
-#   ./musaeus_overnight.sh --full        # all stages including curator
+#   ./musaeus_overnight.sh              # full pipeline (default)
+#   ./musaeus_overnight.sh --minimal    # core only (no enrich/neardupe/curator)
+#   ./musaeus_overnight.sh --with-curator # full + curator export
 #
 # Schedule (cron example — run at 11pm):
 #   0 23 * * * /mnt/FORGE2TB/Projects/MUSAEUS/musaeus_overnight.sh >> /mnt/FORGE2TB/Projects/MUSAEUS_VAULT/RUNS/overnight.log 2>&1
+#
+# Error recovery: each stage runs independently. A failed stage does NOT
+# abort the pipeline — subsequent stages still execute.
 #
 # Disk guard: refuses to run Forge if < MIN_FREE_GB free on vault filesystem.
 # Refuses to run Curator if < CURATOR_MIN_FREE_GB free.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-set -euo pipefail
+# Don't use set -e — we want stages to continue even if one fails.
+set -uo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
 VAULT_ROOT="${MUSAEUS_VAULT_ROOT:-/mnt/FORGE2TB/Projects/MUSAEUS_VAULT}"
@@ -26,20 +30,14 @@ MIN_FREE_GB=50          # minimum free GB required to run Forge
 CURATOR_MIN_FREE_GB=400 # minimum free GB required to run Curator
 
 # ── Parse flags ───────────────────────────────────────────────────────────────
-WITH_ENRICH=0
-WITH_NEARDUPE=0
+# Default: full pipeline (enrich + neardupe enabled)
+MINIMAL=0
 WITH_CURATOR=0
 
 for arg in "$@"; do
     case "$arg" in
-        --with-enrich)   WITH_ENRICH=1 ;;
-        --with-neardupe) WITH_NEARDUPE=1 ;;
+        --minimal)       MINIMAL=1 ;;
         --with-curator)  WITH_CURATOR=1 ;;
-        --full)
-            WITH_ENRICH=1
-            WITH_NEARDUPE=1
-            WITH_CURATOR=1
-            ;;
     esac
 done
 
@@ -52,7 +50,8 @@ LOG_FILE="${LOG_DIR}/overnight_${TIMESTAMP}.log"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
 echo "═══════════════════════════════════════════════════════════════"
-echo "  MUSAEUS Overnight Pipeline — $(date '+%Y-%m-%d %H:%M:%S')"
+echo "  MUSAEUS Overnight Pipeline v2 — $(date '+%Y-%m-%d %H:%M:%S')"
+echo "  Mode: $(if [[ "${MINIMAL}" -eq 1 ]]; then echo 'MINIMAL'; else echo 'FULL'; fi)"
 echo "  Log: ${LOG_FILE}"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
@@ -79,6 +78,11 @@ fi
 
 echo ""
 
+# ── Counters ──────────────────────────────────────────────────────────────────
+PASSED=0
+FAILED=0
+FAILED_STAGES=""
+
 # ── Helper ────────────────────────────────────────────────────────────────────
 run_stage() {
     local stage="$1"
@@ -87,8 +91,11 @@ run_stage() {
     echo "──────────────────────────────────────────────────────────────"
     if musaeus "${stage}" 2>&1; then
         echo "  ✓ ${stage} complete — $(date '+%H:%M:%S')"
+        PASSED=$((PASSED + 1))
     else
-        echo "  ✗ ${stage} failed — $(date '+%H:%M:%S')"
+        echo "  ✗ ${stage} FAILED — $(date '+%H:%M:%S')"
+        FAILED=$((FAILED + 1))
+        FAILED_STAGES="${FAILED_STAGES} ${stage}"
         # Non-fatal: continue to next stage
     fi
     echo ""
@@ -96,24 +103,25 @@ run_stage() {
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
-# Always run core pipeline
+# Phase 0: Ghost sweep FIRST (catches files moved/deleted since last run)
+run_stage ghost
+
+# Phase 1: Core pipeline (always runs)
 run_stage ingest
 run_stage sentinel
 run_stage scholar
 run_stage forge
 run_stage tagger
 
-# Optional stages
-if [[ "${WITH_ENRICH}" -eq 1 ]]; then
+# Phase 2: Maintenance (runs by default, skip with --minimal)
+if [[ "${MINIMAL}" -eq 0 ]]; then
+    run_stage health
     run_stage enrich
-fi
-
-if [[ "${WITH_NEARDUPE}" -eq 1 ]]; then
     run_stage neardupe
 fi
 
+# Phase 3: Export (only when explicitly requested + disk space available)
 if [[ "${WITH_CURATOR}" -eq 1 ]]; then
-    # Re-check disk before curator (it writes files)
     FREE=$(free_gb)
     if [[ "${FREE}" -lt "${CURATOR_MIN_FREE_GB}" ]]; then
         echo "  ⚠ Curator skipped — only ${FREE} GB free (need ${CURATOR_MIN_FREE_GB} GB)"
@@ -125,6 +133,15 @@ fi
 # ── Final status ──────────────────────────────────────────────────────────────
 echo "═══════════════════════════════════════════════════════════════"
 echo "  Overnight pipeline complete — $(date '+%Y-%m-%d %H:%M:%S')"
+echo "  Passed: ${PASSED}  |  Failed: ${FAILED}"
+if [[ -n "${FAILED_STAGES}" ]]; then
+    echo "  Failed stages:${FAILED_STAGES}"
+fi
 echo ""
 musaeus status 2>&1
 echo "═══════════════════════════════════════════════════════════════"
+
+# Exit with non-zero if any stage failed (useful for cron monitoring)
+if [[ "${FAILED}" -gt 0 ]]; then
+    exit 1
+fi
