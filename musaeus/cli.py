@@ -377,6 +377,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # health-report
     sub.add_parser("health-report", help="Print validation issues summary")
 
+    # rebuild-db
+    rebuild_p = sub.add_parser("rebuild-db", help="Rebuild archive table from event log")
+    rebuild_p.add_argument("--dry-run", action="store_true", help="Preview only")
+
     # curator
     curator_p = sub.add_parser("curator", help="Build car-library export")
     curator_p.add_argument("--export-root", metavar="PATH", help="Destination directory for export")
@@ -390,6 +394,15 @@ def _build_parser() -> argparse.ArgumentParser:
     curator_p.add_argument("--force",   action="store_true", help="Re-copy already-exported files")
 
     # ── review commands ───────────────────────────────────────────────────────
+
+    # review (subcommand group)
+    review_p = sub.add_parser("review", help="Album/artist review & approval workflow")
+    review_sub = review_p.add_subparsers(dest="review_command", metavar="action")
+    review_gen = review_sub.add_parser("generate", help="Generate review sheets from archive")
+    review_gen.add_argument("--dry-run", action="store_true", help="Preview only")
+    review_apply = review_sub.add_parser("apply", help="Apply approved fixes from review sheets")
+    review_apply.add_argument("--dry-run", action="store_true", help="Preview only")
+    review_sub.add_parser("status", help="Show pending review sheet status")
 
     # dedupe
     dedupe_p = sub.add_parser("dedupe", help="Interactive duplicate review console")
@@ -472,6 +485,23 @@ def main() -> None:
 
         elif command == "health-report":
             sys.exit(_cmd_health_report())
+
+        elif command == "rebuild-db":
+            from .rebuild import cmd_rebuild_db
+            sys.exit(cmd_rebuild_db(dry_run=dry_run))
+
+        elif command == "review":
+            from .approval import cmd_review_generate, cmd_review_apply, cmd_review_status
+            review_cmd = getattr(args, "review_command", None)
+            if review_cmd == "generate":
+                sys.exit(cmd_review_generate(dry_run=dry_run))
+            elif review_cmd == "apply":
+                sys.exit(cmd_review_apply(dry_run=dry_run))
+            elif review_cmd == "status":
+                sys.exit(cmd_review_status())
+            else:
+                print("Usage: musaeus review {generate|apply|status}")
+                sys.exit(1)
 
         elif command == "curator":
             stash = {}
