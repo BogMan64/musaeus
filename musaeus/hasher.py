@@ -151,7 +151,11 @@ def audio_hash(path: Path) -> str:
     timer.join(timeout=1)
 
     if rc != 0:
-        stderr = proc.stderr.read().decode("utf-8", errors="replace").strip()
+        stderr = (
+            proc.stderr.read().decode("utf-8", errors="replace").strip()
+            if proc.stderr
+            else ""
+        )
         if rc == -9:  # SIGKILL from timeout
             raise HasherError(f"ffmpeg timed out (>{_TIMEOUT_SECS}s) for {path}")
         raise HasherError(f"ffmpeg exited {rc} for {path}: {stderr[:200]}")
