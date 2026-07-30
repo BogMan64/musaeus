@@ -79,9 +79,7 @@ class MusicConfig:
     db_path: Path
 
     # API keys (may be None if not configured)
-    groq_api_key: Optional[str] = field(default=None, repr=False)
     lastfm_api_key: Optional[str] = field(default=None, repr=False)
-    openrouter_api_key: Optional[str] = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls) -> "MusicConfig":
@@ -114,9 +112,7 @@ class MusicConfig:
             runs_root=runs_root,
             meta_dir=meta_dir,
             db_path=db_path,
-            groq_api_key=os.environ.get("GROQ_API_KEY") or None,
             lastfm_api_key=os.environ.get("LASTFM_API_KEY") or None,
-            openrouter_api_key=os.environ.get("OPENROUTER_API_KEY") or None,
         )
 
     def ensure_dirs(self) -> None:
@@ -143,8 +139,7 @@ class MusicConfig:
             f"  Runs      : {self.runs_root}",
             f"  MetaData  : {self.meta_dir}",
             f"  DB        : {self.db_path}",
-            f"  Groq key  : {'✓ set' if self.groq_api_key else '✗ not set'}",
-            f"  Last.fm   : {'✓ set' if self.lastfm_api_key else '✗ not set'}",
+            f"  Last.fm   : {'set' if self.lastfm_api_key else 'not set'}",
         ]
         return "\n".join(lines)
 
