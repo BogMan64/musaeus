@@ -71,7 +71,8 @@ def _probe(path: Path) -> dict[str, Any]:
         raise ProbeError(f"ffprobe exit {proc.returncode}: {stderr[:200]}")
 
     try:
-        return json.loads(proc.stdout)
+        result: dict[str, Any] = json.loads(proc.stdout)
+        return result
     except json.JSONDecodeError as exc:
         raise ProbeError(f"ffprobe JSON parse error for {path.name}") from exc
 

@@ -25,11 +25,12 @@ def rebuild_archive_from_events(conn: sqlite3.Connection, *, dry_run: bool = Fal
 
     Returns a summary dict: {cleared, replayed, files_rebuilt, errors}
     """
-    summary = {
+    errors: list[str] = []
+    summary: dict[str, int | list[str]] = {
         "cleared": 0,
         "replayed": 0,
         "files_rebuilt": 0,
-        "errors": [],
+        "errors": errors,
     }
 
     # Count existing archive rows before clearing
@@ -178,7 +179,7 @@ def rebuild_archive_from_events(conn: sqlite3.Connection, *, dry_run: bool = Fal
                 values,
             )
         except sqlite3.Error as exc:
-            summary["errors"].append(f"{file_path}: {exc}")
+            errors.append(f"{file_path}: {exc}")
 
     conn.commit()
     summary["files_rebuilt"] = len(file_state)

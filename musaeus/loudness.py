@@ -19,6 +19,7 @@ import re
 import subprocess
 import threading
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ def _extract_loudnorm_json(stderr: str) -> dict | None:
     for m in reversed(list(re.finditer(r"\{[^{}]*\}", stderr, re.DOTALL))):
         candidate = m.group().strip()
         try:
-            data = json.loads(candidate)
+            data: dict[str, Any] = json.loads(candidate)
             if "input_i" in data:
                 return data
         except json.JSONDecodeError:
@@ -89,9 +90,9 @@ def _extract_loudnorm_json(stderr: str) -> dict | None:
     lo, hi = stderr.rfind("{"), stderr.rfind("}")
     if lo != -1 and hi != -1 and hi > lo:
         try:
-            data = json.loads(stderr[lo : hi + 1].strip())
-            if "input_i" in data:
-                return data
+            data2: dict[str, Any] = json.loads(stderr[lo : hi + 1].strip())
+            if "input_i" in data2:
+                return data2
         except json.JSONDecodeError:
             pass
 

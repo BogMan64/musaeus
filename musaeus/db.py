@@ -242,7 +242,7 @@ def upsert_archive(conn: sqlite3.Connection, row: dict) -> None:
 
 
 def get_archive_count(conn: sqlite3.Connection) -> int:
-    return conn.execute("SELECT COUNT(*) FROM archive").fetchone()[0]
+    return int(conn.execute("SELECT COUNT(*) FROM archive").fetchone()[0])
 
 
 def get_archive_by_status(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
