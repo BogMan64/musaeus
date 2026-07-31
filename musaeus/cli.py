@@ -70,13 +70,17 @@ from .stages import (
     DEFAULT_PIPELINE,
     FULL_PIPELINE,
     MAINTAIN_PIPELINE,
+    AcousticStage,
+    AlacExportStage,
     CuratorStage,
     EnrichStage,
     ForgeStage,
     GhostStage,
     HealthStage,
     IngestStage,
+    MusicBrainzStage,
     NearDupeStage,
+    PlaylistStage,
     ScholarStage,
     SentinelStage,
     TaggerStage,
@@ -374,6 +378,23 @@ def _build_parser() -> argparse.ArgumentParser:
     neardupe_p = sub.add_parser("neardupe", help="Metadata-based near-duplicate detection")
     neardupe_p.add_argument("--dry-run", action="store_true", help="Show matches without staging")
 
+    # musicbrainz
+    musicbrainz_p = sub.add_parser("musicbrainz", help="MusicBrainz ISRC + MBID lookup")
+    musicbrainz_p.add_argument("--dry-run", action="store_true", help="Show what would be looked up")
+
+    # alac-export
+    alac_p = sub.add_parser("alac-export", help="Build ALAC library from FLAC sources")
+    alac_p.add_argument("--dry-run", action="store_true", help="Preview only")
+    alac_p.add_argument("--export-root", metavar="PATH", help="Override ALAC export destination")
+
+    # playlist
+    playlist_p = sub.add_parser("playlist", help="Build genre/energy M3U8 playlists")
+    playlist_p.add_argument("--dry-run", action="store_true", help="Preview only")
+
+    # acoustic
+    acoustic_p = sub.add_parser("acoustic", help="Acoustic fingerprint duplicate detection")
+    acoustic_p.add_argument("--dry-run", action="store_true", help="Preview only")
+
     # health-report
     sub.add_parser("health-report", help="Print validation issues summary")
 
@@ -417,6 +438,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # console (legacy interactive)
     sub.add_parser("console", help="Launch interactive console")
+
+    # setup wizard
+    sub.add_parser("setup", help="Interactive first-run configuration wizard")
 
     # version
     sub.add_parser("version", help="Print version and exit")
@@ -483,6 +507,22 @@ def main() -> None:
         elif command == "neardupe":
             sys.exit(_run_pipeline([NearDupeStage], dry_run=dry_run))
 
+        elif command == "musicbrainz":
+            sys.exit(_run_pipeline([MusicBrainzStage], dry_run=dry_run))
+
+        elif command == "alac-export":
+            stash = {}
+            export_root = getattr(args, "export_root", None)
+            if export_root:
+                stash["alac_export_root"] = Path(export_root)
+            sys.exit(_run_pipeline([AlacExportStage], dry_run=dry_run, stash=stash))
+
+        elif command == "playlist":
+            sys.exit(_run_pipeline([PlaylistStage], dry_run=dry_run))
+
+        elif command == "acoustic":
+            sys.exit(_run_pipeline([AcousticStage], dry_run=dry_run))
+
         elif command == "health-report":
             sys.exit(_cmd_health_report())
 
@@ -530,6 +570,10 @@ def main() -> None:
         elif command == "console":
             from .console import Console
             Console().run()
+
+        elif command == "setup":
+            from .setup import cmd_setup
+            sys.exit(cmd_setup())
 
         elif command == "version":
             print(f"musaeus {__version__}")

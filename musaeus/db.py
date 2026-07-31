@@ -124,6 +124,13 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     ("archive", "rg_tagged_at", "TEXT"),
     ("archive", "car_export_path", "TEXT"),
     ("archive", "noise_profile", "TEXT"),
+    # MusicBrainz stage
+    ("archive", "mbid", "TEXT"),
+    ("archive", "isrc", "TEXT"),
+    # ALAC export stage
+    ("archive", "alac_export_path", "TEXT"),
+    # Acoustic fingerprint stage
+    ("archive", "chromaprint", "TEXT"),
 ]
 
 

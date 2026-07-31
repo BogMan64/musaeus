@@ -187,10 +187,10 @@ class Console:
         else:
             _warn("ffprobe   : NOT FOUND — Scholar stage will fail")
 
-        if cfg.groq_api_key:
-            _ok("Groq API  : configured")
+        if cfg.lastfm_api_key:
+            _ok("Last.fm   : configured")
         else:
-            _warn("Groq API  : not set (AI features unavailable)")
+            _warn("Last.fm   : not set (Enrich stage will be a no-op)")
 
         # Ensure directories exist
         try:
