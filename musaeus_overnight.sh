@@ -120,6 +120,22 @@ if [[ "${MINIMAL}" -eq 0 ]]; then
     run_stage neardupe
 fi
 
+# Phase 2b: Auto-resolve exact duplicates (always runs unless minimal)
+if [[ "${MINIMAL}" -eq 0 ]]; then
+    echo "──────────────────────────────────────────────────────────────"
+    echo "  Stage: resolve-exact-dupes  — $(date '+%H:%M:%S')"
+    echo "──────────────────────────────────────────────────────────────"
+    if python3 scripts/resolve_exact_dupes.py --apply 2>&1; then
+        echo "  ✓ resolve-exact-dupes complete — $(date '+%H:%M:%S')"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  ✗ resolve-exact-dupes FAILED — $(date '+%H:%M:%S')"
+        FAILED=$((FAILED + 1))
+        FAILED_STAGES="${FAILED_STAGES} resolve-exact-dupes"
+    fi
+    echo ""
+fi
+
 # Phase 3: Export (only when explicitly requested + disk space available)
 if [[ "${WITH_CURATOR}" -eq 1 ]]; then
     FREE=$(free_gb)
@@ -138,7 +154,64 @@ if [[ -n "${FAILED_STAGES}" ]]; then
     echo "  Failed stages:${FAILED_STAGES}"
 fi
 echo ""
+
+# ── Health assertions ─────────────────────────────────────────────────────────
+echo "  Log file: ${LOG_FILE}"
+echo ""
+echo ""
 musaeus status 2>&1
+echo ""
+
+# Check for unresolved debt
+PENDING_DUPES=$(python3 -c "
+import sqlite3, os, sys
+sys.path.insert(0, '.')
+try:
+    from musaeus.config import get_config
+    db = get_config().db_path
+except Exception:
+    db = '${VAULT_ROOT}/musaeus.db'
+conn = sqlite3.connect(str(db))
+count = conn.execute(\"SELECT COUNT(*) FROM duplicates WHERE status = 'pending'\").fetchone()[0]
+print(count)
+conn.close()
+" 2>/dev/null || echo "?")
+
+JUNK_COUNT=$(python3 -c "
+import sqlite3, os, sys
+sys.path.insert(0, '.')
+from musaeus.stages.content_filter import is_junk_by_fields
+try:
+    from musaeus.config import get_config
+    db = get_config().db_path
+except Exception:
+    db = '${VAULT_ROOT}/musaeus.db'
+conn = sqlite3.connect(str(db))
+conn.row_factory = sqlite3.Row
+rows = conn.execute(\"SELECT artist, title FROM archive WHERE status NOT IN ('QUARANTINE', 'DUPE')\").fetchall()
+junk = sum(1 for r in rows if is_junk_by_fields(r['artist'] or '', r['title'] or ''))
+print(junk)
+conn.close()
+" 2>/dev/null || echo "?")
+
+echo "  ── Health Assertions ──────────────────────────────────────"
+if [[ "${PENDING_DUPES}" != "?" && "${PENDING_DUPES}" -gt 0 ]]; then
+    echo "  ⚠ WARNING: ${PENDING_DUPES} duplicate members still pending resolution"
+else
+    echo "  ✓ No pending duplicates"
+fi
+
+if [[ "${JUNK_COUNT}" != "?" && "${JUNK_COUNT}" -gt 0 ]]; then
+    echo "  ⚠ WARNING: ${JUNK_COUNT} junk track(s) detected in archive (run content_filter --purge)"
+else
+    echo "  ✓ No junk content in archive"
+fi
+
+if [[ "${FAILED}" -gt 0 ]]; then
+    echo "  ✗ PIPELINE HAD FAILURES — check log: ${LOG_FILE}"
+else
+    echo "  ✓ All stages passed"
+fi
 echo "═══════════════════════════════════════════════════════════════"
 
 # Exit with non-zero if any stage failed (useful for cron monitoring)

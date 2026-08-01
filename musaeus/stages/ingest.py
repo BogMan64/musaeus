@@ -28,6 +28,7 @@ from ..config import AUDIO_EXTENSIONS
 from ..context import RunContext, StageResult
 from ..db import upsert_archive
 from .base import BaseStage, StageError
+from .content_filter import is_junk_content
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,12 @@ class IngestStage(BaseStage):
             if path_str in known:
                 result.files_skipped += 1
                 logger.debug("skip (known): %s", path.name)
+                continue
+
+            # Content filter: reject junk before it enters the archive
+            if is_junk_content(path.name):
+                result.files_skipped += 1
+                logger.info("reject (junk): %s", path.name)
                 continue
 
             try:
