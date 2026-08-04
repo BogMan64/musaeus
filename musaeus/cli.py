@@ -675,6 +675,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # dry-run shortcut
     sub.add_parser("dry-run", help="Alias for: run --dry-run")
 
+    # ── setup wizard ──────────────────────────────────────────────────────────
+    sub.add_parser("setup", help="Run the setup wizard (paths + API keys)")
+
     # ── individual stages ─────────────────────────────────────────────────────
     for name in ("ingest", "sentinel", "scholar"):
         sp = sub.add_parser(name, help=f"Run {name} stage only")
@@ -900,6 +903,19 @@ def main() -> None:
 
     command = args.command or "console"
     dry_run = getattr(args, "dry_run", False)
+
+    # ── First-run check: trigger wizard if no config exists ───────────────────
+    from .setup import needs_setup, run_wizard as _run_wizard
+
+    if command == "setup":
+        _run_wizard(force=True)
+        return
+
+    if needs_setup() and command not in ("setup", "status", "runs"):
+        print("\n  Welcome to MUSAEUS! No configuration found.")
+        print("  Running first-time setup wizard...\n")
+        if not _run_wizard():
+            return
 
     try:
         # ── pipeline commands ─────────────────────────────────────────────────
