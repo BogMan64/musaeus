@@ -98,6 +98,7 @@ from .stages import (
     ENRICH_PIPELINE,
     FULL_PIPELINE,
     ARCHIVE_PIPELINE,
+    BIG_KAHUNA_PIPELINE,
     MAINTAIN_PIPELINE,
     AcousticIDStage,
     AlbumArtStage,
@@ -716,7 +717,12 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--archive",
         action="store_true",
-        help="Full pipeline minus LUFS/ReplayGain (Ingest→Sentinel→Scholar→Normalize→Tagger)",
+        help="Everything minus LUFS: Ingest→Scholar→Normalize→Health→Enrich→Dedup→Art→Tagger",
+    )
+    run_p.add_argument(
+        "--big-kahuna",
+        action="store_true",
+        help="ALL stages: full pipeline + health + enrich + dedup + art + curator + playlists",
     )
     run_p.add_argument(
         "--maintain", action="store_true", help="Run Ghost + Health + Enrich + NearDupe"
@@ -1004,6 +1010,8 @@ def main() -> None:
                 print("  ✓ Resume state cleared.")
             if getattr(args, "maintain", False):
                 pipeline = MAINTAIN_PIPELINE
+            elif getattr(args, "big_kahuna", False):
+                pipeline = BIG_KAHUNA_PIPELINE
             elif getattr(args, "full", False):
                 pipeline = FULL_PIPELINE
             elif getattr(args, "archive", False):

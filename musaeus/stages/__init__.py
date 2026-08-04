@@ -90,7 +90,37 @@ ARCHIVE_PIPELINE: list[type] = [
     SentinelStage,
     ScholarStage,
     NormalizeStage,
+    GhostStage,
+    HealthStage,
+    IntegrityStage,
+    EnrichStage,
+    MBEnrichStage,
+    NearDupeStage,
+    AcousticIDStage,
+    AlbumArtStage,
     TaggerStage,
+    ReviewerStage,
+]
+
+# Big Kahuna (run with `musaeus run --big-kahuna`) — everything including LUFS
+BIG_KAHUNA_PIPELINE: list[type] = [
+    IngestStage,
+    SentinelStage,
+    ScholarStage,
+    NormalizeStage,
+    GhostStage,
+    HealthStage,
+    IntegrityStage,
+    EnrichStage,
+    MBEnrichStage,
+    NearDupeStage,
+    AcousticIDStage,
+    AlbumArtStage,
+    ForgeStage,
+    TaggerStage,
+    CuratorStage,
+    PlaylistStage,
+    ReviewerStage,
 ]
 
 # Maintenance pipeline (run with `musaeus run --maintain`)
