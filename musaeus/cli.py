@@ -83,6 +83,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import traceback
@@ -131,6 +132,37 @@ def _setup_logging(verbose: bool) -> None:
     )
 
 
+# ── Resume state ──────────────────────────────────────────────────────────────
+_RESUME_FILE = Path.home() / ".config" / "musaeus" / "resume_state.json"
+
+
+def _save_resume(completed: list[str], all_stages: list[str]) -> None:
+    _RESUME_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _RESUME_FILE.write_text(json.dumps(
+        {"completed": completed, "all_stages": all_stages}, indent=2
+    ))
+
+
+def _load_resume(all_stages: list[str]) -> list[str] | None:
+    if not _RESUME_FILE.exists():
+        return None
+    try:
+        state = json.loads(_RESUME_FILE.read_text())
+        if state.get("all_stages") != all_stages:
+            return None
+        completed = state.get("completed", [])
+        return completed if completed else None
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _clear_resume() -> None:
+    try:
+        _RESUME_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 # ── Pipeline runner ───────────────────────────────────────────────────────────
 
 
@@ -160,22 +192,56 @@ def _run_pipeline(
     mode = " [DRY RUN]" if dry_run else ""
     print(f"\nMusaeus pipeline{mode}  —  run_id={ctx.run_id}\n")
 
+    stage_names = [cls.__name__ for cls in stages]
+    completed_names: list[str] = []
+
+    # Check for resume
+    resume_from = _load_resume(stage_names)
+    if resume_from:
+        print(f"  ⚠  Incomplete run detected — {len(resume_from)} stage(s) done.")
+        try:
+            answer = input("  Resume from next stage? [Y/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if answer == "n":
+            _clear_resume()
+        else:
+            completed_names = list(resume_from)
+
     exit_code = 0
     for cls in stages:
+        stage_name = cls.__name__
+        if stage_name in completed_names:
+            print(f"  ⏭  {stage_name} (already done)")
+            continue
+
         stage = cls()
-        result = stage.execute(ctx)
+        try:
+            result = stage.execute(ctx)
+        except KeyboardInterrupt:
+            print(f"\n\n  ⚠  Interrupted during {stage_name}.")
+            print("  Progress saved — run 'musaeus run' again to resume.\n")
+            _save_resume(completed_names, stage_names)
+            return 1
+
         status = "✓" if result.success else "✗"
         print(f"  {status}  {result.summarise()}")
         for note in result.notes:
             print(f"       {note}")
         for err in result.errors:
             print(f"       ERROR: {err}", file=sys.stderr)
+
+        completed_names.append(stage_name)
+        _save_resume(completed_names, stage_names)
+
         if not result.success:
             exit_code = 1
 
     print()
     all_ok = all(r.success for r in ctx.stage_results)
     if all_ok:
+        _clear_resume()
         print(f"  Pipeline complete.  run_id={ctx.run_id}")
     else:
         print(f"  Pipeline finished with errors.  run_id={ctx.run_id}", file=sys.stderr)
@@ -600,6 +666,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run Enrich + MBEnrich + AcousticID + Reviewer pipeline",
     )
+    run_p.add_argument(
+        "--reset",
+        action="store_true",
+        help="Clear resume state and start fresh",
+    )
 
     # dry-run shortcut
     sub.add_parser("dry-run", help="Alias for: run --dry-run")
@@ -834,6 +905,9 @@ def main() -> None:
         # ── pipeline commands ─────────────────────────────────────────────────
 
         if command == "run":
+            if getattr(args, "reset", False):
+                _clear_resume()
+                print("  ✓ Resume state cleared.")
             if getattr(args, "maintain", False):
                 pipeline = MAINTAIN_PIPELINE
             elif getattr(args, "full", False):
