@@ -84,6 +84,15 @@ FULL_PIPELINE: list[type] = [
     TaggerStage,
 ]
 
+# Archive pipeline (run with `musaeus run --archive`) — full minus LUFS/ReplayGain
+ARCHIVE_PIPELINE: list[type] = [
+    IngestStage,
+    SentinelStage,
+    ScholarStage,
+    NormalizeStage,
+    TaggerStage,
+]
+
 # Maintenance pipeline (run with `musaeus run --maintain`)
 MAINTAIN_PIPELINE: list[type] = [
     GhostStage,

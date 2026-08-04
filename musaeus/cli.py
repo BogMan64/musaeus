@@ -97,6 +97,7 @@ from .stages import (
     DEFAULT_PIPELINE,
     ENRICH_PIPELINE,
     FULL_PIPELINE,
+    ARCHIVE_PIPELINE,
     MAINTAIN_PIPELINE,
     AcousticIDStage,
     AlbumArtStage,
@@ -713,6 +714,11 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--dry-run", action="store_true", help="Preview only, no mutations")
     run_p.add_argument("--full", action="store_true", help="Also run Forge + Tagger stages")
     run_p.add_argument(
+        "--archive",
+        action="store_true",
+        help="Full pipeline minus LUFS/ReplayGain (Ingest→Sentinel→Scholar→Normalize→Tagger)",
+    )
+    run_p.add_argument(
         "--maintain", action="store_true", help="Run Ghost + Health + Enrich + NearDupe"
     )
     run_p.add_argument(
@@ -1000,6 +1006,8 @@ def main() -> None:
                 pipeline = MAINTAIN_PIPELINE
             elif getattr(args, "full", False):
                 pipeline = FULL_PIPELINE
+            elif getattr(args, "archive", False):
+                pipeline = ARCHIVE_PIPELINE
             elif getattr(args, "enrich", False):
                 pipeline = ENRICH_PIPELINE
             else:
