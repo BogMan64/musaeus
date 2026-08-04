@@ -61,18 +61,18 @@ def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
 
 def _check_file(path: str) -> tuple[bool, str]:
     """
-    Run ffprobe decode-test on a file.
+    Run ffmpeg decode-test on a file (decode to null output).
     Returns (is_ok, error_detail).
     is_ok=True means no errors detected.
     """
-    ffprobe = shutil.which("ffprobe")
-    if not ffprobe:
-        raise RuntimeError("ffprobe not found in PATH")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg not found in PATH")
 
     try:
         res = subprocess.run(
             [
-                ffprobe,
+                ffmpeg,
                 "-v",
                 "error",
                 "-i",
@@ -86,7 +86,7 @@ def _check_file(path: str) -> tuple[bool, str]:
             timeout=_FFPROBE_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
-        return False, f"ffprobe timed out after {_FFPROBE_TIMEOUT}s"
+        return False, f"ffmpeg timed out after {_FFPROBE_TIMEOUT}s"
 
     stderr = res.stderr.strip()
     if stderr:
@@ -94,7 +94,7 @@ def _check_file(path: str) -> tuple[bool, str]:
         detail = stderr[:300]
         return False, detail
     if res.returncode != 0:
-        return False, f"ffprobe rc={res.returncode}"
+        return False, f"ffmpeg rc={res.returncode}"
     return True, ""
 
 
@@ -109,8 +109,8 @@ class IntegrityStage(BaseStage):
     NAME = "integrity"
 
     def validate(self, ctx: RunContext) -> None:
-        if not shutil.which("ffprobe"):
-            raise StageError("ffprobe not found in PATH — Integrity requires ffprobe.")
+        if not shutil.which("ffmpeg"):
+            raise StageError("ffmpeg not found in PATH — Integrity requires ffmpeg.")
 
         try:
             count = ctx.conn.execute(
