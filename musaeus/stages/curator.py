@@ -208,11 +208,15 @@ class CuratorStage(BaseStage):
         return [f for f in all_noise if any(kw in f.stem.lower() for kw in keywords)]
 
     def _copy_file(self, src: Path, dst: Path) -> bool:
-        """Copy src → dst, creating parent dirs. Returns True on success."""
+        """Copy src → dst, creating parent dirs. Returns True on success.
+        Guards against TOCTOU race: file may vanish between exists() check and copy."""
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(src), str(dst))
             return True
+        except FileNotFoundError:
+            logger.warning("curator: source vanished before copy: %s", src)
+            return False
         except Exception as exc:
             logger.warning("curator copy failed %s → %s: %s", src, dst, exc)
             return False

@@ -33,12 +33,16 @@ import re
 import unicodedata
 import uuid
 
-from rapidfuzz import fuzz
+try:
+    from rapidfuzz import fuzz
+    _HAVE_RAPIDFUZZ = True
+except ImportError:
+    _HAVE_RAPIDFUZZ = False
 
 from ..canon import ArtistCanon
 from ..config import get_config
 from ..context import RunContext, StageResult
-from .base import BaseStage
+from .base import BaseStage, StageError
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +79,11 @@ class NearDupeStage(BaseStage):
     # ── Validate ──────────────────────────────────────────────────────────────
 
     def validate(self, ctx: RunContext) -> None:
+        if not _HAVE_RAPIDFUZZ:
+            raise StageError(
+                "rapidfuzz not installed — required for near-duplicate detection.\n"
+                "Install with: pip install rapidfuzz"
+            )
         count = ctx.conn.execute(
             "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'"
         ).fetchone()[0]

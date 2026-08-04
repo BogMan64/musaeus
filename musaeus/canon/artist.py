@@ -82,22 +82,26 @@ class ArtistCanon:
         if exact:
             return exact
 
-        # Fuzzy fallback
+        # Fuzzy fallback — use process.extractOne for O(1)-ish performance
+        # instead of iterating all entries manually
         try:
-            from rapidfuzz import fuzz  # type: ignore[import-untyped]
-            best_score = 0
-            best_canon = raw
-            for stored_key, canon in self._map.items():
-                score = fuzz.ratio(key, stored_key)
-                if score > best_score:
-                    best_score = score
-                    best_canon = canon
-            if best_score >= _FUZZY_THRESHOLD:
+            from rapidfuzz import process, fuzz as _fuzz  # type: ignore[import-untyped]
+            if not self._map:
+                return raw
+            result = process.extractOne(
+                key,
+                self._map.keys(),
+                scorer=_fuzz.ratio,
+                score_cutoff=_FUZZY_THRESHOLD,
+            )
+            if result is not None:
+                matched_key, score, _ = result
+                canon = self._map[matched_key]
                 logger.debug(
                     "artist canon fuzzy match: %r → %r (score=%d)",
-                    raw, best_canon, best_score,
+                    raw, canon, score,
                 )
-                return best_canon
+                return canon
         except ImportError:
             pass   # rapidfuzz optional
 

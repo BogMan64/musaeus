@@ -174,16 +174,43 @@ class EnrichStage(BaseStage):
             """
         ).fetchall()
 
+        # Pre-build a library cross-reference: if other tracks by the same artist
+        # already have a genre set, use that immediately (no API call needed).
+        # This is instant, free, and avoids the 5 req/s Last.fm rate limit.
+        artist_genre_from_library: dict[str, str] = {}
+        lib_rows = ctx.conn.execute(
+            """
+            SELECT LOWER(TRIM(artist)) AS artist_key, genre, COUNT(*) AS cnt
+            FROM archive
+            WHERE genre IS NOT NULL AND TRIM(genre) != ''
+              AND artist IS NOT NULL AND TRIM(artist) != ''
+            GROUP BY artist_key, genre
+            ORDER BY cnt DESC
+            """
+        ).fetchall()
+        for lr in lib_rows:
+            akey = lr["artist_key"]
+            if akey not in artist_genre_from_library:
+                artist_genre_from_library[akey] = lr["genre"]
+
         # Per-artist cache: artist_lower → resolved genre or None
         artist_cache: dict[str, str | None] = {}
         enriched = 0
         skipped_no_tag = 0
         skipped_api_err = 0
+        enriched_from_library = 0
 
         for row in rows:
             result.files_processed += 1
             artist = row["artist"].strip()
             artist_lower = artist.lower()
+
+            # Library cross-reference: check if other tracks by this artist
+            # already have a genre assigned (instant, no API call needed)
+            if artist_lower in artist_genre_from_library and artist_lower not in artist_cache:
+                artist_cache[artist_lower] = artist_genre_from_library[artist_lower]
+                enriched_from_library += 1
+                logger.debug("genre from library: %r → %r", artist, artist_cache[artist_lower])
 
             # Cache hit
             if artist_lower in artist_cache:
@@ -246,6 +273,10 @@ class EnrichStage(BaseStage):
 
         prefix = "Would set" if dry_run else "Set"
         result.notes.append(f"{prefix} genre for {enriched} track(s).")
+        if enriched_from_library:
+            result.notes.append(
+                f"{enriched_from_library} artist(s) resolved from existing library data (no API call)."
+            )
         if skipped_no_tag:
             result.notes.append(f"{skipped_no_tag} artist(s) had no resolvable Last.fm tag.")
         if skipped_api_err:

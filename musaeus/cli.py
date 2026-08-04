@@ -262,6 +262,48 @@ def _run_pipeline(
     return exit_code
 
 
+# ── Reset command ─────────────────────────────────────────────────────────────
+
+
+def _cmd_reset() -> None:
+    """Wipe the MUSAEUS database for a completely fresh start."""
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return
+
+    db = cfg.db_path
+    print("\n  MUSAEUS — Database Reset")
+    print(f"  DB: {db}")
+    print(f"  This will DELETE the database and all pipeline state.")
+    print(f"  Your music files in the vault are NOT affected.")
+    print()
+
+    try:
+        confirm = input("  Type RESET to confirm: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Cancelled.")
+        return
+
+    if confirm != "RESET":
+        print("  Cancelled.")
+        return
+
+    for suffix in ("", "-wal", "-shm"):
+        p = Path(str(db) + suffix)
+        if p.exists():
+            p.unlink()
+            print(f"  ✓ Deleted: {p.name}")
+
+    # Also clear resume state
+    _clear_resume()
+
+    print("\n  ✓ Database reset complete.")
+    print("  Run 'musaeus run' to re-ingest your library from the inbox.")
+    print()
+
+
 # ── Status command ────────────────────────────────────────────────────────────
 
 
@@ -689,6 +731,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # ── setup wizard ──────────────────────────────────────────────────────────
     sub.add_parser("setup", help="Run the setup wizard (paths + API keys)")
+    sub.add_parser("reset", help="Wipe DB for a fresh start (confirms before deleting)")
 
     # ── individual stages ─────────────────────────────────────────────────────
     for name in ("ingest", "sentinel", "scholar"):
@@ -761,6 +804,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # health-report
     sub.add_parser("health-report", help="Print validation issues summary")
+
+    # rebuild-db
+    rebuild_p = sub.add_parser("rebuild-db", help="Rebuild archive table from event log")
+    rebuild_p.add_argument("--dry-run", action="store_true", help="Preview only")
 
     # curator
     curator_p = sub.add_parser("curator", help="Build car-library export")
@@ -882,6 +929,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # ── review commands ───────────────────────────────────────────────────────
 
+    # review (subcommand group)
+    review_p = sub.add_parser("review", help="Album/artist review & approval workflow")
+    review_sub = review_p.add_subparsers(dest="review_command", metavar="action")
+    review_gen = review_sub.add_parser("generate", help="Generate review sheets from archive")
+    review_gen.add_argument("--dry-run", action="store_true", help="Preview only")
+    review_apply = review_sub.add_parser("apply", help="Apply approved fixes from review sheets")
+    review_apply.add_argument("--dry-run", action="store_true", help="Preview only")
+    review_sub.add_parser("status", help="Show pending review sheet status")
+
     # dedupe
     dedupe_p = sub.add_parser("dedupe", help="Interactive duplicate review console")
     dedupe_p.add_argument("--auto", action="store_true", help="Auto-resolve: keep highest quality")
@@ -923,7 +979,11 @@ def main() -> None:
         _run_wizard(force=True)
         return
 
-    if needs_setup() and command not in ("setup", "status", "runs"):
+    if command == "reset":
+        _cmd_reset()
+        return
+
+    if needs_setup() and command not in ("setup", "reset", "status", "runs"):
         print("\n  Welcome to MUSAEUS! No configuration found.")
         print("  Running first-time setup wizard...\n")
         if not _run_wizard():
@@ -1017,6 +1077,23 @@ def main() -> None:
 
         elif command == "health-report":
             sys.exit(_cmd_health_report())
+
+        elif command == "rebuild-db":
+            from .rebuild import cmd_rebuild_db
+            sys.exit(cmd_rebuild_db(dry_run=dry_run))
+
+        elif command == "review":
+            from .approval import cmd_review_generate, cmd_review_apply, cmd_review_status
+            review_cmd = getattr(args, "review_command", None)
+            if review_cmd == "generate":
+                sys.exit(cmd_review_generate(dry_run=dry_run))
+            elif review_cmd == "apply":
+                sys.exit(cmd_review_apply(dry_run=dry_run))
+            elif review_cmd == "status":
+                sys.exit(cmd_review_status())
+            else:
+                print("Usage: musaeus review {generate|apply|status}")
+                sys.exit(1)
 
         elif command == "curator":
             stash = {}
