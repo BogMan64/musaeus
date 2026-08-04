@@ -190,7 +190,19 @@ def _run_pipeline(
             ctx.set(k, v)
 
     mode = " [DRY RUN]" if dry_run else ""
-    print(f"\nMusaeus pipeline{mode}  —  run_id={ctx.run_id}\n")
+    print(f"\nMusaeus pipeline{mode}  —  run_id={ctx.run_id}")
+
+    # Show API key status hint
+    missing_keys = []
+    if not cfg.groq_api_key:
+        missing_keys.append("Groq")
+    if not cfg.lastfm_api_key:
+        missing_keys.append("Last.fm")
+    if not cfg.acousticid_api_key:
+        missing_keys.append("AcousticID")
+    if missing_keys:
+        print(f"  ⚠ Missing API keys: {', '.join(missing_keys)} (run 'musaeus setup' to configure)")
+    print()
 
     stage_names = [cls.__name__ for cls in stages]
     completed_names: list[str] = []
