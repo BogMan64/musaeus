@@ -56,7 +56,8 @@ def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
         ("auditor_checked_at", "TEXT"),
     ):
         if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
+            # Quote identifier with double-quotes to avoid injection/syntax issues
+            conn.execute(f'ALTER TABLE archive ADD COLUMN "{col}" {typedef}')
     conn.commit()
 
 
