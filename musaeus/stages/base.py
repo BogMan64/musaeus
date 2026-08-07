@@ -67,12 +67,12 @@ class BaseStage(ABC):
     # ── Abstract interface ────────────────────────────────────────────────────
 
     @abstractmethod
-    def run(self, ctx: "RunContext") -> "StageResult":
+    def run(self, ctx: RunContext) -> StageResult:
         """Execute the stage. May write files, update DB, move files."""
         ...
 
     @abstractmethod
-    def dry_run(self, ctx: "RunContext") -> "StageResult":
+    def dry_run(self, ctx: RunContext) -> StageResult:
         """
         Report what run() would do — NO mutations.
         Must be implemented. Never a no-op.
@@ -80,7 +80,7 @@ class BaseStage(ABC):
         ...
 
     @abstractmethod
-    def validate(self, ctx: "RunContext") -> None:
+    def validate(self, ctx: RunContext) -> None:
         """
         Pre-flight checks. Raise StageError if prerequisites are not met.
         Called before run() or dry_run().
@@ -89,13 +89,13 @@ class BaseStage(ABC):
 
     # ── Helper ────────────────────────────────────────────────────────────────
 
-    def _make_result(self, dry_run: bool = False) -> "StageResult":
+    def _make_result(self, dry_run: bool = False) -> StageResult:
         """Create a fresh StageResult for this stage."""
         from ..context import StageResult
 
         return StageResult(stage_name=self.NAME, success=True, dry_run=dry_run)
 
-    def execute(self, ctx: "RunContext") -> "StageResult":
+    def execute(self, ctx: RunContext) -> StageResult:
         """
         Public entry point called by the pipeline runner.
         Runs validate(), then run() or dry_run() depending on ctx.dry_run.
@@ -119,16 +119,13 @@ class BaseStage(ABC):
             logger.error("[%s] stage error: %s", self.NAME, exc)
             result = self._make_result(dry_run=ctx.dry_run)
             result.success = False
-            result.errors.append(str(exc))
+            result.errors.append(f"StageError: {exc}")
             ctx.record_stage(result)
             return result
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("[%s] unexpected error", self.NAME)
+        except Exception as exc:
+            logger.exception("[%s] unexpected error: %s", self.NAME, exc)
             result = self._make_result(dry_run=ctx.dry_run)
             result.success = False
-            result.errors.append(f"Unexpected: {exc}")
+            result.errors.append(f"UnexpectedError: {exc}")
             ctx.record_stage(result)
             return result
-
-    def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(name={self.NAME!r})"

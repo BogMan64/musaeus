@@ -46,7 +46,12 @@ _FILE_TIMEOUT_S = 90
 _COMMIT_EVERY = 50
 
 
-def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
+import sqlite3
+
+# ... (top of file)
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
     """Add auditor columns to archive if they don't exist yet (auto-migrate)."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
     for col, typedef in (
@@ -56,7 +61,7 @@ def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
         ("auditor_checked_at", "TEXT"),
     ):
         if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
+            conn.execute(f'ALTER TABLE archive ADD COLUMN "{col}" {typedef}')
     conn.commit()
 
 
@@ -64,7 +69,8 @@ def _ffmpeg_lufs(path: Path, target_lufs: float, target_tp: float) -> tuple[floa
     """
     Run ffmpeg loudnorm pass-1 analysis.
     Returns (integrated_lufs, true_peak_dbtp).
-    Raises ValueError on parse failure, subprocess.TimeoutExpired on timeout.
+    Raises ValueError on parse failure or timeout.
+    Raises RuntimeError if ffmpeg not found.
     """
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:

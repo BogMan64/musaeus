@@ -29,6 +29,7 @@ Usage:
     python3 scripts/musaeus_canon_review.py report --csv canon_review.csv
     python3 scripts/musaeus_canon_review.py apply --fixes canon_fixes.csv
     python3 scripts/musaeus_canon_review.py apply --fixes canon_fixes.csv --dry-run
+        # temporarily unavailable: exits with the safety block
 
 ORPHEUS equivalents: SCRIPTS/generate_genre_canon.py,
                      SCRIPTS/generate_album_canon.py,
@@ -51,6 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from musaeus.config import get_config
 from musaeus.db import open_db
+from musaeus.preview_guard import LEGACY_PREVIEW_HELP, reject_legacy_preview
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -271,10 +273,13 @@ def main() -> None:
     appl.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show what would be applied without writing to DB",
+        help=LEGACY_PREVIEW_HELP,
     )
 
     args = parser.parse_args()
+
+    if args.mode == "apply" and args.dry_run:
+        sys.exit(reject_legacy_preview())
 
     try:
         cfg = get_config()
