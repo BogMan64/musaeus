@@ -27,29 +27,27 @@ logger = logging.getLogger(__name__)
 
 # ── Formatting helpers ────────────────────────────────────────────────────────
 
-
 def _human_size(n: int | None) -> str:
     if n is None:
         return "?"
-    size = float(n)
     for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024:
-            return f"{size:.0f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"
+        if n < 1024:
+            return f"{n:.0f} {unit}"
+        n /= 1024  # type: ignore[assignment]
+    return f"{n:.1f} TB"
 
 
 def _fmt_row(idx: int, row: dict) -> str:
-    path = row.get("file_path", "?")
-    ext = row.get("ext", "?") or "?"
-    size = _human_size(row.get("size_bytes"))
-    br = row.get("bitrate")
-    br_s = f"{br} kbps" if br else "?"
-    lufs = row.get("lufs")
+    path  = row.get("file_path", "?")
+    ext   = row.get("ext", "?") or "?"
+    size  = _human_size(row.get("size_bytes"))
+    br    = row.get("bitrate")
+    br_s  = f"{br} kbps" if br else "?"
+    lufs  = row.get("lufs")
     lufs_s = f"{lufs:.1f} LUFS" if lufs else "no LUFS"
-    title = row.get("title") or Path(path).stem
+    title  = row.get("title") or Path(path).stem
     artist = row.get("artist") or "?"
-    album = row.get("album") or "?"
+    album  = row.get("album") or "?"
     status = row.get("dup_status", "pending")
 
     lines = [
@@ -62,7 +60,6 @@ def _fmt_row(idx: int, row: dict) -> str:
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
-
 
 def _get_pending_groups(conn) -> list[str]:
     """Return group_ids with at least one 'pending' member, ordered."""
@@ -109,7 +106,7 @@ def _auto_keep_best(conn, group_id: str, members: list[dict]) -> None:
     """Auto-select the highest bitrate/largest file as KEEP, rest as ARCHIVE."""
     if not members:
         return
-    keep = members[0]  # already sorted by bitrate DESC, size DESC
+    keep = members[0]   # already sorted by bitrate DESC, size DESC
     for m in members:
         if m["file_path"] == keep["file_path"]:
             _set_status(conn, group_id, m["file_path"], "keep")
@@ -118,7 +115,6 @@ def _auto_keep_best(conn, group_id: str, members: list[dict]) -> None:
 
 
 # ── Interactive review ────────────────────────────────────────────────────────
-
 
 def _read_key(prompt: str) -> str:
     try:
@@ -168,17 +164,15 @@ def run_dedupe_console(conn, *, auto_mode: bool = False) -> None:
     print("  Type ? for help.\n")
 
     resolved = 0
-    skipped = 0
+    skipped  = 0
 
     for group_idx, group_id in enumerate(pending, 1):
         members = _get_group_members(conn, group_id)
         dup_type = members[0].get("duplicate_type", "?") if members else "?"
-        conf = members[0].get("confidence", 0) if members else 0
+        conf     = members[0].get("confidence", 0) if members else 0
 
-        print(f"\n{'─' * 70}")
-        print(
-            f"  Group {group_idx}/{len(pending)}  [{group_id}]  {dup_type}  confidence={conf:.0%}"
-        )
+        print(f"\n{'─'*70}")
+        print(f"  Group {group_idx}/{len(pending)}  [{group_id}]  {dup_type}  confidence={conf:.0%}")
 
         for i, m in enumerate(members, 1):
             print(_fmt_row(i, m))
@@ -191,9 +185,7 @@ def run_dedupe_console(conn, *, auto_mode: bool = False) -> None:
                 continue
 
             if cmd == "q":
-                print(
-                    f"\n  Quit. Resolved={resolved} Skipped={skipped} Remaining={len(pending) - group_idx}"
-                )
+                print(f"\n  Quit. Resolved={resolved} Skipped={skipped} Remaining={len(pending)-group_idx}")
                 return
 
             if cmd == "s":
@@ -234,7 +226,6 @@ def run_dedupe_console(conn, *, auto_mode: bool = False) -> None:
 
 
 # ── Report ────────────────────────────────────────────────────────────────────
-
 
 def print_dedupe_report(conn) -> None:
     """Print a summary of all duplicate groups and their resolution status."""

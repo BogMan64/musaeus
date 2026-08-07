@@ -21,9 +21,9 @@ import csv
 import logging
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-
-from .preview_guard import reject_legacy_preview
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -75,18 +75,16 @@ def write_review_tsv(path: Path, entries: list[ReviewEntry]) -> int:
         writer = csv.DictWriter(fh, fieldnames=_FIELDS, delimiter="\t")
         writer.writeheader()
         for e in entries:
-            writer.writerow(
-                {
-                    "approve": e.approve,
-                    "file_path": e.file_path,
-                    "field_name": e.field_name,
-                    "current_value": e.current_value,
-                    "suggested_value": e.suggested_value,
-                    "source": e.source,
-                    "confidence": f"{e.confidence:.2f}",
-                    "notes": e.notes,
-                }
-            )
+            writer.writerow({
+                "approve": e.approve,
+                "file_path": e.file_path,
+                "field_name": e.field_name,
+                "current_value": e.current_value,
+                "suggested_value": e.suggested_value,
+                "source": e.source,
+                "confidence": f"{e.confidence:.2f}",
+                "notes": e.notes,
+            })
     return len(entries)
 
 
@@ -96,28 +94,18 @@ def read_review_tsv(path: Path) -> list[ReviewEntry]:
         return []
     entries: list[ReviewEntry] = []
     with open(path, newline="", encoding="utf-8") as fh:
-        reader = csv.DictReader(fh, delimiter="	")
+        reader = csv.DictReader(fh, delimiter="\t")
         for row in reader:
-            conf_str = row.get("confidence", "0").strip()
-            try:
-                confidence = float(conf_str) if conf_str else 0.0
-            except ValueError:
-                confidence = 0.0
-                logger.warning(
-                    "Invalid confidence value '%s' in %s, defaulting to 0.0", conf_str, path
-                )
-            entries.append(
-                ReviewEntry(
-                    file_path=row.get("file_path", ""),
-                    field_name=row.get("field_name", ""),
-                    current_value=row.get("current_value", ""),
-                    suggested_value=row.get("suggested_value", ""),
-                    source=row.get("source", ""),
-                    confidence=confidence,
-                    approve=row.get("approve", "").strip().lower(),
-                    notes=row.get("notes", ""),
-                )
-            )
+            entries.append(ReviewEntry(
+                file_path=row.get("file_path", ""),
+                field_name=row.get("field_name", ""),
+                current_value=row.get("current_value", ""),
+                suggested_value=row.get("suggested_value", ""),
+                source=row.get("source", ""),
+                confidence=float(row.get("confidence", 0) or 0),
+                approve=row.get("approve", "").strip().lower(),
+                notes=row.get("notes", ""),
+            ))
     return entries
 
 
@@ -141,7 +129,6 @@ def generate_artist_review(
 
     # Load canon
     from .canon.artist import ArtistCanon
-
     canon = ArtistCanon(canon_path)
 
     # Find all unique artists in archive
@@ -165,16 +152,14 @@ def generate_artist_review(
         resolved = canon.resolve(raw_artist)
         # Only flag if canon resolved differently (and it's not just returning raw)
         if resolved != raw_artist and resolved != raw_artist.strip():
-            entries.append(
-                ReviewEntry(
-                    file_path=file_path,
-                    field_name="artist",
-                    current_value=raw_artist,
-                    suggested_value=resolved,
-                    source="canon_fuzzy",
-                    confidence=0.88,
-                )
-            )
+            entries.append(ReviewEntry(
+                file_path=file_path,
+                field_name="artist",
+                current_value=raw_artist,
+                suggested_value=resolved,
+                source="canon_fuzzy",
+                confidence=0.88,
+            ))
             seen.add(norm_key)
 
     report.generated = len(entries)
@@ -206,29 +191,25 @@ def generate_album_review(
 
     for row in rows:
         if not row["year"]:
-            entries.append(
-                ReviewEntry(
-                    file_path=row["file_path"],
-                    field_name="year",
-                    current_value="",
-                    suggested_value="",
-                    source="missing_metadata",
-                    confidence=0.0,
-                    notes=f"Album: {row['album'] or '?'}, Artist: {row['artist'] or '?'}",
-                )
-            )
+            entries.append(ReviewEntry(
+                file_path=row["file_path"],
+                field_name="year",
+                current_value="",
+                suggested_value="",
+                source="missing_metadata",
+                confidence=0.0,
+                notes=f"Album: {row['album'] or '?'}, Artist: {row['artist'] or '?'}",
+            ))
         if not row["genre"]:
-            entries.append(
-                ReviewEntry(
-                    file_path=row["file_path"],
-                    field_name="genre",
-                    current_value="",
-                    suggested_value="",
-                    source="missing_metadata",
-                    confidence=0.0,
-                    notes=f"Album: {row['album'] or '?'}, Artist: {row['artist'] or '?'}",
-                )
-            )
+            entries.append(ReviewEntry(
+                file_path=row["file_path"],
+                field_name="genre",
+                current_value="",
+                suggested_value="",
+                source="missing_metadata",
+                confidence=0.0,
+                notes=f"Album: {row['album'] or '?'}, Artist: {row['artist'] or '?'}",
+            ))
 
     # Find album name inconsistencies (same artist, similar album names)
     artist_albums = conn.execute(
@@ -239,7 +220,6 @@ def generate_album_review(
 
     # Group by artist and check for near-duplicate album names
     from collections import defaultdict
-
     by_artist: dict[str, list[str]] = defaultdict(list)
     for row in artist_albums:
         by_artist[row["artist"]].append(row["album"])
@@ -251,7 +231,7 @@ def generate_album_review(
         norm_map: dict[str, list[str]] = defaultdict(list)
         for album in albums:
             norm_map[album.strip().lower()].append(album)
-        for _norm, variants in norm_map.items():
+        for norm, variants in norm_map.items():
             if len(variants) > 1:
                 canonical = sorted(variants, key=len)[-1]  # longest = most complete
                 for v in variants:
@@ -262,17 +242,15 @@ def generate_album_review(
                             (artist, v),
                         ).fetchone()
                         if sample:
-                            entries.append(
-                                ReviewEntry(
-                                    file_path=sample["file_path"],
-                                    field_name="album",
-                                    current_value=v,
-                                    suggested_value=canonical,
-                                    source="album_variant",
-                                    confidence=0.90,
-                                    notes=f"Artist: {artist}",
-                                )
-                            )
+                            entries.append(ReviewEntry(
+                                file_path=sample["file_path"],
+                                field_name="album",
+                                current_value=v,
+                                suggested_value=canonical,
+                                source="album_variant",
+                                confidence=0.90,
+                                notes=f"Artist: {artist}",
+                            ))
 
     report.generated = len(entries)
     if entries:
@@ -311,9 +289,7 @@ def apply_approved_fixes(
                     (entry.suggested_value, entry.file_path),
                 )
                 log_event(
-                    conn,
-                    run_id,
-                    "REVIEW_APPLIED",
+                    conn, run_id, "REVIEW_APPLIED",
                     file_path=entry.file_path,
                     old_value=entry.current_value,
                     new_value=entry.suggested_value,
@@ -337,11 +313,7 @@ def apply_approved_fixes(
 
 def cmd_review_generate(dry_run: bool = False) -> int:
     """Generate review sheets from current archive state."""
-    if dry_run:
-        return reject_legacy_preview()
-
     import sys
-
     from .config import get_config
     from .db import open_db
 
@@ -392,11 +364,7 @@ def cmd_review_generate(dry_run: bool = False) -> int:
 
 def cmd_review_apply(dry_run: bool = False) -> int:
     """Apply approved fixes from review sheets."""
-    if dry_run:
-        return reject_legacy_preview()
-
     import sys
-
     from .config import get_config
     from .context import RunContext
     from .db import open_db
@@ -461,7 +429,6 @@ def cmd_review_apply(dry_run: bool = False) -> int:
 def cmd_review_status() -> int:
     """Show status of pending review sheets."""
     import sys
-
     from .config import get_config
 
     try:
@@ -471,7 +438,7 @@ def cmd_review_status() -> int:
         return 1
 
     review_dir = cfg.meta_dir / "review"
-    print("\nMusaeus Review Status")
+    print(f"\nMusaeus Review Status")
     print(f"  Review dir: {review_dir}")
     print()
 

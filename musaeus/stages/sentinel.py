@@ -119,13 +119,7 @@ class SentinelStage(BaseStage):
                 ctx.conn.execute(
                     "DELETE FROM archive WHERE file_path = ?", (path_str,)
                 )
-                result.files_errored += 1
-                result.errors.append(f"Missing file: {path.name}")
-                ctx.log_event(
-                    "FILE_MISSING",
-                    file_path=path_str,
-                    stage=self.NAME,
-                )
+                result.files_skipped += 1
                 continue
 
             # Full-file hash (always, cheap)

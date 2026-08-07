@@ -110,6 +110,7 @@ Each stage is idempotent — re-running skips already-processed files.
 musaeus run              # Ingest → Sentinel → Scholar
 musaeus run --full       # + Forge → Tagger
 musaeus run --maintain   # Ghost + Health + Enrich + NearDupe
+musaeus run --dry-run    # Preview only, no changes
 
 musaeus ingest           # Register new INBOX files
 musaeus sentinel         # Hash files, detect exact duplicates
@@ -120,25 +121,21 @@ musaeus tagger           # Write normalised DB metadata back to tags
 musaeus curator --export-root /mnt/USB --noise dual
 ```
 
-> **Preview status:** Legacy preview/dry-run is temporarily unavailable because it can
-> persist state. `musaeus dry-run`, every `--dry-run` CLI route, interactive-console
-> preview selection, and legacy script dry-run/default-preview routes fail closed before
-> MUSAEUS starts managed configuration, database, library/file, log, or network work
-> for that preview. Run without `--dry-run` only for an explicitly authorised live
-> run, or wait for the safe-preview repair. Low-level `BaseStage` APIs are internal
-> execution interfaces and must not be used as a consumer preview safety boundary.
-
 ### Maintenance Commands
 
 ```bash
 musaeus ghost            # Sweep archive for files missing from disk
+musaeus ghost --dry-run  # Report missing files without marking them
 
 musaeus health           # Run consistency + quality checks
+musaeus health --dry-run # Show issues without writing to DB
 musaeus health-report    # Print validation issues summary table
 
 musaeus enrich           # Fill missing genres via Last.fm
+musaeus enrich --dry-run # Preview what genres would be assigned
 
 musaeus neardupe         # Detect near-duplicate tracks (fuzzy title match)
+musaeus neardupe --dry-run  # Report without staging in DB
 ```
 
 ### Review Commands
@@ -178,7 +175,7 @@ musaeus          # launches the console
 ╚══════════════════════════════════════════════════════════╝
 
     0  Status
-    1  Preview temporarily unavailable  ← safety block + remediation
+    1  Run full pipeline  [DRY RUN]
     2  Run full pipeline  [LIVE]
     3  Run single stage…       ← Ingest/Sentinel/Scholar/Forge/Tagger/Curator
     4  Dedupe review           ← Interactive / Auto / Report
@@ -352,7 +349,7 @@ musaeus/
 - Every stage implements `run()`, `dry_run()`, `validate()`
 - Stages never commit the DB — `ctx.record_stage()` does
 - Periodic commits every N files (crash resilience)
-- Legacy `dry_run` CLI/console preview is temporarily unavailable pending the safe-preview repair
+- `dry_run=True` is first-class — never a no-op
 
 ---
 

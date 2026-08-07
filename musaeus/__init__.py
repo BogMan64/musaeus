@@ -10,8 +10,7 @@ Architecture:
   - One DB connection, one scan pass, one log session per run
   - Content-addressed audio hashing (tags don't break identity)
   - Event log as the source of truth (DB is derived, always rebuildable)
-  - Legacy CLI/console dry-run preview is temporarily unavailable pending the
-    safe-preview repair
+  - Every stage MUST implement dry_run() — it is never optional
 
 Version: 0.1.0
 """

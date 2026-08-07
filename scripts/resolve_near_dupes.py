@@ -19,13 +19,10 @@ Actions taken:
   - REVIEW groups: leaves in duplicates table for manual review
 
 Usage:
+  python scripts/resolve_near_dupes.py          # dry run — print decisions
   python scripts/resolve_near_dupes.py --apply  # apply decisions to DB
   python scripts/resolve_near_dupes.py --apply --verbose
-
-Invoking without ``--apply`` is blocked because the legacy dry-run path is
-not yet safe.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -37,29 +34,16 @@ import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-
-from musaeus.preview_guard import LEGACY_PREVIEW_HELP, reject_legacy_preview  # noqa: E402
-
-_DEFAULT_DB_PATH = "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db"
-
-
-def _fallback_db_path() -> Path:
-    """Return the historical environment/default DB path only when live apply is requested."""
-    return Path(os.environ.get("MUSAEUS_DB_PATH", _DEFAULT_DB_PATH))
-
-
-def _resolve_db_path() -> Path:
-    """Resolve the configured DB path only for an explicitly requested live apply."""
-    try:
-        from musaeus.config import get_config
-
-        return get_config().db_path
-    except (ImportError, ValueError):
-        return _fallback_db_path()
-
+# Use Musaeus config system for DB path instead of hardcoding
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+try:
+    from musaeus.config import get_config
+    DB_PATH = get_config().db_path
+except (ImportError, ValueError):
+    # Fallback if config not loadable (e.g. MUSAEUS_VAULT_ROOT not set)
+    DB_PATH = Path(
+        os.environ.get("MUSAEUS_DB_PATH", "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db")
+    )
 
 # ── Heuristics ────────────────────────────────────────────────────────────────
 
@@ -76,8 +60,8 @@ KEEP_BOTH_PATTERNS: list[re.Pattern] = [
 
 # Roman numerals / numbers in title that distinguish movements or sequels
 NUMERAL_PATTERN = re.compile(
-    r"(\b[IVX]{1,4}\b|"  # Roman I II III IV V VI VII VIII IX X
-    r"\b\d+\b)",  # Arabic digit
+    r"(\b[IVX]{1,4}\b|"           # Roman I II III IV V VI VII VIII IX X
+    r"\b\d+\b)",                   # Arabic digit
     re.I,
 )
 
@@ -109,13 +93,12 @@ def _clean_filename(fp: str) -> str:
 
 # ── Data classes ──────────────────────────────────────────────────────────────
 
-
 @dataclass
 class Track:
     file_path: str
     artist: str
     title: str
-    codec: str  # alac / aac / mp3 / flac / aiff
+    codec: str        # alac / aac / mp3 / flac / aiff
     bitrate: int
     size_bytes: int
 
@@ -143,27 +126,21 @@ class Track:
 @dataclass
 class GroupDecision:
     group_id: str
-    disposition: str  # AUTO_KEEP | KEEP_BOTH | FALSE_POS | REVIEW
-    keep: str | None  # file_path to keep (AUTO_KEEP only)
-    drop: str | None  # file_path to mark DUPE (AUTO_KEEP only)
+    disposition: str          # AUTO_KEEP | KEEP_BOTH | FALSE_POS | REVIEW
+    keep: str | None          # file_path to keep (AUTO_KEEP only)
+    drop: str | None          # file_path to mark DUPE (AUTO_KEEP only)
     reason: str = ""
     tracks: list[Track] = field(default_factory=list)
 
 
 # ── Decision logic ────────────────────────────────────────────────────────────
 
-
 def decide(group_id: str, tracks: list[Track]) -> GroupDecision:
     if len(tracks) != 2:
         # More than 2 in a group — unusual; send to review
-        return GroupDecision(
-            group_id,
-            "REVIEW",
-            None,
-            None,
-            f"{len(tracks)} tracks in group — manual review needed",
-            tracks,
-        )
+        return GroupDecision(group_id, "REVIEW", None, None,
+                             f"{len(tracks)} tracks in group — manual review needed",
+                             tracks)
 
     a, b = tracks[0], tracks[1]
     title_a = _norm(a.title)
@@ -175,10 +152,7 @@ def decide(group_id: str, tracks: list[Track]) -> GroupDecision:
     nums_b = _extract_numerals(b.title)
     if nums_a and nums_b and nums_a != nums_b:
         return GroupDecision(
-            group_id,
-            "FALSE_POS",
-            None,
-            None,
+            group_id, "FALSE_POS", None, None,
             f"Different numerals: {a.title!r} vs {b.title!r}",
             tracks,
         )
@@ -188,10 +162,7 @@ def decide(group_id: str, tracks: list[Track]) -> GroupDecision:
     mark_b = _has_keep_both_marker(b.title)
     if mark_a != mark_b:
         return GroupDecision(
-            group_id,
-            "KEEP_BOTH",
-            None,
-            None,
+            group_id, "KEEP_BOTH", None, None,
             f"Different versions: {a.title!r} vs {b.title!r}",
             tracks,
         )
@@ -199,10 +170,7 @@ def decide(group_id: str, tracks: list[Track]) -> GroupDecision:
     # ── 3. Both have keep-both markers but different ones ─────────────────────
     if mark_a and mark_b and title_a != title_b:
         return GroupDecision(
-            group_id,
-            "KEEP_BOTH",
-            None,
-            None,
+            group_id, "KEEP_BOTH", None, None,
             f"Both have version markers: {a.title!r} vs {b.title!r}",
             tracks,
         )
@@ -211,10 +179,7 @@ def decide(group_id: str, tracks: list[Track]) -> GroupDecision:
     if a.is_lossless != b.is_lossless:
         winner, loser = (a, b) if a.is_lossless else (b, a)
         return GroupDecision(
-            group_id,
-            "AUTO_KEEP",
-            winner.file_path,
-            loser.file_path,
+            group_id, "AUTO_KEEP", winner.file_path, loser.file_path,
             f"Lossless ({winner.codec}/{winner.size_bytes}B) beats "
             f"lossy ({loser.codec}/{loser.size_bytes}B)",
             tracks,
@@ -224,11 +189,9 @@ def decide(group_id: str, tracks: list[Track]) -> GroupDecision:
     sz_a = a.disk_size
     sz_b = b.disk_size
     size_ratio = max(sz_a, sz_b) / max(min(sz_a, sz_b), 1)
-    if size_ratio > 1.10:  # >10% size difference → clear winner
+    if size_ratio > 1.10:   # >10% size difference → clear winner
         winner, loser = (a, b) if sz_a > sz_b else (b, a)
-        reason = (
-            f"Larger file ({winner.disk_size:,}B vs {loser.disk_size:,}B, ratio={size_ratio:.2f})"
-        )
+        reason = f"Larger file ({winner.disk_size:,}B vs {loser.disk_size:,}B, ratio={size_ratio:.2f})"
 
         # Bonus: prefer the one without a numbered prefix in filename
         a_prefixed = bool(NUMBERED_PREFIX.match(Path(a.file_path).stem))
@@ -237,9 +200,8 @@ def decide(group_id: str, tracks: list[Track]) -> GroupDecision:
             winner, loser = (b, a) if a_prefixed else (a, b)
             reason += "; clean filename preferred"
 
-        return GroupDecision(
-            group_id, "AUTO_KEEP", winner.file_path, loser.file_path, reason, tracks
-        )
+        return GroupDecision(group_id, "AUTO_KEEP", winner.file_path, loser.file_path,
+                             reason, tracks)
 
     # ── 6. Prefer clean filename over numbered/prefixed filename ──────────────
     a_prefixed = bool(NUMBERED_PREFIX.match(Path(a.file_path).stem))
@@ -247,10 +209,7 @@ def decide(group_id: str, tracks: list[Track]) -> GroupDecision:
     if a_prefixed != b_prefixed:
         winner, loser = (b, a) if a_prefixed else (a, b)
         return GroupDecision(
-            group_id,
-            "AUTO_KEEP",
-            winner.file_path,
-            loser.file_path,
+            group_id, "AUTO_KEEP", winner.file_path, loser.file_path,
             "Clean filename preferred over numbered prefix",
             tracks,
         )
@@ -265,10 +224,7 @@ def decide(group_id: str, tracks: list[Track]) -> GroupDecision:
             # Keep the one without the "Artist - Title" prefix (cleaner standalone name)
             winner, loser = (a, b) if not a_has_prefix else (b, a)
             return GroupDecision(
-                group_id,
-                "AUTO_KEEP",
-                winner.file_path,
-                loser.file_path,
+                group_id, "AUTO_KEEP", winner.file_path, loser.file_path,
                 f"Same title, prefer clean filename over 'Artist - Title' filename",
                 tracks,
             )
@@ -276,10 +232,7 @@ def decide(group_id: str, tracks: list[Track]) -> GroupDecision:
         if sz_a != sz_b:
             winner, loser = (a, b) if sz_a > sz_b else (b, a)
             return GroupDecision(
-                group_id,
-                "AUTO_KEEP",
-                winner.file_path,
-                loser.file_path,
+                group_id, "AUTO_KEEP", winner.file_path, loser.file_path,
                 f"Same title same codec, larger file wins ({winner.disk_size:,}B vs {loser.disk_size:,}B)",
                 tracks,
             )
@@ -288,23 +241,17 @@ def decide(group_id: str, tracks: list[Track]) -> GroupDecision:
     #    e.g. "Under the Br" vs "Under the Bridge" — pick the longer one
     shorter, longer = (a, b) if len(a.title) < len(b.title) else (b, a)
     norm_short = _norm(shorter.title)
-    norm_long = _norm(longer.title)
+    norm_long  = _norm(longer.title)
     if norm_long.startswith(norm_short) and len(norm_long) > len(norm_short):
         return GroupDecision(
-            group_id,
-            "AUTO_KEEP",
-            longer.file_path,
-            shorter.file_path,
+            group_id, "AUTO_KEEP", longer.file_path, shorter.file_path,
             f"Truncated title: {shorter.title!r} → keeping longer {longer.title!r}",
             tracks,
         )
 
     # ── 9. Too close to call ──────────────────────────────────────────────────
     return GroupDecision(
-        group_id,
-        "REVIEW",
-        None,
-        None,
+        group_id, "REVIEW", None, None,
         f"Similar quality — manual review: {a.title!r} vs {b.title!r}",
         tracks,
     )
@@ -312,24 +259,14 @@ def decide(group_id: str, tracks: list[Track]) -> GroupDecision:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="MUSAEUS Near-Dupe Auto-Resolver",
-        epilog=f"Without --apply: {LEGACY_PREVIEW_HELP}",
-    )
-    parser.add_argument(
-        "--apply",
-        action="store_true",
-        help="Apply decisions to DB; legacy dry-run is unavailable",
-    )
+    parser = argparse.ArgumentParser(description="MUSAEUS Near-Dupe Auto-Resolver")
+    parser.add_argument("--apply", action="store_true",
+                        help="Apply decisions to DB (default: dry run)")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
-    if not args.apply:
-        sys.exit(reject_legacy_preview())
-
-    conn = sqlite3.connect(str(_resolve_db_path()))
+    conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
 
     # Load all NEAR dupe groups
@@ -371,7 +308,7 @@ def main() -> None:
     print(f"  REVIEW (manual needed)   : {counts.get('REVIEW', 0)}")
     print()
 
-    if args.verbose:
+    if args.verbose or not args.apply:
         for disp in ("FALSE_POS", "KEEP_BOTH", "REVIEW", "AUTO_KEEP"):
             subset = [d for d in decisions if d.disposition == disp]
             if not subset:
@@ -380,7 +317,7 @@ def main() -> None:
                 "AUTO_KEEP": "AUTO-KEEP (will mark loser as DUPE)",
                 "KEEP_BOTH": "KEEP BOTH (different versions)",
                 "FALSE_POS": "FALSE POSITIVE (different tracks)",
-                "REVIEW": "NEEDS REVIEW",
+                "REVIEW":    "NEEDS REVIEW",
             }[disp]
             print(f"── {label} ({len(subset)}) ─────────────────────────────")
             for d in subset:
@@ -394,6 +331,11 @@ def main() -> None:
                         print(f"  [{t.codec:4}] {t.size_bytes:>10,}B  {t.title!r}")
                 print(f"  → {d.reason}")
                 print()
+
+    if not args.apply:
+        print("Dry run — pass --apply to commit decisions.")
+        conn.close()
+        return
 
     # Apply decisions
     auto_kept = 0

@@ -18,8 +18,6 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from .preview_guard import reject_legacy_preview
-
 
 def rebuild_archive_from_events(conn: sqlite3.Connection, *, dry_run: bool = False) -> dict:
     """
@@ -52,7 +50,9 @@ def rebuild_archive_from_events(conn: sqlite3.Connection, *, dry_run: bool = Fal
     conn.execute("DELETE FROM archive")
 
     # ── Step 2: Replay events in chronological order ─────────────────────────
-    events = conn.execute("SELECT * FROM events ORDER BY id ASC").fetchall()
+    events = conn.execute(
+        "SELECT * FROM events ORDER BY id ASC"
+    ).fetchall()
     summary["replayed"] = len(events)
 
     # Track per-file state as we replay
@@ -111,17 +111,8 @@ def rebuild_archive_from_events(conn: sqlite3.Connection, *, dry_run: bool = Fal
                 try:
                     meta = json.loads(event["new_value"])
                     for key in (
-                        "artist",
-                        "album",
-                        "title",
-                        "genre",
-                        "year",
-                        "track",
-                        "duration",
-                        "bitrate",
-                        "sample_rate",
-                        "channels",
-                        "codec",
+                        "artist", "album", "title", "genre", "year", "track",
+                        "duration", "bitrate", "sample_rate", "channels", "codec",
                     ):
                         if key in meta:
                             state[key] = meta[key]
@@ -142,9 +133,10 @@ def rebuild_archive_from_events(conn: sqlite3.Connection, *, dry_run: bool = Fal
             if event["new_value"]:
                 try:
                     data = json.loads(event["new_value"])
-                    state.update(
-                        {k: data[k] for k in ("lufs", "lufs_tp", "rg_gain", "rg_peak") if k in data}
-                    )
+                    state.update({
+                        k: data[k] for k in ("lufs", "lufs_tp", "rg_gain", "rg_peak")
+                        if k in data
+                    })
                 except (json.JSONDecodeError, TypeError):
                     pass
 
@@ -169,34 +161,12 @@ def rebuild_archive_from_events(conn: sqlite3.Connection, *, dry_run: bool = Fal
 
     # ── Step 3: Write rebuilt archive ────────────────────────────────────────
     archive_fields = [
-        "file_path",
-        "audio_hash",
-        "full_hash",
-        "filename",
-        "ext",
-        "size_bytes",
-        "artist",
-        "album",
-        "title",
-        "genre",
-        "year",
-        "track",
-        "duration",
-        "bitrate",
-        "sample_rate",
-        "channels",
-        "codec",
-        "status",
-        "date_added",
-        "last_seen",
-        "last_modified",
-        "lufs",
-        "lufs_tp",
-        "rg_gain",
-        "rg_peak",
-        "rg_tagged_at",
-        "car_export_path",
-        "noise_profile",
+        "file_path", "audio_hash", "full_hash", "filename", "ext", "size_bytes",
+        "artist", "album", "title", "genre", "year", "track",
+        "duration", "bitrate", "sample_rate", "channels", "codec",
+        "status", "date_added", "last_seen", "last_modified",
+        "lufs", "lufs_tp", "rg_gain", "rg_peak", "rg_tagged_at",
+        "car_export_path", "noise_profile",
     ]
 
     for file_path, state in file_state.items():
@@ -217,9 +187,6 @@ def rebuild_archive_from_events(conn: sqlite3.Connection, *, dry_run: bool = Fal
 
 def cmd_rebuild_db(dry_run: bool = False) -> int:
     """CLI entry point for rebuild-db command."""
-    if dry_run:
-        return reject_legacy_preview()
-
     from .config import get_config
     from .db import open_db
 

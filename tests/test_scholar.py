@@ -24,9 +24,6 @@ def cfg(tmp_path: Path) -> MusicConfig:
         runs_root=tmp_path / "RUNS",
         meta_dir=tmp_path / "MetaData",
         db_path=tmp_path / "musaeus.db",
-        aac_car_root=tmp_path / "RUNS" / "AAC-Car",
-        aac_car_masked_root=tmp_path / "RUNS" / "AAC-Car-Masked",
-        noise_dir=tmp_path / "RUNS" / "Noise",
     )
 
 
@@ -38,12 +35,8 @@ def ctx(cfg: MusicConfig) -> RunContext:
 
 @pytest.fixture
 def ctx_dry(cfg: MusicConfig) -> RunContext:
-    """Dry-run contexts are no longer supported; use the pure planner or skip."""
-    pytest.skip(
-        "P0-05: dry_run fixture contexts no longer supported. "
-        "Dry-run stages are only accessible through the pure planner (CLI --dry-run). "
-        "Integration tests should use the public CLI preview route or the planning module."
-    )
+    conn = open_db(cfg.db_path)
+    return RunContext.new(cfg, conn, dry_run=True)
 
 
 def _insert_hashed(ctx: RunContext, file_path: str) -> None:

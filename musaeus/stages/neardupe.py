@@ -47,9 +47,7 @@ from .base import BaseStage, StageError
 logger = logging.getLogger(__name__)
 
 # Minimum fuzz.ratio to flag as near-duplicate (0–100 scale)
-# 85 was tested in ORPHEUS folder dedup and catches live/remaster variants well.
-# 88 is more conservative but may miss some near-dupes with punctuation diffs.
-TITLE_THRESHOLD = 85
+TITLE_THRESHOLD = 88
 ARTIST_THRESHOLD = 88
 
 

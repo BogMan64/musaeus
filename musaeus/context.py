@@ -18,7 +18,6 @@ from typing import Any
 
 from .config import MusicConfig
 from .db import log_event
-from .planning import RunMode
 
 
 def _utc_now() -> str:
@@ -67,8 +66,8 @@ class RunContext:
     run_id: str
     config: MusicConfig
     conn: sqlite3.Connection
+    dry_run: bool
     started_at: str
-    mode: RunMode
     stage_results: list[StageResult] = field(default_factory=list)
     _extra: dict[str, Any] = field(default_factory=dict, repr=False)
 
@@ -81,41 +80,23 @@ class RunContext:
         conn: sqlite3.Connection,
         dry_run: bool = False,
         run_id: str | None = None,
-        mode: RunMode = RunMode.EXECUTE,
-    ) -> RunContext:
-        """Create an execution context and log the RUN_START event.
-
-        Preview is intentionally excluded: it is represented by the pure
-        ``planning.PreviewResult`` rather than a context that can append events
-        or create run state.
-        """
-        if dry_run:
-            mode = RunMode.PREVIEW
-        if mode is not RunMode.EXECUTE:
-            raise ValueError("RunContext is execution-only; preview uses the pure planner.")
-        rid = (
-            run_id
-            or f"run_{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:6]}"
-        )
+    ) -> "RunContext":
+        """Create a fresh RunContext and log the RUN_START event."""
+        rid = run_id or f"run_{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:6]}"
         started = _utc_now()
         ctx = cls(
             run_id=rid,
             config=config,
             conn=conn,
+            dry_run=dry_run,
             started_at=started,
-            mode=mode,
         )
         ctx.log_event(
             "RUN_START",
-            note=f"dry_run={ctx.dry_run}",
+            note=f"dry_run={dry_run}",
         )
         conn.commit()
         return ctx
-
-    @property
-    def dry_run(self) -> bool:
-        """Compatibility view; preview contexts are intentionally impossible."""
-        return self.mode is RunMode.PREVIEW
 
     # ── Event log passthrough ─────────────────────────────────────────────────
 

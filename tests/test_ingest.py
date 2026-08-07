@@ -45,9 +45,6 @@ def cfg(vault: Path) -> MusicConfig:
         runs_root=vault / "RUNS",
         meta_dir=vault / "MetaData",
         db_path=vault / "musaeus.db",
-        aac_car_root=vault / "RUNS" / "AAC-Car",
-        aac_car_masked_root=vault / "RUNS" / "AAC-Car-Masked",
-        noise_dir=vault / "RUNS" / "Noise",
     )
 
 
@@ -59,12 +56,8 @@ def ctx(cfg: MusicConfig) -> RunContext:
 
 @pytest.fixture
 def ctx_dry(cfg: MusicConfig) -> RunContext:
-    """Dry-run contexts are no longer supported; use the pure planner or skip."""
-    pytest.skip(
-        "P0-05: dry_run fixture contexts no longer supported. "
-        "Dry-run stages are only accessible through the pure planner (CLI --dry-run). "
-        "Integration tests should use the public CLI preview route or the planning module."
-    )
+    conn = open_db(cfg.db_path)
+    return RunContext.new(cfg, conn, dry_run=True)
 
 
 # ── _scan_inbox ───────────────────────────────────────────────────────────────
@@ -110,9 +103,6 @@ class TestIngestValidate:
             runs_root=tmp_path / "RUNS",
             meta_dir=tmp_path / "MetaData",
             db_path=tmp_path / "musaeus.db",
-            aac_car_root=tmp_path / "RUNS" / "AAC-Car",
-            aac_car_masked_root=tmp_path / "RUNS" / "AAC-Car-Masked",
-            noise_dir=tmp_path / "RUNS" / "Noise",
         )
         conn = open_db(cfg2.db_path)
         bad_ctx = RunContext.new(cfg2, conn, dry_run=False)
@@ -200,9 +190,6 @@ class TestIngestDryRun:
             runs_root=root / "RUNS",
             meta_dir=root / "MetaData",
             db_path=root / "musaeus.db",
-            aac_car_root=root / "RUNS" / "AAC-Car",
-            aac_car_masked_root=root / "RUNS" / "AAC-Car-Masked",
-            noise_dir=root / "RUNS" / "Noise",
         )
         (root / "INBOX").mkdir()
         conn = open_db(cfg2.db_path)
