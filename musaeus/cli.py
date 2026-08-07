@@ -10,7 +10,8 @@ Pipeline commands:
     run --full       Run the full pipeline  (+ Normalize → Forge → Tagger)
     run --maintain   Run the maintenance pipeline (Ghost→Health→Normalize→Enrich→MBEnrich→NearDupe)
     run --enrich     Run the enrichment pipeline (Enrich→MBEnrich→AcousticID→Reviewer)
-    dry-run          Preview the default pipeline without any mutations
+    dry-run          Preview-only mode — no changes, just planning
+    preview          Preview-only mode — no changes, just planning
     ingest           Run Ingest stage only
     sentinel         Run Sentinel stage only
     scholar          Run Scholar stage only
@@ -38,7 +39,7 @@ Review commands:
     runs             List recent pipeline runs
 
 Options:
-    --dry-run        Preview mode (no mutations)
+    --dry-run        Preview only — no changes, just planning
     --verbose / -v   Enable DEBUG logging
     --force          Re-process already-done files (forge, curator, transcode)
     --full           Include Forge + Tagger in `run` pipeline
@@ -49,25 +50,30 @@ Options:
     --noise          Noise profile for curator: clean|pink|brown|white|dual
     --max-files      Cap files processed per run (auditor, reviewer)
 
+Temporary safety notice:
+    Legacy preview/dry-run commands are temporarily unavailable because the legacy
+    implementation can persist state. A blocked preview starts no MUSAEUS managed
+    configuration, database, library/files, logs, or network work. Run without
+    --dry-run only for an explicitly authorised live run, or wait for the
+    safe-preview repair.
+
 Examples:
     musaeus run
     musaeus run --full
     musaeus run --maintain
     musaeus run --enrich
-    musaeus forge --dry-run
+    musaeus forge
     musaeus tagger
     musaeus curator --export-root /mnt/USB --noise dual
     musaeus ghost
     musaeus health
-    musaeus normalize --dry-run
-    musaeus auditor --dry-run
-    musaeus enrich --dry-run
-    musaeus mb-enrich --dry-run
-    musaeus neardupe --dry-run
-    musaeus acousticid --dry-run
-    musaeus transcode --dry-run
+    musaeus normalize
+    musaeus auditor
+    musaeus enrich
+    musaeus mb-enrich
+    musaeus neardupe
+    musaeus acousticid
     musaeus transcode --export-root /mnt/USB/AAC
-    musaeus reviewer --dry-run
     musaeus reviewer --max-files 100
     musaeus report
     musaeus report --json
@@ -84,22 +90,27 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
+import os
 import sys
 import traceback
+from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
-from . import __version__
+from . import __version__, preview_guard
 from .config import get_config
 from .context import RunContext
 from .db import open_db
+from .planning import CommandRequest, PreviewUsageError, RunMode, normalise_persistence_options
 from .stages import (
+    ARCHIVE_PIPELINE,
+    BIG_KAHUNA_PIPELINE,
     DEFAULT_PIPELINE,
     ENRICH_PIPELINE,
     FULL_PIPELINE,
-    ARCHIVE_PIPELINE,
-    BIG_KAHUNA_PIPELINE,
     MAINTAIN_PIPELINE,
+    AACCarMaskedStage,
+    AACCarStage,
     AcousticIDStage,
     AlbumArtStage,
     AuditorStage,
@@ -112,6 +123,7 @@ from .stages import (
     IntegrityStage,
     MBEnrichStage,
     NearDupeStage,
+    NoiseGeneratorStage,
     NormalizeStage,
     PlaylistStage,
     ReviewerStage,
@@ -122,10 +134,164 @@ from .stages import (
 )
 from .stages.base import BaseStage
 
+_LEGACY_PREVIEW_EXIT_CODE = preview_guard.LEGACY_PREVIEW_EXIT_CODE
+_LEGACY_PREVIEW_HELP = preview_guard.LEGACY_PREVIEW_HELP
+_LEGACY_PREVIEW_MESSAGE = preview_guard.LEGACY_PREVIEW_MESSAGE
+LegacyPreviewAction = preview_guard.LegacyPreviewAction
+_legacy_preview_requested = preview_guard.legacy_preview_requested
+mark_legacy_preview_command = preview_guard.mark_legacy_preview_command
+_reject_legacy_preview = preview_guard.reject_legacy_preview
+
+
+class _PurePreviewAction(argparse.Action):
+    """Mark a --dry-run option for dispatch through the pure planner (P0-05)."""
+
+    def __init__(self, option_strings: list[str], dest: str, **kwargs: Any) -> None:
+        kwargs["nargs"] = 0
+        kwargs.setdefault("default", False)
+        super().__init__(option_strings, dest, **kwargs)
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        del parser, values, option_string
+        setattr(namespace, self.dest, True)
+        namespace.run_mode = RunMode.PREVIEW
+        # Important: do NOT set the legacy guard marker
+
+
+
+BIG_KAHUNA_EXPORT_ROOT_EXIT_CODE = 2
+BIG_KAHUNA_EXPORT_ROOT_MESSAGE = (
+    "Safety block: Big Kahuna is temporarily unavailable because there is no supported "
+    "pre-resolved Curator export root. No MUSAEUS managed work has started. P0-15 will "
+    "provide proper configuration/preflight."
+)
+
+
+def _has_pre_resolved_curator_export_root(stash: dict | None) -> bool:
+    """Return whether an existing direct-call stash supplies a non-empty root path."""
+    if not stash:
+        return False
+    root = stash.get("curator_export_root")
+    if root is None:
+        return False
+    try:
+        return bool(os.fsdecode(os.fspath(root)).strip())
+    except TypeError:
+        return False
+
+
+def _big_kahuna_export_root_missing(
+    stages: list[type[BaseStage]], stash: dict | None = None
+) -> bool:
+    """Recognise only the existing Big Kahuna orchestration path for the P0-03 block.
+
+    This compatibility guard intentionally neither resolves nor validates a root.
+    P0-15 owns typed configuration and preflight; a direct caller may retain its
+    existing non-empty ``curator_export_root`` stash value.
+    """
+    return stages == BIG_KAHUNA_PIPELINE and not _has_pre_resolved_curator_export_root(stash)
+
+
+def _reject_big_kahuna_missing_export_root() -> int:
+    """Render the P0-03 safety block without invoking managed work."""
+    print(BIG_KAHUNA_EXPORT_ROOT_MESSAGE, file=sys.stderr)
+    return BIG_KAHUNA_EXPORT_ROOT_EXIT_CODE
+
+
+def _mark_legacy_preview_options_unavailable(parser: argparse.ArgumentParser) -> None:
+    """Update every parser action that declares ``dry_run``, including nested commands."""
+    for action in parser._actions:
+        if action.dest == "dry_run":
+            action.help = _LEGACY_PREVIEW_HELP
+        if isinstance(action, argparse._SubParsersAction):
+            for subparser in action.choices.values():
+                _mark_legacy_preview_options_unavailable(subparser)
+
+
+def _stage_names_for_command(args: argparse.Namespace) -> tuple[str, ...]:
+    """Describe a command's stages without constructing a stage object."""
+    command = getattr(args, "command", None)
+    if command in {"preview", "dry-run"}:
+        stages = DEFAULT_PIPELINE
+    elif command == "run":
+        stages = _select_run_pipeline(args)
+    elif command == "overnight":
+        stages = (
+            GhostStage,
+            HealthStage,
+            NormalizeStage,
+            EnrichStage,
+            MBEnrichStage,
+            NearDupeStage,
+            ReviewerStage,
+        )
+    else:
+        single_stage_commands: dict[str, type[BaseStage]] = {
+            "ingest": IngestStage,
+            "sentinel": SentinelStage,
+            "scholar": ScholarStage,
+            "normalize": NormalizeStage,
+            "forge": ForgeStage,
+            "tagger": TaggerStage,
+            "ghost": GhostStage,
+            "health": HealthStage,
+            "auditor": AuditorStage,
+            "enrich": EnrichStage,
+            "mb-enrich": MBEnrichStage,
+            "neardupe": NearDupeStage,
+            "curator": CuratorStage,
+            "acousticid": AcousticIDStage,
+            "transcode": TranscodeStage,
+            "reviewer": ReviewerStage,
+            "integrity": IntegrityStage,
+            "albumart": AlbumArtStage,
+            "playlist": PlaylistStage,
+        }
+        stage = single_stage_commands.get(command)
+        stages = () if stage is None else (stage,)
+    return tuple(stage.__name__ for stage in stages)
+
+
+def _persistence_options_from_args(args: argparse.Namespace) -> tuple[str, ...]:
+    """Identify legacy flags that would otherwise select a persistent boundary."""
+    candidates = {
+        "csv": getattr(args, "csv", False),
+        "export-root": getattr(args, "export_root", None),
+        "reset": getattr(args, "reset", False),
+    }
+    return tuple(name for name, value in candidates.items() if value)
+
+
+def _command_request_from_args(args: argparse.Namespace) -> CommandRequest:
+    """Translate parsed CLI intent into values safe to pass to the pure planner."""
+    raw_mode = getattr(args, "run_mode", RunMode.EXECUTE)
+    mode = raw_mode if isinstance(raw_mode, RunMode) else RunMode(raw_mode)
+    request = CommandRequest(
+        command=getattr(args, "command", None) or "console",
+        mode=mode,
+        stage_names=_stage_names_for_command(args),
+        # No path, INBOX declaration, flag, mount, or container context may become
+        # authority here. Scope remains deliberately unclassified until P0-10/P0-11.
+        declared_scope="unclassified",
+        persistence_options=_persistence_options_from_args(args),
+    )
+    if request.mode is RunMode.PREVIEW:
+        normalise_persistence_options(request.persistence_options)
+    return request
+
+
 # ── Logging setup ─────────────────────────────────────────────────────────────
 
 
 def _setup_logging(verbose: bool) -> None:
+    import logging
+
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,
@@ -140,9 +306,9 @@ _RESUME_FILE = Path.home() / ".config" / "musaeus" / "resume_state.json"
 
 def _save_resume(completed: list[str], all_stages: list[str]) -> None:
     _RESUME_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _RESUME_FILE.write_text(json.dumps(
-        {"completed": completed, "all_stages": all_stages}, indent=2
-    ))
+    _RESUME_FILE.write_text(
+        json.dumps({"completed": completed, "all_stages": all_stages}, indent=2)
+    )
 
 
 def _load_resume(all_stages: list[str]) -> list[str] | None:
@@ -159,13 +325,26 @@ def _load_resume(all_stages: list[str]) -> list[str] | None:
 
 
 def _clear_resume() -> None:
-    try:
+    with suppress(OSError):
         _RESUME_FILE.unlink(missing_ok=True)
-    except OSError:
-        pass
 
 
 # ── Pipeline runner ───────────────────────────────────────────────────────────
+
+
+def _select_run_pipeline(args: argparse.Namespace) -> list[type[BaseStage]]:
+    """Return the ``run`` pipeline with the historic flag precedence intact."""
+    if getattr(args, "maintain", False):
+        return MAINTAIN_PIPELINE
+    if getattr(args, "big_kahuna", False):
+        return BIG_KAHUNA_PIPELINE
+    if getattr(args, "full", False):
+        return FULL_PIPELINE
+    if getattr(args, "archive", False):
+        return ARCHIVE_PIPELINE
+    if getattr(args, "enrich", False):
+        return ENRICH_PIPELINE
+    return DEFAULT_PIPELINE
 
 
 def _run_pipeline(
@@ -176,8 +355,13 @@ def _run_pipeline(
     """
     Run a sequence of stages.
     stash: optional dict of key→value to pre-load into ctx before running.
-    Returns 0 on success, 1 on any stage failure.
+    Returns 0 on success, 1 on a stage failure, or 2 for a safety block.
     """
+    if dry_run:
+        return _reject_legacy_preview()
+    if _big_kahuna_export_root_missing(stages, stash):
+        return _reject_big_kahuna_missing_export_root()
+
     try:
         cfg = get_config()
         cfg.ensure_dirs()
@@ -278,8 +462,8 @@ def _cmd_reset() -> None:
     db = cfg.db_path
     print("\n  MUSAEUS — Database Reset")
     print(f"  DB: {db}")
-    print(f"  This will DELETE the database and all pipeline state.")
-    print(f"  Your music files in the vault are NOT affected.")
+    print("  This will DELETE the database and all pipeline state.")
+    print("  Your music files in the vault are NOT affected.")
     print()
 
     try:
@@ -669,6 +853,9 @@ def _cmd_canon_review(
     fixes_path: str | None = None,
     dry_run: bool = False,
 ) -> int:
+    if dry_run:
+        return _reject_legacy_preview()
+
     try:
         cfg = get_config()
     except ValueError as exc:
@@ -707,12 +894,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--version", action="version", version=f"musaeus {__version__}")
     p.add_argument("--verbose", "-v", action="store_true", help="Enable DEBUG logging")
+    p.set_defaults(run_mode=RunMode.EXECUTE)
 
     sub = p.add_subparsers(dest="command", metavar="command")
 
     # ── run ──────────────────────────────────────────────────────────────────
     run_p = sub.add_parser("run", help="Run pipeline (Ingest→Sentinel→Scholar)")
-    run_p.add_argument("--dry-run", action="store_true", help="Preview only, no mutations")
+    run_p.add_argument("--dry-run", action=_PurePreviewAction, help="Preview only, no mutations")
     run_p.add_argument("--full", action="store_true", help="Also run Forge + Tagger stages")
     run_p.add_argument(
         "--archive",
@@ -722,7 +910,10 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--big-kahuna",
         action="store_true",
-        help="ALL stages: full pipeline + health + enrich + dedup + art + curator + playlists",
+        help=(
+            "Temporarily unavailable: no supported pre-resolved Curator export root "
+            "(P0-15 will add configuration/preflight)"
+        ),
     )
     run_p.add_argument(
         "--maintain", action="store_true", help="Run Ghost + Health + Enrich + NearDupe"
@@ -738,8 +929,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Clear resume state and start fresh",
     )
 
-    # dry-run shortcut
-    sub.add_parser("dry-run", help="Alias for: run --dry-run")
+
+    # ── preview shortcuts: routed through pure planner (P0-05 complete) ────────
+    # These no longer use the legacy guard; they dispatch through build_preview_plan()
+    # which is pure: no DB access, no filesystem work, deterministic output only.
+    dry_run_p = sub.add_parser(
+        "dry-run",
+        help="Preview-only mode — no database or filesystem changes",
+        description="Shows what the command would do without making any changes.",
+    )
+    dry_run_p.set_defaults(run_mode=RunMode.PREVIEW)
+
+    preview_p = sub.add_parser(
+        "preview",
+        help="Preview-only mode — no database or filesystem changes",
+        description="Shows what the command would do without making any changes.",
+    )
+    preview_p.set_defaults(run_mode=RunMode.PREVIEW)
 
     # ── setup wizard ──────────────────────────────────────────────────────────
     sub.add_parser("setup", help="Run the setup wizard (paths + API keys)")
@@ -748,15 +954,19 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── individual stages ─────────────────────────────────────────────────────
     for name in ("ingest", "sentinel", "scholar"):
         sp = sub.add_parser(name, help=f"Run {name} stage only")
-        sp.add_argument("--dry-run", action="store_true", help="Preview only")
+        sp.add_argument("--dry-run", action=_PurePreviewAction, help="Preview only")
 
     # normalize
     normalize_p = sub.add_parser("normalize", help="Article-suffix fix + ALL-CAPS repair")
-    normalize_p.add_argument("--dry-run", action="store_true", help="Preview only, no DB changes")
+    normalize_p.add_argument(
+        "--dry-run", action=_PurePreviewAction, help="Preview only, no DB changes"
+    )
 
     # forge
     forge_p = sub.add_parser("forge", help="Measure LUFS + write ReplayGain tags")
-    forge_p.add_argument("--dry-run", action="store_true", help="Measure but don't write tags")
+    forge_p.add_argument(
+        "--dry-run", action=_PurePreviewAction, help="Measure but don't write tags"
+    )
     forge_p.add_argument("--force", action="store_true", help="Re-tag already-forged files")
     forge_p.add_argument(
         "--target-lufs",
@@ -769,19 +979,21 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # tagger
     tagger_p = sub.add_parser("tagger", help="Write normalised DB metadata back to file tags")
-    tagger_p.add_argument("--dry-run", action="store_true", help="Preview only")
+    tagger_p.add_argument("--dry-run", action=_PurePreviewAction, help="Preview only")
 
     # ghost
     ghost_p = sub.add_parser("ghost", help="Sweep archive for files missing from disk")
-    ghost_p.add_argument("--dry-run", action="store_true", help="Report only, no DB changes")
+    ghost_p.add_argument("--dry-run", action=_PurePreviewAction, help="Report only, no DB changes")
 
     # health
     health_p = sub.add_parser("health", help="Library consistency and quality checks")
-    health_p.add_argument("--dry-run", action="store_true", help="Report only, no DB writes")
+    health_p.add_argument("--dry-run", action=_PurePreviewAction, help="Report only, no DB writes")
 
     # auditor
     auditor_p = sub.add_parser("auditor", help="Pre-forge LUFS audit — flag out-of-window files")
-    auditor_p.add_argument("--dry-run", action="store_true", help="Measure + report, no DB writes")
+    auditor_p.add_argument(
+        "--dry-run", action=_PurePreviewAction, help="Measure + report, no DB writes"
+    )
     auditor_p.add_argument(
         "--target-lufs",
         type=float,
@@ -799,15 +1011,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # enrich
     enrich_p = sub.add_parser("enrich", help="Last.fm genre enrichment for missing genres")
-    enrich_p.add_argument("--dry-run", action="store_true", help="Show what would change")
+    enrich_p.add_argument("--dry-run", action=_PurePreviewAction, help="Show what would change")
 
     # mb-enrich
     mb_p = sub.add_parser("mb-enrich", help="MusicBrainz artist + release MBID enrichment")
-    mb_p.add_argument("--dry-run", action="store_true", help="Show what would change, no DB writes")
+    mb_p.add_argument(
+        "--dry-run", action=_PurePreviewAction, help="Show what would change, no DB writes"
+    )
 
     # neardupe
     neardupe_p = sub.add_parser("neardupe", help="Metadata-based near-duplicate detection")
-    neardupe_p.add_argument("--dry-run", action="store_true", help="Show matches without staging")
+    neardupe_p.add_argument(
+        "--dry-run", action=_PurePreviewAction, help="Show matches without staging"
+    )
 
     # report
     report_p = sub.add_parser("report", help="Dashboard: library stats, genre/bitrate breakdown")
@@ -819,7 +1035,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # rebuild-db
     rebuild_p = sub.add_parser("rebuild-db", help="Rebuild archive table from event log")
-    rebuild_p.add_argument("--dry-run", action="store_true", help="Preview only")
+    rebuild_p.add_argument("--dry-run", action=_PurePreviewAction, help="Preview only")
 
     # curator
     curator_p = sub.add_parser("curator", help="Build car-library export")
@@ -830,21 +1046,52 @@ def _build_parser() -> argparse.ArgumentParser:
         default="dual",
         help="Noise profile to include (default: dual = pink+brown)",
     )
-    curator_p.add_argument("--dry-run", action="store_true", help="Preview only")
+    curator_p.add_argument("--dry-run", action=_PurePreviewAction, help="Preview only")
     curator_p.add_argument("--force", action="store_true", help="Re-copy already-exported files")
+
+    # noise-gen (generate noise samples for AAC-Car-Masked)
+    noisegen_p = sub.add_parser("noise-gen", help="Generate Pink/Brown/White noise samples for AAC-Car masking")
+    noisegen_p.add_argument("--dry-run", action=_PurePreviewAction, help="Preview only")
+
+    # aac-car (encode ALAC → AAC-Car 256k)
+    aaccar_p = sub.add_parser("aac-car", help="Encode ALAC source → AAC-Car 256k")
+    aaccar_p.add_argument("--dry-run", action=_PurePreviewAction, help="Preview only")
+    aaccar_p.add_argument("--workers", type=int, default=4, help="Parallel ffmpeg workers (default: 4)")
+
+    # aac-car-mask (mix noise under AAC-Car)
+    aacmask_p = sub.add_parser("aac-car-mask", help="Mix subliminal noise under AAC-Car tracks")
+    aacmask_p.add_argument("--dry-run", action=_PurePreviewAction, help="Preview only")
+    aacmask_p.add_argument(
+        "--noise",
+        choices=["clean", "pink", "brown", "white", "dual"],
+        default="dual",
+        help="Noise profile (default: dual = brown+pink)",
+    )
+    aacmask_p.add_argument("--workers", type=int, default=4, help="Parallel ffmpeg workers (default: 4)")
+
+    # aac-car-full (encode + mask + playlists in one go)
+    aacfull_p = sub.add_parser("aac-car-full", help="Full AAC-Car-Masked pipeline (encode → mask → playlists)")
+    aacfull_p.add_argument("--dry-run", action=_PurePreviewAction, help="Preview only")
+    aacfull_p.add_argument(
+        "--noise",
+        choices=["clean", "pink", "brown", "white", "dual"],
+        default="dual",
+        help="Noise profile (default: dual = brown+pink)",
+    )
+    aacfull_p.add_argument("--workers", type=int, default=4, help="Parallel ffmpeg workers (default: 4)")
 
     # acousticid
     acousticid_p = sub.add_parser(
         "acousticid", help="Acoustic fingerprint dedup via fpcalc + AcousticID API"
     )
     acousticid_p.add_argument(
-        "--dry-run", action="store_true", help="Fingerprint + report, no DB writes"
+        "--dry-run", action=_PurePreviewAction, help="Fingerprint + report, no DB writes"
     )
 
     # transcode
     transcode_p = sub.add_parser("transcode", help="Lossless → 256k AAC export via ffmpeg")
     transcode_p.add_argument(
-        "--dry-run", action="store_true", help="Report what would be transcoded"
+        "--dry-run", action=_PurePreviewAction, help="Report what would be transcoded"
     )
     transcode_p.add_argument("--force", action="store_true", help="Re-transcode already-done files")
     transcode_p.add_argument(
@@ -855,7 +1102,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # reviewer
     reviewer_p = sub.add_parser("reviewer", help="Groq AI metadata quality review")
-    reviewer_p.add_argument("--dry-run", action="store_true", help="Show what would be reviewed")
+    reviewer_p.add_argument(
+        "--dry-run", action=_PurePreviewAction, help="Show what would be reviewed"
+    )
     reviewer_p.add_argument(
         "--max-files",
         type=int,
@@ -884,7 +1133,7 @@ def _build_parser() -> argparse.ArgumentParser:
     integrity_p = sub.add_parser(
         "integrity", help="Detect corrupt/truncated files via ffprobe decode-test"
     )
-    integrity_p.add_argument("--dry-run", action="store_true", help="Count, no DB writes")
+    integrity_p.add_argument("--dry-run", action=_PurePreviewAction, help="Count, no DB writes")
     integrity_p.add_argument(
         "--max-files",
         type=int,
@@ -897,7 +1146,9 @@ def _build_parser() -> argparse.ArgumentParser:
     albumart_p = sub.add_parser(
         "albumart", help="Audit missing embedded art + embed sidecar images"
     )
-    albumart_p.add_argument("--dry-run", action="store_true", help="Audit only, no embedding")
+    albumart_p.add_argument(
+        "--dry-run", action=_PurePreviewAction, help="Audit only, no embedding"
+    )
     albumart_p.add_argument("--force", action="store_true", help="Re-check all files")
     albumart_p.add_argument(
         "--no-embed", action="store_true", help="Audit only, skip sidecar embedding"
@@ -908,14 +1159,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "overnight",
         help="Automated nightly self-heal: Ghost→Health→Normalize→Enrich→MBEnrich→NearDupe→Reviewer",
     )
-    overnight_p.add_argument("--dry-run", action="store_true", help="Preview only")
+    overnight_p.add_argument("--dry-run", action=_PurePreviewAction, help="Preview only")
 
     # playlist
     playlist_p = sub.add_parser(
         "playlist",
         help="Build M3U8 playlists (genre + All) with relative paths — works on Android & Apple",
     )
-    playlist_p.add_argument("--dry-run", action="store_true", help="Preview only, no files written")
+    playlist_p.add_argument(
+        "--dry-run", action=_PurePreviewAction, help="Preview only, no files written"
+    )
 
     # db-tune
     sub.add_parser("db-tune", help="VACUUM, ANALYZE, WAL mode + DB stats")
@@ -937,7 +1190,7 @@ def _build_parser() -> argparse.ArgumentParser:
     canon_rep.add_argument("--csv", metavar="PATH", help="Also write CSV")
     canon_appl = canon_sub.add_parser("apply", help="Apply approved fixes from CSV")
     canon_appl.add_argument("--fixes", required=True, metavar="PATH")
-    canon_appl.add_argument("--dry-run", action="store_true")
+    canon_appl.add_argument("--dry-run", action=_PurePreviewAction)
 
     # ── review commands ───────────────────────────────────────────────────────
 
@@ -945,9 +1198,9 @@ def _build_parser() -> argparse.ArgumentParser:
     review_p = sub.add_parser("review", help="Album/artist review & approval workflow")
     review_sub = review_p.add_subparsers(dest="review_command", metavar="action")
     review_gen = review_sub.add_parser("generate", help="Generate review sheets from archive")
-    review_gen.add_argument("--dry-run", action="store_true", help="Preview only")
+    review_gen.add_argument("--dry-run", action=_PurePreviewAction, help="Preview only")
     review_apply = review_sub.add_parser("apply", help="Apply approved fixes from review sheets")
-    review_apply.add_argument("--dry-run", action="store_true", help="Preview only")
+    review_apply.add_argument("--dry-run", action=_PurePreviewAction, help="Preview only")
     review_sub.add_parser("status", help="Show pending review sheet status")
 
     # dedupe
@@ -969,23 +1222,64 @@ def _build_parser() -> argparse.ArgumentParser:
     # version
     sub.add_parser("version", help="Print version and exit")
 
+    _mark_legacy_preview_options_unavailable(p)
     return p
-
-
-# ── Main ──────────────────────────────────────────────────────────────────────
 
 
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    _setup_logging(getattr(args, "verbose", False))
+    try:
+        command_request = _command_request_from_args(args)
+    except PreviewUsageError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(exc.exit_code)
+
+    # Public CLI preview reaches only the P0-04 pure planner.  This occurs before
+    # logging, setup, configuration, database, stage, report, lock, or transport
+    # initialisation.  Direct helpers without this typed command boundary retain
+    # P0-02's fail-closed guard.
+    if command_request.mode is RunMode.PREVIEW:
+        from .planning import (
+            PREVIEW_COMPLETE_EXIT_CODE,
+            PreviewOutputFormat,
+            build_preview_plan,
+            render_preview,
+        )
+
+        try:
+            result = build_preview_plan(command_request)
+        except PreviewUsageError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            sys.exit(exc.exit_code)
+        render_preview(result, PreviewOutputFormat.HUMAN)
+        sys.exit(PREVIEW_COMPLETE_EXIT_CODE)
+
+    if _legacy_preview_requested(args):
+        sys.exit(_reject_legacy_preview())
 
     command = args.command or "console"
-    dry_run = getattr(args, "dry_run", False)
+    if command == "console":
+        from .console import Console
+
+        verbose = getattr(args, "verbose", False)
+        Console(configure_logging=lambda: _setup_logging(verbose)).run()
+        return
+
+    selected_run_pipeline: list[type[BaseStage]] | None = None
+    if command == "run":
+        selected_run_pipeline = _select_run_pipeline(args)
+        if _big_kahuna_export_root_missing(selected_run_pipeline):
+            sys.exit(_reject_big_kahuna_missing_export_root())
+
+    _setup_logging(getattr(args, "verbose", False))
+
+    dry_run = command_request.mode is RunMode.PREVIEW
 
     # ── First-run check: trigger wizard if no config exists ───────────────────
-    from .setup import needs_setup, run_wizard as _run_wizard
+    from .setup import needs_setup
+    from .setup import run_wizard as _run_wizard
 
     if command == "setup":
         _run_wizard(force=True)
@@ -995,7 +1289,7 @@ def main() -> None:
         _cmd_reset()
         return
 
-    if needs_setup() and command not in ("setup", "reset", "status", "runs"):
+    if command not in ("setup", "reset", "status", "runs") and needs_setup():
         print("\n  Welcome to MUSAEUS! No configuration found.")
         print("  Running first-time setup wizard...\n")
         if not _run_wizard():
@@ -1008,19 +1302,9 @@ def main() -> None:
             if getattr(args, "reset", False):
                 _clear_resume()
                 print("  ✓ Resume state cleared.")
-            if getattr(args, "maintain", False):
-                pipeline = MAINTAIN_PIPELINE
-            elif getattr(args, "big_kahuna", False):
-                pipeline = BIG_KAHUNA_PIPELINE
-            elif getattr(args, "full", False):
-                pipeline = FULL_PIPELINE
-            elif getattr(args, "archive", False):
-                pipeline = ARCHIVE_PIPELINE
-            elif getattr(args, "enrich", False):
-                pipeline = ENRICH_PIPELINE
-            else:
-                pipeline = DEFAULT_PIPELINE
-            sys.exit(_run_pipeline(pipeline, dry_run=dry_run))
+            if selected_run_pipeline is None:
+                raise RuntimeError("run pipeline was not selected")
+            sys.exit(_run_pipeline(selected_run_pipeline, dry_run=dry_run))
 
         elif command == "dry-run":
             sys.exit(_run_pipeline(DEFAULT_PIPELINE, dry_run=True))
@@ -1096,10 +1380,12 @@ def main() -> None:
 
         elif command == "rebuild-db":
             from .rebuild import cmd_rebuild_db
+
             sys.exit(cmd_rebuild_db(dry_run=dry_run))
 
         elif command == "review":
-            from .approval import cmd_review_generate, cmd_review_apply, cmd_review_status
+            from .approval import cmd_review_apply, cmd_review_generate, cmd_review_status
+
             review_cmd = getattr(args, "review_command", None)
             if review_cmd == "generate":
                 sys.exit(cmd_review_generate(dry_run=dry_run))
@@ -1120,6 +1406,34 @@ def main() -> None:
             if getattr(args, "force", False):
                 stash["curator_force"] = True
             sys.exit(_run_pipeline([CuratorStage], dry_run=dry_run, stash=stash))
+
+        elif command == "noise-gen":
+            sys.exit(_run_pipeline([NoiseGeneratorStage], dry_run=dry_run))
+
+        elif command == "aac-car":
+            workers = getattr(args, "workers", 4)
+            sys.exit(_run_pipeline([AACCarStage], dry_run=dry_run, stash={"aac_car_workers": workers}))
+
+        elif command == "aac-car-mask":
+            noise_profile = getattr(args, "noise", "dual")
+            workers = getattr(args, "workers", 4)
+            sys.exit(_run_pipeline([AACCarMaskedStage], dry_run=dry_run, stash={
+                "aac_car_masked_noise_profile": noise_profile,
+                "aac_car_masked_workers": workers,
+            }))
+
+        elif command == "aac-car-full":
+            noise_profile = getattr(args, "noise", "dual")
+            workers = getattr(args, "workers", 4)
+            sys.exit(_run_pipeline([
+                NoiseGeneratorStage,
+                AACCarStage,
+                AACCarMaskedStage,
+            ], dry_run=dry_run, stash={
+                "aac_car_workers": workers,
+                "aac_car_masked_noise_profile": noise_profile,
+                "aac_car_masked_workers": workers,
+            }))
 
         elif command == "acousticid":
             sys.exit(_run_pipeline([AcousticIDStage], dry_run=dry_run))
@@ -1222,11 +1536,6 @@ def main() -> None:
 
         elif command == "runs":
             sys.exit(_cmd_runs())
-
-        elif command == "console":
-            from .console import Console
-
-            Console().run()
 
         elif command == "version":
             print(f"musaeus {__version__}")

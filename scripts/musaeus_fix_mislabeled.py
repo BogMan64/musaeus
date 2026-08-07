@@ -16,7 +16,10 @@ Logic:
      the highest quality (largest file) and quarantine the rest.
 
 Usage:
-  python3 musaeus_fix_mislabeled.py [--apply] [--db PATH]
+  python3 musaeus_fix_mislabeled.py --apply [--db PATH]
+
+Invoking without ``--apply`` is blocked because the legacy dry-run path is
+not yet safe.
 """
 
 from __future__ import annotations
@@ -28,6 +31,12 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from musaeus.preview_guard import LEGACY_PREVIEW_HELP, reject_legacy_preview  # noqa: E402
 
 MUSAEUS_VAULT = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT")
 DEFAULT_DB = MUSAEUS_VAULT / "musaeus.db"
@@ -113,14 +122,22 @@ def _safe_filename(artist: str, title: str, ext: str) -> str:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Fix mislabeled MUSAEUS audio files")
+    ap = argparse.ArgumentParser(
+        description="Fix mislabeled MUSAEUS audio files",
+        epilog=f"Without --apply: {LEGACY_PREVIEW_HELP}",
+    )
     ap.add_argument(
-        "--apply", action="store_true", help="Apply renames and quarantine (default: dry run)"
+        "--apply",
+        action="store_true",
+        help="Apply renames and quarantine; legacy dry-run is unavailable",
     )
     ap.add_argument("--db", default=str(DEFAULT_DB), help="Path to musaeus.db")
     args = ap.parse_args()
 
-    dry_run = not args.apply
+    if not args.apply:
+        sys.exit(reject_legacy_preview())
+
+    dry_run = False
     db_path = Path(args.db)
 
     if not db_path.exists():

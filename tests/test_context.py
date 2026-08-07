@@ -20,6 +20,9 @@ def cfg(tmp_path: Path) -> MusicConfig:
         runs_root=tmp_path / "RUNS",
         meta_dir=tmp_path / "MetaData",
         db_path=tmp_path / "musaeus.db",
+        aac_car_root=tmp_path / "RUNS" / "AAC-Car",
+        aac_car_masked_root=tmp_path / "RUNS" / "AAC-Car-Masked",
+        noise_dir=tmp_path / "RUNS" / "Noise",
     )
 
 
@@ -72,8 +75,9 @@ class TestRunContextNew:
         assert row["event_type"] == "RUN_START"
 
     def test_dry_run_flag(self, cfg, conn):
-        ctx = RunContext.new(cfg, conn, dry_run=True)
-        assert ctx.dry_run is True
+        """P0-05: RunContext.new() rejects dry_run=True; use the pure planner instead."""
+        with pytest.raises(ValueError, match="RunContext is execution-only"):
+            RunContext.new(cfg, conn, dry_run=True)
 
     def test_default_not_dry_run(self, cfg, conn):
         ctx = RunContext.new(cfg, conn)

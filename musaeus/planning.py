@@ -87,13 +87,10 @@ class PlannedAction:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "plan": self.plan.to_dict(),
-            "network_policy": {
-                "name": self.network_policy.name,
-                "external_lookup_permitted": self.network_policy.external_lookup_permitted,
-            },
-            "external_lookup_performed": self.external_lookup_performed,
-            "managed_state_changed": self.managed_state_changed,
+            "stage_id": self.stage_id,
+            "operation": self.operation,
+            "item_reference": self.item_reference,
+            "requires_execution_authority": self.requires_execution_authority,
         }
 
 

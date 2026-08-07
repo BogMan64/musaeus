@@ -25,6 +25,8 @@ On-demand: Auditor, Curator, Playlist, Ghost, Health, Enrich, MBEnrich,
            NearDupe, AcousticID, Transcode, Reviewer
 """
 
+from .aac_car import AACCarStage
+from .aac_car_masked import AACCarMaskedStage
 from .acousticid import AcousticIDStage
 from .albumart import AlbumArtStage
 from .auditor import AuditorStage
@@ -37,6 +39,7 @@ from .ingest import IngestStage
 from .integrity import IntegrityStage
 from .mb_enrich import MBEnrichStage
 from .neardupe import NearDupeStage
+from .noise_generator import NoiseGeneratorStage
 from .normalize import NormalizeStage
 from .playlist import PlaylistStage
 from .reviewer import ReviewerStage
@@ -65,6 +68,9 @@ __all__ = [
     "ReviewerStage",
     "IntegrityStage",
     "AlbumArtStage",
+    "NoiseGeneratorStage",
+    "AACCarStage",
+    "AACCarMaskedStage",
 ]
 
 # Canonical run order for the default pipeline

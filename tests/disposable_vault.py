@@ -1,14 +1,17 @@
-"""Disposable MUSAEUS test vaults and safety guards for P0 regression tests.
+"""Disposable MUSAEUS test vaults and fixture-containment tripwires.
 
-Later P0 tests must request the ``disposable_vault`` fixture instead of constructing
-paths from a user environment.  It supplies only temporary vault/state/config roots,
-blocks protected real paths before a filesystem operation is made, and denies all
-in-process network transport.  The guards are installed with pytest's ``monkeypatch``
-fixture, so each test restores the host process environment and socket behaviour.
+This helper is deliberately a test tripwire, not an operating-system sandbox. The
+session bootstrap plus lazy configuration resolution prevent MUSAEUS configuration
+from reaching live user paths before application modules are imported. Tests that
+request ``disposable_vault`` additionally confine Python-level writes to a fixture
+root and block standard Python subprocess and in-process network routes. Ordinary
+read-only pytest, import, and plugin activity remains outside this guard; native
+extensions and unpatched APIs are outside its guarantee.
 """
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import hashlib
 import io
@@ -16,21 +19,30 @@ import os
 import shutil
 import socket
 import sqlite3
+import stat
+import subprocess
+import tempfile
+import threading
+import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator
-from urllib.parse import unquote, urlparse
+from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qs, unquote, urlparse
 
 import pytest
 
 if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
+
     from musaeus.config import MusicConfig
 
 
-# Keep these explicit: a guard must fail closed before an operation reaches a
-# known live library, state/configuration root, predecessor project, or NEXUS.
+# These explicit live locations are never opened by guarded operations: every
+# attempted protected-path check fails before the underlying filesystem call. Do
+# not protect the whole home directory: pytest plugins and imports may legitimately
+# read interpreter-managed files from it during result reporting.
 PROTECTED_REAL_ROOTS: tuple[Path, ...] = (
     Path("/home/grey/Music"),
     Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT"),
@@ -40,8 +52,6 @@ PROTECTED_REAL_ROOTS: tuple[Path, ...] = (
     Path("/mnt/FORGE2TB/Projects/orpheus"),
     Path("/home/grey/Projects/NEXUS"),
     Path("/mnt/FORGE2TB/Projects/NEXUS"),
-    # Block any remaining real-home configuration or state path as well.
-    Path("/home/grey"),
 )
 
 _SENSITIVE_ENVIRONMENT = (
@@ -57,17 +67,20 @@ _SENSITIVE_ENVIRONMENT = (
 
 
 class UnsafeTestPathError(RuntimeError):
-    """Raised before a test touches a protected or real-user filesystem path."""
+    """Raised before a test touches a protected or non-disposable write path."""
 
 
 class NetworkAccessDenied(RuntimeError):
-    """Raised before a test can create, resolve, or send over a network transport."""
+    """Raised before a test can create, resolve, or send over an in-process transport."""
+
+
+class SubprocessAccessDenied(RuntimeError):
+    """Raised before a fixture test can launch or replace the current process."""
 
 
 def _absolute_path(value: object) -> Path | None:
     """Return an absolute lexical path without opening the target."""
     if isinstance(value, int):
-        # File descriptors have no path identity that can be safely verified.
         return None
     try:
         raw_path = os.fspath(value)
@@ -85,29 +98,84 @@ def _is_within(path: Path, root: Path) -> bool:
     return True
 
 
+def _write_mode(mode: object) -> bool:
+    return isinstance(mode, str) and any(flag in mode for flag in ("w", "a", "x", "+"))
+
+
+def _open_flags_write(flags: int) -> bool:
+    write_flags = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
+    temporary_flag = getattr(os, "O_TMPFILE", 0)
+    return bool(flags & (write_flags | temporary_flag))
+
+
 @dataclass
 class PathGuard:
-    """Intercept common filesystem APIs and reject protected paths before I/O."""
+    """Guard protected roots and confine path-based writes to one fixture root.
 
+    Reads outside the fixture root remain possible so ordinary imports and stdlib
+    access continue to work. Mutating path APIs must resolve within ``fixture_root``;
+    the exact ``/dev/null`` device is the sole system-write exception because it
+    cannot persist state. File-descriptor-only and native-extension operations remain
+    outside this monkeypatch-based guard's guarantee.
+    """
+
+    fixture_root: Path
     protected_roots: tuple[Path, ...] = PROTECTED_REAL_ROOTS
     blocked_attempts: list[str] = field(default_factory=list)
+    write_attempts: list[str] = field(default_factory=list)
     _realpath: Any = field(init=False, repr=False)
+    _thread_state: threading.local = field(default_factory=threading.local, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self.protected_roots = tuple(_absolute_path(root) for root in self.protected_roots)  # type: ignore[arg-type]
+        fixture_root = _absolute_path(self.fixture_root)
+        if fixture_root is None:
+            raise TypeError("fixture_root must be a filesystem path")
+        self.fixture_root = fixture_root
+        roots = tuple(_absolute_path(root) for root in self.protected_roots)
+        self.protected_roots = tuple(root for root in roots if root is not None)
         self._realpath = os.path.realpath
 
-    def assert_safe_path(self, value: object, operation: str = "filesystem access") -> None:
-        """Fail before ``operation`` can reach a protected path or symlink target."""
+    def _is_resolving(self) -> bool:
+        return bool(getattr(self._thread_state, "realpath_depth", 0))
+
+    def _path_candidates(self, value: object, operation: str) -> tuple[Path, Path] | None:
         lexical = _absolute_path(value)
         if lexical is None:
-            return
+            return None
         self._raise_if_protected(lexical, operation)
 
-        # ``realpath`` follows only path metadata.  Checking it catches a safe-looking
-        # temporary symlink whose target is a protected root before the actual operation.
-        resolved = Path(self._realpath(os.fspath(lexical)))
+        depth = getattr(self._thread_state, "realpath_depth", 0)
+        self._thread_state.realpath_depth = depth + 1
+        try:
+            resolved = Path(self._realpath(os.fspath(lexical)))
+        finally:
+            self._thread_state.realpath_depth = depth
         self._raise_if_protected(resolved, operation)
+        return lexical, resolved
+
+    def assert_safe_path(self, value: object, operation: str = "filesystem access") -> None:
+        """Reject a protected lexical path or symlink target before underlying I/O."""
+        self._path_candidates(value, operation)
+
+    def assert_writable_path(self, value: object, operation: str) -> None:
+        """Reject a write unless both lexical and resolved paths stay in the fixture."""
+        candidates = self._path_candidates(value, operation)
+        if candidates is None:
+            detail = f"{operation}: path cannot be verified for a contained write"
+            self.blocked_attempts.append(detail)
+            self.write_attempts.append(detail)
+            raise UnsafeTestPathError(detail)
+        for candidate in candidates:
+            if candidate == Path("/dev/null"):
+                continue
+            if not _is_within(candidate, self.fixture_root):
+                detail = (
+                    f"{operation}: {candidate} is outside disposable fixture root "
+                    f"{self.fixture_root}"
+                )
+                self.blocked_attempts.append(detail)
+                self.write_attempts.append(detail)
+                raise UnsafeTestPathError(detail)
 
     def _raise_if_protected(self, candidate: Path, operation: str) -> None:
         for root in self.protected_roots:
@@ -118,96 +186,98 @@ class PathGuard:
 
     def _reject_dir_fd(self, kwargs: dict[str, object], operation: str) -> None:
         if any(kwargs.get(name) is not None for name in ("dir_fd", "src_dir_fd", "dst_dir_fd")):
-            raise UnsafeTestPathError(
-                f"{operation}: directory-descriptor paths are rejected because they cannot be verified"
-            )
+            detail = f"{operation}: directory-descriptor paths cannot be verified"
+            self.blocked_attempts.append(detail)
+            self.write_attempts.append(detail)
+            raise UnsafeTestPathError(detail)
 
-    def install(self, monkeypatch: "MonkeyPatch") -> None:
-        """Install per-test wrappers; pytest restores every wrapper automatically."""
-        original_path_resolve = Path.resolve
-        original_realpath = os.path.realpath
-
-        def guarded_path_resolve(path: Path, strict: bool = False) -> Path:
-            self.assert_safe_path(path, "Path.resolve")
-            return original_path_resolve(path, strict=strict)
-
-        def guarded_realpath(path: object, *, strict: bool = False) -> str:
-            self.assert_safe_path(path, "os.path.realpath")
-            result = original_realpath(path, strict=strict)
-            self.assert_safe_path(result, "os.path.realpath")
-            return result
-
-        monkeypatch.setattr(Path, "resolve", guarded_path_resolve)
-        monkeypatch.setattr(os.path, "realpath", guarded_realpath)
-
+    def install(self, monkeypatch: MonkeyPatch) -> None:
+        """Install per-test write/process tripwires; pytest restores them after the test."""
         self._patch_open(monkeypatch, builtins, "open")
         self._patch_open(monkeypatch, io, "open")
         for name in (
-            "access",
             "chmod",
             "chown",
-            "listdir",
-            "lstat",
             "mkdir",
             "makedirs",
-            "open",
-            "readlink",
             "remove",
             "rmdir",
-            "scandir",
-            "stat",
-            "statvfs",
             "truncate",
             "unlink",
             "utime",
-            "walk",
         ):
-            self._patch_unary_os_call(monkeypatch, name)
-        for name in ("link", "rename", "replace", "symlink"):
-            self._patch_binary_os_call(monkeypatch, name)
+            self._patch_unary_os_call(monkeypatch, name, writes=True)
+        self._patch_os_open(monkeypatch)
+        for name in ("link", "rename", "replace"):
+            self._patch_binary_os_call(monkeypatch, name, source_writes=True)
+        self._patch_binary_os_call(monkeypatch, "symlink", source_writes=False)
         self._patch_sqlite_connect(monkeypatch)
         self._patch_shutil(monkeypatch)
 
-    def _patch_open(self, monkeypatch: "MonkeyPatch", module: object, name: str) -> None:
+    def _patch_open(self, monkeypatch: MonkeyPatch, module: object, name: str) -> None:
         original = getattr(module, name)
 
         def guarded_open(file: object, *args: object, **kwargs: object) -> Any:
-            self.assert_safe_path(file, f"{module.__name__}.{name}")
+            mode = kwargs.get("mode", args[0] if args else "r")
+            if _write_mode(mode):
+                self.assert_writable_path(file, f"{module.__name__}.{name}")
             return original(file, *args, **kwargs)
 
         monkeypatch.setattr(module, name, guarded_open)
 
-    def _patch_unary_os_call(self, monkeypatch: "MonkeyPatch", name: str) -> None:
+    def _patch_unary_os_call(self, monkeypatch: MonkeyPatch, name: str, *, writes: bool) -> None:
         original = getattr(os, name)
 
         def guarded(path: object, *args: object, **kwargs: object) -> Any:
-            self._reject_dir_fd(kwargs, f"os.{name}")
-            self.assert_safe_path(path, f"os.{name}")
+            operation = f"os.{name}"
+            self._reject_dir_fd(kwargs, operation)
+            if writes:
+                self.assert_writable_path(path, operation)
             return original(path, *args, **kwargs)
 
         monkeypatch.setattr(os, name, guarded)
 
-    def _patch_binary_os_call(self, monkeypatch: "MonkeyPatch", name: str) -> None:
+    def _patch_os_open(self, monkeypatch: MonkeyPatch) -> None:
+        original = os.open
+
+        def guarded_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+            if _open_flags_write(flags):
+                operation = "os.open"
+                self._reject_dir_fd(kwargs, operation)
+                self.assert_writable_path(path, operation)
+            return original(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", guarded_open)
+
+    def _patch_binary_os_call(
+        self, monkeypatch: MonkeyPatch, name: str, *, source_writes: bool
+    ) -> None:
         original = getattr(os, name)
 
         def guarded(source: object, destination: object, *args: object, **kwargs: object) -> Any:
-            self._reject_dir_fd(kwargs, f"os.{name}")
-            self.assert_safe_path(source, f"os.{name}")
-            self.assert_safe_path(destination, f"os.{name}")
+            operation = f"os.{name}"
+            self._reject_dir_fd(kwargs, operation)
+            if source_writes:
+                self.assert_writable_path(source, operation)
+            else:
+                self.assert_safe_path(source, operation)
+            self.assert_writable_path(destination, operation)
             return original(source, destination, *args, **kwargs)
 
         monkeypatch.setattr(os, name, guarded)
 
-    def _patch_sqlite_connect(self, monkeypatch: "MonkeyPatch") -> None:
+    def _patch_sqlite_connect(self, monkeypatch: MonkeyPatch) -> None:
         original_connect = sqlite3.connect
 
-        def guarded_connect(database: object, *args: object, **kwargs: object) -> sqlite3.Connection:
-            self._assert_safe_sqlite_target(database)
+        def guarded_connect(
+            database: object, *args: object, **kwargs: object
+        ) -> sqlite3.Connection:
+            self._assert_safe_sqlite_target(database, kwargs)
             return original_connect(database, *args, **kwargs)
 
         monkeypatch.setattr(sqlite3, "connect", guarded_connect)
 
-    def _assert_safe_sqlite_target(self, database: object) -> None:
+    def _assert_safe_sqlite_target(self, database: object, kwargs: dict[str, object]) -> None:
         if database == ":memory:":
             return
         if isinstance(database, (str, bytes)):
@@ -216,26 +286,76 @@ class PathGuard:
                 parsed = urlparse(value)
                 if parsed.path in ("", ":memory:"):
                     return
-                self.assert_safe_path(unquote(parsed.path), "sqlite3.connect")
+                target = unquote(parsed.path)
+                modes = parse_qs(parsed.query).get("mode", [])
+                if modes == ["ro"]:
+                    return
+                self.assert_writable_path(target, "sqlite3.connect")
                 return
-        self.assert_safe_path(database, "sqlite3.connect")
+        self.assert_writable_path(database, "sqlite3.connect")
 
-    def _patch_shutil(self, monkeypatch: "MonkeyPatch") -> None:
-        for name in ("copy", "copy2", "copyfile", "copymode", "copystat", "copytree", "move"):
+    def _patch_shutil(self, monkeypatch: MonkeyPatch) -> None:
+        for name in ("copy", "copy2", "copyfile", "copytree"):
             original = getattr(shutil, name)
 
-            def guarded_copy(source: object, destination: object, *args: object, _original=original, _name=name, **kwargs: object) -> Any:
+            def guarded_copy(
+                source: object,
+                destination: object,
+                *args: object,
+                _original: Any = original,
+                _name: str = name,
+                **kwargs: object,
+            ) -> Any:
                 self.assert_safe_path(source, f"shutil.{_name}")
-                self.assert_safe_path(destination, f"shutil.{_name}")
+                self.assert_writable_path(destination, f"shutil.{_name}")
                 return _original(source, destination, *args, **kwargs)
 
             monkeypatch.setattr(shutil, name, guarded_copy)
 
-        for name in ("chown", "disk_usage", "rmtree"):
+        for name in ("copymode", "copystat"):
             original = getattr(shutil, name)
 
-            def guarded_path(path: object, *args: object, _original=original, _name=name, **kwargs: object) -> Any:
-                self.assert_safe_path(path, f"shutil.{_name}")
+            def guarded_metadata(
+                source: object,
+                destination: object,
+                *args: object,
+                _original: Any = original,
+                _name: str = name,
+                **kwargs: object,
+            ) -> Any:
+                self.assert_safe_path(source, f"shutil.{_name}")
+                self.assert_writable_path(destination, f"shutil.{_name}")
+                return _original(source, destination, *args, **kwargs)
+
+            monkeypatch.setattr(shutil, name, guarded_metadata)
+
+        original_move = shutil.move
+
+        def guarded_move(
+            source: object, destination: object, *args: object, **kwargs: object
+        ) -> Any:
+            self.assert_writable_path(source, "shutil.move")
+            self.assert_writable_path(destination, "shutil.move")
+            return original_move(source, destination, *args, **kwargs)
+
+        monkeypatch.setattr(shutil, "move", guarded_move)
+
+        for name, writes in (("chown", True), ("rmtree", True)):
+            original = getattr(shutil, name)
+
+            def guarded_path(
+                path: object,
+                *args: object,
+                _original: Any = original,
+                _name: str = name,
+                _writes: bool = writes,
+                **kwargs: object,
+            ) -> Any:
+                operation = f"shutil.{_name}"
+                if _writes:
+                    self.assert_writable_path(path, operation)
+                else:
+                    self.assert_safe_path(path, operation)
                 return _original(path, *args, **kwargs)
 
             monkeypatch.setattr(shutil, name, guarded_path)
@@ -243,17 +363,24 @@ class PathGuard:
 
 @dataclass
 class TransportDenial:
-    """In-process network kill switch that records and fails every attempted transport."""
+    """Record and reject common in-process Python transport routes.
+
+    This deliberately makes no claim to block native transports or networking in a
+    child process. Fixture tests also install ``SubprocessDenial`` so standard Python
+    subprocess routes fail before a child can be created.
+    """
 
     attempts: list[str] = field(default_factory=list)
 
-    def install(self, monkeypatch: "MonkeyPatch") -> None:
-        """Patch socket/DNS APIs only for the active pytest test."""
+    def install(self, monkeypatch: MonkeyPatch) -> None:
+        """Patch socket and DNS APIs for the active pytest test only."""
 
         def deny(operation: str, target: object) -> None:
             detail = f"{operation}: {target!r}"
             self.attempts.append(detail)
-            raise NetworkAccessDenied(f"Network access denied by disposable-vault harness ({detail})")
+            raise NetworkAccessDenied(
+                f"Network access denied by disposable-vault harness ({detail})"
+            )
 
         def denied_create_connection(address: object, *args: object, **kwargs: object) -> None:
             deny("socket.create_connection", address)
@@ -265,21 +392,137 @@ class TransportDenial:
             deny("socket.socket.connect_ex", address)
             raise AssertionError("unreachable")
 
-        def denied_sendto(_socket: socket.socket, data: object, address: object | None = None) -> int:
-            deny("socket.socket.sendto", address)
+        def denied_send(
+            _socket: socket.socket, data: object, *args: object, **kwargs: object
+        ) -> int:
+            del data, args, kwargs
+            deny("socket.socket.send", None)
+            raise AssertionError("unreachable")
+
+        def denied_sendall(
+            _socket: socket.socket, data: object, *args: object, **kwargs: object
+        ) -> None:
+            del data, args, kwargs
+            deny("socket.socket.sendall", None)
+
+        def denied_sendto(
+            _socket: socket.socket, data: object, *args: object, **kwargs: object
+        ) -> int:
+            del data
+            target = kwargs.get("address")
+            if target is None and args:
+                # socket.sendto(data, address) and socket.sendto(data, flags, address)
+                target = args[-1]
+            deny("socket.socket.sendto", target)
             raise AssertionError("unreachable")
 
         def denied_lookup(host: object, *args: object, **kwargs: object) -> None:
+            del args, kwargs
             deny("socket name lookup", host)
 
         monkeypatch.setattr(socket, "create_connection", denied_create_connection)
         monkeypatch.setattr(socket.socket, "connect", denied_connect)
         monkeypatch.setattr(socket.socket, "connect_ex", denied_connect_ex)
+        monkeypatch.setattr(socket.socket, "send", denied_send)
+        monkeypatch.setattr(socket.socket, "sendall", denied_sendall)
         monkeypatch.setattr(socket.socket, "sendto", denied_sendto)
+        if hasattr(socket.socket, "sendmsg"):
+            monkeypatch.setattr(socket.socket, "sendmsg", denied_send)
+        if hasattr(socket.socket, "sendfile"):
+            monkeypatch.setattr(socket.socket, "sendfile", denied_send)
         monkeypatch.setattr(socket, "getaddrinfo", denied_lookup)
         monkeypatch.setattr(socket, "gethostbyaddr", denied_lookup)
         monkeypatch.setattr(socket, "gethostbyname", denied_lookup)
         monkeypatch.setattr(socket, "gethostbyname_ex", denied_lookup)
+
+
+@dataclass
+class SubprocessDenial:
+    """Record and reject standard Python subprocess launch routes before execution."""
+
+    attempts: list[str] = field(default_factory=list)
+
+    def install(self, monkeypatch: MonkeyPatch) -> None:
+        """Patch common process-launch APIs for the active fixture test."""
+
+        def deny(operation: str, command: object) -> None:
+            detail = f"{operation}: {command!r}"
+            self.attempts.append(detail)
+            raise SubprocessAccessDenied(
+                f"Subprocess access denied by disposable-vault harness ({detail})"
+            )
+
+        def denied_popen(command: object, *args: object, **kwargs: object) -> Any:
+            del args, kwargs
+            deny("subprocess.Popen", command)
+            raise AssertionError("unreachable")
+
+        def denied_subprocess(command: object, *args: object, _name: str, **kwargs: object) -> Any:
+            del args, kwargs
+            deny(f"subprocess.{_name}", command)
+            raise AssertionError("unreachable")
+
+        def denied_os_process(command: object, *args: object, _name: str, **kwargs: object) -> Any:
+            del args, kwargs
+            deny(f"os.{_name}", command)
+            raise AssertionError("unreachable")
+
+        async def denied_async(command: object, *args: object, _name: str, **kwargs: object) -> Any:
+            del args, kwargs
+            deny(f"asyncio.{_name}", command)
+            raise AssertionError("unreachable")
+
+        monkeypatch.setattr(subprocess, "Popen", denied_popen)
+        for name in ("run", "call", "check_call", "check_output", "getoutput", "getstatusoutput"):
+            monkeypatch.setattr(
+                subprocess,
+                name,
+                lambda command, *args, _name=name, **kwargs: denied_subprocess(
+                    command, *args, _name=_name, **kwargs
+                ),
+            )
+        for name in ("system", "popen"):
+            monkeypatch.setattr(
+                os,
+                name,
+                lambda command, *args, _name=name, **kwargs: denied_os_process(
+                    command, *args, _name=_name, **kwargs
+                ),
+            )
+        for name in (
+            "execl",
+            "execle",
+            "execlp",
+            "execlpe",
+            "execv",
+            "execve",
+            "execvp",
+            "execvpe",
+            "spawnl",
+            "spawnle",
+            "spawnlp",
+            "spawnlpe",
+            "spawnv",
+            "spawnve",
+            "spawnvp",
+            "spawnvpe",
+        ):
+            if hasattr(os, name):
+                monkeypatch.setattr(
+                    os,
+                    name,
+                    lambda command, *args, _name=name, **kwargs: denied_os_process(
+                        command, *args, _name=_name, **kwargs
+                    ),
+                )
+        for name in ("create_subprocess_exec", "create_subprocess_shell"):
+            monkeypatch.setattr(
+                asyncio,
+                name,
+                lambda command, *args, _name=name, **kwargs: denied_async(
+                    command, *args, _name=_name, **kwargs
+                ),
+            )
 
 
 @dataclass
@@ -297,33 +540,83 @@ class FakeClock:
 
 
 @dataclass(frozen=True)
-class VaultSnapshot:
-    """Inventory evidence for a disposable vault before/after comparison."""
+class SnapshotEntry:
+    """Portable metadata for one filesystem entry in a disposable snapshot."""
 
-    directories: tuple[str, ...]
-    file_hashes: tuple[tuple[str, str], ...]
+    path: str
+    entry_type: str
+    mode: int
+    content_hash: str | None = None
+    link_target: str | None = None
+
+
+@dataclass(frozen=True)
+class VaultSnapshot:
+    """Inventory, metadata, and database evidence for a disposable vault."""
+
+    entries: tuple[SnapshotEntry, ...]
     database_checksum: str | None
     event_count: int | None
 
-    def difference_from(self, before: "VaultSnapshot") -> str:
-        """Summarise state changes for an expected-failure baseline assertion."""
+    @property
+    def directories(self) -> tuple[str, ...]:
+        """Compatibility view of tracked directory paths."""
+        return tuple(entry.path for entry in self.entries if entry.entry_type == "directory")
+
+    @property
+    def file_hashes(self) -> tuple[tuple[str, str], ...]:
+        """Compatibility view of regular-file content hashes."""
+        return tuple(
+            (entry.path, entry.content_hash)
+            for entry in self.entries
+            if entry.entry_type == "file" and entry.content_hash is not None
+        )
+
+    def difference_from(self, before: VaultSnapshot) -> str:
+        """Summarise additions, removals, and metadata changes for diagnostics."""
         changes: list[str] = []
-        if self.directories != before.directories:
-            changes.append("directory tree changed")
-        if self.file_hashes != before.file_hashes:
-            before_files = dict(before.file_hashes)
-            after_files = dict(self.file_hashes)
-            added = sorted(set(after_files) - set(before_files))
-            changed = sorted(
-                path for path in set(before_files) & set(after_files) if before_files[path] != after_files[path]
-            )
-            detail = [*added, *changed]
-            changes.append(f"file inventory changed ({', '.join(detail[:5])})")
+        before_entries = {entry.path: entry for entry in before.entries}
+        after_entries = {entry.path: entry for entry in self.entries}
+        removed = sorted(set(before_entries) - set(after_entries))
+        added = sorted(set(after_entries) - set(before_entries))
+        if removed:
+            changes.append(f"removed paths ({self._format_paths(removed)})")
+        if added:
+            changes.append(f"added paths ({self._format_paths(added)})")
+
+        type_changed = []
+        mode_changed = []
+        content_changed = []
+        link_changed = []
+        for path in sorted(set(before_entries) & set(after_entries)):
+            old = before_entries[path]
+            new = after_entries[path]
+            if old.entry_type != new.entry_type:
+                type_changed.append(path)
+            if old.mode != new.mode:
+                mode_changed.append(path)
+            if old.content_hash != new.content_hash:
+                content_changed.append(path)
+            if old.link_target != new.link_target:
+                link_changed.append(path)
+        if type_changed:
+            changes.append(f"entry types changed ({self._format_paths(type_changed)})")
+        if mode_changed:
+            changes.append(f"modes changed ({self._format_paths(mode_changed)})")
+        if content_changed:
+            changes.append(f"content hashes changed ({self._format_paths(content_changed)})")
+        if link_changed:
+            changes.append(f"symlink targets changed ({self._format_paths(link_changed)})")
         if self.database_checksum != before.database_checksum:
             changes.append("database checksum changed")
         if self.event_count != before.event_count:
             changes.append(f"event count {before.event_count!r} -> {self.event_count!r}")
         return "; ".join(changes) if changes else "no managed-state difference"
+
+    @staticmethod
+    def _format_paths(paths: list[str]) -> str:
+        visible = ", ".join(paths[:5])
+        return f"{visible}, …" if len(paths) > 5 else visible
 
 
 @dataclass
@@ -336,21 +629,30 @@ class DisposableVault:
     staging: Path
     quarantine: Path
     runs_root: Path
+    meta_dir: Path
     recovery_root: Path
     reports_root: Path
     state_root: Path
     database_path: Path
     home: Path
     xdg_config_home: Path
+    xdg_cache_home: Path
+    xdg_data_home: Path
+    xdg_state_home: Path
+    tmp_dir: Path
     home_config_dir: Path
     xdg_config_dir: Path
-    path_guard: PathGuard = field(default_factory=PathGuard)
+    path_guard: PathGuard = field(init=False)
     transport: TransportDenial = field(default_factory=TransportDenial)
+    subprocesses: SubprocessDenial = field(default_factory=SubprocessDenial)
     clock: FakeClock = field(default_factory=FakeClock)
 
+    def __post_init__(self) -> None:
+        self.path_guard = PathGuard(self.root)
+
     @classmethod
-    def create(cls, tmp_path: Path) -> "DisposableVault":
-        """Create a complete, empty fixture topology below pytest's ``tmp_path``."""
+    def create(cls, tmp_path: Path) -> DisposableVault:
+        """Create a complete empty topology below a disposable fixture parent."""
         root = tmp_path / "disposable-musaeus"
         vault_root = root / "vault"
         home = root / "home"
@@ -362,25 +664,36 @@ class DisposableVault:
             staging=vault_root / "STAGING",
             quarantine=vault_root / "QUARANTINE",
             runs_root=vault_root / "RUNS",
+            meta_dir=vault_root / "MetaData",
             recovery_root=root / "recovery",
             reports_root=root / "reports",
             state_root=root / "state",
             database_path=root / "state" / "musaeus.db",
             home=home,
             xdg_config_home=xdg_config_home,
+            xdg_cache_home=root / "xdg-cache",
+            xdg_data_home=root / "xdg-data",
+            xdg_state_home=root / "xdg-state",
+            tmp_dir=root / "tmp",
             home_config_dir=home / ".config" / "musaeus",
             xdg_config_dir=xdg_config_home / "musaeus",
         )
         for directory in (
+            fixture.vault_root,
             fixture.inbox,
             fixture.staging,
             fixture.quarantine,
             fixture.runs_root,
+            fixture.meta_dir,
             fixture.recovery_root,
             fixture.reports_root,
             fixture.state_root,
             fixture.home_config_dir,
             fixture.xdg_config_dir,
+            fixture.xdg_cache_home,
+            fixture.xdg_data_home,
+            fixture.xdg_state_home,
+            fixture.tmp_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
         fixture._write_temporary_settings()
@@ -395,7 +708,7 @@ class DisposableVault:
                 f"MUSAEUS_STAGING={self.staging}",
                 f"MUSAEUS_QUARANTINE={self.quarantine}",
                 f"MUSAEUS_RUNS_ROOT={self.runs_root}",
-                f"MUSAEUS_META_DIR={self.vault_root / 'MetaData'}",
+                f"MUSAEUS_META_DIR={self.meta_dir}",
                 "",
             )
         )
@@ -403,62 +716,78 @@ class DisposableVault:
             (config_dir / "settings.env").write_text(settings, encoding="utf-8")
             (config_dir / "credentials.env").write_text("", encoding="utf-8")
 
-    def install(self, monkeypatch: "MonkeyPatch") -> "DisposableVault":
-        """Activate temporary environment, path guard, and transport denial for one test."""
+    def install(self, monkeypatch: MonkeyPatch) -> DisposableVault:
+        """Activate safe paths plus per-test filesystem, transport, and process guards."""
         self.install_environment(monkeypatch)
         self.path_guard.install(monkeypatch)
         self.transport.install(monkeypatch)
+        self.subprocesses.install(monkeypatch)
         return self
 
-    def install_environment(self, monkeypatch: "MonkeyPatch") -> None:
-        """Point HOME, XDG paths, MUSAEUS roots, and credentials at fixture-only values."""
+    def install_environment(self, monkeypatch: MonkeyPatch) -> None:
+        """Point all home/XDG/MUSAEUS values at this fixture and remove provider values."""
         for name in _SENSITIVE_ENVIRONMENT:
             monkeypatch.delenv(name, raising=False)
         environment = {
             "HOME": str(self.home),
             "XDG_CONFIG_HOME": str(self.xdg_config_home),
-            "XDG_CACHE_HOME": str(self.root / "xdg-cache"),
-            "XDG_DATA_HOME": str(self.root / "xdg-data"),
-            "XDG_STATE_HOME": str(self.root / "xdg-state"),
+            "XDG_CACHE_HOME": str(self.xdg_cache_home),
+            "XDG_DATA_HOME": str(self.xdg_data_home),
+            "XDG_STATE_HOME": str(self.xdg_state_home),
+            "TMPDIR": str(self.tmp_dir),
+            "TMP": str(self.tmp_dir),
+            "TEMP": str(self.tmp_dir),
             "MUSAEUS_VAULT_ROOT": str(self.vault_root),
             "MUSAEUS_DB_PATH": str(self.database_path),
             "MUSAEUS_INBOX": str(self.inbox),
             "MUSAEUS_STAGING": str(self.staging),
             "MUSAEUS_QUARANTINE": str(self.quarantine),
             "MUSAEUS_RUNS_ROOT": str(self.runs_root),
-            "MUSAEUS_META_DIR": str(self.vault_root / "MetaData"),
+            "MUSAEUS_META_DIR": str(self.meta_dir),
             "MUSAEUS_RECOVERY_ROOT": str(self.recovery_root),
             "MUSAEUS_REPORTS_ROOT": str(self.reports_root),
             "MUSAEUS_CONFIG_HOME": str(self.xdg_config_home),
+            "MUSAEUS_DISABLE_PROJECT_ENV": "1",
         }
         for name, value in environment.items():
             monkeypatch.setenv(name, value)
+        monkeypatch.setattr(tempfile, "tempdir", str(self.tmp_dir))
         monkeypatch.setattr(Path, "home", classmethod(lambda path_cls: path_cls(self.home)))
 
-    def music_config(self) -> "MusicConfig":
-        """Resolve the current application config after this fixture's environment is active."""
+        # A prior session/fixture cache may contain paths from a different
+        # disposable root. Resolve it afresh only after this environment is active.
+        from musaeus.config import reset_config_cache
+
+        reset_config_cache()
+
+    def music_config(self) -> MusicConfig:
+        """Resolve application configuration after this fixture's environment is active."""
         from musaeus.config import MusicConfig
 
         return MusicConfig.from_env()
 
-    def prepare_legacy_cli(self, monkeypatch: "MonkeyPatch") -> Any:
-        """Bind cached legacy config/resume paths to this fixture before invoking its CLI."""
+    def prepare_legacy_cli(self, monkeypatch: MonkeyPatch) -> Any:
+        """Bind legacy cached paths to this fixture before invoking the existing CLI."""
         from musaeus import cli
         from musaeus import config as config_module
         from musaeus.setup import wizard
 
-        monkeypatch.setattr(config_module, "_cached_config", None)
-        monkeypatch.setattr(config_module, "_USER_CONFIG_DIR", self.home_config_dir)
-        monkeypatch.setattr(config_module, "_SETTINGS_FILE", self.home_config_dir / "settings.env")
-        monkeypatch.setattr(config_module, "_CREDENTIALS_FILE", self.home_config_dir / "credentials.env")
-        monkeypatch.setattr(cli, "_RESUME_FILE", self.home_config_dir / "resume_state.json")
-        monkeypatch.setattr(wizard, "_CONFIG_DIR", self.home_config_dir)
-        monkeypatch.setattr(wizard, "_SETTINGS_FILE", self.home_config_dir / "settings.env")
-        monkeypatch.setattr(wizard, "_CREDENTIALS_FILE", self.home_config_dir / "credentials.env")
+        config_module.reset_config_cache()
+        monkeypatch.setattr(cli, "_RESUME_FILE", self.xdg_config_dir / "resume_state.json")
+        monkeypatch.setattr(wizard, "_CONFIG_DIR", self.xdg_config_dir)
+        monkeypatch.setattr(wizard, "_SETTINGS_FILE", self.xdg_config_dir / "settings.env")
+        monkeypatch.setattr(wizard, "_CREDENTIALS_FILE", self.xdg_config_dir / "credentials.env")
         return cli
 
+    def initialise_database(self) -> None:
+        """Create only the fixture database/schema needed by the legacy baseline."""
+        from musaeus.db import open_db
+
+        connection = open_db(self.database_path)
+        connection.close()
+
     def write_inbox_file(self, relative_path: str | Path, content: bytes) -> Path:
-        """Create a fixture input file while refusing a path that escapes the disposable inbox."""
+        """Create fixture input while refusing a path that escapes the disposable inbox."""
         relative = Path(relative_path)
         if relative.is_absolute() or ".." in relative.parts:
             raise ValueError("Fixture inbox paths must be relative and contained")
@@ -468,19 +797,39 @@ class DisposableVault:
         return destination
 
     def snapshot(self) -> VaultSnapshot:
-        """Capture directory/file hashes plus SQLite checksum/event evidence under fixture root."""
-        directories: list[str] = []
-        file_hashes: list[tuple[str, str]] = []
+        """Capture entry types, modes, content evidence, and existing SQLite state."""
+        entries: list[SnapshotEntry] = []
         for path in sorted(self.root.rglob("*"), key=lambda item: item.as_posix()):
             relative = path.relative_to(self.root).as_posix()
-            if path.is_dir():
-                directories.append(relative)
-            elif path.is_file():
-                file_hashes.append((relative, self._sha256(path)))
+            metadata = path.lstat()
+            mode = stat.S_IMODE(metadata.st_mode)
+            if stat.S_ISLNK(metadata.st_mode):
+                entries.append(
+                    SnapshotEntry(
+                        path=relative,
+                        entry_type="symlink",
+                        mode=mode,
+                        link_target=os.readlink(path),
+                    )
+                )
+            elif stat.S_ISDIR(metadata.st_mode):
+                entries.append(SnapshotEntry(path=relative, entry_type="directory", mode=mode))
+            elif stat.S_ISREG(metadata.st_mode):
+                entries.append(
+                    SnapshotEntry(
+                        path=relative,
+                        entry_type="file",
+                        mode=mode,
+                        content_hash=self._sha256(path),
+                    )
+                )
+            else:
+                entries.append(SnapshotEntry(path=relative, entry_type="other", mode=mode))
         return VaultSnapshot(
-            directories=tuple(directories),
-            file_hashes=tuple(file_hashes),
-            database_checksum=self._sha256(self.database_path) if self.database_path.exists() else None,
+            entries=tuple(entries),
+            database_checksum=self._sha256(self.database_path)
+            if self.database_path.exists()
+            else None,
             event_count=self._event_count(),
         )
 
@@ -498,15 +847,32 @@ class DisposableVault:
         try:
             connection = sqlite3.connect(f"{self.database_path.as_uri()}?mode=ro", uri=True)
             try:
-                return int(connection.execute("SELECT COUNT(*) FROM events").fetchone()[0])
+                row = connection.execute("SELECT COUNT(*) FROM events").fetchone()
+                if row is None:
+                    raise RuntimeError("events count query returned no row")
+                return int(row[0])
             finally:
                 connection.close()
-        except sqlite3.Error:
-            return None
+        except (RuntimeError, sqlite3.Error) as exc:
+            raise RuntimeError(
+                "Existing disposable database could not be read or event-counted"
+            ) from exc
 
 
 @pytest.fixture
-def disposable_vault(tmp_path: Path, monkeypatch: "MonkeyPatch") -> Iterator[DisposableVault]:
-    """Provide a fully isolated fixture vault with per-test guards already active."""
-    fixture = DisposableVault.create(tmp_path).install(monkeypatch)
-    yield fixture
+def disposable_vault(tmp_path: Path, monkeypatch: MonkeyPatch) -> Iterator[DisposableVault]:
+    """Provide an isolated session-root vault with guards already active."""
+    session_root = os.environ.get("MUSAEUS_TEST_SESSION_ROOT")
+    if not session_root:
+        raise RuntimeError("MUSAEUS test session bootstrap was not installed")
+    fixture_parent = Path(session_root) / "fixture-vaults" / uuid.uuid4().hex
+    fixture_parent.mkdir(parents=True, exist_ok=False)
+    fixture = DisposableVault.create(fixture_parent).install(monkeypatch)
+    try:
+        yield fixture
+    finally:
+        # Reset while this fixture's disposable environment still exists. The
+        # monkeypatch fixture restores the session environment after this finalizer.
+        from musaeus.config import reset_config_cache
+
+        reset_config_cache()

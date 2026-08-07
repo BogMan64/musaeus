@@ -10,7 +10,8 @@ Design:
   - Menu-driven: numbered choices, never bare input() for pipeline commands.
   - every interactive prompt guards against EOF (non-TTY / piped input).
   - No global state — Console is instantiated, used, and discarded.
-  - dry_run mode is first-class: "Preview" always available before "Run".
+  - Legacy preview/dry-run is temporarily unavailable and routes to one shared
+    fail-closed safety message before any console pipeline dispatch.
   - Graceful degradation: if DB is unreachable, shows error and offers retry.
 
 Launch:
@@ -22,17 +23,17 @@ Launch:
 from __future__ import annotations
 
 import logging
-import os
 import sys
-import textwrap
 import traceback
+from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
-from typing import Callable
 
 from .config import MusicConfig, get_config
 from .context import RunContext
 from .db import open_db
 from .hasher import ffmpeg_available, ffprobe_available
+from .preview_guard import LEGACY_PREVIEW_MESSAGE, reject_legacy_preview
 from .stages import (
     DEFAULT_PIPELINE,
     CuratorStage,
@@ -58,6 +59,7 @@ _RED = "\033[31m"
 _CYAN = "\033[36m"
 _BLUE = "\033[34m"
 _MAGENTA = "\033[35m"
+
 
 def _c(text: str, *codes: str) -> str:
     """Wrap text in ANSI codes if stdout is a TTY."""
@@ -124,13 +126,14 @@ def _choose(prompt: str, options: list[str], default: str = "0") -> str:
     for i, opt in enumerate(options):
         print(f"    {_c(str(i), _BOLD, _CYAN)}  {opt}")
     try:
-        val = input(f"\n  {prompt} [0-{len(options)-1}]: ").strip()
+        val = input(f"\n  {prompt} [0-{len(options) - 1}]: ").strip()
         return val if val else default
     except EOFError:
         return default
 
 
 # ── Console class ─────────────────────────────────────────────────────────────
+
 
 class Console:
     """
@@ -143,9 +146,34 @@ class Console:
 
     VERSION = "0.1.0"
 
-    def __init__(self) -> None:
+    def __init__(self, configure_logging: Callable[[], None] | None = None) -> None:
         self._config: MusicConfig | None = None
+        self._boot_ready = False
+        self._logging_setup = configure_logging or self._default_logging_setup
+        self._logging_configured = False
         self._running = True
+
+    def _block_legacy_preview(self, *, terminate: bool = False) -> int:
+        """Display the shared safety block, optionally ending a public console route."""
+        _section("Preview unavailable")
+        exit_code = reject_legacy_preview(_err)
+        if terminate:
+            raise SystemExit(exit_code)
+        return exit_code
+
+    @staticmethod
+    def _default_logging_setup() -> None:
+        """Configure direct-console logging only after a real console action begins."""
+        logging.basicConfig(
+            level=logging.WARNING,
+            format="%(levelname)s  %(name)s  %(message)s",
+        )
+
+    def _ensure_logging_configured(self) -> None:
+        """Run the selected logging setup once, alongside the first booted action."""
+        if not self._logging_configured:
+            self._logging_setup()
+            self._logging_configured = True
 
     # ── Boot ──────────────────────────────────────────────────────────────────
 
@@ -196,7 +224,13 @@ class Console:
             _err(f"Cannot create directories: {exc}")
             return False
 
+        self._boot_ready = True
         return ok
+
+    def _ensure_booted(self) -> bool:
+        """Run managed logging and configuration checks for a non-preview action."""
+        self._ensure_logging_configured()
+        return self._boot_ready or self._boot_check()
 
     # ── DB helpers ────────────────────────────────────────────────────────────
 
@@ -220,18 +254,16 @@ class Console:
             pending = conn.execute(
                 "SELECT COUNT(*) FROM archive WHERE status='PENDING'"
             ).fetchone()[0]
-            hashed = conn.execute(
-                "SELECT COUNT(*) FROM archive WHERE status='HASHED'"
-            ).fetchone()[0]
+            hashed = conn.execute("SELECT COUNT(*) FROM archive WHERE status='HASHED'").fetchone()[
+                0
+            ]
             catalogued = conn.execute(
                 "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'"
             ).fetchone()[0]
             dupes = conn.execute(
                 "SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE status='pending'"
             ).fetchone()[0]
-            issues = conn.execute(
-                "SELECT COUNT(*) FROM validation_issues"
-            ).fetchone()[0]
+            issues = conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
             last_run = conn.execute(
                 "SELECT MAX(ts) FROM events WHERE event_type='RUN_START'"
             ).fetchone()[0]
@@ -258,8 +290,10 @@ class Console:
             inbox = self._config.inbox
             if inbox.exists():
                 from .config import AUDIO_EXTENSIONS
+
                 inbox_count = sum(
-                    1 for f in inbox.rglob("*")
+                    1
+                    for f in inbox.rglob("*")
                     if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS
                 )
                 _info(f"Inbox files   : {_c(str(inbox_count), _CYAN)}")
@@ -271,8 +305,11 @@ class Console:
 
     # ── Run pipeline ──────────────────────────────────────────────────────────
 
-    def _run_pipeline(self, dry_run: bool) -> None:
-        mode = "DRY RUN" if dry_run else "LIVE RUN"
+    def _run_pipeline(self, dry_run: bool) -> int | None:
+        if dry_run:
+            return self._block_legacy_preview()
+
+        mode = "LIVE RUN"
         _section(f"Pipeline  [{mode}]")
 
         assert self._config is not None
@@ -311,15 +348,16 @@ class Console:
         except Exception:
             _err("Pipeline crashed — see traceback below")
             traceback.print_exc()
-            try:
+            with suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
     # ── Run single stage ──────────────────────────────────────────────────────
 
-    def _run_stage(self, stage_cls: type[BaseStage], dry_run: bool) -> None:
-        mode = "DRY RUN" if dry_run else "LIVE RUN"
+    def _run_stage(self, stage_cls: type[BaseStage], dry_run: bool) -> int | None:
+        if dry_run:
+            return self._block_legacy_preview()
+
+        mode = "LIVE RUN"
         assert self._config is not None
         conn = self._open_db()
         if conn is None:
@@ -341,10 +379,8 @@ class Console:
         except Exception:
             _err("Stage crashed — see traceback below")
             traceback.print_exc()
-            try:
+            with suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
     # ── Recent runs ───────────────────────────────────────────────────────────
 
@@ -569,6 +605,7 @@ class Console:
             except ValueError:
                 return
             from .dedupe import print_dedupe_report, run_dedupe_console
+
             if idx == 0:
                 run_dedupe_console(conn, auto_mode=False)
             elif idx == 1:
@@ -582,9 +619,12 @@ class Console:
 
     def _run_stage_with_stash(
         self, stage_cls: type, dry_run: bool, stash: dict | None = None
-    ) -> None:
+    ) -> int | None:
         """Like _run_stage but pre-loads ctx stash keys (for curator, forge --force, etc.)."""
-        mode = "DRY RUN" if dry_run else "LIVE RUN"
+        if dry_run:
+            return self._block_legacy_preview()
+
+        mode = "LIVE RUN"
         assert self._config is not None
         conn = self._open_db()
         if conn is None:
@@ -609,20 +649,18 @@ class Console:
         except Exception:
             _err("Stage crashed — see traceback below")
             traceback.print_exc()
-            try:
+            with suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
     def _stage_menu(self) -> None:
         stages: list[tuple[str, type, dict]] = [
-            ("Ingest    — register new files from inbox",       IngestStage,   {}),
-            ("Sentinel  — hash files + detect exact dupes",     SentinelStage, {}),
-            ("Scholar   — extract ffprobe metadata",            ScholarStage,  {}),
-            ("Forge     — measure LUFS + write ReplayGain tags", ForgeStage,  {}),
+            ("Ingest    — register new files from inbox", IngestStage, {}),
+            ("Sentinel  — hash files + detect exact dupes", SentinelStage, {}),
+            ("Scholar   — extract ffprobe metadata", ScholarStage, {}),
+            ("Forge     — measure LUFS + write ReplayGain tags", ForgeStage, {}),
             ("Tagger    — write normalised DB metadata to files", TaggerStage, {}),
-            ("Curator   — build car-library export",            CuratorStage,  {}),
-            ("Playlists — build per-genre M3U8 playlists",     PlaylistStage, {}),
+            ("Curator   — build car-library export", CuratorStage, {}),
+            ("Playlists — build per-genre M3U8 playlists", PlaylistStage, {}),
         ]
         opts = [label for label, _, _ in stages] + ["Back"]
         choice = _choose("Select stage", opts)
@@ -632,11 +670,26 @@ class Console:
             return
         if idx >= len(stages):
             return
-        label, cls, default_stash = stages[idx]
+        _, cls, default_stash = stages[idx]
+
+        mode_opts = [
+            "Preview temporarily unavailable (safety block)",
+            "Live run (real changes)",
+            "Back",
+        ]
+        mode_choice = _choose("Mode", mode_opts, default="2")
+        try:
+            mode_idx = int(mode_choice)
+        except ValueError:
+            return
+        if mode_idx == 0:
+            self._block_legacy_preview(terminate=True)
+        if mode_idx != 1:
+            return
 
         stash: dict = dict(default_stash)
 
-        # Curator needs an export root
+        # Curator needs an export root only for an authorised live run.
         if cls is CuratorStage:
             export_raw = _prompt("Export root path (e.g. /mnt/USB)")
             if not export_raw:
@@ -654,36 +707,34 @@ class Console:
             except ValueError:
                 stash["curator_noise"] = "dual"
 
-        mode_opts = ["Dry run  (preview only)", "Live run (real changes)", "Back"]
-        mode_choice = _choose("Mode", mode_opts)
-        try:
-            mode_idx = int(mode_choice)
-        except ValueError:
+        if not self._ensure_booted():
             return
-        if mode_idx == 0:
-            self._run_stage_with_stash(cls, dry_run=True, stash=stash)
-        elif mode_idx == 1:
-            self._run_stage_with_stash(cls, dry_run=False, stash=stash)
+
+        self._run_stage_with_stash(cls, dry_run=False, stash=stash)
 
     # ── Main menu ─────────────────────────────────────────────────────────────
 
     def _main_menu(self) -> None:
         options = [
-            ("Status",                        self._show_status),
-            ("Run full pipeline  [DRY RUN]",  lambda: self._run_pipeline(dry_run=True)),
-            ("Run full pipeline  [LIVE]",     lambda: self._run_pipeline(dry_run=False)),
-            ("Run single stage…",             self._stage_menu),
-            ("Dedupe review",                 self._run_dedupe),
-            ("View recent runs",              self._show_runs),
-            ("Inspect a run",                 self._show_run_detail),
-            ("View duplicates",               self._show_duplicates),
-            ("Configuration",                 self._show_config),
-            ("Reset / fresh start",           self._reset_menu),
-            ("Quit",                          self._quit),
+            ("Status", self._show_status, True),
+            (
+                "Preview temporarily unavailable",
+                lambda: self._block_legacy_preview(terminate=True),
+                False,
+            ),
+            ("Run full pipeline  [LIVE]", lambda: self._run_pipeline(dry_run=False), True),
+            ("Run single stage…", self._stage_menu, False),
+            ("Dedupe review", self._run_dedupe, True),
+            ("View recent runs", self._show_runs, True),
+            ("Inspect a run", self._show_run_detail, True),
+            ("View duplicates", self._show_duplicates, True),
+            ("Configuration", self._show_config, True),
+            ("Reset / fresh start", self._reset_menu, True),
+            ("Quit", self._quit, False),
         ]
 
         _header(f"MUSAEUS  v{self.VERSION}")
-        choice = _choose("Select action", [label for label, _ in options])
+        choice = _choose("Select action", [label for label, _, _ in options])
 
         try:
             idx = int(choice)
@@ -692,7 +743,9 @@ class Console:
             return
 
         if 0 <= idx < len(options):
-            _, action = options[idx]
+            _, action, needs_boot = options[idx]
+            if needs_boot and not self._ensure_booted():
+                return
             try:
                 action()
             except KeyboardInterrupt:
@@ -710,19 +763,11 @@ class Console:
 
     def run(self) -> None:
         """Start the interactive console loop."""
-        # Suppress library-level logging noise in console mode
-        logging.basicConfig(
-            level=logging.WARNING,
-            format="%(levelname)s  %(name)s  %(message)s",
-        )
-
         _header(f"MUSAEUS  v{self.VERSION}  —  Music Library Pipeline")
         print()
         _info("Musaeus — the student of Orpheus, keeper of sacred knowledge.")
         _info("Type a number and press Enter at each menu.")
-
-        if not self._boot_check():
-            sys.exit(1)
+        _warn(LEGACY_PREVIEW_MESSAGE)
 
         while self._running:
             try:
