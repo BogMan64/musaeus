@@ -69,7 +69,8 @@ def _ffmpeg_lufs(path: Path, target_lufs: float, target_tp: float) -> tuple[floa
     """
     Run ffmpeg loudnorm pass-1 analysis.
     Returns (integrated_lufs, true_peak_dbtp).
-    Raises ValueError on parse failure, subprocess.TimeoutExpired on timeout.
+    Raises ValueError on parse failure or timeout.
+    Raises RuntimeError if ffmpeg not found.
     """
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
