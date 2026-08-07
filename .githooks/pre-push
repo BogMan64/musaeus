@@ -1,0 +1,40 @@
+#!/bin/bash
+# MUSAEUS — pre-push safety net
+#
+# Blocks any direct push to main. This is a *local* defense in depth
+# alongside GitHub's server-side branch protection on main (required
+# status checks + required PR + enforce_admins) — it never makes a
+# network call and works purely by inspecting the refs about to be pushed.
+#
+# Rationale: on 2026-08-07 a PR into main was merged automatically within
+# 15 seconds of being opened, with zero CI checks recorded, while main had
+# no branch protection. GitHub-side protection now blocks that at the
+# server, but this hook stops the push attempt even earlier, locally,
+# before any request reaches GitHub.
+#
+# To bypass in a genuine emergency: git push --no-verify (not recommended;
+# the server-side protection on main will still refuse a direct push).
+
+remote="$1"
+protected_branch='main'
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # remote_ref looks like refs/heads/main
+    branch=$(echo "$remote_ref" | sed -n 's#^refs/heads/##p')
+    if [ "$branch" = "$protected_branch" ]; then
+        echo ""
+        echo "───────────────────────────────────────────────────────────"
+        echo "  BLOCKED: direct push to '$protected_branch' via pre-push hook"
+        echo "───────────────────────────────────────────────────────────"
+        echo "  Push your work to a feature/review branch and open a PR"
+        echo "  instead. main is protected (required CI + required PR)."
+        echo ""
+        echo "  If this push IS a fast-forward merge you already reviewed"
+        echo "  via a PR merge button on GitHub, you don't need to push"
+        echo "  main locally at all — just 'git fetch' to sync."
+        echo "───────────────────────────────────────────────────────────"
+        exit 1
+    fi
+done
+
+exit 0
