@@ -46,7 +46,12 @@ _FILE_TIMEOUT_S = 90
 _COMMIT_EVERY = 50
 
 
-def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
+import sqlite3
+
+# ... (top of file)
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
     """Add auditor columns to archive if they don't exist yet (auto-migrate)."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
     for col, typedef in (
@@ -56,7 +61,6 @@ def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
         ("auditor_checked_at", "TEXT"),
     ):
         if col not in existing:
-            # Quote identifier with double-quotes to avoid injection/syntax issues
             conn.execute(f'ALTER TABLE archive ADD COLUMN "{col}" {typedef}')
     conn.commit()
 
