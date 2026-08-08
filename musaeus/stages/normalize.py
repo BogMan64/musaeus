@@ -4,10 +4,11 @@ MUSAEUS — Stage: Normalize
 Metadata normalisation for CATALOGUED archive rows.
 
 What it does:
-  - Fixes article suffixes in artist fields:
-      "Beatles, The"         → "The Beatles"   (stored form → display form)
-      "Eagles, the"          → "The Eagles"
-      "Cranberries, The (the)" → "The Cranberries"
+  - Moves leading articles to suffix (ORPHEUS-style canonical storage):
+      "The Beatles"         → "Beatles, The"
+      "The Band"            → "Band, The"
+      "A Tribe Called Quest" → "Tribe Called Quest, A"
+  - This enables proper alphabetical sorting (B not T)
   - Repairs ALL-CAPS fields with MusicBrainz-style title case:
       "FLEETWOOD MAC"        → "Fleetwood Mac"
       "DREAMS"               → "Dreams"
@@ -30,6 +31,11 @@ Title Case Rules (MusicBrainz standard):
   - Acronyms preserved (AC/DC, USA, REM, etc.)
   - Special patterns: Rock 'n' Roll, R&B, feat.
   - Roman numerals stay uppercase (II, III, IV, etc.)
+
+Article Storage Philosophy (ORPHEUS-compatible):
+  - Database stores: "Beatles, The" (sorts under B)
+  - Tagger can optionally write: "The Beatles" (display form)
+  - This matches ORPHEUS canonical storage format
 
 Rules:
   - Only modifies fields that ARE wrong — never touches already-correct data
@@ -113,33 +119,34 @@ _SPECIAL_PATTERNS = [
 # ── Normalisation helpers ──────────────────────────────────────────────────────
 
 
-def _fix_article_suffix(name: str) -> str:
+def _move_article_to_suffix(name: str) -> str:
     """
-    Convert stored article-suffix form to natural display form.
+    Move leading article to suffix for canonical storage (ORPHEUS-style).
     
     Examples:
-      "Beatles, The (the)" → "The Beatles"
-      "Beatles, The"       → "The Beatles"
-      "Eagles, the"        → "The Eagles"
-      "Refused"            → "Refused" (unchanged)
+      "The Beatles"     → "Beatles, The"
+      "The Band"        → "Band, The"
+      "A Tribe Called Quest" → "Tribe Called Quest, A"
+      "An American Band" → "American Band, An"
+      "Beatles, The"    → "Beatles, The" (already correct, unchanged)
+      "Refused"         → "Refused" (no article, unchanged)
     
-    Handles both comma-parenthesis and comma-only formats.
+    This enables proper alphabetical sorting: "Beatles, The" sorts under B, not T.
     """
     s = name.strip()
     
-    # First try: parenthesis format "Artist (the)"
-    m = _ARTICLE_SUFFIX_RE.search(s)
-    if m:
-        article = m.group(1).strip().capitalize()
-        base = s[: m.start()].strip().rstrip(",").strip()
-        return f"{article} {base}"
+    # If already has suffix format, return as-is
+    if _ARTICLE_SUFFIX_RE.search(s) or _ARTICLE_COMMA_RE.search(s):
+        return s
     
-    # Second try: comma format "Artist, the"
-    m2 = _ARTICLE_COMMA_RE.search(s)
-    if m2:
-        article = m2.group(1).strip().capitalize()
-        base = s[: m2.start()].strip()
-        return f"{article} {base}"
+    # Check for leading article
+    articles = ["The", "A", "An", "Le", "La", "Les", "El", "Los", "Las", "De", "Het", "Een", "Die", "Das", "Ein", "Eine"]
+    
+    for article in articles:
+        if s.startswith(f"{article} ") and len(s) > len(article) + 1:
+            # Found leading article - move to suffix
+            rest = s[len(article):].strip()
+            return f"{rest}, {article}"
     
     return s
 
@@ -204,11 +211,17 @@ def _smart_title_case(s: str) -> str:
 def _normalise_artist(artist: str) -> str | None:
     """
     Return corrected artist string, or None if no change needed.
-    Order: article fix first, then caps fix.
+    Order: caps fix first, then article move to suffix.
     """
-    fixed = _fix_article_suffix(artist)
+    fixed = artist
+    
+    # Fix ALL-CAPS first
     if _is_all_caps(fixed):
         fixed = _smart_title_case(fixed)
+    
+    # Move article to suffix (ORPHEUS-style canonical form)
+    fixed = _move_article_to_suffix(fixed)
+    
     return fixed if fixed != artist else None
 
 
