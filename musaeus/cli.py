@@ -113,8 +113,10 @@ from .stages import (
     MBEnrichStage,
     NearDupeStage,
     NormalizeStage,
+    OrganizeStage,
     PlaylistStage,
     ReviewerStage,
+    SanitizeStage,
     ScholarStage,
     SentinelStage,
     TaggerStage,
@@ -706,7 +708,9 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=__doc__,
     )
     p.add_argument("--version", action="version", version=f"musaeus {__version__}")
-    p.add_argument("--verbose", "-v", action="store_true", help="Enable DEBUG logging")
+    p.add_argument("--verbose", "-v", action="store_true", help="Enable DEBUG logging + detailed metrics")
+    p.add_argument("--progress", action="store_true", default=True, help="Show progress bars (default: enabled)")
+    p.add_argument("--no-progress", dest="progress", action="store_false", help="Disable progress bars")
 
     sub = p.add_subparsers(dest="command", metavar="command")
 
@@ -754,6 +758,14 @@ def _build_parser() -> argparse.ArgumentParser:
     normalize_p = sub.add_parser("normalize", help="Article-suffix fix + ALL-CAPS repair")
     normalize_p.add_argument("--dry-run", action="store_true", help="Preview only, no DB changes")
 
+    # organize
+    organize_p = sub.add_parser("organize", help="Rename and reorganize files into Artist/Album/ structure")
+    organize_p.add_argument("--dry-run", action="store_true", help="Preview only, no file moves")
+
+    # sanitize
+    sanitize_p = sub.add_parser("sanitize", help="Filesystem-safe metadata (Windows/ExFAT/Android)")
+    sanitize_p.add_argument("--dry-run", action="store_true", help="Preview only, no DB changes")
+
     # forge
     forge_p = sub.add_parser("forge", help="Measure LUFS + write ReplayGain tags")
     forge_p.add_argument("--dry-run", action="store_true", help="Measure but don't write tags")
@@ -778,6 +790,14 @@ def _build_parser() -> argparse.ArgumentParser:
     # health
     health_p = sub.add_parser("health", help="Library consistency and quality checks")
     health_p.add_argument("--dry-run", action="store_true", help="Report only, no DB writes")
+
+    # corrupt
+    corrupt_p = sub.add_parser("corrupt", help="Detect and quarantine corrupt/truncated audio files")
+    corrupt_p.add_argument("--dry-run", action="store_true", help="Report only, no quarantine")
+
+    # artist-consolidate
+    artist_consol_p = sub.add_parser("artist-consolidate", help="Normalize artist name variants to canonical forms")
+    artist_consol_p.add_argument("--dry-run", action="store_true", help="Show what would change, no DB writes")
 
     # auditor
     auditor_p = sub.add_parser("auditor", help="Pre-forge LUFS audit — flag out-of-window files")
@@ -979,7 +999,15 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    _setup_logging(getattr(args, "verbose", False))
+    verbose = getattr(args, "verbose", False)
+    show_progress = getattr(args, "progress", True)  # Default to True
+    
+    _setup_logging(verbose)
+    
+    # Enable progress tracking if requested
+    if verbose:
+        from .progress import enable_verbose_logging
+        enable_verbose_logging()
 
     command = args.command or "console"
     dry_run = getattr(args, "dry_run", False)
@@ -1002,6 +1030,11 @@ def main() -> None:
             return
 
     try:
+        # Store progress settings in global state for pipeline runner
+        import os
+        os.environ["MUSAEUS_VERBOSE"] = "1" if verbose else "0"
+        os.environ["MUSAEUS_PROGRESS"] = "1" if show_progress else "0"
+        
         # ── pipeline commands ─────────────────────────────────────────────────
 
         if command == "run":
@@ -1037,6 +1070,12 @@ def main() -> None:
         elif command == "normalize":
             sys.exit(_run_pipeline([NormalizeStage], dry_run=dry_run))
 
+        elif command == "organize":
+            sys.exit(_run_pipeline([OrganizeStage], dry_run=dry_run))
+
+        elif command == "sanitize":
+            sys.exit(_run_pipeline([SanitizeStage], dry_run=dry_run))
+
         elif command == "forge":
             stash: dict = {}
             if getattr(args, "force", False):
@@ -1054,6 +1093,14 @@ def main() -> None:
 
         elif command == "health":
             sys.exit(_run_pipeline([HealthStage], dry_run=dry_run))
+
+        elif command == "corrupt":
+            from .stages import CorruptStage
+            sys.exit(_run_pipeline([CorruptStage], dry_run=dry_run))
+
+        elif command == "artist-consolidate":
+            from .stages import ArtistConsolidateStage
+            sys.exit(_run_pipeline([ArtistConsolidateStage], dry_run=dry_run))
 
         elif command == "auditor":
             stash: dict = {}

@@ -6,6 +6,8 @@ Available stages:
   SentinelStage  — compute audio + full hashes, detect exact duplicates
   ScholarStage   — extract ffprobe metadata, populate archive fields
   NormalizeStage — article-suffix fix + ALL-CAPS repair on archived metadata
+  OrganizeStage  — rename and reorganize files into Artist/Album/ structure
+  SanitizeStage  — filesystem-safe metadata (Windows/ExFAT/Android compatible)
   ForgeStage     — measure EBU R128 loudness, write ReplayGain tags
   TaggerStage    — write normalised metadata from DB back to file tags
   AuditorStage   — pre-forge LUFS audit (flags out-of-window files)
@@ -20,14 +22,16 @@ Available stages:
   TranscodeStage  — lossless → 256k AAC export via ffmpeg
   ReviewerStage   — Groq AI metadata quality review
 
-Run order: Ingest → Sentinel → Scholar → Normalize → Forge → Tagger
+Run order: Ingest → Sentinel → Scholar → Normalize → Organize → Forge → Tagger
 On-demand: Auditor, Curator, Playlist, Ghost, Health, Enrich, MBEnrich,
            NearDupe, AcousticID, Transcode, Reviewer
 """
 
 from .acousticid import AcousticIDStage
 from .albumart import AlbumArtStage
+from .artist_consolidate import ArtistConsolidateStage
 from .auditor import AuditorStage
+from .corrupt import CorruptStage
 from .curator import CuratorStage
 from .enrich import EnrichStage
 from .forge import ForgeStage
@@ -38,8 +42,10 @@ from .integrity import IntegrityStage
 from .mb_enrich import MBEnrichStage
 from .neardupe import NearDupeStage
 from .normalize import NormalizeStage
+from .organize import OrganizeStage
 from .playlist import PlaylistStage
 from .reviewer import ReviewerStage
+from .sanitize import SanitizeStage
 from .scholar import ScholarStage
 from .sentinel import SentinelStage
 from .tagger import TaggerStage
@@ -50,6 +56,8 @@ __all__ = [
     "SentinelStage",
     "ScholarStage",
     "NormalizeStage",
+    "OrganizeStage",
+    "SanitizeStage",
     "ForgeStage",
     "TaggerStage",
     "AuditorStage",
@@ -57,6 +65,8 @@ __all__ = [
     "PlaylistStage",
     "GhostStage",
     "HealthStage",
+    "CorruptStage",
+    "ArtistConsolidateStage",
     "EnrichStage",
     "MBEnrichStage",
     "NearDupeStage",
@@ -80,6 +90,7 @@ FULL_PIPELINE: list[type] = [
     SentinelStage,
     ScholarStage,
     NormalizeStage,
+    SanitizeStage,
     ForgeStage,
     TaggerStage,
 ]
@@ -90,6 +101,7 @@ ARCHIVE_PIPELINE: list[type] = [
     SentinelStage,
     ScholarStage,
     NormalizeStage,
+    SanitizeStage,
     GhostStage,
     HealthStage,
     IntegrityStage,
@@ -108,6 +120,7 @@ BIG_KAHUNA_PIPELINE: list[type] = [
     SentinelStage,
     ScholarStage,
     NormalizeStage,
+    SanitizeStage,
     GhostStage,
     HealthStage,
     IntegrityStage,
@@ -128,6 +141,8 @@ MAINTAIN_PIPELINE: list[type] = [
     GhostStage,
     HealthStage,
     NormalizeStage,
+    SanitizeStage,
+    ArtistConsolidateStage,
     EnrichStage,
     MBEnrichStage,
     NearDupeStage,
