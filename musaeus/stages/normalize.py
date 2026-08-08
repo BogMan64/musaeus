@@ -6,15 +6,30 @@ Metadata normalisation for CATALOGUED archive rows.
 What it does:
   - Fixes article suffixes in artist fields:
       "Beatles, The"         → "The Beatles"   (stored form → display form)
+      "Eagles, the"          → "The Eagles"
       "Cranberries, The (the)" → "The Cranberries"
-  - Repairs ALL-CAPS fields:
+  - Repairs ALL-CAPS fields with MusicBrainz-style title case:
       "FLEETWOOD MAC"        → "Fleetwood Mac"
       "DREAMS"               → "Dreams"
-  - Applies title-case rules to title / album fields that are fully uppercase
+      "ROCK 'N' ROLL"        → "Rock 'n' Roll"
+      "DON'T STOP BELIEVIN'" → "Don't Stop Believin'"
+  - Preserves acronyms and special terms:
+      "AC/DC"                → "AC/DC" (not "Ac/dc")
+      "R&B"                  → "R&B" (not "R&b")
+      "USA"                  → "USA" (not "Usa")
+  - Applies title-case rules to title/album fields that are fully uppercase
   - Writes normalised values back to the archive table
   - Logs NORMALIZE_ARTIST / NORMALIZE_TITLE / NORMALIZE_ALBUM per change
   - dry_run() reports all proposed changes without touching the DB
   - Re-run safe: unchanged rows are skipped (no spurious events)
+
+Title Case Rules (MusicBrainz standard):
+  - First word always capitalized
+  - Last word always capitalized
+  - Short prepositions/articles stay lowercase (unless first/last)
+  - Acronyms preserved (AC/DC, USA, REM, etc.)
+  - Special patterns: Rock 'n' Roll, R&B, feat.
+  - Roman numerals stay uppercase (II, III, IV, etc.)
 
 Rules:
   - Only modifies fields that ARE wrong — never touches already-correct data
@@ -25,6 +40,7 @@ Rules:
 ORPHEUS equivalents:
   - SCRIPTS/cleanup_embedded_article_names.py  (article fix)
   - SCRIPTS/find_all_caps_metadata.py          (caps detection)
+  - SCRIPTS/audit_mb_title_case.py             (MusicBrainz title case)
   - SCRIPTS/orpheus_metadata_normalizer.py     (combined pass)
 """
 
@@ -58,33 +74,40 @@ _ARTICLE_COMMA_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Short words that stay lowercase in title-case (standard English list)
+# Short words that stay lowercase in title-case (MusicBrainz standard)
 _LOWERCASE_WORDS: frozenset[str] = frozenset(
     {
-        "a",
-        "an",
-        "the",
-        "and",
-        "but",
-        "or",
-        "nor",
-        "for",
-        "so",
-        "yet",
-        "at",
-        "by",
-        "in",
-        "of",
-        "on",
-        "to",
-        "up",
-        "as",
-        "if",
-        "vs",
-        "feat",
-        "ft",
+        # Articles
+        "a", "an", "the",
+        # Conjunctions
+        "and", "but", "or", "nor", "for", "so", "yet",
+        # Prepositions
+        "at", "by", "in", "of", "on", "to", "up", "as", "if", "vs",
+        # Common in music titles
+        "feat", "ft", "with", "from", "into", "onto", "upon",
+        "n", "n'",  # Rock 'n' Roll
     }
 )
+
+# Words that should stay ALL CAPS (acronyms, special terms)
+_KEEP_CAPS: frozenset[str] = frozenset(
+    {
+        "AC", "DC", "AC/DC", "ACDC", "USA", "UK", "NYC", "LA", "DJ", "MC",
+        "DMX", "REM", "INXS", "ELO", "OMD", "UB40", "TLC", "SWV",
+        "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X",  # Roman numerals
+        "BMW", "UFO", "TV", "FM", "AM", "LP", "EP", "CD",
+    }
+)
+
+# Special patterns to preserve
+_SPECIAL_PATTERNS = [
+    # 'n' combinations
+    (re.compile(r"\b([Rr])ock\s*[''`]?\s*[Nn]\s*[''`]?\s*[Rr]oll\b"), r"\1ock 'n' Roll"),
+    (re.compile(r"\bR\s*[''`&]\s*B\b", re.IGNORECASE), "R&B"),
+    # Common abbreviations
+    (re.compile(r"\bFt\.?\b", re.IGNORECASE), "feat."),
+    (re.compile(r"\bFeat\.?\b", re.IGNORECASE), "feat."),
+]
 
 
 # ── Normalisation helpers ──────────────────────────────────────────────────────
@@ -93,23 +116,31 @@ _LOWERCASE_WORDS: frozenset[str] = frozenset(
 def _fix_article_suffix(name: str) -> str:
     """
     Convert stored article-suffix form to natural display form.
-    "Beatles, The (the)" → "The Beatles"
-    "Refused"            → "Refused"  (unchanged)
+    
+    Examples:
+      "Beatles, The (the)" → "The Beatles"
+      "Beatles, The"       → "The Beatles"
+      "Eagles, the"        → "The Eagles"
+      "Refused"            → "Refused" (unchanged)
+    
+    Handles both comma-parenthesis and comma-only formats.
     """
     s = name.strip()
-
+    
+    # First try: parenthesis format "Artist (the)"
     m = _ARTICLE_SUFFIX_RE.search(s)
     if m:
         article = m.group(1).strip().capitalize()
         base = s[: m.start()].strip().rstrip(",").strip()
         return f"{article} {base}"
-
+    
+    # Second try: comma format "Artist, the"
     m2 = _ARTICLE_COMMA_RE.search(s)
     if m2:
         article = m2.group(1).strip().capitalize()
         base = s[: m2.start()].strip()
         return f"{article} {base}"
-
+    
     return s
 
 
@@ -124,19 +155,50 @@ def _is_all_caps(s: str) -> bool:
 
 def _smart_title_case(s: str) -> str:
     """
-    Convert a string to title-case, keeping short prepositions/articles
-    lowercase except at the start of the string.
+    Convert a string to MusicBrainz-style title case.
+    
+    Rules:
+    - First word always capitalized
+    - Last word always capitalized
+    - Short prepositions/articles stay lowercase (unless first/last)
+    - Preserve ALL-CAPS acronyms (AC/DC, USA, etc.)
+    - Special patterns (Rock 'n' Roll, R&B, feat.)
+    - Roman numerals stay uppercase
     """
-    words = s.split()
-    result = []
+    # Apply special patterns first
+    result = s
+    for pattern, replacement in _SPECIAL_PATTERNS:
+        result = pattern.sub(replacement, result)
+    
+    words = result.split()
+    if not words:
+        return s
+    
+    processed = []
     for i, word in enumerate(words):
-        clean = word.strip("\"'()[]{}.,!?")
-        lower = clean.lower()
-        if i == 0 or lower not in _LOWERCASE_WORDS:
-            result.append(word.capitalize())
-        else:
-            result.append(word.lower())
-    return " ".join(result)
+        # Clean word (remove surrounding punctuation for checking)
+        clean = word.strip("\"'()[]{}.,!?;:-")
+        upper_clean = clean.upper()
+        
+        # Check if it's an acronym/special term that should stay caps
+        if upper_clean in _KEEP_CAPS:
+            processed.append(word.replace(clean, upper_clean))
+            continue
+        
+        # First or last word always capitalized
+        if i == 0 or i == len(words) - 1:
+            processed.append(word.capitalize())
+            continue
+        
+        # Check if it's a lowercase word
+        if clean.lower() in _LOWERCASE_WORDS:
+            processed.append(word.lower())
+            continue
+        
+        # Default: capitalize
+        processed.append(word.capitalize())
+    
+    return " ".join(processed)
 
 
 def _normalise_artist(artist: str) -> str | None:
