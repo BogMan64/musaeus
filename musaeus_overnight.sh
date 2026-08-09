@@ -13,6 +13,12 @@
 # Schedule (cron example — run at 11pm):
 #   0 23 * * * /mnt/FORGE2TB/Projects/MUSAEUS/musaeus_overnight.sh >> /mnt/FORGE2TB/Projects/MUSAEUS_VAULT/RUNS/overnight.log 2>&1
 #
+# Note: uses `python3 -m musaeus`, not the bare `musaeus` console script --
+# cron's default PATH does not include ~/.local/bin, so the bare command
+# fails with "command not found" under cron even though it works fine
+# from an interactive shell. `python3 -m musaeus` only depends on the
+# package being importable, which the editable pip install guarantees.
+#
 # Error recovery: each stage runs independently. A failed stage does NOT
 # abort the pipeline — subsequent stages still execute.
 #
@@ -89,7 +95,7 @@ run_stage() {
     echo "──────────────────────────────────────────────────────────────"
     echo "  Stage: ${stage}  — $(date '+%H:%M:%S')"
     echo "──────────────────────────────────────────────────────────────"
-    if musaeus "${stage}" 2>&1; then
+    if python3 -m musaeus "${stage}" 2>&1; then
         echo "  ✓ ${stage} complete — $(date '+%H:%M:%S')"
         PASSED=$((PASSED + 1))
     else
@@ -138,7 +144,7 @@ if [[ -n "${FAILED_STAGES}" ]]; then
     echo "  Failed stages:${FAILED_STAGES}"
 fi
 echo ""
-musaeus status 2>&1
+python3 -m musaeus status 2>&1
 echo "═══════════════════════════════════════════════════════════════"
 
 # Exit with non-zero if any stage failed (useful for cron monitoring)
