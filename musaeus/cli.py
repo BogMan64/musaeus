@@ -215,15 +215,23 @@ def _run_pipeline(
     resume_from = _load_resume(stage_names)
     if resume_from:
         print(f"  ⚠  Incomplete run detected — {len(resume_from)} stage(s) done.")
-        try:
-            answer = input("  Resume from next stage? [Y/n]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return 0
-        if answer == "n":
-            _clear_resume()
-        else:
+        if not sys.stdin.isatty():
+            # No TTY (cron, background process, piped/redirected shell) —
+            # a bare input() here would block forever with no way to answer.
+            # Auto-resume is the safe default: it's exactly what the [Y]
+            # default in the interactive prompt below would do anyway.
+            print("  ⚠  No TTY detected — auto-resuming non-interactively.")
             completed_names = list(resume_from)
+        else:
+            try:
+                answer = input("  Resume from next stage? [Y/n]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return 0
+            if answer == "n":
+                _clear_resume()
+            else:
+                completed_names = list(resume_from)
 
     exit_code = 0
     for cls in stages:
@@ -283,6 +291,15 @@ def _cmd_reset() -> None:
     print(f"  This will DELETE the database and all pipeline state.")
     print(f"  Your music files in the vault are NOT affected.")
     print()
+
+    if not sys.stdin.isatty():
+        # No TTY (cron, background process, piped/redirected shell) —
+        # a bare input() here would block forever. Unlike the resume
+        # prompt, this is destructive (wipes the DB), so the safe default
+        # is to refuse, not to auto-confirm.
+        print("  ⚠  No TTY detected — refusing to reset non-interactively.")
+        print("  Run this command from an interactive shell to confirm.")
+        return
 
     try:
         confirm = input("  Type RESET to confirm: ").strip()
