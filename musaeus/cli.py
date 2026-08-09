@@ -6,7 +6,8 @@ Usage:
     musaeus [command] [options]
 
 Pipeline commands:
-    run              Run the default pipeline (Ingest → Sentinel → Scholar)
+    preflight        Environment checks (commands, packages, disk, DB) — report-only
+    run              Run the default pipeline (Preflight → Ingest → Sentinel → Scholar)
     run --full       Run the full pipeline  (+ Normalize → Forge → Tagger)
     run --maintain   Run the maintenance pipeline (Ghost→Health→Normalize→Enrich→MBEnrich→NearDupe)
     run --enrich     Run the enrichment pipeline (Enrich→MBEnrich→AcousticID→Reviewer)
@@ -115,6 +116,7 @@ from .stages import (
     NormalizeStage,
     OrganizeStage,
     PlaylistStage,
+    PreflightStage,
     ReviewerStage,
     SanitizeStage,
     ScholarStage,
@@ -762,6 +764,12 @@ def _build_parser() -> argparse.ArgumentParser:
     # dry-run shortcut
     sub.add_parser("dry-run", help="Alias for: run --dry-run")
 
+    # preflight
+    preflight_p = sub.add_parser(
+        "preflight", help="Environment checks (commands, packages, disk, DB) — report-only"
+    )
+    preflight_p.add_argument("--dry-run", action="store_true", help="Same as run (report-only, never mutates)")
+
     # ── setup wizard ──────────────────────────────────────────────────────────
     sub.add_parser("setup", help="Run the setup wizard (paths + API keys)")
     sub.add_parser("reset", help="Wipe DB for a fresh start (confirms before deleting)")
@@ -1074,6 +1082,9 @@ def main() -> None:
 
         elif command == "dry-run":
             sys.exit(_run_pipeline(DEFAULT_PIPELINE, dry_run=True))
+
+        elif command == "preflight":
+            sys.exit(_run_pipeline([PreflightStage], dry_run=dry_run))
 
         elif command == "ingest":
             sys.exit(_run_pipeline([IngestStage], dry_run=dry_run))

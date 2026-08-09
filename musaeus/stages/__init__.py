@@ -2,6 +2,8 @@
 MUSAEUS — Pipeline stages package.
 
 Available stages:
+  PreflightStage — environment sanity checks (commands, packages, disk,
+                   DB integrity) -- report-only, runs first, never mutates
   IngestStage    — scan inbox, register new files in archive
   SentinelStage  — compute audio + full hashes, detect exact duplicates
   ScholarStage   — extract ffprobe metadata, populate archive fields
@@ -44,6 +46,7 @@ from .neardupe import NearDupeStage
 from .normalize import NormalizeStage
 from .organize import OrganizeStage
 from .playlist import PlaylistStage
+from .preflight import PreflightStage
 from .reviewer import ReviewerStage
 from .sanitize import SanitizeStage
 from .scholar import ScholarStage
@@ -52,6 +55,7 @@ from .tagger import TaggerStage
 from .transcode import TranscodeStage
 
 __all__ = [
+    "PreflightStage",
     "IngestStage",
     "SentinelStage",
     "ScholarStage",
@@ -79,6 +83,7 @@ __all__ = [
 
 # Canonical run order for the default pipeline
 DEFAULT_PIPELINE: list[type] = [
+    PreflightStage,
     IngestStage,
     SentinelStage,
     ScholarStage,
@@ -86,6 +91,7 @@ DEFAULT_PIPELINE: list[type] = [
 
 # Extended pipeline (run with `musaeus run --full`)
 FULL_PIPELINE: list[type] = [
+    PreflightStage,
     IngestStage,
     SentinelStage,
     ScholarStage,
@@ -97,6 +103,7 @@ FULL_PIPELINE: list[type] = [
 
 # Archive pipeline (run with `musaeus run --archive`) — full minus LUFS/ReplayGain
 ARCHIVE_PIPELINE: list[type] = [
+    PreflightStage,
     IngestStage,
     SentinelStage,
     ScholarStage,
@@ -116,6 +123,7 @@ ARCHIVE_PIPELINE: list[type] = [
 
 # Big Kahuna (run with `musaeus run --big-kahuna`) — everything including LUFS
 BIG_KAHUNA_PIPELINE: list[type] = [
+    PreflightStage,
     IngestStage,
     SentinelStage,
     ScholarStage,
@@ -138,6 +146,7 @@ BIG_KAHUNA_PIPELINE: list[type] = [
 
 # Maintenance pipeline (run with `musaeus run --maintain`)
 MAINTAIN_PIPELINE: list[type] = [
+    PreflightStage,
     GhostStage,
     HealthStage,
     NormalizeStage,
