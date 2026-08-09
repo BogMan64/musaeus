@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
 import unicodedata
 from pathlib import Path
 
@@ -218,6 +219,49 @@ class OrganizeStage(BaseStage):
 
     NAME = "organize"
 
+    def _apply_rename(
+        self,
+        ctx: RunContext,
+        current_path: Path,
+        target_path: Path,
+        row_id: int,
+        event_type: str,
+    ) -> bool:
+        """
+        Rename on disk, then update the DB by rowid. If the DB write fails
+        (e.g. a stale row already holds the target path), the filesystem
+        rename is reverted so disk and DB never drift out of sync. Returns
+        False so the caller can skip this row and keep processing the rest.
+        """
+        current_path.rename(target_path)
+        try:
+            ctx.conn.execute(
+                "UPDATE archive SET file_path = ? WHERE rowid = ?",
+                (str(target_path), row_id),
+            )
+        except sqlite3.IntegrityError as exc:
+            logger.error(
+                "[organize] DB collision for %s -> %s (%s); reverting move",
+                current_path, target_path, exc,
+            )
+            try:
+                target_path.rename(current_path)
+            except OSError as revert_exc:
+                logger.error(
+                    "[organize] COULD NOT REVERT %s -- disk/DB now out of "
+                    "sync, needs manual fix: %s", current_path, revert_exc,
+                )
+            return False
+
+        ctx.log_event(
+            event_type,
+            file_path=str(current_path),
+            old_value=str(current_path),
+            new_value=str(target_path),
+            stage=self.NAME,
+        )
+        return True
+
     def validate(self, ctx: RunContext) -> None:
         """Check how many files need organization."""
         count = ctx.conn.execute(
@@ -236,7 +280,7 @@ class OrganizeStage(BaseStage):
 
         rows = ctx.conn.execute(
             """
-            SELECT file_path, artist, album, title
+            SELECT rowid, file_path, artist, album, title
             FROM archive
             WHERE status = 'CATALOGUED'
               AND artist IS NOT NULL
@@ -255,7 +299,8 @@ class OrganizeStage(BaseStage):
             current_path = Path(row["file_path"])
             if not current_path.exists():
                 logger.warning("[organize] file missing: %s", current_path)
-                result.errors += 1
+                result.files_errored += 1
+                result.errors.append(f"{current_path}: file missing on disk")
                 continue
             
             artist = row["artist"] or "Unknown Artist"
@@ -288,18 +333,12 @@ class OrganizeStage(BaseStage):
                 )
                 
                 if not dry_run:
-                    current_path.rename(target_path)
-                    ctx.conn.execute(
-                        "UPDATE archive SET file_path = ? WHERE file_path = ?",
-                        (str(target_path), str(current_path)),
-                    )
-                    ctx.log_event(
-                        "ORGANIZE_RENAME",
-                        file_path=str(current_path),
-                        old_value=str(current_path.name),
-                        new_value=str(target_path.name),
-                        stage=self.NAME,
-                    )
+                    if not self._apply_rename(
+                        ctx, current_path, target_path, row["rowid"], "ORGANIZE_RENAME"
+                    ):
+                        result.files_errored += 1
+                        result.errors.append(f"{current_path.name}: DB collision, skipped")
+                        continue
                 
                 renamed += 1
                 result.files_changed += 1
@@ -314,18 +353,12 @@ class OrganizeStage(BaseStage):
                 
                 if not dry_run:
                     target_dir.mkdir(parents=True, exist_ok=True)
-                    current_path.rename(target_path)
-                    ctx.conn.execute(
-                        "UPDATE archive SET file_path = ? WHERE file_path = ?",
-                        (str(target_path), str(current_path)),
-                    )
-                    ctx.log_event(
-                        "ORGANIZE_MOVE",
-                        file_path=str(current_path),
-                        old_value=str(current_path),
-                        new_value=str(target_path),
-                        stage=self.NAME,
-                    )
+                    if not self._apply_rename(
+                        ctx, current_path, target_path, row["rowid"], "ORGANIZE_MOVE"
+                    ):
+                        result.files_errored += 1
+                        result.errors.append(f"{current_path.name}: DB collision, skipped")
+                        continue
                 
                 moved += 1
                 result.files_changed += 1
