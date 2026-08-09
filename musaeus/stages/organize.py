@@ -296,7 +296,8 @@ class OrganizeStage(BaseStage):
                     ctx.log_event(
                         "ORGANIZE_RENAME",
                         file_path=str(current_path),
-                        new_path=str(target_path),
+                        old_value=str(current_path.name),
+                        new_value=str(target_path.name),
                         stage=self.NAME,
                     )
                 
@@ -321,7 +322,8 @@ class OrganizeStage(BaseStage):
                     ctx.log_event(
                         "ORGANIZE_MOVE",
                         file_path=str(current_path),
-                        new_path=str(target_path),
+                        old_value=str(current_path),
+                        new_value=str(target_path),
                         stage=self.NAME,
                     )
                 
