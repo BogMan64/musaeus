@@ -214,7 +214,24 @@ def get_file_history(conn: sqlite3.Connection, file_path: str) -> list[sqlite3.R
 
 
 def upsert_archive(conn: sqlite3.Connection, row: dict) -> None:
-    """Insert or update an archive row."""
+    """
+    Insert or update an archive row.
+
+    On INSERT (new row), every field below gets a value (None where the
+    caller didn't supply one — that's a normal NULL for a brand-new row).
+
+    On UPDATE (existing row, i.e. ON CONFLICT), only fields the caller
+    ACTUALLY PASSED IN `row` are overwritten. This matters because
+    several callers intentionally update a narrow subset of columns —
+    e.g. sentinel.py's audio_hash/status pass, or scholar.py's metadata
+    pass which never mentions filename/ext at all. Before this fix, the
+    UPDATE clause unconditionally set every field to `row.get(f)`, which
+    is None for anything the caller omitted — so, concretely, every
+    Scholar run was silently nulling out filename and ext that Ingest
+    had correctly set moments earlier. Only including a field in the
+    UPDATE when `f in row` fixes that without changing INSERT behaviour
+    (a fresh row still gets every column, defaulting to None/NULL).
+    """
     fields = [
         "file_path",
         "audio_hash",
@@ -238,11 +255,17 @@ def upsert_archive(conn: sqlite3.Connection, row: dict) -> None:
         "last_modified",
     ]
     placeholders = ", ".join("?" for _ in fields)
-    updates = ", ".join(f"{f}=excluded.{f}" for f in fields if f != "file_path")
+    updates = ", ".join(f"{f}=excluded.{f}" for f in fields if f != "file_path" and f in row)
+    if not updates:
+        # Nothing but file_path was supplied (or ON CONFLICT would be a
+        # true no-op) — DO NOTHING avoids an invalid empty SET clause.
+        conflict_clause = "ON CONFLICT(file_path) DO NOTHING"
+    else:
+        conflict_clause = f"ON CONFLICT(file_path) DO UPDATE SET {updates}"
     conn.execute(
         f"""
         INSERT INTO archive ({", ".join(fields)}) VALUES ({placeholders})
-        ON CONFLICT(file_path) DO UPDATE SET {updates}
+        {conflict_clause}
         """,
         [row.get(f) for f in fields],
     )

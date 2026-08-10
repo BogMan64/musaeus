@@ -280,7 +280,7 @@ class OrganizeStage(BaseStage):
 
         rows = ctx.conn.execute(
             """
-            SELECT rowid, file_path, artist, album, title
+            SELECT id, file_path, artist, album, title
             FROM archive
             WHERE status = 'CATALOGUED'
               AND artist IS NOT NULL
@@ -316,7 +316,19 @@ class OrganizeStage(BaseStage):
             album_safe = sanitize_path_component(album)
             
             target_dir = ctx.inbox / artist_safe / album_safe
-            target_path = unique_path(target_dir / new_filename)
+            candidate_path = target_dir / new_filename
+
+            # unique_path() checks disk existence to avoid collisions, but
+            # the file being organized right now already exists at its
+            # OWN current path -- if that happens to be the candidate
+            # path (i.e. it's already correctly organized), unique_path()
+            # would wrongly see that as "taken" and bump to " (2)".  Only
+            # run collision-avoidance when the file is actually moving
+            # somewhere new.
+            if candidate_path == current_path:
+                target_path = candidate_path
+            else:
+                target_path = unique_path(candidate_path)
             
             # Check if already organized
             if current_path == target_path:
@@ -334,7 +346,7 @@ class OrganizeStage(BaseStage):
                 
                 if not dry_run:
                     if not self._apply_rename(
-                        ctx, current_path, target_path, row["rowid"], "ORGANIZE_RENAME"
+                        ctx, current_path, target_path, row["id"], "ORGANIZE_RENAME"
                     ):
                         result.files_errored += 1
                         result.errors.append(f"{current_path.name}: DB collision, skipped")
@@ -354,7 +366,7 @@ class OrganizeStage(BaseStage):
                 if not dry_run:
                     target_dir.mkdir(parents=True, exist_ok=True)
                     if not self._apply_rename(
-                        ctx, current_path, target_path, row["rowid"], "ORGANIZE_MOVE"
+                        ctx, current_path, target_path, row["id"], "ORGANIZE_MOVE"
                     ):
                         result.files_errored += 1
                         result.errors.append(f"{current_path.name}: DB collision, skipped")
