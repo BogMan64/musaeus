@@ -18,6 +18,17 @@ Key env vars:
   MUSAEUS_STAGING      — staging area before vault (default: VAULT_ROOT/STAGING)
   MUSAEUS_QUARANTINE   — quarantine for bad files (default: VAULT_ROOT/QUARANTINE)
   MUSAEUS_META_DIR     — canon CSVs location (default: VAULT_ROOT/MetaData)
+  MUSAEUS_ALAC_LIBRARY — canonical finalized library (default: VAULT_ROOT/ALAC-Library)
+
+ALAC-Library is the canonical, finalized output of the pipeline — distinct
+from INBOX (mutable working area). Physical presence of a file in
+ALAC-Library is meant to be a trustworthy, DB-independent signal that
+processing is actually complete for that file, not just that a DB row
+claims so. musaeus.db itself is treated as transient per-batch working
+state and is expected to be wiped after each batch finalizes; anything
+that must survive across batches (the audio-hash index used for
+cross-batch dedup, the TuneMyMusic.csv sub-lossless log, DB snapshots)
+lives under ALAC-Library itself, not in the wipeable vault DB.
 """
 
 from __future__ import annotations
@@ -75,6 +86,9 @@ class MusicConfig:
     runs_root: Path
     meta_dir: Path
 
+    # Canonical finalized library — see module docstring
+    alac_library: Path
+
     # Database
     db_path: Path
 
@@ -106,6 +120,7 @@ class MusicConfig:
         quarantine = _p("MUSAEUS_QUARANTINE", vault_root / "QUARANTINE")
         runs_root = _p("MUSAEUS_RUNS_ROOT", vault_root / "RUNS")
         meta_dir = _p("MUSAEUS_META_DIR", vault_root / "MetaData")
+        alac_library = _p("MUSAEUS_ALAC_LIBRARY", vault_root / "ALAC-Library")
 
         return cls(
             vault_root=vault_root,
@@ -114,12 +129,44 @@ class MusicConfig:
             quarantine=quarantine,
             runs_root=runs_root,
             meta_dir=meta_dir,
+            alac_library=alac_library,
             db_path=db_path,
             groq_api_key=os.environ.get("GROQ_API_KEY") or None,
             lastfm_api_key=os.environ.get("LASTFM_API_KEY") or None,
             openrouter_api_key=os.environ.get("OPENROUTER_API_KEY") or None,
             acousticid_api_key=os.environ.get("ACOUSTICID_API_KEY") or None,
         )
+
+    # ── ALAC-Library derived paths ───────────────────────────────────────────
+    # Everything here lives under alac_library itself (not the vault DB) so
+    # it survives a DB wipe between batches.
+
+    @property
+    def dupes_review_dir(self) -> Path:
+        """Losing duplicates land here, never deleted. ORPHEUS
+        LESSER_DUPES_MOVED_FOR_REVIEW convention."""
+        return self.alac_library / "DUPES_MOVED_FOR_REVIEW"
+
+    @property
+    def hash_index_path(self) -> Path:
+        """Persistent audio-hash index of everything already finalized into
+        ALAC-Library, used for cross-batch dedup once musaeus.db has been
+        wiped. A plain SQLite file, separate from the transient vault DB."""
+        return self.alac_library / "_history" / "hash_index.db"
+
+    @property
+    def db_history_dir(self) -> Path:
+        """Where a musaeus.db snapshot is copied before it's wiped at the
+        end of a completed batch."""
+        return self.alac_library / "_history"
+
+    @property
+    def tunemymusic_csv_path(self) -> Path:
+        """Cross-platform track-list CSV for sub-lossless sources that
+        Canonicalize transcoded rather than archived losslessly. Appended
+        across batches, lives at the top of ALAC-Library so it survives a
+        DB wipe."""
+        return self.alac_library / "TuneMyMusic.csv"
 
     def ensure_dirs(self) -> None:
         """Create all required directories if they don't exist."""
@@ -130,6 +177,9 @@ class MusicConfig:
             self.quarantine,
             self.runs_root,
             self.meta_dir,
+            self.alac_library,
+            self.dupes_review_dir,
+            self.db_history_dir,
             self.db_path.parent,
         ):
             d.mkdir(parents=True, exist_ok=True)
@@ -138,17 +188,17 @@ class MusicConfig:
         """Human-readable summary for console display."""
         lines = [
             "  MUSAEUS Configuration",
-            f"  Vault     : {self.vault_root}",
-            f"  Inbox     : {self.inbox}",
-            f"  Staging   : {self.staging}",
-            f"  Quarantine: {self.quarantine}",
-            f"  Runs      : {self.runs_root}",
-            f"  MetaData  : {self.meta_dir}",
-            f"  DB        : {self.db_path}",
-            f"  Groq key  : {'✓ set' if self.groq_api_key else '✗ not set'}",
-            f"  Last.fm   : {'✓ set' if self.lastfm_api_key else '✗ not set'}",
-            f"  AcousticID: {'✓ set' if self.acousticid_api_key else '✗ not set'}",
-            f"  Groq      : {'✓ set' if self.groq_api_key else '✗ not set'}",
+            f"  Vault      : {self.vault_root}",
+            f"  Inbox      : {self.inbox}",
+            f"  Staging    : {self.staging}",
+            f"  Quarantine : {self.quarantine}",
+            f"  Runs       : {self.runs_root}",
+            f"  MetaData   : {self.meta_dir}",
+            f"  ALAC-Library: {self.alac_library}",
+            f"  DB         : {self.db_path}",
+            f"  Groq key   : {'✓ set' if self.groq_api_key else '✗ not set'}",
+            f"  Last.fm    : {'✓ set' if self.lastfm_api_key else '✗ not set'}",
+            f"  AcousticID : {'✓ set' if self.acousticid_api_key else '✗ not set'}",
         ]
         return "\n".join(lines)
 

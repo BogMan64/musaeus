@@ -155,6 +155,10 @@ class RunContext:
     def runs_root(self) -> Path:
         return self.config.runs_root
 
+    @property
+    def alac_library(self) -> Path:
+        return self.config.alac_library
+
     # ── Stash: stages can store cross-stage data here ─────────────────────────
 
     def set(self, key: str, value: Any) -> None:

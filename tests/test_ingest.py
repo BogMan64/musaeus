@@ -44,6 +44,7 @@ def cfg(vault: Path) -> MusicConfig:
         quarantine=vault / "QUARANTINE",
         runs_root=vault / "RUNS",
         meta_dir=vault / "MetaData",
+        alac_library=vault / "ALAC-Library",
         db_path=vault / "musaeus.db",
     )
 
@@ -102,6 +103,7 @@ class TestIngestValidate:
             quarantine=tmp_path / "QUARANTINE",
             runs_root=tmp_path / "RUNS",
             meta_dir=tmp_path / "MetaData",
+            alac_library=tmp_path / "ALAC-Library",
             db_path=tmp_path / "musaeus.db",
         )
         conn = open_db(cfg2.db_path)
@@ -189,6 +191,7 @@ class TestIngestDryRun:
             quarantine=root / "QUARANTINE",
             runs_root=root / "RUNS",
             meta_dir=root / "MetaData",
+            alac_library=root / "ALAC-Library",
             db_path=root / "musaeus.db",
         )
         (root / "INBOX").mkdir()
