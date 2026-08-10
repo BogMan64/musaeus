@@ -240,6 +240,20 @@ class DupeResolverStage(BaseStage):
                     "UPDATE duplicates SET status = 'archive' WHERE group_id = ? AND file_path = ?",
                     (group_id, str(source)),
                 )
+                # The archive row's status must change too, and file_path
+                # must follow the file to its new location -- otherwise a
+                # later stage's WHERE status='CATALOGUED' query has no way
+                # to know this row moved, and would try to act on a path
+                # that no longer has a file (confirmed as a real failure
+                # during a full-chain dry run: Canonicalize picked up a
+                # DupeResolver-relocated row and errored on the missing
+                # source). status='DUPE_REVIEW' is a new, distinct status
+                # (not CATALOGUED, not GHOST -- this is an intentional,
+                # tracked relocation, not a disappearance).
+                ctx.conn.execute(
+                    "UPDATE archive SET status = 'DUPE_REVIEW', file_path = ? WHERE file_path = ?",
+                    (str(target), str(source)),
+                )
                 ctx.log_event(
                     "DUPE_MOVED_FOR_REVIEW",
                     file_path=str(target),

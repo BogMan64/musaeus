@@ -180,6 +180,36 @@ class TestDupeResolverCodecPriority:
         assert keep_status == "keep"
 
 
+class TestDupeResolverArchiveRowFollowsFile:
+    def test_archive_file_path_updated_to_new_location(self, ctx):
+        """Regression test: the loser's archive row must follow the file
+        to its new location, not just the duplicates table. Found via a
+        full-chain dry run -- Canonicalize picked up a DupeResolver-
+        relocated row still pointing at the old (now-empty) path and
+        errored on 'file missing on disk'."""
+        high = _make_archive_row(ctx, "high.flac", "Artist", "Album", "Title", bitrate=900_000, size_bytes=500)
+        low = _make_archive_row(ctx, "low.m4a", "Artist", "Album", "Title", bitrate=128_000, size_bytes=200)
+        _stage_duplicate_pair(ctx, "dup_followpath", high, low)
+
+        DupeResolverStage().execute(ctx)
+
+        target = ctx.config.dupes_review_dir / _TEST_BATCH_DATE / "Artist" / "Album" / "Artist - Title.m4a"
+        row = ctx.conn.execute(
+            "SELECT file_path, status FROM archive WHERE id = (SELECT id FROM archive WHERE file_path = ?)",
+            (str(target),),
+        ).fetchone()
+        assert row is not None, "no archive row found at the new location"
+        assert row["file_path"] == str(target)
+        assert row["status"] == "DUPE_REVIEW"
+
+        # And the OLD path must have no row left claiming CATALOGUED status
+        # (which is what would make Canonicalize/Forge/etc pick it up again).
+        stale = ctx.conn.execute(
+            "SELECT status FROM archive WHERE file_path = ?", (str(low),)
+        ).fetchone()
+        assert stale is None  # no row at the old path anymore
+
+
 class TestDupeResolverCrossBatchGroup:
     def test_lone_cross_batch_member_moves_no_keeper_needed(self, ctx):
         """A CROSS_BATCH group has exactly one member in THIS batch's

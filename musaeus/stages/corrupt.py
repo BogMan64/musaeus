@@ -244,10 +244,17 @@ class CorruptStage(BaseStage):
                         shutil.move(str(file_path), str(dest))
                         logger.info(f"[{self.NAME}] → Quarantined to {dest.name}")
 
-                        # Update archive status
+                        # Update archive status AND follow file_path to the
+                        # new quarantine location -- the file physically
+                        # moved, so a row still pointing at the old path
+                        # would silently disagree with disk (the same class
+                        # of bug found and fixed in dupe_resolver.py: a
+                        # later stage reading file_path for this row would
+                        # hit a "missing on disk" surprise instead of ever
+                        # seeing the real quarantine location).
                         conn.execute(
-                            "UPDATE archive SET status='QUARANTINED' WHERE file_path=?",
-                            (str(file_path),),
+                            "UPDATE archive SET status='QUARANTINED', file_path=? WHERE file_path=?",
+                            (str(dest), str(file_path)),
                         )
                     except OSError as e:
                         logger.error(f"[{self.NAME}] Failed to quarantine: {e}")
