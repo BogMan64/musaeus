@@ -16,6 +16,8 @@ Available stages:
                    based on real ffprobe codec, not file extension (Act 3)
   FinalizeStage  — move canonicalized files INBOX -> ALAC-Library, the
                    trusted canonical library (Act 3)
+  AuditStage     — physical-presence verification gate before a batch's
+                   DB can be snapshotted and wiped (Act 3)
   ForgeStage     — measure EBU R128 loudness, write ReplayGain tags
   TaggerStage    — write normalised metadata from DB back to file tags
   AuditorStage   — pre-forge LUFS audit (flags out-of-window files)
@@ -38,6 +40,7 @@ On-demand: Auditor, Curator, Playlist, Ghost, Health, Enrich, MBEnrich,
 from .acousticid import AcousticIDStage
 from .albumart import AlbumArtStage
 from .artist_consolidate import ArtistConsolidateStage
+from .audit import AuditStage
 from .auditor import AuditorStage
 from .canonicalize import CanonicalizeStage
 from .corrupt import CorruptStage
@@ -74,6 +77,7 @@ __all__ = [
     "CrossDupeStage",
     "CanonicalizeStage",
     "FinalizeStage",
+    "AuditStage",
     "ForgeStage",
     "TaggerStage",
     "AuditorStage",
