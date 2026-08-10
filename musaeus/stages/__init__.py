@@ -12,6 +12,8 @@ Available stages:
   SanitizeStage  — filesystem-safe metadata (Windows/ExFAT/Android compatible)
   CanonicalizeStage — lossless->ALAC / sub-lossless->AAC, both as .m4a,
                    based on real ffprobe codec, not file extension (Act 3)
+  FinalizeStage  — move canonicalized files INBOX -> ALAC-Library, the
+                   trusted canonical library (Act 3)
   ForgeStage     — measure EBU R128 loudness, write ReplayGain tags
   TaggerStage    — write normalised metadata from DB back to file tags
   AuditorStage   — pre-forge LUFS audit (flags out-of-window files)
@@ -39,6 +41,7 @@ from .canonicalize import CanonicalizeStage
 from .corrupt import CorruptStage
 from .curator import CuratorStage
 from .enrich import EnrichStage
+from .finalize import FinalizeStage
 from .forge import ForgeStage
 from .ghost import GhostStage
 from .health import HealthStage
@@ -66,6 +69,7 @@ __all__ = [
     "OrganizeStage",
     "SanitizeStage",
     "CanonicalizeStage",
+    "FinalizeStage",
     "ForgeStage",
     "TaggerStage",
     "AuditorStage",

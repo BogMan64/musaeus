@@ -17,6 +17,7 @@ Pipeline commands:
     scholar          Run Scholar stage only
     normalize        Article-suffix fix + ALL-CAPS repair on archived metadata
     canonicalize     Lossless→ALAC / sub-lossless→AAC, both as .m4a (Act 3)
+    finalize         Move canonicalized files INBOX → ALAC-Library (Act 3)
     forge            Measure EBU R128 loudness + write ReplayGain tags
     tagger           Write normalised DB metadata back to file tags
     auditor          Pre-forge LUFS audit (flags out-of-window files)
@@ -114,6 +115,7 @@ from .stages import (
     IntegrityStage,
     MBEnrichStage,
     CanonicalizeStage,
+    FinalizeStage,
     NearDupeStage,
     NormalizeStage,
     OrganizeStage,
@@ -801,6 +803,13 @@ def _build_parser() -> argparse.ArgumentParser:
     canonicalize_p.add_argument("--dry-run", action="store_true", help="Report actions, no ffmpeg calls")
     canonicalize_p.add_argument("--force", action="store_true", help="Re-process already-canonicalized files")
 
+    # finalize
+    finalize_p = sub.add_parser(
+        "finalize", help="Move canonicalized files from INBOX into vault_root/ALAC-Library"
+    )
+    finalize_p.add_argument("--dry-run", action="store_true", help="Report moves, no files written")
+    finalize_p.add_argument("--force", action="store_true", help="Re-process already-finalized files")
+
     # forge
     forge_p = sub.add_parser("forge", help="Measure LUFS + write ReplayGain tags")
     forge_p.add_argument("--dry-run", action="store_true", help="Measure but don't write tags")
@@ -1119,6 +1128,12 @@ def main() -> None:
             if getattr(args, "force", False):
                 stash["canonicalize_force"] = True
             sys.exit(_run_pipeline([CanonicalizeStage], dry_run=dry_run, stash=stash))
+
+        elif command == "finalize":
+            stash = {}
+            if getattr(args, "force", False):
+                stash["finalize_force"] = True
+            sys.exit(_run_pipeline([FinalizeStage], dry_run=dry_run, stash=stash))
 
         elif command == "forge":
             stash: dict = {}
