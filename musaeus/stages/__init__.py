@@ -10,6 +10,8 @@ Available stages:
   NormalizeStage — article-suffix fix + ALL-CAPS repair on archived metadata
   OrganizeStage  — rename and reorganize files into Artist/Album/ structure
   SanitizeStage  — filesystem-safe metadata (Windows/ExFAT/Android compatible)
+  CanonicalizeStage — lossless->ALAC / sub-lossless->AAC, both as .m4a,
+                   based on real ffprobe codec, not file extension (Act 3)
   ForgeStage     — measure EBU R128 loudness, write ReplayGain tags
   TaggerStage    — write normalised metadata from DB back to file tags
   AuditorStage   — pre-forge LUFS audit (flags out-of-window files)
@@ -33,6 +35,7 @@ from .acousticid import AcousticIDStage
 from .albumart import AlbumArtStage
 from .artist_consolidate import ArtistConsolidateStage
 from .auditor import AuditorStage
+from .canonicalize import CanonicalizeStage
 from .corrupt import CorruptStage
 from .curator import CuratorStage
 from .enrich import EnrichStage
@@ -62,6 +65,7 @@ __all__ = [
     "NormalizeStage",
     "OrganizeStage",
     "SanitizeStage",
+    "CanonicalizeStage",
     "ForgeStage",
     "TaggerStage",
     "AuditorStage",

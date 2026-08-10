@@ -16,6 +16,7 @@ Pipeline commands:
     sentinel         Run Sentinel stage only
     scholar          Run Scholar stage only
     normalize        Article-suffix fix + ALL-CAPS repair on archived metadata
+    canonicalize     Lossless→ALAC / sub-lossless→AAC, both as .m4a (Act 3)
     forge            Measure EBU R128 loudness + write ReplayGain tags
     tagger           Write normalised DB metadata back to file tags
     auditor          Pre-forge LUFS audit (flags out-of-window files)
@@ -112,6 +113,7 @@ from .stages import (
     IngestStage,
     IntegrityStage,
     MBEnrichStage,
+    CanonicalizeStage,
     NearDupeStage,
     NormalizeStage,
     OrganizeStage,
@@ -791,6 +793,14 @@ def _build_parser() -> argparse.ArgumentParser:
     sanitize_p = sub.add_parser("sanitize", help="Filesystem-safe metadata (Windows/ExFAT/Android)")
     sanitize_p.add_argument("--dry-run", action="store_true", help="Preview only, no DB changes")
 
+    # canonicalize
+    canonicalize_p = sub.add_parser(
+        "canonicalize",
+        help="Lossless->ALAC / sub-lossless->AAC, both as .m4a, based on real codec",
+    )
+    canonicalize_p.add_argument("--dry-run", action="store_true", help="Report actions, no ffmpeg calls")
+    canonicalize_p.add_argument("--force", action="store_true", help="Re-process already-canonicalized files")
+
     # forge
     forge_p = sub.add_parser("forge", help="Measure LUFS + write ReplayGain tags")
     forge_p.add_argument("--dry-run", action="store_true", help="Measure but don't write tags")
@@ -1103,6 +1113,12 @@ def main() -> None:
 
         elif command == "sanitize":
             sys.exit(_run_pipeline([SanitizeStage], dry_run=dry_run))
+
+        elif command == "canonicalize":
+            stash: dict = {}
+            if getattr(args, "force", False):
+                stash["canonicalize_force"] = True
+            sys.exit(_run_pipeline([CanonicalizeStage], dry_run=dry_run, stash=stash))
 
         elif command == "forge":
             stash: dict = {}
