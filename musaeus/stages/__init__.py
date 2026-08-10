@@ -6,6 +6,8 @@ Available stages:
                    DB integrity) -- report-only, runs first, never mutates
   IngestStage    — scan inbox, register new files in archive
   SentinelStage  — compute audio + full hashes, detect exact duplicates
+  CrossDupeStage — flag files matching ALAC-Library content from a prior
+                   batch, via the persistent cross-batch hash index (Act 2)
   ScholarStage   — extract ffprobe metadata, populate archive fields
   NormalizeStage — article-suffix fix + ALL-CAPS repair on archived metadata
   OrganizeStage  — rename and reorganize files into Artist/Album/ structure
@@ -39,6 +41,7 @@ from .artist_consolidate import ArtistConsolidateStage
 from .auditor import AuditorStage
 from .canonicalize import CanonicalizeStage
 from .corrupt import CorruptStage
+from .cross_dupe import CrossDupeStage
 from .curator import CuratorStage
 from .enrich import EnrichStage
 from .finalize import FinalizeStage
@@ -68,6 +71,7 @@ __all__ = [
     "NormalizeStage",
     "OrganizeStage",
     "SanitizeStage",
+    "CrossDupeStage",
     "CanonicalizeStage",
     "FinalizeStage",
     "ForgeStage",
