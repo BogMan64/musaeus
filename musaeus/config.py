@@ -223,3 +223,13 @@ LOSSLESS_EXTENSIONS: frozenset[str] = frozenset(
     {".flac", ".alac", ".wav", ".aiff", ".aif"}
 )
 LOSSY_EXTENSIONS: frozenset[str] = frozenset({".mp3", ".aac", ".m4a", ".ogg"})
+
+# Real, codec-based (not extension-based) lossless check -- the sets above
+# are known-broken for this purpose: .m4a can hold either ALAC (lossless)
+# or AAC (lossy), so an extension-only check misclassifies the entire
+# ALAC-in-.m4a case. Use this against archive.codec (Scholar's real
+# ffprobe codec_name) wherever "is this file actually lossless" matters,
+# e.g. picking a keeper between duplicate candidates of different codecs.
+LOSSLESS_CODECS: frozenset[str] = frozenset(
+    {"flac", "alac", "pcm_s16le", "pcm_s24le", "pcm_s32le"}
+)

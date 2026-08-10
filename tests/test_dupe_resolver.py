@@ -139,6 +139,47 @@ class TestDupeResolverSameBatchGroup:
         assert low.exists()  # back where it started
 
 
+class TestDupeResolverCodecPriority:
+    def test_lossless_kept_over_lossy_despite_lower_bitrate_number(self, ctx):
+        """Regression test: bitrate alone is not a fair cross-codec
+        comparison -- a highly-compressible lossless FLAC can report a
+        LOWER bitrate number than a lossy file of the same audio,
+        despite being the objectively better copy. Real scenario found
+        live during this session's testing."""
+        from musaeus.db import upsert_archive
+
+        lossy = ctx.inbox / "lossy_high_number.m4a"
+        lossy.parent.mkdir(parents=True, exist_ok=True)
+        lossy.write_bytes(b"X" * 1000)
+        upsert_archive(ctx.conn, {
+            "file_path": str(lossy), "status": "CATALOGUED",
+            "artist": "Artist", "album": "Album", "title": "Title",
+            "codec": "aac", "bitrate": 131_382, "size_bytes": 1000,
+        })
+
+        lossless = ctx.inbox / "lossless_low_number.flac"
+        lossless.write_bytes(b"X" * 900)
+        upsert_archive(ctx.conn, {
+            "file_path": str(lossless), "status": "CATALOGUED",
+            "artist": "Artist", "album": "Album", "title": "Title",
+            "codec": "flac", "bitrate": 129_200, "size_bytes": 900,
+        })
+        ctx.conn.commit()
+
+        _stage_duplicate_pair(ctx, "dup_codec_test", lossless, lossy)
+
+        result = DupeResolverStage().execute(ctx)
+
+        assert result.success is True
+        assert lossless.exists()  # lossless kept, despite the lower bitrate number
+        assert not lossy.exists()  # lossy moved to review, despite the higher bitrate number
+
+        keep_status = ctx.conn.execute(
+            "SELECT status FROM duplicates WHERE file_path = ?", (str(lossless),)
+        ).fetchone()["status"]
+        assert keep_status == "keep"
+
+
 class TestDupeResolverCrossBatchGroup:
     def test_lone_cross_batch_member_moves_no_keeper_needed(self, ctx):
         """A CROSS_BATCH group has exactly one member in THIS batch's

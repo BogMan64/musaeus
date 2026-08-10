@@ -60,6 +60,7 @@ import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..config import LOSSLESS_CODECS
 from ..context import RunContext, StageResult
 from .base import BaseStage
 from .organize import build_track_filename, sanitize_path_component, unique_path
@@ -84,18 +85,34 @@ def _get_pending_groups(conn) -> list[str]:
 
 
 def _get_group_members(conn, group_id: str) -> list[dict]:
+    """
+    Members of one duplicate group, ordered so the best keeper candidate
+    is always first: real lossless codec beats lossy UNCONDITIONALLY
+    (a bitrate/size comparison across different codecs isn't a fair
+    quality comparison -- a quiet, highly-compressible FLAC can report a
+    lower bitrate than a dense, less-compressible lossy file despite
+    being the objectively better copy), then bitrate/size as a tiebreak
+    among files that are equally lossless or equally lossy.
+    """
     rows = conn.execute(
         """
         SELECT d.file_path, d.duplicate_type, d.confidence, d.status AS dup_status,
-               a.artist, a.album, a.title, a.ext, a.bitrate, a.size_bytes
+               a.artist, a.album, a.title, a.ext, a.codec, a.bitrate, a.size_bytes
           FROM duplicates d
           LEFT JOIN archive a USING (file_path)
          WHERE d.group_id = ?
-         ORDER BY a.bitrate DESC, a.size_bytes DESC
         """,
         (group_id,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    members = [dict(r) for r in rows]
+    members.sort(
+        key=lambda m: (
+            0 if (m.get("codec") or "").lower() in LOSSLESS_CODECS else 1,
+            -(m.get("bitrate") or 0),
+            -(m.get("size_bytes") or 0),
+        )
+    )
+    return members
 
 
 def _pick_keeper_and_losers(members: list[dict]) -> tuple[dict | None, list[dict]]:

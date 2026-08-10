@@ -22,6 +22,8 @@ import logging
 import sys
 from pathlib import Path
 
+from .config import LOSSLESS_CODECS
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,7 +77,13 @@ def _get_pending_groups(conn) -> list[str]:
 
 
 def _get_group_members(conn, group_id: str) -> list[dict]:
-    """Return archive info for every member of a duplicate group."""
+    """
+    Return archive info for every member of a duplicate group, ordered
+    so the best keeper candidate is first: real lossless codec beats
+    lossy UNCONDITIONALLY (a bitrate/size comparison across different
+    codecs isn't a fair quality comparison), then bitrate/size as a
+    tiebreak among files that are equally lossless or equally lossy.
+    """
     rows = conn.execute(
         """
         SELECT d.file_path,
@@ -87,11 +95,18 @@ def _get_group_members(conn, group_id: str) -> list[dict]:
           FROM duplicates d
           LEFT JOIN archive a USING (file_path)
          WHERE d.group_id = ?
-         ORDER BY a.bitrate DESC, a.size_bytes DESC
         """,
         (group_id,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    members = [dict(r) for r in rows]
+    members.sort(
+        key=lambda m: (
+            0 if (m.get("codec") or "").lower() in LOSSLESS_CODECS else 1,
+            -(m.get("bitrate") or 0),
+            -(m.get("size_bytes") or 0),
+        )
+    )
+    return members
 
 
 def _set_status(conn, group_id: str, file_path: str, status: str) -> None:
@@ -103,10 +118,12 @@ def _set_status(conn, group_id: str, file_path: str, status: str) -> None:
 
 
 def _auto_keep_best(conn, group_id: str, members: list[dict]) -> None:
-    """Auto-select the highest bitrate/largest file as KEEP, rest as ARCHIVE."""
+    """Auto-select the best file as KEEP, rest as ARCHIVE. See
+    _get_group_members() for the actual ordering rule (lossless-first,
+    then bitrate/size)."""
     if not members:
         return
-    keep = members[0]   # already sorted by bitrate DESC, size DESC
+    keep = members[0]   # already sorted: lossless-first, then bitrate/size DESC
     for m in members:
         if m["file_path"] == keep["file_path"]:
             _set_status(conn, group_id, m["file_path"], "keep")

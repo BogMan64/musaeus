@@ -62,6 +62,7 @@ import logging
 import subprocess
 from pathlib import Path
 
+from ..config import LOSSLESS_CODECS as _LOSSLESS_CODECS
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
 
@@ -73,7 +74,6 @@ _COMMIT_EVERY = 25
 # archive.codec), NOT file extensions.
 _ALAC_CODECS = frozenset({"alac"})
 _AAC_CODECS = frozenset({"aac"})
-_LOSSLESS_CODECS = frozenset({"flac", "alac", "pcm_s16le", "pcm_s24le", "pcm_s32le"})
 
 AAC_TRANSCODE_BITRATE = "256k"
 
