@@ -124,6 +124,20 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     ("archive", "rg_tagged_at", "TEXT"),
     ("archive", "car_export_path", "TEXT"),
     ("archive", "noise_profile", "TEXT"),
+    # Act 3 — Canonicalize + Finalize (ALAC-Library). Nullable timestamp
+    # columns, same pattern as rg_tagged_at: NULL means "not done yet",
+    # set means "done", stages skip already-done rows unless --force.
+    ("archive", "canonicalized_at", "TEXT"),
+    # What Canonicalize actually did to this file:
+    #   PASSTHROUGH  — already ALAC-in-.m4a (or already AAC-in-.m4a for a
+    #                  sub-lossless source), no re-encode needed
+    #   CONVERTED    — lossless source (flac/wav/aiff) re-containered to
+    #                  ALAC-in-.m4a, no lossy re-encode
+    #   TRANSCODED   — sub-lossless source (mp3/ogg/etc) re-encoded to
+    #                  256k AAC-in-.m4a; a real lossy-to-lossy transcode,
+    #                  also logged to TuneMyMusic.csv
+    ("archive", "canon_action", "TEXT"),
+    ("archive", "finalized_at", "TEXT"),
 ]
 
 
@@ -242,4 +256,53 @@ def get_archive_by_status(conn: sqlite3.Connection, status: str) -> list[sqlite3
     return conn.execute(
         "SELECT * FROM archive WHERE status = ? ORDER BY artist, album, title",
         (status,),
+    ).fetchall()
+
+
+# ── Persistent hash index (survives a musaeus.db wipe) ───────────────────────
+#
+# musaeus.db is transient per-batch working state, wiped after every
+# completed batch (see config.alac_library / db_history_dir). Cross-batch
+# duplicate detection against already-finalized ALAC-Library content has
+# no DB rows to query once that wipe happens, so it needs its own tiny,
+# separate, persistent SQLite file living under ALAC-Library itself:
+# config.hash_index_path. This is intentionally a different schema/file
+# from the main vault DB -- it is never wiped and only ever grows.
+
+_HASH_INDEX_SCHEMA = """
+CREATE TABLE IF NOT EXISTS finalized_hashes (
+    audio_hash   TEXT NOT NULL,
+    file_path    TEXT NOT NULL,   -- final ALAC-Library path at time of finalize
+    finalized_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (audio_hash, file_path)
+);
+CREATE INDEX IF NOT EXISTS idx_finalized_hash ON finalized_hashes(audio_hash);
+"""
+
+
+def open_hash_index(path: Path) -> sqlite3.Connection:
+    """Open (or create) the persistent cross-batch audio-hash index."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.executescript(_HASH_INDEX_SCHEMA)
+    conn.commit()
+    return conn
+
+
+def record_finalized_hash(conn: sqlite3.Connection, audio_hash: str, file_path: str) -> None:
+    """Record that *file_path* (audio_hash) now exists in ALAC-Library."""
+    conn.execute(
+        "INSERT OR IGNORE INTO finalized_hashes (audio_hash, file_path) VALUES (?, ?)",
+        (audio_hash, file_path),
+    )
+
+
+def lookup_finalized_hash(conn: sqlite3.Connection, audio_hash: str) -> list[sqlite3.Row]:
+    """Return every ALAC-Library file_path already recorded for *audio_hash*."""
+    return conn.execute(
+        "SELECT file_path, finalized_at FROM finalized_hashes WHERE audio_hash = ?",
+        (audio_hash,),
     ).fetchall()
