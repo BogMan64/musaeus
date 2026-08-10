@@ -35,9 +35,17 @@ Available stages:
   TranscodeStage  — lossless → 256k AAC export via ffmpeg
   ReviewerStage   — Groq AI metadata quality review
 
-Run order: Ingest → Sentinel → Scholar → Normalize → Organize → Forge → Tagger
-On-demand: Auditor, Curator, Playlist, Ghost, Health, Enrich, MBEnrich,
-           NearDupe, AcousticID, Transcode, Reviewer
+DEFAULT_PIPELINE (`musaeus run`) is the full Act 1/2/3 canonical chain:
+  Act 1 (Intake & Correction): Preflight → Ingest → Sentinel → Scholar →
+         Health → Corrupt → Normalize → Sanitize → ArtistConsolidate
+  Act 2 (Dedup & Staging):     CrossDupe → NearDupe → DupeResolver
+  Act 3 (Canonicalize/Finalize): Canonicalize → Finalize → Forge →
+         Tagger → Audit
+See ACT1_INTAKE_CORRECTION / ACT2_DEDUP_STAGING / ACT3_CANONICALIZE_FINALIZE
+below for the named building blocks and the reasoning behind this order.
+On-demand only (not part of the canonical chain): Auditor, Curator,
+           Playlist, Ghost, Enrich, MBEnrich, AcousticID, Transcode,
+           Reviewer, Organize, IntegrityStage, AlbumArt.
 """
 
 from .acousticid import AcousticIDStage
