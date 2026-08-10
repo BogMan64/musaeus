@@ -19,6 +19,7 @@ Pipeline commands:
     canonicalize     Lossless→ALAC / sub-lossless→AAC, both as .m4a (Act 3)
     finalize         Move canonicalized files INBOX → ALAC-Library (Act 3)
     audit            Physical-presence gate before DB snapshot+wipe (Act 3)
+    dupe-resolver    Physically relocate duplicate losers to review folder (Act 2)
     cross-dupe       Flag files already in ALAC-Library from a prior batch (Act 2)
     forge            Measure EBU R128 loudness + write ReplayGain tags
     tagger           Write normalised DB metadata back to file tags
@@ -119,6 +120,7 @@ from .stages import (
     MBEnrichStage,
     CanonicalizeStage,
     CrossDupeStage,
+    DupeResolverStage,
     FinalizeStage,
     NearDupeStage,
     NormalizeStage,
@@ -793,6 +795,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     cross_dupe_p.add_argument("--dry-run", action="store_true", help="Report matches, no DB writes")
 
+    # dupe-resolver
+    dupe_resolver_p = sub.add_parser(
+        "dupe-resolver", help="Physically relocate duplicate-group losers to DUPES_MOVED_FOR_REVIEW/"
+    )
+    dupe_resolver_p.add_argument("--dry-run", action="store_true", help="Report moves, no files written")
+
     # normalize
     normalize_p = sub.add_parser("normalize", help="Article-suffix fix + ALL-CAPS repair")
     normalize_p.add_argument("--dry-run", action="store_true", help="Preview only, no DB changes")
@@ -1129,6 +1137,9 @@ def main() -> None:
 
         elif command == "cross-dupe":
             sys.exit(_run_pipeline([CrossDupeStage], dry_run=dry_run))
+
+        elif command == "dupe-resolver":
+            sys.exit(_run_pipeline([DupeResolverStage], dry_run=dry_run))
 
         elif command == "scholar":
             sys.exit(_run_pipeline([ScholarStage], dry_run=dry_run))

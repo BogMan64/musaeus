@@ -34,18 +34,25 @@ def cfg(tmp_path: Path) -> MusicConfig:
     )
 
 
+_TEST_BATCH_DATE = "2026-01-15"
+
+
 @pytest.fixture
 def ctx(cfg: MusicConfig) -> RunContext:
     cfg.ensure_dirs()
     conn = open_db(cfg.db_path)
-    return RunContext.new(cfg, conn, dry_run=False)
+    c = RunContext.new(cfg, conn, dry_run=False)
+    c.set("finalize_batch_date", _TEST_BATCH_DATE)
+    return c
 
 
 @pytest.fixture
 def ctx_dry(cfg: MusicConfig) -> RunContext:
     cfg.ensure_dirs()
     conn = open_db(cfg.db_path)
-    return RunContext.new(cfg, conn, dry_run=True)
+    c = RunContext.new(cfg, conn, dry_run=True)
+    c.set("finalize_batch_date", _TEST_BATCH_DATE)
+    return c
 
 
 def _make_canonicalized_track(
@@ -94,7 +101,7 @@ class TestFinalizeRunLive:
         assert result.files_changed == 1
         assert not track.exists()
 
-        expected = ctx.alac_library / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
+        expected = ctx.alac_library / _TEST_BATCH_DATE / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
         assert expected.exists()
         assert expected.read_bytes() == b"FAKE CANONICAL AUDIO DATA"
 
@@ -111,8 +118,8 @@ class TestFinalizeRunLive:
         result = FinalizeStage().execute(ctx)
 
         assert result.files_changed == 2
-        assert (ctx.alac_library / "Artist A" / "Album A" / "Artist A - Title A.m4a").exists()
-        assert (ctx.alac_library / "Artist B" / "Album B" / "Artist B - Title B.m4a").exists()
+        assert (ctx.alac_library / _TEST_BATCH_DATE / "Artist A" / "Album A" / "Artist A - Title A.m4a").exists()
+        assert (ctx.alac_library / _TEST_BATCH_DATE / "Artist B" / "Album B" / "Artist B - Title B.m4a").exists()
 
     def test_empty_inbox_dirs_cleaned_up(self, ctx):
         _make_canonicalized_track(ctx, "nested/deep/path/track.m4a", "Artist", "Album", "Title")
@@ -137,7 +144,7 @@ class TestFinalizeRunLive:
         hash_conn.close()
 
         assert len(rows) == 1
-        expected = ctx.alac_library / "Artist" / "Album" / "Artist - Title.m4a"
+        expected = ctx.alac_library / _TEST_BATCH_DATE / "Artist" / "Album" / "Artist - Title.m4a"
         assert rows[0]["file_path"] == str(expected)
 
     def test_hash_index_survives_after_vault_db_would_be_wiped(self, ctx):
@@ -218,11 +225,57 @@ class TestFinalizeIdempotency:
         second = FinalizeStage().execute(ctx)
 
         assert second.files_errored == 0
-        matches = list((ctx.alac_library / "Artist" / "Album").glob("*.m4a"))
+        matches = list((ctx.alac_library / _TEST_BATCH_DATE / "Artist" / "Album").glob("*.m4a"))
         assert len(matches) == 1  # no " (2)" sibling created
 
 
 # ── Dry run ───────────────────────────────────────────────────────────────────
+
+class TestFinalizeBatchDate:
+    def test_batch_date_folder_in_path(self, ctx):
+        """Every finalized file lands under a YYYY-MM-DD folder directly
+        under ALAC-Library -- lets a whole batch be copied to cold
+        storage in one shot."""
+        _make_canonicalized_track(ctx, "track.m4a", "Artist", "Album", "Title")
+
+        FinalizeStage().execute(ctx)
+
+        expected = ctx.alac_library / _TEST_BATCH_DATE / "Artist" / "Album" / "Artist - Title.m4a"
+        assert expected.exists()
+        # And the date folder is a DIRECT child of alac_library, not nested
+        # any deeper or shallower.
+        assert expected.relative_to(ctx.alac_library).parts[0] == _TEST_BATCH_DATE
+
+    def test_default_batch_date_is_todays_utc_date(self, cfg):
+        """Without an explicit override, the batch date defaults to the
+        real current UTC date, not a fixed/stale value."""
+        from datetime import datetime, timezone
+        cfg.ensure_dirs()
+        conn = open_db(cfg.db_path)
+        real_ctx = RunContext.new(cfg, conn, dry_run=False)
+        # Deliberately NOT setting finalize_batch_date here.
+
+        track = _make_canonicalized_track(real_ctx, "track.m4a", "Artist", "Album", "Title")
+        FinalizeStage().execute(real_ctx)
+
+        today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+        expected = real_ctx.alac_library / today / "Artist" / "Album" / "Artist - Title.m4a"
+        assert expected.exists()
+
+    def test_all_files_in_one_run_share_the_same_batch_date(self, ctx):
+        """The date is computed once per run, not per file -- two files
+        finalized in the same run must land under the same date folder
+        even if the run happens to straddle a UTC midnight boundary."""
+        _make_canonicalized_track(ctx, "a.m4a", "Artist A", "Album", "Title A", "hash_a")
+        _make_canonicalized_track(ctx, "b.m4a", "Artist B", "Album", "Title B", "hash_b")
+
+        FinalizeStage().execute(ctx)
+
+        a = ctx.alac_library / _TEST_BATCH_DATE / "Artist A" / "Album" / "Artist A - Title A.m4a"
+        b = ctx.alac_library / _TEST_BATCH_DATE / "Artist B" / "Album" / "Artist B - Title B.m4a"
+        assert a.exists()
+        assert b.exists()
+
 
 class TestFinalizeDryRun:
     def test_dry_run_makes_no_changes(self, ctx_dry):
@@ -232,7 +285,7 @@ class TestFinalizeDryRun:
 
         assert result.dry_run is True
         assert track.exists()
-        expected = ctx_dry.alac_library / "Artist" / "Album" / "Artist - Title.m4a"
+        expected = ctx_dry.alac_library / _TEST_BATCH_DATE / "Artist" / "Album" / "Artist - Title.m4a"
         assert not expected.exists()
 
         row = ctx_dry.conn.execute("SELECT finalized_at FROM archive").fetchone()

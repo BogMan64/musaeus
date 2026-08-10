@@ -8,6 +8,9 @@ Available stages:
   SentinelStage  — compute audio + full hashes, detect exact duplicates
   CrossDupeStage — flag files matching ALAC-Library content from a prior
                    batch, via the persistent cross-batch hash index (Act 2)
+  DupeResolverStage — physically relocate duplicate-group losers into
+                   ALAC-Library/DUPES_MOVED_FOR_REVIEW/, mirroring
+                   ALAC-Library's own Artist/Album/Track shape (Act 2)
   ScholarStage   — extract ffprobe metadata, populate archive fields
   NormalizeStage — article-suffix fix + ALL-CAPS repair on archived metadata
   OrganizeStage  — rename and reorganize files into Artist/Album/ structure
@@ -46,6 +49,7 @@ from .canonicalize import CanonicalizeStage
 from .corrupt import CorruptStage
 from .cross_dupe import CrossDupeStage
 from .curator import CuratorStage
+from .dupe_resolver import DupeResolverStage
 from .enrich import EnrichStage
 from .finalize import FinalizeStage
 from .forge import ForgeStage
@@ -75,6 +79,7 @@ __all__ = [
     "OrganizeStage",
     "SanitizeStage",
     "CrossDupeStage",
+    "DupeResolverStage",
     "CanonicalizeStage",
     "FinalizeStage",
     "AuditStage",

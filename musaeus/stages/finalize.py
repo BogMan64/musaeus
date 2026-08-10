@@ -183,6 +183,22 @@ class FinalizeStage(BaseStage):
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def _batch_date(self, ctx: RunContext) -> str:
+        """
+        YYYY-MM-DD stamp for this batch's top-level ALAC-Library folder
+        (Grey's explicit request: a dated folder above everything, so a
+        whole batch can be copied to cold-storage archives in one shot).
+        Overridable via ctx.set("finalize_batch_date", ...) for tests --
+        without an override, every file finalized in the same run gets
+        the same stamp (computed once, not per-file, so a run spanning
+        midnight doesn't split one batch across two date folders).
+        """
+        override = ctx.get("finalize_batch_date")
+        if override:
+            return override
+        from datetime import datetime, timezone
+        return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+
     def _target_path(self, ctx: RunContext, row: dict, source: Path) -> Path:
         artist = row.get("artist") or "Unknown Artist"
         album = row.get("album") or "Unsorted"
@@ -192,7 +208,7 @@ class FinalizeStage(BaseStage):
         artist_safe = sanitize_path_component(artist)
         album_safe = sanitize_path_component(album)
 
-        target_dir = ctx.alac_library / artist_safe / album_safe
+        target_dir = ctx.alac_library / self._batch_date(ctx) / artist_safe / album_safe
         candidate = target_dir / new_filename
 
         # Same self-is-not-a-collision guard organize.py needed: if the
