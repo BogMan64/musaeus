@@ -22,14 +22,27 @@ call a file "finished" until it has actually arrived here.
 What it does:
   - Processes CATALOGUED rows with canonicalized_at set and finalized_at
     NOT set (skips anything Canonicalize hasn't reached yet, or that's
-    already finalized, unless --force)
+    already finalized, unless --force). The source for a row is wherever
+    archive.file_path currently points: STAGING for a CONVERTED/
+    TRANSCODED row (Canonicalize's verified output), or still INBOX for
+    a PASSTHROUGH row (nothing to stage, codec/container was already
+    canonical). Finalize doesn't care which -- it just moves whatever is
+    there into ALAC-Library.
   - Copies to a same-directory temp name at the destination, verifies
-    size, then renames into place (same-filesystem atomic rename) before
-    deleting the source — safer than a raw shutil.move()/os.rename() if
-    ALAC-Library lives on a different filesystem than INBOX and a
-    cross-device copy is interrupted partway: the source is only ever
-    removed AFTER the destination copy is confirmed intact, so a crash
-    mid-copy leaves INBOX untouched rather than losing the only copy.
+    size, then renames into place (same-filesystem atomic rename).
+    Deleting the source is deliberately a SEPARATE, later step (see
+    below) — safer than a raw shutil.move()/os.rename() if ALAC-Library
+    lives on a different filesystem than the source and a cross-device
+    copy is interrupted partway: nothing removes the source until both
+    the destination copy AND the DB row are confirmed, so a crash
+    anywhere in between leaves the source untouched rather than losing
+    the only copy.
+  - DB update is by rowid, disk-change-first (organize.py's
+    _apply_rename pattern): if UPDATE ... WHERE id=? hits a
+    sqlite3.IntegrityError (archive.file_path is UNIQUE; another row
+    already claims that exact target path), the just-created
+    ALAC-Library copy is deleted and the source is left completely
+    untouched — the row is skipped, not the whole stage.
   - Uses organize.py's unique_path() to avoid clobbering an unrelated
     file that happens to sanitize to the same target filename (with the
     same self-is-not-a-collision guard organize.py needed, for the
@@ -70,6 +83,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import sqlite3
 from pathlib import Path
 
 from ..context import RunContext, StageResult
@@ -90,9 +104,12 @@ def _copy_then_verify_then_swap(source: Path, target: Path) -> None:
     """
     Copy source -> a same-directory temp name at target's destination,
     verify the copy landed intact (size match), rename into place (same
-    filesystem, atomic), then remove the source. If anything fails
-    before the source is removed, the source is left completely
-    untouched — only the temp file (if any) is cleaned up.
+    filesystem, atomic). Deliberately does NOT remove source -- the
+    caller only does that after the DB row has been safely updated by
+    rowid, so a DB-write collision can still be reverted (by deleting
+    this freshly-created target) while the source is completely intact.
+    If anything fails before target exists, the source is left
+    completely untouched — only the temp file (if any) is cleaned up.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp_target = target.with_name(target.name + ".finalize_tmp")
@@ -109,7 +126,6 @@ def _copy_then_verify_then_swap(source: Path, target: Path) -> None:
             )
 
         tmp_target.rename(target)  # tmp_target and target share a parent -> atomic
-        source.unlink()
 
     except Exception:
         if tmp_target.exists():
@@ -266,14 +282,46 @@ class FinalizeStage(BaseStage):
                     logger.warning("[finalize] %s: %s", source, exc)
                     continue
 
-                ctx.conn.execute(
-                    """
-                    UPDATE archive
-                       SET file_path = ?, finalized_at = datetime('now')
-                     WHERE id = ?
-                    """,
-                    (str(target), row["id"]),
-                )
+                # organize.py's _apply_rename pattern: disk change (the
+                # copy into ALAC-Library) already happened above; the DB
+                # write is the only thing that can still fail (a UNIQUE
+                # collision on archive.file_path). If it does, delete the
+                # just-created ALAC-Library copy and leave source
+                # completely untouched, instead of losing track of it.
+                try:
+                    ctx.conn.execute(
+                        """
+                        UPDATE archive
+                           SET file_path = ?, finalized_at = datetime('now')
+                         WHERE id = ?
+                        """,
+                        (str(target), row["id"]),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    logger.error(
+                        "[finalize] DB collision for row %s -> %s (%s); "
+                        "reverting ALAC-Library copy, source untouched",
+                        row["id"], target, exc,
+                    )
+                    try:
+                        target.unlink(missing_ok=True)
+                    except OSError as revert_exc:
+                        logger.error(
+                            "[finalize] COULD NOT REVERT %s -- disk/DB now out of "
+                            "sync, needs manual fix: %s", target, revert_exc,
+                        )
+                    result.files_errored += 1
+                    result.errors.append(f"{source.name}: DB collision on {target}: {exc}")
+                    ctx.log_event(
+                        "FINALIZE_DB_COLLISION",
+                        file_path=str(target),
+                        old_value=str(source),
+                        new_value=None,
+                        stage=self.NAME,
+                        note=str(exc),
+                    )
+                    continue
+
                 ctx.log_event(
                     "FINALIZE_MOVE",
                     file_path=str(target),
@@ -281,6 +329,20 @@ class FinalizeStage(BaseStage):
                     new_value=str(target),
                     stage=self.NAME,
                 )
+
+                # Only now, with the DB row safely pointing at the
+                # ALAC-Library copy, is it safe to remove the source --
+                # STAGING for a converted/transcoded row, or INBOX for a
+                # passthrough row. Either way this is what keeps STAGING
+                # trending back to empty.
+                try:
+                    source.unlink()
+                except OSError as exc:
+                    logger.warning(
+                        "[finalize] %s finalized to %s but source could not "
+                        "be removed: %s", source, target, exc,
+                    )
+                    result.notes.append(f"  WARNING: {source} not removed after finalize: {exc}")
 
                 if row.get("audio_hash"):
                     record_finalized_hash(hash_conn, row["audio_hash"], str(target))

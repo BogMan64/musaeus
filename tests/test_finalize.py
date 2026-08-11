@@ -89,6 +89,99 @@ def _make_canonicalized_track(
     return path
 
 
+def _make_staged_track(
+    ctx: RunContext,
+    filename: str,
+    artist: str,
+    album: str,
+    title: str,
+    audio_hash: str = "deadbeef",
+) -> Path:
+    """Create a real file under STAGING, registered as a CONVERTED row --
+    the state Canonicalize leaves behind for a lossless/sub-lossless
+    source (see CanonicalizeStage's STAGING flow). Finalize must treat
+    this identically to a PASSTHROUGH row still sitting in INBOX."""
+    path = ctx.staging / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"FAKE STAGED CANONICAL AUDIO DATA")
+    upsert_archive(
+        ctx.conn,
+        {
+            "file_path": str(path),
+            "status": "CATALOGUED",
+            "artist": artist,
+            "album": album,
+            "title": title,
+            "audio_hash": audio_hash,
+        },
+    )
+    ctx.conn.execute(
+        "UPDATE archive SET canonicalized_at = datetime('now'), canon_action = 'CONVERTED' "
+        "WHERE file_path = ?",
+        (str(path),),
+    )
+    ctx.conn.commit()
+    return path
+
+
+# ── STAGING flow (Grey's 2026-08-11 design decision) ───────────────────────────
+
+class TestFinalizeFromStaging:
+    def test_moves_staged_file_into_alac_library_and_empties_staging(self, ctx):
+        """A CONVERTED/TRANSCODED row's source lives in STAGING, not
+        INBOX. Finalize must move it into ALAC-Library the same way as a
+        PASSTHROUGH row, and STAGING must end up empty -- a clean run
+        should never leave anything behind there."""
+        staged = _make_staged_track(ctx, "1_source.m4a", "Artist", "Album", "Title")
+
+        result = FinalizeStage().execute(ctx)
+
+        assert result.success is True
+        assert result.files_changed == 1
+        assert not staged.exists()
+
+        expected = ctx.alac_library / _TEST_BATCH_DATE / "Artist" / "Album" / "Artist - Title.m4a"
+        assert expected.exists()
+        assert expected.read_bytes() == b"FAKE STAGED CANONICAL AUDIO DATA"
+
+        # STAGING is empty -- nothing left behind after a clean run.
+        assert list(ctx.staging.rglob("*")) == []
+
+    def test_db_collision_reverts_alac_copy_and_leaves_staged_source(self, ctx):
+        """A real UNIQUE collision on archive.file_path (another row
+        already holding the exact ALAC-Library path this row would take)
+        must delete the just-created ALAC-Library copy and leave the
+        STAGING source completely untouched -- never lose track of it."""
+        staged = _make_staged_track(ctx, "1_source.m4a", "Artist", "Album", "Title")
+        expected = ctx.alac_library / _TEST_BATCH_DATE / "Artist" / "Album" / "Artist - Title.m4a"
+
+        # A decoy row that already occupies the exact ALAC-Library path
+        # this row's finalize would try to record.
+        upsert_archive(ctx.conn, {"file_path": str(expected), "status": "CATALOGUED"})
+        ctx.conn.commit()
+
+        result = FinalizeStage().execute(ctx)
+
+        assert result.files_errored == 1
+        assert staged.exists()  # STAGING source untouched
+        assert not expected.exists()  # reverted, not left as an untracked copy
+
+        row = ctx.conn.execute(
+            "SELECT finalized_at FROM archive WHERE file_path = ?", (str(staged),)
+        ).fetchone()
+        assert row["finalized_at"] is None
+
+        events = ctx.conn.execute(
+            "SELECT event_type FROM events WHERE event_type='FINALIZE_DB_COLLISION'"
+        ).fetchall()
+        assert len(events) == 1
+
+        events = ctx.conn.execute(
+            "SELECT event_type FROM events WHERE event_type='FINALIZE_DB_COLLISION'"
+        ).fetchall()
+        assert len(events) == 1
+
+
 # ── Live run ──────────────────────────────────────────────────────────────────
 
 class TestFinalizeRunLive:

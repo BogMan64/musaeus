@@ -240,6 +240,139 @@ class TestErrorHandling:
         assert any("missing" in e.lower() for e in result.errors)
 
 
+# ── STAGING flow (Grey's 2026-08-11 design decision) ───────────────────────────
+
+class TestStagingFlow:
+    def test_converted_file_lands_in_staging_not_inbox(self, ctx):
+        """CONVERT/TRANSCODE output must land in config.staging, never as
+        a sibling of the source in INBOX. Canonicalize's job stops at a
+        verified STAGING copy -- ALAC-Library placement is Finalize's."""
+        path = ctx.inbox / "source.flac"
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        _gen_audio(path, "flac")
+        _register_catalogued(ctx, path, "flac", ".flac")
+
+        CanonicalizeStage().execute(ctx)
+
+        row = ctx.conn.execute("SELECT file_path FROM archive").fetchone()
+        new_path = Path(row["file_path"])
+        assert new_path.parent == ctx.staging
+        assert not (ctx.inbox / "source.m4a").exists()
+
+    def test_db_collision_leaves_source_and_staged_file_untouched(self, ctx):
+        """A real UNIQUE collision on archive.file_path (another row
+        already holding the exact STAGING path this row would take) must
+        revert nothing on disk: the pre-conversion INBOX original is
+        never deleted, and the verified STAGING copy is left in place
+        for manual review rather than being wired into the DB."""
+        path = ctx.inbox / "source.flac"
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        _gen_audio(path, "flac")
+        _register_catalogued(ctx, path, "flac", ".flac")
+
+        row_id = ctx.conn.execute(
+            "SELECT id FROM archive WHERE file_path = ?", (str(path),)
+        ).fetchone()["id"]
+        colliding_staging_path = ctx.staging / f"{row_id}_source.m4a"
+
+        # A decoy row that already occupies the exact path this row's
+        # verified STAGING copy would be recorded at. canonicalized_at is
+        # set so _get_pending() doesn't also pick up this decoy itself
+        # (it exists purely to hold the colliding file_path).
+        upsert_archive(ctx.conn, {
+            "file_path": str(colliding_staging_path),
+            "status": "CATALOGUED",
+        })
+        ctx.conn.execute(
+            "UPDATE archive SET canonicalized_at = datetime('now') WHERE file_path = ?",
+            (str(colliding_staging_path),),
+        )
+        ctx.conn.commit()
+
+        result = CanonicalizeStage().execute(ctx)
+
+        assert result.files_errored == 1
+        assert path.exists()  # original untouched
+        assert colliding_staging_path.exists()  # staged copy left behind for review
+
+        row = ctx.conn.execute(
+            "SELECT canonicalized_at FROM archive WHERE id = ?", (row_id,)
+        ).fetchone()
+        assert row["canonicalized_at"] is None
+
+        events = ctx.conn.execute(
+            "SELECT event_type FROM events WHERE event_type='CANONICALIZE_DB_COLLISION'"
+        ).fetchall()
+        assert len(events) == 1
+
+    def test_failed_verification_leaves_marked_file_in_staging(self, ctx, monkeypatch):
+        """A verification failure must never silently delete the STAGING
+        attempt or silently retry -- it's renamed to .FAILED_VERIFY and
+        left there, with a CANONICALIZE_VERIFY_FAILED event logged, and
+        the original INBOX source is never touched."""
+        from musaeus.stages import canonicalize as canon_mod
+
+        path = ctx.inbox / "source.flac"
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        _gen_audio(path, "flac")
+        _register_catalogued(ctx, path, "flac", ".flac")
+
+        def _fail_verify(source, output):
+            raise canon_mod.CanonicalizeError("simulated verification failure")
+
+        monkeypatch.setattr(canon_mod, "_verify_conversion", _fail_verify)
+
+        result = CanonicalizeStage().execute(ctx)
+
+        assert result.files_errored == 1
+        assert path.exists()  # original completely untouched
+
+        failed = list(ctx.staging.glob("*.FAILED_VERIFY"))
+        assert len(failed) == 1
+
+        row = ctx.conn.execute("SELECT canonicalized_at FROM archive").fetchone()
+        assert row["canonicalized_at"] is None
+
+        events = ctx.conn.execute(
+            "SELECT note FROM events WHERE event_type='CANONICALIZE_VERIFY_FAILED'"
+        ).fetchall()
+        assert len(events) == 1
+        assert "simulated verification failure" in events[0]["note"]
+
+    def test_full_pipeline_leaves_staging_empty(self, ctx):
+        """End-to-end: real Canonicalize (flac -> STAGING) followed by
+        real Finalize (STAGING -> ALAC-Library) must leave STAGING
+        completely empty, matching Grey's design: STAGING should be
+        empty at the end of any clean run, and anything left behind is
+        itself a signal to check."""
+        from musaeus.stages.finalize import FinalizeStage
+
+        path = ctx.inbox / "source.flac"
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        _gen_audio(path, "flac")
+        _register_catalogued(ctx, path, "flac", ".flac")
+
+        canon_result = CanonicalizeStage().execute(ctx)
+        assert canon_result.success is True
+
+        staged = list(ctx.staging.glob("*.m4a"))
+        assert len(staged) == 1  # confirms the STAGING hop actually happened
+
+        finalize_result = FinalizeStage().execute(ctx)
+        assert finalize_result.success is True
+        assert finalize_result.files_changed == 1
+
+        assert list(ctx.staging.rglob("*")) == []  # nothing left behind
+
+        row = ctx.conn.execute(
+            "SELECT file_path, finalized_at FROM archive"
+        ).fetchone()
+        assert row["finalized_at"] is not None
+        final_path = Path(row["file_path"])
+        assert final_path.exists()
+        assert final_path.is_relative_to(ctx.alac_library)  # landed under ALAC-Library
+
+
 # ── Dry run ───────────────────────────────────────────────────────────────────
 
 class TestDryRun:

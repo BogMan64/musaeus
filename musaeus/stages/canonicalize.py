@@ -40,17 +40,38 @@ output to decide skip-vs-reconvert, never re-probes a freshly written
 file. Canonicalize adds a real post-conversion check here (confirmed with
 Grey as a deliberate improvement, not a port): ffprobe the output,
 require the stream count and duration (within a small tolerance) to match
-the source, before the temp file is renamed into place and the DB is
-updated. If verification fails, the source is left untouched and the
-failure is recorded as a normal per-file error — never a silent skip.
+the source, before it is trusted and the original is ever touched.
+
+STAGING flow (Grey's explicit design decision, 2026-08-11 session):
+CONVERTED/TRANSCODED output is written to config.staging (vault_root/
+STAGING), never as a sibling file next to the source in INBOX. Sequence
+per file:
+  1. ffmpeg writes to STAGING/<row.id>_<name>.m4a.canon_tmp
+  2. ffprobe-verify that tmp file against the still-untouched INBOX
+     source (stream count + duration)
+  3. on success: rename it to STAGING/<row.id>_<name>.m4a (still inside
+     STAGING -- Canonicalize never writes into ALAC-Library itself,
+     that's Finalize's job) and update archive.file_path/canon_action/
+     canonicalized_at by rowid (organize.py's _apply_rename pattern: disk
+     change first, DB update second; a sqlite3.IntegrityError on the DB
+     write is caught and reverted -- the staged file and the original
+     INBOX source are both left exactly as they were, nothing is lost)
+  4. only once the DB row safely points at the verified STAGING copy is
+     the original INBOX source deleted
+  5. on ffmpeg or verification failure: the partial/bad output is
+     RENAMED to STAGING/<row.id>_<name>.m4a.FAILED_VERIFY and left there
+     — never silently deleted, never silently retried. A
+     CANONICALIZE_VERIFY_FAILED event is logged. The original INBOX
+     source is untouched throughout.
+Finalize then picks the row up from wherever archive.file_path currently
+points (STAGING for CONVERTED/TRANSCODED, still INBOX for PASSTHROUGH)
+and moves it into ALAC-Library, deleting the STAGING copy only after
+that move is confirmed. A STAGING directory that isn't empty at the end
+of a clean run is itself a signal something needs manual review.
 
 Rules:
   - Only processes CATALOGUED files (status='CATALOGUED')
   - Skips files with canonicalized_at already set, unless --force
-  - Writes to a .tmp sibling file first, verifies, then renames into
-    place over the original — the DB row's file_path and extension both
-    change together, in the same way organize.py's _apply_rename keeps
-    disk and DB from drifting
   - dry_run() reports the action each file would receive, no ffmpeg calls
 """
 
@@ -59,6 +80,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -294,10 +316,44 @@ class CanonicalizeStage(BaseStage):
             return "CONVERT"
         return "TRANSCODE"
 
+    def _quarantine_failed_staging(
+        self, ctx: RunContext, tmp_output: Path, staging_name: str, source: Path, exc: Exception
+    ) -> None:
+        """
+        Leave a failed conversion/verification attempt visible in STAGING
+        instead of silently deleting it (Grey's explicit design decision:
+        STAGING should be empty at the end of a clean run, so anything
+        left there -- including a failed attempt -- is itself a signal to
+        investigate manually). The original INBOX source is never touched
+        here, and the row is never marked canonicalized, so it stays
+        eligible to be picked up (and produce a fresh attempt) on a later
+        run rather than being silently retried within this one.
+        """
+        if tmp_output.exists():
+            failed_path = ctx.staging / f"{staging_name}.FAILED_VERIFY"
+            try:
+                tmp_output.rename(failed_path)
+            except OSError:
+                failed_path = tmp_output  # rename itself failed; report the tmp path as-is
+        else:
+            failed_path = tmp_output
+        ctx.log_event(
+            "CANONICALIZE_VERIFY_FAILED",
+            file_path=str(failed_path),
+            old_value=str(source),
+            new_value=None,
+            stage=self.NAME,
+            note=str(exc),
+        )
+
     def _process_one(self, ctx: RunContext, row: dict, dry_run: bool) -> tuple[str, str]:
         """
         Returns (canon_action, detail). canon_action is one of
-        PASSTHROUGH/CONVERTED/TRANSCODED/ERROR.
+        PASSTHROUGH/CONVERTED/TRANSCODED/ERROR. Does NOT touch the
+        original INBOX source or the DB -- run() does both, and only
+        after this has produced a verified STAGING copy, so a DB
+        collision or crash between here and there never loses the
+        source (see module docstring's STAGING flow).
         """
         source = Path(row["file_path"])
         if not source.exists():
@@ -311,27 +367,21 @@ class CanonicalizeStage(BaseStage):
         if dry_run:
             return ("CONVERTED" if action == "CONVERT" else "TRANSCODED"), "[dry run]"
 
-        output = source.with_suffix(".m4a.canon_tmp")
+        ctx.staging.mkdir(parents=True, exist_ok=True)
+        staging_name = f"{row['id']}_{source.stem}.m4a"
+        tmp_output = ctx.staging / f"{staging_name}.canon_tmp"
+        staged_output = ctx.staging / staging_name
+
         try:
             if action == "CONVERT":
-                _convert_to_alac(source, output)
+                _convert_to_alac(source, tmp_output)
             else:
-                _transcode_to_aac(source, output)
+                _transcode_to_aac(source, tmp_output)
 
-            _verify_conversion(source, output)
+            _verify_conversion(source, tmp_output)
 
-            final_path = source.with_suffix(".m4a")
-            if final_path == source:
-                # Source was already .m4a with a non-canonical codec
-                # (shouldn't normally happen given _decide_action, but
-                # guard against clobbering the source with itself).
-                final_path = source.with_name(source.stem + "_canon.m4a")
-
-            output.rename(final_path)
-            if final_path != source:
-                source.unlink(missing_ok=True)
-
-            row["_final_path"] = str(final_path)
+            tmp_output.rename(staged_output)
+            row["_final_path"] = str(staged_output)
 
             if action == "TRANSCODE":
                 _append_tunemymusic_row(ctx, {
@@ -343,17 +393,15 @@ class CanonicalizeStage(BaseStage):
                     "duration": row.get("duration"),
                     "file_path": str(source),
                 })
-                return "TRANSCODED", "sub-lossless -> 256k AAC-in-.m4a"
+                return "TRANSCODED", "sub-lossless -> 256k AAC-in-.m4a (staged)"
 
-            return "CONVERTED", "lossless -> ALAC-in-.m4a"
+            return "CONVERTED", "lossless -> ALAC-in-.m4a (staged)"
 
         except CanonicalizeError as exc:
-            if output.exists():
-                output.unlink(missing_ok=True)
+            self._quarantine_failed_staging(ctx, tmp_output, staging_name, source, exc)
             return "ERROR", str(exc)
         except OSError as exc:
-            if output.exists():
-                output.unlink(missing_ok=True)
+            self._quarantine_failed_staging(ctx, tmp_output, staging_name, source, exc)
             return "ERROR", f"filesystem error: {exc}"
 
     # ── run ───────────────────────────────────────────────────────────────────
@@ -381,9 +429,22 @@ class CanonicalizeStage(BaseStage):
                 result.files_errored += 1
                 result.errors.append(f"{Path(row['file_path']).name}: {detail}")
                 logger.warning("[canonicalize] %s: %s", row["file_path"], detail)
-            else:
-                result.files_changed += 1
-                new_path = row.get("_final_path", row["file_path"])
+                if i % _COMMIT_EVERY == 0:
+                    ctx.conn.commit()
+                    logger.info("canonicalize: checkpoint %d/%d", i, total)
+                continue
+
+            new_path = row.get("_final_path", row["file_path"])
+            old_path = row["file_path"]
+
+            # organize.py's _apply_rename pattern: the on-disk side (the
+            # verified STAGING copy) already exists; the DB write is the
+            # only thing that can still fail here (a UNIQUE collision on
+            # archive.file_path). If it does, revert nothing on disk --
+            # the original INBOX source hasn't been touched yet, and the
+            # staged file is simply left behind for manual review instead
+            # of being wired into the DB.
+            try:
                 ctx.conn.execute(
                     """
                     UPDATE archive
@@ -394,18 +455,45 @@ class CanonicalizeStage(BaseStage):
                     """,
                     (new_path, outcome, row["id"]),
                 )
-                ctx.log_event(
-                    "CANONICALIZE",
-                    file_path=new_path,
-                    old_value=row["file_path"],
-                    new_value=outcome,
-                    stage=self.NAME,
-                    note=detail,
+            except sqlite3.IntegrityError as exc:
+                logger.error(
+                    "[canonicalize] DB collision for row %s -> %s (%s); "
+                    "leaving staged file in place, source untouched",
+                    row["id"], new_path, exc,
                 )
-                if new_path != row["file_path"]:
-                    logger.info("[canonicalize] %s: %s -> %s", outcome, row["file_path"], new_path)
-                else:
-                    logger.info("[canonicalize] %s: %s", outcome, new_path)
+                result.files_errored += 1
+                result.errors.append(f"{Path(old_path).name}: DB collision on {new_path}: {exc}")
+                ctx.log_event(
+                    "CANONICALIZE_DB_COLLISION",
+                    file_path=new_path,
+                    old_value=old_path,
+                    new_value=None,
+                    stage=self.NAME,
+                    note=str(exc),
+                )
+                if i % _COMMIT_EVERY == 0:
+                    ctx.conn.commit()
+                    logger.info("canonicalize: checkpoint %d/%d", i, total)
+                continue
+
+            result.files_changed += 1
+            ctx.log_event(
+                "CANONICALIZE",
+                file_path=new_path,
+                old_value=old_path,
+                new_value=outcome,
+                stage=self.NAME,
+                note=detail,
+            )
+
+            # Only now, with the DB row safely pointing at the verified
+            # STAGING copy, is it safe to remove the pre-conversion
+            # original -- never before the DB write is confirmed.
+            if new_path != old_path:
+                Path(old_path).unlink(missing_ok=True)
+                logger.info("[canonicalize] %s: %s -> %s", outcome, old_path, new_path)
+            else:
+                logger.info("[canonicalize] %s: %s", outcome, new_path)
 
             if i % _COMMIT_EVERY == 0:
                 ctx.conn.commit()
