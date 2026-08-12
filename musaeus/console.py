@@ -281,36 +281,47 @@ class Console:
             return
 
         try:
-            ctx = RunContext.new(self._config, conn, dry_run=dry_run)
-            stages: list[BaseStage] = [cls() for cls in DEFAULT_PIPELINE]
+            try:
+                ctx = RunContext.new(self._config, conn, dry_run=dry_run)
+                stages: list[BaseStage] = [cls() for cls in DEFAULT_PIPELINE]
 
-            for stage in stages:
+                for stage in stages:
+                    print()
+                    print(_c(f"  ── {stage.NAME.upper()} ──", _BOLD, _BLUE))
+                    result = stage.execute(ctx)
+
+                    if result.success:
+                        _ok(result.summarise())
+                    else:
+                        _err(result.summarise())
+
+                    for note in result.notes:
+                        _info(note)
+                    for err in result.errors:
+                        _err(f"  ERROR: {err}")
+
                 print()
-                print(_c(f"  ── {stage.NAME.upper()} ──", _BOLD, _BLUE))
-                result = stage.execute(ctx)
-
-                if result.success:
-                    _ok(result.summarise())
+                all_ok = all(r.success for r in ctx.stage_results)
+                if all_ok:
+                    _ok(f"Pipeline complete  run_id={ctx.run_id}")
                 else:
-                    _err(result.summarise())
+                    _warn(f"Pipeline finished with errors  run_id={ctx.run_id}")
 
-                for note in result.notes:
-                    _info(note)
-                for err in result.errors:
-                    _err(f"  ERROR: {err}")
+                ctx.finish()
 
-            print()
-            all_ok = all(r.success for r in ctx.stage_results)
-            if all_ok:
-                _ok(f"Pipeline complete  run_id={ctx.run_id}")
-            else:
-                _warn(f"Pipeline finished with errors  run_id={ctx.run_id}")
-
-            ctx.finish()
-
-        except Exception:
-            _err("Pipeline crashed — see traceback below")
-            traceback.print_exc()
+            except Exception:
+                _err("Pipeline crashed — see traceback below")
+                traceback.print_exc()
+        finally:
+            # Guaranteed close on every exit path -- including
+            # KeyboardInterrupt, which is a BaseException and would
+            # otherwise skip both ctx.finish()'s close and the
+            # except-Exception branch above, leaking an open connection
+            # that then locks out any later stage run in this same
+            # process (the exact bug behind two "database is locked"
+            # crashes in one session, 2026-08-11). Safe to call even
+            # after ctx.finish() already closed it -- closing an
+            # already-closed sqlite3.Connection is a documented no-op.
             try:
                 conn.close()
             except Exception:
@@ -325,22 +336,28 @@ class Console:
         if conn is None:
             return
         try:
-            ctx = RunContext.new(self._config, conn, dry_run=dry_run)
-            stage = stage_cls()
-            _section(f"{stage.NAME.upper()}  [{mode}]")
-            result = stage.execute(ctx)
-            if result.success:
-                _ok(result.summarise())
-            else:
-                _err(result.summarise())
-            for note in result.notes:
-                _info(note)
-            for err_msg in result.errors:
-                _err(f"  ERROR: {err_msg}")
-            ctx.finish()
-        except Exception:
-            _err("Stage crashed — see traceback below")
-            traceback.print_exc()
+            try:
+                ctx = RunContext.new(self._config, conn, dry_run=dry_run)
+                stage = stage_cls()
+                _section(f"{stage.NAME.upper()}  [{mode}]")
+                result = stage.execute(ctx)
+                if result.success:
+                    _ok(result.summarise())
+                else:
+                    _err(result.summarise())
+                for note in result.notes:
+                    _info(note)
+                for err_msg in result.errors:
+                    _err(f"  ERROR: {err_msg}")
+                ctx.finish()
+            except Exception:
+                _err("Stage crashed — see traceback below")
+                traceback.print_exc()
+        finally:
+            # Guaranteed close on every exit path -- see _run_pipeline's
+            # identical comment for why this must be a finally, not just
+            # the except-Exception branch (KeyboardInterrupt is a
+            # BaseException and would otherwise leak the connection).
             try:
                 conn.close()
             except Exception:
@@ -590,25 +607,34 @@ class Console:
         if conn is None:
             return
         try:
-            ctx = RunContext.new(self._config, conn, dry_run=dry_run)
-            if stash:
-                for k, v in stash.items():
-                    ctx.set(k, v)
-            stage = stage_cls()
-            _section(f"{stage.NAME.upper()}  [{mode}]")
-            result = stage.execute(ctx)
-            if result.success:
-                _ok(result.summarise())
-            else:
-                _err(result.summarise())
-            for note in result.notes:
-                _info(note)
-            for err_msg in result.errors:
-                _err(f"  ERROR: {err_msg}")
-            ctx.finish()
-        except Exception:
-            _err("Stage crashed — see traceback below")
-            traceback.print_exc()
+            try:
+                ctx = RunContext.new(self._config, conn, dry_run=dry_run)
+                if stash:
+                    for k, v in stash.items():
+                        ctx.set(k, v)
+                stage = stage_cls()
+                _section(f"{stage.NAME.upper()}  [{mode}]")
+                result = stage.execute(ctx)
+                if result.success:
+                    _ok(result.summarise())
+                else:
+                    _err(result.summarise())
+                for note in result.notes:
+                    _info(note)
+                for err_msg in result.errors:
+                    _err(f"  ERROR: {err_msg}")
+                ctx.finish()
+            except Exception:
+                _err("Stage crashed — see traceback below")
+                traceback.print_exc()
+        finally:
+            # Guaranteed close on every exit path -- see _run_pipeline's
+            # identical comment for why this must be a finally, not just
+            # the except-Exception branch (KeyboardInterrupt is a
+            # BaseException and would otherwise leak the connection).
+            # This is the exact call site from the traceback that
+            # exposed the bug (Forge failing with "database is locked"
+            # after an interrupted Sentinel run leaked its connection).
             try:
                 conn.close()
             except Exception:
