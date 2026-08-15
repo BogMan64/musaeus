@@ -181,6 +181,84 @@ def _clear_resume() -> None:
 
 # ── Pipeline runner ───────────────────────────────────────────────────────────
 
+# P0-02 (musaeus-consumer-readiness spec): temporary, blunt, fail-closed
+# guard for --dry-run / preview.
+#
+# This is a compatibility patch, NOT the real preview fix -- the real fix
+# (a typed RunMode.PREVIEW with a pure in-memory planner, MCR-001/DR-01) is
+# P0-04/P0-05 and does not exist in this repository yet. Until it does,
+# dry_run=True is REJECTED outright rather than allowed to keep doing the
+# two confirmed-unsafe things below (see tests/test_p0_01_characterization.py
+# for the live reproduction each of these is based on):
+#
+#   1. Every dry_run=True call into _run_pipeline() unconditionally runs
+#      cfg.ensure_dirs() (creates the real vault directory skeleton) and
+#      RunContext.new()/record_stage() (creates/writes the real SQLite DB
+#      and commits RUN_START/STAGE_COMPLETE/RUN_END events) before any
+#      stage executes. None of that is gated behind dry_run at this layer
+#      -- only each individual stage's own archive/duplicates/
+#      validation_issues writes are.
+#   2. EnrichStage/MBEnrichStage/AcousticIDStage make their Last.fm/
+#      MusicBrainz/AcoustID network calls unconditionally inside their
+#      shared _enrich()/_run() methods -- only the DB write *after* the
+#      network call is gated behind dry_run, not the network call itself.
+#
+# This guard fires before get_config()/cfg.ensure_dirs()/open_db() -- i.e.
+# before ANY configuration, directory, database, or network initialisation
+# -- so a rejected invocation touches nothing. It applies uniformly to
+# every command that routes through _run_pipeline() (see tasks.md's P0-02
+# completion evidence for the exact command list); it does not apply when
+# dry_run is False, and it does not touch the separate rebuild-db/review/
+# canon-review commands or musaeus/console.py's own interactive pipeline
+# runner, none of which call this function.
+_NETWORK_STAGES: frozenset[type[BaseStage]] = frozenset(
+    {EnrichStage, MBEnrichStage, AcousticIDStage}
+)
+
+_DRY_RUN_REASON_DIRS_DB = (
+    "dry-run unconditionally creates real directories (cfg.ensure_dirs()) and "
+    "writes real database/event records (RunContext.new()/record_stage()) "
+    "before any stage runs -- this is not a safe, side-effect-free preview today."
+)
+_DRY_RUN_REASON_NETWORK = (
+    "{stages} make live network call(s) unconditionally even under --dry-run "
+    "-- only the database write afterwards is currently skipped, not the "
+    "network request itself."
+)
+
+
+def _dry_run_guard_message(reasons: list[str]) -> str:
+    reason_lines = "\n".join(f"  Reason: {r}" for r in reasons)
+    return (
+        "ERROR: --dry-run / preview is temporarily disabled -- this command "
+        "was refused and did not run.\n"
+        f"{reason_lines}\n"
+        "  This is a temporary compatibility patch (musaeus-consumer-readiness "
+        "spec, task P0-02), not the real preview fix -- see tasks P0-04/P0-05.\n"
+        "  Run the same command without --dry-run for a real run, or wait for "
+        "the safety fix that restores a truthful preview mode."
+    )
+
+
+def _reject_unsafe_dry_run(stages: list[type[BaseStage]], dry_run: bool) -> int | None:
+    """
+    P0-02 fail-closed guard. Returns exit code 2 if *dry_run* must be
+    rejected, or None if the caller should proceed normally.
+
+    Must be called before get_config()/cfg.ensure_dirs()/open_db() in
+    _run_pipeline() -- see the module comment above for why.
+    """
+    if not dry_run:
+        return None
+
+    reasons = [_DRY_RUN_REASON_DIRS_DB]
+    offending_network = [cls.__name__ for cls in stages if cls in _NETWORK_STAGES]
+    if offending_network:
+        reasons.append(_DRY_RUN_REASON_NETWORK.format(stages=", ".join(offending_network)))
+
+    print(_dry_run_guard_message(reasons), file=sys.stderr)
+    return 2
+
 
 def _run_pipeline(
     stages: list[type[BaseStage]],
@@ -190,8 +268,13 @@ def _run_pipeline(
     """
     Run a sequence of stages.
     stash: optional dict of key→value to pre-load into ctx before running.
-    Returns 0 on success, 1 on any stage failure.
+    Returns 0 on success, 1 on any stage failure, 2 if dry_run is rejected
+    by the P0-02 fail-closed guard (see _reject_unsafe_dry_run above).
     """
+    guard_exit = _reject_unsafe_dry_run(stages, dry_run)
+    if guard_exit is not None:
+        return guard_exit
+
     try:
         cfg = get_config()
         cfg.ensure_dirs()
@@ -863,6 +946,10 @@ def _build_parser() -> argparse.ArgumentParser:
     corrupt_p = sub.add_parser("corrupt", help="Detect and quarantine corrupt/truncated audio files")
     corrupt_p.add_argument("--dry-run", action="store_true", help="Report only, no quarantine")
 
+    # permissions
+    permissions_p = sub.add_parser("permissions", help="Fix file/folder permissions under inbox (644/755)")
+    permissions_p.add_argument("--dry-run", action="store_true", help="Report only, no chmod")
+
     # artist-consolidate
     artist_consol_p = sub.add_parser("artist-consolidate", help="Normalize artist name variants to canonical forms")
     artist_consol_p.add_argument("--dry-run", action="store_true", help="Show what would change, no DB writes")
@@ -1189,6 +1276,10 @@ def main() -> None:
         elif command == "corrupt":
             from .stages import CorruptStage
             sys.exit(_run_pipeline([CorruptStage], dry_run=dry_run))
+
+        elif command == "permissions":
+            from .stages import PermissionsStage
+            sys.exit(_run_pipeline([PermissionsStage], dry_run=dry_run))
 
         elif command == "artist-consolidate":
             from .stages import ArtistConsolidateStage
