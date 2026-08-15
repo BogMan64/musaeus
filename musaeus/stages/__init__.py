@@ -28,6 +28,8 @@ Available stages:
   PlaylistStage  — build per-genre M3U8 playlists from the archive
   GhostStage     — mark archive entries whose files no longer exist on disk
   HealthStage    — library-wide consistency and quality checks
+  PermissionsStage — fix file/folder permissions under inbox (Windows/ExFAT
+                   sources land with wrong perms; 644 files / 755 dirs)
   EnrichStage    — Last.fm genre enrichment for tracks with missing genre
   MBEnrichStage  — MusicBrainz artist + release MBID enrichment
   NearDupeStage  — metadata-based near-duplicate detection (fuzzy title match)
@@ -37,15 +39,21 @@ Available stages:
 
 DEFAULT_PIPELINE (`musaeus run`) is the full Act 1/2/3 canonical chain:
   Act 1 (Intake & Correction): Preflight → Ingest → Sentinel → Scholar →
-         Health → Corrupt → Normalize → Sanitize → ArtistConsolidate
+         Health → Corrupt → AlbumArt → Normalize → Sanitize →
+         ArtistConsolidate
   Act 2 (Dedup & Staging):     CrossDupe → NearDupe → DupeResolver
   Act 3 (Canonicalize/Finalize): Canonicalize → Finalize → Forge →
          Tagger → Audit
 See ACT1_INTAKE_CORRECTION / ACT2_DEDUP_STAGING / ACT3_CANONICALIZE_FINALIZE
 below for the named building blocks and the reasoning behind this order.
+AlbumArt runs in Act 1, before Canonicalize, so any sidecar art it embeds
+gets carried through Canonicalize/Finalize's container conversion (see
+canonicalize.py's/transcode.py's _has_attached_picture()-gated art
+preservation) rather than being embedded after the file's already in its
+final container.
 On-demand only (not part of the canonical chain): Auditor, Curator,
            Playlist, Ghost, Enrich, MBEnrich, AcousticID, Transcode,
-           Reviewer, Organize, IntegrityStage, AlbumArt.
+           Reviewer, Organize, IntegrityStage, Permissions.
 """
 
 from .acousticid import AcousticIDStage
@@ -69,6 +77,7 @@ from .mb_enrich import MBEnrichStage
 from .neardupe import NearDupeStage
 from .normalize import NormalizeStage
 from .organize import OrganizeStage
+from .permissions import PermissionsStage
 from .playlist import PlaylistStage
 from .preflight import PreflightStage
 from .reviewer import ReviewerStage
@@ -98,6 +107,7 @@ __all__ = [
     "PlaylistStage",
     "GhostStage",
     "HealthStage",
+    "PermissionsStage",
     "CorruptStage",
     "ArtistConsolidateStage",
     "EnrichStage",
@@ -147,6 +157,7 @@ ACT1_INTAKE_CORRECTION: list[type] = [
     ScholarStage,
     HealthStage,
     CorruptStage,
+    AlbumArtStage,
     NormalizeStage,
     SanitizeStage,
     ArtistConsolidateStage,
