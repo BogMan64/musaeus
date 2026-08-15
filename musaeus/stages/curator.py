@@ -80,8 +80,17 @@ def _primary_artist(raw: str) -> str:
             name = parts[0]
     if name.lower() in _PROTECTED_ARTIST_NAMES:
         return name
+    # Only a real collaborator credit if the text after the first comma
+    # isn't an article (the/a/an, case-insensitive) -- "Beatles, The" is
+    # the confirmed real on-disk canonical suffix form, not a
+    # collaborator credit, and must survive this step untouched. Same
+    # fix as artist_consolidate.py's _strip_collaborator_tail() -- this
+    # function had the identical bug (dropped the article, produced
+    # "Beatles" as the car-export folder name for a ", The" artist).
     if "," in name:
-        name = name.split(",", 1)[0].strip()
+        head, _, tail = name.partition(",")
+        if tail.strip().lower() not in ("the", "a", "an"):
+            name = head.strip()
     return name or "Unknown Artist"
 
 
