@@ -351,10 +351,19 @@ def _run_pipeline(
         for err in result.errors:
             print(f"       ERROR: {err}", file=sys.stderr)
 
-        completed_names.append(stage_name)
-        _save_resume(completed_names, stage_names)
-
-        if not result.success:
+        # Only a genuinely successful stage counts as "done" for resume
+        # purposes (2026-08-18 fix). Previously this ran unconditionally,
+        # so a stage that completed but reported failure (result.success
+        # is False -- no exception, just an internal error) got marked
+        # "completed" anyway: a resumed run would silently skip it instead
+        # of retrying it. The pipeline still continues to the next stage
+        # either way (unchanged -- matches musaeus_overnight.sh's own
+        # "each top-level stage runs independently" philosophy); only
+        # what counts as resumable-skip changes.
+        if result.success:
+            completed_names.append(stage_name)
+            _save_resume(completed_names, stage_names)
+        else:
             exit_code = 1
 
     print()

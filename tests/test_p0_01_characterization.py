@@ -177,27 +177,25 @@ class TestDefaultPipelineDryRunCharacterization:
 
 class TestResumeRecordsFailedStageAsCompleteCharacterization:
     """
-    Reproduces, against a disposable vault, the exact baseline defect
+    FIXED 2026-08-18. Used to reproduce the baseline defect
     requirements.md names: "Resume records failed stages as complete and
-    permits downstream work to continue." This is confirmed live
-    behaviour today, not merely audit prose.
+    permits downstream work to continue." cli.py's _run_pipeline() now
+    only appends a stage to completed_names (and saves that to the resume
+    file) when result.success is True -- a stage that runs to completion
+    but reports failure (no exception, just result.success=False) is no
+    longer treated as resumable-skip. This test now proves the fix: the
+    failed stage is retried, not silently skipped, on the next
+    invocation. This was the specific defect P0-08 (run/stage lifecycle,
+    prerequisite gating, safe resume) tracked under this name; P0-08's
+    broader scope may still have other open items unrelated to this one.
 
-    UPDATED BY P0-02: originally reproduced via dry_run=True, purely
-    because dry-run was a cheap way to exercise the resume/completed-list
-    bookkeeping without needing real stage work -- this defect is in the
-    resume mechanism itself (_save_resume/_load_resume in cli.py), not
-    specific to preview mode, and is unrelated to the P0-02 guard's
-    concern (unconditional dir/DB creation and unconditional network
-    calls under dry_run). Since P0-02 now rejects dry_run=True outright,
-    this test uses dry_run=False (a real run) against the disposable
-    vault's empty inbox instead -- every stage still completes trivially
-    with zero files to process, so the resume-bookkeeping defect
-    reproduces identically. This defect remains unfixed and is tracked
-    for P0-08 (run/stage lifecycle, prerequisite gating, safe resume),
-    not this task.
+    UPDATED BY P0-02 (kept from the original test): dry_run=True is
+    rejected outright now, so this exercises dry_run=False (a real run)
+    against the disposable vault's empty inbox -- every other stage still
+    completes trivially with zero files to process.
     """
 
-    def test_failed_stage_is_recorded_as_completed_and_skipped_on_resume(
+    def test_failed_stage_is_retried_not_skipped_on_resume(
         self, disposable_vault, monkeypatch, tmp_path
     ):
         import musaeus.cli as cli_mod
@@ -224,17 +222,19 @@ class TestResumeRecordsFailedStageAsCompleteCharacterization:
         import json
 
         resume_state = json.loads(cli_mod._RESUME_FILE.read_text())
-        assert "NearDupeStage" in resume_state["completed"], (
-            "baseline defect reproduced: a stage that FAILED validation "
-            "was still written into the resume state's 'completed' list"
+        assert "NearDupeStage" not in resume_state["completed"], (
+            "fix regressed: a stage that FAILED validation was written "
+            "into the resume file's 'completed' list"
         )
 
-        # Second invocation: non-TTY auto-resume skips the failed stage
-        # and the pipeline now reports overall success.
+        # Second invocation: NearDupeStage's validate() is still
+        # monkeypatched to always fail, so a correct retry fails again --
+        # rc2 == 1 (honest, not silently reported as success) proves the
+        # stage was actually re-attempted, not skipped.
         rc2 = cli_mod._run_pipeline(DEFAULT_PIPELINE, dry_run=False)
-        assert rc2 == 0, (
-            "baseline defect reproduced: resume treated a previously "
-            "FAILED stage as done and reported the pipeline complete"
+        assert rc2 == 1, (
+            "fix regressed: resume treated the still-failing stage as "
+            "done and reported the pipeline complete"
         )
 
 
