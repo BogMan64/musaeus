@@ -1265,7 +1265,7 @@ def main() -> None:
             sys.exit(_run_pipeline([AuditStage], dry_run=dry_run))
 
         elif command == "forge":
-            stash: dict = {}
+            stash = {}
             if getattr(args, "force", False):
                 stash["forge_force"] = True
             target_lufs = getattr(args, "target_lufs", None)
@@ -1295,7 +1295,7 @@ def main() -> None:
             sys.exit(_run_pipeline([ArtistConsolidateStage], dry_run=dry_run))
 
         elif command == "auditor":
-            stash: dict = {}
+            stash = {}
             tl = getattr(args, "target_lufs", None)
             if tl is not None:
                 stash["auditor_target_lufs"] = float(tl)

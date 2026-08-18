@@ -79,7 +79,7 @@ def _extract_loudnorm_json(stderr: str) -> dict | None:
     for m in reversed(list(re.finditer(r"\{[^{}]*\}", stderr, re.DOTALL))):
         candidate = m.group().strip()
         try:
-            data = json.loads(candidate)
+            data: dict = json.loads(candidate)
             if "input_i" in data:
                 return data
         except json.JSONDecodeError:

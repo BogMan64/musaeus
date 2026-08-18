@@ -101,7 +101,7 @@ def _batch_date(ctx: RunContext) -> str:
     tests, defaults to today's real UTC date, computed once per run."""
     override = ctx.get("finalize_batch_date")
     if override:
-        return override
+        return str(override)
     return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
 
 

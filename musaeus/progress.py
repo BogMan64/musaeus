@@ -98,12 +98,14 @@ class ProgressTracker:
         self.console = Console() if self.use_rich else None
         self.start_time = time.time()
 
-    def _get_memory_mb(self) -> float:
+    @staticmethod
+    def _get_memory_mb() -> float:
         """Get current memory usage in MB."""
         try:
             import psutil
             process = psutil.Process()
-            return process.memory_info().rss / 1024 / 1024
+            rss_mb: float = process.memory_info().rss / 1024 / 1024
+            return rss_mb
         except ImportError:
             return 0.0
 
@@ -118,11 +120,12 @@ class ProgressTracker:
 
     def _format_bytes(self, bytes_: int) -> str:
         """Format bytes as human-readable string."""
+        size = float(bytes_)
         for unit in ['B', 'KB', 'MB', 'GB']:
-            if bytes_ < 1024:
-                return f"{bytes_:.1f}{unit}"
-            bytes_ /= 1024
-        return f"{bytes_:.1f}TB"
+            if size < 1024:
+                return f"{size:.1f}{unit}"
+            size /= 1024
+        return f"{size:.1f}TB"
 
     @contextmanager
     def stage(self, stage_name: str):
@@ -183,7 +186,7 @@ class ProgressTracker:
                 self.metrics.files_processed = current
                 self.metrics.peak_memory_mb = max(
                     self.metrics.peak_memory_mb,
-                    ProgressTracker._get_memory_mb(None)
+                    ProgressTracker._get_memory_mb()
                 )
 
                 self.progress.update(
@@ -244,6 +247,9 @@ class ProgressTracker:
         if not self.verbose:
             return
 
+        # Only called when self.use_rich is True, which is exactly when
+        # __init__ set self.console to a real Console (never None).
+        assert self.console is not None
         table = Table(show_header=False, box=None)
         table.add_column("Metric", style="cyan")
         table.add_column("Value", style="white")
@@ -292,6 +298,9 @@ class ProgressTracker:
 
     def _rich_summary(self, duration: float, files: int, changed: int, errors: int):
         """Print rich formatted overall summary."""
+        # Only called when self.use_rich is True, which is exactly when
+        # __init__ set self.console to a real Console (never None).
+        assert self.console is not None
         table = Table(title="Pipeline Summary", show_header=True)
         table.add_column("Stage", style="cyan")
         table.add_column("Duration", justify="right")

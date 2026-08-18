@@ -17,6 +17,7 @@ import json
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Any
 
 
 def rebuild_archive_from_events(conn: sqlite3.Connection, *, dry_run: bool = False) -> dict:
@@ -25,7 +26,7 @@ def rebuild_archive_from_events(conn: sqlite3.Connection, *, dry_run: bool = Fal
 
     Returns a summary dict: {cleared, replayed, files_rebuilt, errors}
     """
-    summary = {
+    summary: dict[str, Any] = {
         "cleared": 0,
         "replayed": 0,
         "files_rebuilt": 0,

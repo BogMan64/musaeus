@@ -81,7 +81,8 @@ def _mb_get(path: str, params: dict[str, str]) -> dict:
     for attempt in range(2):
         try:
             with urlopen(req, timeout=_TIMEOUT_S) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                data: dict = json.loads(resp.read().decode("utf-8"))
+                return data
         except urllib.error.HTTPError as exc:
             if exc.code == 503 and attempt == 0:
                 logger.warning("[mb_enrich] rate-limited, backing off %ds", _RETRY_WAIT_S)
@@ -142,7 +143,8 @@ def _search_release(artist_mbid: str, album_name: str) -> str | None:
     if releases:
         score = int(releases[0].get("score", 0))
         if score >= 70:
-            return releases[0]["id"]
+            release_id: str = releases[0]["id"]
+            return release_id
     return None
 
 

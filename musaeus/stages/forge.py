@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from ..context import RunContext, StageResult
 from ..loudness import (
@@ -69,6 +70,7 @@ def _write_tags_mp3(path: Path, rg_gain: float, rg_peak: float) -> bool:
     """Write ReplayGain tags to MP3."""
     try:
         from mutagen.easyid3 import EasyID3  # type: ignore[import-untyped]
+        audio: Any
         try:
             audio = EasyID3(str(path))
         except Exception:
@@ -90,6 +92,7 @@ def _write_tags_aiff(path: Path, rg_gain: float, rg_peak: float) -> bool:
         audio = AIFF(str(path))
         if audio.tags is None:
             audio.add_tags()
+        assert audio.tags is not None
         audio.tags["TXXX:replaygain_track_gain"] = \
             __import__("mutagen.id3", fromlist=["TXXX"]).TXXX(
                 encoding=3, desc="replaygain_track_gain", text=f"{rg_gain:+.2f} dB"

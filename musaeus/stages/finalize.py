@@ -211,7 +211,7 @@ class FinalizeStage(BaseStage):
         """
         override = ctx.get("finalize_batch_date")
         if override:
-            return override
+            return str(override)
         from datetime import datetime, timezone
         return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
 

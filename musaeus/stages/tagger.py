@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
@@ -34,8 +35,8 @@ def _read_tags(path: Path) -> dict[str, str]:
     try:
         if ext in (".m4a", ".alac", ".mp4"):
             from mutagen.mp4 import MP4  # type: ignore[import-untyped]
-            audio = MP4(str(path))
-            tags = audio.tags or {}
+            audio: Any = MP4(str(path))
+            tags: dict = audio.tags or {}
             def _g(key: str) -> str:
                 v = tags.get(key, [])
                 return str(v[0]) if v else ""
@@ -97,7 +98,7 @@ def _write_tags(path: Path, changes: dict[str, str]) -> bool:
     try:
         if ext in (".m4a", ".alac", ".mp4"):
             from mutagen.mp4 import MP4  # type: ignore[import-untyped]
-            audio = MP4(str(path))
+            audio: Any = MP4(str(path))
             if audio.tags is None:
                 audio.add_tags()
             _map = {

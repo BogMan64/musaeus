@@ -122,7 +122,8 @@ def _probe_streams(path: Path) -> dict:
     if proc.returncode != 0:
         raise CanonicalizeError(f"ffprobe failed ({proc.returncode}): {proc.stderr[:200]}")
     try:
-        return json.loads(proc.stdout)
+        data: dict = json.loads(proc.stdout)
+        return data
     except json.JSONDecodeError as exc:
         raise CanonicalizeError(f"ffprobe JSON parse error: {exc}") from exc
 

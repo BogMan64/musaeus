@@ -94,7 +94,7 @@ class GenreCanon:
         # 3. Fuzzy match
         try:
             from rapidfuzz import fuzz  # type: ignore[import-untyped]
-            best_score = 0
+            best_score: float = 0
             best_genre = ""
             for allowed, allowed_lower in zip(self._allowed, self._allowed_lower, strict=True):
                 score = fuzz.ratio(lower, allowed_lower)
