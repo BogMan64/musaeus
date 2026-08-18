@@ -51,7 +51,6 @@ except ImportError:
     _HAVE_RAPIDFUZZ = False
 
 from ..canon import ArtistCanon
-from ..config import get_config
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
 
@@ -158,7 +157,7 @@ class NearDupeStage(BaseStage):
     def _detect(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
 
-        cfg = get_config()
+        cfg = ctx.config
         artist_canon = ArtistCanon(cfg.meta_dir / "artist_canon.tsv")
 
         # Load all catalogued rows

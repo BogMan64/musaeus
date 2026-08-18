@@ -33,7 +33,6 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 from ..canon import GenreCanon
-from ..config import get_config
 from ..context import RunContext, StageResult
 from .base import BaseStage
 
@@ -131,7 +130,7 @@ class EnrichStage(BaseStage):
     # ── Validate ──────────────────────────────────────────────────────────────
 
     def validate(self, ctx: RunContext) -> None:
-        cfg = get_config()
+        cfg = ctx.config
         if not cfg.lastfm_api_key:
             logger.warning(
                 "[enrich] LASTFM_API_KEY not set — stage will be a no-op. "
@@ -148,7 +147,7 @@ class EnrichStage(BaseStage):
     def _enrich(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
 
-        cfg = get_config()
+        cfg = ctx.config
         api_key = cfg.lastfm_api_key
         if not api_key:
             result.notes.append(

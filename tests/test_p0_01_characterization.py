@@ -124,12 +124,15 @@ class TestDefaultPipelineDryRunCharacterization:
         self, disposable_vault, monkeypatch, tmp_path, transport_harness
     ):
         """
-        SAFE FINDING: DEFAULT_PIPELINE (Preflight -> ... -> Audit) never
-        includes EnrichStage/MBEnrichStage/AcousticIDStage/ReviewerStage
-        (confirmed via musaeus/stages/__init__.py's ACT1/ACT2/ACT3 lists
-        — those four are on-demand only). Against an empty inbox, a
-        dry-run of DEFAULT_PIPELINE makes zero outbound network
-        connection attempts. This test runs under the session-wide
+        SAFE FINDING, still true after the 2026-08-17 reorder for a
+        different reason than originally: DEFAULT_PIPELINE now DOES
+        include EnrichStage/MBEnrichStage (default-on, last in the
+        chain), but P0-02's fail-closed guard rejects `--dry-run`
+        outright, before any stage's dry_run() ever runs — so a CLI
+        dry-run still makes zero outbound network connection attempts,
+        just via a different mechanism (blocked at the guard, not by
+        pipeline composition). AcousticIDStage/ReviewerStage remain
+        on-demand only. This test runs under the session-wide
         transport_harness every other test already runs under, so any
         connection attempt would raise NetworkAccessDeniedError and fail
         this test rather than silently succeed.
@@ -240,17 +243,20 @@ class TestResumeRecordsFailedStageAsCompleteCharacterization:
 
 class TestNetworkStageDryRunCharacterization:
     """
-    EnrichStage, AcousticIDStage, and MBEnrichStage are NOT part of
-    DEFAULT_PIPELINE, but a user can invoke them directly today (`musaeus
-    enrich --dry-run`, `musaeus acousticid --dry-run`, `musaeus mb-enrich
-    --dry-run`). Confirmed by reading each stage's _enrich()/_run()
-    implementation: the network call itself happens unconditionally —
-    only the subsequent DB write is gated behind `if not dry_run`. This
-    means "--dry-run" for these three stages is not a network no-op
-    today, contrary to what a user would reasonably expect from a flag
-    named --dry-run. These tests prove it with the real network call
-    site replaced by a counting stub (not a mock of the whole stage),
-    under dry_run=True, and confirm the stub WAS invoked.
+    UPDATED 2026-08-17: EnrichStage and MBEnrichStage joined
+    DEFAULT_PIPELINE's default-on chain (positioned last, after Audit).
+    AcousticIDStage remains on-demand only. For all three, confirmed by
+    reading each stage's _enrich()/_run() implementation: the per-item
+    network call itself happens unconditionally once reachability is
+    confirmed — only the subsequent DB write is gated behind `if not
+    dry_run`. This means "--dry-run" for these stages is not a network
+    no-op today when the network IS reachable, contrary to what a user
+    would reasonably expect from a flag named --dry-run (tracked as a
+    known gap in the consumer-readiness safety spec, P0-03+, not yet
+    fixed). MBEnrichStage additionally now probes reachability once up
+    front and degrades gracefully (skip + report) rather than failing
+    when it's NOT reachable — see
+    test_mb_enrich_unreachable_network_skips_gracefully.
     """
 
     def _catalogued_row(self, ctx, file_path: str, artist: str = "Some Artist") -> None:
@@ -285,15 +291,12 @@ class TestNetworkStageDryRunCharacterization:
             calls["n"] += 1
             return []
 
-        # EnrichStage._enrich() calls the module-level get_config() singleton
-        # directly rather than using ctx.config (same isolation gap
-        # confirmed in NearDupeStage during the P0-01 characterization
-        # pass) — must patch it the same way tests/test_neardupe.py already
-        # does, or this hits the real MUSAEUS_VAULT_ROOT-not-set ValueError.
-        with (
-            patch("musaeus.stages.enrich.get_config", return_value=disposable_vault.cfg),
-            patch("musaeus.stages.enrich._lastfm_top_tags", side_effect=_stub_top_tags),
-        ):
+        # FIXED 2026-08-17: EnrichStage._enrich() used to call the
+        # module-level get_config() singleton directly instead of
+        # ctx.config (same isolation gap that existed in NearDupeStage) --
+        # now uses ctx.config like every other stage, so no get_config
+        # patch is needed here any more.
+        with patch("musaeus.stages.enrich._lastfm_top_tags", side_effect=_stub_top_tags):
             EnrichStage()._enrich(ctx, dry_run=True)
 
         assert calls["n"] == 1, (
@@ -303,7 +306,19 @@ class TestNetworkStageDryRunCharacterization:
         )
         ctx.finish()
 
-    def test_mb_enrich_dry_run_still_calls_musicbrainz_search(self, disposable_vault):
+    def test_mb_enrich_dry_run_still_calls_musicbrainz_search_when_reachable(
+        self, disposable_vault
+    ):
+        """
+        UPDATED 2026-08-17: MBEnrichStage now probes connectivity once up
+        front (see test_mb_enrich_unreachable_network_skips_gracefully for
+        that half) and, when reachable, dry_run still doesn't gate the
+        per-artist search call -- only the subsequent archive UPDATE is
+        skipped. That half of the original characterization finding is
+        still true and still worth locking in; the difference from before
+        is that this is now safe (graceful skip) rather than a hard
+        failure when unreachable, not that dry_run gates it.
+        """
         disposable_vault.cfg.ensure_dirs()
         conn = disposable_vault.open_db()
         ctx = disposable_vault.new_context(conn, dry_run=True)
@@ -317,33 +332,40 @@ class TestNetworkStageDryRunCharacterization:
             calls["n"] += 1
             return None
 
-        with patch("musaeus.stages.mb_enrich._search_artist", side_effect=_stub_search_artist):
+        with (
+            patch("musaeus.stages.mb_enrich.urlopen"),  # connectivity probe: reachable
+            patch("musaeus.stages.mb_enrich._search_artist", side_effect=_stub_search_artist),
+        ):
             MBEnrichStage()._enrich(ctx, dry_run=True)
 
         assert calls["n"] == 1, (
             "characterization finding: mb-enrich --dry-run still performs "
-            "the MusicBrainz artist search; only the archive UPDATE "
-            "afterwards is skipped"
+            "the MusicBrainz artist search when the network is reachable; "
+            "only the archive UPDATE afterwards is skipped"
         )
         ctx.finish()
 
-    def test_mb_enrich_validate_makes_a_live_network_call_regardless_of_dry_run(
-        self, transport_harness
+    def test_mb_enrich_unreachable_network_skips_gracefully(
+        self, disposable_vault, transport_harness
     ):
         """
-        Stronger finding specific to MBEnrichStage: validate() (called
-        BEFORE dry_run is even relevant) performs a live HEAD request to
-        https://musicbrainz.org/ with no dry_run parameter available to
-        gate it at all. Running under the session's transport_harness
-        turns that into a StageError (wrapped from the underlying network
-        exception) rather than a silent real connection, but the intent
-        --- musaeus mb-enrich --dry-run still contacts musicbrainz.org
-        just to validate --- is the characterization finding.
+        2026-08-17: MBEnrichStage joined DEFAULT_PIPELINE's default-on
+        chain, so an unreachable network must degrade gracefully (skip +
+        report) rather than fail the stage/run -- matches EnrichStage's
+        existing missing-API-key pattern. Runs under the session's
+        transport_harness, so the connectivity probe genuinely fails.
         """
-        from musaeus.stages.base import StageError
+        disposable_vault.cfg.ensure_dirs()
+        conn = disposable_vault.open_db()
+        ctx = disposable_vault.new_context(conn, dry_run=False)
+        self._catalogued_row(ctx, str(disposable_vault.root / "a.flac"))
+
         from musaeus.stages.mb_enrich import MBEnrichStage
 
-        attempts_before = len(transport_harness.attempts)
-        with pytest.raises(StageError, match="MusicBrainz not reachable"):
-            MBEnrichStage().validate(None)  # type: ignore[arg-type]
-        assert len(transport_harness.attempts) == attempts_before + 1
+        with patch("musaeus.stages.mb_enrich._search_artist") as search:
+            result = MBEnrichStage()._enrich(ctx, dry_run=False)
+
+        assert result.success
+        search.assert_not_called()
+        assert any("not reachable" in n.lower() for n in result.notes)
+        ctx.finish()

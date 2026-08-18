@@ -159,20 +159,13 @@ class MBEnrichStage(BaseStage):
     # ── Validate ──────────────────────────────────────────────────────────────
 
     def validate(self, ctx: RunContext) -> None:
-        # Check connectivity (lightweight HEAD to MB)
-        try:
-            req = Request(
-                "https://musicbrainz.org/",
-                headers={"User-Agent": _USER_AGENT},
-                method="HEAD",
-            )
-            urlopen(req, timeout=5)
-        except Exception as exc:
-            from .base import StageError
-
-            raise StageError(
-                f"MusicBrainz not reachable: {exc}. Check network connectivity."
-            ) from exc
+        # Connectivity is no longer checked here as a hard failure (2026-08-17):
+        # this stage joined DEFAULT_PIPELINE's default-on chain, and a network
+        # hiccup must never block or fail the whole run -- matches EnrichStage's
+        # existing graceful-degradation pattern (missing API key -> warn +
+        # no-op, not a StageError). The actual connectivity check now lives in
+        # _enrich() itself, where a real StageResult can be returned instead of
+        # raising. See _enrich()'s early-return block below.
 
         # Count work to do (columns may not exist yet — use try/except)
         try:
@@ -194,6 +187,26 @@ class MBEnrichStage(BaseStage):
 
     def _enrich(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
+
+        # Graceful degradation (2026-08-17, matches EnrichStage's missing-
+        # API-key pattern): a single lightweight connectivity probe before
+        # doing any real work. Unreachable -> skip and report, never fail
+        # the stage/run over it. Real per-request failures further down are
+        # already caught individually (_search_artist/_search_release) and
+        # skip that one artist/release without aborting the rest.
+        try:
+            req = Request(
+                "https://musicbrainz.org/",
+                headers={"User-Agent": _USER_AGENT},
+                method="HEAD",
+            )
+            urlopen(req, timeout=5)
+        except Exception as exc:
+            result.notes.append(
+                f"MusicBrainz not reachable — skipping mb_enrich this run. ({exc})"
+            )
+            ctx.record_stage(result)
+            return result
 
         if not dry_run:
             _ensure_columns(ctx.conn)

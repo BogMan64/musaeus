@@ -5,7 +5,6 @@ Requires rapidfuzz; tests skip if not installed.
 """
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 from musaeus.config import MusicConfig
@@ -101,18 +100,14 @@ class TestGroupId:
 # ── Validate ──────────────────────────────────────────────────────────────────
 
 class TestNearDupeValidate:
-    @patch("musaeus.stages.neardupe.get_config")
-    def test_validate_passes_with_rapidfuzz(self, mock_cfg, ctx, cfg):
-        mock_cfg.return_value = cfg
+    def test_validate_passes_with_rapidfuzz(self, ctx, cfg):
         NearDupeStage().validate(ctx)
 
 
 # ── Dry run ───────────────────────────────────────────────────────────────────
 
 class TestNearDupeDryRun:
-    @patch("musaeus.stages.neardupe.get_config")
-    def test_dry_run_detects_near_dupes(self, mock_cfg, ctx_dry, cfg, tmp_path):
-        mock_cfg.return_value = cfg
+    def test_dry_run_detects_near_dupes(self, ctx_dry, cfg, tmp_path):
         # Two tracks, same artist, very similar titles
         _insert_catalogued(ctx_dry, str(tmp_path / "a.flac"), "The Beatles", "Yesterday")
         _insert_catalogued(ctx_dry, str(tmp_path / "b.flac"), "The Beatles", "Yesterday (Remaster)")
@@ -122,9 +117,7 @@ class TestNearDupeDryRun:
         # Should detect the near-dupe pair
         assert result.files_changed >= 1
 
-    @patch("musaeus.stages.neardupe.get_config")
-    def test_dry_run_no_db_writes(self, mock_cfg, ctx_dry, cfg, tmp_path):
-        mock_cfg.return_value = cfg
+    def test_dry_run_no_db_writes(self, ctx_dry, cfg, tmp_path):
         _insert_catalogued(ctx_dry, str(tmp_path / "a.flac"), "Artist", "Song A")
         _insert_catalogued(ctx_dry, str(tmp_path / "b.flac"), "Artist", "Song A Remix")
 
@@ -133,9 +126,7 @@ class TestNearDupeDryRun:
         count = ctx_dry.conn.execute("SELECT COUNT(*) FROM duplicates").fetchone()[0]
         assert count == 0
 
-    @patch("musaeus.stages.neardupe.get_config")
-    def test_dry_run_no_matches(self, mock_cfg, ctx_dry, cfg, tmp_path):
-        mock_cfg.return_value = cfg
+    def test_dry_run_no_matches(self, ctx_dry, cfg, tmp_path):
         _insert_catalogued(ctx_dry, str(tmp_path / "a.flac"), "Artist A", "Totally Different")
         _insert_catalogued(ctx_dry, str(tmp_path / "b.flac"), "Artist B", "Completely Other")
 
@@ -147,9 +138,7 @@ class TestNearDupeDryRun:
 # ── Run ───────────────────────────────────────────────────────────────────────
 
 class TestNearDupeRun:
-    @patch("musaeus.stages.neardupe.get_config")
-    def test_run_writes_to_duplicates_table(self, mock_cfg, ctx, cfg, tmp_path):
-        mock_cfg.return_value = cfg
+    def test_run_writes_to_duplicates_table(self, ctx, cfg, tmp_path):
         _insert_catalogued(ctx, str(tmp_path / "a.flac"), "Pink Floyd", "Comfortably Numb")
         _insert_catalogued(ctx, str(tmp_path / "b.flac"), "Pink Floyd", "Comfortably Numb (Live)")
 
@@ -161,9 +150,7 @@ class TestNearDupeRun:
         ).fetchall()
         assert len(dupes) >= 2  # Both files in the group
 
-    @patch("musaeus.stages.neardupe.get_config")
-    def test_run_different_artists_not_matched(self, mock_cfg, ctx, cfg, tmp_path):
-        mock_cfg.return_value = cfg
+    def test_run_different_artists_not_matched(self, ctx, cfg, tmp_path):
         _insert_catalogued(ctx, str(tmp_path / "a.flac"), "Artist A", "Same Title")
         _insert_catalogued(ctx, str(tmp_path / "b.flac"), "Artist B", "Same Title")
 
@@ -174,9 +161,7 @@ class TestNearDupeRun:
         ).fetchall()
         assert len(dupes) == 0
 
-    @patch("musaeus.stages.neardupe.get_config")
-    def test_run_idempotent(self, mock_cfg, ctx, cfg, tmp_path):
-        mock_cfg.return_value = cfg
+    def test_run_idempotent(self, ctx, cfg, tmp_path):
         _insert_catalogued(ctx, str(tmp_path / "a.flac"), "Artist", "Song Title")
         _insert_catalogued(ctx, str(tmp_path / "b.flac"), "Artist", "Song Title Remix")
 
@@ -188,9 +173,7 @@ class TestNearDupeRun:
         count2 = ctx.conn.execute("SELECT COUNT(*) FROM duplicates").fetchone()[0]
         assert count2 == count1
 
-    @patch("musaeus.stages.neardupe.get_config")
-    def test_run_skips_exact_dupes(self, mock_cfg, ctx, cfg, tmp_path):
-        mock_cfg.return_value = cfg
+    def test_run_skips_exact_dupes(self, ctx, cfg, tmp_path):
         # Pre-insert an EXACT duplicate
         _insert_catalogued(ctx, str(tmp_path / "a.flac"), "Artist", "Song")
         _insert_catalogued(ctx, str(tmp_path / "b.flac"), "Artist", "Song (same)")
@@ -208,9 +191,7 @@ class TestNearDupeRun:
         ).fetchall()
         assert len(near_dupes) == 0
 
-    @patch("musaeus.stages.neardupe.get_config")
-    def test_run_empty_archive(self, mock_cfg, ctx, cfg):
-        mock_cfg.return_value = cfg
+    def test_run_empty_archive(self, ctx, cfg):
         result = NearDupeStage().execute(ctx)
         assert result.files_processed == 0
         assert result.files_changed == 0
