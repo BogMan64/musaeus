@@ -60,40 +60,62 @@ def ctx_dry(cfg: MusicConfig) -> RunContext:
 def _gen_audio(path: Path, codec: str, duration: int = 2) -> None:
     """Generate a short synthetic audio file with a real codec via ffmpeg."""
     cmd = [
-        "ffmpeg", "-y", "-f", "lavfi",
-        "-i", f"sine=frequency=440:duration={duration}",
-        "-c:a", codec, str(path),
+        "ffmpeg",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"sine=frequency=440:duration={duration}",
+        "-c:a",
+        codec,
+        str(path),
     ]
     subprocess.run(cmd, capture_output=True, check=True)
 
 
 def _probe_codec(path: Path) -> str:
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "a:0",
-         "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
-        capture_output=True, text=True, check=True,
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return out.stdout.strip()
 
 
 def _register_catalogued(ctx: RunContext, path: Path, codec: str, ext: str) -> None:
-    upsert_archive(ctx.conn, {
-        "file_path": str(path),
-        "filename": path.name,
-        "ext": ext,
-        "status": "CATALOGUED",
-        "codec": codec,
-        "artist": "Test Artist",
-        "title": "Test Title",
-        "bitrate": 128000,
-        "sample_rate": 44100,
-        "channels": 1,
-        "duration": 2.0,
-    })
+    upsert_archive(
+        ctx.conn,
+        {
+            "file_path": str(path),
+            "filename": path.name,
+            "ext": ext,
+            "status": "CATALOGUED",
+            "codec": codec,
+            "artist": "Test Artist",
+            "title": "Test Title",
+            "bitrate": 128000,
+            "sample_rate": 44100,
+            "channels": 1,
+            "duration": 2.0,
+        },
+    )
     ctx.conn.commit()
 
 
 # ── PASSTHROUGH ────────────────────────────────────────────────────────────────
+
 
 class TestPassthrough:
     def test_alac_in_m4a_untouched(self, ctx):
@@ -124,6 +146,7 @@ class TestPassthrough:
 
 
 # ── CONVERTED (lossless -> ALAC) ──────────────────────────────────────────────
+
 
 class TestConvert:
     def test_flac_converted_to_alac(self, ctx):
@@ -156,14 +179,25 @@ class TestConvert:
 
         row = ctx.conn.execute("SELECT file_path FROM archive").fetchone()
         out = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "csv=p=0", row["file_path"]],
-            capture_output=True, text=True, check=True,
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "csv=p=0",
+                row["file_path"],
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
         )
         assert abs(float(out.stdout.strip()) - 5.0) < 1.0
 
 
 # ── TRANSCODED (sub-lossless -> AAC) ──────────────────────────────────────────
+
 
 class TestTranscode:
     def test_mp3_transcoded_to_aac(self, ctx):
@@ -201,6 +235,7 @@ class TestTranscode:
 
 # ── Idempotency / re-run behaviour ─────────────────────────────────────────────
 
+
 class TestIdempotency:
     def test_already_canonicalized_file_skipped_on_rerun(self, ctx):
         path = ctx.inbox / "source.flac"
@@ -230,6 +265,7 @@ class TestIdempotency:
 
 # ── Error handling ────────────────────────────────────────────────────────────
 
+
 class TestErrorHandling:
     def test_missing_file_reported_not_crash(self, ctx):
         missing = ctx.inbox / "gone.flac"
@@ -242,6 +278,7 @@ class TestErrorHandling:
 
 
 # ── STAGING flow (Grey's 2026-08-11 design decision) ───────────────────────────
+
 
 class TestStagingFlow:
     def test_converted_file_lands_in_staging_not_inbox(self, ctx):
@@ -280,10 +317,13 @@ class TestStagingFlow:
         # verified STAGING copy would be recorded at. canonicalized_at is
         # set so _get_pending() doesn't also pick up this decoy itself
         # (it exists purely to hold the colliding file_path).
-        upsert_archive(ctx.conn, {
-            "file_path": str(colliding_staging_path),
-            "status": "CATALOGUED",
-        })
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(colliding_staging_path),
+                "status": "CATALOGUED",
+            },
+        )
         ctx.conn.execute(
             "UPDATE archive SET canonicalized_at = datetime('now') WHERE file_path = ?",
             (str(colliding_staging_path),),
@@ -365,9 +405,7 @@ class TestStagingFlow:
 
         assert list(ctx.staging.rglob("*")) == []  # nothing left behind
 
-        row = ctx.conn.execute(
-            "SELECT file_path, finalized_at FROM archive"
-        ).fetchone()
+        row = ctx.conn.execute("SELECT file_path, finalized_at FROM archive").fetchone()
         assert row["finalized_at"] is not None
         final_path = Path(row["file_path"])
         assert final_path.exists()
@@ -375,6 +413,7 @@ class TestStagingFlow:
 
 
 # ── Dry run ───────────────────────────────────────────────────────────────────
+
 
 class TestDryRun:
     def test_dry_run_makes_no_changes(self, ctx_dry):

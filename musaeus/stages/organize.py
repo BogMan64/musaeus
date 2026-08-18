@@ -81,27 +81,64 @@ _TRACK_NUMBER_PATTERNS = [
 _FORBIDDEN_CHARS = r'\/:*?"<>|'
 _FORBIDDEN_RE = re.compile(f"[{re.escape(_FORBIDDEN_CHARS)}]")
 
-_WINDOWS_RESERVED_NAMES = frozenset({
-    "CON", "PRN", "AUX", "NUL",
-    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-})
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "COM5",
+        "COM6",
+        "COM7",
+        "COM8",
+        "COM9",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+        "LPT5",
+        "LPT6",
+        "LPT7",
+        "LPT8",
+        "LPT9",
+    }
+)
 
 # ── Protected Artist Tokens (preserve special formatting) ─────────────────────
 
-_PROTECTED_TOKENS = frozenset({
-    "ABBA", "AC-DC", "AC/DC", "BTO", "CCR", "CSNY", "INXS",
-    "R.E.M.", "REM", "U2", "TLC", "SWV", "UB40", "DMX",
-})
+_PROTECTED_TOKENS = frozenset(
+    {
+        "ABBA",
+        "AC-DC",
+        "AC/DC",
+        "BTO",
+        "CCR",
+        "CSNY",
+        "INXS",
+        "R.E.M.",
+        "REM",
+        "U2",
+        "TLC",
+        "SWV",
+        "UB40",
+        "DMX",
+    }
+)
 
-_PROTECTED_ARTIST_NAMES = frozenset({
-    "crosby, stills & nash",
-    "crosby, stills, nash & young",
-    "earth, wind & fire",
-    "simon & garfunkel",
-    "hall & oates",
-    "sly & the family stone",
-})
+_PROTECTED_ARTIST_NAMES = frozenset(
+    {
+        "crosby, stills & nash",
+        "crosby, stills, nash & young",
+        "earth, wind & fire",
+        "simon & garfunkel",
+        "hall & oates",
+        "sly & the family stone",
+    }
+)
 
 # ── Helper Functions ───────────────────────────────────────────────────────────
 
@@ -242,14 +279,18 @@ class OrganizeStage(BaseStage):
         except sqlite3.IntegrityError as exc:
             logger.error(
                 "[organize] DB collision for %s -> %s (%s); reverting move",
-                current_path, target_path, exc,
+                current_path,
+                target_path,
+                exc,
             )
             try:
                 target_path.rename(current_path)
             except OSError as revert_exc:
                 logger.error(
                     "[organize] COULD NOT REVERT %s -- disk/DB now out of "
-                    "sync, needs manual fix: %s", current_path, revert_exc,
+                    "sync, needs manual fix: %s",
+                    current_path,
+                    revert_exc,
                 )
             return False
 
@@ -380,9 +421,7 @@ class OrganizeStage(BaseStage):
                 logger.info("[organize] checkpoint %d", result.files_processed)
 
         prefix = "Would" if dry_run else "Done"
-        result.notes.append(
-            f"{prefix}: renamed={renamed}, moved={moved}, skipped={skipped}"
-        )
+        result.notes.append(f"{prefix}: renamed={renamed}, moved={moved}, skipped={skipped}")
 
         ctx.record_stage(result)
         return result

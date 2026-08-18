@@ -152,9 +152,7 @@ class SanitizeStage(BaseStage):
                     if sanitized and sanitized != original:
                         changes[field] = sanitized
                         fields_fixed[field] += 1
-                        logger.info(
-                            f"[{self.NAME}] {field}: '{original}' → '{sanitized}'"
-                        )
+                        logger.info(f"[{self.NAME}] {field}: '{original}' → '{sanitized}'")
 
             # Apply changes to DB
             if changes:

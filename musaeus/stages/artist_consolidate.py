@@ -233,9 +233,7 @@ def _preferred_name(names_with_counts: list[tuple[str, int]]) -> str:
        to be longer.
     4. Apply smart title casing.
     """
-    cleaned = [
-        (_strip_collaborator_tail(n), c) for n, c in names_with_counts if n and n.strip()
-    ]
+    cleaned = [(_strip_collaborator_tail(n), c) for n, c in names_with_counts if n and n.strip()]
     cleaned = [(n, c) for n, c in cleaned if n]
     if not cleaned:
         return "Unknown Artist"

@@ -46,11 +46,22 @@ def ctx(cfg: MusicConfig) -> RunContext:
 
 def _gen_audio(path: Path, freq: int = 440) -> None:
     import subprocess
+
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-y", "-f", "lavfi", "-i", f"sine=frequency={freq}:duration=1",
-         "-c:a", "alac", str(path)],
-        capture_output=True, check=True,
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency={freq}:duration=1",
+            "-c:a",
+            "alac",
+            str(path),
+        ],
+        capture_output=True,
+        check=True,
     )
 
 
@@ -60,9 +71,14 @@ def _make_finalized_row(ctx: RunContext, relpath: str, audio_hash_val: str = "ha
     entry -- the fully-consistent state Audit should approve."""
     path = ctx.alac_library / relpath
     _gen_audio(path)
-    upsert_archive(ctx.conn, {
-        "file_path": str(path), "status": "CATALOGUED", "audio_hash": audio_hash_val,
-    })
+    upsert_archive(
+        ctx.conn,
+        {
+            "file_path": str(path),
+            "status": "CATALOGUED",
+            "audio_hash": audio_hash_val,
+        },
+    )
     ctx.conn.execute(
         "UPDATE archive SET finalized_at = datetime('now') WHERE file_path = ?",
         (str(path),),
@@ -130,9 +146,14 @@ class TestAuditHashIndexMismatch:
     def test_finalized_row_missing_from_hash_index(self, ctx):
         path = ctx.alac_library / "Artist" / "Album" / "Track.m4a"
         _gen_audio(path)
-        upsert_archive(ctx.conn, {
-            "file_path": str(path), "status": "CATALOGUED", "audio_hash": "hash999",
-        })
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(path),
+                "status": "CATALOGUED",
+                "audio_hash": "hash999",
+            },
+        )
         ctx.conn.execute(
             "UPDATE archive SET finalized_at = datetime('now') WHERE file_path = ?",
             (str(path),),
@@ -155,9 +176,14 @@ class TestAuditHashIndexMismatch:
         # ...a second row finalized but its hash never made it into the index.
         path_b = ctx.alac_library / "Artist B" / "Album" / "Track.m4a"
         _gen_audio(path_b, freq=880)
-        upsert_archive(ctx.conn, {
-            "file_path": str(path_b), "status": "CATALOGUED", "audio_hash": "hash_b",
-        })
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(path_b),
+                "status": "CATALOGUED",
+                "audio_hash": "hash_b",
+            },
+        )
         ctx.conn.execute(
             "UPDATE archive SET finalized_at = datetime('now') WHERE file_path = ?",
             (str(path_b),),

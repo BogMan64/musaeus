@@ -42,23 +42,28 @@ def ctx_dry(cfg: MusicConfig) -> RunContext:
 
 
 def _insert_catalogued(ctx: RunContext, file_path: str, ext: str = ".flac") -> None:
-    upsert_archive(ctx.conn, {
-        "file_path": file_path,
-        "status": "CATALOGUED",
-        "ext": ext,
-        "artist": "Artist",
-        "album": "Album",
-        "title": "Song",
-    })
+    upsert_archive(
+        ctx.conn,
+        {
+            "file_path": file_path,
+            "status": "CATALOGUED",
+            "ext": ext,
+            "artist": "Artist",
+            "album": "Album",
+            "title": "Song",
+        },
+    )
     ctx.conn.commit()
 
 
 # ── Validate ──────────────────────────────────────────────────────────────────
 
+
 class TestForgeValidate:
     @patch("shutil.which", return_value=None)
     def test_validate_no_ffmpeg(self, mock_which, ctx):
         from musaeus.stages.base import StageError
+
         stage = ForgeStage()
         with pytest.raises(StageError, match="ffmpeg"):
             stage.validate(ctx)
@@ -66,6 +71,7 @@ class TestForgeValidate:
     @patch("shutil.which", side_effect=lambda cmd: "/usr/bin/" + cmd)
     def test_validate_no_mutagen(self, mock_which, ctx):
         from musaeus.stages.base import StageError
+
         with patch.dict("sys.modules", {"mutagen": None}):
             stage = ForgeStage()
             with pytest.raises(StageError, match="mutagen"):
@@ -75,6 +81,7 @@ class TestForgeValidate:
     def test_validate_passes_with_all_deps(self, mock_which, ctx):
         """If ffmpeg, ffprobe and mutagen are available, validate passes."""
         import sys
+
         # Ensure mutagen is importable (mock it)
         mock_mutagen = MagicMock()
         with patch.dict(sys.modules, {"mutagen": mock_mutagen}):
@@ -83,6 +90,7 @@ class TestForgeValidate:
 
 
 # ── Dry run ───────────────────────────────────────────────────────────────────
+
 
 class TestForgeDryRun:
     @patch("musaeus.stages.forge.ForgeStage.validate")
@@ -120,6 +128,7 @@ class TestForgeDryRun:
 
 
 # ── Run (mocked loudness + tags) ──────────────────────────────────────────────
+
 
 class TestForgeRun:
     @patch("musaeus.stages.forge.ForgeStage.validate")
@@ -220,6 +229,7 @@ class TestForgeRun:
 
 
 # ── write_rg_tags dispatch ────────────────────────────────────────────────────
+
 
 class TestWriteRgTags:
     @patch("musaeus.stages.forge._write_tags_flac")

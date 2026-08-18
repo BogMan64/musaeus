@@ -36,6 +36,7 @@ def conn(cfg):
 
 # ── StageResult ───────────────────────────────────────────────────────────────
 
+
 class TestStageResult:
     def test_summarise_success(self):
         r = StageResult("ingest", success=True, files_processed=10, files_changed=8)
@@ -54,6 +55,7 @@ class TestStageResult:
 
 
 # ── RunContext.new() ──────────────────────────────────────────────────────────
+
 
 class TestRunContextNew:
     def test_creates_run_id(self, cfg, conn):
@@ -82,6 +84,7 @@ class TestRunContextNew:
 
 
 # ── RunContext accessors ──────────────────────────────────────────────────────
+
 
 class TestRunContextAccessors:
     def test_path_accessors(self, cfg, conn):
@@ -113,6 +116,7 @@ class TestRunContextAccessors:
 
 # ── RunContext.record_stage() ─────────────────────────────────────────────────
 
+
 class TestRunContextRecordStage:
     def test_records_result(self, cfg, conn):
         ctx = RunContext.new(cfg, conn)
@@ -132,6 +136,7 @@ class TestRunContextRecordStage:
 
 
 # ── RunContext.finish() ───────────────────────────────────────────────────────
+
 
 class TestRunContextFinish:
     def test_logs_run_end(self, cfg, tmp_path):

@@ -6,6 +6,7 @@ Covers the interactive auto-install/API-key-offer safety invariants added
 (no TTY) must stay report-only exactly as before this feature existed,
 and declining the batch install prompt must never touch subprocess.
 """
+
 from __future__ import annotations
 
 from musaeus.stages.preflight import PreflightStage

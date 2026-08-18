@@ -238,10 +238,7 @@ ENRICHMENT: list[type] = [
 # and what musaeus_overnight.sh's cron entry point should call
 # stage-by-stage in this same order.
 CANONICAL_PIPELINE: list[type] = (
-    ACT1_INTAKE_CORRECTION
-    + ACT2_DEDUP_STAGING
-    + ACT3_CANONICALIZE_FINALIZE
-    + ENRICHMENT
+    ACT1_INTAKE_CORRECTION + ACT2_DEDUP_STAGING + ACT3_CANONICALIZE_FINALIZE + ENRICHMENT
 )
 
 # Canonical run order for the default pipeline -- the full chain above.

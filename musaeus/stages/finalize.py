@@ -121,8 +121,7 @@ def _copy_then_verify_then_swap(source: Path, target: Path) -> None:
         tmp_size = tmp_target.stat().st_size
         if src_size != tmp_size:
             raise FinalizeError(
-                f"size mismatch after copy: source={src_size} bytes, "
-                f"copy={tmp_size} bytes"
+                f"size mismatch after copy: source={src_size} bytes, copy={tmp_size} bytes"
             )
 
         tmp_target.rename(target)  # tmp_target and target share a parent -> atomic
@@ -213,6 +212,7 @@ class FinalizeStage(BaseStage):
         if override:
             return str(override)
         from datetime import datetime, timezone
+
         return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
 
     def _target_path(self, ctx: RunContext, row: dict, source: Path) -> Path:
@@ -301,14 +301,18 @@ class FinalizeStage(BaseStage):
                     logger.error(
                         "[finalize] DB collision for row %s -> %s (%s); "
                         "reverting ALAC-Library copy, source untouched",
-                        row["id"], target, exc,
+                        row["id"],
+                        target,
+                        exc,
                     )
                     try:
                         target.unlink(missing_ok=True)
                     except OSError as revert_exc:
                         logger.error(
                             "[finalize] COULD NOT REVERT %s -- disk/DB now out of "
-                            "sync, needs manual fix: %s", target, revert_exc,
+                            "sync, needs manual fix: %s",
+                            target,
+                            revert_exc,
                         )
                     result.files_errored += 1
                     result.errors.append(f"{source.name}: DB collision on {target}: {exc}")
@@ -339,8 +343,10 @@ class FinalizeStage(BaseStage):
                     source.unlink()
                 except OSError as exc:
                     logger.warning(
-                        "[finalize] %s finalized to %s but source could not "
-                        "be removed: %s", source, target, exc,
+                        "[finalize] %s finalized to %s but source could not be removed: %s",
+                        source,
+                        target,
+                        exc,
                     )
                     result.notes.append(f"  WARNING: {source} not removed after finalize: {exc}")
 

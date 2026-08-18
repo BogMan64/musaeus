@@ -36,6 +36,7 @@ try:
         TimeElapsedColumn,
     )
     from rich.table import Table
+
     _HAVE_RICH = True
 except ImportError:
     _HAVE_RICH = False
@@ -103,6 +104,7 @@ class ProgressTracker:
         """Get current memory usage in MB."""
         try:
             import psutil
+
             process = psutil.Process()
             rss_mb: float = process.memory_info().rss / 1024 / 1024
             return rss_mb
@@ -114,14 +116,14 @@ class ProgressTracker:
         if seconds < 60:
             return f"{seconds:.1f}s"
         elif seconds < 3600:
-            return f"{seconds/60:.1f}m"
+            return f"{seconds / 60:.1f}m"
         else:
-            return f"{seconds/3600:.1f}h"
+            return f"{seconds / 3600:.1f}h"
 
     def _format_bytes(self, bytes_: int) -> str:
         """Format bytes as human-readable string."""
         size = float(bytes_)
-        for unit in ['B', 'KB', 'MB', 'GB']:
+        for unit in ["B", "KB", "MB", "GB"]:
             if size < 1024:
                 return f"{size:.1f}{unit}"
             size /= 1024
@@ -185,28 +187,23 @@ class ProgressTracker:
 
                 self.metrics.files_processed = current
                 self.metrics.peak_memory_mb = max(
-                    self.metrics.peak_memory_mb,
-                    ProgressTracker._get_memory_mb()
+                    self.metrics.peak_memory_mb, ProgressTracker._get_memory_mb()
                 )
 
                 self.progress.update(
                     self.task_id,
                     completed=current,
                     total=total,
-                    status=status or f"{current}/{total} files"
+                    status=status or f"{current}/{total} files",
                 )
 
-        task_id = progress.add_task(
-            f"[{stage_name}]",
-            total=100,
-            status="Starting...",
-            start=False
-        )
+        task_id = progress.add_task(f"[{stage_name}]", total=100, status="Starting...", start=False)
 
         return RichProgressUpdater(progress, task_id, metrics)
 
     def _simple_stage_progress(self, stage_name: str, metrics: StageMetrics):
         """Create a simple text-based progress tracker."""
+
         class SimpleProgressUpdater:
             def __init__(self, stage_name, metrics, verbose):
                 self.stage_name = stage_name
@@ -230,7 +227,9 @@ class ProgressTracker:
                     if percent - self.last_print >= 10 or current == total:
                         elapsed = time.time() - self.metrics.start_time
                         rate = current / elapsed if elapsed > 0 else 0
-                        print(f"  [{percent:5.1f}%] {current}/{total} files ({rate:.1f} files/sec) {status}")
+                        print(
+                            f"  [{percent:5.1f}%] {current}/{total} files ({rate:.1f} files/sec) {status}"
+                        )
                         self.last_print = percent
 
         return SimpleProgressUpdater(stage_name, metrics, self.verbose)
@@ -316,7 +315,7 @@ class ProgressTracker:
                 str(metrics.files_processed),
                 str(metrics.files_changed),
                 str(metrics.files_errored),
-                f"{metrics.throughput:.1f}/s"
+                f"{metrics.throughput:.1f}/s",
             )
 
         table.add_section()
@@ -326,7 +325,7 @@ class ProgressTracker:
             f"[bold]{files}[/bold]",
             f"[bold]{changed}[/bold]",
             f"[bold]{errors}[/bold]",
-            f"[bold]{files/duration if duration > 0 else 0:.1f}/s[/bold]"
+            f"[bold]{files / duration if duration > 0 else 0:.1f}/s[/bold]",
         )
 
         self.console.print("\n")
@@ -334,20 +333,24 @@ class ProgressTracker:
 
     def _simple_summary(self, duration: float, files: int, changed: int, errors: int):
         """Print simple text overall summary."""
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("PIPELINE SUMMARY")
-        print("="*60)
+        print("=" * 60)
 
         for stage_name, metrics in self.metrics.items():
-            print(f"{stage_name:20s} {self._format_duration(metrics.duration):>8s} "
-                  f"{metrics.files_processed:>6d} files  "
-                  f"{metrics.throughput:>6.1f}/s")
+            print(
+                f"{stage_name:20s} {self._format_duration(metrics.duration):>8s} "
+                f"{metrics.files_processed:>6d} files  "
+                f"{metrics.throughput:>6.1f}/s"
+            )
 
-        print("-"*60)
-        print(f"{'TOTAL':20s} {self._format_duration(duration):>8s} "
-              f"{files:>6d} files  "
-              f"{files/duration if duration > 0 else 0:>6.1f}/s")
-        print("="*60)
+        print("-" * 60)
+        print(
+            f"{'TOTAL':20s} {self._format_duration(duration):>8s} "
+            f"{files:>6d} files  "
+            f"{files / duration if duration > 0 else 0:>6.1f}/s"
+        )
+        print("=" * 60)
 
         if changed > 0:
             print(f"Changed: {changed} files")
@@ -373,7 +376,7 @@ def enable_verbose_logging():
     logging.basicConfig(
         level=logging.DEBUG,
         format="%(asctime)s [%(levelname)7s] %(name)s - %(message)s",
-        datefmt="%H:%M:%S"
+        datefmt="%H:%M:%S",
     )
 
 

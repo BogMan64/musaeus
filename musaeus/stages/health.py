@@ -173,8 +173,7 @@ class HealthStage(BaseStage):
         else:
             prefix = "Would log" if dry_run else "Logged"
             result.notes.append(
-                f"{prefix} {total_issues} issue(s) across "
-                f"{result.files_changed} file(s):"
+                f"{prefix} {total_issues} issue(s) across {result.files_changed} file(s):"
             )
             for code, count in sorted(issue_counts.items(), key=lambda x: -x[1]):
                 result.notes.append(f"  {code}: {count}")

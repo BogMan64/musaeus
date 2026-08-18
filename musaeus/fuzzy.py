@@ -141,6 +141,7 @@ def best_similarity(a: str, b: str) -> float:
 
 # ── Match predicate ───────────────────────────────────────────────────────────
 
+
 def is_match(a: str, b: str, threshold: int = DEFAULT_THRESHOLD) -> bool:
     """
     Return True if a and b are considered the same string.
@@ -150,6 +151,7 @@ def is_match(a: str, b: str, threshold: int = DEFAULT_THRESHOLD) -> bool:
 
 
 # ── Batch matching ────────────────────────────────────────────────────────────
+
 
 def best_match(
     query: str,

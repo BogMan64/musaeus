@@ -63,9 +63,9 @@ class SentinelStage(BaseStage):
     # ── Validate ──────────────────────────────────────────────────────────────
 
     def validate(self, ctx: RunContext) -> None:
-        count = ctx.conn.execute(
-            "SELECT COUNT(*) FROM archive WHERE status='PENDING'"
-        ).fetchone()[0]
+        count = ctx.conn.execute("SELECT COUNT(*) FROM archive WHERE status='PENDING'").fetchone()[
+            0
+        ]
         if count == 0:
             logger.info("[sentinel] no PENDING files — stage will be a no-op")
         # ffmpeg absence is a warning, not a hard failure — file_hash still works
@@ -115,9 +115,7 @@ class SentinelStage(BaseStage):
 
             if not path.exists():
                 logger.warning("Missing file (stale DB record — removing): %s", path_str)
-                ctx.conn.execute(
-                    "DELETE FROM archive WHERE file_path = ?", (path_str,)
-                )
+                ctx.conn.execute("DELETE FROM archive WHERE file_path = ?", (path_str,))
                 result.files_errored += 1
                 result.errors.append(f"Missing file, removed from archive: {path_str}")
                 continue
@@ -193,9 +191,7 @@ class SentinelStage(BaseStage):
                         stage=self.NAME,
                         note=f"EXACT group={group_id}",
                     )
-                    result.notes.append(
-                        f"DUPLICATE: {Path(path_str).name} == {Path(first).name}"
-                    )
+                    result.notes.append(f"DUPLICATE: {Path(path_str).name} == {Path(first).name}")
             else:
                 seen_hashes[ah] = path_str
 

@@ -155,9 +155,9 @@ _RESUME_FILE = Path.home() / ".config" / "musaeus" / "resume_state.json"
 
 def _save_resume(completed: list[str], all_stages: list[str]) -> None:
     _RESUME_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _RESUME_FILE.write_text(json.dumps(
-        {"completed": completed, "all_stages": all_stages}, indent=2
-    ))
+    _RESUME_FILE.write_text(
+        json.dumps({"completed": completed, "all_stages": all_stages}, indent=2)
+    )
 
 
 def _load_resume(all_stages: list[str]) -> list[str] | None:
@@ -828,9 +828,18 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=__doc__,
     )
     p.add_argument("--version", action="version", version=f"musaeus {__version__}")
-    p.add_argument("--verbose", "-v", action="store_true", help="Enable DEBUG logging + detailed metrics")
-    p.add_argument("--progress", action="store_true", default=True, help="Show progress bars (default: enabled)")
-    p.add_argument("--no-progress", dest="progress", action="store_false", help="Disable progress bars")
+    p.add_argument(
+        "--verbose", "-v", action="store_true", help="Enable DEBUG logging + detailed metrics"
+    )
+    p.add_argument(
+        "--progress",
+        action="store_true",
+        default=True,
+        help="Show progress bars (default: enabled)",
+    )
+    p.add_argument(
+        "--no-progress", dest="progress", action="store_false", help="Disable progress bars"
+    )
 
     sub = p.add_subparsers(dest="command", metavar="command")
 
@@ -869,7 +878,9 @@ def _build_parser() -> argparse.ArgumentParser:
     preflight_p = sub.add_parser(
         "preflight", help="Environment checks (commands, packages, disk, DB) — report-only"
     )
-    preflight_p.add_argument("--dry-run", action="store_true", help="Same as run (report-only, never mutates)")
+    preflight_p.add_argument(
+        "--dry-run", action="store_true", help="Same as run (report-only, never mutates)"
+    )
 
     # ── setup wizard ──────────────────────────────────────────────────────────
     sub.add_parser("setup", help="Run the setup wizard (paths + API keys)")
@@ -888,16 +899,21 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # dupe-resolver
     dupe_resolver_p = sub.add_parser(
-        "dupe-resolver", help="Physically relocate duplicate-group losers to DUPES_MOVED_FOR_REVIEW/"
+        "dupe-resolver",
+        help="Physically relocate duplicate-group losers to DUPES_MOVED_FOR_REVIEW/",
     )
-    dupe_resolver_p.add_argument("--dry-run", action="store_true", help="Report moves, no files written")
+    dupe_resolver_p.add_argument(
+        "--dry-run", action="store_true", help="Report moves, no files written"
+    )
 
     # normalize
     normalize_p = sub.add_parser("normalize", help="Article-suffix fix + ALL-CAPS repair")
     normalize_p.add_argument("--dry-run", action="store_true", help="Preview only, no DB changes")
 
     # organize
-    organize_p = sub.add_parser("organize", help="Rename and reorganize files into Artist/Album/ structure")
+    organize_p = sub.add_parser(
+        "organize", help="Rename and reorganize files into Artist/Album/ structure"
+    )
     organize_p.add_argument("--dry-run", action="store_true", help="Preview only, no file moves")
 
     # sanitize
@@ -909,21 +925,29 @@ def _build_parser() -> argparse.ArgumentParser:
         "canonicalize",
         help="Lossless->ALAC / sub-lossless->AAC, both as .m4a, based on real codec",
     )
-    canonicalize_p.add_argument("--dry-run", action="store_true", help="Report actions, no ffmpeg calls")
-    canonicalize_p.add_argument("--force", action="store_true", help="Re-process already-canonicalized files")
+    canonicalize_p.add_argument(
+        "--dry-run", action="store_true", help="Report actions, no ffmpeg calls"
+    )
+    canonicalize_p.add_argument(
+        "--force", action="store_true", help="Re-process already-canonicalized files"
+    )
 
     # finalize
     finalize_p = sub.add_parser(
         "finalize", help="Move canonicalized files from INBOX into vault_root/ALAC-Library"
     )
     finalize_p.add_argument("--dry-run", action="store_true", help="Report moves, no files written")
-    finalize_p.add_argument("--force", action="store_true", help="Re-process already-finalized files")
+    finalize_p.add_argument(
+        "--force", action="store_true", help="Re-process already-finalized files"
+    )
 
     # audit
     audit_p = sub.add_parser(
         "audit", help="Physical-presence verification gate before DB snapshot+wipe"
     )
-    audit_p.add_argument("--dry-run", action="store_true", help="Same as run -- audit is inherently read-only")
+    audit_p.add_argument(
+        "--dry-run", action="store_true", help="Same as run -- audit is inherently read-only"
+    )
 
     # forge
     forge_p = sub.add_parser("forge", help="Measure LUFS + write ReplayGain tags")
@@ -951,16 +975,24 @@ def _build_parser() -> argparse.ArgumentParser:
     health_p.add_argument("--dry-run", action="store_true", help="Report only, no DB writes")
 
     # corrupt
-    corrupt_p = sub.add_parser("corrupt", help="Detect and quarantine corrupt/truncated audio files")
+    corrupt_p = sub.add_parser(
+        "corrupt", help="Detect and quarantine corrupt/truncated audio files"
+    )
     corrupt_p.add_argument("--dry-run", action="store_true", help="Report only, no quarantine")
 
     # permissions
-    permissions_p = sub.add_parser("permissions", help="Fix file/folder permissions under inbox (644/755)")
+    permissions_p = sub.add_parser(
+        "permissions", help="Fix file/folder permissions under inbox (644/755)"
+    )
     permissions_p.add_argument("--dry-run", action="store_true", help="Report only, no chmod")
 
     # artist-consolidate
-    artist_consol_p = sub.add_parser("artist-consolidate", help="Normalize artist name variants to canonical forms")
-    artist_consol_p.add_argument("--dry-run", action="store_true", help="Show what would change, no DB writes")
+    artist_consol_p = sub.add_parser(
+        "artist-consolidate", help="Normalize artist name variants to canonical forms"
+    )
+    artist_consol_p.add_argument(
+        "--dry-run", action="store_true", help="Show what would change, no DB writes"
+    )
 
     # auditor
     auditor_p = sub.add_parser("auditor", help="Pre-forge LUFS audit — flag out-of-window files")
@@ -1170,6 +1202,7 @@ def main() -> None:
     # Enable progress tracking if requested
     if verbose:
         from .progress import enable_verbose_logging
+
         enable_verbose_logging()
 
     command = args.command or "console"
@@ -1196,6 +1229,7 @@ def main() -> None:
     try:
         # Store progress settings in global state for pipeline runner
         import os
+
         os.environ["MUSAEUS_VERBOSE"] = "1" if verbose else "0"
         os.environ["MUSAEUS_PROGRESS"] = "1" if show_progress else "0"
 
@@ -1284,14 +1318,17 @@ def main() -> None:
 
         elif command == "corrupt":
             from .stages import CorruptStage
+
             sys.exit(_run_pipeline([CorruptStage], dry_run=dry_run))
 
         elif command == "permissions":
             from .stages import PermissionsStage
+
             sys.exit(_run_pipeline([PermissionsStage], dry_run=dry_run))
 
         elif command == "artist-consolidate":
             from .stages import ArtistConsolidateStage
+
             sys.exit(_run_pipeline([ArtistConsolidateStage], dry_run=dry_run))
 
         elif command == "auditor":
@@ -1335,10 +1372,12 @@ def main() -> None:
 
         elif command == "rebuild-db":
             from .rebuild import cmd_rebuild_db
+
             sys.exit(cmd_rebuild_db(dry_run=dry_run))
 
         elif command == "review":
             from .approval import cmd_review_apply, cmd_review_generate, cmd_review_status
+
             review_cmd = getattr(args, "review_command", None)
             if review_cmd == "generate":
                 sys.exit(cmd_review_generate(dry_run=dry_run))

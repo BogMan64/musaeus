@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 _COMMIT_EVERY = 200
 
 FILE_MODE = 0o644  # rw-r--r--
-DIR_MODE = 0o755   # rwxr-xr-x
+DIR_MODE = 0o755  # rwxr-xr-x
 
 
 def _scan_permissions(root: Path) -> tuple[list[Path], list[Path]]:
@@ -86,9 +86,7 @@ class PermissionsStage(BaseStage):
         if not bad_files and not bad_dirs:
             result.notes.append("✓ All file/folder permissions correct.")
         else:
-            result.notes.append(
-                f"Would fix {len(bad_files)} file(s) and {len(bad_dirs)} dir(s):"
-            )
+            result.notes.append(f"Would fix {len(bad_files)} file(s) and {len(bad_dirs)} dir(s):")
             for p in (bad_files + bad_dirs)[:20]:
                 kind = "dir " if p in bad_dirs else "file"
                 try:
@@ -159,9 +157,7 @@ class PermissionsStage(BaseStage):
         if fixed_files == 0 and fixed_dirs == 0:
             result.notes.append("✓ All file/folder permissions correct.")
         else:
-            result.notes.append(
-                f"Fixed {fixed_files} file(s) and {fixed_dirs} dir(s)."
-            )
+            result.notes.append(f"Fixed {fixed_files} file(s) and {fixed_dirs} dir(s).")
 
         ctx.record_stage(result)
         return result

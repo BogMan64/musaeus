@@ -57,6 +57,7 @@ _CYAN = "\033[36m"
 _BLUE = "\033[34m"
 _MAGENTA = "\033[35m"
 
+
 def _c(text: str, *codes: str) -> str:
     """Wrap text in ANSI codes if stdout is a TTY."""
     if not sys.stdout.isatty():
@@ -122,13 +123,14 @@ def _choose(prompt: str, options: list[str], default: str = "0") -> str:
     for i, opt in enumerate(options):
         print(f"    {_c(str(i), _BOLD, _CYAN)}  {opt}")
     try:
-        val = input(f"\n  {prompt} [0-{len(options)-1}]: ").strip()
+        val = input(f"\n  {prompt} [0-{len(options) - 1}]: ").strip()
         return val if val else default
     except EOFError:
         return default
 
 
 # ── Console class ─────────────────────────────────────────────────────────────
+
 
 class Console:
     """
@@ -218,18 +220,16 @@ class Console:
             pending = conn.execute(
                 "SELECT COUNT(*) FROM archive WHERE status='PENDING'"
             ).fetchone()[0]
-            hashed = conn.execute(
-                "SELECT COUNT(*) FROM archive WHERE status='HASHED'"
-            ).fetchone()[0]
+            hashed = conn.execute("SELECT COUNT(*) FROM archive WHERE status='HASHED'").fetchone()[
+                0
+            ]
             catalogued = conn.execute(
                 "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'"
             ).fetchone()[0]
             dupes = conn.execute(
                 "SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE status='pending'"
             ).fetchone()[0]
-            issues = conn.execute(
-                "SELECT COUNT(*) FROM validation_issues"
-            ).fetchone()[0]
+            issues = conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
             last_run = conn.execute(
                 "SELECT MAX(ts) FROM events WHERE event_type='RUN_START'"
             ).fetchone()[0]
@@ -256,8 +256,10 @@ class Console:
             inbox = self._config.inbox
             if inbox.exists():
                 from .config import AUDIO_EXTENSIONS
+
                 inbox_count = sum(
-                    1 for f in inbox.rglob("*")
+                    1
+                    for f in inbox.rglob("*")
                     if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS
                 )
                 _info(f"Inbox files   : {_c(str(inbox_count), _CYAN)}")
@@ -596,6 +598,7 @@ class Console:
             except ValueError:
                 return
             from .dedupe import print_dedupe_report, run_dedupe_console
+
             if idx == 0:
                 run_dedupe_console(conn, auto_mode=False)
             elif idx == 1:
@@ -650,13 +653,13 @@ class Console:
 
     def _stage_menu(self) -> None:
         stages: list[tuple[str, type, dict]] = [
-            ("Ingest    — register new files from inbox",       IngestStage,   {}),
-            ("Sentinel  — hash files + detect exact dupes",     SentinelStage, {}),
-            ("Scholar   — extract ffprobe metadata",            ScholarStage,  {}),
-            ("Forge     — measure LUFS + write ReplayGain tags", ForgeStage,  {}),
+            ("Ingest    — register new files from inbox", IngestStage, {}),
+            ("Sentinel  — hash files + detect exact dupes", SentinelStage, {}),
+            ("Scholar   — extract ffprobe metadata", ScholarStage, {}),
+            ("Forge     — measure LUFS + write ReplayGain tags", ForgeStage, {}),
             ("Tagger    — write normalised DB metadata to files", TaggerStage, {}),
-            ("Curator   — build car-library export",            CuratorStage,  {}),
-            ("Playlists — build per-genre M3U8 playlists",     PlaylistStage, {}),
+            ("Curator   — build car-library export", CuratorStage, {}),
+            ("Playlists — build per-genre M3U8 playlists", PlaylistStage, {}),
         ]
         opts = [label for label, _, _ in stages] + ["Back"]
         choice = _choose("Select stage", opts)
@@ -703,18 +706,18 @@ class Console:
 
     def _main_menu(self) -> None:
         options = [
-            ("Status",                        self._show_status),
-            ("Run full pipeline  [DRY RUN]",  lambda: self._run_pipeline(dry_run=True)),
-            ("Run full pipeline  [LIVE]",     lambda: self._run_pipeline(dry_run=False)),
-            ("Run single stage…",             self._stage_menu),
-            ("Dedupe review",                 self._run_dedupe),
-            ("View recent runs",              self._show_runs),
-            ("Inspect a run",                 self._show_run_detail),
-            ("View duplicates",               self._show_duplicates),
-            ("Configuration",                 self._show_config),
-            ("Enter/Update API Keys",         self._manage_api_keys),
-            ("Reset / fresh start",           self._reset_menu),
-            ("Quit",                          self._quit),
+            ("Status", self._show_status),
+            ("Run full pipeline  [DRY RUN]", lambda: self._run_pipeline(dry_run=True)),
+            ("Run full pipeline  [LIVE]", lambda: self._run_pipeline(dry_run=False)),
+            ("Run single stage…", self._stage_menu),
+            ("Dedupe review", self._run_dedupe),
+            ("View recent runs", self._show_runs),
+            ("Inspect a run", self._show_run_detail),
+            ("View duplicates", self._show_duplicates),
+            ("Configuration", self._show_config),
+            ("Enter/Update API Keys", self._manage_api_keys),
+            ("Reset / fresh start", self._reset_menu),
+            ("Quit", self._quit),
         ]
 
         _header(f"MUSAEUS  v{self.VERSION}")

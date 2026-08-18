@@ -118,9 +118,7 @@ class AuditStage(BaseStage):
             db_side_paths.add(db_path.resolve() if db_path.exists() else db_path)
 
             if not db_path.exists():
-                problems.append(
-                    f"DB says finalized but file missing on disk: {row['file_path']}"
-                )
+                problems.append(f"DB says finalized but file missing on disk: {row['file_path']}")
                 continue
 
             if alac_library_resolved is not None:
@@ -138,10 +136,14 @@ class AuditStage(BaseStage):
         disk_files = _scan_alac_library_files(ctx.alac_library)
         orphans = disk_files - db_side_paths
         for orphan in sorted(orphans):
-            problems.append(f"file present in ALAC-Library with no matching finalized row: {orphan}")
+            problems.append(
+                f"file present in ALAC-Library with no matching finalized row: {orphan}"
+            )
 
         if disk_files and not orphans:
-            ok.append(f"all {len(disk_files)} file(s) in ALAC-Library have a matching finalized row")
+            ok.append(
+                f"all {len(disk_files)} file(s) in ALAC-Library have a matching finalized row"
+            )
 
         # ── Check 3: every finalized row's hash must be in the persistent index
         if finalized_rows:

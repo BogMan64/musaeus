@@ -9,6 +9,7 @@ was REVERTED 2026-08-18 once cross-format duplicate detection (the
 motivating case) was confirmed to already work via PCM-based audio_hash
 without it -- see musaeus/stages/__init__.py's module docstring.
 """
+
 from __future__ import annotations
 
 from musaeus.stages import DEFAULT_PIPELINE

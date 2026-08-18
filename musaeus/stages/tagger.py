@@ -29,60 +29,70 @@ _COMMIT_EVERY = 50
 
 # ── Tag read/write helpers ────────────────────────────────────────────────────
 
+
 def _read_tags(path: Path) -> dict[str, str]:
     """Read existing tags from file. Returns {} on failure."""
     ext = path.suffix.lower()
     try:
         if ext in (".m4a", ".alac", ".mp4"):
             from mutagen.mp4 import MP4  # type: ignore[import-untyped]
+
             audio: Any = MP4(str(path))
             tags: dict = audio.tags or {}
+
             def _g(key: str) -> str:
                 v = tags.get(key, [])
                 return str(v[0]) if v else ""
+
             # trkn is stored as [(track_num, total)] — extract the number directly.
             _trkn = tags.get("trkn", [])
             track_str = str(_trkn[0][0]) if _trkn and _trkn[0] else ""
             return {
                 "artist": _g("\xa9ART"),
-                "album":  _g("\xa9alb"),
-                "title":  _g("\xa9nam"),
-                "genre":  _g("\xa9gen"),
-                "year":   _g("\xa9day"),
-                "track":  track_str,
+                "album": _g("\xa9alb"),
+                "title": _g("\xa9nam"),
+                "genre": _g("\xa9gen"),
+                "year": _g("\xa9day"),
+                "track": track_str,
             }
 
         if ext == ".flac":
             from mutagen.flac import FLAC  # type: ignore[import-untyped]
+
             audio = FLAC(str(path))
+
             def _gf(key: str) -> str:
                 v = audio.get(key, [])
                 return v[0] if v else ""
+
             return {
                 "artist": _gf("artist"),
-                "album":  _gf("album"),
-                "title":  _gf("title"),
-                "genre":  _gf("genre"),
-                "year":   _gf("date"),
-                "track":  _gf("tracknumber"),
+                "album": _gf("album"),
+                "title": _gf("title"),
+                "genre": _gf("genre"),
+                "year": _gf("date"),
+                "track": _gf("tracknumber"),
             }
 
         if ext == ".mp3":
             from mutagen.easyid3 import EasyID3  # type: ignore[import-untyped]
+
             try:
                 audio = EasyID3(str(path))
             except Exception:
                 return {}
+
             def _gm(key: str) -> str:
                 v = audio.get(key, [])
                 return v[0] if v else ""
+
             return {
                 "artist": _gm("artist"),
-                "album":  _gm("album"),
-                "title":  _gm("title"),
-                "genre":  _gm("genre"),
-                "year":   _gm("date"),
-                "track":  _gm("tracknumber"),
+                "album": _gm("album"),
+                "title": _gm("title"),
+                "genre": _gm("genre"),
+                "year": _gm("date"),
+                "track": _gm("tracknumber"),
             }
 
     except Exception as exc:
@@ -98,15 +108,16 @@ def _write_tags(path: Path, changes: dict[str, str]) -> bool:
     try:
         if ext in (".m4a", ".alac", ".mp4"):
             from mutagen.mp4 import MP4  # type: ignore[import-untyped]
+
             audio: Any = MP4(str(path))
             if audio.tags is None:
                 audio.add_tags()
             _map = {
                 "artist": "\xa9ART",
-                "album":  "\xa9alb",
-                "title":  "\xa9nam",
-                "genre":  "\xa9gen",
-                "year":   "\xa9day",
+                "album": "\xa9alb",
+                "title": "\xa9nam",
+                "genre": "\xa9gen",
+                "year": "\xa9day",
             }
             for field, val in changes.items():
                 key = _map.get(field)
@@ -117,14 +128,15 @@ def _write_tags(path: Path, changes: dict[str, str]) -> bool:
 
         if ext == ".flac":
             from mutagen.flac import FLAC  # type: ignore[import-untyped]
+
             audio = FLAC(str(path))
             _map_f = {
                 "artist": "artist",
-                "album":  "album",
-                "title":  "title",
-                "genre":  "genre",
-                "year":   "date",
-                "track":  "tracknumber",
+                "album": "album",
+                "title": "title",
+                "genre": "genre",
+                "year": "date",
+                "track": "tracknumber",
             }
             for field, val in changes.items():
                 key = _map_f.get(field)
@@ -135,18 +147,20 @@ def _write_tags(path: Path, changes: dict[str, str]) -> bool:
 
         if ext == ".mp3":
             from mutagen.easyid3 import EasyID3  # type: ignore[import-untyped]
+
             try:
                 audio = EasyID3(str(path))
             except Exception:
                 from mutagen.id3 import ID3  # type: ignore[import-untyped]
+
                 audio = ID3()
             _map_m = {
                 "artist": "artist",
-                "album":  "album",
-                "title":  "title",
-                "genre":  "genre",
-                "year":   "date",
-                "track":  "tracknumber",
+                "album": "album",
+                "title": "title",
+                "genre": "genre",
+                "year": "date",
+                "track": "tracknumber",
             }
             for field, val in changes.items():
                 key = _map_m.get(field)
@@ -165,6 +179,7 @@ def _write_tags(path: Path, changes: dict[str, str]) -> bool:
 
 
 # ── Tagger Stage ──────────────────────────────────────────────────────────────
+
 
 class TaggerStage(BaseStage):
     """
@@ -200,11 +215,11 @@ class TaggerStage(BaseStage):
         changes: dict[str, str] = {}
         field_map = {
             "artist": "artist",
-            "album":  "album",
-            "title":  "title",
-            "genre":  "genre",
-            "year":   "year",
-            "track":  "track",
+            "album": "album",
+            "title": "title",
+            "genre": "genre",
+            "year": "year",
+            "track": "track",
         }
         for db_field, tag_field in field_map.items():
             db_val = str(db_row.get(db_field) or "").strip()

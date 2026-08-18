@@ -29,11 +29,14 @@ def tmp_db(tmp_path: Path) -> sqlite3.Connection:
 
 # ── open_db / schema ──────────────────────────────────────────────────────────
 
+
 class TestOpenDb:
     def test_creates_tables(self, tmp_db):
         tables = {
-            row[0] for row in
-            tmp_db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            row[0]
+            for row in tmp_db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
         }
         assert {"events", "archive", "duplicates", "validation_issues", "metadata_cache"} <= tables
 
@@ -59,6 +62,7 @@ class TestOpenDb:
 
 # ── log_event() ───────────────────────────────────────────────────────────────
 
+
 class TestLogEvent:
     def test_basic_event(self, tmp_db):
         log_event(tmp_db, "run_001", "RUN_START")
@@ -78,9 +82,7 @@ class TestLogEvent:
             note="size=1234",
         )
         tmp_db.commit()
-        row = tmp_db.execute(
-            "SELECT * FROM events WHERE run_id='run_002'"
-        ).fetchone()
+        row = tmp_db.execute("SELECT * FROM events WHERE run_id='run_002'").fetchone()
         assert row["file_path"] == "/vault/track.flac"
         assert row["stage"] == "ingest"
         assert row["note"] == "size=1234"
@@ -89,9 +91,7 @@ class TestLogEvent:
         for i in range(5):
             log_event(tmp_db, "run_multi", f"EVENT_{i}")
         tmp_db.commit()
-        count = tmp_db.execute(
-            "SELECT COUNT(*) FROM events WHERE run_id='run_multi'"
-        ).fetchone()[0]
+        count = tmp_db.execute("SELECT COUNT(*) FROM events WHERE run_id='run_multi'").fetchone()[0]
         assert count == 5
 
     def test_get_file_history(self, tmp_db):
@@ -107,15 +107,19 @@ class TestLogEvent:
 
 # ── upsert_archive() ──────────────────────────────────────────────────────────
 
+
 class TestUpsertArchive:
     def test_insert_basic(self, tmp_db):
-        upsert_archive(tmp_db, {
-            "file_path": "/vault/track.flac",
-            "filename": "track.flac",
-            "ext": ".flac",
-            "size_bytes": 50_000_000,
-            "status": "PENDING",
-        })
+        upsert_archive(
+            tmp_db,
+            {
+                "file_path": "/vault/track.flac",
+                "filename": "track.flac",
+                "ext": ".flac",
+                "size_bytes": 50_000_000,
+                "status": "PENDING",
+            },
+        )
         tmp_db.commit()
         assert get_archive_count(tmp_db) == 1
 
@@ -147,11 +151,14 @@ class TestUpsertArchive:
 
     def test_bitrate_stored_as_int(self, tmp_db):
         """Regression: bitrate must always be INTEGER, never a string."""
-        upsert_archive(tmp_db, {
-            "file_path": "/vault/t.mp3",
-            "bitrate": 320000,
-            "status": "CATALOGUED",
-        })
+        upsert_archive(
+            tmp_db,
+            {
+                "file_path": "/vault/t.mp3",
+                "bitrate": 320000,
+                "status": "CATALOGUED",
+            },
+        )
         tmp_db.commit()
         row = tmp_db.execute(
             "SELECT bitrate FROM archive WHERE file_path='/vault/t.mp3'"
@@ -161,6 +168,7 @@ class TestUpsertArchive:
 
 
 # ── validation_issues UNIQUE constraint ───────────────────────────────────────
+
 
 class TestValidationIssues:
     def test_unique_constraint(self, tmp_db):
@@ -174,9 +182,7 @@ class TestValidationIssues:
                 ("/vault/bad.mp3", "missing_artist", "run_001"),
             )
         tmp_db.commit()
-        count = tmp_db.execute(
-            "SELECT COUNT(*) FROM validation_issues"
-        ).fetchone()[0]
+        count = tmp_db.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
         assert count == 1
 
     def test_different_runs_allowed(self, tmp_db):
@@ -190,7 +196,5 @@ class TestValidationIssues:
                 ("/vault/bad.mp3", "missing_artist", run),
             )
         tmp_db.commit()
-        count = tmp_db.execute(
-            "SELECT COUNT(*) FROM validation_issues"
-        ).fetchone()[0]
+        count = tmp_db.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
         assert count == 2

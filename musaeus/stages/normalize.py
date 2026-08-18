@@ -106,24 +106,79 @@ PROTECTED_ARTIST_NAMES: frozenset[str] = frozenset(
 _LOWERCASE_WORDS: frozenset[str] = frozenset(
     {
         # Articles
-        "a", "an", "the",
+        "a",
+        "an",
+        "the",
         # Conjunctions
-        "and", "but", "or", "nor", "for", "so", "yet",
+        "and",
+        "but",
+        "or",
+        "nor",
+        "for",
+        "so",
+        "yet",
         # Prepositions
-        "at", "by", "in", "of", "on", "to", "up", "as", "if", "vs",
+        "at",
+        "by",
+        "in",
+        "of",
+        "on",
+        "to",
+        "up",
+        "as",
+        "if",
+        "vs",
         # Common in music titles
-        "feat", "ft", "with", "from", "into", "onto", "upon",
-        "n", "n'",  # Rock 'n' Roll
+        "feat",
+        "ft",
+        "with",
+        "from",
+        "into",
+        "onto",
+        "upon",
+        "n",
+        "n'",  # Rock 'n' Roll
     }
 )
 
 # Words that should stay ALL CAPS (acronyms, special terms)
 _KEEP_CAPS: frozenset[str] = frozenset(
     {
-        "AC", "DC", "AC/DC", "ACDC", "USA", "UK", "NYC", "LA", "DJ", "MC",
-        "DMX", "REM", "INXS", "ELO", "OMD", "UB40", "TLC", "SWV",
-        "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X",  # Roman numerals
-        "BMW", "UFO", "TV", "FM", "AM", "LP", "EP", "CD",
+        "AC",
+        "DC",
+        "AC/DC",
+        "ACDC",
+        "USA",
+        "UK",
+        "NYC",
+        "LA",
+        "DJ",
+        "MC",
+        "DMX",
+        "REM",
+        "INXS",
+        "ELO",
+        "OMD",
+        "UB40",
+        "TLC",
+        "SWV",
+        "II",
+        "III",
+        "IV",
+        "V",
+        "VI",
+        "VII",
+        "VIII",
+        "IX",
+        "X",  # Roman numerals
+        "BMW",
+        "UFO",
+        "TV",
+        "FM",
+        "AM",
+        "LP",
+        "EP",
+        "CD",
     }
 )
 
@@ -181,13 +236,30 @@ def _move_article_to_suffix(name: str) -> str:
     # 15 others found completely unfixed after a live Normalize run
     # (`Fixed: 0 artist(s)` despite 18 distinct affected artists in the
     # data).
-    articles = ["The", "A", "An", "Le", "La", "Les", "El", "Los", "Las", "De", "Het", "Een", "Die", "Das", "Ein", "Eine"]
+    articles = [
+        "The",
+        "A",
+        "An",
+        "Le",
+        "La",
+        "Les",
+        "El",
+        "Los",
+        "Las",
+        "De",
+        "Het",
+        "Een",
+        "Die",
+        "Das",
+        "Ein",
+        "Eine",
+    ]
 
     for article in articles:
         prefix = f"{article} "
         if s[: len(prefix)].lower() == prefix.lower() and len(s) > len(article) + 1:
             # Found leading article - move to suffix, canonical casing
-            rest = s[len(article):].strip()
+            rest = s[len(article) :].strip()
             return f"{rest}, {article}"
 
     return s

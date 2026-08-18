@@ -75,6 +75,7 @@ def _make_track(ctx: RunContext, relpath: str, artist: str, album: str, title: s
 
 # ── Naming helpers ────────────────────────────────────────────────────────────
 
+
 class TestNamingHelpers:
     def test_strip_track_number_prefix(self):
         assert strip_track_number_prefix("171. Song Title") == "Song Title"
@@ -82,13 +83,16 @@ class TestNamingHelpers:
         assert strip_track_number_prefix("No Prefix Here") == "No Prefix Here"
 
     def test_sanitize_path_component_forbidden_chars(self):
-        result = sanitize_path_component('AC/DC: Greatest?')
+        result = sanitize_path_component("AC/DC: Greatest?")
         assert "/" not in result
         assert ":" not in result
         assert "?" not in result
 
     def test_build_track_filename(self):
-        assert build_track_filename("The Beatles", "Come Together", ".m4a") == "The Beatles - Come Together.m4a"
+        assert (
+            build_track_filename("The Beatles", "Come Together", ".m4a")
+            == "The Beatles - Come Together.m4a"
+        )
 
     def test_unique_path_no_collision(self, tmp_path):
         target = tmp_path / "file.m4a"
@@ -102,6 +106,7 @@ class TestNamingHelpers:
 
 
 # ── Live run: the actual regression this file guards against ────────────────
+
 
 class TestOrganizeRunLive:
     def test_move_to_artist_album_folder(self, ctx):
@@ -221,6 +226,7 @@ class TestOrganizeRunLive:
 
 
 # ── Dry run ───────────────────────────────────────────────────────────────────
+
 
 class TestOrganizeDryRun:
     def test_dry_run_does_not_move_file(self, ctx_dry):

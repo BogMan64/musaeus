@@ -68,7 +68,8 @@ def _probe_audio_meta(path: Path) -> tuple[int, float]:
         if result.returncode != 0 or not result.stdout.strip():
             logger.warning(
                 "ffprobe probe returned rc=%d with empty stdout for %s",
-                result.returncode, path,
+                result.returncode,
+                path,
             )
             return 48000, 0.0
         data = json.loads(result.stdout)
@@ -168,11 +169,7 @@ def audio_hash(path: Path) -> str:
     timer.join(timeout=1)
 
     if rc != 0:
-        stderr = (
-            proc.stderr.read().decode("utf-8", errors="replace").strip()
-            if proc.stderr
-            else ""
-        )
+        stderr = proc.stderr.read().decode("utf-8", errors="replace").strip() if proc.stderr else ""
         if rc == -9:  # SIGKILL from timeout
             raise HasherError(f"ffmpeg timed out (>{_TIMEOUT_SECS}s) for {path}")
         raise HasherError(f"ffmpeg exited {rc} for {path}: {stderr[:200]}")

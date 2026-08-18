@@ -89,9 +89,7 @@ class IngestStage(BaseStage):
             result.files_changed += 1
 
         if new_files:
-            result.notes.append(
-                f"Would ingest {len(new_files)} new file(s):"
-            )
+            result.notes.append(f"Would ingest {len(new_files)} new file(s):")
             for p in new_files[:20]:
                 result.notes.append(f"  + {p.relative_to(ctx.inbox)}")
             if len(new_files) > 20:

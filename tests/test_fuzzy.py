@@ -17,6 +17,7 @@ from musaeus.fuzzy import (
 
 # ── normalize() ───────────────────────────────────────────────────────────────
 
+
 class TestNormalize:
     def test_lowercase(self):
         assert normalize("RADIOHEAD") == "radiohead"
@@ -59,6 +60,7 @@ class TestNormalize:
 
 # ── similarity() ─────────────────────────────────────────────────────────────
 
+
 class TestSimilarity:
     def test_identical(self):
         assert similarity("abbey road", "abbey road") == pytest.approx(100, abs=1)
@@ -80,6 +82,7 @@ class TestSimilarity:
 
 # ── token_similarity() ────────────────────────────────────────────────────────
 
+
 class TestTokenSimilarity:
     def test_word_order_independent(self):
         s = token_similarity("Pink Floyd Animals", "Animals Pink Floyd")
@@ -91,6 +94,7 @@ class TestTokenSimilarity:
 
 
 # ── is_match() ───────────────────────────────────────────────────────────────
+
 
 class TestIsMatch:
     def test_identical_strings(self):
@@ -126,6 +130,7 @@ class TestIsMatch:
 
 # ── best_match() ─────────────────────────────────────────────────────────────
 
+
 class TestBestMatch:
     def test_finds_best(self):
         candidates = ["The Beatles", "Led Zeppelin", "Pink Floyd", "Radiohead"]
@@ -145,6 +150,7 @@ class TestBestMatch:
 
 
 # ── group_near_duplicates() ───────────────────────────────────────────────────
+
 
 class TestGroupNearDuplicates:
     def test_groups_identical(self):

@@ -34,6 +34,7 @@ def canon(tsv_path: Path) -> ArtistCanon:
 
 # ── Basic loading ─────────────────────────────────────────────────────────────
 
+
 class TestArtistCanonLoad:
     def test_loads_entries(self, canon):
         assert len(canon) == 4
@@ -49,9 +50,7 @@ class TestArtistCanonLoad:
 
     def test_comments_ignored(self, tsv_path):
         tsv_path.write_text(
-            "# Comment\n"
-            "# Another comment\n"
-            "radiohead\tRadiohead\n",
+            "# Comment\n# Another comment\nradiohead\tRadiohead\n",
             encoding="utf-8",
         )
         ac = ArtistCanon(tsv_path)
@@ -59,6 +58,7 @@ class TestArtistCanonLoad:
 
 
 # ── Resolve (exact match) ────────────────────────────────────────────────────
+
 
 class TestArtistCanonResolve:
     def test_exact_match_case_insensitive(self, canon):
@@ -84,11 +84,13 @@ class TestArtistCanonResolve:
 
 # ── Fuzzy resolution ──────────────────────────────────────────────────────────
 
+
 class TestArtistCanonFuzzy:
     def test_fuzzy_match_close_spelling(self, canon):
         """With rapidfuzz available, close misspellings should resolve."""
         try:
             import rapidfuzz  # noqa: F401
+
             # "the betales" is close enough to "the beatles"
             result = canon.resolve("the betales")
             # Should fuzzy-match to The Beatles (score ~90+)
@@ -98,7 +100,9 @@ class TestArtistCanonFuzzy:
             result = canon.resolve("the betales")
             assert result == "the betales"
 
-    @patch.dict("sys.modules", {"rapidfuzz": None, "rapidfuzz.process": None, "rapidfuzz.fuzz": None})
+    @patch.dict(
+        "sys.modules", {"rapidfuzz": None, "rapidfuzz.process": None, "rapidfuzz.fuzz": None}
+    )
     def test_no_rapidfuzz_returns_raw(self, canon):
         """Without rapidfuzz, unmatched input returns as-is."""
         # This test verifies the ImportError path
@@ -108,6 +112,7 @@ class TestArtistCanonFuzzy:
 
 
 # ── Add and persist ───────────────────────────────────────────────────────────
+
 
 class TestArtistCanonAdd:
     def test_add_new_entry(self, canon, tsv_path):
@@ -129,6 +134,7 @@ class TestArtistCanonAdd:
 
 
 # ── Utility methods ───────────────────────────────────────────────────────────
+
 
 class TestArtistCanonUtility:
     def test_all_entries(self, canon):

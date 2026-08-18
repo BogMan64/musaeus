@@ -48,18 +48,22 @@ def ctx_dry(cfg: MusicConfig) -> RunContext:
 
 
 def _insert_catalogued(ctx: RunContext, file_path: str, artist: str, title: str) -> None:
-    upsert_archive(ctx.conn, {
-        "file_path": file_path,
-        "status": "CATALOGUED",
-        "artist": artist,
-        "title": title,
-        "bitrate": 320000,
-        "size_bytes": 5000000,
-    })
+    upsert_archive(
+        ctx.conn,
+        {
+            "file_path": file_path,
+            "status": "CATALOGUED",
+            "artist": artist,
+            "title": title,
+            "bitrate": 320000,
+            "size_bytes": 5000000,
+        },
+    )
     ctx.conn.commit()
 
 
 # ── _normalise helper ─────────────────────────────────────────────────────────
+
 
 class TestNormalise:
     def test_lowercase(self):
@@ -82,6 +86,7 @@ class TestNormalise:
 
 # ── _group_id helper ──────────────────────────────────────────────────────────
 
+
 class TestGroupId:
     def test_stable(self):
         gid1 = _group_id("/a.flac", "/b.flac")
@@ -100,12 +105,14 @@ class TestGroupId:
 
 # ── Validate ──────────────────────────────────────────────────────────────────
 
+
 class TestNearDupeValidate:
     def test_validate_passes_with_rapidfuzz(self, ctx, cfg):
         NearDupeStage().validate(ctx)
 
 
 # ── Dry run ───────────────────────────────────────────────────────────────────
+
 
 class TestNearDupeDryRun:
     def test_dry_run_detects_near_dupes(self, ctx_dry, cfg, tmp_path):
@@ -138,6 +145,7 @@ class TestNearDupeDryRun:
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
+
 class TestNearDupeRun:
     def test_run_writes_to_duplicates_table(self, ctx, cfg, tmp_path):
         _insert_catalogued(ctx, str(tmp_path / "a.flac"), "Pink Floyd", "Comfortably Numb")
@@ -146,9 +154,7 @@ class TestNearDupeRun:
         result = NearDupeStage().execute(ctx)
         assert result.files_changed >= 1
 
-        dupes = ctx.conn.execute(
-            "SELECT * FROM duplicates WHERE duplicate_type='NEAR'"
-        ).fetchall()
+        dupes = ctx.conn.execute("SELECT * FROM duplicates WHERE duplicate_type='NEAR'").fetchall()
         assert len(dupes) >= 2  # Both files in the group
 
     def test_run_different_artists_not_matched(self, ctx, cfg, tmp_path):
@@ -157,9 +163,7 @@ class TestNearDupeRun:
 
         NearDupeStage().execute(ctx)
         # Different artists → no match (unless artists are very similar)
-        dupes = ctx.conn.execute(
-            "SELECT * FROM duplicates WHERE duplicate_type='NEAR'"
-        ).fetchall()
+        dupes = ctx.conn.execute("SELECT * FROM duplicates WHERE duplicate_type='NEAR'").fetchall()
         assert len(dupes) == 0
 
     def test_run_idempotent(self, ctx, cfg, tmp_path):

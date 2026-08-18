@@ -82,7 +82,10 @@ class RunContext:
         run_id: str | None = None,
     ) -> RunContext:
         """Create a fresh RunContext and log the RUN_START event."""
-        rid = run_id or f"run_{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:6]}"
+        rid = (
+            run_id
+            or f"run_{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:6]}"
+        )
         started = _utc_now()
         ctx = cls(
             run_id=rid,

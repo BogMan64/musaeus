@@ -39,6 +39,7 @@ _FFPROBE_CMD = "ffprobe"
 
 # ── ffprobe wrapper ───────────────────────────────────────────────────────────
 
+
 class ProbeError(Exception):
     """ffprobe returned an error or couldn't be found."""
 
@@ -50,8 +51,10 @@ def _probe(path: Path) -> dict[str, Any]:
     """
     cmd = [
         _FFPROBE_CMD,
-        "-v", "quiet",
-        "-print_format", "json",
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
         "-show_streams",
         "-show_format",
         str(path),
@@ -94,12 +97,8 @@ def _extract_meta(probe_data: dict[str, Any]) -> dict[str, Any]:
             break
 
     # Tags can be in format or stream; format takes precedence
-    fmt_tags: dict[str, str] = {
-        k.lower(): v for k, v in fmt.get("tags", {}).items()
-    }
-    stream_tags: dict[str, str] = {
-        k.lower(): v for k, v in audio_stream.get("tags", {}).items()
-    }
+    fmt_tags: dict[str, str] = {k.lower(): v for k, v in fmt.get("tags", {}).items()}
+    stream_tags: dict[str, str] = {k.lower(): v for k, v in audio_stream.get("tags", {}).items()}
     tags = {**stream_tags, **fmt_tags}
 
     def tag(*keys: str) -> str | None:
@@ -123,9 +122,7 @@ def _extract_meta(probe_data: dict[str, Any]) -> dict[str, Any]:
         except (ValueError, TypeError):
             return None
 
-    bitrate = _int_or_none(
-        audio_stream.get("bit_rate") or fmt.get("bit_rate")
-    )
+    bitrate = _int_or_none(audio_stream.get("bit_rate") or fmt.get("bit_rate"))
     sample_rate = _int_or_none(audio_stream.get("sample_rate"))
     channels = _int_or_none(audio_stream.get("channels"))
 
@@ -158,6 +155,7 @@ def _extract_meta(probe_data: dict[str, Any]) -> dict[str, Any]:
 
 # ── Stage ─────────────────────────────────────────────────────────────────────
 
+
 def _get_hashed(conn) -> list[dict]:  # type: ignore[type-arg]
     """Return archive rows ready for Scholar (HASHED status)."""
     rows = conn.execute(
@@ -176,9 +174,7 @@ class ScholarStage(BaseStage):
     # ── Validate ──────────────────────────────────────────────────────────────
 
     def validate(self, ctx: RunContext) -> None:
-        count = ctx.conn.execute(
-            "SELECT COUNT(*) FROM archive WHERE status='HASHED'"
-        ).fetchone()[0]
+        count = ctx.conn.execute("SELECT COUNT(*) FROM archive WHERE status='HASHED'").fetchone()[0]
         if count == 0:
             logger.info("[scholar] no HASHED files — stage will be a no-op")
 
@@ -249,10 +245,17 @@ class ScholarStage(BaseStage):
                 """,
                 (
                     path_str,
-                    meta["title"], meta["artist"], meta["album"],
-                    meta["genre"], meta["year"], meta["track"],
-                    meta["duration"], meta["bitrate"],
-                    meta["sample_rate"], meta["channels"], meta["codec"],
+                    meta["title"],
+                    meta["artist"],
+                    meta["album"],
+                    meta["genre"],
+                    meta["year"],
+                    meta["track"],
+                    meta["duration"],
+                    meta["bitrate"],
+                    meta["sample_rate"],
+                    meta["channels"],
+                    meta["codec"],
                     raw_json,
                 ),
             )

@@ -56,11 +56,22 @@ def ctx_dry(cfg: MusicConfig) -> RunContext:
 
 def _gen_audio(path: Path, freq: int = 440, duration: int = 1) -> None:
     import subprocess
+
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-y", "-f", "lavfi", "-i", f"sine=frequency={freq}:duration={duration}",
-         "-c:a", "alac", str(path)],
-        capture_output=True, check=True,
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency={freq}:duration={duration}",
+            "-c:a",
+            "alac",
+            str(path),
+        ],
+        capture_output=True,
+        check=True,
     )
 
 
@@ -77,9 +88,14 @@ def _seed_prior_batch_hash(ctx: RunContext, real_audio_path: Path, library_path:
 
 
 def _register_hashed(ctx: RunContext, path: Path, audio_hash_val: str) -> None:
-    upsert_archive(ctx.conn, {
-        "file_path": str(path), "status": "HASHED", "audio_hash": audio_hash_val,
-    })
+    upsert_archive(
+        ctx.conn,
+        {
+            "file_path": str(path),
+            "status": "HASHED",
+            "audio_hash": audio_hash_val,
+        },
+    )
     ctx.conn.commit()
 
 
@@ -88,7 +104,9 @@ class TestCrossDupeDetection:
         # "Prior batch" file, same audio content as what's arriving now.
         prior_source = ctx.vault_root / "prior_source.m4a"
         _gen_audio(prior_source, freq=440)
-        h = _seed_prior_batch_hash(ctx, prior_source, str(ctx.alac_library / "Artist" / "Album" / "Existing.m4a"))
+        h = _seed_prior_batch_hash(
+            ctx, prior_source, str(ctx.alac_library / "Artist" / "Album" / "Existing.m4a")
+        )
 
         # This batch's file has the identical audio content.
         incoming = ctx.inbox / "new_arrival.m4a"
@@ -108,7 +126,9 @@ class TestCrossDupeDetection:
     def test_non_matching_hash_not_flagged(self, ctx):
         prior_source = ctx.vault_root / "prior_source.m4a"
         _gen_audio(prior_source, freq=440)
-        _seed_prior_batch_hash(ctx, prior_source, str(ctx.alac_library / "Artist" / "Album" / "Existing.m4a"))
+        _seed_prior_batch_hash(
+            ctx, prior_source, str(ctx.alac_library / "Artist" / "Album" / "Existing.m4a")
+        )
 
         # Genuinely different audio content.
         incoming = ctx.inbox / "different_song.m4a"
@@ -145,7 +165,9 @@ class TestCrossDupeIdempotency:
     def test_rerun_does_not_duplicate_flag(self, ctx):
         prior_source = ctx.vault_root / "prior_source.m4a"
         _gen_audio(prior_source, freq=440)
-        h = _seed_prior_batch_hash(ctx, prior_source, str(ctx.alac_library / "Artist" / "Album" / "Existing.m4a"))
+        h = _seed_prior_batch_hash(
+            ctx, prior_source, str(ctx.alac_library / "Artist" / "Album" / "Existing.m4a")
+        )
 
         incoming = ctx.inbox / "new_arrival.m4a"
         _gen_audio(incoming, freq=440)
@@ -167,7 +189,9 @@ class TestCrossDupeDryRun:
     def test_dry_run_makes_no_db_changes(self, ctx_dry):
         prior_source = ctx_dry.vault_root / "prior_source.m4a"
         _gen_audio(prior_source, freq=440)
-        h = _seed_prior_batch_hash(ctx_dry, prior_source, str(ctx_dry.alac_library / "Artist" / "Album" / "Existing.m4a"))
+        h = _seed_prior_batch_hash(
+            ctx_dry, prior_source, str(ctx_dry.alac_library / "Artist" / "Album" / "Existing.m4a")
+        )
 
         incoming = ctx_dry.inbox / "new_arrival.m4a"
         _gen_audio(incoming, freq=440)

@@ -23,6 +23,7 @@ def conn(tmp_path: Path):
 
 # ── Basic rebuild ─────────────────────────────────────────────────────────────
 
+
 class TestRebuildBasic:
     def test_empty_db_rebuild(self, conn):
         """Rebuilding an empty DB produces empty archive."""
@@ -51,7 +52,9 @@ class TestRebuildBasic:
         """FILE_HASHED events set status to HASHED and store hashes."""
         log_event(conn, "run_001", "FILE_REGISTERED", file_path="/vault/x.flac")
         log_event(
-            conn, "run_001", "FILE_HASHED",
+            conn,
+            "run_001",
+            "FILE_HASHED",
             file_path="/vault/x.flac",
             new_value=json.dumps({"audio_hash": "abc123", "full_hash": "def456"}),
         )
@@ -71,7 +74,9 @@ class TestRebuildBasic:
         log_event(conn, "run_001", "FILE_REGISTERED", file_path="/vault/song.flac")
         meta = {"artist": "The Beatles", "title": "Yesterday", "bitrate": 320000}
         log_event(
-            conn, "run_001", "FILE_CATALOGUED",
+            conn,
+            "run_001",
+            "FILE_CATALOGUED",
             file_path="/vault/song.flac",
             new_value=json.dumps(meta),
         )
@@ -89,6 +94,7 @@ class TestRebuildBasic:
 
 
 # ── Advanced replay scenarios ─────────────────────────────────────────────────
+
 
 class TestRebuildAdvanced:
     def test_ghost_status(self, conn):
@@ -117,8 +123,9 @@ class TestRebuildAdvanced:
     def test_status_change_event(self, conn):
         """STATUS_CHANGE event updates status field."""
         log_event(conn, "run_001", "FILE_REGISTERED", file_path="/vault/x.flac")
-        log_event(conn, "run_001", "STATUS_CHANGE",
-                  file_path="/vault/x.flac", new_value="CATALOGUED")
+        log_event(
+            conn, "run_001", "STATUS_CHANGE", file_path="/vault/x.flac", new_value="CATALOGUED"
+        )
         conn.commit()
 
         rebuild_archive_from_events(conn)
@@ -143,22 +150,34 @@ class TestRebuildAdvanced:
     def test_multiple_events_same_file(self, conn):
         """Multiple events for same file produce single archive entry."""
         log_event(conn, "run_001", "FILE_REGISTERED", file_path="/vault/track.flac")
-        log_event(conn, "run_001", "FILE_HASHED", file_path="/vault/track.flac",
-                  new_value=json.dumps({"audio_hash": "h1"}))
-        log_event(conn, "run_001", "FILE_CATALOGUED", file_path="/vault/track.flac",
-                  new_value=json.dumps({"artist": "A", "title": "T"}))
+        log_event(
+            conn,
+            "run_001",
+            "FILE_HASHED",
+            file_path="/vault/track.flac",
+            new_value=json.dumps({"audio_hash": "h1"}),
+        )
+        log_event(
+            conn,
+            "run_001",
+            "FILE_CATALOGUED",
+            file_path="/vault/track.flac",
+            new_value=json.dumps({"artist": "A", "title": "T"}),
+        )
         conn.commit()
 
         rebuild_archive_from_events(conn)
         assert get_archive_count(conn) == 1
-        row = conn.execute("SELECT * FROM archive WHERE file_path=?",
-                          ("/vault/track.flac",)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM archive WHERE file_path=?", ("/vault/track.flac",)
+        ).fetchone()
         assert row["audio_hash"] == "h1"
         assert row["artist"] == "A"
         assert row["status"] == "CATALOGUED"
 
 
 # ── Dry run mode ──────────────────────────────────────────────────────────────
+
 
 class TestRebuildDryRun:
     def test_dry_run_no_changes(self, conn):
@@ -189,6 +208,7 @@ class TestRebuildDryRun:
 
 # ── Edge cases ────────────────────────────────────────────────────────────────
 
+
 class TestRebuildEdgeCases:
     def test_non_file_events_skipped(self, conn):
         """RUN_START, RUN_END events (no file_path) are skipped."""
@@ -203,8 +223,9 @@ class TestRebuildEdgeCases:
     def test_malformed_json_in_new_value(self, conn):
         """Non-JSON new_value for FILE_HASHED is handled gracefully."""
         log_event(conn, "run_001", "FILE_REGISTERED", file_path="/vault/x.flac")
-        log_event(conn, "run_001", "FILE_HASHED", file_path="/vault/x.flac",
-                  new_value="plain_hash_string")
+        log_event(
+            conn, "run_001", "FILE_HASHED", file_path="/vault/x.flac", new_value="plain_hash_string"
+        )
         conn.commit()
 
         summary = rebuild_archive_from_events(conn)

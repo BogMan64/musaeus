@@ -127,6 +127,7 @@ def _make_staged_track(
 
 # ── STAGING flow (Grey's 2026-08-11 design decision) ───────────────────────────
 
+
 class TestFinalizeFromStaging:
     def test_moves_staged_file_into_alac_library_and_empties_staging(self, ctx):
         """A CONVERTED/TRANSCODED row's source lives in STAGING, not
@@ -185,6 +186,7 @@ class TestFinalizeFromStaging:
 
 # ── Live run ──────────────────────────────────────────────────────────────────
 
+
 class TestFinalizeRunLive:
     def test_moves_file_into_alac_library(self, ctx):
         track = _make_canonicalized_track(ctx, "flat.m4a", "Test Artist", "Test Album", "Song One")
@@ -195,7 +197,13 @@ class TestFinalizeRunLive:
         assert result.files_changed == 1
         assert not track.exists()
 
-        expected = ctx.alac_library / _TEST_BATCH_DATE / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
+        expected = (
+            ctx.alac_library
+            / _TEST_BATCH_DATE
+            / "Test Artist"
+            / "Test Album"
+            / "Test Artist - Song One.m4a"
+        )
         assert expected.exists()
         assert expected.read_bytes() == b"FAKE CANONICAL AUDIO DATA"
 
@@ -212,8 +220,12 @@ class TestFinalizeRunLive:
         result = FinalizeStage().execute(ctx)
 
         assert result.files_changed == 2
-        assert (ctx.alac_library / _TEST_BATCH_DATE / "Artist A" / "Album A" / "Artist A - Title A.m4a").exists()
-        assert (ctx.alac_library / _TEST_BATCH_DATE / "Artist B" / "Album B" / "Artist B - Title B.m4a").exists()
+        assert (
+            ctx.alac_library / _TEST_BATCH_DATE / "Artist A" / "Album A" / "Artist A - Title A.m4a"
+        ).exists()
+        assert (
+            ctx.alac_library / _TEST_BATCH_DATE / "Artist B" / "Album B" / "Artist B - Title B.m4a"
+        ).exists()
 
     def test_empty_inbox_dirs_cleaned_up(self, ctx):
         _make_canonicalized_track(ctx, "nested/deep/path/track.m4a", "Artist", "Album", "Title")
@@ -264,10 +276,16 @@ class TestFinalizeRunLive:
 
     def test_missing_file_reported_not_crash(self, ctx):
         missing = ctx.inbox / "gone.m4a"
-        upsert_archive(ctx.conn, {
-            "file_path": str(missing), "status": "CATALOGUED",
-            "artist": "A", "album": "B", "title": "C",
-        })
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(missing),
+                "status": "CATALOGUED",
+                "artist": "A",
+                "album": "B",
+                "title": "C",
+            },
+        )
         ctx.conn.execute(
             "UPDATE archive SET canonicalized_at = datetime('now') WHERE file_path = ?",
             (str(missing),),
@@ -285,10 +303,16 @@ class TestFinalizeRunLive:
         path = ctx.inbox / "not_ready.m4a"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"DATA")
-        upsert_archive(ctx.conn, {
-            "file_path": str(path), "status": "CATALOGUED",
-            "artist": "A", "album": "B", "title": "C",
-        })
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(path),
+                "status": "CATALOGUED",
+                "artist": "A",
+                "album": "B",
+                "title": "C",
+            },
+        )
         ctx.conn.commit()
 
         result = FinalizeStage().execute(ctx)
@@ -325,6 +349,7 @@ class TestFinalizeIdempotency:
 
 # ── Dry run ───────────────────────────────────────────────────────────────────
 
+
 class TestFinalizeBatchDate:
     def test_batch_date_folder_in_path(self, ctx):
         """Every finalized file lands under a YYYY-MM-DD folder directly
@@ -344,6 +369,7 @@ class TestFinalizeBatchDate:
         """Without an explicit override, the batch date defaults to the
         real current UTC date, not a fixed/stale value."""
         from datetime import datetime, timezone
+
         cfg.ensure_dirs()
         conn = open_db(cfg.db_path)
         real_ctx = RunContext.new(cfg, conn, dry_run=False)
@@ -379,7 +405,9 @@ class TestFinalizeDryRun:
 
         assert result.dry_run is True
         assert track.exists()
-        expected = ctx_dry.alac_library / _TEST_BATCH_DATE / "Artist" / "Album" / "Artist - Title.m4a"
+        expected = (
+            ctx_dry.alac_library / _TEST_BATCH_DATE / "Artist" / "Album" / "Artist - Title.m4a"
+        )
         assert not expected.exists()
 
         row = ctx_dry.conn.execute("SELECT finalized_at FROM archive").fetchone()

@@ -25,25 +25,37 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-R128_REFERENCE: float = -18.0        # ReplayGain 2 target for FLAC/MP3 tags
+R128_REFERENCE: float = -18.0  # ReplayGain 2 target for FLAC/MP3 tags
 R128_APPLE_REFERENCE: float = -23.0  # EBU R128 reference; required by Apple R128_TRACK_GAIN
-_SILENCE_FLOOR: float = -70.0        # below this → treat as silence/unmeasurable
+_SILENCE_FLOOR: float = -70.0  # below this → treat as silence/unmeasurable
 
 # Per-file ffmpeg timeout: cap at 600s for very long files (30s minimum)
-_TIMEOUT_MIN  = 30
-_TIMEOUT_MAX  = 600
-_DURATION_FRAC = 0.3   # 30 % of file duration
+_TIMEOUT_MIN = 30
+_TIMEOUT_MAX = 600
+_DURATION_FRAC = 0.3  # 30 % of file duration
 
 
 # ── ffmpeg helpers ────────────────────────────────────────────────────────────
+
 
 def _get_duration(path: Path) -> float | None:
     """Quick ffprobe duration check (used to scale the timeout)."""
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json",
-             "-show_entries", "format=duration", str(path)],
-            capture_output=True, text=True, timeout=10, check=False,
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_entries",
+                "format=duration",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
         )
         return float(json.loads(r.stdout)["format"]["duration"])
     except Exception as exc:
@@ -59,6 +71,7 @@ def _calc_timeout(duration: float | None) -> int:
 
 def _kill_on_timeout(proc: subprocess.Popen, secs: int, path: Path) -> threading.Timer:
     """Return a started timer that kills *proc* after *secs* seconds."""
+
     def _kill() -> None:
         with contextlib.suppress(OSError):
             proc.kill()
@@ -107,11 +120,18 @@ def _run_loudnorm(path: Path, linear: bool, duration: float | None) -> tuple[int
         af += ":linear=true"
 
     cmd = [
-        "ffmpeg", "-hide_banner", "-nostats",
-        "-i", str(path),
-        "-map", "0:a",
-        "-af", af,
-        "-f", "null", "-",
+        "ffmpeg",
+        "-hide_banner",
+        "-nostats",
+        "-i",
+        str(path),
+        "-map",
+        "0:a",
+        "-af",
+        af,
+        "-f",
+        "null",
+        "-",
     ]
     timeout = _calc_timeout(duration)
 
@@ -130,6 +150,7 @@ def _run_loudnorm(path: Path, linear: bool, duration: float | None) -> tuple[int
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
 
 def measure_loudness(path: Path) -> tuple[float | None, float | None, str]:
     """
@@ -163,7 +184,7 @@ def measure_loudness(path: Path) -> tuple[float | None, float | None, str]:
             return None, None, "json_fail"
 
         lufs = float(data.get("input_i", -999))
-        tp   = float(data.get("input_tp", -100))
+        tp = float(data.get("input_tp", -100))
 
         if lufs < _SILENCE_FLOOR:
             return lufs, tp, "silence"

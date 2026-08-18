@@ -32,15 +32,17 @@ from .base import BaseStage, StageError
 
 logger = logging.getLogger(__name__)
 
-_COMMIT_EVERY = 25   # commit DB every N files (crash resilience)
+_COMMIT_EVERY = 25  # commit DB every N files (crash resilience)
 
 
 # ── Tag writers ───────────────────────────────────────────────────────────────
+
 
 def _write_tags_m4a(path: Path, rg_gain: float, rg_peak: float) -> bool:
     """Write R128 gain to M4A/ALAC using mutagen (Apple Q7.8 format)."""
     try:
         from mutagen.mp4 import MP4  # type: ignore[import-untyped]
+
         audio = MP4(str(path))
         # Apple uses R128_TRACK_GAIN in Q7.8 fixed-point (gain × 256, integer)
         audio["com.apple.iTunes.R128_TRACK_GAIN"] = [str(int(round(rg_gain * 256)))]
@@ -55,6 +57,7 @@ def _write_tags_flac(path: Path, rg_gain: float, rg_peak: float) -> bool:
     """Write ReplayGain tags to FLAC."""
     try:
         from mutagen.flac import FLAC  # type: ignore[import-untyped]
+
         audio = FLAC(str(path))
         audio["REPLAYGAIN_TRACK_GAIN"] = [f"{rg_gain:+.2f} dB"]
         audio["REPLAYGAIN_TRACK_PEAK"] = [f"{rg_peak:.8f}"]
@@ -70,11 +73,13 @@ def _write_tags_mp3(path: Path, rg_gain: float, rg_peak: float) -> bool:
     """Write ReplayGain tags to MP3."""
     try:
         from mutagen.easyid3 import EasyID3  # type: ignore[import-untyped]
+
         audio: Any
         try:
             audio = EasyID3(str(path))
         except Exception:
             from mutagen.id3 import ID3  # type: ignore[import-untyped]
+
             audio = ID3(str(path))
         audio["replaygain_track_gain"] = [f"{rg_gain:+.2f} dB"]
         audio["replaygain_track_peak"] = [f"{rg_peak:.8f}"]
@@ -89,14 +94,14 @@ def _write_tags_aiff(path: Path, rg_gain: float, rg_peak: float) -> bool:
     """Write ReplayGain tags to AIFF via ID3."""
     try:
         from mutagen.aiff import AIFF  # type: ignore[import-untyped]
+
         audio = AIFF(str(path))
         if audio.tags is None:
             audio.add_tags()
         assert audio.tags is not None
-        audio.tags["TXXX:replaygain_track_gain"] = \
-            __import__("mutagen.id3", fromlist=["TXXX"]).TXXX(
-                encoding=3, desc="replaygain_track_gain", text=f"{rg_gain:+.2f} dB"
-            )
+        audio.tags["TXXX:replaygain_track_gain"] = __import__(
+            "mutagen.id3", fromlist=["TXXX"]
+        ).TXXX(encoding=3, desc="replaygain_track_gain", text=f"{rg_gain:+.2f} dB")
         audio.save()
         return True
     except Exception as exc:
@@ -124,10 +129,11 @@ def write_rg_tags(
         return _write_tags_aiff(path, rg_gain, rg_peak)
     # WAV: no standard RG tag container — store in DB only
     logger.debug("no RG tag writer for ext %s, DB-only: %s", ext, path)
-    return True   # not a failure — we just don't embed
+    return True  # not a failure — we just don't embed
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
+
 
 def _save_loudness(
     ctx: RunContext,
@@ -161,6 +167,7 @@ def _save_loudness(
 
 # ── Forge Stage ───────────────────────────────────────────────────────────────
 
+
 class ForgeStage(BaseStage):
     """
     EBU R128 loudness measurement + ReplayGain tag embedding.
@@ -173,6 +180,7 @@ class ForgeStage(BaseStage):
 
     def validate(self, ctx: RunContext) -> None:
         import shutil
+
         if not shutil.which("ffmpeg"):
             raise StageError("ffmpeg not found — required for loudness measurement")
         if not shutil.which("ffprobe"):
@@ -214,14 +222,14 @@ class ForgeStage(BaseStage):
         if reason != "ok":
             return reason
 
-        rg_gain = lufs_to_rg(lufs, reference=target_lufs)       # type: ignore[arg-type]
+        rg_gain = lufs_to_rg(lufs, reference=target_lufs)  # type: ignore[arg-type]
         r128_gain = lufs_to_rg(lufs, reference=R128_APPLE_REFERENCE)  # type: ignore[arg-type]
-        rg_peak = dbtp_to_linear(tp)                                   # type: ignore[arg-type]
+        rg_peak = dbtp_to_linear(tp)  # type: ignore[arg-type]
 
         tagged = False
         if not dry_run:
             tagged = write_rg_tags(path, rg_gain, rg_peak, r128_gain=r128_gain)
-            _save_loudness(ctx, file_path, lufs, tp, rg_gain, rg_peak, tagged)   # type: ignore[arg-type]
+            _save_loudness(ctx, file_path, lufs, tp, rg_gain, rg_peak, tagged)  # type: ignore[arg-type]
 
         return "ok" if tagged or dry_run else "tag_fail"
 
@@ -243,8 +251,12 @@ class ForgeStage(BaseStage):
             return result
 
         counters: dict[str, int] = {
-            "ok": 0, "silence": 0, "json_fail": 0,
-            "ffmpeg_fail": 0, "tag_fail": 0, "missing": 0,
+            "ok": 0,
+            "silence": 0,
+            "json_fail": 0,
+            "ffmpeg_fail": 0,
+            "tag_fail": 0,
+            "missing": 0,
         }
 
         for i, (fp, _ext) in enumerate(pending, 1):

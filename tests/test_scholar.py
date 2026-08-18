@@ -43,11 +43,14 @@ def ctx_dry(cfg: MusicConfig) -> RunContext:
 
 def _insert_hashed(ctx: RunContext, file_path: str) -> None:
     """Insert a HASHED row into archive for testing."""
-    upsert_archive(ctx.conn, {
-        "file_path": file_path,
-        "status": "HASHED",
-        "audio_hash": "abc123",
-    })
+    upsert_archive(
+        ctx.conn,
+        {
+            "file_path": file_path,
+            "status": "HASHED",
+            "audio_hash": "abc123",
+        },
+    )
     ctx.conn.commit()
 
 
@@ -78,6 +81,7 @@ SAMPLE_PROBE_DATA = {
 
 
 # ── _extract_meta ─────────────────────────────────────────────────────────────
+
 
 class TestExtractMeta:
     def test_basic_extraction(self):
@@ -147,6 +151,7 @@ class TestExtractMeta:
 
 # ── ScholarStage.validate() ───────────────────────────────────────────────────
 
+
 class TestScholarValidate:
     def test_validate_no_hashed_is_fine(self, ctx):
         """No HASHED rows → validate passes (just a no-op warning)."""
@@ -159,6 +164,7 @@ class TestScholarValidate:
 
 
 # ── ScholarStage.dry_run() ────────────────────────────────────────────────────
+
 
 class TestScholarDryRun:
     def test_dry_run_reports_count(self, ctx_dry, tmp_path):
@@ -182,6 +188,7 @@ class TestScholarDryRun:
 
 
 # ── ScholarStage.run() ────────────────────────────────────────────────────────
+
 
 class TestScholarRun:
     @patch("musaeus.stages.scholar._probe")
@@ -259,6 +266,7 @@ class TestScholarRun:
 
 
 # ── _get_hashed helper ────────────────────────────────────────────────────────
+
 
 class TestGetHashed:
     def test_empty_db(self, ctx):

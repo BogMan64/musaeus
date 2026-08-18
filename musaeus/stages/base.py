@@ -135,9 +135,7 @@ class BaseStage(ABC):
                 "traceback": traceback.format_exc(),
                 "last_item": ctx.get("_current_item"),
             }
-            report_path.write_text(
-                json.dumps(report, indent=2, default=str), encoding="utf-8"
-            )
+            report_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
             return str(report_path)
         except Exception:  # noqa: BLE001 — reporting failures must never propagate
             logger.exception(

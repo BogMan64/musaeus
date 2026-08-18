@@ -115,8 +115,14 @@ class CanonicalizeError(Exception):
 def _probe_streams(path: Path) -> dict:
     """Run ffprobe and return the parsed JSON (streams + format)."""
     cmd = [
-        "ffprobe", "-v", "error", "-print_format", "json",
-        "-show_format", "-show_streams", str(path),
+        "ffprobe",
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+        str(path),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if proc.returncode != 0:
@@ -157,10 +163,13 @@ def _verify_conversion(source: Path, output: Path) -> None:
 
     src_dur = _duration(src_probe)
     out_dur = _duration(out_probe)
-    if src_dur is not None and out_dur is not None and abs(src_dur - out_dur) > _DURATION_TOLERANCE_SEC:
+    if (
+        src_dur is not None
+        and out_dur is not None
+        and abs(src_dur - out_dur) > _DURATION_TOLERANCE_SEC
+    ):
         raise CanonicalizeError(
-            f"verification failed: duration mismatch "
-            f"(source={src_dur:.2f}s, output={out_dur:.2f}s)"
+            f"verification failed: duration mismatch (source={src_dur:.2f}s, output={out_dur:.2f}s)"
         )
 
 
@@ -179,18 +188,33 @@ def _convert_to_alac(source: Path, output: Path) -> None:
     cmd = ["ffmpeg", "-y" if output.exists() else "-n", "-i", str(source), "-threads", "2"]
     if has_art:
         cmd += [
-            "-map", "0:a:0", "-map", "0:v:0",
-            "-c:a", "alac", "-c:v", "copy",
-            "-disposition:v:0", "attached_pic",
-            "-map_metadata", "0",
-            "-f", "mp4", str(output),
+            "-map",
+            "0:a:0",
+            "-map",
+            "0:v:0",
+            "-c:a",
+            "alac",
+            "-c:v",
+            "copy",
+            "-disposition:v:0",
+            "attached_pic",
+            "-map_metadata",
+            "0",
+            "-f",
+            "mp4",
+            str(output),
         ]
     else:
         cmd += [
-            "-map", "0:a:0",
-            "-c:a", "alac",
-            "-map_metadata", "0",
-            "-f", "mp4", str(output),
+            "-map",
+            "0:a:0",
+            "-c:a",
+            "alac",
+            "-map_metadata",
+            "0",
+            "-f",
+            "mp4",
+            str(output),
         ]
 
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -210,18 +234,37 @@ def _transcode_to_aac(source: Path, output: Path) -> None:
     cmd = ["ffmpeg", "-y" if output.exists() else "-n", "-i", str(source), "-threads", "2"]
     if has_art:
         cmd += [
-            "-map", "0:a:0", "-map", "0:v:0",
-            "-c:a", "aac", "-b:a", AAC_TRANSCODE_BITRATE, "-c:v", "copy",
-            "-disposition:v:0", "attached_pic",
-            "-map_metadata", "0",
-            "-f", "mp4", str(output),
+            "-map",
+            "0:a:0",
+            "-map",
+            "0:v:0",
+            "-c:a",
+            "aac",
+            "-b:a",
+            AAC_TRANSCODE_BITRATE,
+            "-c:v",
+            "copy",
+            "-disposition:v:0",
+            "attached_pic",
+            "-map_metadata",
+            "0",
+            "-f",
+            "mp4",
+            str(output),
         ]
     else:
         cmd += [
-            "-map", "0:a:0",
-            "-c:a", "aac", "-b:a", AAC_TRANSCODE_BITRATE,
-            "-map_metadata", "0",
-            "-f", "mp4", str(output),
+            "-map",
+            "0:a:0",
+            "-c:a",
+            "aac",
+            "-b:a",
+            AAC_TRANSCODE_BITRATE,
+            "-map_metadata",
+            "0",
+            "-f",
+            "mp4",
+            str(output),
         ]
 
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -248,7 +291,15 @@ def _append_tunemymusic_row(ctx: RunContext, row: dict) -> None:
         writer = csv.writer(fh)
         if is_new:
             writer.writerow(
-                ["reason", "codec", "bitrate_kbps", "sample_rate", "channels", "duration_sec", "path"]
+                [
+                    "reason",
+                    "codec",
+                    "bitrate_kbps",
+                    "sample_rate",
+                    "channels",
+                    "duration_sec",
+                    "path",
+                ]
             )
         writer.writerow(
             [
@@ -277,6 +328,7 @@ class CanonicalizeStage(BaseStage):
 
     def validate(self, ctx: RunContext) -> None:
         import shutil
+
         if not shutil.which("ffmpeg"):
             raise StageError("ffmpeg not found — required for canonicalize")
         if not shutil.which("ffprobe"):
@@ -384,15 +436,18 @@ class CanonicalizeStage(BaseStage):
             row["_final_path"] = str(staged_output)
 
             if action == "TRANSCODE":
-                _append_tunemymusic_row(ctx, {
-                    "reason": "sub-lossless source, transcoded to AAC",
-                    "codec": row.get("codec"),
-                    "bitrate": row.get("bitrate"),
-                    "sample_rate": row.get("sample_rate"),
-                    "channels": row.get("channels"),
-                    "duration": row.get("duration"),
-                    "file_path": str(source),
-                })
+                _append_tunemymusic_row(
+                    ctx,
+                    {
+                        "reason": "sub-lossless source, transcoded to AAC",
+                        "codec": row.get("codec"),
+                        "bitrate": row.get("bitrate"),
+                        "sample_rate": row.get("sample_rate"),
+                        "channels": row.get("channels"),
+                        "duration": row.get("duration"),
+                        "file_path": str(source),
+                    },
+                )
                 return "TRANSCODED", "sub-lossless -> 256k AAC-in-.m4a (staged)"
 
             return "CONVERTED", "lossless -> ALAC-in-.m4a (staged)"
@@ -459,7 +514,9 @@ class CanonicalizeStage(BaseStage):
                 logger.error(
                     "[canonicalize] DB collision for row %s -> %s (%s); "
                     "leaving staged file in place, source untouched",
-                    row["id"], new_path, exc,
+                    row["id"],
+                    new_path,
+                    exc,
                 )
                 result.files_errored += 1
                 result.errors.append(f"{Path(old_path).name}: DB collision on {new_path}: {exc}")
@@ -525,7 +582,11 @@ class CanonicalizeStage(BaseStage):
         counters: dict[str, int] = {"PASSTHROUGH": 0, "CONVERTED": 0, "TRANSCODED": 0}
         for row in pending:
             action = self._decide_action(row)
-            key = "PASSTHROUGH" if action == "PASSTHROUGH" else ("CONVERTED" if action == "CONVERT" else "TRANSCODED")
+            key = (
+                "PASSTHROUGH"
+                if action == "PASSTHROUGH"
+                else ("CONVERTED" if action == "CONVERT" else "TRANSCODED")
+            )
             counters[key] += 1
 
         for k, v in counters.items():

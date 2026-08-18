@@ -191,8 +191,13 @@ def run_wizard(force: bool = False) -> bool:
     _save_env(_CREDENTIALS_FILE, creds_env)
 
     # Create directories
-    for d in (vault_path, inbox_path, vault_path / "STAGING",
-              vault_path / "QUARANTINE", vault_path / "RUNS"):
+    for d in (
+        vault_path,
+        inbox_path,
+        vault_path / "STAGING",
+        vault_path / "QUARANTINE",
+        vault_path / "RUNS",
+    ):
         d.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)

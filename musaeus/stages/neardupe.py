@@ -45,6 +45,7 @@ import unicodedata
 
 try:
     from rapidfuzz import fuzz
+
     _HAVE_RAPIDFUZZ = True
 except ImportError:
     _HAVE_RAPIDFUZZ = False
@@ -62,9 +63,18 @@ ARTIST_THRESHOLD = 88
 # Version/edition words stripped from titles before fuzzy comparison.
 # ORPHEUS-compatible (SCRIPTS/lib/orpheus_fuzzy.py STRIP_WORDS).
 STRIP_WORDS: tuple[str, ...] = (
-    "remastered", "remaster", "remix", "live", "acoustic",
-    "radio edit", "single version", "album version",
-    "mono", "stereo", "demo", "karaoke",
+    "remastered",
+    "remaster",
+    "remix",
+    "live",
+    "acoustic",
+    "radio edit",
+    "single version",
+    "album version",
+    "mono",
+    "stereo",
+    "demo",
+    "karaoke",
 )
 
 # Brackets containing ONLY version words (+ optional year/digits/punctuation)
@@ -77,8 +87,8 @@ _VERSION_BRACKET_WORDS = re.compile(
     + r")[\s\d,./+-]*[\)\]]",
     re.IGNORECASE,
 )
-_YEAR_BRACKET_RE = re.compile(r"[\(\[]\s*(?:19|20)\d{2}\s*[\)\]]")   # "(2015)"
-_NUM_BRACKET_RE = re.compile(r"[\(\[]\s*\d{1,2}\s*[\)\]]")           # "[2]"
+_YEAR_BRACKET_RE = re.compile(r"[\(\[]\s*(?:19|20)\d{2}\s*[\)\]]")  # "(2015)"
+_NUM_BRACKET_RE = re.compile(r"[\(\[]\s*\d{1,2}\s*[\)\]]")  # "[2]"
 
 # Same words also stripped as bare whole-words (catches "Song Title Remix"
 # with no surrounding parens at all).
@@ -116,8 +126,8 @@ def _normalise(s: str, strip_qualifiers: bool = False) -> str:
     if strip_qualifiers:
         s = _strip_title_qualifiers(s)
     s = unicodedata.normalize("NFD", s.lower())
-    s = re.sub(r"[^\w\s]", " ", s)          # punctuation → space
-    s = re.sub(r"\s+", " ", s).strip()       # collapse whitespace
+    s = re.sub(r"[^\w\s]", " ", s)  # punctuation → space
+    s = re.sub(r"\s+", " ", s).strip()  # collapse whitespace
     # Strip leading "the "
     if s.startswith("the "):
         s = s[4:]
@@ -266,7 +276,10 @@ class NearDupeStage(BaseStage):
                         result.files_changed += 1
                         logger.info(
                             "near-dupe: %r ~~ %r (score=%d, artist=%s)",
-                            a["title"], b["title"], score, artist_key,
+                            a["title"],
+                            b["title"],
+                            score,
+                            artist_key,
                         )
 
         if not dry_run and new_pairs > 0:

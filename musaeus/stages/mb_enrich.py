@@ -204,9 +204,7 @@ class MBEnrichStage(BaseStage):
             )
             urlopen(req, timeout=5)
         except Exception as exc:
-            result.notes.append(
-                f"MusicBrainz not reachable — skipping mb_enrich this run. ({exc})"
-            )
+            result.notes.append(f"MusicBrainz not reachable — skipping mb_enrich this run. ({exc})")
             ctx.record_stage(result)
             return result
 

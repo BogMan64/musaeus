@@ -292,8 +292,7 @@ class TestNetworkStageDryRunCharacterization:
             result = EnrichStage()._enrich(ctx, dry_run=True)
 
         assert calls["n"] == 0, (
-            "fix regressed: enrich --dry-run performed a real Last.fm "
-            "network lookup"
+            "fix regressed: enrich --dry-run performed a real Last.fm network lookup"
         )
         assert any("would be queried via Last.fm" in n for n in result.notes)
         ctx.finish()
@@ -319,8 +318,7 @@ class TestNetworkStageDryRunCharacterization:
             result = MBEnrichStage()._enrich(ctx, dry_run=True)
 
         assert calls["n"] == 0, (
-            "fix regressed: mb-enrich --dry-run performed a real "
-            "MusicBrainz artist search"
+            "fix regressed: mb-enrich --dry-run performed a real MusicBrainz artist search"
         )
         assert any("would be queried via MusicBrainz" in n for n in result.notes)
         ctx.finish()

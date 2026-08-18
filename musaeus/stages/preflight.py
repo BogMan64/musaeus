@@ -101,7 +101,7 @@ class PreflightStage(BaseStage):
         # _offer_installs() -- reset per instance, and PreflightStage is
         # instantiated fresh per run (see cli.py), so this never leaks
         # state between runs.
-        self._missing_apt: dict[str, str] = {}   # cmd -> apt package name
+        self._missing_apt: dict[str, str] = {}  # cmd -> apt package name
         self._missing_pip: list[str] = []
 
     def validate(self, ctx: RunContext) -> None:
@@ -153,9 +153,12 @@ class PreflightStage(BaseStage):
         # Hard dependency: pyproject.toml declares this, tagger/forge import it.
         try:
             import mutagen  # noqa: F401
+
             ok.append(f"mutagen: available (v{mutagen.version_string})")
         except ImportError:
-            fail.append("mutagen: not installed -- required by forge, tagger. Fix: pip install mutagen")
+            fail.append(
+                "mutagen: not installed -- required by forge, tagger. Fix: pip install mutagen"
+            )
             self._missing_pip.append("mutagen")
 
         # Soft dependency: neardupe/canon already guard this import and
@@ -164,6 +167,7 @@ class PreflightStage(BaseStage):
         # so a preflight run doesn't block stages that don't need it.
         try:
             import rapidfuzz  # noqa: F401
+
             ok.append("rapidfuzz: available")
         except ImportError:
             warn.append(
@@ -217,7 +221,9 @@ class PreflightStage(BaseStage):
         for suffix in ("-wal", "-shm"):
             p = Path(str(db_path) + suffix)
             if p.exists():
-                ok.append(f"{p.name}: present ({p.stat().st_size} bytes) -- normal for an open WAL connection")
+                ok.append(
+                    f"{p.name}: present ({p.stat().st_size} bytes) -- normal for an open WAL connection"
+                )
 
     # ── Interactive, run()-only (never dry_run()) ───────────────────────────────
 
@@ -245,7 +251,9 @@ class PreflightStage(BaseStage):
             return
 
         names = apt_pkgs + pip_pkgs
-        print(f"\n  Preflight found {len(names)} missing dependenc{'y' if len(names) == 1 else 'ies'}: {', '.join(names)}")
+        print(
+            f"\n  Preflight found {len(names)} missing dependenc{'y' if len(names) == 1 else 'ies'}: {', '.join(names)}"
+        )
         if not self._confirm("Install now?", default=True):
             ok.append("dependency auto-install: declined, left as report-only")
             return
@@ -260,7 +268,9 @@ class PreflightStage(BaseStage):
                 else:
                     fail.append(f"apt install: {', '.join(apt_pkgs)} -- exit {result.returncode}")
             except OSError as exc:
-                fail.append(f"apt install: {', '.join(apt_pkgs)} -- could not run sudo/apt-get: {exc}")
+                fail.append(
+                    f"apt install: {', '.join(apt_pkgs)} -- could not run sudo/apt-get: {exc}"
+                )
 
         if pip_pkgs:
             cmd = [sys.executable, "-m", "pip", "install", *pip_pkgs]
@@ -292,6 +302,7 @@ class PreflightStage(BaseStage):
         if not self._confirm("Do you have new API keys to add?", default=False):
             return
         from ..setup import run_api_key_manager
+
         run_api_key_manager()
         ok.append("API key manager: invoked interactively")
 
@@ -337,9 +348,7 @@ class PreflightStage(BaseStage):
             result.errors.append(item)
             logger.error("[preflight] %s", item)
 
-        result.notes.append(
-            f"Preflight: {len(ok)} OK, {len(warn)} WARN, {len(fail)} FAIL"
-        )
+        result.notes.append(f"Preflight: {len(ok)} OK, {len(warn)} WARN, {len(fail)} FAIL")
 
         # Report-only: preflight itself never fails the stage result over a
         # FAIL condition -- it's a report, and the caller (interactive CLI,
