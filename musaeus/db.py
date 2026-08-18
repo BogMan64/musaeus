@@ -138,6 +138,13 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     #                  also logged to TuneMyMusic.csv
     ("archive", "canon_action", "TEXT"),
     ("archive", "finalized_at", "TEXT"),
+    # Phase 2A — ALAC-Library LUFS bake (scripts/alac_library/build_alac_library.py,
+    # standalone, not a pipeline stage). Same nullable-timestamp resumability
+    # pattern as canonicalized_at/finalized_at. lufs_baked_target records what
+    # target was actually baked to (-18.0 today), self-documenting without
+    # needing to re-derive it from the script's source.
+    ("archive", "lufs_baked_at", "TEXT"),
+    ("archive", "lufs_baked_target", "REAL"),
 ]
 
 
