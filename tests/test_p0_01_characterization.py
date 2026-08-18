@@ -241,20 +241,19 @@ class TestResumeRecordsFailedStageAsCompleteCharacterization:
 
 class TestNetworkStageDryRunCharacterization:
     """
-    UPDATED 2026-08-17: EnrichStage and MBEnrichStage joined
-    DEFAULT_PIPELINE's default-on chain (positioned last, after Audit).
-    AcousticIDStage remains on-demand only. For all three, confirmed by
-    reading each stage's _enrich()/_run() implementation: the per-item
-    network call itself happens unconditionally once reachability is
-    confirmed — only the subsequent DB write is gated behind `if not
-    dry_run`. This means "--dry-run" for these stages is not a network
-    no-op today when the network IS reachable, contrary to what a user
-    would reasonably expect from a flag named --dry-run (tracked as a
-    known gap in the consumer-readiness safety spec, P0-03+, not yet
-    fixed). MBEnrichStage additionally now probes reachability once up
-    front and degrades gracefully (skip + report) rather than failing
-    when it's NOT reachable — see
-    test_mb_enrich_unreachable_network_skips_gracefully.
+    FIXED 2026-08-18. EnrichStage and MBEnrichStage joined
+    DEFAULT_PIPELINE's default-on chain 2026-08-17 (positioned last,
+    after Audit), which is what made the pre-existing "dry_run doesn't
+    gate the network call" gap worth actually closing rather than just
+    tracking (previously these stages were on-demand only, so the gap
+    was lower-stakes). Both stages' dry_run() now skip the real network
+    call entirely -- not just the DB write -- reporting what WOULD be
+    queried instead of actually querying it. AcousticIDStage remains
+    on-demand only and is unaffected; its own dry_run() still makes real
+    network calls, tracked separately in the consumer-readiness safety
+    spec (P0-03+, not this fix). MBEnrichStage also probes connectivity
+    once up front and degrades gracefully (skip + report) when
+    unreachable — see test_mb_enrich_unreachable_network_skips_gracefully.
     """
 
     def _catalogued_row(self, ctx, file_path: str, artist: str = "Some Artist") -> None:
@@ -271,7 +270,7 @@ class TestNetworkStageDryRunCharacterization:
         )
         ctx.conn.commit()
 
-    def test_enrich_dry_run_still_calls_the_lastfm_lookup(self, disposable_vault):
+    def test_enrich_dry_run_makes_no_lastfm_lookup(self, disposable_vault):
         disposable_vault.cfg.ensure_dirs()
         (disposable_vault.cfg.meta_dir / "genre_allowed.txt").write_text("Rock\n")
         (disposable_vault.cfg.meta_dir / "genre_map.tsv").write_text("")
@@ -289,34 +288,17 @@ class TestNetworkStageDryRunCharacterization:
             calls["n"] += 1
             return []
 
-        # FIXED 2026-08-17: EnrichStage._enrich() used to call the
-        # module-level get_config() singleton directly instead of
-        # ctx.config (same isolation gap that existed in NearDupeStage) --
-        # now uses ctx.config like every other stage, so no get_config
-        # patch is needed here any more.
         with patch("musaeus.stages.enrich._lastfm_top_tags", side_effect=_stub_top_tags):
-            EnrichStage()._enrich(ctx, dry_run=True)
+            result = EnrichStage()._enrich(ctx, dry_run=True)
 
-        assert calls["n"] == 1, (
-            "characterization finding: enrich --dry-run still performs the "
-            "Last.fm network lookup; only the archive.genre UPDATE afterwards "
-            "is skipped"
+        assert calls["n"] == 0, (
+            "fix regressed: enrich --dry-run performed a real Last.fm "
+            "network lookup"
         )
+        assert any("would be queried via Last.fm" in n for n in result.notes)
         ctx.finish()
 
-    def test_mb_enrich_dry_run_still_calls_musicbrainz_search_when_reachable(
-        self, disposable_vault
-    ):
-        """
-        UPDATED 2026-08-17: MBEnrichStage now probes connectivity once up
-        front (see test_mb_enrich_unreachable_network_skips_gracefully for
-        that half) and, when reachable, dry_run still doesn't gate the
-        per-artist search call -- only the subsequent archive UPDATE is
-        skipped. That half of the original characterization finding is
-        still true and still worth locking in; the difference from before
-        is that this is now safe (graceful skip) rather than a hard
-        failure when unreachable, not that dry_run gates it.
-        """
+    def test_mb_enrich_dry_run_makes_no_musicbrainz_search(self, disposable_vault):
         disposable_vault.cfg.ensure_dirs()
         conn = disposable_vault.open_db()
         ctx = disposable_vault.new_context(conn, dry_run=True)
@@ -334,13 +316,13 @@ class TestNetworkStageDryRunCharacterization:
             patch("musaeus.stages.mb_enrich.urlopen"),  # connectivity probe: reachable
             patch("musaeus.stages.mb_enrich._search_artist", side_effect=_stub_search_artist),
         ):
-            MBEnrichStage()._enrich(ctx, dry_run=True)
+            result = MBEnrichStage()._enrich(ctx, dry_run=True)
 
-        assert calls["n"] == 1, (
-            "characterization finding: mb-enrich --dry-run still performs "
-            "the MusicBrainz artist search when the network is reachable; "
-            "only the archive UPDATE afterwards is skipped"
+        assert calls["n"] == 0, (
+            "fix regressed: mb-enrich --dry-run performed a real "
+            "MusicBrainz artist search"
         )
+        assert any("would be queried via MusicBrainz" in n for n in result.notes)
         ctx.finish()
 
     def test_mb_enrich_unreachable_network_skips_gracefully(

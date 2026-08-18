@@ -198,6 +198,7 @@ class EnrichStage(BaseStage):
         skipped_no_tag = 0
         skipped_api_err = 0
         enriched_from_library = 0
+        would_query_artists: set[str] = set()
 
         for row in rows:
             result.files_processed += 1
@@ -214,6 +215,15 @@ class EnrichStage(BaseStage):
             # Cache hit
             if artist_lower in artist_cache:
                 resolved = artist_cache[artist_lower]
+            elif dry_run:
+                # FIXED 2026-08-18: dry_run must not make the real network
+                # call at all (previously only the DB write was gated,
+                # so "--dry-run" still hit Last.fm for real). Anything not
+                # already resolvable from library data is reported as
+                # "would query", not actually looked up.
+                would_query_artists.add(artist_lower)
+                result.files_skipped += 1
+                continue
             else:
                 lookup_name = _clean_artist_for_lookup(artist)
                 if lookup_name != artist:
@@ -275,6 +285,11 @@ class EnrichStage(BaseStage):
         if enriched_from_library:
             result.notes.append(
                 f"{enriched_from_library} artist(s) resolved from existing library data (no API call)."
+            )
+        if would_query_artists:
+            result.notes.append(
+                f"{len(would_query_artists)} artist(s) would be queried via Last.fm in a "
+                f"real run — not looked up now, dry-run makes no network calls."
             )
         if skipped_no_tag:
             result.notes.append(f"{skipped_no_tag} artist(s) had no resolvable Last.fm tag.")

@@ -243,6 +243,7 @@ class MBEnrichStage(BaseStage):
         found_artists = 0
         found_releases = 0
         not_found = 0
+        would_query_artists: set[str] = set()
 
         from datetime import datetime, timezone
 
@@ -257,6 +258,16 @@ class MBEnrichStage(BaseStage):
 
             # ── Artist lookup ──────────────────────────────────────────────
             if artist_lower not in artist_cache:
+                if dry_run:
+                    # FIXED 2026-08-18: dry_run must not make the real
+                    # network call at all (previously only the DB write
+                    # was gated). Not populating artist_cache here is
+                    # deliberate -- the release lookup below is naturally
+                    # never reached for an uncached artist, since this
+                    # branch always continues past it.
+                    would_query_artists.add(artist_lower)
+                    result.files_skipped += 1
+                    continue
                 time.sleep(_RATE_LIMIT_S)
                 match = _search_artist(artist)
                 artist_cache[artist_lower] = match
@@ -332,6 +343,12 @@ class MBEnrichStage(BaseStage):
             result.notes.append(f"  {found_releases} release MBID(s) found.")
         if not_found:
             result.notes.append(f"  {not_found} artist(s) not found on MusicBrainz.")
+        if would_query_artists:
+            result.notes.append(
+                f"  {len(would_query_artists)} artist(s) would be queried via "
+                f"MusicBrainz in a real run — not looked up now, dry-run makes "
+                f"no network calls."
+            )
 
         ctx.record_stage(result)
         return result
