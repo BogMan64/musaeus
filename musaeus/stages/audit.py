@@ -146,6 +146,18 @@ class AuditStage(BaseStage):
             )
 
         # ── Check 3: every finalized row's hash must be in the persistent index
+        #
+        # Matches on audio_hash alone, not (audio_hash, file_path) -- mirroring
+        # db.lookup_finalized_hash(), the actual production cross-batch dedup
+        # lookup, which only ever keys on audio_hash. finalized_hashes.file_path
+        # is documented (db.py) as "final ALAC-Library path at time of
+        # finalize" -- an immutable historical snapshot, not something kept in
+        # sync with archive.file_path afterward. A row finalized once and later
+        # moved by DupeResolverStage (into DUPES_MOVED_FOR_REVIEW, updating
+        # archive.file_path) is expected to no longer match its finalize-time
+        # snapshot; audio_hash is the stable identity across any such move
+        # (dupe_resolver.py's own stated design), so that's what this check
+        # must key on too.
         if finalized_rows:
             hashed_rows = [r for r in finalized_rows if r["audio_hash"]]
             if hashed_rows:
@@ -155,8 +167,8 @@ class AuditStage(BaseStage):
                         missing_from_index = []
                         for row in hashed_rows:
                             found = hash_conn.execute(
-                                "SELECT 1 FROM finalized_hashes WHERE audio_hash = ? AND file_path = ?",
-                                (row["audio_hash"], row["file_path"]),
+                                "SELECT 1 FROM finalized_hashes WHERE audio_hash = ?",
+                                (row["audio_hash"],),
                             ).fetchone()
                             if not found:
                                 missing_from_index.append(row["file_path"])

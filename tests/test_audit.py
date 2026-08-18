@@ -196,6 +196,53 @@ class TestAuditHashIndexMismatch:
         assert any("hash missing from persistent" in e for e in result.errors)
 
 
+class TestAuditHashIndexSurvivesPostFinalizeMove:
+    def test_row_moved_after_finalize_still_matches_via_audio_hash(self, ctx):
+        """Regression test for the 2026-08-18 overnight run's 10,415 false
+        positives: DupeResolverStage finalizes a row, records its hash-index
+        entry at the finalize-time path, then later quarantines the row into
+        DUPES_MOVED_FOR_REVIEW and updates archive.file_path -- exactly like
+        dupe_resolver.py's own UPDATE at line ~389. The hash-index entry is
+        never touched (by design -- finalized_hashes.file_path is a
+        point-in-time snapshot, not kept in sync). Audit must still find the
+        hash via audio_hash alone, not require the stale path to match."""
+        original_path = ctx.alac_library / "Artist" / "Album" / "Track.m4a"
+        _gen_audio(original_path)
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(original_path),
+                "status": "CATALOGUED",
+                "audio_hash": "hash_moved",
+            },
+        )
+        ctx.conn.execute(
+            "UPDATE archive SET finalized_at = datetime('now') WHERE file_path = ?",
+            (str(original_path),),
+        )
+        ctx.conn.commit()
+
+        hash_conn = open_hash_index(ctx.config.hash_index_path)
+        record_finalized_hash(hash_conn, "hash_moved", str(original_path))
+        hash_conn.commit()
+        hash_conn.close()
+
+        # Simulate DupeResolverStage quarantining this row: file physically
+        # moved, archive.file_path updated, hash index left untouched.
+        quarantined_path = ctx.config.dupes_review_dir / "EXACT" / "group1" / "Track.m4a"
+        quarantined_path.parent.mkdir(parents=True, exist_ok=True)
+        original_path.rename(quarantined_path)
+        ctx.conn.execute(
+            "UPDATE archive SET status = 'DUPE_REVIEW', file_path = ? WHERE file_path = ?",
+            (str(quarantined_path), str(original_path)),
+        )
+        ctx.conn.commit()
+
+        result = AuditStage().execute(ctx)
+
+        assert not any("hash missing from persistent" in e for e in result.errors)
+
+
 class TestAuditReadOnly:
     def test_never_mutates_archive_or_disk(self, ctx):
         path = _make_finalized_row(ctx, "Artist/Album/Track.m4a")
