@@ -87,7 +87,8 @@ def similarity(a: str, b: str, pre_normalized: bool = False) -> float:
         b = normalize(b)
 
     if _HAVE_RAPIDFUZZ:
-        return _fuzz.ratio(a, b)
+        score: float = _fuzz.ratio(a, b)
+        return score
     else:
         # difflib returns 0..1; scale to 0..100
         return _difflib.SequenceMatcher(None, a, b).ratio() * 100
@@ -105,7 +106,8 @@ def token_similarity(a: str, b: str, pre_normalized: bool = False) -> float:
         b = normalize(b)
 
     if _HAVE_RAPIDFUZZ:
-        return _fuzz.token_sort_ratio(a, b)
+        score: float = _fuzz.token_sort_ratio(a, b)
+        return score
     return similarity(a, b, pre_normalized=True)
 
 
@@ -119,7 +121,8 @@ def partial_similarity(a: str, b: str, pre_normalized: bool = False) -> float:
         b = normalize(b)
 
     if _HAVE_RAPIDFUZZ:
-        return _fuzz.partial_ratio(a, b)
+        score: float = _fuzz.partial_ratio(a, b)
+        return score
     return similarity(a, b, pre_normalized=True)
 
 
