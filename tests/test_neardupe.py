@@ -7,10 +7,11 @@ Requires rapidfuzz; tests skip if not installed.
 from pathlib import Path
 
 import pytest
+
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db, upsert_archive
-from musaeus.stages.neardupe import NearDupeStage, _normalise, _group_id
+from musaeus.stages.neardupe import NearDupeStage, _group_id, _normalise
 
 # Skip all tests if rapidfuzz is not available
 rapidfuzz = pytest.importorskip("rapidfuzz")
@@ -154,7 +155,7 @@ class TestNearDupeRun:
         _insert_catalogued(ctx, str(tmp_path / "a.flac"), "Artist A", "Same Title")
         _insert_catalogued(ctx, str(tmp_path / "b.flac"), "Artist B", "Same Title")
 
-        result = NearDupeStage().execute(ctx)
+        NearDupeStage().execute(ctx)
         # Different artists → no match (unless artists are very similar)
         dupes = ctx.conn.execute(
             "SELECT * FROM duplicates WHERE duplicate_type='NEAR'"
@@ -183,7 +184,7 @@ class TestNearDupeRun:
         )
         ctx.conn.commit()
 
-        result = NearDupeStage().execute(ctx)
+        NearDupeStage().execute(ctx)
         # a.flac is in exact duplicates → should be skipped in neardupe
         # The pair should not be flagged since a.flac is already EXACT
         near_dupes = ctx.conn.execute(

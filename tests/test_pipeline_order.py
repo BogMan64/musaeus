@@ -70,7 +70,7 @@ def test_enrichment_is_default_on_and_positioned_last():
 
 
 def test_full_default_pipeline_order_matches_the_2026_08_17_reorder():
-    assert DEFAULT_PIPELINE == [
+    assert [
         PreflightStage,
         IngestStage,
         PermissionsStage,
@@ -92,4 +92,4 @@ def test_full_default_pipeline_order_matches_the_2026_08_17_reorder():
         AuditStage,
         EnrichStage,
         MBEnrichStage,
-    ]
+    ] == DEFAULT_PIPELINE

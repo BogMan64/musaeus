@@ -42,7 +42,6 @@ import hashlib
 import logging
 import re
 import unicodedata
-import uuid
 
 try:
     from rapidfuzz import fuzz

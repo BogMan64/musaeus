@@ -21,13 +21,11 @@ Launch:
 
 from __future__ import annotations
 
+import contextlib
 import logging
-import os
 import sys
-import textwrap
 import traceback
 from pathlib import Path
-from typing import Callable
 
 from .config import MusicConfig, get_config
 from .context import RunContext
@@ -322,10 +320,8 @@ class Console:
             # crashes in one session, 2026-08-11). Safe to call even
             # after ctx.finish() already closed it -- closing an
             # already-closed sqlite3.Connection is a documented no-op.
-            try:
+            with contextlib.suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
     # ── Run single stage ──────────────────────────────────────────────────────
 
@@ -358,10 +354,8 @@ class Console:
             # identical comment for why this must be a finally, not just
             # the except-Exception branch (KeyboardInterrupt is a
             # BaseException and would otherwise leak the connection).
-            try:
+            with contextlib.suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
     # ── Recent runs ───────────────────────────────────────────────────────────
 
@@ -480,6 +474,22 @@ class Console:
                 _info(line)
         else:
             _warn("Config not loaded.")
+
+    # ── API keys ──────────────────────────────────────────────────────────────
+
+    def _manage_api_keys(self) -> None:
+        _section("Enter/Update API Keys")
+        from .setup import run_api_key_manager
+
+        run_api_key_manager()
+
+        # Refresh so the Configuration view reflects any key that took
+        # effect immediately (i.e. no higher-precedence env var was
+        # already active for it). Keys that showed the shell-export
+        # warning intentionally won't change here -- that's correct,
+        # since MusicConfig.from_env() would see the same override.
+        with contextlib.suppress(Exception):
+            self._config = MusicConfig.from_env()
 
     # ── Reset / fresh-start ───────────────────────────────────────────────────
 
@@ -635,10 +645,8 @@ class Console:
             # This is the exact call site from the traceback that
             # exposed the bug (Forge failing with "database is locked"
             # after an interrupted Sentinel run leaked its connection).
-            try:
+            with contextlib.suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
     def _stage_menu(self) -> None:
         stages: list[tuple[str, type, dict]] = [
@@ -704,6 +712,7 @@ class Console:
             ("Inspect a run",                 self._show_run_detail),
             ("View duplicates",               self._show_duplicates),
             ("Configuration",                 self._show_config),
+            ("Enter/Update API Keys",         self._manage_api_keys),
             ("Reset / fresh start",           self._reset_menu),
             ("Quit",                          self._quit),
         ]
@@ -755,7 +764,7 @@ class Console:
                 self._main_menu()
             except KeyboardInterrupt:
                 print()
-                _warn("Use option 10 (Quit) to exit cleanly.")
+                _warn("Use option 11 (Quit) to exit cleanly.")
             except Exception:
                 _err("Unexpected error in console loop:")
                 traceback.print_exc()

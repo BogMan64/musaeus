@@ -60,13 +60,13 @@ from __future__ import annotations
 
 import logging
 import shutil
+import sqlite3
 import subprocess
 import sys
-import sqlite3
 from pathlib import Path
 
 from ..context import RunContext, StageResult
-from .base import BaseStage, StageError
+from .base import BaseStage
 
 logger = logging.getLogger(__name__)
 

@@ -28,8 +28,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
-
 from musaeus.stages import DEFAULT_PIPELINE
 
 # ── musaeus run --dry-run / musaeus dry-run (DEFAULT_PIPELINE) ────────────────
