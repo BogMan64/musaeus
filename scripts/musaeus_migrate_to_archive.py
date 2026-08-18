@@ -87,7 +87,7 @@ def _candidate_rows(conn: sqlite3.Connection) -> list[dict]:
     """
     rows = conn.execute(
         """
-        SELECT rowid, file_path, artist, album
+        SELECT id, file_path, artist, album
           FROM archive
          WHERE status = 'CATALOGUED'
            AND finalized_at IS NOT NULL
@@ -148,7 +148,7 @@ def main() -> int:
 
         # Live re-check -- never trust the snapshot taken above.
         current = conn.execute(
-            "SELECT status, finalized_at FROM archive WHERE rowid = ?", (row["rowid"],)
+            "SELECT status, finalized_at FROM archive WHERE id = ?", (row["id"],)
         ).fetchone()
         if not current or current["status"] != "CATALOGUED" or not current["finalized_at"]:
             print(f"  SKIP  {source.name}: no longer a finalized CATALOGUED row")
@@ -184,8 +184,8 @@ def main() -> int:
 
         try:
             conn.execute(
-                "UPDATE archive SET file_path = ? WHERE rowid = ?",
-                (str(target), row["rowid"]),
+                "UPDATE archive SET file_path = ? WHERE id = ?",
+                (str(target), row["id"]),
             )
             conn.execute(
                 "INSERT INTO events (run_id, event_type, file_path, old_value, new_value, stage, note) "
