@@ -35,12 +35,33 @@ What it checks, in order:
 Unlike ORPHEUS's version, this only checks what MUSAEUS's own stages
 actually import/call (no PIL/requests/itunespy -- MUSAEUS doesn't use
 them). See module docstring history if that changes.
+
+Interactive auto-install (2026-08-17, Grey's call): when run() (never
+dry_run()) is invoked from a real terminal (sys.stdin.isatty()) and any
+required command or package is missing, preflight asks ONE batch
+confirmation ("Install: ffmpeg, mutagen? [Y/n]") covering everything
+missing, not a prompt per item. On yes, missing apt packages are
+installed via one `sudo apt-get install -y ...` call and missing pip
+packages via one `pip install ...` call, each check is re-run to confirm
+it actually worked, and the outcome is reported like any other check.
+Deliberately still report-only, exactly as before, when there's no TTY
+(cron/overnight/piped) or the user declines -- auto-installing without a
+human present would be the unattended-automation risk this project's
+whole discipline exists to avoid (see scope doc SOP #10); auto-installing
+after a human explicitly ran preflight and confirmed is a different,
+accepted case (Grey, 2026-08-17).
+
+Also offers to launch the existing API-key manager
+(musaeus.setup.run_api_key_manager) under the same interactive-only
+condition, rather than reimplementing key entry here.
 """
 
 from __future__ import annotations
 
 import logging
 import shutil
+import subprocess
+import sys
 import sqlite3
 from pathlib import Path
 
@@ -57,11 +78,12 @@ FAIL_FREE_GB = 50
 WARN_FREE_GB = 100
 
 # External commands each real MUSAEUS stage depends on, with the stage(s)
-# that need them and an install hint if missing.
+# that need them and the apt package that provides them (ffmpeg/ffprobe
+# both come from the same "ffmpeg" package -- deduped before install).
 _REQUIRED_COMMANDS: tuple[tuple[str, str, str], ...] = (
-    ("ffmpeg", "forge, transcode, integrity, auditor, albumart", "sudo apt install ffmpeg"),
-    ("ffprobe", "forge, transcode, integrity, auditor, albumart", "sudo apt install ffmpeg"),
-    ("fpcalc", "acousticid", "sudo apt install libchromaprint-tools"),
+    ("ffmpeg", "forge, transcode, integrity, auditor, albumart", "ffmpeg"),
+    ("ffprobe", "forge, transcode, integrity, auditor, albumart", "ffmpeg"),
+    ("fpcalc", "acousticid", "libchromaprint-tools"),
 )
 
 
@@ -72,6 +94,15 @@ class PreflightStage(BaseStage):
     """
 
     NAME = "preflight"
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Populated by _check_commands()/_check_packages(), consumed by
+        # _offer_installs() -- reset per instance, and PreflightStage is
+        # instantiated fresh per run (see cli.py), so this never leaks
+        # state between runs.
+        self._missing_apt: dict[str, str] = {}   # cmd -> apt package name
+        self._missing_pip: list[str] = []
 
     def validate(self, ctx: RunContext) -> None:
         # Nothing to validate before validating -- if ctx/config didn't
@@ -107,12 +138,16 @@ class PreflightStage(BaseStage):
                 fail.append(f"{label}: not writable ({path}): {exc}")
 
     def _check_commands(self, ok: list, warn: list, fail: list) -> None:
-        for cmd, used_by, hint in _REQUIRED_COMMANDS:
+        for cmd, used_by, apt_pkg in _REQUIRED_COMMANDS:
             found = shutil.which(cmd)
             if found:
                 ok.append(f"{cmd}: found ({found})")
             else:
-                fail.append(f"{cmd}: not found on PATH -- required by {used_by}. Fix: {hint}")
+                fail.append(
+                    f"{cmd}: not found on PATH -- required by {used_by}. "
+                    f"Fix: sudo apt install {apt_pkg}"
+                )
+                self._missing_apt[cmd] = apt_pkg
 
     def _check_packages(self, ok: list, warn: list, fail: list) -> None:
         # Hard dependency: pyproject.toml declares this, tagger/forge import it.
@@ -121,6 +156,7 @@ class PreflightStage(BaseStage):
             ok.append(f"mutagen: available (v{mutagen.version_string})")
         except ImportError:
             fail.append("mutagen: not installed -- required by forge, tagger. Fix: pip install mutagen")
+            self._missing_pip.append("mutagen")
 
         # Soft dependency: neardupe/canon already guard this import and
         # degrade gracefully (NearDupeStage.validate() raises StageError
@@ -134,6 +170,7 @@ class PreflightStage(BaseStage):
                 "rapidfuzz: not installed -- neardupe and fuzzy artist/genre "
                 "canon matching will be unavailable. Fix: pip install rapidfuzz"
             )
+            self._missing_pip.append("rapidfuzz")
 
     def _check_disk_space(self, ctx: RunContext, ok: list, warn: list, fail: list) -> None:
         try:
@@ -182,6 +219,82 @@ class PreflightStage(BaseStage):
             if p.exists():
                 ok.append(f"{p.name}: present ({p.stat().st_size} bytes) -- normal for an open WAL connection")
 
+    # ── Interactive, run()-only (never dry_run()) ───────────────────────────────
+
+    @staticmethod
+    def _confirm(prompt: str, default: bool = False) -> bool:
+        suffix = " [Y/n]" if default else " [y/N]"
+        try:
+            val = input(f"  {prompt}{suffix}: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return default
+        if not val:
+            return default
+        return val in ("y", "yes")
+
+    def _offer_installs(self, ok: list, warn: list, fail: list) -> None:
+        """
+        One batch Y/n covering everything missing, not a prompt per item
+        (Grey, 2026-08-17). Only called from run() when sys.stdin.isatty();
+        dry_run() never reaches this.
+        """
+        apt_pkgs = sorted(set(self._missing_apt.values()))
+        pip_pkgs = sorted(set(self._missing_pip))
+        if not apt_pkgs and not pip_pkgs:
+            return
+
+        names = apt_pkgs + pip_pkgs
+        print(f"\n  Preflight found {len(names)} missing dependenc{'y' if len(names) == 1 else 'ies'}: {', '.join(names)}")
+        if not self._confirm("Install now?", default=True):
+            ok.append("dependency auto-install: declined, left as report-only")
+            return
+
+        if apt_pkgs:
+            cmd = ["sudo", "apt-get", "install", "-y", *apt_pkgs]
+            print(f"    Running: {' '.join(cmd)}")
+            try:
+                result = subprocess.run(cmd, capture_output=False)
+                if result.returncode == 0:
+                    ok.append(f"apt install: {', '.join(apt_pkgs)} -- exit 0")
+                else:
+                    fail.append(f"apt install: {', '.join(apt_pkgs)} -- exit {result.returncode}")
+            except OSError as exc:
+                fail.append(f"apt install: {', '.join(apt_pkgs)} -- could not run sudo/apt-get: {exc}")
+
+        if pip_pkgs:
+            cmd = [sys.executable, "-m", "pip", "install", *pip_pkgs]
+            print(f"    Running: {' '.join(cmd)}")
+            try:
+                result = subprocess.run(cmd, capture_output=False)
+                if result.returncode == 0:
+                    ok.append(f"pip install: {', '.join(pip_pkgs)} -- exit 0")
+                else:
+                    fail.append(f"pip install: {', '.join(pip_pkgs)} -- exit {result.returncode}")
+            except OSError as exc:
+                fail.append(f"pip install: {', '.join(pip_pkgs)} -- could not run pip: {exc}")
+
+        # Re-run the two checks to confirm the install actually worked,
+        # rather than trusting the installer's exit code alone.
+        self._missing_apt.clear()
+        self._missing_pip.clear()
+        self._check_commands(ok, warn, fail)
+        self._check_packages(ok, warn, fail)
+
+    def _offer_api_keys(self, ok: list) -> None:
+        """
+        Reuses the existing, already-wired API-key manager
+        (musaeus.setup.run_api_key_manager, console.py's own "Enter/Update
+        API Keys" menu) instead of reimplementing key entry here. Its
+        per-key "Update this key? [y/N]" + blank-to-skip pattern already
+        matches what Grey asked for.
+        """
+        if not self._confirm("Do you have new API keys to add?", default=False):
+            return
+        from ..setup import run_api_key_manager
+        run_api_key_manager()
+        ok.append("API key manager: invoked interactively")
+
     # ── Shared logic ──────────────────────────────────────────────────────────
 
     def _run_checks(self, ctx: RunContext) -> tuple[list, list, list]:
@@ -201,6 +314,14 @@ class PreflightStage(BaseStage):
     def _report(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
         ok, warn, fail = self._run_checks(ctx)
+
+        # Interactive-only, and only for a real run -- dry_run() must stay
+        # zero-mutation per BaseStage's contract, and a non-interactive
+        # caller (cron, overnight, piped) gets no prompt at all, same
+        # report-only behavior as before this feature existed.
+        if not dry_run and sys.stdin.isatty():
+            self._offer_installs(ok, warn, fail)
+            self._offer_api_keys(ok)
 
         result.files_processed = len(ok) + len(warn) + len(fail)
         result.files_changed = len(ok)
