@@ -39,7 +39,19 @@ MIN_BYTES_PER_SEC: dict[str, int] = {
     "alac": 30_000,
     "aac": 8_000,  # ~64kbps minimum
     "mp3": 8_000,
-    "m4a": 8_000,  # AAC
+    # "m4a" here is a FILE EXTENSION key, only reached via check_file()'s
+    # fallback when archive.codec is blank/unrecognized -- .m4a is a
+    # container that can hold either ALAC (lossless) or AAC (lossy), so
+    # this can NOT be treated as a confirmed AAC identification the way
+    # "aac"/"mp3" above are (real ffprobe codec_name values). It's
+    # intentionally set to the same conservative value as the "" unknown
+    # default below, not a real AAC-specific threshold, precisely so an
+    # ALAC-in-.m4a file with an unexpectedly blank codec doesn't get
+    # held to a stricter lossless floor it might not deserve. By the
+    # time CorruptStage runs (after ScholarStage in CANONICAL_PIPELINE),
+    # codec should normally already be populated, so this fallback is a
+    # rare, deliberately conservative safety net, not the common path.
+    "m4a": 8_000,
     "wav": 88_000,  # 44.1kHz 16-bit stereo
     "pcm_s16le": 88_000,
     "": 8_000,  # unknown — be conservative
@@ -96,9 +108,7 @@ def ffprobe_duration(path: Path) -> float | None:
         return None
 
 
-def check_file(
-    path: Path, codec: str | None, duration_db: float | None
-) -> tuple[bool, str]:
+def check_file(path: Path, codec: str | None, duration_db: float | None) -> tuple[bool, str]:
     """
     Check if file is corrupt based on size/duration ratio.
     Returns (is_suspect, reason).
@@ -192,9 +202,7 @@ class CorruptStage(BaseStage):
                 result.files_skipped += 1
                 continue
 
-            is_corrupt, reason = check_file(
-                file_path, row["codec"], row["duration"]
-            )
+            is_corrupt, reason = check_file(file_path, row["codec"], row["duration"])
 
             if is_corrupt:
                 result.files_changed += 1
@@ -241,6 +249,7 @@ class CorruptStage(BaseStage):
 
                     try:
                         import shutil
+
                         shutil.move(str(file_path), str(dest))
                         logger.info(f"[{self.NAME}] → Quarantined to {dest.name}")
 
@@ -266,9 +275,7 @@ class CorruptStage(BaseStage):
         # Summary
         if suspects:
             prefix = "Would quarantine" if dry_run else "Quarantined"
-            result.notes.append(
-                f"{prefix} {len(suspects)} corrupt file(s) to {quarantine_dir}"
-            )
+            result.notes.append(f"{prefix} {len(suspects)} corrupt file(s) to {quarantine_dir}")
             for s in suspects[:10]:  # Show first 10
                 result.notes.append(f"  ⚠ {Path(s['file_path']).name}: {s['reason']}")
             if len(suspects) > 10:
