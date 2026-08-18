@@ -353,6 +353,60 @@ class TestDupeResolverErrorHandling:
         assert result.files_errored == 1
         assert any("missing on disk" in e for e in result.errors)
 
+    def test_missing_file_already_resolved_by_prior_run_is_skipped_not_errored(self, ctx):
+        """Regression test for the 2026-08-18 finding: 422 duplicates-table
+        rows stuck 'pending' forever because a file staged into more than
+        one group across *separate runs* (not covered by the within-run
+        already_moved dict) gets its first group's move recorded in the
+        events log, but a second, later-created group for the same
+        original path is left permanently 'pending' -- re-erroring on the
+        same already-moved file every future run. Simulates that exact
+        state: a duplicates row pointing at a path that's gone, plus a
+        DUPE_MOVED_FOR_REVIEW event proving a prior run already handled it."""
+        high = _make_archive_row(
+            ctx, "high.flac", "Artist", "Album", "Title", bitrate=900_000, size_bytes=500
+        )
+        already_moved_source = ctx.inbox / "already_moved.m4a"  # never created --
+        # simulates a file a PRIOR run already physically relocated.
+        ctx.conn.execute(
+            "INSERT INTO events (run_id, event_type, file_path, old_value, new_value, stage) "
+            "VALUES ('prior_run', 'DUPE_MOVED_FOR_REVIEW', ?, ?, ?, 'dupe_resolver')",
+            (
+                str(already_moved_source) + ".moved",
+                str(already_moved_source),
+                str(already_moved_source) + ".moved",
+            ),
+        )
+        ctx.conn.commit()
+        from musaeus.db import upsert_archive
+
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(already_moved_source),
+                "status": "CATALOGUED",
+                "artist": "Artist",
+                "album": "Album",
+                "title": "Title",
+                "bitrate": 64_000,
+                "size_bytes": 100,
+            },
+        )
+        ctx.conn.commit()
+        _stage_duplicate_pair(ctx, "dup_stale_pending", high, already_moved_source)
+
+        result = DupeResolverStage().execute(ctx)
+
+        assert result.files_errored == 0
+        assert not any("missing on disk" in e for e in result.errors)
+        assert any("already resolved by a prior run" in n for n in result.notes)
+
+        status = ctx.conn.execute(
+            "SELECT status FROM duplicates WHERE group_id = ? AND file_path = ?",
+            ("dup_stale_pending", str(already_moved_source)),
+        ).fetchone()[0]
+        assert status == "archive"
+
 
 class TestDupeResolverManifestEnrichment:
     def test_manifest_includes_kept_and_moved_codec_bitrate(self, ctx):

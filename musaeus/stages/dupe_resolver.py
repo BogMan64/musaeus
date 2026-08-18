@@ -347,6 +347,40 @@ class DupeResolverStage(BaseStage):
                 continue
 
             if not source.exists():
+                # Before treating this as a real error: the same physical
+                # file may already have been resolved by a *different*
+                # group in an earlier run (a title re-flagged as a
+                # duplicate a second time after already being quarantined
+                # once -- e.g. re-downloaded and re-detected). The
+                # `already_moved` dict above only covers moves made earlier
+                # in *this* _resolve() call; it can't see a prior run's
+                # moves. The events log is the one place that history is
+                # actually recorded (old_value=source at the time of the
+                # original move), so check it before giving up. Confirmed
+                # 2026-08-18: 422 duplicates-table rows stuck 'pending'
+                # forever this way, all 370 distinct paths already moved
+                # per a matching DUPE_MOVED_FOR_REVIEW event -- not lost
+                # files, just a group that never got told its file was
+                # already handled elsewhere.
+                already_handled = ctx.conn.execute(
+                    "SELECT 1 FROM events WHERE event_type = 'DUPE_MOVED_FOR_REVIEW' "
+                    "AND old_value = ? LIMIT 1",
+                    (source_key,),
+                ).fetchone()
+                if already_handled:
+                    result.files_skipped += 1
+                    result.notes.append(
+                        f"[{dtype}] skipped {source.name}: already resolved by a prior run "
+                        f"(stale duplicates-table row)"
+                    )
+                    if update_duplicates_table and not dry_run:
+                        ctx.conn.execute(
+                            "UPDATE duplicates SET status = 'archive' "
+                            "WHERE group_id = ? AND file_path = ?",
+                            (group_id, source_key),
+                        )
+                    continue
+
                 result.files_errored += 1
                 result.errors.append(f"{source}: file missing on disk")
                 continue
