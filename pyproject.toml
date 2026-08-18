@@ -65,6 +65,17 @@ ignore = [
 testpaths = ["tests"]
 addopts = "-v --tb=short"
 
+[tool.coverage.run]
+# parallel=true so each subprocess invocation (the vendored/standalone
+# scripts under scripts/, tested by spawning them as real subprocesses,
+# not imported in-process) writes its own uniquely-named .coverage.*
+# data file instead of clobbering a shared one. Combine with `coverage
+# combine` before reporting. Opt-in per test via MUSAEUS_COVERAGE_SUBPROCESS
+# (see tests/test_build_aac_library_lufs_bake.py / test_build_alac_library_lufs_bake.py)
+# -- normal `pytest tests/` runs are unaffected.
+parallel = true
+source = ["musaeus", "scripts"]
+data_file = ".coverage"
 
 [tool.mypy]
 python_version = "3.10"

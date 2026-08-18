@@ -19,6 +19,7 @@ never touches a real ORPHEUS install or its DB.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -31,7 +32,34 @@ pytestmark = pytest.mark.skipif(
     reason="ffmpeg/ffprobe not available",
 )
 
-_VENDOR_DIR = Path(__file__).resolve().parent.parent / "scripts" / "car_library" / "vendor"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_VENDOR_DIR = _REPO_ROOT / "scripts" / "car_library" / "vendor"
+
+
+def _script_argv(script_path: Path) -> list[str]:
+    """Normally just [python3, script.py]. When MUSAEUS_COVERAGE_SUBPROCESS
+    is set, wrap in `coverage run --parallel-mode` so this subprocess's
+    execution shows up in the project's coverage numbers instead of being
+    an invisible blind spot -- see pyproject.toml's [tool.coverage.run]
+    for the parallel-mode config this relies on. Opt-in only: normal
+    `pytest tests/` runs are unaffected."""
+    if os.environ.get("MUSAEUS_COVERAGE_SUBPROCESS"):
+        # No --rcfile here deliberately: pyproject.toml's [tool.coverage.run]
+        # `source` is a relative path, which coverage.py resolves against
+        # this subprocess's own cwd (VENDOR_DIR, not repo root) -- pointing
+        # it there traced nothing and silently produced an empty data file.
+        # --parallel-mode + the absolute COVERAGE_FILE (below) are all this
+        # child process needs; source-filtering happens later at report
+        # time (`coverage report --include=scripts/*`), run from repo root.
+        return [
+            sys.executable,
+            "-m",
+            "coverage",
+            "run",
+            "--parallel-mode",
+            str(script_path),
+        ]
+    return [sys.executable, str(script_path)]
 
 
 def _gen_loud_audio(path: Path, duration: int = 3) -> None:
@@ -95,6 +123,35 @@ def scratch(tmp_path: Path) -> dict[str, Path]:
     }
 
 
+def _env_for(scratch: dict[str, Path]) -> dict[str, str]:
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "ORPHEUS_AAC_INPUT_DIR": str(scratch["input"]),
+        "ORPHEUS_AAC_OUTPUT_DIR": str(scratch["output"]),
+        "ORPHEUS_ROOT": str(scratch["orpheus_root"]),
+        "ORPHEUS_DB_PATH": str(scratch["db"]),
+    }
+    if os.environ.get("MUSAEUS_COVERAGE_SUBPROCESS"):
+        # Parallel-mode data files land at this base path + a unique
+        # per-process suffix (pid/random) -- see [tool.coverage.run] in
+        # pyproject.toml. Absolute path so it lands in the same place
+        # regardless of this subprocess's cwd (VENDOR_DIR, not repo root).
+        env["COVERAGE_FILE"] = str(_REPO_ROOT / ".coverage")
+        # conftest.py deliberately redirects HOME to a fake session directory
+        # for the whole test run (so config.py's _load_env() can't leak real
+        # ~/.config/musaeus/credentials.env into tests) -- correct, and not
+        # touched here. But it also breaks `python3 -m coverage`'s own
+        # ~/.local-based module resolution in a subprocess that inherits
+        # this env. Point PYTHONPATH at coverage's actual install location
+        # explicitly instead of restoring HOME.
+        import coverage as _coverage
+
+        site_packages = str(Path(_coverage.__file__).resolve().parent.parent)
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{site_packages}:{existing}" if existing else site_packages
+    return env
+
+
 class TestLufsBakeWiredIntoCarProfile:
     def test_baked_output_lands_near_minus_14_lufs(self, scratch: dict[str, Path]) -> None:
         src = scratch["input"] / "loud_source.m4a"
@@ -105,21 +162,9 @@ class TestLufsBakeWiredIntoCarProfile:
         source_lufs = _measure_lufs(src)
         assert source_lufs > -13.0, f"test fixture not loud enough: {source_lufs} LUFS"
 
-        env = {
-            "PATH": __import__("os").environ.get("PATH", ""),
-            "ORPHEUS_AAC_INPUT_DIR": str(scratch["input"]),
-            "ORPHEUS_AAC_OUTPUT_DIR": str(scratch["output"]),
-            "ORPHEUS_ROOT": str(scratch["orpheus_root"]),
-            "ORPHEUS_DB_PATH": str(scratch["db"]),
-        }
+        env = _env_for(scratch)
         result = subprocess.run(
-            [
-                sys.executable,
-                str(_VENDOR_DIR / "build_aac_library.py"),
-                "--profile",
-                "car",
-                "--apply",
-            ],
+            [*_script_argv(_VENDOR_DIR / "build_aac_library.py"), "--profile", "car", "--apply"],
             cwd=str(_VENDOR_DIR),
             env=env,
             capture_output=True,
@@ -152,21 +197,9 @@ class TestLufsBakeWiredIntoCarProfile:
         src = scratch["input"] / "loud_source.m4a"
         _gen_loud_audio(src)
 
-        env = {
-            "PATH": __import__("os").environ.get("PATH", ""),
-            "ORPHEUS_AAC_INPUT_DIR": str(scratch["input"]),
-            "ORPHEUS_AAC_OUTPUT_DIR": str(scratch["output"]),
-            "ORPHEUS_ROOT": str(scratch["orpheus_root"]),
-            "ORPHEUS_DB_PATH": str(scratch["db"]),
-        }
+        env = _env_for(scratch)
         subprocess.run(
-            [
-                sys.executable,
-                str(_VENDOR_DIR / "build_aac_library.py"),
-                "--profile",
-                "car",
-                "--apply",
-            ],
+            [*_script_argv(_VENDOR_DIR / "build_aac_library.py"), "--profile", "car", "--apply"],
             cwd=str(_VENDOR_DIR),
             env=env,
             capture_output=True,
