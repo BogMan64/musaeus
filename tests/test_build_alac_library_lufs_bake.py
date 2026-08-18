@@ -29,9 +29,30 @@ pytestmark = pytest.mark.skipif(
     reason="ffmpeg/ffprobe not available",
 )
 
-_SCRIPT = (
-    Path(__file__).resolve().parent.parent / "scripts" / "alac_library" / "build_alac_library.py"
-)
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_SCRIPT = _REPO_ROOT / "scripts" / "alac_library" / "build_alac_library.py"
+
+
+def _script_argv(script_path: Path) -> list[str]:
+    """Normally just [python3, script.py]. When MUSAEUS_COVERAGE_SUBPROCESS
+    is set, wrap in `coverage run --parallel-mode` so this subprocess's
+    execution shows up in the project's coverage numbers -- see
+    pyproject.toml's [tool.coverage.run]. Opt-in only."""
+    if os.environ.get("MUSAEUS_COVERAGE_SUBPROCESS"):
+        # No --rcfile: pyproject.toml's `source` is a relative path,
+        # resolved against this subprocess's cwd, not repo root -- fragile
+        # if cwd= is ever added to this call. --parallel-mode + the
+        # absolute COVERAGE_FILE (below) are all this child needs;
+        # source-filtering happens later at report time.
+        return [
+            sys.executable,
+            "-m",
+            "coverage",
+            "run",
+            "--parallel-mode",
+            str(script_path),
+        ]
+    return [sys.executable, str(script_path)]
 
 
 def _gen_loud_alac(path: Path, duration: int = 3) -> None:
@@ -91,8 +112,24 @@ def _run_script(
     env["MUSAEUS_VAULT_ROOT"] = str(cfg.vault_root)
     env["MUSAEUS_DB_PATH"] = str(cfg.db_path)
     env["MUSAEUS_ALAC_LIBRARY"] = str(cfg.alac_library)
+    if os.environ.get("MUSAEUS_COVERAGE_SUBPROCESS"):
+        # Absolute path so parallel-mode data files land in one place
+        # regardless of this subprocess's cwd.
+        env["COVERAGE_FILE"] = str(_REPO_ROOT / ".coverage")
+        # conftest.py deliberately redirects HOME to a fake session directory
+        # for the whole test run (so config.py's _load_env() can't leak real
+        # ~/.config/musaeus/credentials.env into tests) -- correct, not
+        # touched here. But it also breaks `python3 -m coverage`'s own
+        # ~/.local-based module resolution in a subprocess that inherits
+        # this env. Point PYTHONPATH at coverage's actual install location
+        # explicitly instead of restoring HOME.
+        import coverage as _coverage
+
+        site_packages = str(Path(_coverage.__file__).resolve().parent.parent)
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{site_packages}:{existing}" if existing else site_packages
     return subprocess.run(
-        [sys.executable, str(_SCRIPT), "--archive-dir", str(archive_dir), *extra_args],
+        [*_script_argv(_SCRIPT), "--archive-dir", str(archive_dir), *extra_args],
         env=env,
         capture_output=True,
         text=True,
@@ -223,3 +260,76 @@ class TestPhase2ABake:
         second = _run_script(cfg, archive_dir, ["--execute"])
         assert second.returncode == 0, second.stderr
         assert "0 row(s)" in second.stdout or "0 baked" in second.stdout
+
+
+class TestUnmigratedWarning:
+    """FinalizeStage doesn't write to ALAC_Archive yet (2026-08-18) --
+    only migrate_to_archive.py moves content there, and only when someone
+    remembers to run it. A finalized row still sitting in ALAC-Library is
+    invisible to this script's own candidate query (it only reads rows
+    already under archive_dir), so it needs to say so up front rather
+    than silently bake nothing and look like there's simply no work."""
+
+    def test_warns_when_finalized_rows_never_migrated(self, cfg: MusicConfig) -> None:
+        archive_dir = cfg.vault_root / "ALAC_Archive"
+        archive_dir.mkdir(parents=True)
+        # A finalized row still in ALAC-Library -- never migrated.
+        stuck = cfg.alac_library / "Artist" / "Album" / "stuck.m4a"
+        stuck.parent.mkdir(parents=True)
+        _gen_loud_alac(stuck)
+
+        conn = open_db(cfg.db_path)
+        upsert_archive(
+            conn,
+            {
+                "file_path": str(stuck),
+                "filename": stuck.name,
+                "ext": ".m4a",
+                "status": "CATALOGUED",
+                "codec": "alac",
+                "artist": "Artist",
+                "title": "Stuck",
+            },
+        )
+        conn.execute(
+            "UPDATE archive SET finalized_at = datetime('now') WHERE file_path = ?",
+            (str(stuck),),
+        )
+        conn.commit()
+        conn.close()
+
+        result = _run_script(cfg, archive_dir, [])
+        assert result.returncode == 0, result.stderr
+        assert "never migrated to ALAC_Archive" in result.stdout
+        assert "migrate_to_archive.py" in result.stdout
+
+    def test_no_warning_when_everything_migrated(self, cfg: MusicConfig) -> None:
+        archive_dir = cfg.vault_root / "ALAC_Archive"
+        archive_dir.mkdir(parents=True)
+        src = archive_dir / "Artist" / "Album" / "track.m4a"
+        src.parent.mkdir(parents=True)
+        _gen_loud_alac(src)
+
+        conn = open_db(cfg.db_path)
+        upsert_archive(
+            conn,
+            {
+                "file_path": str(src),
+                "filename": src.name,
+                "ext": ".m4a",
+                "status": "CATALOGUED",
+                "codec": "alac",
+                "artist": "Artist",
+                "title": "Track",
+            },
+        )
+        conn.execute(
+            "UPDATE archive SET finalized_at = datetime('now') WHERE file_path = ?",
+            (str(src),),
+        )
+        conn.commit()
+        conn.close()
+
+        result = _run_script(cfg, archive_dir, [])
+        assert result.returncode == 0, result.stderr
+        assert "never migrated" not in result.stdout

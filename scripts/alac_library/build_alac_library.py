@@ -287,6 +287,25 @@ def _candidate_rows(conn, archive_dir: Path, force: bool) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _unmigrated_count(conn, library_dir: Path) -> int:
+    """Finalized rows still sitting in ALAC-Library that never got moved
+    into ALAC_Archive by migrate_to_archive.py -- this script can't see
+    them (it only reads rows already under archive_dir), so they'd
+    silently never get baked unless someone remembers to run the
+    migration script first. Same selection shape as
+    migrate_to_archive.py's own _candidate_rows(), so the two scripts
+    agree on what "not yet migrated" means."""
+    return conn.execute(
+        """
+        SELECT COUNT(*) FROM archive
+         WHERE status = 'CATALOGUED'
+           AND finalized_at IS NOT NULL
+           AND file_path LIKE ? || '%'
+        """,
+        (str(library_dir),),
+    ).fetchone()[0]
+
+
 def _process_one(conn, row: dict, archive_dir: Path, library_dir: Path, execute: bool) -> str:
     source = Path(row["file_path"])
 
@@ -382,6 +401,16 @@ def main() -> int:
     library_dir = cfg.alac_library
 
     conn = open_db(cfg.db_path)
+
+    unmigrated = _unmigrated_count(conn, library_dir)
+    if unmigrated:
+        print(
+            f"⚠  {unmigrated} finalized row(s) are still in ALAC-Library, never migrated "
+            f"to ALAC_Archive -- this run WILL NOT see them (FinalizeStage doesn't write "
+            f"to ALAC_Archive yet, this is still a manual step). Run "
+            f"scripts/musaeus_migrate_to_archive.py first if you want them included.\n"
+        )
+
     rows = _candidate_rows(conn, archive_dir, args.force)
     if args.limit:
         rows = rows[: args.limit]
