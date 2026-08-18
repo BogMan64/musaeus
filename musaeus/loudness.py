@@ -13,6 +13,7 @@ Reference: -18 LUFS (home listening middle-ground)
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -59,10 +60,8 @@ def _calc_timeout(duration: float | None) -> int:
 def _kill_on_timeout(proc: subprocess.Popen, secs: int, path: Path) -> threading.Timer:
     """Return a started timer that kills *proc* after *secs* seconds."""
     def _kill() -> None:
-        try:
+        with contextlib.suppress(OSError):
             proc.kill()
-        except OSError:
-            pass
         logger.warning("ffmpeg killed after %ds timeout: %s", secs, path)
 
     t = threading.Timer(secs, _kill)

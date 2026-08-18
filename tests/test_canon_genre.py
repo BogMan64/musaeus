@@ -5,9 +5,9 @@ Tests the genre resolution system: allowed list, map, and fuzzy matching.
 """
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
+
 from musaeus.canon.genre import GenreCanon
 
 

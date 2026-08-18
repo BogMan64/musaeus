@@ -80,7 +80,7 @@ class RunContext:
         conn: sqlite3.Connection,
         dry_run: bool = False,
         run_id: str | None = None,
-    ) -> "RunContext":
+    ) -> RunContext:
         """Create a fresh RunContext and log the RUN_START event."""
         rid = run_id or f"run_{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:6]}"
         started = _utc_now()

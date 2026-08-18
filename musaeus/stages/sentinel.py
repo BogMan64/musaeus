@@ -21,13 +21,12 @@ Design:
 from __future__ import annotations
 
 import logging
-import uuid
 from pathlib import Path
 
 from ..context import RunContext, StageResult
 from ..db import upsert_archive
-from ..hasher import HasherError, audio_hash_safe, file_hash
-from .base import BaseStage, StageError
+from ..hasher import audio_hash_safe, file_hash
+from .base import BaseStage
 
 logger = logging.getLogger(__name__)
 

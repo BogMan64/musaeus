@@ -5,6 +5,7 @@ Tests for GhostStage — marks archive entries whose files no longer exist on di
 from pathlib import Path
 
 import pytest
+
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db, upsert_archive

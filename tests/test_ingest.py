@@ -5,16 +5,15 @@ Creates a temporary vault with fake audio files, runs IngestStage,
 and verifies DB state. No actual audio content needed for ingest.
 """
 
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
+
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import get_archive_count, open_db
-from musaeus.stages.ingest import IngestStage, _scan_inbox
 from musaeus.stages.base import StageError
+from musaeus.stages.ingest import IngestStage, _scan_inbox
 
 
 @pytest.fixture
@@ -127,7 +126,7 @@ class TestIngestRun:
 
     def test_skips_txt_files(self, ctx):
         stage = IngestStage()
-        result = stage.execute(ctx)
+        stage.execute(ctx)
         # notes.txt not in DB
         rows = ctx.conn.execute("SELECT file_path FROM archive").fetchall()
         paths = [r["file_path"] for r in rows]
@@ -135,7 +134,7 @@ class TestIngestRun:
 
     def test_idempotent_second_run(self, ctx, cfg):
         stage = IngestStage()
-        r1 = stage.execute(ctx)
+        stage.execute(ctx)
         ctx.conn.commit()
 
         # Second run on fresh context (same DB)

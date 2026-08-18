@@ -96,7 +96,7 @@ class GenreCanon:
             from rapidfuzz import fuzz  # type: ignore[import-untyped]
             best_score = 0
             best_genre = ""
-            for allowed, allowed_lower in zip(self._allowed, self._allowed_lower):
+            for allowed, allowed_lower in zip(self._allowed, self._allowed_lower, strict=True):
                 score = fuzz.ratio(lower, allowed_lower)
                 if score > best_score:
                     best_score = score

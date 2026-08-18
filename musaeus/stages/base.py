@@ -72,12 +72,12 @@ class BaseStage(ABC):
     # ── Abstract interface ────────────────────────────────────────────────────
 
     @abstractmethod
-    def run(self, ctx: "RunContext") -> "StageResult":
+    def run(self, ctx: RunContext) -> StageResult:
         """Execute the stage. May write files, update DB, move files."""
         ...
 
     @abstractmethod
-    def dry_run(self, ctx: "RunContext") -> "StageResult":
+    def dry_run(self, ctx: RunContext) -> StageResult:
         """
         Report what run() would do — NO mutations.
         Must be implemented. Never a no-op.
@@ -85,7 +85,7 @@ class BaseStage(ABC):
         ...
 
     @abstractmethod
-    def validate(self, ctx: "RunContext") -> None:
+    def validate(self, ctx: RunContext) -> None:
         """
         Pre-flight checks. Raise StageError if prerequisites are not met.
         Called before run() or dry_run().
@@ -94,13 +94,13 @@ class BaseStage(ABC):
 
     # ── Helper ────────────────────────────────────────────────────────────────
 
-    def _make_result(self, dry_run: bool = False) -> "StageResult":
+    def _make_result(self, dry_run: bool = False) -> StageResult:
         """Create a fresh StageResult for this stage."""
         from ..context import StageResult
 
         return StageResult(stage_name=self.NAME, success=True, dry_run=dry_run)
 
-    def _failure_report_path(self, ctx: "RunContext") -> "Path":
+    def _failure_report_path(self, ctx: RunContext) -> Path:
         """
         Where the next failure report for this stage/run will be written.
         Lives under {runs_root}/FAILURES/ so it survives a DB wipe and is
@@ -111,7 +111,7 @@ class BaseStage(ABC):
         stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         return d / f"{self.NAME}_{ctx.run_id}_{stamp}.json"
 
-    def _write_failure_report(self, ctx: "RunContext", exc: Exception, phase: str) -> str:
+    def _write_failure_report(self, ctx: RunContext, exc: Exception, phase: str) -> str:
         """
         Write a structured, self-contained failure report: what stage, what
         phase (validate/run/dry_run), the exception, full traceback, and the
@@ -147,7 +147,7 @@ class BaseStage(ABC):
             )
             return ""
 
-    def execute(self, ctx: "RunContext") -> "StageResult":
+    def execute(self, ctx: RunContext) -> StageResult:
         """
         Public entry point called by the pipeline runner.
         Runs validate(), then run() or dry_run() depending on ctx.dry_run.

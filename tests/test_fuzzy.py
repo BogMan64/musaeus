@@ -4,17 +4,16 @@ No external dependencies required (falls back to difflib if no rapidfuzz).
 """
 
 import pytest
+
 from musaeus.fuzzy import (
     DEFAULT_THRESHOLD,
     best_match,
-    best_similarity,
     group_near_duplicates,
     is_match,
     normalize,
     similarity,
     token_similarity,
 )
-
 
 # ── normalize() ───────────────────────────────────────────────────────────────
 

@@ -8,10 +8,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db, upsert_archive
-from musaeus.stages.tagger import TaggerStage, _read_tags, _write_tags
+from musaeus.stages.tagger import TaggerStage
 
 
 @pytest.fixture
@@ -61,16 +62,20 @@ def _insert_catalogued(ctx: RunContext, file_path: str, **kwargs) -> None:
 class TestTaggerValidate:
     def test_validate_with_mutagen(self, ctx):
         """Validate should pass if mutagen is importable."""
-        with patch("builtins.__import__", wraps=__import__):
-            with patch.dict("sys.modules", {"mutagen": MagicMock()}):
-                TaggerStage().validate(ctx)
+        with (
+            patch("builtins.__import__", wraps=__import__),
+            patch.dict("sys.modules", {"mutagen": MagicMock()}),
+        ):
+            TaggerStage().validate(ctx)
 
     def test_validate_without_mutagen(self, ctx):
         from musaeus.stages.base import StageError
-        with patch.dict("sys.modules", {"mutagen": None}):
-            with patch("builtins.__import__", side_effect=ImportError("no mutagen")):
-                with pytest.raises(StageError, match="mutagen"):
-                    TaggerStage().validate(ctx)
+        with (
+            patch.dict("sys.modules", {"mutagen": None}),
+            patch("builtins.__import__", side_effect=ImportError("no mutagen")),
+            pytest.raises(StageError, match="mutagen"),
+        ):
+            TaggerStage().validate(ctx)
 
 
 # ── _read_tags / _write_tags (mocked) ────────────────────────────────────────

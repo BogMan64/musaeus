@@ -21,6 +21,7 @@ Design:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import subprocess
@@ -29,7 +30,7 @@ from typing import Any
 
 from ..context import RunContext, StageResult
 from ..db import upsert_archive
-from .base import BaseStage, StageError
+from .base import BaseStage
 
 logger = logging.getLogger(__name__)
 
@@ -131,10 +132,8 @@ def _extract_meta(probe_data: dict[str, Any]) -> dict[str, Any]:
     track_raw = tag("track", "tracknumber")
     track: int | None = None
     if track_raw:
-        try:
+        with contextlib.suppress(ValueError):
             track = int(track_raw.split("/")[0].strip())
-        except ValueError:
-            pass
 
     # Year: date tag commonly "YYYY" or "YYYY-MM-DD"
     year = tag("date", "year", "originaldate")

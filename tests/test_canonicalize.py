@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db, upsert_archive
@@ -116,7 +117,7 @@ class TestPassthrough:
         _gen_audio(path, "aac")
         _register_catalogued(ctx, path, "aac", ".m4a")
 
-        result = CanonicalizeStage().execute(ctx)
+        CanonicalizeStage().execute(ctx)
 
         row = ctx.conn.execute("SELECT canon_action FROM archive").fetchone()
         assert row["canon_action"] == "PASSTHROUGH"

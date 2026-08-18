@@ -8,10 +8,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db, upsert_archive
-from musaeus.stages.forge import ForgeStage, write_rg_tags, _save_loudness
+from musaeus.stages.forge import ForgeStage, write_rg_tags
 
 
 @pytest.fixture

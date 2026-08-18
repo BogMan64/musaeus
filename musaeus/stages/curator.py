@@ -123,10 +123,7 @@ def _dest_path(export_root: Path, row: dict, noise_subdir: bool = False) -> Path
     track = row.get("track")
     title = _sanitise(row.get("title") or Path(row["file_path"]).stem)
 
-    if track:
-        filename = f"{int(track):02d} - {title}{ext}"
-    else:
-        filename = f"{title}{ext}"
+    filename = f"{int(track):02d} - {title}{ext}" if track else f"{title}{ext}"
 
     return export_root / artist / album / filename
 

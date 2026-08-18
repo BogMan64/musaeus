@@ -11,7 +11,7 @@ What it does:
   4. Logs changes for review
 
 Examples of consolidation:
-  - "Andrews Sisters" + "Andrews Sisters (The)" → "Andrews Sisters (The)"
+  - "Andrews Sisters" + "Andrews Sisters (The)" → "Andrews Sisters, The"
   - "Earth Wind and Fire" + "Earth, Wind & Fire" → "Earth, Wind & Fire"
   - "AC/DC" + "Ac/dc" + "AC-DC" → "AC-DC"
 
@@ -53,7 +53,7 @@ CANON_ARTIST_DISPLAY = {
     "of monsters and men": "Of Monsters and Men",
     "simon and garfunkel": "Simon & Garfunkel",
     "tom petty and the heartbreakers": "Tom Petty & The Heartbreakers",
-    "andrews sisters": "Andrews Sisters (The)",
+    "andrews sisters": "Andrews Sisters, The",
 }
 
 # Protected artist names (don't modify these)
@@ -183,7 +183,23 @@ def _normalize_key(text: str) -> str:
 
 
 def _smart_title(text: str) -> str:
-    """Convert text to Title Case with special handling for short words."""
+    """Convert text to Title Case with special handling for short words.
+
+    A trailing ", The" is the canonical article suffix (see the
+    "the"-article spellings note above _has_the_article), not a
+    mid-title connector word like the "the" in "Lord of the Rings" --
+    it must stay capitalized. Split it off before the word loop (which
+    would otherwise lowercase it via the and/of/the connector-word rule)
+    and reattach it capitalized. Confirmed live-data bug: "Chieftains
+    and Belfast Harp Orchestra, The" and "Bob Seger System, The" were
+    both coming out with a lowercase trailing "the".
+    """
+    suffix = ""
+    m = _TRAILING_COMMA_THE_RE.search(text)
+    if m:
+        text = text[: m.start()]
+        suffix = ", The"
+
     words = []
     for word in text.split():
         if word.lower() in {"and", "of", "the"}:
@@ -192,7 +208,7 @@ def _smart_title(text: str) -> str:
             words.append(word)  # Keep acronyms like ABBA
         else:
             words.append(word[:1].upper() + word[1:].lower())
-    return " ".join(words)
+    return " ".join(words) + suffix
 
 
 def _preferred_name(names_with_counts: list[tuple[str, int]]) -> str:
@@ -204,7 +220,10 @@ def _preferred_name(names_with_counts: list[tuple[str, int]]) -> str:
     1. Check if any variant has a known canonical form (CANON_ARTIST_DISPLAY)
     2. Handle "the"-article variants intelligently (any of the three real
        spellings, unified via _has_the_article -- not just leading "The"):
-       - If variants exist with/without the article, use "Name (The)"
+       - If variants exist with/without the article, use "Name, The" --
+         the confirmed real on-disk convention (341 real folders use
+         ", The", zero use "(The)"; the old "(The)" parenthetical output
+         was a former ORPHEUS-specific format never matched by real data).
        - The non-article base is the highest-track_count variant.
     3. Otherwise, the highest-track_count variant wins as canonical (ties
        broken by longest string, then alphabetically for determinism).
@@ -233,13 +252,15 @@ def _preferred_name(names_with_counts: list[tuple[str, int]]) -> str:
 
     # Smart handling of "the"-article variants (leading/trailing-comma/
     # parenthetical, unified) -- if we have both an article and a
-    # non-article form, prefer "Name (The)", base picked by track count.
+    # non-article form, prefer "Name, The" (confirmed real on-disk
+    # convention -- 341 real folders use ", The", zero use "(The)"),
+    # base picked by track count.
     with_the = [(n, c) for n, c in cleaned if _has_the_article(n)]
     without_the = [(n, c) for n, c in cleaned if not _has_the_article(n)]
 
     if with_the and without_the:
         base_name, _ = sorted(without_the, key=_rank)[0]
-        return f"{_smart_title(base_name)} (The)"
+        return f"{_smart_title(base_name)}, The"
 
     # Highest track_count wins; ties broken by longest string, then
     # alphabetically for determinism.
@@ -296,7 +317,7 @@ class ArtistConsolidateStage(BaseStage):
 
         # Find groups with multiple variants
         changes: dict[str, str] = {}  # old_name → new_name
-        for key, variants in grouped.items():
+        for _key, variants in grouped.items():
             if len(variants) == 1:
                 continue  # No consolidation needed
 

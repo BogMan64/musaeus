@@ -79,13 +79,18 @@ def _check_row(row: dict) -> list[tuple[str, str]]:
         elif br_int < 128_000:
             issues.append(("LOW_QUALITY", "warning"))
 
-    # Lossless format but low bitrate
-    # .m4a is AAC (lossy) — only flag .flac extension and alac/flac codec explicitly
+    # Lossless format but low bitrate. Deliberately codec-first, not
+    # extension-first: .m4a can hold either ALAC (lossless) or AAC
+    # (lossy) -- codec in ("alac", "flac") is what actually catches an
+    # ALAC-in-.m4a file. The ext == ".flac" branch only exists because
+    # .flac unambiguously means lossless by extension alone, unlike
+    # .m4a. See config.py's LOSSLESS_CODECS comment and
+    # canonicalize.py's module docstring for the concrete bug this
+    # class of extension-only check caused elsewhere in the codebase.
     ext = (row.get("ext") or "").lower()
     codec = (row.get("codec") or "").lower()
-    if ext == ".flac" or codec in ("alac", "flac"):
-        if br is not None and int(br) < 300_000:
-            issues.append(("LOSSLESS_EXPECTED", "warning"))
+    if (ext == ".flac" or codec in ("alac", "flac")) and br is not None and int(br) < 300_000:
+        issues.append(("LOSSLESS_EXPECTED", "warning"))
 
     # Hash
     if not row.get("audio_hash"):

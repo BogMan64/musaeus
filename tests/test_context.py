@@ -2,9 +2,11 @@
 Tests for musaeus.context — RunContext, StageResult.
 """
 
+import contextlib
 from pathlib import Path
 
 import pytest
+
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext, StageResult
 from musaeus.db import open_db
@@ -28,10 +30,8 @@ def cfg(tmp_path: Path) -> MusicConfig:
 def conn(cfg):
     c = open_db(cfg.db_path)
     yield c
-    try:
+    with contextlib.suppress(Exception):
         c.close()
-    except Exception:
-        pass
 
 
 # ── StageResult ───────────────────────────────────────────────────────────────

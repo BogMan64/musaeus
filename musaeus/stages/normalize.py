@@ -80,6 +80,28 @@ _ARTICLE_COMMA_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Real stylized band names whose leading word matches an entry in
+# _move_article_to_suffix()'s article list but is actually part of the
+# name, not a leading article -- must never be split. Confirmed live
+# corruption (2026-08-16): "De La Soul" was mis-normalized to "La Soul,
+# De" by a real Normalize run (2 real files affected, before this guard
+# existed). The others below are documented, well-known real-world cases
+# of the same failure shape (La Roux, Los Lobos, Los Lonely Boys, Die
+# Ärzte, Das EFX) -- not present in this library today, but added
+# defensively since the failure mode is identical and would otherwise
+# silently corrupt them the moment they're ingested.
+PROTECTED_ARTIST_NAMES: frozenset[str] = frozenset(
+    {
+        "de la soul",
+        "la roux",
+        "los lobos",
+        "los lonely boys",
+        "die ärzte",
+        "die toten hosen",
+        "das efx",
+    }
+)
+
 # Short words that stay lowercase in title-case (MusicBrainz standard)
 _LOWERCASE_WORDS: frozenset[str] = frozenset(
     {
@@ -122,32 +144,52 @@ _SPECIAL_PATTERNS = [
 def _move_article_to_suffix(name: str) -> str:
     """
     Move leading article to suffix for canonical storage (ORPHEUS-style).
-    
+
     Examples:
       "The Beatles"     → "Beatles, The"
-      "The Band"        → "Band, The"
+      "the Beatles"     → "Beatles, The" (case-insensitive match; the
+                           suffix article is always emitted in its
+                           canonical capitalized form regardless of input
+                           casing, per the uniform-capitalization
+                           convention -- matches artist_consolidate.py's
+                           _smart_title() fix for the same ", The" vs
+                           "(the)" convention)
       "A Tribe Called Quest" → "Tribe Called Quest, A"
       "An American Band" → "American Band, An"
       "Beatles, The"    → "Beatles, The" (already correct, unchanged)
       "Refused"         → "Refused" (no article, unchanged)
-    
+
     This enables proper alphabetical sorting: "Beatles, The" sorts under B, not T.
     """
     s = name.strip()
-    
+
+    # Real stylized band name (De La Soul, Los Lobos, etc.) -- the
+    # leading word looks like an article but isn't. Must be checked
+    # before the suffix-format check below, since a protected name could
+    # coincidentally also match _ARTICLE_SUFFIX_RE/_ARTICLE_COMMA_RE.
+    if s.lower() in PROTECTED_ARTIST_NAMES:
+        return s
+
     # If already has suffix format, return as-is
     if _ARTICLE_SUFFIX_RE.search(s) or _ARTICLE_COMMA_RE.search(s):
         return s
-    
-    # Check for leading article
+
+    # Check for leading article, case-insensitively. Confirmed live-data
+    # bug (2026-08-16): the original `s.startswith(f"{article} ")` check
+    # is case-sensitive, so it silently skipped every lowercase-leading-
+    # article artist -- "the Chieftains", "the Band", "the Bangles", and
+    # 15 others found completely unfixed after a live Normalize run
+    # (`Fixed: 0 artist(s)` despite 18 distinct affected artists in the
+    # data).
     articles = ["The", "A", "An", "Le", "La", "Les", "El", "Los", "Las", "De", "Het", "Een", "Die", "Das", "Ein", "Eine"]
-    
+
     for article in articles:
-        if s.startswith(f"{article} ") and len(s) > len(article) + 1:
-            # Found leading article - move to suffix
+        prefix = f"{article} "
+        if s[: len(prefix)].lower() == prefix.lower() and len(s) > len(article) + 1:
+            # Found leading article - move to suffix, canonical casing
             rest = s[len(article):].strip()
             return f"{rest}, {article}"
-    
+
     return s
 
 
@@ -163,7 +205,7 @@ def _is_all_caps(s: str) -> bool:
 def _smart_title_case(s: str) -> str:
     """
     Convert a string to MusicBrainz-style title case.
-    
+
     Rules:
     - First word always capitalized
     - Last word always capitalized
@@ -176,35 +218,35 @@ def _smart_title_case(s: str) -> str:
     result = s
     for pattern, replacement in _SPECIAL_PATTERNS:
         result = pattern.sub(replacement, result)
-    
+
     words = result.split()
     if not words:
         return s
-    
+
     processed = []
     for i, word in enumerate(words):
         # Clean word (remove surrounding punctuation for checking)
         clean = word.strip("\"'()[]{}.,!?;:-")
         upper_clean = clean.upper()
-        
+
         # Check if it's an acronym/special term that should stay caps
         if upper_clean in _KEEP_CAPS:
             processed.append(word.replace(clean, upper_clean))
             continue
-        
+
         # First or last word always capitalized
         if i == 0 or i == len(words) - 1:
             processed.append(word.capitalize())
             continue
-        
+
         # Check if it's a lowercase word
         if clean.lower() in _LOWERCASE_WORDS:
             processed.append(word.lower())
             continue
-        
+
         # Default: capitalize
         processed.append(word.capitalize())
-    
+
     return " ".join(processed)
 
 
@@ -214,14 +256,14 @@ def _normalise_artist(artist: str) -> str | None:
     Order: caps fix first, then article move to suffix.
     """
     fixed = artist
-    
+
     # Fix ALL-CAPS first
     if _is_all_caps(fixed):
         fixed = _smart_title_case(fixed)
-    
+
     # Move article to suffix (ORPHEUS-style canonical form)
     fixed = _move_article_to_suffix(fixed)
-    
+
     return fixed if fixed != artist else None
 
 

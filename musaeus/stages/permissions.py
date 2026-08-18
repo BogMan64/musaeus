@@ -55,9 +55,8 @@ def _scan_permissions(root: Path) -> tuple[list[Path], list[Path]]:
         if stat.S_ISDIR(st.st_mode):
             if mode != DIR_MODE:
                 bad_dirs.append(path)
-        elif stat.S_ISREG(st.st_mode):
-            if mode != FILE_MODE:
-                bad_files.append(path)
+        elif stat.S_ISREG(st.st_mode) and mode != FILE_MODE:
+            bad_files.append(path)
 
     return bad_files, bad_dirs
 

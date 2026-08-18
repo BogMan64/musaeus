@@ -8,9 +8,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
-from musaeus.db import get_archive_count, open_db, upsert_archive
+from musaeus.db import open_db, upsert_archive
 from musaeus.stages.sentinel import SentinelStage, _get_pending, _hash_group_for
 
 

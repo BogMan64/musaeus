@@ -21,9 +21,7 @@ import csv
 import logging
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +229,7 @@ def generate_album_review(
         norm_map: dict[str, list[str]] = defaultdict(list)
         for album in albums:
             norm_map[album.strip().lower()].append(album)
-        for norm, variants in norm_map.items():
+        for _norm, variants in norm_map.items():
             if len(variants) > 1:
                 canonical = sorted(variants, key=len)[-1]  # longest = most complete
                 for v in variants:
@@ -314,6 +312,7 @@ def apply_approved_fixes(
 def cmd_review_generate(dry_run: bool = False) -> int:
     """Generate review sheets from current archive state."""
     import sys
+
     from .config import get_config
     from .db import open_db
 
@@ -365,6 +364,7 @@ def cmd_review_generate(dry_run: bool = False) -> int:
 def cmd_review_apply(dry_run: bool = False) -> int:
     """Apply approved fixes from review sheets."""
     import sys
+
     from .config import get_config
     from .context import RunContext
     from .db import open_db
@@ -429,6 +429,7 @@ def cmd_review_apply(dry_run: bool = False) -> int:
 def cmd_review_status() -> int:
     """Show status of pending review sheets."""
     import sys
+
     from .config import get_config
 
     try:
@@ -438,7 +439,7 @@ def cmd_review_status() -> int:
         return 1
 
     review_dir = cfg.meta_dir / "review"
-    print(f"\nMusaeus Review Status")
+    print("\nMusaeus Review Status")
     print(f"  Review dir: {review_dir}")
     print()
 

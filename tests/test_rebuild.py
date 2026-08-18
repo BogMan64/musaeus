@@ -8,7 +8,8 @@ import json
 from pathlib import Path
 
 import pytest
-from musaeus.db import log_event, open_db, upsert_archive, get_archive_count
+
+from musaeus.db import get_archive_count, log_event, open_db, upsert_archive
 from musaeus.rebuild import rebuild_archive_from_events
 
 

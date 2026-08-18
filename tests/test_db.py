@@ -4,10 +4,10 @@ Uses a temporary in-memory SQLite DB (no files on disk).
 """
 
 import sqlite3
-import tempfile
 from pathlib import Path
 
 import pytest
+
 from musaeus.db import (
     get_archive_by_status,
     get_archive_count,

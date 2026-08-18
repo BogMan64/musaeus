@@ -179,7 +179,7 @@ class TaggerStage(BaseStage):
         try:
             import mutagen  # noqa: F401
         except ImportError:
-            raise StageError("mutagen not installed — run: pip install mutagen")
+            raise StageError("mutagen not installed — run: pip install mutagen") from None
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

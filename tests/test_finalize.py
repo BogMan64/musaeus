@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db, open_hash_index, upsert_archive
@@ -348,7 +349,7 @@ class TestFinalizeBatchDate:
         real_ctx = RunContext.new(cfg, conn, dry_run=False)
         # Deliberately NOT setting finalize_batch_date here.
 
-        track = _make_canonicalized_track(real_ctx, "track.m4a", "Artist", "Album", "Title")
+        _make_canonicalized_track(real_ctx, "track.m4a", "Artist", "Album", "Title")
         FinalizeStage().execute(real_ctx)
 
         today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")

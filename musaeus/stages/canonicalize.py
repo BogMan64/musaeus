@@ -156,12 +156,11 @@ def _verify_conversion(source: Path, output: Path) -> None:
 
     src_dur = _duration(src_probe)
     out_dur = _duration(out_probe)
-    if src_dur is not None and out_dur is not None:
-        if abs(src_dur - out_dur) > _DURATION_TOLERANCE_SEC:
-            raise CanonicalizeError(
-                f"verification failed: duration mismatch "
-                f"(source={src_dur:.2f}s, output={out_dur:.2f}s)"
-            )
+    if src_dur is not None and out_dur is not None and abs(src_dur - out_dur) > _DURATION_TOLERANCE_SEC:
+        raise CanonicalizeError(
+            f"verification failed: duration mismatch "
+            f"(source={src_dur:.2f}s, output={out_dur:.2f}s)"
+        )
 
 
 # ── ffmpeg conversion commands ────────────────────────────────────────────────

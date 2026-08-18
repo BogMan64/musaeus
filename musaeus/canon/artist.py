@@ -85,7 +85,8 @@ class ArtistCanon:
         # Fuzzy fallback — use process.extractOne for O(1)-ish performance
         # instead of iterating all entries manually
         try:
-            from rapidfuzz import process, fuzz as _fuzz  # type: ignore[import-untyped]
+            from rapidfuzz import fuzz as _fuzz
+            from rapidfuzz import process  # type: ignore[import-untyped]
             if not self._map:
                 return raw
             result = process.extractOne(

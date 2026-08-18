@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 MUSAEUS — Organize Stage
 
 File organization and renaming stage for CATALOGUED archive rows.
@@ -109,26 +109,26 @@ _PROTECTED_ARTIST_NAMES = frozenset({
 def strip_track_number_prefix(text: str) -> str:
     """
     Remove track number prefix from filename/title using ORPHEUS patterns.
-    
+
     Examples:
       "171. Afrika Bambaataa - Planet Rock.m4a" → "Afrika Bambaataa - Planet Rock.m4a"
       "01 - Title.mp3"                          → "Title.mp3"
       "Disc 2 - 05 - Song.flac"                 → "Song.flac"
     """
     original = text.strip()
-    
+
     for pattern in _TRACK_NUMBER_PATTERNS:
         stripped = pattern.sub("", original, count=1).strip()
         if stripped and stripped != original:
             return stripped
-    
+
     return original
 
 
 def sanitize_path_component(text: str) -> str:
-    """
+    r"""
     Sanitize a single path component for Windows/ExFAT compatibility.
-    
+
     - Removes forbidden characters: \ / : * ? " < > |
     - Handles Windows reserved names (CON, PRN, etc.)
     - Normalizes quotes and dashes
@@ -137,70 +137,70 @@ def sanitize_path_component(text: str) -> str:
     """
     if not text:
         return "Unknown"
-    
+
     # Normalize unicode
     s = unicodedata.normalize("NFC", str(text))
-    
+
     # Normalize quotes and dashes
     s = s.replace("'", "'").replace("'", "'").replace("`", "'")
     s = s.replace(""", '"').replace(""", '"')
     s = s.replace("–", "-").replace("—", "-").replace("−", "-")
-    
+
     # Remove control characters
     s = "".join(c for c in s if unicodedata.category(c)[0] != "C")
-    
+
     # Replace forbidden characters with safe alternatives
     s = _FORBIDDEN_RE.sub("_", s)
-    
+
     # Collapse multiple spaces
     s = re.sub(r"\s+", " ", s).strip()
-    
+
     # Strip leading/trailing dots and spaces (Windows doesn't like them)
     s = s.strip(". ")
-    
+
     if not s:
         return "Unknown"
-    
+
     # Check for Windows reserved names
     name_upper = s.split(".")[0].upper()
     if name_upper in _WINDOWS_RESERVED_NAMES:
         s = f"_{s}"
-    
+
     return s
 
 
 def build_track_filename(artist: str, title: str, ext: str) -> str:
     """
     Build standard filename: "Artist - Title.ext"
-    
+
     ORPHEUS-compatible format with sanitization.
     """
     artist_safe = sanitize_path_component(artist or "Unknown Artist")
     title_safe = sanitize_path_component(strip_track_number_prefix(title or "Unknown Title"))
-    
+
     # Ensure extension starts with dot and is lowercase
     if not ext.startswith("."):
         ext = f".{ext}"
     ext = ext.lower()
-    
+
     return f"{artist_safe} - {title_safe}{ext}"
 
 
 def unique_path(target: Path) -> Path:
     """
     Return a unique path by appending (N) if target already exists.
-    
+
     Example:
       "Beatles, The/Abbey Road/Beatles, The - Come Together.m4a"
       → "Beatles, The/Abbey Road/Beatles, The - Come Together (2).m4a"
     """
     if not target.exists():
         return target
-    
+
     stem = target.stem
     suffix = target.suffix
     parent = target.parent
-    
+
     counter = 2
     while True:
         new_path = parent / f"{stem} ({counter}){suffix}"
@@ -295,26 +295,26 @@ class OrganizeStage(BaseStage):
 
         for row in rows:
             result.files_processed += 1
-            
+
             current_path = Path(row["file_path"])
             if not current_path.exists():
                 logger.warning("[organize] file missing: %s", current_path)
                 result.files_errored += 1
                 result.errors.append(f"{current_path}: file missing on disk")
                 continue
-            
+
             artist = row["artist"] or "Unknown Artist"
             album = row["album"] or "Unsorted"
             title = row["title"] or "Unknown Title"
-            
+
             # Build new filename
             ext = current_path.suffix
             new_filename = build_track_filename(artist, title, ext)
-            
+
             # Build target path: INBOX/Artist/Album/filename
             artist_safe = sanitize_path_component(artist)
             album_safe = sanitize_path_component(album)
-            
+
             target_dir = ctx.inbox / artist_safe / album_safe
             candidate_path = target_dir / new_filename
 
@@ -329,12 +329,12 @@ class OrganizeStage(BaseStage):
                 target_path = candidate_path
             else:
                 target_path = unique_path(candidate_path)
-            
+
             # Check if already organized
             if current_path == target_path:
                 skipped += 1
                 continue
-            
+
             # Check if only needs rename (same directory)
             if current_path.parent == target_path.parent and current_path.name != target_path.name:
                 # Just rename
@@ -343,18 +343,17 @@ class OrganizeStage(BaseStage):
                     current_path.name,
                     target_path.name,
                 )
-                
-                if not dry_run:
-                    if not self._apply_rename(
-                        ctx, current_path, target_path, row["id"], "ORGANIZE_RENAME"
-                    ):
-                        result.files_errored += 1
-                        result.errors.append(f"{current_path.name}: DB collision, skipped")
-                        continue
-                
+
+                if not dry_run and not self._apply_rename(
+                    ctx, current_path, target_path, row["id"], "ORGANIZE_RENAME"
+                ):
+                    result.files_errored += 1
+                    result.errors.append(f"{current_path.name}: DB collision, skipped")
+                    continue
+
                 renamed += 1
                 result.files_changed += 1
-            
+
             # Needs move (different directory)
             elif current_path.parent != target_path.parent:
                 logger.info(
@@ -362,7 +361,7 @@ class OrganizeStage(BaseStage):
                     current_path.relative_to(ctx.inbox),
                     target_path.relative_to(ctx.inbox),
                 )
-                
+
                 if not dry_run:
                     target_dir.mkdir(parents=True, exist_ok=True)
                     if not self._apply_rename(
@@ -371,10 +370,10 @@ class OrganizeStage(BaseStage):
                         result.files_errored += 1
                         result.errors.append(f"{current_path.name}: DB collision, skipped")
                         continue
-                
+
                 moved += 1
                 result.files_changed += 1
-            
+
             # Commit periodically
             if result.files_processed % _COMMIT_EVERY == 0 and not dry_run:
                 ctx.conn.commit()

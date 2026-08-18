@@ -89,6 +89,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import sys
@@ -100,28 +101,28 @@ from .config import get_config
 from .context import RunContext
 from .db import open_db
 from .stages import (
+    ARCHIVE_PIPELINE,
+    BIG_KAHUNA_PIPELINE,
     DEFAULT_PIPELINE,
     ENRICH_PIPELINE,
     FULL_PIPELINE,
-    ARCHIVE_PIPELINE,
-    BIG_KAHUNA_PIPELINE,
     MAINTAIN_PIPELINE,
     AcousticIDStage,
     AlbumArtStage,
     AuditorStage,
     AuditStage,
+    CanonicalizeStage,
+    CrossDupeStage,
     CuratorStage,
+    DupeResolverStage,
     EnrichStage,
+    FinalizeStage,
     ForgeStage,
     GhostStage,
     HealthStage,
     IngestStage,
     IntegrityStage,
     MBEnrichStage,
-    CanonicalizeStage,
-    CrossDupeStage,
-    DupeResolverStage,
-    FinalizeStage,
     NearDupeStage,
     NormalizeStage,
     OrganizeStage,
@@ -173,10 +174,8 @@ def _load_resume(all_stages: list[str]) -> list[str] | None:
 
 
 def _clear_resume() -> None:
-    try:
+    with contextlib.suppress(OSError):
         _RESUME_FILE.unlink(missing_ok=True)
-    except OSError:
-        pass
 
 
 # ── Pipeline runner ───────────────────────────────────────────────────────────
@@ -392,8 +391,8 @@ def _cmd_reset() -> None:
     db = cfg.db_path
     print("\n  MUSAEUS — Database Reset")
     print(f"  DB: {db}")
-    print(f"  This will DELETE the database and all pipeline state.")
-    print(f"  Your music files in the vault are NOT affected.")
+    print("  This will DELETE the database and all pipeline state.")
+    print("  Your music files in the vault are NOT affected.")
     print()
 
     if not sys.stdin.isatty():
@@ -1165,9 +1164,9 @@ def main() -> None:
 
     verbose = getattr(args, "verbose", False)
     show_progress = getattr(args, "progress", True)  # Default to True
-    
+
     _setup_logging(verbose)
-    
+
     # Enable progress tracking if requested
     if verbose:
         from .progress import enable_verbose_logging
@@ -1177,7 +1176,8 @@ def main() -> None:
     dry_run = getattr(args, "dry_run", False)
 
     # ── First-run check: trigger wizard if no config exists ───────────────────
-    from .setup import needs_setup, run_wizard as _run_wizard
+    from .setup import needs_setup
+    from .setup import run_wizard as _run_wizard
 
     if command == "setup":
         _run_wizard(force=True)
@@ -1198,7 +1198,7 @@ def main() -> None:
         import os
         os.environ["MUSAEUS_VERBOSE"] = "1" if verbose else "0"
         os.environ["MUSAEUS_PROGRESS"] = "1" if show_progress else "0"
-        
+
         # ── pipeline commands ─────────────────────────────────────────────────
 
         if command == "run":
@@ -1338,7 +1338,7 @@ def main() -> None:
             sys.exit(cmd_rebuild_db(dry_run=dry_run))
 
         elif command == "review":
-            from .approval import cmd_review_generate, cmd_review_apply, cmd_review_status
+            from .approval import cmd_review_apply, cmd_review_generate, cmd_review_status
             review_cmd = getattr(args, "review_command", None)
             if review_cmd == "generate":
                 sys.exit(cmd_review_generate(dry_run=dry_run))

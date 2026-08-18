@@ -36,8 +36,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
-
 
 _USER_CONFIG_DIR = Path.home() / ".config" / "musaeus"
 _SETTINGS_FILE = _USER_CONFIG_DIR / "settings.env"
@@ -93,13 +91,13 @@ class MusicConfig:
     db_path: Path
 
     # API keys (may be None if not configured)
-    groq_api_key: Optional[str] = field(default=None, repr=False)
-    lastfm_api_key: Optional[str] = field(default=None, repr=False)
-    openrouter_api_key: Optional[str] = field(default=None, repr=False)
-    acousticid_api_key: Optional[str] = field(default=None, repr=False)
+    groq_api_key: str | None = field(default=None, repr=False)
+    lastfm_api_key: str | None = field(default=None, repr=False)
+    openrouter_api_key: str | None = field(default=None, repr=False)
+    acousticid_api_key: str | None = field(default=None, repr=False)
 
     @classmethod
-    def from_env(cls) -> "MusicConfig":
+    def from_env(cls) -> MusicConfig:
         """Build MusicConfig from environment. Raises ValueError if vault_root missing."""
         vault_str = os.environ.get("MUSAEUS_VAULT_ROOT", "")
         if not vault_str:
@@ -204,7 +202,7 @@ class MusicConfig:
 
 
 # Convenience: load once at import time for scripts that just want paths
-_cached_config: Optional[MusicConfig] = None
+_cached_config: MusicConfig | None = None
 
 
 def get_config() -> MusicConfig:

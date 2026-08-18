@@ -1,4 +1,4 @@
-"""
+r"""
 MUSAEUS — Sanitize Stage
 
 Filesystem-safe metadata normalization for Windows/ExFAT/Android compatibility.
@@ -44,10 +44,10 @@ SMART_QUOTE_MAP = {
 def sanitize_value(value: str | None) -> str | None:
     """
     Make metadata filesystem-safe while preserving readability.
-    
+
     Rules (from ORPHEUS):
       - / → - (forward slash to hyphen)
-      - \\ → - (backslash to hyphen)  
+      - \\ → - (backslash to hyphen)
       - : → " - " (colon to space-hyphen-space for readability)
       - Remove: ? * " < > |
       - Smart quotes → straight quotes
@@ -97,10 +97,7 @@ def needs_sanitization(value: str | None) -> bool:
         return True
 
     # Check for trailing dots/spaces
-    if value != value.rstrip(". "):
-        return True
-
-    return False
+    return value != value.rstrip(". ")
 
 
 class SanitizeStage(BaseStage):
