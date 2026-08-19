@@ -962,6 +962,11 @@ def _build_parser() -> argparse.ArgumentParser:
     forge_p.add_argument("--dry-run", action="store_true", help="Measure but don't write tags")
     forge_p.add_argument("--force", action="store_true", help="Re-tag already-forged files")
     forge_p.add_argument(
+        "--retag",
+        action="store_true",
+        help="Skip the existing-tag shortcut; always re-measure via ffmpeg",
+    )
+    forge_p.add_argument(
         "--target-lufs",
         type=float,
         default=None,
@@ -1359,6 +1364,8 @@ def main() -> None:
             stash = {}
             if getattr(args, "force", False):
                 stash["forge_force"] = True
+            if getattr(args, "retag", False):
+                stash["forge_retag"] = True
             target_lufs = getattr(args, "target_lufs", None)
             if target_lufs is not None:
                 stash["forge_target_lufs"] = float(target_lufs)

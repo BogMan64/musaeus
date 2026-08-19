@@ -11,6 +11,24 @@ Rules:
   - Never re-encodes audio.  Tags only.
   - Works sequentially (ffmpeg is already CPU-heavy); no threading.
   - Periodic DB commits every _COMMIT_EVERY files.
+
+Tag-read-first shortcut (added 2026-08-19, matching bpm.py's existing
+pattern): a candidate row can reach this stage with rg_tagged_at NULL
+purely because the DB was reset/rebuilt while the file itself already
+carries loudness tags from an earlier MUSAEUS or ORPHEUS pass -- that's
+exactly what a DB wipe does to already-forged files re-ingested from
+INBOX. Before spending real ffmpeg time re-measuring, read_existing_rg_tags()
+checks the file's own embedded tag first (com.apple.iTunes.R128_TRACK_GAIN
+for M4A, REPLAYGAIN_TRACK_GAIN/PEAK for FLAC/MP3/AIFF) and, if present,
+recovers `lufs` from it directly -- lufs is a physical property of the
+audio, not of any particular reference level, so this stays correct even
+if --target-lufs differs from whatever reference produced the original
+tag. Skipped via --retag, same escape hatch as bpm.py's --retag. WAV has
+no standard RG tag container (see write_rg_tags below) so it always
+falls through to a real ffmpeg measurement -- there's nothing to read.
+M4A's R128_TRACK_GAIN atom carries gain only, not true-peak, so a
+tag-shortcut hit leaves lufs_tp/rg_peak NULL in the DB rather than
+guessing a value ffmpeg never actually measured.
 """
 
 from __future__ import annotations
@@ -132,6 +150,70 @@ def write_rg_tags(
     return True  # not a failure — we just don't embed
 
 
+# ── Tag readers (skip ffmpeg if already tagged) ─────────────────────────────
+
+
+def read_existing_rg_tags(path: Path) -> dict[str, float | None] | None:
+    """
+    Read already-embedded loudness info without invoking ffmpeg.
+
+    Returns {"lufs", "lufs_tp", "rg_gain", "rg_peak"} (lufs_tp/rg_peak may
+    be None when the tag container doesn't carry true-peak, e.g. Apple's
+    R128_TRACK_GAIN) or None if no usable tag is present.
+    """
+    ext = path.suffix.lower()
+    try:
+        if ext in (".m4a", ".alac"):
+            from mutagen.mp4 import MP4  # type: ignore[import-untyped]
+
+            audio = MP4(str(path))
+            raw = audio.get("com.apple.iTunes.R128_TRACK_GAIN")
+            if not raw:
+                return None
+            r128_gain = int(raw[0]) / 256.0  # Q7.8 fixed-point, dB @ -23 LUFS
+            lufs = R128_APPLE_REFERENCE - r128_gain
+            return {
+                "lufs": lufs,
+                "lufs_tp": None,
+                "rg_gain": lufs_to_rg(lufs, reference=R128_REFERENCE),
+                "rg_peak": None,
+            }
+
+        if ext == ".flac":
+            from mutagen.flac import FLAC  # type: ignore[import-untyped]
+
+            return _rg_dict_from_vorbis_style(FLAC(str(path)))
+
+        if ext == ".mp3":
+            from mutagen.easyid3 import EasyID3  # type: ignore[import-untyped]
+
+            return _rg_dict_from_vorbis_style(EasyID3(str(path)))
+
+        # AIFF's gain-only TXXX tag and WAV's lack of any standard RG
+        # container both mean there's nothing reliable to shortcut from.
+        return None
+    except Exception as exc:
+        logger.debug("read_existing_rg_tags failed for %s: %s", path, exc)
+        return None
+
+
+def _rg_dict_from_vorbis_style(audio: Any) -> dict[str, float | None] | None:
+    """Shared parser for FLAC/MP3's ReplayGain-2-style text tags."""
+    gain_tag = audio.get("replaygain_track_gain")
+    if not gain_tag:
+        return None
+    rg_gain = float(str(gain_tag[0]).replace("dB", "").strip())
+
+    ref_tag = audio.get("replaygain_reference_loudness")
+    reference = -float(str(ref_tag[0]).replace("LUFS", "").strip()) if ref_tag else R128_REFERENCE
+    lufs = reference - rg_gain
+
+    peak_tag = audio.get("replaygain_track_peak")
+    rg_peak = float(str(peak_tag[0])) if peak_tag else None
+
+    return {"lufs": lufs, "lufs_tp": None, "rg_gain": rg_gain, "rg_peak": rg_peak}
+
+
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 
@@ -139,9 +221,9 @@ def _save_loudness(
     ctx: RunContext,
     file_path: str,
     lufs: float,
-    lufs_tp: float,
+    lufs_tp: float | None,
     rg_gain: float,
-    rg_peak: float,
+    rg_peak: float | None,
     tagged: bool,
 ) -> None:
     ts = datetime.now(tz=timezone.utc).isoformat(timespec="seconds") if tagged else None
@@ -174,6 +256,8 @@ class ForgeStage(BaseStage):
 
     Processes every CATALOGUED file not yet forged.
     Use ctx.set("forge_force", True) before running to retag everything.
+    Use ctx.set("forge_retag", True) to skip the tag-read shortcut and
+    always re-measure via ffmpeg, even for files with a usable embedded tag.
     """
 
     NAME = "forge"
@@ -210,13 +294,38 @@ class ForgeStage(BaseStage):
         return [(r["file_path"], r["ext"] or "") for r in rows]
 
     def _process_one(
-        self, ctx: RunContext, file_path: str, dry_run: bool, target_lufs: float
+        self,
+        ctx: RunContext,
+        file_path: str,
+        dry_run: bool,
+        target_lufs: float,
+        retag: bool = False,
     ) -> str:
         """
         Measure + tag one file.
-        Returns: 'ok' | 'silence' | 'json_fail' | 'ffmpeg_fail' | 'tag_fail' | 'missing'
+        Returns: 'ok' | 'tag_shortcut' | 'silence' | 'json_fail' | 'ffmpeg_fail'
+                 | 'tag_fail' | 'missing'
         """
         path = Path(file_path)
+
+        if not retag:
+            existing = read_existing_rg_tags(path)
+            if existing is not None:
+                if not dry_run:
+                    lufs_v = existing["lufs"]
+                    rg_gain_v = existing["rg_gain"]
+                    assert lufs_v is not None and rg_gain_v is not None
+                    _save_loudness(
+                        ctx,
+                        file_path,
+                        lufs_v,
+                        existing["lufs_tp"],
+                        rg_gain_v,
+                        existing["rg_peak"],
+                        tagged=True,
+                    )
+                return "tag_shortcut"
+
         lufs, tp, reason = measure_loudness(path)
 
         if reason != "ok":
@@ -238,6 +347,7 @@ class ForgeStage(BaseStage):
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)
         force: bool = ctx.get("forge_force", False)
+        retag: bool = ctx.get("forge_retag", False)
         target_lufs: float = ctx.get("forge_target_lufs", R128_REFERENCE)
 
         pending = self._get_pending(ctx, force)
@@ -252,6 +362,7 @@ class ForgeStage(BaseStage):
 
         counters: dict[str, int] = {
             "ok": 0,
+            "tag_shortcut": 0,
             "silence": 0,
             "json_fail": 0,
             "ffmpeg_fail": 0,
@@ -260,11 +371,11 @@ class ForgeStage(BaseStage):
         }
 
         for i, (fp, _ext) in enumerate(pending, 1):
-            status = self._process_one(ctx, fp, dry_run=False, target_lufs=target_lufs)
+            status = self._process_one(ctx, fp, dry_run=False, target_lufs=target_lufs, retag=retag)
             counters[status] = counters.get(status, 0) + 1
             result.files_processed += 1
 
-            if status == "ok":
+            if status in ("ok", "tag_shortcut"):
                 result.files_changed += 1
             elif status in ("silence", "missing"):
                 result.files_skipped += 1
@@ -281,6 +392,9 @@ class ForgeStage(BaseStage):
         for k, v in counters.items():
             if v:
                 result.notes.append(f"  {k}: {v}")
+        result.notes.append(
+            f"  (measured via ffmpeg: {counters['ok']}, from existing tags: {counters['tag_shortcut']})"
+        )
 
         if counters.get("ffmpeg_fail", 0) + counters.get("tag_fail", 0) > 0:
             result.success = False
