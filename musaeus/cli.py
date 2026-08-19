@@ -1299,10 +1299,19 @@ def main() -> None:
                 pipeline = ENRICH_PIPELINE
             else:
                 pipeline = DEFAULT_PIPELINE
-            sys.exit(_run_pipeline(pipeline, dry_run=dry_run))
+            # VariousArtistsFixStage is wired into DEFAULT_PIPELINE
+            # (2026-08-19); force MB lookups off here so a network
+            # hiccup early in Act 1 can't stall an otherwise
+            # file-safety-critical automatic run. `musaeus
+            # various-artists-fix` run standalone still defaults to MB
+            # lookups on.
+            run_stash = {"various_artists_no_mb": True} if pipeline is DEFAULT_PIPELINE else {}
+            sys.exit(_run_pipeline(pipeline, dry_run=dry_run, stash=run_stash))
 
         elif command == "dry-run":
-            sys.exit(_run_pipeline(DEFAULT_PIPELINE, dry_run=True))
+            sys.exit(
+                _run_pipeline(DEFAULT_PIPELINE, dry_run=True, stash={"various_artists_no_mb": True})
+            )
 
         elif command == "preflight":
             sys.exit(_run_pipeline([PreflightStage], dry_run=dry_run))

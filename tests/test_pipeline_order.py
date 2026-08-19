@@ -8,6 +8,9 @@ stand), and briefly moved Canonicalize ahead of dedup. That last change
 was REVERTED 2026-08-18 once cross-format duplicate detection (the
 motivating case) was confirmed to already work via PCM-based audio_hash
 without it -- see musaeus/stages/__init__.py's module docstring.
+2026-08-19: BPM and VariousArtistsFix moved from on-demand-only to
+default-on (Grey's explicit call) -- BPM after Finalize near Forge,
+VariousArtistsFix at the end of Act 1 right after ArtistConsolidate.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from musaeus.stages import DEFAULT_PIPELINE
 from musaeus.stages.albumart import AlbumArtStage
 from musaeus.stages.artist_consolidate import ArtistConsolidateStage
 from musaeus.stages.audit import AuditStage
+from musaeus.stages.bpm import BPMStage
 from musaeus.stages.canonicalize import CanonicalizeStage
 from musaeus.stages.corrupt import CorruptStage
 from musaeus.stages.cross_dupe import CrossDupeStage
@@ -34,6 +38,7 @@ from musaeus.stages.sanitize import SanitizeStage
 from musaeus.stages.scholar import ScholarStage
 from musaeus.stages.sentinel import SentinelStage
 from musaeus.stages.tagger import TaggerStage
+from musaeus.stages.various_artists_fix import VariousArtistsFixStage
 
 
 def _index(cls: type) -> int:
@@ -61,6 +66,21 @@ def test_canonicalize_still_runs_before_finalize():
     assert _index(CanonicalizeStage) < _index(FinalizeStage)
 
 
+def test_bpm_runs_after_finalize_before_forge():
+    """2026-08-19, Grey's explicit call: BPM near Forge, after Finalize
+    -- its tag-read-first shortcut + bpm_analyzed_at resumability mean
+    the Essentia cost is paid once per new file, not on every run."""
+    assert _index(FinalizeStage) < _index(BPMStage) < _index(ForgeStage)
+
+
+def test_various_artists_fix_runs_at_end_of_act1_before_dedup():
+    """2026-08-19, Grey's explicit call: resolve the real artist before
+    Act 2's dedup runs, same logic that already put ArtistConsolidate
+    ahead of dedup."""
+    assert _index(ArtistConsolidateStage) < _index(VariousArtistsFixStage)
+    assert _index(VariousArtistsFixStage) < _index(CrossDupeStage)
+
+
 def test_enrichment_is_default_on_and_positioned_last():
     """2026-08-17, Grey's explicit call: default-on every run, after
     dedup -- implemented as strictly last (after Audit), deliberately
@@ -86,11 +106,13 @@ def test_full_default_pipeline_order_matches_current_design():
         NormalizeStage,
         SanitizeStage,
         ArtistConsolidateStage,
+        VariousArtistsFixStage,
         CrossDupeStage,
         NearDupeStage,
         DupeResolverStage,
         CanonicalizeStage,
         FinalizeStage,
+        BPMStage,
         ForgeStage,
         TaggerStage,
         AuditStage,

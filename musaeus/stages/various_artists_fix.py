@@ -1,12 +1,24 @@
 #!/usr/bin/env python3
 """
-MUSAEUS — Various Artists Fix Stage (standalone, not wired into DEFAULT_PIPELINE)
+MUSAEUS — Various Artists Fix Stage (wired into DEFAULT_PIPELINE, end of Act 1)
 
 Resolves the real artist for tracks tagged "Various Artists" and
 corrects both archive.artist and the file's physical location/name.
 Ported from ORPHEUS's fix_various_artists.py, per tonight's 222-script
-ORPHEUS salvage audit. Standalone, matching the Ghost/Permissions/BPM/
-TributeQuarantine precedent.
+ORPHEUS salvage audit.
+
+Initially built standalone (Ghost/Permissions/BPM/TributeQuarantine
+precedent). Wired into DEFAULT_PIPELINE 2026-08-19 (Grey's explicit
+call), positioned at the end of Act 1 right after ArtistConsolidate --
+resolving the real artist before Act 2's dedup runs means CrossDupe/
+NearDupe see it instead of a shared "Various Artists" tag on every
+candidate row, the same logic that already put ArtistConsolidate ahead
+of dedup. Within DEFAULT_PIPELINE, MusicBrainz lookups are forced off
+(various_artists_no_mb=True, set by cli.py's `run`/`dry-run` commands)
+so a network hiccup here can't stall an otherwise file-safety-critical
+automatic run -- bracket/filename-segment resolution still runs.
+`musaeus various-artists-fix` invoked standalone still defaults to MB
+lookups on.
 
 `fix_various_artist_filenames.py`, the second script the audit initially
 flagged alongside this one, turned out to be incomplete when actually

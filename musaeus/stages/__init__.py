@@ -31,14 +31,17 @@ Available stages:
   PermissionsStage — fix file/folder permissions under inbox (Windows/ExFAT
                    sources land with wrong perms; 644 files / 755 dirs)
   BPMStage       — BPM/key/energy/danceability extraction + tag write
-                   (Essentia, optional `bpm` extra -- standalone, ported
-                   from ORPHEUS's orpheus_audio_analyzer.py)
+                   (Essentia, optional `bpm` extra), ported from ORPHEUS's
+                   orpheus_audio_analyzer.py -- wired into DEFAULT_PIPELINE
+                   2026-08-19, near Forge, after Finalize (see below)
   TributeQuarantineStage — detect + quarantine tribute-band/karaoke/
                    meditation content, ported from ORPHEUS's
                    orpheus_junk_quarantine.py
   VariousArtistsFixStage — resolve the real artist for "Various Artists"
                    tagged rows + relocate the file, ported from
-                   ORPHEUS's fix_various_artists.py
+                   ORPHEUS's fix_various_artists.py -- wired into
+                   DEFAULT_PIPELINE 2026-08-19, end of Act 1, MusicBrainz
+                   lookups forced off (see below)
   BitRotStage    — verify ALAC_Archive against a directory-scan baseline
                    (archive_tier_hashes) to catch silent bit rot, ported
                    from ORPHEUS's orpheus_integrity_check.py
@@ -60,10 +63,10 @@ correctness problem that didn't actually exist. Canonicalize is back in
 Act 3, its original position:
   Act 1 (Intake & Correction): Preflight → Ingest → Permissions → Sentinel
          → Scholar → Health → Corrupt → AlbumArt → Normalize → Sanitize →
-         ArtistConsolidate
+         ArtistConsolidate → VariousArtistsFix
   Act 2 (Dedup & Staging):     CrossDupe → NearDupe → DupeResolver
-  Act 3 (Canonicalize/Finalize): Canonicalize → Finalize → Forge → Tagger
-         → Audit
+  Act 3 (Canonicalize/Finalize): Canonicalize → Finalize → BPM → Forge →
+         Tagger → Audit
   Enrichment (default-on, moved from on-demand-only 2026-08-17): Enrich →
          MBEnrich
 See ACT1_INTAKE_CORRECTION / ACT2_DEDUP_STAGING / ACT3_CANONICALIZE_FINALIZE
@@ -91,10 +94,27 @@ here can never block or interfere with them. MBEnrichStage was fixed the
 same day to degrade gracefully on an unreachable network (skip + report,
 matching EnrichStage's existing missing-API-key pattern) rather than
 hard-failing the stage, since it's no longer purely on-demand.
+BPM and VariousArtistsFix moved from on-demand-only to default-on
+(2026-08-19, Grey's explicit call). BPM: positioned after Finalize, near
+Forge, per Grey's original request -- Grey also corrected an initial
+cost objection here (Essentia is heavy, but BPM's own tag-read-first
+shortcut + bpm_analyzed_at resumability mean the real cost is "once per
+new file, ever," not "every pipeline run," so wiring it in by default is
+reasonable). VariousArtistsFix: positioned at the end of Act 1, right
+after ArtistConsolidate -- both a natural continuation of "artist
+correction" and, like ArtistConsolidate, beneficial to run before Act
+2's dedup so CrossDupe/NearDupe see the resolved real artist rather than
+a shared "Various Artists" tag on every candidate row. MusicBrainz
+lookups are forced off (various_artists_no_mb=True) when run as part of
+DEFAULT_PIPELINE -- bracket/filename-segment resolution only, no network
+call -- so a Last.fm/MusicBrainz-style network hiccup early in Act 1
+can't block or stall an otherwise file-safety-critical run the way
+Enrich/MBEnrich's isolation-to-the-end already guards against for their
+own network calls. `musaeus various-artists-fix` run standalone still
+defaults to MB lookups on.
 On-demand only (not part of the canonical chain): Auditor, Curator,
            Playlist, Ghost, AcousticID, Transcode, Reviewer, Organize,
-           IntegrityStage, BPMStage, TributeQuarantineStage,
-           VariousArtistsFixStage, BitRotStage.
+           IntegrityStage, TributeQuarantineStage, BitRotStage.
 """
 
 from .acousticid import AcousticIDStage
@@ -195,6 +215,10 @@ __all__ = [
 #   dependency, not a stylistic choice. Permissions added 2026-08-17,
 #   right after Ingest -- no data dependency on the stages after it,
 #   fixing permissions before anything else touches the batch's files.
+#   VariousArtistsFix added 2026-08-19, last in this Act, right after
+#   ArtistConsolidate -- same "resolve the real artist before dedup"
+#   logic, and MB lookups forced off here (bracket/filename-segment
+#   resolution only) so a network hiccup can't stall Act 1.
 # Act 2 - Dedup & Staging. CrossDupe needs audio_hash (Sentinel), so it
 #   can't literally run before Sentinel either -- it runs as early after
 #   Sentinel as a hash-based check can. NearDupe benefits from running
@@ -203,12 +227,17 @@ __all__ = [
 #   something for this batch -- so a confirmed duplicate is physically
 #   pulled out before Act 3 wastes any ffmpeg conversion or loudness
 #   measurement on it.
-# Act 3 - Canonicalize, Finalize, Forge, Tagger, Audit. Finalize runs
+# Act 3 - Canonicalize, Finalize, BPM, Forge, Tagger, Audit. Finalize runs
 #   BEFORE Forge/Tagger per Grey's explicit request: this lets an
 #   external archival copy be made of the canonicalized-but-not-yet-
 #   loudness-tagged file, straight out of its permanent ALAC-Library
-#   location, before Forge's ReplayGain tags get burned into it. Audit
-#   runs last, as the gate before a future DB-snapshot-and-wipe step.
+#   location, before Forge's ReplayGain tags get burned into it. BPM
+#   added 2026-08-19 right after Finalize, near Forge, per Grey's
+#   original request and bpm.py's own recommended placement -- its
+#   tag-read-first shortcut + bpm_analyzed_at resumability mean the
+#   Essentia cost is paid once per new file, not on every pipeline run.
+#   Audit runs last, as the gate before a future DB-snapshot-and-wipe
+#   step.
 # Enrichment (ENRICHMENT) - Enrich (Last.fm genre) + MBEnrich (MusicBrainz
 #   MBID), moved from on-demand-only to default-on, 2026-08-17, Grey's
 #   explicit call ("default-on every run... after dedup"). Positioned
@@ -233,6 +262,7 @@ ACT1_INTAKE_CORRECTION: list[type] = [
     NormalizeStage,
     SanitizeStage,
     ArtistConsolidateStage,
+    VariousArtistsFixStage,
 ]
 
 ACT2_DEDUP_STAGING: list[type] = [
@@ -244,6 +274,7 @@ ACT2_DEDUP_STAGING: list[type] = [
 ACT3_CANONICALIZE_FINALIZE: list[type] = [
     CanonicalizeStage,
     FinalizeStage,
+    BPMStage,
     ForgeStage,
     TaggerStage,
     AuditStage,

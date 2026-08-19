@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MUSAEUS — BPM Stage (standalone, not wired into DEFAULT_PIPELINE)
+MUSAEUS — BPM Stage (wired into DEFAULT_PIPELINE, after Finalize)
 
 Extracts BPM, musical key, energy, and danceability for every CATALOGUED
 file and writes them back both into the archive table and into the file's
@@ -8,12 +8,15 @@ own tags. Ported from ORPHEUS's orpheus_audio_analyzer.py (Essentia-based
 reference implementation), per Grey's recommended placement: late in the
 pipeline, near Forge, after Finalize.
 
-Standalone rather than wired into DEFAULT_PIPELINE, matching the
-GhostStage/PermissionsStage precedent: Essentia analysis is genuinely
-heavy (multi-second full-track decode + several DSP passes per file),
-essentia itself is a large optional dependency (pyproject.toml's `bpm`
-extra, not installed by default or in CI), and slowing down every normal
-run for a feature most callers won't need every time isn't worth it.
+Initially built standalone (GhostStage/PermissionsStage precedent) over
+a cost concern: Essentia analysis is genuinely heavy (multi-second
+full-track decode + several DSP passes per file), and essentia itself is
+a large optional dependency (pyproject.toml's `bpm` extra, not installed
+by default or in CI). Wired into DEFAULT_PIPELINE 2026-08-19 after Grey
+corrected that framing: the tag-read-first shortcut below plus
+bpm_analyzed_at resumability mean that cost is paid once per new file,
+ever -- not on every pipeline run -- so the original objection didn't
+actually hold.
 
 Design differences from the ORPHEUS original:
   - DB-row-driven (archive table, status='CATALOGUED'), not a directory
