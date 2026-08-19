@@ -78,7 +78,10 @@ class TestValidate:
             BPMStage().validate(ctx)
 
     def test_raises_when_mutagen_missing(self, ctx):
-        import essentia.standard  # noqa: F401  -- confirm it's actually available here
+        # Needs essentia genuinely importable (this test is specifically
+        # about mutagen being the missing one) -- skip where the optional
+        # `bpm` extra isn't installed (e.g. CI), rather than failing.
+        pytest.importorskip("essentia")
 
         with (
             patch.dict("sys.modules", {"mutagen": None}),
