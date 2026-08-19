@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+"""
+MUSAEUS — Tribute Quarantine Stage (standalone, not wired into DEFAULT_PIPELINE)
+
+Detects and quarantines tribute-band/karaoke/meditation/ASMR-type content.
+Ported from ORPHEUS's orpheus_junk_quarantine.py, per tonight's ORPHEUS
+salvage audit. Standalone, matching the Ghost/Permissions/BPM precedent.
+
+Design differences from the ORPHEUS original:
+  - DB-row-driven (archive table, status='CATALOGUED'), not a directory
+    walk -- matches every other MUSAEUS stage's convention.
+  - Detection reads archive.artist/title/album directly (already
+    populated by Scholar), not re-parsed from folder names or re-read
+    from file tags on every scan -- MUSAEUS already has this data.
+  - Move target / status / manifest+restore-script conventions borrowed
+    directly from DupeResolverStage: TRIBUTE_REMOVED_FOR_REVIEW/<date>/
+    Artist/Album/ (the exact folder name the 2026-08-12 one-off
+    tribute-removal script already used -- reused for consistency, not
+    reinvented), archive.status = 'TRIBUTE_REVIEW' (same precedent),
+    CSV manifest + auto-generated bash restore script, never deletes.
+  - Resumability is automatic via the status transition -- once a row
+    leaves 'CATALOGUED' it stops matching future scans, same as
+    DupeResolverStage. No extra timestamp column needed.
+  - Detection patterns (JUNK_*_PATTERNS / KNOWN_JUNK_ARTISTS /
+    PROTECTED_ARTISTS) ported verbatim, including ORPHEUS's own inline
+    commentary on why specific protected-artist entries exist -- these
+    are hand-tuned against real false positives from actual ORPHEUS test
+    runs, not something to second-guess or "clean up" while porting.
+"""
+
+from __future__ import annotations
+
+import csv
+import logging
+import os
+import re
+import shutil
+import stat
+from datetime import datetime, timezone
+from pathlib import Path
+
+from ..context import RunContext, StageResult
+from .base import BaseStage
+from .organize import build_track_filename, sanitize_path_component, unique_path
+
+logger = logging.getLogger(__name__)
+
+# ── Junk detection patterns (ported verbatim from orpheus_junk_quarantine.py) ──
+
+JUNK_ARTIST_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"\bkaraoke\b", re.IGNORECASE),
+    re.compile(r"\btribute\b", re.IGNORECASE),
+    re.compile(r"\bsleep\b", re.IGNORECASE),
+    re.compile(r"\bmeditation\b", re.IGNORECASE),
+    re.compile(r"\bhypnos[ie]s\b", re.IGNORECASE),
+    re.compile(r"\brelaxation\b", re.IGNORECASE),
+    re.compile(r"\bhealing\b", re.IGNORECASE),
+    re.compile(r"\bsound bath\b", re.IGNORECASE),
+    re.compile(r"\bwhite noise\b", re.IGNORECASE),
+    re.compile(r"\bbrown noise\b", re.IGNORECASE),
+    re.compile(r"\bpink noise\b", re.IGNORECASE),
+    re.compile(r"\basmr\b", re.IGNORECASE),
+    re.compile(r"\bre-?record", re.IGNORECASE),
+]
+
+JUNK_TITLE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"karaoke version", re.IGNORECASE),
+    re.compile(r"in the style of", re.IGNORECASE),
+    re.compile(r"originally performed", re.IGNORECASE),
+    re.compile(r"made famous by", re.IGNORECASE),
+    re.compile(r"instrumental version", re.IGNORECASE),
+    re.compile(r"backing track", re.IGNORECASE),
+]
+
+JUNK_ALBUM_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"\bkaraoke\b", re.IGNORECASE),
+    re.compile(r"\btribute\b", re.IGNORECASE),
+    re.compile(r"\bmeditation\b", re.IGNORECASE),
+    re.compile(r"\bsleep\b", re.IGNORECASE),
+    re.compile(r"\bhypnos", re.IGNORECASE),
+    re.compile(r"\brelax", re.IGNORECASE),
+]
+
+KNOWN_JUNK_ARTISTS: frozenset[str] = frozenset(
+    {
+        "karaoke channel",
+        "hit tunes karaoke",
+        "monster karaoke",
+        "michael sealey",
+        "lauren ostrowski fenton",
+        "guided meditation guru",
+        "healing vibrations",
+        "michelle's sanctuary",
+    }
+)
+
+# Protected REAL artists -- never quarantine even if title/album matches a
+# pattern. Checked first, always wins. Ported verbatim, including
+# ORPHEUS's own reasoning per entry (real false positives caught in
+# actual ORPHEUS test runs, not hypothetical).
+PROTECTED_ARTISTS: frozenset[str] = frozenset(
+    {
+        # Artists on tribute COMPILATION albums (they didn't make the tribute)
+        "louis armstrong",
+        "neil young",
+        "garth brooks",
+        "merle haggard",
+        "spirit",
+        "blondie",
+        "led zeppelin",
+        "jan",
+        "mary wells",
+        "refreshments",
+        "monks",
+        "thomas d'arcy",
+        "big blues corp city",
+        # Real artists whose SONG TITLES contain trigger words
+        "sleep",  # Sleep is a legitimate doom metal band
+        "sleep token",  # Sleep Token is a legitimate rock band
+        "the healing",  # Could be a real band
+        "big sleep",  # Irish band
+    }
+)
+
+
+def is_junk(artist: str, title: str, album: str) -> tuple[bool, str]:
+    """Check whether a row's metadata matches any junk pattern. Returns
+    (is_junk, reason). Protected artists are checked first and always win,
+    even against a matching title/album pattern."""
+    artist_lower = (artist or "").lower().strip()
+
+    for protected in PROTECTED_ARTISTS:
+        if protected in artist_lower:
+            return False, ""
+
+    for known in KNOWN_JUNK_ARTISTS:
+        if known in artist_lower:
+            return True, f"known_junk_artist: {artist_lower}"
+
+    for pat in JUNK_ARTIST_PATTERNS:
+        if pat.search(artist or ""):
+            return True, f"artist_pattern: {pat.pattern}"
+
+    for pat in JUNK_TITLE_PATTERNS:
+        if pat.search(title or ""):
+            return True, f"title_pattern: {pat.pattern}"
+
+    for pat in JUNK_ALBUM_PATTERNS:
+        if pat.search(album or ""):
+            return True, f"album_pattern: {pat.pattern}"
+
+    return False, ""
+
+
+# ── Tribute Quarantine Stage ─────────────────────────────────────────────────
+
+
+class TributeQuarantineStage(BaseStage):
+    """
+    Detect and quarantine tribute-band/karaoke/meditation-type content.
+    Standalone -- not part of DEFAULT_PIPELINE. Files are moved, never
+    deleted, into config.tribute_review_dir, mirroring DupeResolverStage's
+    DUPES_MOVED_FOR_REVIEW convention exactly.
+    """
+
+    NAME = "tribute-quarantine"
+
+    def validate(self, ctx: RunContext) -> None:
+        """No external dependency to check -- pure Python regex matching
+        against already-populated archive columns."""
+
+    def _get_candidates(self, ctx: RunContext) -> list[dict]:
+        rows = ctx.conn.execute(
+            "SELECT id, file_path, artist, title, album FROM archive WHERE status='CATALOGUED'"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def _batch_date(self, ctx: RunContext) -> str:
+        """Same convention as FinalizeStage/DupeResolverStage's own
+        _batch_date -- overridable for tests, defaults to today's real
+        UTC date, computed once per run."""
+        override = ctx.get("finalize_batch_date")
+        if override:
+            return str(override)
+        return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+
+    def _target_path(self, ctx: RunContext, row: dict, source: Path) -> Path:
+        artist = row.get("artist") or "Unknown Artist"
+        album = row.get("album") or "Unsorted"
+        title = row.get("title") or "Unknown Title"
+
+        new_filename = build_track_filename(artist, title, source.suffix)
+        artist_safe = sanitize_path_component(artist)
+        album_safe = sanitize_path_component(album)
+
+        target_dir = (
+            ctx.config.tribute_review_dir / self._batch_date(ctx) / artist_safe / album_safe
+        )
+        return unique_path(target_dir / new_filename)
+
+    def _write_manifest_and_restore_script(
+        self, ctx: RunContext, batch_date: str, moved: list[dict]
+    ) -> tuple[Path, Path]:
+        review_dir = ctx.config.tribute_review_dir / batch_date
+        review_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+        manifest_path = review_dir / f"tribute_manifest_{stamp}.csv"
+        with open(manifest_path, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=["source", "destination", "reason"])
+            writer.writeheader()
+            writer.writerows(moved)
+
+        restore_path = review_dir / f"restore_{stamp}.sh"
+        lines = ["#!/usr/bin/env bash", "set -euo pipefail", ""]
+        for m in moved:
+            src, dst = m["source"], m["destination"]
+            src_dir = os.path.dirname(src)
+            lines.append(f'mkdir -p "{src_dir}"')
+            lines.append(f'mv -n "{dst}" "{src}"')
+        restore_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        restore_path.chmod(restore_path.stat().st_mode | stat.S_IEXEC)
+
+        return manifest_path, restore_path
+
+    def run(self, ctx: RunContext) -> StageResult:
+        result = self._make_result(dry_run=False)
+        candidates = self._get_candidates(ctx)
+
+        matches: list[tuple[dict, str]] = []
+        for row in candidates:
+            matched, reason = is_junk(
+                row.get("artist") or "", row.get("title") or "", row.get("album") or ""
+            )
+            if matched:
+                matches.append((row, reason))
+
+        result.notes.append(f"scanned: {len(candidates)}")
+        result.notes.append(f"matched: {len(matches)}")
+        if not matches:
+            result.notes.append("nothing to do — no junk patterns matched")
+            ctx.record_stage(result)
+            return result
+
+        batch_date = self._batch_date(ctx)
+        moved: list[dict] = []
+        for row, reason in matches:
+            result.files_processed += 1
+            source = Path(row["file_path"])
+            if not source.exists():
+                result.files_errored += 1
+                result.errors.append(f"{source}: file missing on disk")
+                continue
+
+            target = self._target_path(ctx, row, source)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(source), str(target))
+            except OSError as exc:
+                result.files_errored += 1
+                result.errors.append(f"{source.name}: {exc}")
+                continue
+
+            ctx.conn.execute(
+                "UPDATE archive SET status = 'TRIBUTE_REVIEW', file_path = ? WHERE id = ?",
+                (str(target), row["id"]),
+            )
+            ctx.log_event(
+                "TRIBUTE_QUARANTINED",
+                file_path=str(target),
+                old_value=str(source),
+                new_value=str(target),
+                stage=self.NAME,
+                note=reason,
+            )
+            moved.append({"source": str(source), "destination": str(target), "reason": reason})
+            result.files_changed += 1
+            logger.info("[tribute-quarantine] %s -> %s (%s)", source, target, reason)
+
+        ctx.conn.commit()
+
+        if moved:
+            manifest_path, restore_path = self._write_manifest_and_restore_script(
+                ctx, batch_date, moved
+            )
+            result.notes.append(f"quarantined {len(moved)} file(s)")
+            result.notes.append(f"manifest: {manifest_path}")
+            result.notes.append(f"restore script: {restore_path}")
+
+        if result.files_errored:
+            result.success = False
+
+        ctx.record_stage(result)
+        return result
+
+    def dry_run(self, ctx: RunContext) -> StageResult:
+        result = self._make_result(dry_run=True)
+        candidates = self._get_candidates(ctx)
+
+        matches = []
+        for row in candidates:
+            matched, reason = is_junk(
+                row.get("artist") or "", row.get("title") or "", row.get("album") or ""
+            )
+            if matched:
+                matches.append((row, reason))
+
+        result.files_processed = len(matches)
+        result.notes.append(f"[DRY RUN] scanned {len(candidates)}, would quarantine {len(matches)}")
+        result.notes.append("  no files moved, no DB changes")
+        for row, reason in matches[:20]:
+            result.notes.append(f"  {row.get('artist')} — {row.get('title')}  ({reason})")
+        if len(matches) > 20:
+            result.notes.append(f"  ... and {len(matches) - 20} more")
+
+        ctx.record_stage(result)
+        return result

@@ -28,6 +28,7 @@ Pipeline commands:
     ghost            Sweep for archive entries missing from disk
     health           Run library consistency + quality checks
     bpm              Extract + tag BPM/key/energy/danceability (requires 'bpm' extra)
+    tribute-quarantine  Detect + quarantine tribute-band/karaoke/meditation content
     enrich           Last.fm genre enrichment for tracks with missing genre
     mb-enrich        MusicBrainz artist + release MBID enrichment
     neardupe         Metadata-based near-duplicate detection
@@ -995,6 +996,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--retag", action="store_true", help="Force Essentia even if BPM tags already exist"
     )
 
+    # tribute-quarantine
+    tribute_p = sub.add_parser(
+        "tribute-quarantine", help="Detect + quarantine tribute-band/karaoke/meditation content"
+    )
+    tribute_p.add_argument("--dry-run", action="store_true", help="Report only, no moves")
+
     # permissions
     permissions_p = sub.add_parser(
         "permissions", help="Fix file/folder permissions under inbox (644/755)"
@@ -1340,6 +1347,11 @@ def main() -> None:
             from .stages import PermissionsStage
 
             sys.exit(_run_pipeline([PermissionsStage], dry_run=dry_run))
+
+        elif command == "tribute-quarantine":
+            from .stages import TributeQuarantineStage
+
+            sys.exit(_run_pipeline([TributeQuarantineStage], dry_run=dry_run))
 
         elif command == "bpm":
             from .stages import BPMStage

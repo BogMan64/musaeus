@@ -141,6 +141,17 @@ class TestAuditOrphanFile:
 
         assert result.success is True
 
+    def test_tribute_review_dir_excluded_from_orphan_scan(self, ctx):
+        """2026-08-19 regression test: TributeQuarantineStage moves files
+        into config.tribute_review_dir, same convention as
+        DUPES_MOVED_FOR_REVIEW -- must not be flagged as orphans either."""
+        held = ctx.config.tribute_review_dir / "2026-01-15" / "Karaoke Channel" / "song.m4a"
+        _gen_audio(held)
+
+        result = AuditStage().execute(ctx)
+
+        assert result.success is True
+
 
 class TestAuditHashIndexMismatch:
     def test_finalized_row_missing_from_hash_index(self, ctx):

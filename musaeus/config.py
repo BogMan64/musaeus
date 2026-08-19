@@ -146,6 +146,16 @@ class MusicConfig:
         return self.alac_library / "DUPES_MOVED_FOR_REVIEW"
 
     @property
+    def tribute_review_dir(self) -> Path:
+        """Quarantined tribute/karaoke/meditation tracks land here, never
+        deleted -- same reversible convention as dupes_review_dir. Reuses
+        the exact folder name the 2026-08-12 one-off tribute-removal
+        script already used (TRIBUTE_REMOVED_FOR_REVIEW), for consistency
+        with that precedent rather than introducing a second name for the
+        same concept."""
+        return self.alac_library / "TRIBUTE_REMOVED_FOR_REVIEW"
+
+    @property
     def hash_index_path(self) -> Path:
         """Persistent audio-hash index of everything already finalized into
         ALAC-Library, used for cross-batch dedup once musaeus.db has been
@@ -177,6 +187,7 @@ class MusicConfig:
             self.meta_dir,
             self.alac_library,
             self.dupes_review_dir,
+            self.tribute_review_dir,
             self.db_history_dir,
             self.db_path.parent,
         ):

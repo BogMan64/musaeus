@@ -33,6 +33,9 @@ Available stages:
   BPMStage       — BPM/key/energy/danceability extraction + tag write
                    (Essentia, optional `bpm` extra -- standalone, ported
                    from ORPHEUS's orpheus_audio_analyzer.py)
+  TributeQuarantineStage — detect + quarantine tribute-band/karaoke/
+                   meditation content, ported from ORPHEUS's
+                   orpheus_junk_quarantine.py
   EnrichStage    — Last.fm genre enrichment for tracks with missing genre
   MBEnrichStage  — MusicBrainz artist + release MBID enrichment
   NearDupeStage  — metadata-based near-duplicate detection (fuzzy title match)
@@ -84,7 +87,7 @@ matching EnrichStage's existing missing-API-key pattern) rather than
 hard-failing the stage, since it's no longer purely on-demand.
 On-demand only (not part of the canonical chain): Auditor, Curator,
            Playlist, Ghost, AcousticID, Transcode, Reviewer, Organize,
-           IntegrityStage, BPMStage.
+           IntegrityStage, BPMStage, TributeQuarantineStage.
 """
 
 from .acousticid import AcousticIDStage
@@ -118,6 +121,7 @@ from .scholar import ScholarStage
 from .sentinel import SentinelStage
 from .tagger import TaggerStage
 from .transcode import TranscodeStage
+from .tribute_quarantine import TributeQuarantineStage
 
 __all__ = [
     "PreflightStage",
@@ -151,6 +155,7 @@ __all__ = [
     "ReviewerStage",
     "IntegrityStage",
     "AlbumArtStage",
+    "TributeQuarantineStage",
 ]
 
 # ── Act 1/2/3 + Enrichment pipeline (canonical, dependency-respecting order) ─

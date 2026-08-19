@@ -62,7 +62,7 @@ from .base import BaseStage
 
 logger = logging.getLogger(__name__)
 
-_EXCLUDED_SUBDIRS = frozenset({"_history", "DUPES_MOVED_FOR_REVIEW"})
+_EXCLUDED_SUBDIRS = frozenset({"_history", "DUPES_MOVED_FOR_REVIEW", "TRIBUTE_REMOVED_FOR_REVIEW"})
 
 
 def _scan_alac_library_files(alac_library: Path) -> set[Path]:
