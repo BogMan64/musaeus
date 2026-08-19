@@ -11,6 +11,7 @@ this session, only surfaced under a real live run).
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -273,6 +274,57 @@ class TestFinalizeRunLive:
         ).fetchall()
         hash_conn.close()
         assert len(rows) == 1
+
+    def test_hash_index_write_happens_before_finalized_at_is_set(self, ctx, monkeypatch):
+        """2026-08-18 fix: the hash-index write must be durably committed
+        BEFORE finalized_at is set, not after -- so a failure writing the
+        hash index leaves the row NOT finalized (safe: retried next run)
+        rather than finalized with a missing hash-index entry (the exact
+        gap MUSAEUS_OPEN_ITEMS.md tracked)."""
+        import musaeus.stages.finalize as finalize_mod
+
+        _make_canonicalized_track(ctx, "track.m4a", "Artist", "Album", "Title", "willfail")
+
+        def _boom(*a, **k):
+            raise sqlite3.OperationalError("simulated hash-index write failure")
+
+        monkeypatch.setattr(finalize_mod, "record_finalized_hash", _boom)
+
+        result = FinalizeStage().execute(ctx)
+
+        assert result.success is False
+        assert result.files_errored == 1
+
+        row = ctx.conn.execute(
+            "SELECT finalized_at, file_path FROM archive WHERE title='Title'"
+        ).fetchone()
+        assert row["finalized_at"] is None, (
+            "row must not be marked finalized when its hash-index write failed"
+        )
+        # The physical copy may have already landed in ALAC-Library (disk
+        # change happens before the hash-index write) -- that's fine and
+        # expected, matching this stage's existing disk-first discipline;
+        # what matters is the DB row correctly reflects "not finalized yet"
+        # so a retry picks it back up.
+
+    def test_missing_audio_hash_finalizes_but_warns_and_is_not_indexed(self, ctx, caplog):
+        """A row somehow reaching Finalize with no audio_hash still gets
+        finalized (the file really did move -- failing the whole row over
+        a missing hash would be a worse, inconsistent outcome) but must
+        not silently vanish from view: logs a warning, and is correctly
+        NOT counted as hash-indexed."""
+        _make_canonicalized_track(ctx, "track.m4a", "Artist", "Album", "Title", audio_hash="")
+
+        with caplog.at_level("WARNING"):
+            result = FinalizeStage().execute(ctx)
+
+        assert result.success is True
+        assert result.files_changed == 1
+        assert any("no audio_hash at finalize time" in r.message for r in caplog.records)
+        assert any("hash-indexed: 0" in n for n in result.notes)
+
+        row = ctx.conn.execute("SELECT finalized_at FROM archive WHERE title='Title'").fetchone()
+        assert row["finalized_at"] is not None, "file genuinely moved -- must still finalize"
 
     def test_missing_file_reported_not_crash(self, ctx):
         missing = ctx.inbox / "gone.m4a"

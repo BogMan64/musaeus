@@ -236,6 +236,39 @@ class FinalizeStage(BaseStage):
             return candidate
         return unique_path(candidate)
 
+    def _index_hash_before_finalizing(
+        self, hash_conn: sqlite3.Connection, row: dict, target: Path
+    ) -> None:
+        """
+        Write + commit the hash-index entry, synchronously, before the
+        caller marks this row finalized_at. 2026-08-18 fix: previously
+        this write happened AFTER finalized_at was set (and only batched
+        into hash_conn.commit() every _COMMIT_EVERY rows, or skipped
+        outright if audio_hash was somehow falsy) -- a crash between the
+        two, or a genuinely missing audio_hash, meant "a row can be
+        marked finalized without this write completing," exactly the gap
+        MUSAEUS_OPEN_ITEMS.md tracked. Reversing the order means the
+        worst case is now the safe direction: an indexed hash for a row
+        not yet marked finalized (harmless -- record_finalized_hash is
+        INSERT OR IGNORE, so a retry next run is a no-op), never a
+        finalized row missing its index entry.
+
+        A missing audio_hash is logged loudly rather than silently
+        skipped -- Sentinel is expected to have hashed every row that
+        reaches Finalize, so this would itself be worth investigating,
+        not just a routine skip.
+        """
+        audio_hash = row.get("audio_hash")
+        if not audio_hash:
+            logger.warning(
+                "[finalize] %s has no audio_hash at finalize time -- "
+                "will NOT be in the cross-batch hash index",
+                target,
+            )
+            return
+        record_finalized_hash(hash_conn, audio_hash, str(target))
+        hash_conn.commit()
+
     # ── run ───────────────────────────────────────────────────────────────────
 
     def run(self, ctx: RunContext) -> StageResult:
@@ -267,7 +300,16 @@ class FinalizeStage(BaseStage):
                 target = self._target_path(ctx, row, source)
 
                 if target == source:
+                    try:
+                        self._index_hash_before_finalizing(hash_conn, row, target)
+                    except sqlite3.Error as exc:
+                        result.files_errored += 1
+                        result.errors.append(f"{source.name}: hash-index write failed: {exc}")
+                        logger.warning("[finalize] %s: hash-index write failed: %s", source, exc)
+                        continue
                     result.files_skipped += 1
+                    if row.get("audio_hash"):
+                        indexed += 1
                     ctx.conn.execute(
                         "UPDATE archive SET finalized_at = datetime('now') WHERE id = ?",
                         (row["id"],),
@@ -281,6 +323,24 @@ class FinalizeStage(BaseStage):
                     result.errors.append(f"{source.name}: {exc}")
                     logger.warning("[finalize] %s: %s", source, exc)
                     continue
+
+                # Hash-index write happens BEFORE the row is marked
+                # finalized, not after (2026-08-18 fix -- see
+                # _index_hash_before_finalizing's docstring): a row must
+                # never be able to reach finalized_at without its
+                # cross-batch hash entry already durably committed. A
+                # write failure here is a per-row error (file already
+                # copied, but not yet finalized -- safe to retry next
+                # run), not a whole-stage crash.
+                try:
+                    self._index_hash_before_finalizing(hash_conn, row, target)
+                except sqlite3.Error as exc:
+                    result.files_errored += 1
+                    result.errors.append(f"{source.name}: hash-index write failed: {exc}")
+                    logger.warning("[finalize] %s: hash-index write failed: %s", source, exc)
+                    continue
+                if row.get("audio_hash"):
+                    indexed += 1
 
                 # organize.py's _apply_rename pattern: disk change (the
                 # copy into ALAC-Library) already happened above; the DB
@@ -349,10 +409,6 @@ class FinalizeStage(BaseStage):
                         exc,
                     )
                     result.notes.append(f"  WARNING: {source} not removed after finalize: {exc}")
-
-                if row.get("audio_hash"):
-                    record_finalized_hash(hash_conn, row["audio_hash"], str(target))
-                    indexed += 1
 
                 result.files_changed += 1
                 logger.info("[finalize] %s -> %s", source, target)
