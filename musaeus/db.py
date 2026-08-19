@@ -110,6 +110,23 @@ CREATE TABLE IF NOT EXISTS metadata_cache (
     raw_json        TEXT,
     scanned_at      TEXT DEFAULT (datetime('now'))
 );
+
+-- Bit-rot baseline for ALAC_Archive content (musaeus/stages/bitrot.py).
+-- Deliberately keyed by path, not archive.id -- ALAC_Archive is itself
+-- deliberately not DB-row-tracked (build_alac_library.py's own docstring:
+-- avoiding a second path column that could drift out of sync with real
+-- filesystem state), so this table follows the same philosophy rather
+-- than fighting it. Established once via `musaeus bitrot --rebaseline`
+-- (a deliberate, explicit action -- never automatic, since silently
+-- re-baselining on every run would absorb real corruption into the "new
+-- normal" instead of catching it), then verified against on every
+-- `musaeus bitrot` run afterward.
+CREATE TABLE IF NOT EXISTS archive_tier_hashes (
+    path          TEXT PRIMARY KEY,
+    sha256        TEXT NOT NULL,
+    size_bytes    INTEGER,
+    baselined_at  TEXT DEFAULT (datetime('now'))
+);
 """
 
 
@@ -160,14 +177,18 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     ("archive", "energy", "REAL"),
     ("archive", "danceability", "REAL"),
     ("archive", "bpm_analyzed_at", "TEXT"),
-    # Bit-rot check (musaeus/stages/bitrot.py, standalone -- ported from
-    # ORPHEUS's orpheus_integrity_check.py --verify). Unlike every other
-    # nullable-timestamp column above, bitrot_checked_at is NOT a
-    # skip-if-set resumability gate -- catching silent corruption means
-    # re-verifying the SAME files on every run, not once ever. It exists
-    # purely for reporting ("when was this file last confirmed intact").
-    # The actual baseline is archive.full_hash (already computed by
-    # Sentinel at intake) -- this stage only re-hashes and compares.
+    # Bit-rot check (musaeus/stages/bitrot.py). First design (2026-08-19,
+    # same night): compared against archive.full_hash. Superseded within
+    # the same session once live-vault testing showed full_hash goes
+    # stale for any file that passes through Canonicalize/Forge/Tagger --
+    # all of which legitimately rewrite bytes AFTER Sentinel computes
+    # full_hash, which is nearly every finalized file, not just baked
+    # ones. full_hash is fine for what it was actually built for
+    # (Sentinel's own retag-vs-audio-change detection); it was never
+    # meant to survive the rest of the pipeline. bitrot_checked_at/
+    # bitrot_ok are dead columns from that superseded design -- left in
+    # place (SQLite ALTER TABLE can't cheaply drop columns) but unused;
+    # see archive_tier_hashes below for the real mechanism.
     ("archive", "bitrot_checked_at", "TEXT"),
     ("archive", "bitrot_ok", "INTEGER"),
 ]

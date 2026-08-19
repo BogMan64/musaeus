@@ -1,10 +1,18 @@
 """
-Tests for BitRotStage — re-hash CATALOGUED files against archive.full_hash
-to catch silent bit rot. Standalone stage, not part of DEFAULT_PIPELINE.
+Tests for BitRotStage — verify ALAC_Archive content against a
+directory-scan baseline (archive_tier_hashes) to catch silent bit rot.
+Standalone stage, not part of DEFAULT_PIPELINE.
+
+Second design (2026-08-19, same session): the first version compared
+against archive.full_hash instead, but that goes stale for nearly every
+finalized file (Canonicalize/Forge/Tagger all legitimately rewrite bytes
+after Sentinel computes it). This version establishes its own fresh
+baseline from ALAC_Archive's current state and is deliberately not tied
+to archive.id/file_path at all -- directory-scan based, keyed by path,
+matching ALAC_Archive's own "not DB-row-tracked" design.
 
 Uses real files on disk (not mocked): this stage's whole purpose is a
-real re-hash of real bytes, and a mock would hide exactly the kind of
-bug a real hash comparison can catch.
+real hash of real bytes.
 """
 
 from __future__ import annotations
@@ -15,7 +23,7 @@ import pytest
 
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
-from musaeus.db import open_db, upsert_archive
+from musaeus.db import open_db
 from musaeus.hasher import file_hash
 from musaeus.stages.bitrot import BitRotStage
 
@@ -41,128 +49,126 @@ def ctx(cfg: MusicConfig) -> RunContext:
     return RunContext.new(cfg, conn, dry_run=False)
 
 
-def _make_row(ctx: RunContext, relpath: str, content: bytes) -> Path:
-    path = ctx.alac_library / relpath
+def _archive_file(ctx: RunContext, relpath: str, content: bytes) -> Path:
+    path = ctx.config.vault_root / "ALAC_Archive" / relpath
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
-    upsert_archive(
-        ctx.conn,
-        {
-            "file_path": str(path),
-            "status": "CATALOGUED",
-            "full_hash": file_hash(path),
-        },
-    )
-    ctx.conn.commit()
     return path
 
 
-class TestBitRotDetection:
+def _baseline(ctx: RunContext, path: Path) -> None:
+    ctx.conn.execute(
+        "INSERT INTO archive_tier_hashes (path, sha256, size_bytes) VALUES (?, ?, ?)",
+        (str(path), file_hash(path), path.stat().st_size),
+    )
+    ctx.conn.commit()
+
+
+class TestRebaseline:
+    def test_establishes_baseline_for_all_archive_files(self, ctx):
+        _archive_file(ctx, "Artist/Album/a.m4a", b"CONTENT A")
+        _archive_file(ctx, "Artist/Album/b.m4a", b"CONTENT B")
+        ctx.set("bitrot_rebaseline", True)
+
+        result = BitRotStage().run(ctx)
+
+        assert result.success is True
+        assert result.files_changed == 2
+        count = ctx.conn.execute("SELECT COUNT(*) FROM archive_tier_hashes").fetchone()[0]
+        assert count == 2
+
+    def test_rebaseline_overwrites_existing_entry(self, ctx):
+        path = _archive_file(ctx, "Artist/Album/a.m4a", b"ORIGINAL")
+        _baseline(ctx, path)
+        path.write_bytes(b"CHANGED -- THIS IS NOW THE TRUSTED STATE")
+        ctx.set("bitrot_rebaseline", True)
+
+        BitRotStage().run(ctx)
+
+        row = ctx.conn.execute(
+            "SELECT sha256 FROM archive_tier_hashes WHERE path = ?", (str(path),)
+        ).fetchone()
+        assert row["sha256"] == file_hash(path)
+
+    def test_empty_archive_reports_nothing_to_do(self, ctx):
+        ctx.set("bitrot_rebaseline", True)
+        result = BitRotStage().run(ctx)
+        assert any("nothing to do" in n for n in result.notes)
+
+    def test_dry_run_rebaseline_writes_nothing(self, ctx):
+        _archive_file(ctx, "Artist/Album/a.m4a", b"CONTENT")
+        ctx.set("bitrot_rebaseline", True)
+
+        result = BitRotStage().dry_run(ctx)
+
+        assert result.files_processed == 1
+        count = ctx.conn.execute("SELECT COUNT(*) FROM archive_tier_hashes").fetchone()[0]
+        assert count == 0
+
+
+class TestVerify:
     def test_unchanged_file_reports_ok(self, ctx):
-        _make_row(ctx, "Artist/Album/track.m4a", b"ORIGINAL CONTENT")
+        path = _archive_file(ctx, "Artist/Album/a.m4a", b"CONTENT")
+        _baseline(ctx, path)
 
         result = BitRotStage().run(ctx)
 
         assert result.success is True
         assert any("ok: 1" in n for n in result.notes)
-        row = ctx.conn.execute("SELECT bitrot_ok, bitrot_checked_at FROM archive").fetchone()
-        assert row["bitrot_ok"] == 1
-        assert row["bitrot_checked_at"] is not None
 
     def test_changed_bytes_detected_as_corrupt(self, ctx):
-        """The core case this stage exists for: bytes silently change
-        after the baseline hash was recorded."""
-        path = _make_row(ctx, "Artist/Album/track.m4a", b"ORIGINAL CONTENT")
+        path = _archive_file(ctx, "Artist/Album/a.m4a", b"ORIGINAL CONTENT")
+        _baseline(ctx, path)
         path.write_bytes(b"CORRUPTED!!CONTENT")  # same length, different bytes
 
         result = BitRotStage().run(ctx)
 
         assert result.success is False
         assert any("corrupt (hash mismatch): 1" in n for n in result.notes)
-        row = ctx.conn.execute("SELECT bitrot_ok FROM archive").fetchone()
-        assert row["bitrot_ok"] == 0
 
         events = ctx.conn.execute(
             "SELECT event_type FROM events WHERE event_type='BITROT_DETECTED'"
         ).fetchall()
         assert len(events) == 1
 
-    def test_stored_full_hash_never_overwritten_on_mismatch(self, ctx):
-        """Overwriting full_hash with the corrupted file's new hash would
-        silently erase the ability to detect the same corruption again
-        next run -- must never happen."""
-        path = _make_row(ctx, "Artist/Album/track.m4a", b"ORIGINAL CONTENT")
-        original_hash = ctx.conn.execute("SELECT full_hash FROM archive").fetchone()[0]
+    def test_stored_baseline_never_overwritten_on_mismatch(self, ctx):
+        path = _archive_file(ctx, "Artist/Album/a.m4a", b"ORIGINAL CONTENT")
+        _baseline(ctx, path)
+        original_baseline = ctx.conn.execute(
+            "SELECT sha256 FROM archive_tier_hashes WHERE path = ?", (str(path),)
+        ).fetchone()["sha256"]
         path.write_bytes(b"CORRUPTED!!CONTENT")
 
         BitRotStage().run(ctx)
 
-        row = ctx.conn.execute("SELECT full_hash FROM archive").fetchone()
-        assert row["full_hash"] == original_hash
+        row = ctx.conn.execute(
+            "SELECT sha256 FROM archive_tier_hashes WHERE path = ?", (str(path),)
+        ).fetchone()
+        assert row["sha256"] == original_baseline
 
-    def test_missing_file_skipped_not_flagged_corrupt(self, ctx):
-        """A missing file is GhostStage's job to record -- must not
-        masquerade as a bit-rot finding."""
-        path = _make_row(ctx, "Artist/Album/track.m4a", b"ORIGINAL CONTENT")
+    def test_new_file_not_flagged_corrupt(self, ctx):
+        """A file that exists but was never baselined isn't corrupt --
+        it just needs a --rebaseline pass."""
+        _archive_file(ctx, "Artist/Album/new.m4a", b"CONTENT")
+
+        result = BitRotStage().run(ctx)
+
+        assert result.success is True
+        assert any("new (no baseline yet" in n and "1" in n for n in result.notes)
+
+    def test_missing_baselined_file_reported_separately(self, ctx):
+        path = _archive_file(ctx, "Artist/Album/a.m4a", b"CONTENT")
+        _baseline(ctx, path)
         path.unlink()
 
         result = BitRotStage().run(ctx)
 
-        assert result.files_skipped == 1
-        assert any("missing from disk: 1" in n for n in result.notes)
-        assert not any("corrupt (hash mismatch): 1" in n for n in result.notes)
+        assert any("missing from disk" in n and "1" in n for n in result.notes)
 
-    def test_row_with_no_full_hash_not_a_candidate(self, ctx):
-        path = ctx.alac_library / "Artist/Album/track.m4a"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"CONTENT")
-        upsert_archive(
-            ctx.conn, {"file_path": str(path), "status": "CATALOGUED", "full_hash": None}
-        )
-        ctx.conn.commit()
-
-        result = BitRotStage().run(ctx)
-
-        assert result.files_processed == 0
-
-    def test_lufs_baked_row_excluded_from_candidates(self, ctx):
-        """Real finding, confirmed live against the vault (2026-08-19):
-        build_alac_library.py rewrites a file's bytes when baking LUFS but
-        never refreshes full_hash, so a baked row's stored hash is stale
-        relative to an intentional change, not evidence of corruption.
-        Must not be treated as a candidate at all -- flagging it would be
-        a guaranteed false positive, not a real bit-rot finding."""
-        path = _make_row(ctx, "Artist/Album/track.m4a", b"ORIGINAL CONTENT")
-        # Simulate what build_alac_library.py actually does: rewrite the
-        # file's bytes (the bake) and set lufs_baked_at, WITHOUT touching
-        # full_hash -- confirmed live to be exactly what happens today.
-        path.write_bytes(b"BAKED CONTENT, DIFFERENT BYTES")
-        ctx.conn.execute(
-            "UPDATE archive SET lufs_baked_at = datetime('now') WHERE file_path = ?",
-            (str(path),),
-        )
-        ctx.conn.commit()
-
-        result = BitRotStage().run(ctx)
-
-        assert result.files_processed == 0
-        assert any("nothing to do" in n for n in result.notes)
-
-    def test_re_run_on_unchanged_library_still_checks_every_time(self, ctx):
-        """Unlike every other resumable stage tonight, this one must NOT
-        skip already-checked rows on a second run -- catching newly
-        occurring corruption requires re-verifying every time."""
-        _make_row(ctx, "Artist/Album/track.m4a", b"ORIGINAL CONTENT")
-
-        first = BitRotStage().run(ctx)
-        second = BitRotStage().run(ctx)
-
-        assert first.files_processed == 1
-        assert second.files_processed == 1
-
-    def test_limit_caps_rows_checked(self, ctx):
+    def test_limit_caps_files_processed(self, ctx):
         for i in range(5):
-            _make_row(ctx, f"Artist/Album/track{i}.m4a", f"CONTENT {i}".encode())
+            p = _archive_file(ctx, f"Artist/Album/{i}.m4a", f"CONTENT {i}".encode())
+            _baseline(ctx, p)
         ctx.set("bitrot_limit", 2)
 
         result = BitRotStage().run(ctx)
@@ -170,10 +176,29 @@ class TestBitRotDetection:
         assert result.files_processed == 2
 
     def test_dry_run_makes_no_changes(self, ctx):
-        _make_row(ctx, "Artist/Album/track.m4a", b"ORIGINAL CONTENT")
+        path = _archive_file(ctx, "Artist/Album/a.m4a", b"CONTENT")
+        _baseline(ctx, path)
 
         result = BitRotStage().dry_run(ctx)
 
         assert result.files_processed == 1
-        row = ctx.conn.execute("SELECT bitrot_checked_at FROM archive").fetchone()
-        assert row["bitrot_checked_at"] is None
+        # RunContext.new()/record_stage() log their own framework-level
+        # events (RUN_START/STAGE_COMPLETE) regardless of stage or mode --
+        # that's universal, not something to assert against here. What
+        # actually matters: no bit-rot-specific event, no baseline write.
+        bitrot_events = ctx.conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type = 'BITROT_DETECTED'"
+        ).fetchone()[0]
+        assert bitrot_events == 0
+
+    def test_alac_library_content_never_scanned(self, ctx):
+        """This stage checks ALAC_Archive specifically -- ALAC-Library
+        gets legitimately rewritten by LUFS baking, so "did it change" is
+        never a meaningful question to ask about it here."""
+        lib_file = ctx.alac_library / "Artist" / "Album" / "baked.m4a"
+        lib_file.parent.mkdir(parents=True, exist_ok=True)
+        lib_file.write_bytes(b"BAKED CONTENT")
+
+        result = BitRotStage().run(ctx)
+
+        assert result.files_processed == 0

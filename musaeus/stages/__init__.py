@@ -39,9 +39,9 @@ Available stages:
   VariousArtistsFixStage — resolve the real artist for "Various Artists"
                    tagged rows + relocate the file, ported from
                    ORPHEUS's fix_various_artists.py
-  BitRotStage    — re-hash CATALOGUED files against archive.full_hash to
-                   catch silent bit rot, ported from ORPHEUS's
-                   orpheus_integrity_check.py --verify
+  BitRotStage    — verify ALAC_Archive against a directory-scan baseline
+                   (archive_tier_hashes) to catch silent bit rot, ported
+                   from ORPHEUS's orpheus_integrity_check.py
   EnrichStage    — Last.fm genre enrichment for tracks with missing genre
   MBEnrichStage  — MusicBrainz artist + release MBID enrichment
   NearDupeStage  — metadata-based near-duplicate detection (fuzzy title match)

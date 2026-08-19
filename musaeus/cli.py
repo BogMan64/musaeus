@@ -30,7 +30,7 @@ Pipeline commands:
     bpm              Extract + tag BPM/key/energy/danceability (requires 'bpm' extra)
     tribute-quarantine  Detect + quarantine tribute-band/karaoke/meditation content
     various-artists-fix Resolve real artist for 'Various Artists' tagged rows
-    bitrot           Re-hash CATALOGUED files against full_hash (silent corruption)
+    bitrot           Verify ALAC_Archive against a baseline (silent corruption)
     enrich           Last.fm genre enrichment for tracks with missing genre
     mb-enrich        MusicBrainz artist + release MBID enrichment
     neardupe         Metadata-based near-duplicate detection
@@ -1015,11 +1015,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # bitrot
     bitrot_p = sub.add_parser(
-        "bitrot", help="Re-hash CATALOGUED files against full_hash to catch silent corruption"
+        "bitrot", help="Verify ALAC_Archive against a baseline to catch silent corruption"
     )
     bitrot_p.add_argument("--dry-run", action="store_true", help="Count only, no hashing/writes")
     bitrot_p.add_argument(
-        "--limit", type=int, default=0, help="Cap how many rows to check this run (0 = all)"
+        "--rebaseline",
+        action="store_true",
+        help="Establish/refresh the baseline from ALAC_Archive's current state, "
+        "instead of verifying against it",
+    )
+    bitrot_p.add_argument(
+        "--limit", type=int, default=0, help="Cap how many files to process this run (0 = all)"
     )
 
     # permissions
@@ -1388,6 +1394,8 @@ def main() -> None:
             limit = getattr(args, "limit", 0)
             if limit:
                 stash["bitrot_limit"] = int(limit)
+            if getattr(args, "rebaseline", False):
+                stash["bitrot_rebaseline"] = True
             sys.exit(_run_pipeline([BitRotStage], dry_run=dry_run, stash=stash))
 
         elif command == "bpm":
