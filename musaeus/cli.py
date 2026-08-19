@@ -29,6 +29,7 @@ Pipeline commands:
     health           Run library consistency + quality checks
     bpm              Extract + tag BPM/key/energy/danceability (requires 'bpm' extra)
     tribute-quarantine  Detect + quarantine tribute-band/karaoke/meditation content
+    various-artists-fix Resolve real artist for 'Various Artists' tagged rows
     enrich           Last.fm genre enrichment for tracks with missing genre
     mb-enrich        MusicBrainz artist + release MBID enrichment
     neardupe         Metadata-based near-duplicate detection
@@ -1002,6 +1003,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     tribute_p.add_argument("--dry-run", action="store_true", help="Report only, no moves")
 
+    # various-artists-fix
+    va_p = sub.add_parser(
+        "various-artists-fix", help="Resolve real artist for 'Various Artists' tagged rows"
+    )
+    va_p.add_argument("--dry-run", action="store_true", help="Report only, no moves/writes")
+    va_p.add_argument(
+        "--no-mb", action="store_true", help="Skip MusicBrainz lookup (faster, offline-safe)"
+    )
+
     # permissions
     permissions_p = sub.add_parser(
         "permissions", help="Fix file/folder permissions under inbox (644/755)"
@@ -1352,6 +1362,14 @@ def main() -> None:
             from .stages import TributeQuarantineStage
 
             sys.exit(_run_pipeline([TributeQuarantineStage], dry_run=dry_run))
+
+        elif command == "various-artists-fix":
+            from .stages import VariousArtistsFixStage
+
+            stash = {}
+            if getattr(args, "no_mb", False):
+                stash["various_artists_no_mb"] = True
+            sys.exit(_run_pipeline([VariousArtistsFixStage], dry_run=dry_run, stash=stash))
 
         elif command == "bpm":
             from .stages import BPMStage

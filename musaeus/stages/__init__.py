@@ -36,6 +36,9 @@ Available stages:
   TributeQuarantineStage — detect + quarantine tribute-band/karaoke/
                    meditation content, ported from ORPHEUS's
                    orpheus_junk_quarantine.py
+  VariousArtistsFixStage — resolve the real artist for "Various Artists"
+                   tagged rows + relocate the file, ported from
+                   ORPHEUS's fix_various_artists.py
   EnrichStage    — Last.fm genre enrichment for tracks with missing genre
   MBEnrichStage  — MusicBrainz artist + release MBID enrichment
   NearDupeStage  — metadata-based near-duplicate detection (fuzzy title match)
@@ -87,7 +90,8 @@ matching EnrichStage's existing missing-API-key pattern) rather than
 hard-failing the stage, since it's no longer purely on-demand.
 On-demand only (not part of the canonical chain): Auditor, Curator,
            Playlist, Ghost, AcousticID, Transcode, Reviewer, Organize,
-           IntegrityStage, BPMStage, TributeQuarantineStage.
+           IntegrityStage, BPMStage, TributeQuarantineStage,
+           VariousArtistsFixStage.
 """
 
 from .acousticid import AcousticIDStage
@@ -122,6 +126,7 @@ from .sentinel import SentinelStage
 from .tagger import TaggerStage
 from .transcode import TranscodeStage
 from .tribute_quarantine import TributeQuarantineStage
+from .various_artists_fix import VariousArtistsFixStage
 
 __all__ = [
     "PreflightStage",
@@ -156,6 +161,7 @@ __all__ = [
     "IntegrityStage",
     "AlbumArtStage",
     "TributeQuarantineStage",
+    "VariousArtistsFixStage",
 ]
 
 # ── Act 1/2/3 + Enrichment pipeline (canonical, dependency-respecting order) ─
