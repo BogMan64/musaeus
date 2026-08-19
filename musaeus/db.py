@@ -9,6 +9,7 @@ Rebuilding the DB from scratch is always possible.
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 # ── Schema ────────────────────────────────────────────────────────────────────
@@ -336,3 +337,43 @@ def lookup_finalized_hash(conn: sqlite3.Connection, audio_hash: str) -> list[sql
         "SELECT file_path, finalized_at FROM finalized_hashes WHERE audio_hash = ?",
         (audio_hash,),
     ).fetchall()
+
+
+def snapshot_db_before_wipe(db_path: Path, history_dir: Path) -> Path | None:
+    """
+    Copy db_path to a timestamped file under history_dir before a reset
+    wipes it -- documented as intended behavior (config.db_history_dir's
+    own docstring) since 2026-08-17, but neither reset code path
+    (cli.py's _cmd_reset, console.py's _reset_menu hard reset) actually
+    called it. Returns None (no-op) if db_path doesn't exist yet -- a
+    fresh install with nothing to snapshot.
+
+    Uses sqlite3's backup API rather than a plain file copy: this
+    project's connections run in WAL mode (PRAGMA journal_mode=WAL), so
+    recent commits can still be sitting in a `-wal` sidecar file rather
+    than the main .db file -- a raw copy of just the main file could
+    silently miss them. backup() produces a correct, consistent
+    point-in-time snapshot regardless of WAL state, no manual checkpoint
+    step needed.
+    """
+    if not db_path.exists():
+        return None
+
+    history_dir.mkdir(parents=True, exist_ok=True)
+    # Microsecond resolution: two resets seconds apart are unlikely, but
+    # two calls within the same test/script run are not, and a collision
+    # would silently overwrite an earlier snapshot rather than error.
+    timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    snapshot_path = history_dir / f"musaeus_pre_reset_{timestamp}Z.db"
+
+    source = sqlite3.connect(str(db_path))
+    try:
+        dest = sqlite3.connect(str(snapshot_path))
+        try:
+            source.backup(dest)
+        finally:
+            dest.close()
+    finally:
+        source.close()
+
+    return snapshot_path

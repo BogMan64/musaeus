@@ -29,7 +29,7 @@ from pathlib import Path
 
 from .config import MusicConfig, get_config
 from .context import RunContext
-from .db import open_db
+from .db import open_db, snapshot_db_before_wipe
 from .hasher import ffmpeg_available, ffprobe_available
 from .stages import (
     DEFAULT_PIPELINE,
@@ -566,6 +566,9 @@ class Console:
                 _info("Cancelled.")
                 return
             try:
+                snapshot_path = snapshot_db_before_wipe(db_path, self._config.db_history_dir)
+                if snapshot_path is not None:
+                    _ok(f"Snapshotted to: {snapshot_path}")
                 # Also remove WAL/SHM sidecar files
                 for suffix in ("", "-wal", "-shm"):
                     p = db_path.parent / (db_path.name + suffix)

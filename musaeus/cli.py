@@ -99,7 +99,7 @@ from pathlib import Path
 from . import __version__
 from .config import get_config
 from .context import RunContext
-from .db import open_db
+from .db import open_db, snapshot_db_before_wipe
 from .stages import (
     ARCHIVE_PIPELINE,
     BIG_KAHUNA_PIPELINE,
@@ -413,6 +413,10 @@ def _cmd_reset() -> None:
     if confirm != "RESET":
         print("  Cancelled.")
         return
+
+    snapshot_path = snapshot_db_before_wipe(db, cfg.db_history_dir)
+    if snapshot_path is not None:
+        print(f"  ✓ Snapshotted to: {snapshot_path}")
 
     for suffix in ("", "-wal", "-shm"):
         p = Path(str(db) + suffix)

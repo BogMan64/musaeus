@@ -14,6 +14,7 @@ from musaeus.db import (
     get_file_history,
     log_event,
     open_db,
+    snapshot_db_before_wipe,
     upsert_archive,
 )
 
@@ -198,3 +199,82 @@ class TestValidationIssues:
         tmp_db.commit()
         count = tmp_db.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
         assert count == 2
+
+
+# ── snapshot_db_before_wipe ────────────────────────────────────────────────────
+
+
+class TestSnapshotDbBeforeWipe:
+    def test_returns_none_when_db_does_not_exist(self, tmp_path: Path):
+        missing = tmp_path / "nope.db"
+        history_dir = tmp_path / "_history"
+        assert snapshot_db_before_wipe(missing, history_dir) is None
+        assert not history_dir.exists()
+
+    def test_creates_snapshot_with_real_data(self, tmp_path: Path):
+        db_path = tmp_path / "musaeus.db"
+        conn = open_db(db_path)
+        upsert_archive(conn, {"file_path": "/vault/a.m4a", "status": "CATALOGUED"})
+        conn.commit()
+        conn.close()
+
+        history_dir = tmp_path / "ALAC-Library" / "_history"
+        snapshot_path = snapshot_db_before_wipe(db_path, history_dir)
+
+        assert snapshot_path is not None
+        assert snapshot_path.exists()
+        assert snapshot_path.parent == history_dir
+
+        snap_conn = sqlite3.connect(str(snapshot_path))
+        row = snap_conn.execute("SELECT file_path FROM archive").fetchone()
+        snap_conn.close()
+        assert row[0] == "/vault/a.m4a"
+
+    def test_captures_data_still_in_wal_not_yet_checkpointed(self, tmp_path: Path):
+        """The whole point of using the backup API instead of a plain file
+        copy: WAL-mode connections can have committed data sitting only in
+        the -wal sidecar, not yet folded into the main .db file. A naive
+        `shutil.copy2(db_path, ...)` of just the main file could silently
+        produce a snapshot missing recent commits."""
+        db_path = tmp_path / "musaeus.db"
+        conn = open_db(db_path)
+        upsert_archive(conn, {"file_path": "/vault/wal_only.m4a", "status": "CATALOGUED"})
+        conn.commit()
+        # Deliberately no checkpoint and no conn.close() before snapshotting --
+        # this is the exact "committed but not yet in the main file" state.
+
+        history_dir = tmp_path / "_history"
+        snapshot_path = snapshot_db_before_wipe(db_path, history_dir)
+        conn.close()
+
+        assert snapshot_path is not None
+        snap_conn = sqlite3.connect(str(snapshot_path))
+        row = snap_conn.execute(
+            "SELECT file_path FROM archive WHERE file_path = '/vault/wal_only.m4a'"
+        ).fetchone()
+        snap_conn.close()
+        assert row is not None, "snapshot missed data still sitting in the WAL"
+
+    def test_source_db_untouched(self, tmp_path: Path):
+        db_path = tmp_path / "musaeus.db"
+        conn = open_db(db_path)
+        upsert_archive(conn, {"file_path": "/vault/a.m4a", "status": "CATALOGUED"})
+        conn.commit()
+        conn.close()
+        before = db_path.read_bytes()
+
+        snapshot_db_before_wipe(db_path, tmp_path / "_history")
+
+        assert db_path.read_bytes() == before
+
+    def test_timestamped_filename_is_unique_per_call(self, tmp_path: Path):
+        db_path = tmp_path / "musaeus.db"
+        conn = open_db(db_path)
+        conn.close()
+        history_dir = tmp_path / "_history"
+
+        first = snapshot_db_before_wipe(db_path, history_dir)
+        second = snapshot_db_before_wipe(db_path, history_dir)
+
+        assert first != second
+        assert first.exists() and second.exists()
