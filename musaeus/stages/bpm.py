@@ -77,7 +77,19 @@ def analyze_file(path: Path) -> dict[str, float | str]:
     Raises on failure -- caller decides skip vs. error via _is_skip_error."""
     import gc
 
+    import essentia  # type: ignore[import-not-found]
     import essentia.standard as es  # type: ignore[import-not-found]
+
+    # Essentia's own C++-side AudioLoader logs a "skipping frame" warning
+    # per bad/unsupported frame straight to stdout (bypassing Python's
+    # logging module), which floods the console on hi-res source files --
+    # confirmed 2026-08-19 against real 96/192kHz vault content. This is
+    # normal, fault-tolerant frame-skipping (decode continues, BPM/energy/
+    # key/danceability are whole-track statistics unaffected by a handful
+    # of skipped frames out of hundreds of thousands) -- verified the
+    # suppression itself changes nothing: same sample count, same BPM,
+    # only the console spam disappears.
+    essentia.log.warningActive = False
 
     audio = es.MonoLoader(filename=str(path), sampleRate=44100)()
 
