@@ -146,6 +146,20 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # needing to re-derive it from the script's source.
     ("archive", "lufs_baked_at", "TEXT"),
     ("archive", "lufs_baked_target", "REAL"),
+    # BPM tagging (musaeus/stages/bpm.py, standalone -- not wired into
+    # DEFAULT_PIPELINE, same precedent as GhostStage/PermissionsStage).
+    # Same nullable-timestamp resumability pattern as the others above.
+    # bpm/musical_key/energy/danceability all come from one Essentia
+    # analysis pass over the same decoded audio -- ported together from
+    # orpheus_audio_analyzer.py since computing just one would still pay
+    # the full decode+analysis cost of the others. "key" avoided as a
+    # column name (reserved-word-adjacent); "musical_key" to be
+    # unambiguous.
+    ("archive", "bpm", "REAL"),
+    ("archive", "musical_key", "TEXT"),
+    ("archive", "energy", "REAL"),
+    ("archive", "danceability", "REAL"),
+    ("archive", "bpm_analyzed_at", "TEXT"),
 ]
 
 

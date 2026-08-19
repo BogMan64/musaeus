@@ -30,6 +30,9 @@ Available stages:
   HealthStage    — library-wide consistency and quality checks
   PermissionsStage — fix file/folder permissions under inbox (Windows/ExFAT
                    sources land with wrong perms; 644 files / 755 dirs)
+  BPMStage       — BPM/key/energy/danceability extraction + tag write
+                   (Essentia, optional `bpm` extra -- standalone, ported
+                   from ORPHEUS's orpheus_audio_analyzer.py)
   EnrichStage    — Last.fm genre enrichment for tracks with missing genre
   MBEnrichStage  — MusicBrainz artist + release MBID enrichment
   NearDupeStage  — metadata-based near-duplicate detection (fuzzy title match)
@@ -81,7 +84,7 @@ matching EnrichStage's existing missing-API-key pattern) rather than
 hard-failing the stage, since it's no longer purely on-demand.
 On-demand only (not part of the canonical chain): Auditor, Curator,
            Playlist, Ghost, AcousticID, Transcode, Reviewer, Organize,
-           IntegrityStage.
+           IntegrityStage, BPMStage.
 """
 
 from .acousticid import AcousticIDStage
@@ -89,6 +92,7 @@ from .albumart import AlbumArtStage
 from .artist_consolidate import ArtistConsolidateStage
 from .audit import AuditStage
 from .auditor import AuditorStage
+from .bpm import BPMStage
 from .canonicalize import CanonicalizeStage
 from .corrupt import CorruptStage
 from .cross_dupe import CrossDupeStage
@@ -136,6 +140,7 @@ __all__ = [
     "GhostStage",
     "HealthStage",
     "PermissionsStage",
+    "BPMStage",
     "CorruptStage",
     "ArtistConsolidateStage",
     "EnrichStage",

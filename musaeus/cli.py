@@ -27,6 +27,7 @@ Pipeline commands:
     curator          Build car-library export (requires --export-root)
     ghost            Sweep for archive entries missing from disk
     health           Run library consistency + quality checks
+    bpm              Extract + tag BPM/key/energy/danceability (requires 'bpm' extra)
     enrich           Last.fm genre enrichment for tracks with missing genre
     mb-enrich        MusicBrainz artist + release MBID enrichment
     neardupe         Metadata-based near-duplicate detection
@@ -984,6 +985,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     corrupt_p.add_argument("--dry-run", action="store_true", help="Report only, no quarantine")
 
+    # bpm
+    bpm_p = sub.add_parser(
+        "bpm", help="Extract + tag BPM/key/energy/danceability (requires the 'bpm' extra)"
+    )
+    bpm_p.add_argument("--dry-run", action="store_true", help="Preview only, no analysis/writes")
+    bpm_p.add_argument("--force", action="store_true", help="Re-analyze already-analyzed files")
+    bpm_p.add_argument(
+        "--retag", action="store_true", help="Force Essentia even if BPM tags already exist"
+    )
+
     # permissions
     permissions_p = sub.add_parser(
         "permissions", help="Fix file/folder permissions under inbox (644/755)"
@@ -1329,6 +1340,16 @@ def main() -> None:
             from .stages import PermissionsStage
 
             sys.exit(_run_pipeline([PermissionsStage], dry_run=dry_run))
+
+        elif command == "bpm":
+            from .stages import BPMStage
+
+            stash = {}
+            if getattr(args, "force", False):
+                stash["bpm_force"] = True
+            if getattr(args, "retag", False):
+                stash["bpm_retag"] = True
+            sys.exit(_run_pipeline([BPMStage], dry_run=dry_run, stash=stash))
 
         elif command == "artist-consolidate":
             from .stages import ArtistConsolidateStage

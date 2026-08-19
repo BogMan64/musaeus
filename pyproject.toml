@@ -25,6 +25,9 @@ dev = [
 fuzzy = [
     "rapidfuzz>=3",
 ]
+bpm = [
+    "essentia",
+]
 
 [project.scripts]
 musaeus = "musaeus.cli:main"
