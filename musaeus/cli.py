@@ -30,6 +30,7 @@ Pipeline commands:
     bpm              Extract + tag BPM/key/energy/danceability (requires 'bpm' extra)
     tribute-quarantine  Detect + quarantine tribute-band/karaoke/meditation content
     various-artists-fix Resolve real artist for 'Various Artists' tagged rows
+    bitrot           Re-hash CATALOGUED files against full_hash (silent corruption)
     enrich           Last.fm genre enrichment for tracks with missing genre
     mb-enrich        MusicBrainz artist + release MBID enrichment
     neardupe         Metadata-based near-duplicate detection
@@ -1012,6 +1013,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-mb", action="store_true", help="Skip MusicBrainz lookup (faster, offline-safe)"
     )
 
+    # bitrot
+    bitrot_p = sub.add_parser(
+        "bitrot", help="Re-hash CATALOGUED files against full_hash to catch silent corruption"
+    )
+    bitrot_p.add_argument("--dry-run", action="store_true", help="Count only, no hashing/writes")
+    bitrot_p.add_argument(
+        "--limit", type=int, default=0, help="Cap how many rows to check this run (0 = all)"
+    )
+
     # permissions
     permissions_p = sub.add_parser(
         "permissions", help="Fix file/folder permissions under inbox (644/755)"
@@ -1370,6 +1380,15 @@ def main() -> None:
             if getattr(args, "no_mb", False):
                 stash["various_artists_no_mb"] = True
             sys.exit(_run_pipeline([VariousArtistsFixStage], dry_run=dry_run, stash=stash))
+
+        elif command == "bitrot":
+            from .stages import BitRotStage
+
+            stash = {}
+            limit = getattr(args, "limit", 0)
+            if limit:
+                stash["bitrot_limit"] = int(limit)
+            sys.exit(_run_pipeline([BitRotStage], dry_run=dry_run, stash=stash))
 
         elif command == "bpm":
             from .stages import BPMStage

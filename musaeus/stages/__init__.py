@@ -39,6 +39,9 @@ Available stages:
   VariousArtistsFixStage — resolve the real artist for "Various Artists"
                    tagged rows + relocate the file, ported from
                    ORPHEUS's fix_various_artists.py
+  BitRotStage    — re-hash CATALOGUED files against archive.full_hash to
+                   catch silent bit rot, ported from ORPHEUS's
+                   orpheus_integrity_check.py --verify
   EnrichStage    — Last.fm genre enrichment for tracks with missing genre
   MBEnrichStage  — MusicBrainz artist + release MBID enrichment
   NearDupeStage  — metadata-based near-duplicate detection (fuzzy title match)
@@ -91,7 +94,7 @@ hard-failing the stage, since it's no longer purely on-demand.
 On-demand only (not part of the canonical chain): Auditor, Curator,
            Playlist, Ghost, AcousticID, Transcode, Reviewer, Organize,
            IntegrityStage, BPMStage, TributeQuarantineStage,
-           VariousArtistsFixStage.
+           VariousArtistsFixStage, BitRotStage.
 """
 
 from .acousticid import AcousticIDStage
@@ -99,6 +102,7 @@ from .albumart import AlbumArtStage
 from .artist_consolidate import ArtistConsolidateStage
 from .audit import AuditStage
 from .auditor import AuditorStage
+from .bitrot import BitRotStage
 from .bpm import BPMStage
 from .canonicalize import CanonicalizeStage
 from .corrupt import CorruptStage
@@ -162,6 +166,7 @@ __all__ = [
     "AlbumArtStage",
     "TributeQuarantineStage",
     "VariousArtistsFixStage",
+    "BitRotStage",
 ]
 
 # ── Act 1/2/3 + Enrichment pipeline (canonical, dependency-respecting order) ─

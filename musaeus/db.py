@@ -160,6 +160,16 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     ("archive", "energy", "REAL"),
     ("archive", "danceability", "REAL"),
     ("archive", "bpm_analyzed_at", "TEXT"),
+    # Bit-rot check (musaeus/stages/bitrot.py, standalone -- ported from
+    # ORPHEUS's orpheus_integrity_check.py --verify). Unlike every other
+    # nullable-timestamp column above, bitrot_checked_at is NOT a
+    # skip-if-set resumability gate -- catching silent corruption means
+    # re-verifying the SAME files on every run, not once ever. It exists
+    # purely for reporting ("when was this file last confirmed intact").
+    # The actual baseline is archive.full_hash (already computed by
+    # Sentinel at intake) -- this stage only re-hashes and compares.
+    ("archive", "bitrot_checked_at", "TEXT"),
+    ("archive", "bitrot_ok", "INTEGER"),
 ]
 
 
