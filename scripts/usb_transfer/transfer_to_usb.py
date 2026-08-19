@@ -400,6 +400,93 @@ def _source_dir(library: str, cfg) -> Path:
     raise ValueError(f"unknown library: {library}")
 
 
+# ── Playlists ─────────────────────────────────────────────────────────────────
+#
+# 2026-08-19 fix: this script never copied vault_root/Playlists/ onto the
+# USB at all -- confirmed gap (Claude(chat)'s review). A naive copy
+# wouldn't have worked anyway: playlist.py's playlists mix ALAC-Library
+# and AAC-Car entries in the same file (per-track, whichever of
+# car_export_path/file_path was set) and use paths relative to
+# vault_root (e.g. "../ALAC-Library/2026-08-17/Artist/Album/Track.m4a"),
+# but this script's own copy is flat -- files land directly under the
+# device root, not under a same-named ALAC-Library/AAC-Car subfolder. So
+# each playlist is filtered down to only the entries that actually exist
+# under *this* transfer's source_root, and rewritten to the flat relative
+# form matching where those files actually land on the device.
+
+
+def _rewrite_playlist_for_device(content: str, source_root: Path) -> str | None:
+    """
+    Given one playlist's raw .m3u8 text (as written by playlist.py --
+    #EXTM3U header, then alternating #EXTINF / path-relative-to-vault_root
+    lines), keep only the track pairs whose path resolves under
+    source_root, rewritten relative to source_root (matching the flat
+    layout copy_with_verification produces on the device). Returns None
+    if no tracks in this playlist belong to source_root at all (nothing
+    worth writing).
+    """
+    lines = content.splitlines()
+    out_lines = ["#EXTM3U"]
+    kept = 0
+
+    i = 1  # skip #EXTM3U
+    while i < len(lines):
+        if not lines[i].startswith("#EXTINF"):
+            i += 1
+            continue
+        extinf = lines[i]
+        path_line = lines[i + 1] if i + 1 < len(lines) else ""
+        i += 2
+
+        # path_line is relative to vault_root/Playlists (e.g.
+        # "../ALAC-Library/2026-08-17/Artist/Album/Track.m4a") or, for a
+        # source outside vault_root, an absolute path (playlist.py's own
+        # fallback) -- either way, resolve it relative to where playlist.py
+        # actually wrote the .m3u8 file (vault_root/Playlists) to get the
+        # real absolute path before checking whether it's under source_root.
+        candidate = (source_root.parent / "Playlists" / path_line).resolve()
+        try:
+            rel = candidate.relative_to(source_root.resolve())
+        except ValueError:
+            continue  # not part of this transfer's library -- drop silently
+
+        out_lines.append(extinf)
+        out_lines.append(str(rel))
+        kept += 1
+
+    if not kept:
+        return None
+    return "\n".join(out_lines) + "\n"
+
+
+def copy_playlists(vault_root: Path, source_root: Path, dest_root: Path) -> list[str]:
+    """Filter+rewrite every playlist under vault_root/Playlists/ for this
+    transfer's source_root, writing the results to dest_root/Playlists/.
+    Returns the list of playlist filenames actually written (skips ones
+    with no matching tracks). Best-effort: a single playlist's failure to
+    read/write is logged and skipped, never aborts the whole transfer --
+    the audio library itself is already safely on the device by the time
+    this runs."""
+    playlist_dir = vault_root / "Playlists"
+    if not playlist_dir.exists():
+        return []
+
+    written: list[str] = []
+    dest_playlists = dest_root / "Playlists"
+    for m3u in sorted(playlist_dir.glob("*.m3u8")):
+        try:
+            content = m3u.read_text(encoding="utf-8")
+            rewritten = _rewrite_playlist_for_device(content, source_root)
+            if rewritten is None:
+                continue
+            dest_playlists.mkdir(parents=True, exist_ok=True)
+            (dest_playlists / m3u.name).write_text(rewritten, encoding="utf-8")
+            written.append(m3u.name)
+        except OSError as exc:
+            print(f"  WARNING: could not copy playlist {m3u.name}: {exc}", file=sys.stderr)
+    return written
+
+
 # ── main ───────────────────────────────────────────────────────────────────────
 
 
@@ -519,6 +606,7 @@ def main() -> int:
         result = copy_with_verification(
             files, source_root, mount_point, cooldown_seconds=args.cooldown_seconds
         )
+        playlists_written = copy_playlists(cfg.vault_root, source_root, mount_point)
     finally:
         subprocess.run(["umount", str(mount_point)], check=False)
 
@@ -528,6 +616,9 @@ def main() -> int:
     )
     for path, reason in result.failed:
         print(f"  FAILED {path}: {reason}")
+    print(
+        f"{len(playlists_written)} playlist(s) copied: {', '.join(playlists_written) or '(none)'}"
+    )
 
     return 1 if result.failed else 0
 

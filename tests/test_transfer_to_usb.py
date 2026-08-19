@@ -32,6 +32,7 @@ from scripts.usb_transfer.transfer_to_usb import (  # noqa: E402
     CopyResult,
     build_wipe_and_format_commands,
     confirm_wipe,
+    copy_playlists,
     copy_with_verification,
     critical_backing_disks,
     execute_commands,
@@ -417,6 +418,91 @@ def _cfg(tmp_path: Path) -> MusicConfig:
         alac_library=tmp_path / "vault" / "ALAC-Library",
         db_path=tmp_path / "vault" / "musaeus.db",
     )
+
+
+class TestPlaylistCopy:
+    """2026-08-19 fix: transfer_to_usb.py never copied vault_root/Playlists/
+    at all. Playlists mix ALAC-Library and AAC-Car entries in one file and
+    use vault-relative paths, but the device copy is flat -- each playlist
+    must be filtered to only its own library's tracks and rewritten to the
+    flat relative form matching where files actually land."""
+
+    def test_mixed_playlist_filtered_to_alac_only(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        cfg.ensure_dirs()
+        alac_track = cfg.alac_library / "2026-08-17" / "Artist" / "Album" / "Song.m4a"
+        alac_track.parent.mkdir(parents=True)
+        alac_track.write_bytes(b"x")
+        (cfg.vault_root / "Playlists").mkdir(parents=True)
+        content = (
+            "#EXTM3U\n"
+            "#EXTINF:-1,Artist - Song\n"
+            "../ALAC-Library/2026-08-17/Artist/Album/Song.m4a\n"
+            "#EXTINF:-1,Other Artist - Other Song\n"
+            "../RUNS/AAC-Car-Masked/_output/2026-08-17/Other Artist/Album/Other Song.m4a\n"
+        )
+        (cfg.vault_root / "Playlists" / "Rock.m3u8").write_text(content)
+
+        dest = tmp_path / "device"
+        dest.mkdir()
+        written = copy_playlists(cfg.vault_root, cfg.alac_library, dest)
+
+        assert written == ["Rock.m3u8"]
+        out = (dest / "Playlists" / "Rock.m3u8").read_text()
+        assert "Artist - Song" in out
+        assert "Other Artist - Other Song" not in out
+        assert "2026-08-17/Artist/Album/Song.m4a" in out
+        assert "../" not in out.split("\n", 1)[1]  # rewritten flat, no vault-relative prefix
+
+    def test_playlist_with_no_matching_tracks_is_skipped(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        cfg.ensure_dirs()
+        (cfg.vault_root / "Playlists").mkdir(parents=True)
+        content = (
+            "#EXTM3U\n"
+            "#EXTINF:-1,Other Artist - Other Song\n"
+            "../RUNS/AAC-Car-Masked/_output/2026-08-17/Other Artist/Album/Other Song.m4a\n"
+        )
+        (cfg.vault_root / "Playlists" / "Jazz.m3u8").write_text(content)
+
+        dest = tmp_path / "device"
+        dest.mkdir()
+        written = copy_playlists(cfg.vault_root, cfg.alac_library, dest)
+
+        assert written == []
+        assert not (dest / "Playlists" / "Jazz.m3u8").exists()
+
+    def test_no_playlists_dir_returns_empty(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        cfg.ensure_dirs()
+        dest = tmp_path / "device"
+        dest.mkdir()
+        assert copy_playlists(cfg.vault_root, cfg.alac_library, dest) == []
+
+    def test_all_m3u8_all_tracks_of_source_included(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        cfg.ensure_dirs()
+        for name in ("a.m4a", "b.m4a"):
+            p = cfg.alac_library / "2026-08-17" / "Artist" / "Album" / name
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"x")
+        (cfg.vault_root / "Playlists").mkdir(parents=True)
+        content = (
+            "#EXTM3U\n"
+            "#EXTINF:-1,Artist - A\n"
+            "../ALAC-Library/2026-08-17/Artist/Album/a.m4a\n"
+            "#EXTINF:-1,Artist - B\n"
+            "../ALAC-Library/2026-08-17/Artist/Album/b.m4a\n"
+        )
+        (cfg.vault_root / "Playlists" / "All.m3u8").write_text(content)
+
+        dest = tmp_path / "device"
+        dest.mkdir()
+        written = copy_playlists(cfg.vault_root, cfg.alac_library, dest)
+
+        assert written == ["All.m3u8"]
+        out = (dest / "Playlists" / "All.m3u8").read_text()
+        assert out.count("#EXTINF") == 2
 
 
 class TestSourceDir:
