@@ -40,6 +40,7 @@ from .stages import (
     ScholarStage,
     SentinelStage,
     TaggerStage,
+    TributeQuarantineStage,
 )
 from .stages.base import BaseStage
 
@@ -663,6 +664,12 @@ class Console:
             ("Tagger    — write normalised DB metadata to files", TaggerStage, {}),
             ("Curator   — build car-library export", CuratorStage, {}),
             ("Playlists — build per-genre M3U8 playlists", PlaylistStage, {}),
+            (
+                "Tribute Quarantine — detect/quarantine karaoke+tribute content"
+                "  [standalone, not part of the automatic pipeline]",
+                TributeQuarantineStage,
+                {},
+            ),
         ]
         opts = [label for label, _, _ in stages] + ["Back"]
         choice = _choose("Select stage", opts)
