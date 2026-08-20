@@ -22,7 +22,10 @@ from musaeus.db import open_db, upsert_archive
 from musaeus.stages.base import StageError
 from musaeus.stages.bpm import (
     BPMStage,
+    _is_multichannel_error,
     _is_skip_error,
+    _mark_multichannel_skipped,
+    _tunemymusic_csv_has_path,
     read_existing_tags,
     write_bpm_tags,
 )
@@ -377,3 +380,164 @@ class TestRealEssentiaEndToEnd:
         assert isinstance(features["musical_key"], str) and features["musical_key"]
         assert 0.0 <= features["energy"] <= 1.0
         assert features["danceability"] >= 0.0
+
+
+# ── Multichannel skip (Grey, 2026-08-20: no interest in multichannel) ───────
+
+
+def _insert_catalogued_with_channels(
+    ctx: RunContext, file_path: str, channels: int | None, ext: str = ".m4a"
+) -> None:
+    _insert_catalogued(ctx, file_path, ext=ext)
+    ctx.conn.execute(
+        "UPDATE archive SET channels = ?, codec = 'aac', bitrate = 256000, "
+        "sample_rate = 48000, duration = 200.0 WHERE file_path = ?",
+        (channels, file_path),
+    )
+    ctx.conn.commit()
+
+
+class TestMulitchannelDetection:
+    def test_is_multichannel_error_matches(self):
+        exc = RuntimeError(
+            "Error while configuring MonoLoader: AudioLoader: could not load "
+            "audio. Audio file has more than 2 channels."
+        )
+        assert _is_multichannel_error(exc) is True
+
+    def test_is_multichannel_error_does_not_match_other_errors(self):
+        assert _is_multichannel_error(RuntimeError("too short")) is False
+        assert _is_multichannel_error(RuntimeError("empty signal")) is False
+
+
+class TestTuneMyMusicDedup:
+    def test_missing_csv_returns_false(self, tmp_path: Path):
+        assert _tunemymusic_csv_has_path(tmp_path / "TuneMyMusic.csv", "/a.m4a") is False
+
+    def test_finds_existing_path(self, tmp_path: Path):
+        csv_path = tmp_path / "TuneMyMusic.csv"
+        csv_path.write_text(
+            "reason,codec,bitrate_kbps,sample_rate,channels,duration_sec,path\n"
+            "multichannel,AAC,256,48000,6,200.0,/music/a.m4a\n"
+        )
+        assert _tunemymusic_csv_has_path(csv_path, "/music/a.m4a") is True
+        assert _tunemymusic_csv_has_path(csv_path, "/music/b.m4a") is False
+
+
+class TestMarkMultichannelSkipped:
+    def test_sets_bpm_analyzed_at_with_null_features(self, ctx, tmp_path):
+        track = str(tmp_path / "surround.m4a")
+        _insert_catalogued_with_channels(ctx, track, channels=6)
+
+        _mark_multichannel_skipped(ctx, track)
+
+        row = ctx.conn.execute(
+            "SELECT bpm, musical_key, energy, danceability, bpm_analyzed_at "
+            "FROM archive WHERE file_path=?",
+            (track,),
+        ).fetchone()
+        assert row["bpm_analyzed_at"] is not None
+        assert row["bpm"] is None
+        assert row["musical_key"] is None
+
+    def test_logs_bpm_skipped_multichannel_event(self, ctx, tmp_path):
+        track = str(tmp_path / "surround.m4a")
+        _insert_catalogued_with_channels(ctx, track, channels=6)
+
+        _mark_multichannel_skipped(ctx, track)
+
+        events = ctx.conn.execute(
+            "SELECT * FROM events WHERE event_type='BPM_SKIPPED_MULTICHANNEL'"
+        ).fetchall()
+        assert len(events) == 1
+        assert events[0]["file_path"] == track
+
+    def test_appends_tunemymusic_row(self, ctx, tmp_path):
+        track = str(tmp_path / "surround.m4a")
+        _insert_catalogued_with_channels(ctx, track, channels=6)
+
+        _mark_multichannel_skipped(ctx, track)
+
+        csv_path = ctx.config.tunemymusic_csv_path
+        content = csv_path.read_text()
+        assert track in content
+        assert "multichannel" in content.lower()
+        assert "6" in content  # channels column
+
+    def test_does_not_duplicate_row_on_second_call(self, ctx, tmp_path):
+        track = str(tmp_path / "surround.m4a")
+        _insert_catalogued_with_channels(ctx, track, channels=6)
+
+        _mark_multichannel_skipped(ctx, track)
+        _mark_multichannel_skipped(ctx, track)
+
+        csv_path = ctx.config.tunemymusic_csv_path
+        assert csv_path.read_text().count(track) == 1
+
+
+class TestProcessOneMultichannel:
+    @patch("musaeus.stages.bpm.BPMStage.validate")
+    def test_proactive_db_channels_skip_never_calls_essentia(self, mock_validate, ctx, tmp_path):
+        track = str(tmp_path / "surround.m4a")
+        Path(track).write_bytes(b"fake")
+        _insert_catalogued_with_channels(ctx, track, channels=6)
+
+        with patch("musaeus.stages.bpm.analyze_file") as mock_analyze:
+            status = BPMStage()._process_one(ctx, track, retag=False)
+
+        assert status == "skip_multichannel"
+        mock_analyze.assert_not_called()
+
+    @patch("musaeus.stages.bpm.BPMStage.validate")
+    def test_essentia_exception_fallback_also_marks_multichannel(
+        self, mock_validate, ctx, tmp_path
+    ):
+        """channels is NULL/unset in the DB but Essentia itself reports
+        the file has more than 2 channels -- the exception-based fallback
+        must catch this too, not just the proactive DB check."""
+        track = str(tmp_path / "surround.m4a")
+        Path(track).write_bytes(b"fake")
+        _insert_catalogued_with_channels(ctx, track, channels=None)
+
+        with patch(
+            "musaeus.stages.bpm.analyze_file",
+            side_effect=RuntimeError(
+                "AudioLoader: could not load audio. Audio file has more than 2 channels."
+            ),
+        ):
+            status = BPMStage()._process_one(ctx, track, retag=False)
+
+        assert status == "skip_multichannel"
+        row = ctx.conn.execute(
+            "SELECT bpm_analyzed_at FROM archive WHERE file_path=?", (track,)
+        ).fetchone()
+        assert row["bpm_analyzed_at"] is not None
+
+
+class TestRunWithMultichannel:
+    @patch("musaeus.stages.bpm.BPMStage.validate")
+    def test_run_does_not_fail_stage_on_multichannel_skip(self, mock_validate, ctx, tmp_path):
+        track = str(tmp_path / "surround.m4a")
+        Path(track).write_bytes(b"fake")
+        _insert_catalogued_with_channels(ctx, track, channels=6)
+
+        result = BPMStage().run(ctx)
+
+        assert result.success is True
+        assert result.files_skipped == 1
+        assert any("skip_multichannel: 1" in n for n in result.notes)
+
+    @patch("musaeus.stages.bpm.BPMStage.validate")
+    def test_second_run_excludes_already_skipped_file(self, mock_validate, ctx, tmp_path):
+        """bpm_analyzed_at being set means _get_pending naturally excludes
+        it from every future run -- a true permanent bypass, not just a
+        per-run reclassification."""
+        track = str(tmp_path / "surround.m4a")
+        Path(track).write_bytes(b"fake")
+        _insert_catalogued_with_channels(ctx, track, channels=6)
+
+        BPMStage().run(ctx)
+        result = BPMStage().run(ctx)
+
+        assert result.files_processed == 0
+        assert any("nothing to do" in n for n in result.notes)

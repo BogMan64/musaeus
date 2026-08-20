@@ -41,6 +41,7 @@ Design differences from the ORPHEUS original:
 
 from __future__ import annotations
 
+import csv
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +49,7 @@ from typing import Any
 
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
+from .canonicalize import _append_tunemymusic_row
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +65,24 @@ _SKIP_ERROR_PATTERNS = (
     "onsetdetectionglobal",
 )
 
+# Essentia's MonoLoader can't decode anything but mono/stereo -- confirmed
+# 2026-08-19/20 against the real USB2 backlog (5.1 surround mixes, mostly
+# soundtrack/live-album bonus tracks). Grey's call: no interest in
+# multichannel outside of stereo, so these are a permanent skip, not a
+# retry-forever error -- checked proactively via archive.channels (already
+# populated by Scholar) before ever calling Essentia, and also caught here
+# as a fallback in case that DB value is ever missing/stale.
+_MULTICHANNEL_ERROR_PATTERNS = ("more than 2 channels",)
+
 
 def _is_skip_error(exc: Exception) -> bool:
     msg = str(exc).lower()
     return any(p in msg for p in _SKIP_ERROR_PATTERNS)
+
+
+def _is_multichannel_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(p in msg for p in _MULTICHANNEL_ERROR_PATTERNS)
 
 
 # ── Essentia analysis ────────────────────────────────────────────────────────
@@ -235,6 +251,61 @@ def write_bpm_tags(path: Path, features: dict[str, float | str]) -> bool:
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 
+def _tunemymusic_csv_has_path(csv_path: Path, file_path: str) -> bool:
+    """True if file_path is already logged in TuneMyMusic.csv -- guards
+    against duplicate rows piling up every time a permanently-unanalyzable
+    file (multichannel audio) gets re-encountered across repeated runs."""
+    if not csv_path.exists():
+        return False
+    try:
+        with open(csv_path, newline="", encoding="utf-8") as fh:
+            reader = csv.reader(fh)
+            next(reader, None)  # header
+            return any(row and row[-1] == file_path for row in reader)
+    except OSError:
+        return False
+
+
+def _mark_multichannel_skipped(ctx: RunContext, file_path: str) -> None:
+    """Permanently exclude a multichannel file from future BPM attempts
+    (bpm_analyzed_at set with bpm/key/energy/danceability left NULL --
+    a legitimate terminal state, not a failed-analysis-to-retry) and log
+    it to TuneMyMusic.csv for manual review/replacement with a stereo
+    source. Grey's call, 2026-08-20: no interest in multichannel audio
+    outside of stereo."""
+    now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+    ctx.conn.execute(
+        "UPDATE archive SET bpm_analyzed_at = ? WHERE file_path = ?",
+        (now, file_path),
+    )
+    ctx.log_event(
+        "BPM_SKIPPED_MULTICHANNEL",
+        file_path=file_path,
+        stage="bpm",
+        note="multichannel audio -- unsupported by Essentia, unwanted per Grey's policy",
+    )
+
+    csv_path = ctx.config.tunemymusic_csv_path
+    if _tunemymusic_csv_has_path(csv_path, file_path):
+        return
+    row = ctx.conn.execute(
+        "SELECT codec, bitrate, sample_rate, channels, duration FROM archive WHERE file_path = ?",
+        (file_path,),
+    ).fetchone()
+    _append_tunemymusic_row(
+        ctx,
+        {
+            "reason": "multichannel audio (no stereo interest -- see BPM skip)",
+            "codec": row["codec"] if row else None,
+            "bitrate": row["bitrate"] if row else None,
+            "sample_rate": row["sample_rate"] if row else None,
+            "channels": row["channels"] if row else None,
+            "duration": row["duration"] if row else None,
+            "file_path": file_path,
+        },
+    )
+
+
 def _save_features(ctx: RunContext, file_path: str, features: dict[str, float | str]) -> None:
     ctx.conn.execute(
         """
@@ -303,10 +374,20 @@ class BPMStage(BaseStage):
         return [r["file_path"] for r in rows]
 
     def _process_one(self, ctx: RunContext, file_path: str, retag: bool) -> str:
-        """Returns: 'ok' | 'tag_shortcut' | 'skip' | 'error' | 'missing'"""
+        """Returns: 'ok' | 'tag_shortcut' | 'skip' | 'skip_multichannel' | 'error' | 'missing'"""
         path = Path(file_path)
         if not path.exists():
             return "missing"
+
+        # Proactive check via Scholar's already-populated channel count --
+        # avoids ever spinning up Essentia for a file we already know is
+        # unanalyzable, not just reacting to its exception after the fact.
+        row = ctx.conn.execute(
+            "SELECT channels FROM archive WHERE file_path = ?", (file_path,)
+        ).fetchone()
+        if row and row["channels"] and row["channels"] > 2:
+            _mark_multichannel_skipped(ctx, file_path)
+            return "skip_multichannel"
 
         features: dict[str, float | str] | None = None
         from_tags = False
@@ -318,6 +399,9 @@ class BPMStage(BaseStage):
             try:
                 features = analyze_file(path)
             except Exception as exc:
+                if _is_multichannel_error(exc):
+                    _mark_multichannel_skipped(ctx, file_path)
+                    return "skip_multichannel"
                 if _is_skip_error(exc):
                     return "skip"
                 logger.warning("[bpm] %s: %s", path, exc)
@@ -341,7 +425,14 @@ class BPMStage(BaseStage):
             ctx.record_stage(result)
             return result
 
-        counters: dict[str, int] = {"ok": 0, "tag_shortcut": 0, "skip": 0, "error": 0, "missing": 0}
+        counters: dict[str, int] = {
+            "ok": 0,
+            "tag_shortcut": 0,
+            "skip": 0,
+            "skip_multichannel": 0,
+            "error": 0,
+            "missing": 0,
+        }
 
         for i, fp in enumerate(pending, 1):
             status = self._process_one(ctx, fp, retag)
@@ -350,7 +441,7 @@ class BPMStage(BaseStage):
 
             if status in ("ok", "tag_shortcut"):
                 result.files_changed += 1
-            elif status in ("skip", "missing"):
+            elif status in ("skip", "skip_multichannel", "missing"):
                 result.files_skipped += 1
             else:
                 result.files_errored += 1
