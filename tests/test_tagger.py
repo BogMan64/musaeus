@@ -311,3 +311,48 @@ class TestTaggerRun:
 
         events = ctx.conn.execute("SELECT * FROM events WHERE event_type='TAGGER_WRITE'").fetchall()
         assert len(events) == 1
+
+
+# ── albumartist repair ───────────────────────────────────────────────────────
+#
+# albumartist has no archive column and was never written by this stage, so it
+# kept whatever spelling the source file arrived with. Confirmed live
+# 2026-08-21: 2,035 of 5,894 article-artist files (34.5%) had artist and
+# albumartist disagreeing. It is repaired, not mirrored -- a genuinely
+# different albumartist (compilation / split credit) must survive untouched.
+
+
+class TestAlbumArtistRepair:
+    def _changes(self, db_artist, file_albumartist):
+        return TaggerStage()._compute_changes(
+            {"artist": db_artist},
+            {"artist": db_artist, "albumartist": file_albumartist},
+        )
+
+    def test_leading_the_variant_is_corrected(self):
+        assert self._changes("Cranberries, The", "The Cranberries") == {
+            "albumartist": "Cranberries, The"
+        }
+
+    def test_parenthetical_variant_is_corrected(self):
+        assert self._changes("Ronettes, The", "Ronettes (the)") == {"albumartist": "Ronettes, The"}
+
+    def test_already_canonical_is_left_alone(self):
+        assert self._changes("Beatles, The", "Beatles, The") == {}
+
+    def test_various_artists_is_preserved(self):
+        # A compilation's albumartist is genuinely not the track artist.
+        assert self._changes("Beatles, The", "Various Artists") == {}
+
+    def test_split_credit_is_preserved(self):
+        assert self._changes("Johnny Cash", "Johnny Cash, The Tennessee Two") == {}
+
+    def test_unrelated_albumartist_is_preserved(self):
+        assert self._changes("Beatles, The", "Rolling Stones, The") == {}
+
+    def test_empty_albumartist_is_not_invented(self):
+        # Nothing to repair, and no DB column to source a value from.
+        assert self._changes("Beatles, The", "") == {}
+
+    def test_protected_stylized_name_not_touched(self):
+        assert self._changes("De La Soul", "De La Soul") == {}

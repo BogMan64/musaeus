@@ -1,238 +1,104 @@
 """
-Tests for musaeus.rebuild — rebuild_archive_from_events().
+Tests for musaeus.rebuild — the DISABLED event-log rebuild.
 
-Verifies that the event log can reconstruct the archive table.
+The previous suite here had 13 passing tests exercising the replay logic,
+and every one of them passed against code that could never have worked on
+real data. They fed it the event-type names the implementation expected
+(FILE_REGISTERED, FILE_HASHED, FILE_CATALOGUED, ...), none of which any
+MUSAEUS stage has ever emitted. The tests validated the implementation's
+own assumptions rather than reality, so the module looked well-covered
+while being entirely dead code sitting in front of a DELETE FROM archive.
+
+These tests replace them: they assert the module refuses to run, and they
+pin the two facts that make it unfixable so a future session doesn't
+"helpfully" re-enable it by renaming the event constants.
 """
 
-import json
-from pathlib import Path
+from __future__ import annotations
 
 import pytest
 
-from musaeus.db import get_archive_count, log_event, open_db, upsert_archive
-from musaeus.rebuild import rebuild_archive_from_events
+from musaeus.db import log_event, open_db
+from musaeus.rebuild import (
+    RebuildDisabledError,
+    cmd_rebuild_db,
+    rebuild_archive_from_events,
+)
 
 
-@pytest.fixture
-def conn(tmp_path: Path):
-    db_path = tmp_path / "rebuild_test.db"
-    c = open_db(db_path)
-    yield c
-    c.close()
+class TestRebuildIsDisabled:
+    def test_rebuild_raises_rather_than_running(self, tmp_path):
+        conn = open_db(tmp_path / "t.db")
+        with pytest.raises(RebuildDisabledError):
+            rebuild_archive_from_events(conn)
 
+    def test_dry_run_also_refuses(self, tmp_path):
+        # Nothing safe to preview: printing a plausible plan would imply
+        # the real run works.
+        conn = open_db(tmp_path / "t.db")
+        with pytest.raises(RebuildDisabledError):
+            rebuild_archive_from_events(conn, dry_run=True)
 
-# ── Basic rebuild ─────────────────────────────────────────────────────────────
-
-
-class TestRebuildBasic:
-    def test_empty_db_rebuild(self, conn):
-        """Rebuilding an empty DB produces empty archive."""
-        summary = rebuild_archive_from_events(conn)
-        assert summary["cleared"] == 0
-        assert summary["replayed"] == 0
-        assert summary["files_rebuilt"] == 0
-        assert summary["errors"] == []
-
-    def test_rebuild_from_ingest_events(self, conn):
-        """FILE_REGISTERED events create archive entries."""
-        # Simulate ingest events
-        log_event(conn, "run_001", "FILE_REGISTERED", file_path="/vault/a.flac")
-        log_event(conn, "run_001", "FILE_REGISTERED", file_path="/vault/b.mp3")
+    def test_it_does_not_touch_the_archive_table(self, tmp_path):
+        """The dangerous part was DELETE FROM archive running *first*."""
+        db = tmp_path / "t.db"
+        conn = open_db(db)
+        conn.execute(
+            "INSERT INTO archive (file_path, status, artist) VALUES (?,?,?)",
+            ("/x/y.m4a", "CATALOGUED", "Beatles, The"),
+        )
         conn.commit()
+        with pytest.raises(RebuildDisabledError):
+            rebuild_archive_from_events(conn)
+        assert conn.execute("SELECT COUNT(*) FROM archive").fetchone()[0] == 1
 
-        summary = rebuild_archive_from_events(conn)
-        assert summary["files_rebuilt"] == 2
-        assert summary["errors"] == []
+    def test_cli_entry_point_returns_refused_exit_code(self, capsys):
+        # 2 == "refused, did not run", matching the P0-02 dry-run guard,
+        # rather than 1 == "ran and failed".
+        assert cmd_rebuild_db() == 2
+        assert cmd_rebuild_db(dry_run=True) == 2
+        assert "DISABLED" in capsys.readouterr().err
 
-        # Verify archive was populated
-        count = get_archive_count(conn)
-        assert count == 2
 
-    def test_rebuild_preserves_hashed_status(self, conn):
-        """FILE_HASHED events set status to HASHED and store hashes."""
-        log_event(conn, "run_001", "FILE_REGISTERED", file_path="/vault/x.flac")
-        log_event(
-            conn,
-            "run_001",
+class TestWhyItCannotBeFixed:
+    """Pins the two independent reasons, so renaming constants isn't
+    mistaken for a fix."""
+
+    def test_emitted_event_names_do_not_match_what_replay_expected(self, tmp_path):
+        conn = open_db(tmp_path / "t.db")
+        # Names a real stage actually emits (see musaeus/stages/*.py).
+        for et in ("INGEST", "HASH_COMPUTED", "METADATA_EXTRACTED", "FINALIZE_MOVE"):
+            log_event(conn, run_id="r", event_type=et, file_path="/x/y.m4a", stage="s")
+        conn.commit()
+        emitted = {r[0] for r in conn.execute("SELECT DISTINCT event_type FROM events")}
+        replay_expected = {
+            "FILE_REGISTERED",
             "FILE_HASHED",
-            file_path="/vault/x.flac",
-            new_value=json.dumps({"audio_hash": "abc123", "full_hash": "def456"}),
-        )
-        conn.commit()
-
-        rebuild_archive_from_events(conn)
-        row = conn.execute(
-            "SELECT status, audio_hash, full_hash FROM archive WHERE file_path=?",
-            ("/vault/x.flac",),
-        ).fetchone()
-        assert row["status"] == "HASHED"
-        assert row["audio_hash"] == "abc123"
-        assert row["full_hash"] == "def456"
-
-    def test_rebuild_catalogued_status(self, conn):
-        """FILE_CATALOGUED events bring metadata and status."""
-        log_event(conn, "run_001", "FILE_REGISTERED", file_path="/vault/song.flac")
-        meta = {"artist": "The Beatles", "title": "Yesterday", "bitrate": 320000}
-        log_event(
-            conn,
-            "run_001",
             "FILE_CATALOGUED",
-            file_path="/vault/song.flac",
-            new_value=json.dumps(meta),
-        )
-        conn.commit()
+            "STATUS_CHANGE",
+            "FIELD_UPDATE",
+            "LUFS_MEASURED",
+            "RG_TAGGED",
+            "CAR_EXPORTED",
+            "FILE_GHOST",
+            "FILE_REMOVED",
+        }
+        assert emitted.isdisjoint(replay_expected)
 
-        rebuild_archive_from_events(conn)
-        row = conn.execute(
-            "SELECT status, artist, title, bitrate FROM archive WHERE file_path=?",
-            ("/vault/song.flac",),
-        ).fetchone()
-        assert row["status"] == "CATALOGUED"
-        assert row["artist"] == "The Beatles"
-        assert row["title"] == "Yesterday"
-        assert row["bitrate"] == 320000
-
-
-# ── Advanced replay scenarios ─────────────────────────────────────────────────
-
-
-class TestRebuildAdvanced:
-    def test_ghost_status(self, conn):
-        """FILE_GHOST event marks the file as GHOST."""
-        log_event(conn, "run_001", "FILE_REGISTERED", file_path="/vault/missing.flac")
-        log_event(conn, "run_002", "FILE_GHOST", file_path="/vault/missing.flac")
-        conn.commit()
-
-        rebuild_archive_from_events(conn)
-        row = conn.execute(
-            "SELECT status FROM archive WHERE file_path=?",
-            ("/vault/missing.flac",),
-        ).fetchone()
-        assert row["status"] == "GHOST"
-
-    def test_removed_file_excluded(self, conn):
-        """FILE_REMOVED means the file should NOT appear in rebuilt archive."""
-        log_event(conn, "run_001", "FILE_REGISTERED", file_path="/vault/deleted.flac")
-        log_event(conn, "run_002", "FILE_REMOVED", file_path="/vault/deleted.flac")
-        conn.commit()
-
-        rebuild_archive_from_events(conn)
-        count = get_archive_count(conn)
-        assert count == 0
-
-    def test_status_change_event(self, conn):
-        """STATUS_CHANGE event updates status field."""
-        log_event(conn, "run_001", "FILE_REGISTERED", file_path="/vault/x.flac")
-        log_event(
-            conn, "run_001", "STATUS_CHANGE", file_path="/vault/x.flac", new_value="CATALOGUED"
-        )
-        conn.commit()
-
-        rebuild_archive_from_events(conn)
-        row = conn.execute(
-            "SELECT status FROM archive WHERE file_path=?",
-            ("/vault/x.flac",),
-        ).fetchone()
-        assert row["status"] == "CATALOGUED"
-
-    def test_clears_existing_archive_before_rebuild(self, conn):
-        """Rebuild clears the archive table first, then rebuilds."""
-        # Pre-populate archive with a manual entry
-        upsert_archive(conn, {"file_path": "/vault/pre_existing.flac", "status": "HASHED"})
-        conn.commit()
-        assert get_archive_count(conn) == 1
-
-        # No events → rebuilt archive is empty
-        summary = rebuild_archive_from_events(conn)
-        assert summary["cleared"] == 1
-        assert get_archive_count(conn) == 0
-
-    def test_multiple_events_same_file(self, conn):
-        """Multiple events for same file produce single archive entry."""
-        log_event(conn, "run_001", "FILE_REGISTERED", file_path="/vault/track.flac")
+    def test_event_log_is_lossy_so_hashes_cannot_be_recovered(self, tmp_path):
+        """sentinel.py logs a display-truncated hash, not the real value."""
+        conn = open_db(tmp_path / "t.db")
+        real = "a" * 64
         log_event(
             conn,
-            "run_001",
-            "FILE_HASHED",
-            file_path="/vault/track.flac",
-            new_value=json.dumps({"audio_hash": "h1"}),
-        )
-        log_event(
-            conn,
-            "run_001",
-            "FILE_CATALOGUED",
-            file_path="/vault/track.flac",
-            new_value=json.dumps({"artist": "A", "title": "T"}),
+            run_id="r",
+            event_type="HASH_COMPUTED",
+            file_path="/x/y.m4a",
+            new_value=f"{real[:16]}…",  # what sentinel actually writes
+            stage="sentinel",
         )
         conn.commit()
-
-        rebuild_archive_from_events(conn)
-        assert get_archive_count(conn) == 1
-        row = conn.execute(
-            "SELECT * FROM archive WHERE file_path=?", ("/vault/track.flac",)
-        ).fetchone()
-        assert row["audio_hash"] == "h1"
-        assert row["artist"] == "A"
-        assert row["status"] == "CATALOGUED"
-
-
-# ── Dry run mode ──────────────────────────────────────────────────────────────
-
-
-class TestRebuildDryRun:
-    def test_dry_run_no_changes(self, conn):
-        """Dry run reports what WOULD happen without changing DB."""
-        log_event(conn, "run_001", "FILE_REGISTERED", file_path="/vault/a.flac")
-        log_event(conn, "run_001", "FILE_REGISTERED", file_path="/vault/b.flac")
-        conn.commit()
-
-        # Pre-populate archive
-        upsert_archive(conn, {"file_path": "/vault/old.flac", "status": "PENDING"})
-        conn.commit()
-
-        summary = rebuild_archive_from_events(conn, dry_run=True)
-        assert summary["cleared"] == 1  # would clear 1 existing
-        assert summary["replayed"] == 2  # would replay 2 events
-        assert summary["files_rebuilt"] == 2  # would rebuild 2 files
-
-        # But archive is unchanged
-        count = get_archive_count(conn)
-        assert count == 1  # still has old.flac
-
-    def test_dry_run_empty(self, conn):
-        summary = rebuild_archive_from_events(conn, dry_run=True)
-        assert summary["cleared"] == 0
-        assert summary["replayed"] == 0
-        assert summary["files_rebuilt"] == 0
-
-
-# ── Edge cases ────────────────────────────────────────────────────────────────
-
-
-class TestRebuildEdgeCases:
-    def test_non_file_events_skipped(self, conn):
-        """RUN_START, RUN_END events (no file_path) are skipped."""
-        log_event(conn, "run_001", "RUN_START")
-        log_event(conn, "run_001", "RUN_END")
-        conn.commit()
-
-        summary = rebuild_archive_from_events(conn)
-        assert summary["files_rebuilt"] == 0
-        assert summary["replayed"] == 2  # events were replayed, just no file effect
-
-    def test_malformed_json_in_new_value(self, conn):
-        """Non-JSON new_value for FILE_HASHED is handled gracefully."""
-        log_event(conn, "run_001", "FILE_REGISTERED", file_path="/vault/x.flac")
-        log_event(
-            conn, "run_001", "FILE_HASHED", file_path="/vault/x.flac", new_value="plain_hash_string"
-        )
-        conn.commit()
-
-        summary = rebuild_archive_from_events(conn)
-        assert summary["files_rebuilt"] == 1
-        row = conn.execute(
-            "SELECT audio_hash FROM archive WHERE file_path=?",
-            ("/vault/x.flac",),
-        ).fetchone()
-        # Falls back to storing the plain string as audio_hash
-        assert row["audio_hash"] == "plain_hash_string"
+        stored = conn.execute("SELECT new_value FROM events").fetchone()[0]
+        assert stored.endswith("…")
+        assert len(stored) < len(real)
+        assert stored.rstrip("…") != real

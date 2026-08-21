@@ -1,14 +1,52 @@
 #!/usr/bin/env python3
 """
-MUSAEUS — Rebuild DB from Event Log
+MUSAEUS — Rebuild DB from Event Log  [DISABLED — DO NOT USE]
 
-The event log is the immutable source of truth. This module replays all events
-to reconstruct the `archive` table from scratch. Used when:
-  - The archive table gets corrupted
-  - Schema changes require a fresh materialization
-  - You want to verify event log integrity
+DISABLED 2026-08-21. This module is retained for reference only; the entry
+point refuses to run. It was never safe to use and would destroy data.
 
-Usage:  musaeus rebuild-db [--dry-run]
+The original premise -- stated in this docstring and quoted below as it
+stood -- was:
+
+    "The event log is the immutable source of truth. This module replays
+     all events to reconstruct the `archive` table from scratch."
+
+That is **false**, in two independent ways, both confirmed against the real
+250,000-event live database:
+
+1. The event-type names it dispatches on do not exist. It handles
+   FILE_REGISTERED / FILE_HASHED / FILE_CATALOGUED / STATUS_CHANGE /
+   FIELD_UPDATE / LUFS_MEASURED / RG_TAGGED / CAR_EXPORTED / FILE_GHOST /
+   FILE_REMOVED. The live DB contains INGEST / HASH_COMPUTED /
+   METADATA_EXTRACTED / FINALIZE_MOVE / FORGE_TAG / BPM_ANALYZED / ... --
+   34 real types, with **zero overlap**. Every replay branch is dead code.
+
+2. Far worse, the events are a human-readable audit trail, not an
+   event-sourcing store, and they are lossy by design:
+     - HASH_COMPUTED stores "0faef0355d05cb91…" -- 16 characters and a
+       literal ellipsis. A real sha256 is 64. audio_hash/full_hash are
+       physically unrecoverable from the log.
+     - METADATA_EXTRACTED stores only artist/title/bitrate. album, genre,
+       year, track, duration, sample_rate, channels and codec are never
+       recorded at all.
+     - FORGE_TAG records lufs and rg_gain but not lufs_tp or rg_peak;
+       BPM_ANALYZED records bpm and key but not energy or danceability.
+
+So even with the names corrected, the archive table could not be
+reconstructed -- the data simply is not in the log.
+
+The failure mode was the dangerous part: rebuild_archive_from_events()
+issues `DELETE FROM archive` *first*, then replays. Run against the real
+vault it would have wiped ~27,000 rows and repopulated metadata-less
+status='PENDING' stubs, silently, while reporting success.
+
+The real recovery paths, both proven in practice:
+  - the pre-reset DB snapshot written to ALAC-Library/_history/ (this is
+    what actually recovered the vault on 2026-08-20), and
+  - rebuilding from disk + embedded file tags, which is where the real
+    metadata lives.
+
+Usage:  refuses to run; see RebuildDisabledError below.
 """
 
 from __future__ import annotations
@@ -20,12 +58,48 @@ from pathlib import Path
 from typing import Any
 
 
-def rebuild_archive_from_events(conn: sqlite3.Connection, *, dry_run: bool = False) -> dict:
-    """
-    Replay the event log to rebuild the archive table.
+class RebuildDisabledError(RuntimeError):
+    """Raised on any attempt to run the event-log rebuild.
 
-    Returns a summary dict: {cleared, replayed, files_rebuilt, errors}
+    Fail closed rather than fail silently: the old behaviour deleted the
+    archive table before discovering it could not rebuild it, and reported
+    success afterwards. See this module's docstring for the evidence.
     """
+
+
+_DISABLED_MESSAGE = (
+    "rebuild-db is DISABLED and will not run.\n"
+    "\n"
+    "It cannot do what its name claims. Verified against the real "
+    "250,000-event database:\n"
+    "  * none of the event-type names it handles exist any more (zero "
+    "overlap with the 34 real types)\n"
+    "  * the event log is lossy by design -- hashes are stored truncated "
+    "to 16 chars + an ellipsis\n"
+    "    (a real sha256 is 64), and album/genre/year/track/duration/codec "
+    "are never recorded at all\n"
+    "\n"
+    "It also ran DELETE FROM archive *before* replaying, so it would have "
+    "destroyed ~27,000 rows\n"
+    "and replaced them with empty PENDING stubs, while reporting success.\n"
+    "\n"
+    "Use instead:\n"
+    "  * the pre-reset snapshot in ALAC-Library/_history/ (this is what "
+    "actually recovered the\n"
+    "    vault on 2026-08-20), or\n"
+    "  * a rebuild from disk + embedded file tags, where the real metadata "
+    "actually lives."
+)
+
+
+def rebuild_archive_from_events(conn: sqlite3.Connection, *, dry_run: bool = False) -> dict:
+    """DISABLED — always raises RebuildDisabledError. See module docstring.
+
+    The original implementation is preserved below the raise for reference,
+    deliberately unreachable rather than deleted, so the shape of what was
+    attempted stays legible next to the reasons it could not work.
+    """
+    raise RebuildDisabledError(_DISABLED_MESSAGE)
     summary: dict[str, Any] = {
         "cleared": 0,
         "replayed": 0,
@@ -215,8 +289,18 @@ def rebuild_archive_from_events(conn: sqlite3.Connection, *, dry_run: bool = Fal
 
 
 def cmd_rebuild_db(dry_run: bool = False) -> int:
-    """CLI entry point for rebuild-db command."""
-    from .config import get_config
+    """CLI entry point for rebuild-db — DISABLED, prints why and exits 2.
+
+    Deliberately refuses even with --dry-run: there is nothing safe to
+    preview, and printing a plausible-looking plan would imply the real
+    run works. Exit code 2 matches the P0-02 dry-run guard's
+    "refused, did not run" convention rather than 1 ("ran and failed").
+    """
+    print(f"\nMusaeus rebuild-db\n\n{_DISABLED_MESSAGE}\n", file=sys.stderr)
+    return 2
+
+    # ── unreachable: original implementation kept for reference ──────────
+    from .config import get_config  # type: ignore[unreachable]
     from .db import open_db
 
     try:
