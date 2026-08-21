@@ -22,7 +22,7 @@ What it does:
 Standalone from HealthStage/CorruptStage deliberately: those already cover
 metadata-quality checks and corruption detection/quarantine respectively.
 This is the one piece of the old (now-archived)
-_ARCHIVES/dead_code_20260809/MUSAEUS_stale_working_copy health.py that
+_ARCHIVE/dead_code_20260809/MUSAEUS_stale_working_copy health.py that
 wasn't duplicated elsewhere — ported as its own small stage rather than
 reviving that file.
 """

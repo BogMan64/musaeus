@@ -47,10 +47,13 @@ from pathlib import Path
 # only ever covered AAC_CAR_SRC/AAC_CAR_OUT). Now reads ORPHEUS_NOISE_DIR
 # from the environment first; the old hardcoded path is only a fallback
 # default for the case where nothing else has set it, not a forced value.
-ORPHEUS_ROOT = Path("/mnt/FORGE2TB/ACTIVE_PROJECTS/ORPHEUS")
-NOISE_DIR = Path(os.environ.get("ORPHEUS_NOISE_DIR", str(ORPHEUS_ROOT / "RUNS" / "Noise")))
-AAC_CAR_SRC = ORPHEUS_ROOT / "RUNS" / "Music.Vault" / "AAC-Car"
-AAC_CAR_OUT = ORPHEUS_ROOT / "RUNS" / "Music.Vault" / "AAC-Car-Masked"
+# Repointed 2026-08-21 from /mnt/FORGE2TB/ACTIVE_PROJECTS/ORPHEUS, which is
+# being retired off FORGE2TB. See the note above: the override was already
+# doing the real work, because the old default directory did not exist.
+VAULT_ROOT = Path(os.environ.get("MUSAEUS_VAULT_ROOT", "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT"))
+NOISE_DIR = Path(os.environ.get("ORPHEUS_NOISE_DIR", str(VAULT_ROOT / "RUNS" / "Noise")))
+AAC_CAR_SRC = VAULT_ROOT / "RUNS" / "AAC-Car"
+AAC_CAR_OUT = VAULT_ROOT / "RUNS" / "AAC-Car-Masked"
 
 # 30-min files loop cleanly for any typical track
 NOISE_FILES = {
@@ -196,9 +199,7 @@ def collect_jobs(
     for src in files:
         rel = src.relative_to(src_root)
         dst = dst_root / rel
-        jobs.append(
-            Job(src=src, dst=dst, brown_db=brown_db, pink_db=pink_db, white_db=white_db)
-        )
+        jobs.append(Job(src=src, dst=dst, brown_db=brown_db, pink_db=pink_db, white_db=white_db))
     return jobs
 
 
@@ -274,9 +275,7 @@ def main() -> None:
         sys.exit(1)
 
     print("   Scanning tracks...")
-    jobs = collect_jobs(
-        src_root, dst_root, args.brown_db, args.pink_db, args.white_db, args.limit
-    )
+    jobs = collect_jobs(src_root, dst_root, args.brown_db, args.pink_db, args.white_db, args.limit)
 
     already_done = sum(1 for j in jobs if j.dst.exists())
     to_process = len(jobs) - already_done
@@ -302,9 +301,7 @@ def main() -> None:
 
     if not args.yes:
         confirm = (
-            input(
-                f"   Process {to_process:,} tracks with {args.workers} workers? [y/N] "
-            )
+            input(f"   Process {to_process:,} tracks with {args.workers} workers? [y/N] ")
             .strip()
             .lower()
         )
