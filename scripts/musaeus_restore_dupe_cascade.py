@@ -213,13 +213,20 @@ def main() -> int:
     idx.row_factory = sqlite3.Row
     entries = idx.execute("SELECT rowid AS rid, audio_hash, file_path FROM finalized_hashes")
 
-    live = {
-        r["audio_hash"]: r["file_path"]
-        for r in conn.execute(
-            "SELECT audio_hash, file_path FROM archive "
-            "WHERE status='CATALOGUED' AND audio_hash IS NOT NULL"
-        )
-    }
+    # Map hash -> where that audio ACTUALLY is right now, across every
+    # status. Restricting this to CATALOGUED was wrong and AuditStage
+    # caught it: a finalized row sitting in DUPES_MOVED_FOR_REVIEW still
+    # exists on disk, so pruning its ledger entry as "dead" stranded 6,537
+    # finalized rows with no index entry. Quarantined is not gone.
+    # CATALOGUED wins when the same audio is in both places.
+    live: dict[str, str] = {}
+    for r in conn.execute(
+        "SELECT audio_hash, file_path, status FROM archive WHERE audio_hash IS NOT NULL"
+    ):
+        if not Path(r["file_path"]).exists():
+            continue
+        if r["audio_hash"] not in live or r["status"] == "CATALOGUED":
+            live[r["audio_hash"]] = r["file_path"]
 
     repoint = prune = 0
     for e in entries.fetchall():
@@ -254,8 +261,63 @@ def main() -> int:
             if args.apply:
                 idx.execute("DELETE FROM finalized_hashes WHERE rowid = ?", (e["rid"],))
 
+    # A restored file sitting at a canonical library path but carrying a
+    # NULL finalized_at was quarantined BEFORE Finalize ever ran on it
+    # (1,608 of the 10,597). It is physically where Finalize would have put
+    # it, so the move half of finalization is already done and the row just
+    # never got stamped -- AuditStage reports these as "file present in
+    # ALAC-Library with no matching finalized row".
+    #
+    # Stamped from the file's own mtime rather than "now", following
+    # rebuild_from_disk.py: the real timestamp is not recoverable, and
+    # inventing a fresh one would claim the file was finalized during this
+    # recovery, which is not what happened.
+    stamped_fin = 0
+    for r in conn.execute(
+        "SELECT rowid AS rid, file_path FROM archive "
+        "WHERE status='CATALOGUED' AND finalized_at IS NULL"
+    ).fetchall():
+        fp = Path(r["file_path"])
+        if not fp.exists() or QUARANTINE_SEGMENT in fp.parts:
+            continue
+        mtime = datetime.fromtimestamp(fp.stat().st_mtime, tz=timezone.utc).isoformat(
+            timespec="seconds"
+        )
+        stamped_fin += 1
+        if args.apply:
+            conn.execute("UPDATE archive SET finalized_at = ? WHERE rowid = ?", (mtime, r["rid"]))
+    if args.apply:
+        conn.commit()
+    print(
+        f"archive: {'would stamp' if args.check else 'stamped'} finalized_at on "
+        f"{stamped_fin} row(s) already at a library path"
+    )
+
+    # Reconcile the other direction: every finalized row whose audio is on
+    # disk must have an index entry, or AuditStage fails it. The prune above
+    # can only remove; this restores what belongs.
+    readded = 0
+    for r in conn.execute(
+        "SELECT audio_hash, file_path FROM archive "
+        "WHERE finalized_at IS NOT NULL AND audio_hash IS NOT NULL"
+    ):
+        if not Path(r["file_path"]).exists():
+            continue
+        hit = idx.execute(
+            "SELECT 1 FROM finalized_hashes WHERE audio_hash = ?", (r["audio_hash"],)
+        ).fetchone()
+        if hit:
+            continue
+        readded += 1
+        if args.apply:
+            idx.execute(
+                "INSERT OR IGNORE INTO finalized_hashes (audio_hash, file_path) VALUES (?, ?)",
+                (r["audio_hash"], r["file_path"]),
+            )
+
     if args.apply:
         idx.commit()
+    print(f"hash index: {'would re-add' if args.check else 're-added'} {readded} missing entr(ies)")
     verb = "would re-point" if args.check else "re-pointed"
     verb2 = "would prune" if args.check else "pruned"
     print(f"hash index: {verb} {repoint} stale entr(ies), {verb2} {prune} dead entr(ies)")
