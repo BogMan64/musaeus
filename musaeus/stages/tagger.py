@@ -3,7 +3,18 @@
 MUSAEUS — Tagger Stage
 
 Writes normalised metadata from the archive table back into audio file tags.
-Fields written: artist, album, title, genre, year, track number.
+Fields written: artist, album, title, genre, year, track number, albumartist.
+
+albumartist is a special case. It has no archive column, so unlike every
+other field here it is not driven by the DB -- it is only *repaired*, and
+only when the file's existing value is demonstrably the same artist in a
+non-canonical spelling (normalizing it lands on the DB artist). A
+genuinely different albumartist is left untouched, because it legitimately
+differs from the track artist on compilations ("Various Artists") and on
+split/guest credits. Before this existed the field was never written at
+all, so it kept whatever the source file arrived with: confirmed live
+2026-08-21, 2,035 of 5,894 article-artist files (34.5%) had artist and
+albumartist disagreeing.
 
 Rules:
   - Only writes fields that differ from what's already in the file.
@@ -21,6 +32,7 @@ from typing import Any
 
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
+from .normalize import _move_article_to_suffix
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +61,7 @@ def _read_tags(path: Path) -> dict[str, str]:
             track_str = str(_trkn[0][0]) if _trkn and _trkn[0] else ""
             return {
                 "artist": _g("\xa9ART"),
+                "albumartist": _g("aART"),
                 "album": _g("\xa9alb"),
                 "title": _g("\xa9nam"),
                 "genre": _g("\xa9gen"),
@@ -67,6 +80,7 @@ def _read_tags(path: Path) -> dict[str, str]:
 
             return {
                 "artist": _gf("artist"),
+                "albumartist": _gf("albumartist"),
                 "album": _gf("album"),
                 "title": _gf("title"),
                 "genre": _gf("genre"),
@@ -88,6 +102,7 @@ def _read_tags(path: Path) -> dict[str, str]:
 
             return {
                 "artist": _gm("artist"),
+                "albumartist": _gm("albumartist"),
                 "album": _gm("album"),
                 "title": _gm("title"),
                 "genre": _gm("genre"),
@@ -114,6 +129,7 @@ def _write_tags(path: Path, changes: dict[str, str]) -> bool:
                 audio.add_tags()
             _map = {
                 "artist": "\xa9ART",
+                "albumartist": "aART",
                 "album": "\xa9alb",
                 "title": "\xa9nam",
                 "genre": "\xa9gen",
@@ -132,6 +148,7 @@ def _write_tags(path: Path, changes: dict[str, str]) -> bool:
             audio = FLAC(str(path))
             _map_f = {
                 "artist": "artist",
+                "albumartist": "albumartist",
                 "album": "album",
                 "title": "title",
                 "genre": "genre",
@@ -156,6 +173,7 @@ def _write_tags(path: Path, changes: dict[str, str]) -> bool:
                 audio = ID3()
             _map_m = {
                 "artist": "artist",
+                "albumartist": "albumartist",
                 "album": "album",
                 "title": "title",
                 "genre": "genre",
@@ -226,6 +244,29 @@ class TaggerStage(BaseStage):
             file_val = str(file_tags.get(tag_field) or "").strip()
             if db_val and db_val != file_val:
                 changes[db_field] = db_val
+
+        # albumartist has no archive column and was never written by this
+        # stage, so it kept whatever spelling the source file arrived with --
+        # forever. Confirmed live 2026-08-21: 2,035 of 5,894 article-artist
+        # files (34.5%) had artist and albumartist disagreeing, e.g. artist
+        # "Cranberries, The" beside albumartist "The Cranberries".
+        #
+        # Deliberately NOT a blanket mirror of artist. albumartist is
+        # legitimately different from track artist on compilations ("Various
+        # Artists") and split/guest credits, and clobbering those would
+        # destroy real information. Only rewritten when the file's existing
+        # albumartist is the SAME artist in a non-canonical spelling -- i.e.
+        # normalizing it lands on the DB artist.
+        db_artist = str(db_row.get("artist") or "").strip()
+        file_aa = str(file_tags.get("albumartist") or "").strip()
+        if (
+            db_artist
+            and file_aa
+            and file_aa != db_artist
+            and _move_article_to_suffix(file_aa) == db_artist
+        ):
+            changes["albumartist"] = db_artist
+
         return changes
 
     # ── run ───────────────────────────────────────────────────────────────────
