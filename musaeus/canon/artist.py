@@ -70,6 +70,29 @@ class ArtistCanon:
 
     # ── public API ────────────────────────────────────────────────────────────
 
+    def resolve_exact(self, raw: str) -> str | None:
+        """
+        Return the canonical form of *raw* from an EXPLICIT canon entry only,
+        or None when there isn't one. No fuzzy fallback.
+
+        This is the lookup to use when the answer will be written back to
+        `archive.artist` without a human in the loop. resolve()'s fuzzy
+        fallback (ratio >= 88) is appropriate for *grouping* candidates that
+        someone will review -- as neardupe.py does -- but not for silently
+        renaming an artist: two genuinely different people can score highly
+        against each other. "Paul Young" vs "John Paul Young" (different
+        artists, UK and Australian) score 80, and "Bon Jovi" vs "Jon Bon
+        Jovi" also 80 -- both under the threshold today, but only by 8
+        points, and nothing guarantees the next such pair is as lucky.
+
+        Exact-only means the canon file is the sole authority: a name is
+        rewritten because someone deliberately wrote that mapping down,
+        never because a similarity score happened to clear a bar.
+        """
+        if not raw:
+            return None
+        return self._map.get(self._norm(raw))
+
     def resolve(self, raw: str) -> str:
         """
         Return the canonical form of *raw*.

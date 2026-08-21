@@ -5,6 +5,8 @@ MUSAEUS — Artist Consolidation Stage
 Normalizes artist names to canonical forms in the database.
 
 What it does:
+  0. Applies explicit ArtistCanon mappings (exact match only) to EVERY
+     artist -- including ones with no variant to be grouped against
   1. Detects artist name variants (punctuation/spacing differences)
   2. Groups variants under a canonical form
   3. Updates database artist field to use canonical name
@@ -25,6 +27,7 @@ import re
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from ..canon import ArtistCanon
 from ..context import StageResult
 from .base import BaseStage
 
@@ -304,6 +307,41 @@ class ArtistConsolidateStage(BaseStage):
 
         logger.info(f"[{self.NAME}] Analyzing {len(rows):,} distinct artists...")
 
+        # ── Pass 0: explicit ArtistCanon mappings ────────────────────────
+        #
+        # Applied to EVERY artist, before any grouping. This matters: the
+        # grouping pass below skips any key with a single variant
+        # (`if len(variants) == 1: continue`), so a lone wrong name has no
+        # peer to be consolidated against and was silently left alone
+        # forever -- which is exactly how the truncated artists
+        # ("nce Boylan" for "Terence Boylan") survived every pipeline run.
+        #
+        # Until 2026-08-21 the canon was effectively dead data for this
+        # purpose. organize.py's docstring claimed "Handles artist canon
+        # lookup from ArtistCanon" but never imported it; normalize.py's
+        # said canon lookup was "Scholar/Enrich"'s job and neither of those
+        # imported it either. Only neardupe.py used it, and only to group
+        # candidates -- nothing ever wrote a canonical name back to
+        # archive.artist.
+        #
+        # Exact matches only (resolve_exact, no fuzzy fallback): this
+        # rewrites real artist metadata unattended, so the canon file is the
+        # sole authority. A name changes because someone wrote that mapping
+        # down deliberately, never because a similarity score cleared a bar.
+        canon_changes: dict[str, str] = {}
+        try:
+            artist_canon = ArtistCanon(ctx.config.meta_dir / "artist_canon.tsv")
+        except Exception as exc:  # missing/unreadable canon must not fail the run
+            logger.warning("[%s] artist canon unavailable: %s", self.NAME, exc)
+            artist_canon = None  # type: ignore[assignment]
+
+        if artist_canon is not None:
+            for row in rows:
+                raw = row["artist"]
+                canonical = artist_canon.resolve_exact(raw)
+                if canonical and canonical != raw:
+                    canon_changes[raw] = canonical
+
         # Group artists by normalized key
         grouped: dict[str, list[tuple[str, int]]] = defaultdict(list)
         for row in rows:
@@ -330,6 +368,18 @@ class ArtistConsolidateStage(BaseStage):
                         f"[{self.NAME}] '{variant_name}' ({track_count} tracks) → '{canonical}'"
                     )
                     result.files_changed += track_count
+
+        # Explicit canon mappings win over the grouping heuristic: a
+        # hand-written canon entry is a deliberate decision, whereas
+        # _preferred_name() is a track-count tiebreak.
+        if canon_changes:
+            counts = {r["artist"]: r["track_count"] for r in rows}
+            for old_name, new_name in canon_changes.items():
+                if changes.get(old_name) != new_name:
+                    result.files_changed += counts.get(old_name, 0)
+                    logger.info("[%s] canon: '%s' → '%s'", self.NAME, old_name, new_name)
+                changes[old_name] = new_name
+            result.notes.append(f"artist canon: {len(canon_changes)} explicit mapping(s) applied")
 
         if not changes:
             result.notes.append("✓ No artist name variants found")
