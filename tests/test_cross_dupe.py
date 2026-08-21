@@ -274,6 +274,9 @@ class TestStaleHashIndexEntries:
 
         assert result.files_changed == 0, "a file must never be its own duplicate"
         assert ctx.conn.execute("SELECT COUNT(*) FROM duplicates").fetchone()[0] == 0
+        # ...and this is not a stale ledger: the indexed file is right there.
+        # Saying otherwise would send someone pruning a healthy index.
+        assert not any("stale" in n for n in result.notes)
 
     def test_live_twin_still_flags(self, ctx):
         """The guard must not cost real cross-batch detection."""

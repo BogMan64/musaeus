@@ -135,17 +135,22 @@ class CrossDupeStage(BaseStage):
                 # So confirm the twin is really there before believing it,
                 # and never count the candidate's own path as its twin.
                 # See scope doc section 4.17.
+                indexed_twins = [r for r in existing if r["file_path"] != path_str]
+                if not indexed_twins:
+                    # The only entry is the candidate's own path -- the exact
+                    # cascade shape. Not a stale ledger, just nothing to
+                    # compare against, so it must not be reported as one.
+                    continue
+
                 live_paths = [
-                    r["file_path"]
-                    for r in existing
-                    if r["file_path"] != path_str and Path(r["file_path"]).exists()
+                    r["file_path"] for r in indexed_twins if Path(r["file_path"]).exists()
                 ]
                 if not live_paths:
                     stale += 1
                     logger.debug(
                         "stale hash-index hit for %s: indexed copies gone (%s)",
                         path_str,
-                        "; ".join(r["file_path"] for r in existing[:2]),
+                        "; ".join(r["file_path"] for r in indexed_twins[:2]),
                     )
                     continue
 

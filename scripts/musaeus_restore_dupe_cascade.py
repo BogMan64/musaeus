@@ -181,7 +181,16 @@ def main() -> int:
                 "DELETE FROM duplicates WHERE file_path = ? AND duplicate_type = 'CROSS_BATCH'",
                 (str(src),),
             )
+            # Committed per row, inside the try, so the durable DB state and
+            # the file's location can never disagree. Batching the commit
+            # outside this block left a window where the rename had happened
+            # but the UPDATE had not been made durable -- and where a DELETE
+            # failing after a successful UPDATE would move the file back
+            # while leaving that UPDATE pending, so a later commit could
+            # record CATALOGUED at a path the file had already left.
+            conn.commit()
         except sqlite3.Error as exc:
+            conn.rollback()
             tgt.rename(src)  # disk reverted; DB never saw a half-state
             print(f"  FAIL (db, move reverted): {src}: {exc}")
             failed += 1
@@ -189,11 +198,7 @@ def main() -> int:
 
         restored += 1
         if i % 200 == 0:
-            conn.commit()
             print(f"  ... {i}/{len(rows)}")
-
-    if args.apply:
-        conn.commit()
 
     print(f"\nrestored: {restored}   skipped: {skipped}   failed: {failed}")
 
