@@ -253,3 +253,54 @@ class TestVariousArtistsFixRun:
             "SELECT artist FROM archive WHERE title = 'All By Myself'"
         ).fetchone()
         assert row["artist"] == "Various Artists"
+
+
+# ── Compound "Various Artists" credits ───────────────────────────────────────
+#
+# is_various() was exact-match only, so every compound credit sailed through as
+# if it were a real artist name and the stage never got to resolve it.
+# Confirmed live 2026-08-21: "Various Artists - The Eagles Tribute" (11 rows)
+# and "Various Artists Interpreted by A.M.P" (3 rows).
+
+
+class TestCompoundVariousArtists:
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Various Artists - The Eagles Tribute",
+            "Various Artists Interpreted by A.M.P",
+            "various artists: 80s hits",
+            "Various Artist - Something",
+        ],
+    )
+    def test_compound_credits_are_detected(self, name):
+        assert is_various(name) is True
+
+    @pytest.mark.parametrize(
+        "name", ["Various Artists", "various artists", "VA", "various", "Various Artist"]
+    )
+    def test_plain_forms_still_detected(self, name):
+        assert is_various(name) is True
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            # A real electronic act -- prefix-matching the bare word "various"
+            # swallowed this on the first attempt at the widened rule.
+            "Various Production",
+            # Boundary guard: the form must not be followed by more letters.
+            "Various Artistry",
+            "Vanessa Carlton",
+            "Variety Lights",
+            "Beatles, The",
+            "",
+        ],
+    )
+    def test_real_artists_are_not_swallowed(self, name):
+        assert is_various(name) is False
+
+    def test_bare_forms_are_exact_match_only(self):
+        # "va"/"various" must never match as a prefix -- only exactly.
+        assert is_various("VA") is True
+        assert is_various("VA Beach Band") is False
+        assert is_various("Various Production") is False
