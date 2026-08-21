@@ -103,12 +103,65 @@ def _sole_copies(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def _orphan_group_winners(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """One copy per duplicate group that lost EVERY copy to quarantine.
+
+    The sole-copy pass above only rescues files whose audio appears exactly
+    once. It cannot see a group of two or three identical copies that were
+    ALL quarantined -- there the audio is simply absent from the library,
+    which is the same cascade with a different shape. 6,190 such groups
+    existed: 6,158 pairs, 31 triples, and one singleton left by a
+    status other than DUPE_REVIEW.
+
+    Restores exactly one member and leaves the rest quarantined, because
+    the rest genuinely are duplicates -- identical audio_hash means
+    identical PCM, so there is no quality question between them (6,160 of
+    the 6,190 groups share a single bitrate anyway). Preference order is
+    an already-finalized copy, then the largest file, then path order so
+    the choice is deterministic rather than dependent on scan order.
+    """
+    return conn.execute(
+        """
+        WITH orphaned AS (
+            SELECT DISTINCT d.audio_hash
+              FROM archive d
+             WHERE d.status = 'DUPE_REVIEW' AND d.audio_hash IS NOT NULL
+               AND NOT EXISTS (
+                     SELECT 1 FROM archive c
+                      WHERE c.status = 'CATALOGUED' AND c.audio_hash = d.audio_hash
+                   )
+        ),
+        ranked AS (
+            SELECT a.rowid AS rid, a.file_path, a.audio_hash,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY a.audio_hash
+                       ORDER BY (a.finalized_at IS NULL),
+                                COALESCE(a.size_bytes, 0) DESC,
+                                a.file_path
+                   ) AS rank
+              FROM archive a
+              JOIN orphaned o ON o.audio_hash = a.audio_hash
+             WHERE a.status = 'DUPE_REVIEW'
+        )
+        SELECT rid, file_path, audio_hash FROM ranked WHERE rank = 1
+         ORDER BY file_path
+        """
+    ).fetchall()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--check", action="store_true", help="Report only, change nothing")
     g.add_argument("--apply", action="store_true", help="Perform the restore")
     ap.add_argument("--limit", type=int, default=0, help="Restore at most N files")
+    ap.add_argument(
+        "--orphan-groups",
+        action="store_true",
+        help="Restore one copy per duplicate group that lost EVERY copy to "
+        "quarantine, instead of the sole-copy pass. The other copies stay "
+        "quarantined -- they really are duplicates.",
+    )
     ap.add_argument(
         "--no-ledger",
         action="store_true",
@@ -123,11 +176,16 @@ def main() -> int:
     conn = sqlite3.connect(cfg.db_path)
     conn.row_factory = sqlite3.Row
 
-    rows = _sole_copies(conn)
+    if args.orphan_groups:
+        rows = _orphan_group_winners(conn)
+        label = "orphaned duplicate groups (restoring one copy each)"
+    else:
+        rows = _sole_copies(conn)
+        label = "sole-copy quarantined files"
     if args.limit:
         rows = rows[: args.limit]
 
-    print(f"sole-copy quarantined files: {len(rows)}")
+    print(f"{label}: {len(rows)}")
 
     # No early return on an empty list: the ledger repair below is the other
     # half of this recovery and still needs to run on a re-invocation after
@@ -148,9 +206,32 @@ def main() -> int:
             skipped += 1
             continue
         if tgt.exists():
-            print(f"  SKIP (target occupied): {tgt}")
-            skipped += 1
-            continue
+            # Occupied by the SAME audio -> a real duplicate; leave it.
+            # Occupied by DIFFERENT audio -> two distinct recordings that
+            # normalise to one filename (e.g. the Crystals' "Then He Kissed
+            # Me" at 158.9s vs the library's 156.2s take). Losing the second
+            # one to a name clash would be the cascade's mistake in
+            # miniature: discarding real music over bookkeeping. Restore it
+            # under the same "(N)" suffix Canonicalize already uses.
+            occupant = conn.execute(
+                "SELECT audio_hash FROM archive WHERE file_path = ?", (str(tgt),)
+            ).fetchone()
+            if occupant and occupant["audio_hash"] == row["audio_hash"]:
+                print(f"  SKIP (same audio already in library): {tgt.name}")
+                skipped += 1
+                continue
+
+            stem, suffix = tgt.stem, tgt.suffix
+            for n in range(2, 100):
+                candidate = tgt.with_name(f"{stem} ({n}){suffix}")
+                if not candidate.exists():
+                    tgt = candidate
+                    break
+            else:
+                print(f"  SKIP (no free name): {tgt.name}")
+                skipped += 1
+                continue
+            print(f"  RENAMED to avoid clash with a different recording: {tgt.name}")
 
         if args.check:
             restored += 1
