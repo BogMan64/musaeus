@@ -80,6 +80,25 @@ _ARTICLE_COMMA_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Strict Roman numeral (1-4999). _KEEP_CAPS previously hardcoded only I-X,
+# so anything past X was title-cased into nonsense: "PART XIV" -> "Part Xiv",
+# "CHAPTER XII" -> "Chapter Xii". A regex covers the real range instead --
+# it matters for real music metadata (Chicago numbered albums run to XXXVIII;
+# classical movements and acts routinely pass X).
+_ROMAN_NUMERAL_RE = re.compile(r"^M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})$")
+
+# Strings that are structurally valid Roman numerals but are really words or
+# common music terms -- these must stay title-cased, not forced uppercase.
+# "MIX" is the dangerous one (M+IX = 1009) and is everywhere in this library
+# ("Radio MIX", "Extended MIX"); "CD"/"XL"/"MD"/"DIV" are the same trap.
+_ROMAN_FALSE_FRIENDS: frozenset[str] = frozenset({"MIX", "CD", "MD", "XL", "DIV", "DIM"})
+
+# Dotted abbreviation: "U.S.A.", "R.E.M.", "D.O.A." -- two or more
+# letter-then-period pairs. _smart_title_case strips surrounding punctuation
+# before its _KEEP_CAPS lookup, so "U.S.A." became "U.S.A" (not in the set),
+# fell through to .capitalize(), and came out "U.s.a.".
+_DOTTED_ABBREV_RE = re.compile(r"^(?:[A-Za-z]\.){2,}$")
+
 # Real stylized band names whose leading word matches an entry in
 # _move_article_to_suffix()'s article list but is actually part of the
 # name, not a leading article -- must never be split. Confirmed live
@@ -147,6 +166,7 @@ _KEEP_CAPS: frozenset[str] = frozenset(
         "AC",
         "DC",
         "AC/DC",
+        "XL",  # XL Recordings -- also a Roman-numeral false friend (see below)
         "ACDC",
         "USA",
         "UK",
@@ -225,9 +245,33 @@ def _move_article_to_suffix(name: str) -> str:
     if s.lower() in PROTECTED_ARTIST_NAMES:
         return s
 
-    # If already has suffix format, return as-is
-    if _ARTICLE_SUFFIX_RE.search(s) or _ARTICLE_COMMA_RE.search(s):
+    # Canonical ", The" suffix -- already correct, leave alone.
+    if _ARTICLE_COMMA_RE.search(s):
         return s
+
+    # Parenthetical "(the)" suffix. This is a real but WRONG form -- scope
+    # doc §5 confirms ", The" is the convention and "(the)" was the source
+    # of a three-times-regressed bug. Previously both regexes were OR'd
+    # into a single "already has suffix format, return as-is" check, so a
+    # "(the)" artist was classified as already-correct and passed through
+    # untouched forever: Normalize could never fix it, because Normalize
+    # believed there was nothing to fix. Confirmed live 2026-08-21 --
+    # 1,262 archive rows across 203 distinct artists ("Archies (the)",
+    # "5th Dimension (the)", "Animals (the)", ...) sitting in the wrong
+    # form, versus 4,498 rows correctly in ", The". Convert instead of
+    # accepting.
+    m = _ARTICLE_SUFFIX_RE.search(s)
+    if m:
+        base = _ARTICLE_SUFFIX_RE.sub("", s).strip()
+        # The base may already carry the canonical suffix -- the documented
+        # double form "Beatles, The (the)". Strip the redundant parenthetical
+        # and stop, rather than stacking a second article onto it.
+        if _ARTICLE_COMMA_RE.search(base):
+            return base
+        base = base.rstrip(",").strip()
+        if not base:
+            return s
+        return f"{base}, {m.group(1).capitalize()}"
 
     # Check for leading article, case-insensitively. Confirmed live-data
     # bug (2026-08-16): the original `s.startswith(f"{article} ")` check
@@ -301,8 +345,28 @@ def _smart_title_case(s: str) -> str:
         clean = word.strip("\"'()[]{}.,!?;:-")
         upper_clean = clean.upper()
 
+        # Dotted abbreviation ("U.S.A.", "R.E.M.") -- checked on the raw word,
+        # before the punctuation-stripped lookups below, since stripping the
+        # trailing period is exactly what used to break these.
+        if _DOTTED_ABBREV_RE.match(word):
+            processed.append(word.upper())
+            continue
+
         # Check if it's an acronym/special term that should stay caps
         if upper_clean in _KEEP_CAPS:
+            processed.append(word.replace(clean, upper_clean))
+            continue
+
+        # Roman numeral of any magnitude, excluding the real-word collisions
+        # in _ROMAN_FALSE_FRIENDS. Only applied when the source token is
+        # already all-caps -- a lowercase "mix"/"did" must never be promoted
+        # to uppercase just because it happens to parse as a numeral.
+        if (
+            clean
+            and clean.isupper()
+            and upper_clean not in _ROMAN_FALSE_FRIENDS
+            and _ROMAN_NUMERAL_RE.match(upper_clean)
+        ):
             processed.append(word.replace(clean, upper_clean))
             continue
 

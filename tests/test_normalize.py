@@ -20,7 +20,13 @@ Fixed via PROTECTED_ARTIST_NAMES, mirroring artist_consolidate.py's
 PROTECTED_FULL_ARTIST_NAMES pattern for the identical problem shape.
 """
 
-from musaeus.stages.normalize import PROTECTED_ARTIST_NAMES, _move_article_to_suffix
+import pytest
+
+from musaeus.stages.normalize import (
+    PROTECTED_ARTIST_NAMES,
+    _move_article_to_suffix,
+    _smart_title_case,
+)
 
 
 class TestMoveArticleToSuffixCaseInsensitive:
@@ -84,3 +90,112 @@ class TestMoveArticleToSuffixProtectedNames:
         # without realizing why each entry is there.
         assert "de la soul" in PROTECTED_ARTIST_NAMES
         assert "los lobos" in PROTECTED_ARTIST_NAMES
+
+
+# ── Parenthetical "(the)" is a WRONG form, not an already-correct one ────────
+#
+# Regression guard for a bug confirmed live 2026-08-21: _move_article_to_suffix
+# OR'd _ARTICLE_SUFFIX_RE and _ARTICLE_COMMA_RE into one "already has suffix
+# format, return as-is" check. That classified the parenthetical "(the)" form
+# as already-correct, so Normalize passed it through untouched forever --
+# 1,262 archive rows across 203 distinct artists stranded in the wrong form.
+
+
+class TestParentheticalArticleConverted:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("Archies (the)", "Archies, The"),
+            ("5th Dimension (the)", "5th Dimension, The"),
+            ("Animals (the)", "Animals, The"),
+            ("Alan Parsons Project (the)", "Alan Parsons Project, The"),
+            ("Beatles (The)", "Beatles, The"),
+        ],
+    )
+    def test_parenthetical_converted_to_comma_suffix(self, raw, expected):
+        assert _move_article_to_suffix(raw) == expected
+
+    def test_double_form_does_not_stack_a_second_article(self):
+        # The documented pathological input. Must collapse to the canonical
+        # single suffix, never "Beatles, The, The" or "The Beatles, The".
+        assert _move_article_to_suffix("Beatles, The (the)") == "Beatles, The"
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Archies (the)",
+            "Beatles, The (the)",
+            "5th Dimension (the)",
+            "The Beatles",
+            "Beatles, The",
+            "De La Soul",
+            "Los Lobos",
+        ],
+    )
+    def test_conversion_is_rerun_safe(self, name):
+        once = _move_article_to_suffix(name)
+        assert _move_article_to_suffix(once) == once
+
+    def test_protected_name_still_wins_over_conversion(self):
+        # A protected stylized name must never be touched, even now that the
+        # parenthetical branch is active.
+        assert _move_article_to_suffix("De La Soul") == "De La Soul"
+
+
+# ── Roman numerals past X, and their real-word collisions ────────────────────
+
+
+class TestRomanNumerals:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("PART XIV", "Part XIV"),
+            ("CHAPTER XII", "Chapter XII"),
+            ("ACT III", "Act III"),
+            ("SYMPHONY IX", "Symphony IX"),
+            ("LED ZEPPELIN IV", "Led Zeppelin IV"),
+            # Chicago really did number albums this far.
+            ("CHICAGO XXXVIII", "Chicago XXXVIII"),
+        ],
+    )
+    def test_roman_numerals_preserved_beyond_ten(self, raw, expected):
+        assert _smart_title_case(raw) == expected
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            # MIX parses as a valid Roman numeral (M + IX = 1009) and is all
+            # over a real music library -- it must stay a word.
+            ("RADIO MIX", "Radio Mix"),
+            ("EXTENDED MIX", "Extended Mix"),
+            ("DIM THE LIGHTS", "Dim the Lights"),
+        ],
+    )
+    def test_real_words_that_parse_as_numerals_are_not_uppercased(self, raw, expected):
+        assert _smart_title_case(raw) == expected
+
+    def test_lowercase_numeral_like_word_is_not_promoted(self):
+        # Only an already-all-caps token is eligible; a lowercase "mix" must
+        # never be promoted to "MIX" just because it parses as a numeral.
+        assert "MIX" not in _smart_title_case("the radio mix")
+
+
+# ── Dotted abbreviations ─────────────────────────────────────────────────────
+
+
+class TestDottedAbbreviations:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("THE U.S.A. TOUR", "The U.S.A. Tour"),
+            ("R.E.M. GREATEST HITS", "R.E.M. Greatest Hits"),
+            ("D.O.A.", "D.O.A."),
+        ],
+    )
+    def test_dotted_abbreviations_stay_uppercase(self, raw, expected):
+        assert _smart_title_case(raw) == expected
+
+    def test_single_letter_prefix_is_not_treated_as_abbreviation(self):
+        # "Mr." is one letter + a period, not a dotted abbreviation -- it must
+        # title-case normally rather than becoming "MR.".
+        assert _smart_title_case("MR. BIG STUFF") == "Mr. Big Stuff"
