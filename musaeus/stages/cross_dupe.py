@@ -111,6 +111,7 @@ class CrossDupeStage(BaseStage):
 
         hash_conn = open_hash_index(ctx.config.hash_index_path)
         matches = 0
+        stale = 0
 
         try:
             for i, row in enumerate(candidates, 1):
@@ -121,8 +122,35 @@ class CrossDupeStage(BaseStage):
                 if not existing:
                     continue
 
+                # The ledger records that a file was once FINALIZED, not that
+                # a copy is held right now: it is append-only (deliberately --
+                # it must survive DB resets) and nothing prunes an entry when
+                # the file it names is later moved. Acting on an unverified
+                # hit is what caused the 2026-08-17/18 cascade: once a file
+                # had been relocated into DUPES_MOVED_FOR_REVIEW, its stale
+                # entry outlived it and the next pass quarantined it as a
+                # duplicate of ITSELF. 10,597 tracks ended up as the only
+                # copy of their own audio, filed as duplicates of nothing.
+                #
+                # So confirm the twin is really there before believing it,
+                # and never count the candidate's own path as its twin.
+                # See scope doc section 4.17.
+                live_paths = [
+                    r["file_path"]
+                    for r in existing
+                    if r["file_path"] != path_str and Path(r["file_path"]).exists()
+                ]
+                if not live_paths:
+                    stale += 1
+                    logger.debug(
+                        "stale hash-index hit for %s: indexed copies gone (%s)",
+                        path_str,
+                        "; ".join(r["file_path"] for r in existing[:2]),
+                    )
+                    continue
+
                 matches += 1
-                matched_paths = [r["file_path"] for r in existing]
+                matched_paths = live_paths
                 note = "already in ALAC-Library: " + "; ".join(matched_paths[:3])
                 if len(matched_paths) > 3:
                     note += f" (+{len(matched_paths) - 3} more)"
@@ -155,6 +183,13 @@ class CrossDupeStage(BaseStage):
 
         if not dry_run:
             ctx.conn.commit()
+
+        if stale:
+            # Surfaced, not silent: a large stale count means the ledger has
+            # drifted from the filesystem and wants pruning.
+            result.notes.append(
+                f"ignored {stale} stale hash-index hit(s) — indexed file no longer on disk"
+            )
 
         if matches == 0:
             result.notes.append("no cross-batch duplicates found")
