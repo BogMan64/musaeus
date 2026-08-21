@@ -132,6 +132,7 @@ from .dupe_resolver import DupeResolverStage
 from .enrich import EnrichStage
 from .finalize import FinalizeStage
 from .forge import ForgeStage
+from .genre_validate import GenreValidateStage  # noqa: E402
 from .ghost import GhostStage
 from .health import HealthStage
 from .ingest import IngestStage
@@ -185,6 +186,7 @@ __all__ = [
     "IntegrityStage",
     "AlbumArtStage",
     "TributeQuarantineStage",
+    "GenreValidateStage",
     "VariousArtistsFixStage",
     "BitRotStage",
 ]

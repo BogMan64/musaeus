@@ -122,6 +122,7 @@ from .stages import (
     EnrichStage,
     FinalizeStage,
     ForgeStage,
+    GenreValidateStage,
     GhostStage,
     HealthStage,
     IngestStage,
@@ -1096,6 +1097,12 @@ def _build_parser() -> argparse.ArgumentParser:
     mb_p.add_argument("--dry-run", action="store_true", help="Show what would change, no DB writes")
 
     # neardupe
+    genre_p = sub.add_parser(
+        "genre-validate",
+        help="Check library genres against MasterLaw.csv (fills empties, reports conflicts)",
+    )
+    genre_p.add_argument("--dry-run", action="store_true", help="Report only, fill nothing")
+
     neardupe_p = sub.add_parser("neardupe", help="Metadata-based near-duplicate detection")
     neardupe_p.add_argument("--dry-run", action="store_true", help="Show matches without staging")
 
@@ -1495,6 +1502,9 @@ def main() -> None:
 
         elif command == "mb-enrich":
             sys.exit(_run_pipeline([MBEnrichStage], dry_run=dry_run))
+
+        elif command == "genre-validate":
+            sys.exit(_run_pipeline([GenreValidateStage], dry_run=dry_run))
 
         elif command == "neardupe":
             sys.exit(_run_pipeline([NearDupeStage], dry_run=dry_run))
