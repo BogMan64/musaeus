@@ -5,6 +5,7 @@ Tests for GhostStage — marks archive entries whose files no longer exist on di
 from pathlib import Path
 
 import pytest
+
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db, upsert_archive
@@ -20,6 +21,7 @@ def cfg(tmp_path: Path) -> MusicConfig:
         quarantine=tmp_path / "QUARANTINE",
         runs_root=tmp_path / "RUNS",
         meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "ALAC-Library",
         db_path=tmp_path / "musaeus.db",
     )
 
@@ -43,6 +45,7 @@ def _insert_archive(ctx: RunContext, file_path: str, status: str = "CATALOGUED")
 
 # ── Validate ──────────────────────────────────────────────────────────────────
 
+
 class TestGhostValidate:
     def test_validate_empty_archive(self, ctx):
         """Empty archive → validate passes (just logs info)."""
@@ -54,6 +57,7 @@ class TestGhostValidate:
 
 
 # ── Dry run ───────────────────────────────────────────────────────────────────
+
 
 class TestGhostDryRun:
     def test_dry_run_missing_file(self, ctx_dry, tmp_path):
@@ -95,6 +99,7 @@ class TestGhostDryRun:
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
+
 class TestGhostRun:
     def test_marks_missing_as_ghost(self, ctx, tmp_path):
         _insert_archive(ctx, str(tmp_path / "missing.flac"))
@@ -130,18 +135,14 @@ class TestGhostRun:
         assert result.files_changed == 0
         assert result.files_skipped == 1
         # No GHOST_FOUND event should be logged
-        events = ctx.conn.execute(
-            "SELECT * FROM events WHERE event_type='GHOST_FOUND'"
-        ).fetchall()
+        events = ctx.conn.execute("SELECT * FROM events WHERE event_type='GHOST_FOUND'").fetchall()
         assert len(events) == 0
 
     def test_events_logged(self, ctx, tmp_path):
         _insert_archive(ctx, str(tmp_path / "vanished.flac"))
         GhostStage().execute(ctx)
 
-        events = ctx.conn.execute(
-            "SELECT * FROM events WHERE event_type='GHOST_FOUND'"
-        ).fetchall()
+        events = ctx.conn.execute("SELECT * FROM events WHERE event_type='GHOST_FOUND'").fetchall()
         assert len(events) == 1
         assert events[0]["file_path"] == str(tmp_path / "vanished.flac")
         assert events[0]["new_value"] == "GHOST"

@@ -21,7 +21,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_FUZZY_THRESHOLD = 88   # rapidfuzz ratio (0–100)
+_FUZZY_THRESHOLD = 88  # rapidfuzz ratio (0–100)
 
 
 class ArtistCanon:
@@ -37,7 +37,7 @@ class ArtistCanon:
     def __init__(self, tsv_path: Path) -> None:
         self._path = tsv_path
         self._lock = threading.Lock()
-        self._map: dict[str, str] = {}   # normalised_key → canonical
+        self._map: dict[str, str] = {}  # normalised_key → canonical
         self._load()
 
     # ── persistence ───────────────────────────────────────────────────────────
@@ -85,7 +85,9 @@ class ArtistCanon:
         # Fuzzy fallback — use process.extractOne for O(1)-ish performance
         # instead of iterating all entries manually
         try:
-            from rapidfuzz import process, fuzz as _fuzz  # type: ignore[import-untyped]
+            from rapidfuzz import fuzz as _fuzz
+            from rapidfuzz import process  # type: ignore[import-untyped]
+
             if not self._map:
                 return raw
             result = process.extractOne(
@@ -99,13 +101,15 @@ class ArtistCanon:
                 canon = self._map[matched_key]
                 logger.debug(
                     "artist canon fuzzy match: %r → %r (score=%d)",
-                    raw, canon, score,
+                    raw,
+                    canon,
+                    score,
                 )
                 return canon
         except ImportError:
-            pass   # rapidfuzz optional
+            pass  # rapidfuzz optional
 
-        return raw   # no match — return as-is
+        return raw  # no match — return as-is
 
     def add(self, raw: str, canonical: str) -> None:
         """Append a new canon mapping and persist to disk."""

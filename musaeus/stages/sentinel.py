@@ -21,13 +21,12 @@ Design:
 from __future__ import annotations
 
 import logging
-import uuid
 from pathlib import Path
 
 from ..context import RunContext, StageResult
 from ..db import upsert_archive
-from ..hasher import HasherError, audio_hash_safe, file_hash
-from .base import BaseStage, StageError
+from ..hasher import audio_hash_safe, file_hash
+from .base import BaseStage
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +63,9 @@ class SentinelStage(BaseStage):
     # ── Validate ──────────────────────────────────────────────────────────────
 
     def validate(self, ctx: RunContext) -> None:
-        count = ctx.conn.execute(
-            "SELECT COUNT(*) FROM archive WHERE status='PENDING'"
-        ).fetchone()[0]
+        count = ctx.conn.execute("SELECT COUNT(*) FROM archive WHERE status='PENDING'").fetchone()[
+            0
+        ]
         if count == 0:
             logger.info("[sentinel] no PENDING files — stage will be a no-op")
         # ffmpeg absence is a warning, not a hard failure — file_hash still works
@@ -115,11 +114,10 @@ class SentinelStage(BaseStage):
             result.files_processed += 1
 
             if not path.exists():
-                logger.warning("file gone (stale DB record — removing): %s", path_str)
-                ctx.conn.execute(
-                    "DELETE FROM archive WHERE file_path = ?", (path_str,)
-                )
-                result.files_skipped += 1
+                logger.warning("Missing file (stale DB record — removing): %s", path_str)
+                ctx.conn.execute("DELETE FROM archive WHERE file_path = ?", (path_str,))
+                result.files_errored += 1
+                result.errors.append(f"Missing file, removed from archive: {path_str}")
                 continue
 
             # Full-file hash (always, cheap)
@@ -193,9 +191,7 @@ class SentinelStage(BaseStage):
                         stage=self.NAME,
                         note=f"EXACT group={group_id}",
                     )
-                    result.notes.append(
-                        f"DUPLICATE: {Path(path_str).name} == {Path(first).name}"
-                    )
+                    result.notes.append(f"DUPLICATE: {Path(path_str).name} == {Path(first).name}")
             else:
                 seen_hashes[ah] = path_str
 

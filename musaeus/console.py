@@ -21,17 +21,15 @@ Launch:
 
 from __future__ import annotations
 
+import contextlib
 import logging
-import os
 import sys
-import textwrap
 import traceback
 from pathlib import Path
-from typing import Callable
 
 from .config import MusicConfig, get_config
 from .context import RunContext
-from .db import open_db
+from .db import open_db, snapshot_db_before_wipe
 from .hasher import ffmpeg_available, ffprobe_available
 from .stages import (
     DEFAULT_PIPELINE,
@@ -42,6 +40,7 @@ from .stages import (
     ScholarStage,
     SentinelStage,
     TaggerStage,
+    TributeQuarantineStage,
 )
 from .stages.base import BaseStage
 
@@ -58,6 +57,7 @@ _RED = "\033[31m"
 _CYAN = "\033[36m"
 _BLUE = "\033[34m"
 _MAGENTA = "\033[35m"
+
 
 def _c(text: str, *codes: str) -> str:
     """Wrap text in ANSI codes if stdout is a TTY."""
@@ -124,13 +124,14 @@ def _choose(prompt: str, options: list[str], default: str = "0") -> str:
     for i, opt in enumerate(options):
         print(f"    {_c(str(i), _BOLD, _CYAN)}  {opt}")
     try:
-        val = input(f"\n  {prompt} [0-{len(options)-1}]: ").strip()
+        val = input(f"\n  {prompt} [0-{len(options) - 1}]: ").strip()
         return val if val else default
     except EOFError:
         return default
 
 
 # ── Console class ─────────────────────────────────────────────────────────────
+
 
 class Console:
     """
@@ -220,18 +221,16 @@ class Console:
             pending = conn.execute(
                 "SELECT COUNT(*) FROM archive WHERE status='PENDING'"
             ).fetchone()[0]
-            hashed = conn.execute(
-                "SELECT COUNT(*) FROM archive WHERE status='HASHED'"
-            ).fetchone()[0]
+            hashed = conn.execute("SELECT COUNT(*) FROM archive WHERE status='HASHED'").fetchone()[
+                0
+            ]
             catalogued = conn.execute(
                 "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'"
             ).fetchone()[0]
             dupes = conn.execute(
                 "SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE status='pending'"
             ).fetchone()[0]
-            issues = conn.execute(
-                "SELECT COUNT(*) FROM validation_issues"
-            ).fetchone()[0]
+            issues = conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
             last_run = conn.execute(
                 "SELECT MAX(ts) FROM events WHERE event_type='RUN_START'"
             ).fetchone()[0]
@@ -258,8 +257,10 @@ class Console:
             inbox = self._config.inbox
             if inbox.exists():
                 from .config import AUDIO_EXTENSIONS
+
                 inbox_count = sum(
-                    1 for f in inbox.rglob("*")
+                    1
+                    for f in inbox.rglob("*")
                     if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS
                 )
                 _info(f"Inbox files   : {_c(str(inbox_count), _CYAN)}")
@@ -281,40 +282,49 @@ class Console:
             return
 
         try:
-            ctx = RunContext.new(self._config, conn, dry_run=dry_run)
-            stages: list[BaseStage] = [cls() for cls in DEFAULT_PIPELINE]
-
-            for stage in stages:
-                print()
-                print(_c(f"  ── {stage.NAME.upper()} ──", _BOLD, _BLUE))
-                result = stage.execute(ctx)
-
-                if result.success:
-                    _ok(result.summarise())
-                else:
-                    _err(result.summarise())
-
-                for note in result.notes:
-                    _info(note)
-                for err in result.errors:
-                    _err(f"  ERROR: {err}")
-
-            print()
-            all_ok = all(r.success for r in ctx.stage_results)
-            if all_ok:
-                _ok(f"Pipeline complete  run_id={ctx.run_id}")
-            else:
-                _warn(f"Pipeline finished with errors  run_id={ctx.run_id}")
-
-            ctx.finish()
-
-        except Exception:
-            _err("Pipeline crashed — see traceback below")
-            traceback.print_exc()
             try:
-                conn.close()
+                ctx = RunContext.new(self._config, conn, dry_run=dry_run)
+                stages: list[BaseStage] = [cls() for cls in DEFAULT_PIPELINE]
+
+                for stage in stages:
+                    print()
+                    print(_c(f"  ── {stage.NAME.upper()} ──", _BOLD, _BLUE))
+                    result = stage.execute(ctx)
+
+                    if result.success:
+                        _ok(result.summarise())
+                    else:
+                        _err(result.summarise())
+
+                    for note in result.notes:
+                        _info(note)
+                    for err in result.errors:
+                        _err(f"  ERROR: {err}")
+
+                print()
+                all_ok = all(r.success for r in ctx.stage_results)
+                if all_ok:
+                    _ok(f"Pipeline complete  run_id={ctx.run_id}")
+                else:
+                    _warn(f"Pipeline finished with errors  run_id={ctx.run_id}")
+
+                ctx.finish()
+
             except Exception:
-                pass
+                _err("Pipeline crashed — see traceback below")
+                traceback.print_exc()
+        finally:
+            # Guaranteed close on every exit path -- including
+            # KeyboardInterrupt, which is a BaseException and would
+            # otherwise skip both ctx.finish()'s close and the
+            # except-Exception branch above, leaking an open connection
+            # that then locks out any later stage run in this same
+            # process (the exact bug behind two "database is locked"
+            # crashes in one session, 2026-08-11). Safe to call even
+            # after ctx.finish() already closed it -- closing an
+            # already-closed sqlite3.Connection is a documented no-op.
+            with contextlib.suppress(Exception):
+                conn.close()
 
     # ── Run single stage ──────────────────────────────────────────────────────
 
@@ -325,26 +335,30 @@ class Console:
         if conn is None:
             return
         try:
-            ctx = RunContext.new(self._config, conn, dry_run=dry_run)
-            stage = stage_cls()
-            _section(f"{stage.NAME.upper()}  [{mode}]")
-            result = stage.execute(ctx)
-            if result.success:
-                _ok(result.summarise())
-            else:
-                _err(result.summarise())
-            for note in result.notes:
-                _info(note)
-            for err_msg in result.errors:
-                _err(f"  ERROR: {err_msg}")
-            ctx.finish()
-        except Exception:
-            _err("Stage crashed — see traceback below")
-            traceback.print_exc()
             try:
-                conn.close()
+                ctx = RunContext.new(self._config, conn, dry_run=dry_run)
+                stage = stage_cls()
+                _section(f"{stage.NAME.upper()}  [{mode}]")
+                result = stage.execute(ctx)
+                if result.success:
+                    _ok(result.summarise())
+                else:
+                    _err(result.summarise())
+                for note in result.notes:
+                    _info(note)
+                for err_msg in result.errors:
+                    _err(f"  ERROR: {err_msg}")
+                ctx.finish()
             except Exception:
-                pass
+                _err("Stage crashed — see traceback below")
+                traceback.print_exc()
+        finally:
+            # Guaranteed close on every exit path -- see _run_pipeline's
+            # identical comment for why this must be a finally, not just
+            # the except-Exception branch (KeyboardInterrupt is a
+            # BaseException and would otherwise leak the connection).
+            with contextlib.suppress(Exception):
+                conn.close()
 
     # ── Recent runs ───────────────────────────────────────────────────────────
 
@@ -464,6 +478,22 @@ class Console:
         else:
             _warn("Config not loaded.")
 
+    # ── API keys ──────────────────────────────────────────────────────────────
+
+    def _manage_api_keys(self) -> None:
+        _section("Enter/Update API Keys")
+        from .setup import run_api_key_manager
+
+        run_api_key_manager()
+
+        # Refresh so the Configuration view reflects any key that took
+        # effect immediately (i.e. no higher-precedence env var was
+        # already active for it). Keys that showed the shell-export
+        # warning intentionally won't change here -- that's correct,
+        # since MusicConfig.from_env() would see the same override.
+        with contextlib.suppress(Exception):
+            self._config = MusicConfig.from_env()
+
     # ── Reset / fresh-start ───────────────────────────────────────────────────
 
     def _reset_menu(self) -> None:
@@ -537,6 +567,9 @@ class Console:
                 _info("Cancelled.")
                 return
             try:
+                snapshot_path = snapshot_db_before_wipe(db_path, self._config.db_history_dir)
+                if snapshot_path is not None:
+                    _ok(f"Snapshotted to: {snapshot_path}")
                 # Also remove WAL/SHM sidecar files
                 for suffix in ("", "-wal", "-shm"):
                     p = db_path.parent / (db_path.name + suffix)
@@ -569,6 +602,7 @@ class Console:
             except ValueError:
                 return
             from .dedupe import print_dedupe_report, run_dedupe_console
+
             if idx == 0:
                 run_dedupe_console(conn, auto_mode=False)
             elif idx == 1:
@@ -590,39 +624,52 @@ class Console:
         if conn is None:
             return
         try:
-            ctx = RunContext.new(self._config, conn, dry_run=dry_run)
-            if stash:
-                for k, v in stash.items():
-                    ctx.set(k, v)
-            stage = stage_cls()
-            _section(f"{stage.NAME.upper()}  [{mode}]")
-            result = stage.execute(ctx)
-            if result.success:
-                _ok(result.summarise())
-            else:
-                _err(result.summarise())
-            for note in result.notes:
-                _info(note)
-            for err_msg in result.errors:
-                _err(f"  ERROR: {err_msg}")
-            ctx.finish()
-        except Exception:
-            _err("Stage crashed — see traceback below")
-            traceback.print_exc()
             try:
-                conn.close()
+                ctx = RunContext.new(self._config, conn, dry_run=dry_run)
+                if stash:
+                    for k, v in stash.items():
+                        ctx.set(k, v)
+                stage = stage_cls()
+                _section(f"{stage.NAME.upper()}  [{mode}]")
+                result = stage.execute(ctx)
+                if result.success:
+                    _ok(result.summarise())
+                else:
+                    _err(result.summarise())
+                for note in result.notes:
+                    _info(note)
+                for err_msg in result.errors:
+                    _err(f"  ERROR: {err_msg}")
+                ctx.finish()
             except Exception:
-                pass
+                _err("Stage crashed — see traceback below")
+                traceback.print_exc()
+        finally:
+            # Guaranteed close on every exit path -- see _run_pipeline's
+            # identical comment for why this must be a finally, not just
+            # the except-Exception branch (KeyboardInterrupt is a
+            # BaseException and would otherwise leak the connection).
+            # This is the exact call site from the traceback that
+            # exposed the bug (Forge failing with "database is locked"
+            # after an interrupted Sentinel run leaked its connection).
+            with contextlib.suppress(Exception):
+                conn.close()
 
     def _stage_menu(self) -> None:
         stages: list[tuple[str, type, dict]] = [
-            ("Ingest    — register new files from inbox",       IngestStage,   {}),
-            ("Sentinel  — hash files + detect exact dupes",     SentinelStage, {}),
-            ("Scholar   — extract ffprobe metadata",            ScholarStage,  {}),
-            ("Forge     — measure LUFS + write ReplayGain tags", ForgeStage,  {}),
+            ("Ingest    — register new files from inbox", IngestStage, {}),
+            ("Sentinel  — hash files + detect exact dupes", SentinelStage, {}),
+            ("Scholar   — extract ffprobe metadata", ScholarStage, {}),
+            ("Forge     — measure LUFS + write ReplayGain tags", ForgeStage, {}),
             ("Tagger    — write normalised DB metadata to files", TaggerStage, {}),
-            ("Curator   — build car-library export",            CuratorStage,  {}),
-            ("Playlists — build per-genre M3U8 playlists",     PlaylistStage, {}),
+            ("Curator   — build car-library export", CuratorStage, {}),
+            ("Playlists — build per-genre M3U8 playlists", PlaylistStage, {}),
+            (
+                "Tribute Quarantine — detect/quarantine karaoke+tribute content"
+                "  [standalone, not part of the automatic pipeline]",
+                TributeQuarantineStage,
+                {},
+            ),
         ]
         opts = [label for label, _, _ in stages] + ["Back"]
         choice = _choose("Select stage", opts)
@@ -669,17 +716,18 @@ class Console:
 
     def _main_menu(self) -> None:
         options = [
-            ("Status",                        self._show_status),
-            ("Run full pipeline  [DRY RUN]",  lambda: self._run_pipeline(dry_run=True)),
-            ("Run full pipeline  [LIVE]",     lambda: self._run_pipeline(dry_run=False)),
-            ("Run single stage…",             self._stage_menu),
-            ("Dedupe review",                 self._run_dedupe),
-            ("View recent runs",              self._show_runs),
-            ("Inspect a run",                 self._show_run_detail),
-            ("View duplicates",               self._show_duplicates),
-            ("Configuration",                 self._show_config),
-            ("Reset / fresh start",           self._reset_menu),
-            ("Quit",                          self._quit),
+            ("Status", self._show_status),
+            ("Run full pipeline  [DRY RUN]", lambda: self._run_pipeline(dry_run=True)),
+            ("Run full pipeline  [LIVE]", lambda: self._run_pipeline(dry_run=False)),
+            ("Run single stage…", self._stage_menu),
+            ("Dedupe review", self._run_dedupe),
+            ("View recent runs", self._show_runs),
+            ("Inspect a run", self._show_run_detail),
+            ("View duplicates", self._show_duplicates),
+            ("Configuration", self._show_config),
+            ("Enter/Update API Keys", self._manage_api_keys),
+            ("Reset / fresh start", self._reset_menu),
+            ("Quit", self._quit),
         ]
 
         _header(f"MUSAEUS  v{self.VERSION}")
@@ -729,7 +777,7 @@ class Console:
                 self._main_menu()
             except KeyboardInterrupt:
                 print()
-                _warn("Use option 10 (Quit) to exit cleanly.")
+                _warn("Use option 11 (Quit) to exit cleanly.")
             except Exception:
                 _err("Unexpected error in console loop:")
                 traceback.print_exc()

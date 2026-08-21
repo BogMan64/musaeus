@@ -4,17 +4,38 @@ MUSAEUS — Stage: Normalize
 Metadata normalisation for CATALOGUED archive rows.
 
 What it does:
-  - Fixes article suffixes in artist fields:
-      "Beatles, The"         → "The Beatles"   (stored form → display form)
-      "Cranberries, The (the)" → "The Cranberries"
-  - Repairs ALL-CAPS fields:
+  - Moves leading articles to suffix (ORPHEUS-style canonical storage):
+      "The Beatles"         → "Beatles, The"
+      "The Band"            → "Band, The"
+      "A Tribe Called Quest" → "Tribe Called Quest, A"
+  - This enables proper alphabetical sorting (B not T)
+  - Repairs ALL-CAPS fields with MusicBrainz-style title case:
       "FLEETWOOD MAC"        → "Fleetwood Mac"
       "DREAMS"               → "Dreams"
-  - Applies title-case rules to title / album fields that are fully uppercase
+      "ROCK 'N' ROLL"        → "Rock 'n' Roll"
+      "DON'T STOP BELIEVIN'" → "Don't Stop Believin'"
+  - Preserves acronyms and special terms:
+      "AC/DC"                → "AC/DC" (not "Ac/dc")
+      "R&B"                  → "R&B" (not "R&b")
+      "USA"                  → "USA" (not "Usa")
+  - Applies title-case rules to title/album fields that are fully uppercase
   - Writes normalised values back to the archive table
   - Logs NORMALIZE_ARTIST / NORMALIZE_TITLE / NORMALIZE_ALBUM per change
   - dry_run() reports all proposed changes without touching the DB
   - Re-run safe: unchanged rows are skipped (no spurious events)
+
+Title Case Rules (MusicBrainz standard):
+  - First word always capitalized
+  - Last word always capitalized
+  - Short prepositions/articles stay lowercase (unless first/last)
+  - Acronyms preserved (AC/DC, USA, REM, etc.)
+  - Special patterns: Rock 'n' Roll, R&B, feat.
+  - Roman numerals stay uppercase (II, III, IV, etc.)
+
+Article Storage Philosophy (ORPHEUS-compatible):
+  - Database stores: "Beatles, The" (sorts under B)
+  - Tagger can optionally write: "The Beatles" (display form)
+  - This matches ORPHEUS canonical storage format
 
 Rules:
   - Only modifies fields that ARE wrong — never touches already-correct data
@@ -25,6 +46,7 @@ Rules:
 ORPHEUS equivalents:
   - SCRIPTS/cleanup_embedded_article_names.py  (article fix)
   - SCRIPTS/find_all_caps_metadata.py          (caps detection)
+  - SCRIPTS/audit_mb_title_case.py             (MusicBrainz title case)
   - SCRIPTS/orpheus_metadata_normalizer.py     (combined pass)
 """
 
@@ -58,12 +80,55 @@ _ARTICLE_COMMA_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Short words that stay lowercase in title-case (standard English list)
+# Strict Roman numeral (1-4999). _KEEP_CAPS previously hardcoded only I-X,
+# so anything past X was title-cased into nonsense: "PART XIV" -> "Part Xiv",
+# "CHAPTER XII" -> "Chapter Xii". A regex covers the real range instead --
+# it matters for real music metadata (Chicago numbered albums run to XXXVIII;
+# classical movements and acts routinely pass X).
+_ROMAN_NUMERAL_RE = re.compile(r"^M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})$")
+
+# Strings that are structurally valid Roman numerals but are really words or
+# common music terms -- these must stay title-cased, not forced uppercase.
+# "MIX" is the dangerous one (M+IX = 1009) and is everywhere in this library
+# ("Radio MIX", "Extended MIX"); "CD"/"XL"/"MD"/"DIV" are the same trap.
+_ROMAN_FALSE_FRIENDS: frozenset[str] = frozenset({"MIX", "CD", "MD", "XL", "DIV", "DIM"})
+
+# Dotted abbreviation: "U.S.A.", "R.E.M.", "D.O.A." -- two or more
+# letter-then-period pairs. _smart_title_case strips surrounding punctuation
+# before its _KEEP_CAPS lookup, so "U.S.A." became "U.S.A" (not in the set),
+# fell through to .capitalize(), and came out "U.s.a.".
+_DOTTED_ABBREV_RE = re.compile(r"^(?:[A-Za-z]\.){2,}$")
+
+# Real stylized band names whose leading word matches an entry in
+# _move_article_to_suffix()'s article list but is actually part of the
+# name, not a leading article -- must never be split. Confirmed live
+# corruption (2026-08-16): "De La Soul" was mis-normalized to "La Soul,
+# De" by a real Normalize run (2 real files affected, before this guard
+# existed). The others below are documented, well-known real-world cases
+# of the same failure shape (La Roux, Los Lobos, Los Lonely Boys, Die
+# Ärzte, Das EFX) -- not present in this library today, but added
+# defensively since the failure mode is identical and would otherwise
+# silently corrupt them the moment they're ingested.
+PROTECTED_ARTIST_NAMES: frozenset[str] = frozenset(
+    {
+        "de la soul",
+        "la roux",
+        "los lobos",
+        "los lonely boys",
+        "die ärzte",
+        "die toten hosen",
+        "das efx",
+    }
+)
+
+# Short words that stay lowercase in title-case (MusicBrainz standard)
 _LOWERCASE_WORDS: frozenset[str] = frozenset(
     {
+        # Articles
         "a",
         "an",
         "the",
+        # Conjunctions
         "and",
         "but",
         "or",
@@ -71,6 +136,7 @@ _LOWERCASE_WORDS: frozenset[str] = frozenset(
         "for",
         "so",
         "yet",
+        # Prepositions
         "at",
         "by",
         "in",
@@ -81,34 +147,164 @@ _LOWERCASE_WORDS: frozenset[str] = frozenset(
         "as",
         "if",
         "vs",
+        # Common in music titles
         "feat",
         "ft",
+        "with",
+        "from",
+        "into",
+        "onto",
+        "upon",
+        "n",
+        "n'",  # Rock 'n' Roll
     }
 )
+
+# Words that should stay ALL CAPS (acronyms, special terms)
+_KEEP_CAPS: frozenset[str] = frozenset(
+    {
+        "AC",
+        "DC",
+        "AC/DC",
+        "XL",  # XL Recordings -- also a Roman-numeral false friend (see below)
+        "ACDC",
+        "USA",
+        "UK",
+        "NYC",
+        "LA",
+        "DJ",
+        "MC",
+        "DMX",
+        "REM",
+        "INXS",
+        "ELO",
+        "OMD",
+        "UB40",
+        "TLC",
+        "SWV",
+        "II",
+        "III",
+        "IV",
+        "V",
+        "VI",
+        "VII",
+        "VIII",
+        "IX",
+        "X",  # Roman numerals
+        "BMW",
+        "UFO",
+        "TV",
+        "FM",
+        "AM",
+        "LP",
+        "EP",
+        "CD",
+    }
+)
+
+# Special patterns to preserve
+_SPECIAL_PATTERNS = [
+    # 'n' combinations
+    (re.compile(r"\b([Rr])ock\s*[''`]?\s*[Nn]\s*[''`]?\s*[Rr]oll\b"), r"\1ock 'n' Roll"),
+    (re.compile(r"\bR\s*[''`&]\s*B\b", re.IGNORECASE), "R&B"),
+    # Common abbreviations
+    (re.compile(r"\bFt\.?\b", re.IGNORECASE), "feat."),
+    (re.compile(r"\bFeat\.?\b", re.IGNORECASE), "feat."),
+]
 
 
 # ── Normalisation helpers ──────────────────────────────────────────────────────
 
 
-def _fix_article_suffix(name: str) -> str:
+def _move_article_to_suffix(name: str) -> str:
     """
-    Convert stored article-suffix form to natural display form.
-    "Beatles, The (the)" → "The Beatles"
-    "Refused"            → "Refused"  (unchanged)
+    Move leading article to suffix for canonical storage (ORPHEUS-style).
+
+    Examples:
+      "The Beatles"     → "Beatles, The"
+      "the Beatles"     → "Beatles, The" (case-insensitive match; the
+                           suffix article is always emitted in its
+                           canonical capitalized form regardless of input
+                           casing, per the uniform-capitalization
+                           convention -- matches artist_consolidate.py's
+                           _smart_title() fix for the same ", The" vs
+                           "(the)" convention)
+      "A Tribe Called Quest" → "Tribe Called Quest, A"
+      "An American Band" → "American Band, An"
+      "Beatles, The"    → "Beatles, The" (already correct, unchanged)
+      "Refused"         → "Refused" (no article, unchanged)
+
+    This enables proper alphabetical sorting: "Beatles, The" sorts under B, not T.
     """
     s = name.strip()
 
+    # Real stylized band name (De La Soul, Los Lobos, etc.) -- the
+    # leading word looks like an article but isn't. Must be checked
+    # before the suffix-format check below, since a protected name could
+    # coincidentally also match _ARTICLE_SUFFIX_RE/_ARTICLE_COMMA_RE.
+    if s.lower() in PROTECTED_ARTIST_NAMES:
+        return s
+
+    # Canonical ", The" suffix -- already correct, leave alone.
+    if _ARTICLE_COMMA_RE.search(s):
+        return s
+
+    # Parenthetical "(the)" suffix. This is a real but WRONG form -- scope
+    # doc §5 confirms ", The" is the convention and "(the)" was the source
+    # of a three-times-regressed bug. Previously both regexes were OR'd
+    # into a single "already has suffix format, return as-is" check, so a
+    # "(the)" artist was classified as already-correct and passed through
+    # untouched forever: Normalize could never fix it, because Normalize
+    # believed there was nothing to fix. Confirmed live 2026-08-21 --
+    # 1,262 archive rows across 203 distinct artists ("Archies (the)",
+    # "5th Dimension (the)", "Animals (the)", ...) sitting in the wrong
+    # form, versus 4,498 rows correctly in ", The". Convert instead of
+    # accepting.
     m = _ARTICLE_SUFFIX_RE.search(s)
     if m:
-        article = m.group(1).strip().capitalize()
-        base = s[: m.start()].strip().rstrip(",").strip()
-        return f"{article} {base}"
+        base = _ARTICLE_SUFFIX_RE.sub("", s).strip()
+        # The base may already carry the canonical suffix -- the documented
+        # double form "Beatles, The (the)". Strip the redundant parenthetical
+        # and stop, rather than stacking a second article onto it.
+        if _ARTICLE_COMMA_RE.search(base):
+            return base
+        base = base.rstrip(",").strip()
+        if not base:
+            return s
+        return f"{base}, {m.group(1).capitalize()}"
 
-    m2 = _ARTICLE_COMMA_RE.search(s)
-    if m2:
-        article = m2.group(1).strip().capitalize()
-        base = s[: m2.start()].strip()
-        return f"{article} {base}"
+    # Check for leading article, case-insensitively. Confirmed live-data
+    # bug (2026-08-16): the original `s.startswith(f"{article} ")` check
+    # is case-sensitive, so it silently skipped every lowercase-leading-
+    # article artist -- "the Chieftains", "the Band", "the Bangles", and
+    # 15 others found completely unfixed after a live Normalize run
+    # (`Fixed: 0 artist(s)` despite 18 distinct affected artists in the
+    # data).
+    articles = [
+        "The",
+        "A",
+        "An",
+        "Le",
+        "La",
+        "Les",
+        "El",
+        "Los",
+        "Las",
+        "De",
+        "Het",
+        "Een",
+        "Die",
+        "Das",
+        "Ein",
+        "Eine",
+    ]
+
+    for article in articles:
+        prefix = f"{article} "
+        if s[: len(prefix)].lower() == prefix.lower() and len(s) > len(article) + 1:
+            # Found leading article - move to suffix, canonical casing
+            rest = s[len(article) :].strip()
+            return f"{rest}, {article}"
 
     return s
 
@@ -124,29 +320,86 @@ def _is_all_caps(s: str) -> bool:
 
 def _smart_title_case(s: str) -> str:
     """
-    Convert a string to title-case, keeping short prepositions/articles
-    lowercase except at the start of the string.
+    Convert a string to MusicBrainz-style title case.
+
+    Rules:
+    - First word always capitalized
+    - Last word always capitalized
+    - Short prepositions/articles stay lowercase (unless first/last)
+    - Preserve ALL-CAPS acronyms (AC/DC, USA, etc.)
+    - Special patterns (Rock 'n' Roll, R&B, feat.)
+    - Roman numerals stay uppercase
     """
-    words = s.split()
-    result = []
+    # Apply special patterns first
+    result = s
+    for pattern, replacement in _SPECIAL_PATTERNS:
+        result = pattern.sub(replacement, result)
+
+    words = result.split()
+    if not words:
+        return s
+
+    processed = []
     for i, word in enumerate(words):
-        clean = word.strip("\"'()[]{}.,!?")
-        lower = clean.lower()
-        if i == 0 or lower not in _LOWERCASE_WORDS:
-            result.append(word.capitalize())
-        else:
-            result.append(word.lower())
-    return " ".join(result)
+        # Clean word (remove surrounding punctuation for checking)
+        clean = word.strip("\"'()[]{}.,!?;:-")
+        upper_clean = clean.upper()
+
+        # Dotted abbreviation ("U.S.A.", "R.E.M.") -- checked on the raw word,
+        # before the punctuation-stripped lookups below, since stripping the
+        # trailing period is exactly what used to break these.
+        if _DOTTED_ABBREV_RE.match(word):
+            processed.append(word.upper())
+            continue
+
+        # Check if it's an acronym/special term that should stay caps
+        if upper_clean in _KEEP_CAPS:
+            processed.append(word.replace(clean, upper_clean))
+            continue
+
+        # Roman numeral of any magnitude, excluding the real-word collisions
+        # in _ROMAN_FALSE_FRIENDS. Only applied when the source token is
+        # already all-caps -- a lowercase "mix"/"did" must never be promoted
+        # to uppercase just because it happens to parse as a numeral.
+        if (
+            clean
+            and clean.isupper()
+            and upper_clean not in _ROMAN_FALSE_FRIENDS
+            and _ROMAN_NUMERAL_RE.match(upper_clean)
+        ):
+            processed.append(word.replace(clean, upper_clean))
+            continue
+
+        # First or last word always capitalized
+        if i == 0 or i == len(words) - 1:
+            processed.append(word.capitalize())
+            continue
+
+        # Check if it's a lowercase word
+        if clean.lower() in _LOWERCASE_WORDS:
+            processed.append(word.lower())
+            continue
+
+        # Default: capitalize
+        processed.append(word.capitalize())
+
+    return " ".join(processed)
 
 
 def _normalise_artist(artist: str) -> str | None:
     """
     Return corrected artist string, or None if no change needed.
-    Order: article fix first, then caps fix.
+    Order: caps fix first, then article move to suffix.
     """
-    fixed = _fix_article_suffix(artist)
+    fixed = artist
+
+    # Fix ALL-CAPS first
     if _is_all_caps(fixed):
         fixed = _smart_title_case(fixed)
+
+    # Move article to suffix (ORPHEUS-style canonical form)
+    fixed = _move_article_to_suffix(fixed)
+
     return fixed if fixed != artist else None
 
 

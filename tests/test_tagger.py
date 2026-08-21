@@ -8,10 +8,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db, upsert_archive
-from musaeus.stages.tagger import TaggerStage, _read_tags, _write_tags
+from musaeus.stages.tagger import TaggerStage
 
 
 @pytest.fixture
@@ -23,6 +24,7 @@ def cfg(tmp_path: Path) -> MusicConfig:
         quarantine=tmp_path / "QUARANTINE",
         runs_root=tmp_path / "RUNS",
         meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "ALAC-Library",
         db_path=tmp_path / "musaeus.db",
     )
 
@@ -57,22 +59,29 @@ def _insert_catalogued(ctx: RunContext, file_path: str, **kwargs) -> None:
 
 # ── Validate ──────────────────────────────────────────────────────────────────
 
+
 class TestTaggerValidate:
     def test_validate_with_mutagen(self, ctx):
         """Validate should pass if mutagen is importable."""
-        with patch("builtins.__import__", wraps=__import__):
-            with patch.dict("sys.modules", {"mutagen": MagicMock()}):
-                TaggerStage().validate(ctx)
+        with (
+            patch("builtins.__import__", wraps=__import__),
+            patch.dict("sys.modules", {"mutagen": MagicMock()}),
+        ):
+            TaggerStage().validate(ctx)
 
     def test_validate_without_mutagen(self, ctx):
         from musaeus.stages.base import StageError
-        with patch.dict("sys.modules", {"mutagen": None}):
-            with patch("builtins.__import__", side_effect=ImportError("no mutagen")):
-                with pytest.raises(StageError, match="mutagen"):
-                    TaggerStage().validate(ctx)
+
+        with (
+            patch.dict("sys.modules", {"mutagen": None}),
+            patch("builtins.__import__", side_effect=ImportError("no mutagen")),
+            pytest.raises(StageError, match="mutagen"),
+        ):
+            TaggerStage().validate(ctx)
 
 
 # ── _read_tags / _write_tags (mocked) ────────────────────────────────────────
+
 
 class TestTagHelpers:
     @patch("musaeus.stages.tagger._read_tags")
@@ -129,8 +138,22 @@ class TestTagHelpers:
     def test_compute_changes_skips_empty_db_values(self, ctx):
         """If DB value is empty/None, don't write empty tags."""
         stage = TaggerStage()
-        db_row = {"artist": None, "album": "", "title": "Title", "genre": "", "year": "", "track": ""}
-        file_tags = {"artist": "Existing", "album": "Existing", "title": "Old", "genre": "R", "year": "2020", "track": "1"}
+        db_row = {
+            "artist": None,
+            "album": "",
+            "title": "Title",
+            "genre": "",
+            "year": "",
+            "track": "",
+        }
+        file_tags = {
+            "artist": "Existing",
+            "album": "Existing",
+            "title": "Old",
+            "genre": "R",
+            "year": "2020",
+            "track": "1",
+        }
         changes = stage._compute_changes(db_row, file_tags)
         # Only title should change (it's non-empty and different)
         assert "title" in changes
@@ -139,6 +162,7 @@ class TestTagHelpers:
 
 
 # ── TaggerStage dry_run ───────────────────────────────────────────────────────
+
 
 class TestTaggerDryRun:
     @patch("musaeus.stages.tagger.TaggerStage.validate")
@@ -185,6 +209,7 @@ class TestTaggerDryRun:
 
 
 # ── TaggerStage run ───────────────────────────────────────────────────────────
+
 
 class TestTaggerRun:
     @patch("musaeus.stages.tagger.TaggerStage.validate")
@@ -240,7 +265,14 @@ class TestTaggerRun:
         track.write_bytes(b"AUDIO")
         _insert_catalogued(ctx, str(track))
 
-        mock_read.return_value = {"artist": "Old", "album": "X", "title": "X", "genre": "", "year": "", "track": ""}
+        mock_read.return_value = {
+            "artist": "Old",
+            "album": "X",
+            "title": "X",
+            "genre": "",
+            "year": "",
+            "track": "",
+        }
         mock_write.return_value = False
 
         result = TaggerStage().run(ctx)
@@ -265,12 +297,17 @@ class TestTaggerRun:
         track.write_bytes(b"AUDIO")
         _insert_catalogued(ctx, str(track))
 
-        mock_read.return_value = {"artist": "Old", "album": "Old", "title": "Old", "genre": "", "year": "", "track": ""}
+        mock_read.return_value = {
+            "artist": "Old",
+            "album": "Old",
+            "title": "Old",
+            "genre": "",
+            "year": "",
+            "track": "",
+        }
         mock_write.return_value = True
 
         TaggerStage().run(ctx)
 
-        events = ctx.conn.execute(
-            "SELECT * FROM events WHERE event_type='TAGGER_WRITE'"
-        ).fetchall()
+        events = ctx.conn.execute("SELECT * FROM events WHERE event_type='TAGGER_WRITE'").fetchall()
         assert len(events) == 1

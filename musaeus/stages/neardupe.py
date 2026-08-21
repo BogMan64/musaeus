@@ -6,20 +6,31 @@ Metadata-based near-duplicate detection (no audio fingerprinting required).
 What it does:
   - Loads all CATALOGUED archive rows
   - Groups tracks by normalised artist name (ArtistCanon → fuzzy ≥88)
-  - Within each artist group, compares normalised title pairs with
+  - Within each artist group, strips version/edition qualifiers from
+    titles (Remaster, Live, Remix, Acoustic, etc. — ORPHEUS-compatible,
+    see STRIP_WORDS below) before comparing normalised title pairs with
     rapidfuzz fuzz.ratio — flags pairs scoring ≥ TITLE_THRESHOLD (88)
+  - Guards against merging two different live recordings of the same
+    song into one group (both sides carry a live marker in the raw,
+    pre-strip title → skipped, since "live" is stripped before scoring
+    and would otherwise make them look identical)
   - Stages flagged pairs in the duplicates table with type='NEAR'
   - Skips pairs already in the EXACT duplicates table
   - dry_run() reports matches without writing to DB
   - Re-run safe: INSERT OR IGNORE on (group_id, file_path)
 
-Design decisions:
+Design decisions (ported from ORPHEUS's SCRIPTS/lib/orpheus_fuzzy.py):
   - Artist normalisation: lowercase, strip punctuation, collapse whitespace
-  - Title normalisation: same as artist + strip leading "the "
+  - Title normalisation: strip version/edition brackets and bare
+    STRIP_WORDS, then same as artist + strip leading "the "
   - group_id: "near_{sha8}" where sha8 is SHA-256[:8] of sorted file paths
   - Confidence: the fuzz.ratio score (0.0–1.0)
   - O(n²) within artist groups — fast because groups are small (< 200 tracks)
-  - Threshold is conservative at 88 to avoid false positives
+  - Threshold is conservative at 88 to avoid false positives; the
+    stripping (not the threshold) is what catches "Yesterday" vs
+    "Yesterday (Remaster)" and similar version-variant pairs — a bare
+    fuzz.ratio on unstripped titles scores well below 88 for these
+    (e.g. "Yesterday" vs "Yesterday (Remaster)" = 66.7)
 
 The resulting near-duplicate groups appear in `musaeus dedupe` alongside
 exact duplicates.
@@ -31,16 +42,15 @@ import hashlib
 import logging
 import re
 import unicodedata
-import uuid
 
 try:
     from rapidfuzz import fuzz
+
     _HAVE_RAPIDFUZZ = True
 except ImportError:
     _HAVE_RAPIDFUZZ = False
 
 from ..canon import ArtistCanon
-from ..config import get_config
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
 
@@ -50,12 +60,74 @@ logger = logging.getLogger(__name__)
 TITLE_THRESHOLD = 88
 ARTIST_THRESHOLD = 88
 
+# Version/edition words stripped from titles before fuzzy comparison.
+# ORPHEUS-compatible (SCRIPTS/lib/orpheus_fuzzy.py STRIP_WORDS).
+STRIP_WORDS: tuple[str, ...] = (
+    "remastered",
+    "remaster",
+    "remix",
+    "live",
+    "acoustic",
+    "radio edit",
+    "single version",
+    "album version",
+    "mono",
+    "stereo",
+    "demo",
+    "karaoke",
+)
 
-def _normalise(s: str) -> str:
-    """Lowercase, NFD-normalise, strip punctuation, collapse whitespace."""
+# Brackets containing ONLY version words (+ optional year/digits/punctuation)
+# are safe to strip. Deliberately NOT stripping all bracketed content —
+# arbitrary parentheticals can be part of the real title (e.g. "Here I Am
+# (Come and Take Me)" must not collapse to "Here I Am").
+_VERSION_BRACKET_WORDS = re.compile(
+    r"[\(\[]\s*(?:(?:19|20)\d{2}\s+)?(?:"
+    + r"|".join(re.escape(w) for w in sorted(STRIP_WORDS, key=len, reverse=True))
+    + r")[\s\d,./+-]*[\)\]]",
+    re.IGNORECASE,
+)
+_YEAR_BRACKET_RE = re.compile(r"[\(\[]\s*(?:19|20)\d{2}\s*[\)\]]")  # "(2015)"
+_NUM_BRACKET_RE = re.compile(r"[\(\[]\s*\d{1,2}\s*[\)\]]")  # "[2]"
+
+# Same words also stripped as bare whole-words (catches "Song Title Remix"
+# with no surrounding parens at all).
+_STRIP_WORDS_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(w) for w in sorted(STRIP_WORDS, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+# Raw (pre-strip) live-recording marker, used to avoid merging two
+# different live recordings of the same song into one near-dupe group.
+_LIVE_MARKER_RE = re.compile(r"\b(live|in concert|at the)\b", re.IGNORECASE)
+
+
+def _has_live_marker(raw_title: str) -> bool:
+    """True if the raw (unstripped) title looks like a live recording."""
+    return bool(_LIVE_MARKER_RE.search(raw_title))
+
+
+def _strip_title_qualifiers(s: str) -> str:
+    """Remove version/edition brackets and bare STRIP_WORDS from a title."""
+    s = _VERSION_BRACKET_WORDS.sub(" ", s)
+    s = _YEAR_BRACKET_RE.sub(" ", s)
+    s = _NUM_BRACKET_RE.sub(" ", s)
+    s = _STRIP_WORDS_RE.sub(" ", s)
+    return s
+
+
+def _normalise(s: str, strip_qualifiers: bool = False) -> str:
+    """
+    Lowercase, NFD-normalise, strip punctuation, collapse whitespace.
+
+    strip_qualifiers=True additionally removes version/edition words
+    (Remaster, Live, Remix, etc.) — used for titles, not artist names.
+    """
+    if strip_qualifiers:
+        s = _strip_title_qualifiers(s)
     s = unicodedata.normalize("NFD", s.lower())
-    s = re.sub(r"[^\w\s]", " ", s)          # punctuation → space
-    s = re.sub(r"\s+", " ", s).strip()       # collapse whitespace
+    s = re.sub(r"[^\w\s]", " ", s)  # punctuation → space
+    s = re.sub(r"\s+", " ", s).strip()  # collapse whitespace
     # Strip leading "the "
     if s.startswith("the "):
         s = s[4:]
@@ -94,7 +166,7 @@ class NearDupeStage(BaseStage):
     def _detect(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
 
-        cfg = get_config()
+        cfg = ctx.config
         artist_canon = ArtistCanon(cfg.meta_dir / "artist_canon.tsv")
 
         # Load all catalogued rows
@@ -152,8 +224,16 @@ class NearDupeStage(BaseStage):
                     if a["file_path"] in exact_paths or b["file_path"] in exact_paths:
                         continue
 
-                    title_a = _normalise(a["title"])
-                    title_b = _normalise(b["title"])
+                    # Don't merge two different live recordings of the same
+                    # song — "live" is stripped before scoring below, so
+                    # without this guard they'd look identical and collapse
+                    # into one group. Studio-vs-live still matches fine
+                    # (only one side carries the marker).
+                    if _has_live_marker(a["title"]) and _has_live_marker(b["title"]):
+                        continue
+
+                    title_a = _normalise(a["title"], strip_qualifiers=True)
+                    title_b = _normalise(b["title"], strip_qualifiers=True)
 
                     score = fuzz.ratio(title_a, title_b)
                     if score < TITLE_THRESHOLD:
@@ -196,7 +276,10 @@ class NearDupeStage(BaseStage):
                         result.files_changed += 1
                         logger.info(
                             "near-dupe: %r ~~ %r (score=%d, artist=%s)",
-                            a["title"], b["title"], score, artist_key,
+                            a["title"],
+                            b["title"],
+                            score,
+                            artist_key,
                         )
 
         if not dry_run and new_pairs > 0:

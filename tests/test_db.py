@@ -4,16 +4,17 @@ Uses a temporary in-memory SQLite DB (no files on disk).
 """
 
 import sqlite3
-import tempfile
 from pathlib import Path
 
 import pytest
+
 from musaeus.db import (
     get_archive_by_status,
     get_archive_count,
     get_file_history,
     log_event,
     open_db,
+    snapshot_db_before_wipe,
     upsert_archive,
 )
 
@@ -29,11 +30,14 @@ def tmp_db(tmp_path: Path) -> sqlite3.Connection:
 
 # ── open_db / schema ──────────────────────────────────────────────────────────
 
+
 class TestOpenDb:
     def test_creates_tables(self, tmp_db):
         tables = {
-            row[0] for row in
-            tmp_db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            row[0]
+            for row in tmp_db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
         }
         assert {"events", "archive", "duplicates", "validation_issues", "metadata_cache"} <= tables
 
@@ -59,6 +63,7 @@ class TestOpenDb:
 
 # ── log_event() ───────────────────────────────────────────────────────────────
 
+
 class TestLogEvent:
     def test_basic_event(self, tmp_db):
         log_event(tmp_db, "run_001", "RUN_START")
@@ -78,9 +83,7 @@ class TestLogEvent:
             note="size=1234",
         )
         tmp_db.commit()
-        row = tmp_db.execute(
-            "SELECT * FROM events WHERE run_id='run_002'"
-        ).fetchone()
+        row = tmp_db.execute("SELECT * FROM events WHERE run_id='run_002'").fetchone()
         assert row["file_path"] == "/vault/track.flac"
         assert row["stage"] == "ingest"
         assert row["note"] == "size=1234"
@@ -89,9 +92,7 @@ class TestLogEvent:
         for i in range(5):
             log_event(tmp_db, "run_multi", f"EVENT_{i}")
         tmp_db.commit()
-        count = tmp_db.execute(
-            "SELECT COUNT(*) FROM events WHERE run_id='run_multi'"
-        ).fetchone()[0]
+        count = tmp_db.execute("SELECT COUNT(*) FROM events WHERE run_id='run_multi'").fetchone()[0]
         assert count == 5
 
     def test_get_file_history(self, tmp_db):
@@ -107,15 +108,19 @@ class TestLogEvent:
 
 # ── upsert_archive() ──────────────────────────────────────────────────────────
 
+
 class TestUpsertArchive:
     def test_insert_basic(self, tmp_db):
-        upsert_archive(tmp_db, {
-            "file_path": "/vault/track.flac",
-            "filename": "track.flac",
-            "ext": ".flac",
-            "size_bytes": 50_000_000,
-            "status": "PENDING",
-        })
+        upsert_archive(
+            tmp_db,
+            {
+                "file_path": "/vault/track.flac",
+                "filename": "track.flac",
+                "ext": ".flac",
+                "size_bytes": 50_000_000,
+                "status": "PENDING",
+            },
+        )
         tmp_db.commit()
         assert get_archive_count(tmp_db) == 1
 
@@ -147,11 +152,14 @@ class TestUpsertArchive:
 
     def test_bitrate_stored_as_int(self, tmp_db):
         """Regression: bitrate must always be INTEGER, never a string."""
-        upsert_archive(tmp_db, {
-            "file_path": "/vault/t.mp3",
-            "bitrate": 320000,
-            "status": "CATALOGUED",
-        })
+        upsert_archive(
+            tmp_db,
+            {
+                "file_path": "/vault/t.mp3",
+                "bitrate": 320000,
+                "status": "CATALOGUED",
+            },
+        )
         tmp_db.commit()
         row = tmp_db.execute(
             "SELECT bitrate FROM archive WHERE file_path='/vault/t.mp3'"
@@ -161,6 +169,7 @@ class TestUpsertArchive:
 
 
 # ── validation_issues UNIQUE constraint ───────────────────────────────────────
+
 
 class TestValidationIssues:
     def test_unique_constraint(self, tmp_db):
@@ -174,9 +183,7 @@ class TestValidationIssues:
                 ("/vault/bad.mp3", "missing_artist", "run_001"),
             )
         tmp_db.commit()
-        count = tmp_db.execute(
-            "SELECT COUNT(*) FROM validation_issues"
-        ).fetchone()[0]
+        count = tmp_db.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
         assert count == 1
 
     def test_different_runs_allowed(self, tmp_db):
@@ -190,7 +197,84 @@ class TestValidationIssues:
                 ("/vault/bad.mp3", "missing_artist", run),
             )
         tmp_db.commit()
-        count = tmp_db.execute(
-            "SELECT COUNT(*) FROM validation_issues"
-        ).fetchone()[0]
+        count = tmp_db.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
         assert count == 2
+
+
+# ── snapshot_db_before_wipe ────────────────────────────────────────────────────
+
+
+class TestSnapshotDbBeforeWipe:
+    def test_returns_none_when_db_does_not_exist(self, tmp_path: Path):
+        missing = tmp_path / "nope.db"
+        history_dir = tmp_path / "_history"
+        assert snapshot_db_before_wipe(missing, history_dir) is None
+        assert not history_dir.exists()
+
+    def test_creates_snapshot_with_real_data(self, tmp_path: Path):
+        db_path = tmp_path / "musaeus.db"
+        conn = open_db(db_path)
+        upsert_archive(conn, {"file_path": "/vault/a.m4a", "status": "CATALOGUED"})
+        conn.commit()
+        conn.close()
+
+        history_dir = tmp_path / "ALAC-Library" / "_history"
+        snapshot_path = snapshot_db_before_wipe(db_path, history_dir)
+
+        assert snapshot_path is not None
+        assert snapshot_path.exists()
+        assert snapshot_path.parent == history_dir
+
+        snap_conn = sqlite3.connect(str(snapshot_path))
+        row = snap_conn.execute("SELECT file_path FROM archive").fetchone()
+        snap_conn.close()
+        assert row[0] == "/vault/a.m4a"
+
+    def test_captures_data_still_in_wal_not_yet_checkpointed(self, tmp_path: Path):
+        """The whole point of using the backup API instead of a plain file
+        copy: WAL-mode connections can have committed data sitting only in
+        the -wal sidecar, not yet folded into the main .db file. A naive
+        `shutil.copy2(db_path, ...)` of just the main file could silently
+        produce a snapshot missing recent commits."""
+        db_path = tmp_path / "musaeus.db"
+        conn = open_db(db_path)
+        upsert_archive(conn, {"file_path": "/vault/wal_only.m4a", "status": "CATALOGUED"})
+        conn.commit()
+        # Deliberately no checkpoint and no conn.close() before snapshotting --
+        # this is the exact "committed but not yet in the main file" state.
+
+        history_dir = tmp_path / "_history"
+        snapshot_path = snapshot_db_before_wipe(db_path, history_dir)
+        conn.close()
+
+        assert snapshot_path is not None
+        snap_conn = sqlite3.connect(str(snapshot_path))
+        row = snap_conn.execute(
+            "SELECT file_path FROM archive WHERE file_path = '/vault/wal_only.m4a'"
+        ).fetchone()
+        snap_conn.close()
+        assert row is not None, "snapshot missed data still sitting in the WAL"
+
+    def test_source_db_untouched(self, tmp_path: Path):
+        db_path = tmp_path / "musaeus.db"
+        conn = open_db(db_path)
+        upsert_archive(conn, {"file_path": "/vault/a.m4a", "status": "CATALOGUED"})
+        conn.commit()
+        conn.close()
+        before = db_path.read_bytes()
+
+        snapshot_db_before_wipe(db_path, tmp_path / "_history")
+
+        assert db_path.read_bytes() == before
+
+    def test_timestamped_filename_is_unique_per_call(self, tmp_path: Path):
+        db_path = tmp_path / "musaeus.db"
+        conn = open_db(db_path)
+        conn.close()
+        history_dir = tmp_path / "_history"
+
+        first = snapshot_db_before_wipe(db_path, history_dir)
+        second = snapshot_db_before_wipe(db_path, history_dir)
+
+        assert first != second
+        assert first.exists() and second.exists()

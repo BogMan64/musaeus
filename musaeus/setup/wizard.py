@@ -12,7 +12,9 @@ Saves to ~/.config/musaeus/settings.env and credentials.env.
 
 from __future__ import annotations
 
+import getpass
 import os
+import sys
 from pathlib import Path
 
 _CONFIG_DIR = Path.home() / ".config" / "musaeus"
@@ -177,11 +179,11 @@ def run_wizard(force: bool = False) -> bool:
         val = _ask(f"  {key}", default=current)
         if val and val != current:
             creds_env[key] = val
-            print(f"    ✓ Updated")
+            print("    ✓ Updated")
         elif val:
-            print(f"    ✓ Kept existing")
+            print("    ✓ Kept existing")
         else:
-            print(f"    ⚠ Skipped (stage will be a no-op)")
+            print("    ⚠ Skipped (stage will be a no-op)")
         print()
 
     # ── Save ──────────────────────────────────────────────────────────────────
@@ -189,8 +191,13 @@ def run_wizard(force: bool = False) -> bool:
     _save_env(_CREDENTIALS_FILE, creds_env)
 
     # Create directories
-    for d in (vault_path, inbox_path, vault_path / "STAGING",
-              vault_path / "QUARANTINE", vault_path / "RUNS"):
+    for d in (
+        vault_path,
+        inbox_path,
+        vault_path / "STAGING",
+        vault_path / "QUARANTINE",
+        vault_path / "RUNS",
+    ):
         d.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
@@ -203,3 +210,124 @@ def run_wizard(force: bool = False) -> bool:
     print("=" * 60)
     print()
     return True
+
+
+# ── API key manager (console 'Enter/Update API Keys' menu) ─────────────────────
+
+# Exactly the four keys MusicConfig.from_env() actually reads (config.py) --
+# a subset of the broader API_KEYS dict above, which also lists keys no
+# stage currently consumes through the config object (MusicBrainz, Discogs,
+# Spotify client id/secret).
+MANAGED_KEYS = ["GROQ_API_KEY", "LASTFM_API_KEY", "OPENROUTER_API_KEY", "ACOUSTICID_API_KEY"]
+
+
+def _confirm(prompt: str, default: bool = False) -> bool:
+    suffix = " [Y/n]" if default else " [y/N]"
+    try:
+        val = input(f"  {prompt}{suffix}: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return default
+    if not val:
+        return default
+    return val in ("y", "yes")
+
+
+def _read_secret(prompt: str) -> str:
+    """Read a secret value, masked via getpass when the terminal supports it."""
+    if sys.stdin.isatty():
+        try:
+            return getpass.getpass(f"  {prompt}: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return ""
+    print("    ⚠ Non-interactive terminal — input will not be masked.")
+    try:
+        return input(f"  {prompt}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return ""
+
+
+def run_api_key_manager() -> None:
+    """
+    Interactive 'Enter/Update API Keys' menu: walk the four keys
+    MusicConfig actually reads (config.py's from_env()), show current
+    status with the same checkmark convention as MusicConfig.describe(),
+    and let Grey update any of them one at a time. Always writes to
+    credentials.env specifically -- never settings.env, which is reserved
+    for paths -- since credentials.env is the file already gitignored for
+    secrets (see module docstring / config.py's loading-priority list).
+
+    Precedence gotcha: config.py's _load_env() loads both settings.env and
+    credentials.env via os.environ.setdefault(), meaning anything already
+    present in the process environment (most commonly a shell export)
+    always wins over what's written here. Detected by comparing the
+    resolved os.environ value against what credentials.env itself
+    currently holds for that key -- a mismatch means some higher-
+    precedence source is active and an update here will be saved but will
+    have no effect until that source is removed.
+    """
+    print()
+    print("=" * 60)
+    print("  MUSAEUS — Enter/Update API Keys")
+    print("=" * 60)
+
+    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    creds_env = _load_env(_CREDENTIALS_FILE)
+    changed = False
+
+    for key in MANAGED_KEYS:
+        info = API_KEYS[key]
+        file_value = creds_env.get(key, "")
+        env_value = os.environ.get(key, "")
+        resolved_set = bool(env_value)
+
+        print()
+        print(f"  {info['label']} ({key})")
+        print(f"    Used by: {info['used_by']}")
+        print(f"    Status: {'✓ set' if resolved_set else '✗ not set'}")
+
+        if env_value and env_value != file_value:
+            print(
+                f"    ⚠ A higher-precedence source (most likely a shell-exported "
+                f"{key}) is currently overriding credentials.env. Updating it here "
+                f"will be saved but will have NO effect until that export is removed."
+            )
+
+        if not _confirm("Update this key?", default=False):
+            continue
+
+        new_val = _read_secret(f"New value for {key}")
+        if not new_val:
+            print("    ⚠ Empty input — left unchanged.")
+            continue
+
+        creds_env[key] = new_val
+        _save_env(_CREDENTIALS_FILE, creds_env)
+        changed = True
+        print(f"    ✓ Saved to {_CREDENTIALS_FILE}")
+
+        if env_value and env_value != new_val:
+            print(
+                f"    ⚠ Reminder: {key} is still present in this session's environment "
+                f"with a different value -- the saved key will not take effect until "
+                f"that export is unset (and the process restarted)."
+            )
+        else:
+            # No higher-precedence value was active, so it's safe -- and
+            # matches what a fresh process would load from credentials.env
+            # anyway -- to make this take effect immediately.
+            os.environ[key] = new_val
+            print("    ✓ Active immediately for this session.")
+
+    print()
+    print("=" * 60)
+    if changed:
+        print(f"  ✓ Credentials updated: {_CREDENTIALS_FILE}")
+        print("  If any key above showed the shell-export warning, unset that")
+        print("  variable (and restart musaeus) for the saved value to take effect.")
+    else:
+        print("  No changes made.")
+    print("=" * 60)
+    print()

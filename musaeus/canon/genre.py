@@ -35,10 +35,10 @@ class GenreCanon:
 
     def __init__(self, allowed_path: Path, map_path: Path) -> None:
         self._allowed_path = allowed_path
-        self._map_path     = map_path
-        self._allowed: set[str]         = set()
-        self._allowed_lower: list[str]  = []   # for fuzzy matching
-        self._map: dict[str, str]       = {}   # lower_raw → canonical
+        self._map_path = map_path
+        self._allowed: set[str] = set()
+        self._allowed_lower: list[str] = []  # for fuzzy matching
+        self._map: dict[str, str] = {}  # lower_raw → canonical
         self._load()
 
     # ── loaders ───────────────────────────────────────────────────────────────
@@ -94,9 +94,10 @@ class GenreCanon:
         # 3. Fuzzy match
         try:
             from rapidfuzz import fuzz  # type: ignore[import-untyped]
-            best_score = 0
+
+            best_score: float = 0
             best_genre = ""
-            for allowed, allowed_lower in zip(self._allowed, self._allowed_lower):
+            for allowed, allowed_lower in zip(self._allowed, self._allowed_lower, strict=True):
                 score = fuzz.ratio(lower, allowed_lower)
                 if score > best_score:
                     best_score = score
@@ -107,7 +108,7 @@ class GenreCanon:
         except ImportError:
             pass
 
-        return None   # unresolvable
+        return None  # unresolvable
 
     def is_allowed(self, genre: str) -> bool:
         return genre.strip() in self._allowed

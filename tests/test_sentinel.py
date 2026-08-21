@@ -8,9 +8,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
-from musaeus.db import get_archive_count, open_db, upsert_archive
+from musaeus.db import open_db, upsert_archive
 from musaeus.stages.sentinel import SentinelStage, _get_pending, _hash_group_for
 
 
@@ -23,6 +24,7 @@ def cfg(tmp_path: Path) -> MusicConfig:
         quarantine=tmp_path / "QUARANTINE",
         runs_root=tmp_path / "RUNS",
         meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "ALAC-Library",
         db_path=tmp_path / "musaeus.db",
     )
 
@@ -47,6 +49,7 @@ def _insert_pending(ctx: RunContext, file_path: str) -> None:
 
 # ── Validate ──────────────────────────────────────────────────────────────────
 
+
 class TestSentinelValidate:
     def test_validate_no_pending_is_noop(self, ctx):
         """Validate passes even with no PENDING rows (just info log)."""
@@ -60,6 +63,7 @@ class TestSentinelValidate:
 
 
 # ── Dry run ───────────────────────────────────────────────────────────────────
+
 
 class TestSentinelDryRun:
     def test_dry_run_reports_pending_count(self, ctx_dry, tmp_path):
@@ -102,6 +106,7 @@ class TestSentinelDryRun:
 
 
 # ── Run (mocked hashing) ─────────────────────────────────────────────────────
+
 
 class TestSentinelRun:
     @patch("musaeus.stages.sentinel.audio_hash_safe")
@@ -207,13 +212,17 @@ class TestSentinelRun:
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 
+
 class TestSentinelHelpers:
     def test_get_pending_empty(self, ctx):
         assert _get_pending(ctx.conn) == []
 
     def test_get_pending_returns_pending_rows(self, ctx, tmp_path):
         _insert_pending(ctx, str(tmp_path / "x.flac"))
-        upsert_archive(ctx.conn, {"file_path": str(tmp_path / "y.flac"), "status": "HASHED", "audio_hash": "abc"})
+        upsert_archive(
+            ctx.conn,
+            {"file_path": str(tmp_path / "y.flac"), "status": "HASHED", "audio_hash": "abc"},
+        )
         ctx.conn.commit()
         pending = _get_pending(ctx.conn)
         paths = [r["file_path"] for r in pending]
@@ -222,9 +231,15 @@ class TestSentinelHelpers:
         # (it's not PENDING and audio_hash is not NULL)
 
     def test_hash_group_for(self, ctx, tmp_path):
-        upsert_archive(ctx.conn, {"file_path": "/a.flac", "audio_hash": "abc123", "status": "HASHED"})
-        upsert_archive(ctx.conn, {"file_path": "/b.flac", "audio_hash": "abc123", "status": "HASHED"})
-        upsert_archive(ctx.conn, {"file_path": "/c.flac", "audio_hash": "other", "status": "HASHED"})
+        upsert_archive(
+            ctx.conn, {"file_path": "/a.flac", "audio_hash": "abc123", "status": "HASHED"}
+        )
+        upsert_archive(
+            ctx.conn, {"file_path": "/b.flac", "audio_hash": "abc123", "status": "HASHED"}
+        )
+        upsert_archive(
+            ctx.conn, {"file_path": "/c.flac", "audio_hash": "other", "status": "HASHED"}
+        )
         ctx.conn.commit()
         group = _hash_group_for(ctx.conn, "abc123")
         assert len(group) == 2

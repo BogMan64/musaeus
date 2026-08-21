@@ -5,9 +5,9 @@ Tests the genre resolution system: allowed list, map, and fuzzy matching.
 """
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
+
 from musaeus.canon.genre import GenreCanon
 
 
@@ -23,15 +23,7 @@ def meta_dir(tmp_path: Path) -> Path:
 def allowed_path(meta_dir: Path) -> Path:
     p = meta_dir / "genre_allowed.txt"
     p.write_text(
-        "# Allowed genres\n"
-        "Rock\n"
-        "Electronic\n"
-        "Hip-Hop\n"
-        "Jazz\n"
-        "Classical\n"
-        "Metal\n"
-        "Ambient\n"
-        "Pop\n",
+        "# Allowed genres\nRock\nElectronic\nHip-Hop\nJazz\nClassical\nMetal\nAmbient\nPop\n",
         encoding="utf-8",
     )
     return p
@@ -57,6 +49,7 @@ def gc(allowed_path: Path, map_path: Path) -> GenreCanon:
 
 
 # ── Basic loading ─────────────────────────────────────────────────────────────
+
 
 class TestGenreCanonLoad:
     def test_loads_allowed_list(self, gc):
@@ -86,6 +79,7 @@ class TestGenreCanonLoad:
 
 # ── Resolve (exact match) ────────────────────────────────────────────────────
 
+
 class TestGenreCanonResolve:
     def test_exact_match_case_insensitive(self, gc):
         assert gc.resolve("rock") == "Rock"
@@ -106,6 +100,7 @@ class TestGenreCanonResolve:
 
 # ── Resolve (explicit map) ────────────────────────────────────────────────────
 
+
 class TestGenreCanonMap:
     def test_map_lookup(self, gc):
         assert gc.resolve("hip-hop/rap") == "Hip-Hop"
@@ -119,11 +114,13 @@ class TestGenreCanonMap:
 
 # ── Resolve (fuzzy match) ────────────────────────────────────────────────────
 
+
 class TestGenreCanonFuzzy:
     def test_fuzzy_close_match(self, gc):
         """With rapidfuzz available, close genres should match."""
         try:
             import rapidfuzz  # noqa: F401
+
             # "Electroni" is very close to "Electronic"
             result = gc.resolve("Electroni")
             assert result == "Electronic"
@@ -139,6 +136,7 @@ class TestGenreCanonFuzzy:
 
 
 # ── is_allowed / utility ──────────────────────────────────────────────────────
+
 
 class TestGenreCanonUtility:
     def test_is_allowed_true(self, gc):

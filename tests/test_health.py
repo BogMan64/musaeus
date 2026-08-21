@@ -8,6 +8,7 @@ issues to validation_issues table.
 from pathlib import Path
 
 import pytest
+
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db, upsert_archive
@@ -23,6 +24,7 @@ def cfg(tmp_path: Path) -> MusicConfig:
         quarantine=tmp_path / "QUARANTINE",
         runs_root=tmp_path / "RUNS",
         meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "ALAC-Library",
         db_path=tmp_path / "musaeus.db",
     )
 
@@ -63,6 +65,7 @@ def _insert_catalogued(ctx: RunContext, file_path: str, **kwargs) -> None:
 
 # ── _check_row unit tests ────────────────────────────────────────────────────
 
+
 class TestCheckRow:
     def test_healthy_row_no_issues(self):
         row = {
@@ -82,88 +85,189 @@ class TestCheckRow:
         assert issues == []
 
     def test_missing_title(self):
-        row = {"title": None, "artist": "A", "album": "B", "genre": "R",
-               "year": "2023", "track": 1, "duration": 100.0,
-               "bitrate": 320000, "codec": "mp3", "ext": ".mp3", "audio_hash": "x"}
+        row = {
+            "title": None,
+            "artist": "A",
+            "album": "B",
+            "genre": "R",
+            "year": "2023",
+            "track": 1,
+            "duration": 100.0,
+            "bitrate": 320000,
+            "codec": "mp3",
+            "ext": ".mp3",
+            "audio_hash": "x",
+        }
         issues = _check_row(row)
         codes = [i[0] for i in issues]
         assert "MISSING_TITLE" in codes
 
     def test_missing_artist(self):
-        row = {"title": "S", "artist": "", "album": "B", "genre": "R",
-               "year": "2023", "track": 1, "duration": 100.0,
-               "bitrate": 320000, "codec": "mp3", "ext": ".mp3", "audio_hash": "x"}
+        row = {
+            "title": "S",
+            "artist": "",
+            "album": "B",
+            "genre": "R",
+            "year": "2023",
+            "track": 1,
+            "duration": 100.0,
+            "bitrate": 320000,
+            "codec": "mp3",
+            "ext": ".mp3",
+            "audio_hash": "x",
+        }
         issues = _check_row(row)
         codes = [i[0] for i in issues]
         assert "MISSING_ARTIST" in codes
 
     def test_zero_duration(self):
-        row = {"title": "S", "artist": "A", "album": "B", "genre": "R",
-               "year": "2023", "track": 1, "duration": 0.0,
-               "bitrate": 320000, "codec": "mp3", "ext": ".mp3", "audio_hash": "x"}
+        row = {
+            "title": "S",
+            "artist": "A",
+            "album": "B",
+            "genre": "R",
+            "year": "2023",
+            "track": 1,
+            "duration": 0.0,
+            "bitrate": 320000,
+            "codec": "mp3",
+            "ext": ".mp3",
+            "audio_hash": "x",
+        }
         issues = _check_row(row)
         codes = [i[0] for i in issues]
         assert "ZERO_DURATION" in codes
 
     def test_suspicious_bitrate_too_low(self):
-        row = {"title": "S", "artist": "A", "album": "B", "genre": "R",
-               "year": "2023", "track": 1, "duration": 100.0,
-               "bitrate": 32000, "codec": "mp3", "ext": ".mp3", "audio_hash": "x"}
+        row = {
+            "title": "S",
+            "artist": "A",
+            "album": "B",
+            "genre": "R",
+            "year": "2023",
+            "track": 1,
+            "duration": 100.0,
+            "bitrate": 32000,
+            "codec": "mp3",
+            "ext": ".mp3",
+            "audio_hash": "x",
+        }
         issues = _check_row(row)
         codes = [i[0] for i in issues]
         assert "SUSPICIOUS_BITRATE" in codes
 
     def test_suspicious_bitrate_none(self):
-        row = {"title": "S", "artist": "A", "album": "B", "genre": "R",
-               "year": "2023", "track": 1, "duration": 100.0,
-               "bitrate": None, "codec": "mp3", "ext": ".mp3", "audio_hash": "x"}
+        row = {
+            "title": "S",
+            "artist": "A",
+            "album": "B",
+            "genre": "R",
+            "year": "2023",
+            "track": 1,
+            "duration": 100.0,
+            "bitrate": None,
+            "codec": "mp3",
+            "ext": ".mp3",
+            "audio_hash": "x",
+        }
         issues = _check_row(row)
         codes = [i[0] for i in issues]
         assert "SUSPICIOUS_BITRATE" in codes
 
     def test_low_quality_warning(self):
-        row = {"title": "S", "artist": "A", "album": "B", "genre": "R",
-               "year": "2023", "track": 1, "duration": 100.0,
-               "bitrate": 96000, "codec": "mp3", "ext": ".mp3", "audio_hash": "x"}
+        row = {
+            "title": "S",
+            "artist": "A",
+            "album": "B",
+            "genre": "R",
+            "year": "2023",
+            "track": 1,
+            "duration": 100.0,
+            "bitrate": 96000,
+            "codec": "mp3",
+            "ext": ".mp3",
+            "audio_hash": "x",
+        }
         issues = _check_row(row)
         codes = [i[0] for i in issues]
         assert "LOW_QUALITY" in codes
 
     def test_lossless_low_bitrate(self):
         """FLAC with bitrate < 300k → LOSSLESS_EXPECTED warning."""
-        row = {"title": "S", "artist": "A", "album": "B", "genre": "R",
-               "year": "2023", "track": 1, "duration": 100.0,
-               "bitrate": 200000, "codec": "flac", "ext": ".flac", "audio_hash": "x"}
+        row = {
+            "title": "S",
+            "artist": "A",
+            "album": "B",
+            "genre": "R",
+            "year": "2023",
+            "track": 1,
+            "duration": 100.0,
+            "bitrate": 200000,
+            "codec": "flac",
+            "ext": ".flac",
+            "audio_hash": "x",
+        }
         issues = _check_row(row)
         codes = [i[0] for i in issues]
         assert "LOSSLESS_EXPECTED" in codes
 
     def test_no_audio_hash(self):
-        row = {"title": "S", "artist": "A", "album": "B", "genre": "R",
-               "year": "2023", "track": 1, "duration": 100.0,
-               "bitrate": 320000, "codec": "mp3", "ext": ".mp3", "audio_hash": None}
+        row = {
+            "title": "S",
+            "artist": "A",
+            "album": "B",
+            "genre": "R",
+            "year": "2023",
+            "track": 1,
+            "duration": 100.0,
+            "bitrate": 320000,
+            "codec": "mp3",
+            "ext": ".mp3",
+            "audio_hash": None,
+        }
         issues = _check_row(row)
         codes = [i[0] for i in issues]
         assert "NO_AUDIO_HASH" in codes
 
     def test_unknown_codec(self):
-        row = {"title": "S", "artist": "A", "album": "B", "genre": "R",
-               "year": "2023", "track": 1, "duration": 100.0,
-               "bitrate": 320000, "codec": None, "ext": ".mp3", "audio_hash": "x"}
+        row = {
+            "title": "S",
+            "artist": "A",
+            "album": "B",
+            "genre": "R",
+            "year": "2023",
+            "track": 1,
+            "duration": 100.0,
+            "bitrate": 320000,
+            "codec": None,
+            "ext": ".mp3",
+            "audio_hash": "x",
+        }
         issues = _check_row(row)
         codes = [i[0] for i in issues]
         assert "UNKNOWN_CODEC" in codes
 
     def test_missing_genre_is_warning(self):
-        row = {"title": "S", "artist": "A", "album": "B", "genre": None,
-               "year": "2023", "track": 1, "duration": 100.0,
-               "bitrate": 320000, "codec": "mp3", "ext": ".mp3", "audio_hash": "x"}
+        row = {
+            "title": "S",
+            "artist": "A",
+            "album": "B",
+            "genre": None,
+            "year": "2023",
+            "track": 1,
+            "duration": 100.0,
+            "bitrate": 320000,
+            "codec": "mp3",
+            "ext": ".mp3",
+            "audio_hash": "x",
+        }
         issues = _check_row(row)
         severities = {i[0]: i[1] for i in issues}
         assert severities.get("MISSING_GENRE") == "warning"
 
 
 # ── HealthStage.validate() ────────────────────────────────────────────────────
+
 
 class TestHealthValidate:
     def test_validate_empty(self, ctx):
@@ -175,6 +279,7 @@ class TestHealthValidate:
 
 
 # ── HealthStage dry_run ───────────────────────────────────────────────────────
+
 
 class TestHealthDryRun:
     def test_dry_run_reports_issues(self, ctx_dry, tmp_path):
@@ -189,9 +294,7 @@ class TestHealthDryRun:
         _insert_catalogued(ctx_dry, str(tmp_path / "bad.mp3"), title=None)
         HealthStage().execute(ctx_dry)
 
-        count = ctx_dry.conn.execute(
-            "SELECT COUNT(*) FROM validation_issues"
-        ).fetchone()[0]
+        count = ctx_dry.conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
         assert count == 0
 
     def test_dry_run_healthy_library(self, ctx_dry, tmp_path):
@@ -202,15 +305,14 @@ class TestHealthDryRun:
 
 # ── HealthStage run ───────────────────────────────────────────────────────────
 
+
 class TestHealthRun:
     def test_run_writes_issues(self, ctx, tmp_path):
         _insert_catalogued(ctx, str(tmp_path / "bad.mp3"), title=None, artist=None)
         result = HealthStage().execute(ctx)
 
         assert result.files_changed >= 1
-        count = ctx.conn.execute(
-            "SELECT COUNT(*) FROM validation_issues"
-        ).fetchone()[0]
+        count = ctx.conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
         assert count >= 2  # MISSING_TITLE + MISSING_ARTIST
 
     def test_run_no_issues_on_good_data(self, ctx, tmp_path):

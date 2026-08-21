@@ -33,7 +33,6 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 from ..canon import GenreCanon
-from ..config import get_config
 from ..context import RunContext, StageResult
 from .base import BaseStage
 
@@ -131,7 +130,7 @@ class EnrichStage(BaseStage):
     # ── Validate ──────────────────────────────────────────────────────────────
 
     def validate(self, ctx: RunContext) -> None:
-        cfg = get_config()
+        cfg = ctx.config
         if not cfg.lastfm_api_key:
             logger.warning(
                 "[enrich] LASTFM_API_KEY not set — stage will be a no-op. "
@@ -148,7 +147,7 @@ class EnrichStage(BaseStage):
     def _enrich(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
 
-        cfg = get_config()
+        cfg = ctx.config
         api_key = cfg.lastfm_api_key
         if not api_key:
             result.notes.append(
@@ -199,6 +198,7 @@ class EnrichStage(BaseStage):
         skipped_no_tag = 0
         skipped_api_err = 0
         enriched_from_library = 0
+        would_query_artists: set[str] = set()
 
         for row in rows:
             result.files_processed += 1
@@ -215,6 +215,15 @@ class EnrichStage(BaseStage):
             # Cache hit
             if artist_lower in artist_cache:
                 resolved = artist_cache[artist_lower]
+            elif dry_run:
+                # FIXED 2026-08-18: dry_run must not make the real network
+                # call at all (previously only the DB write was gated,
+                # so "--dry-run" still hit Last.fm for real). Anything not
+                # already resolvable from library data is reported as
+                # "would query", not actually looked up.
+                would_query_artists.add(artist_lower)
+                result.files_skipped += 1
+                continue
             else:
                 lookup_name = _clean_artist_for_lookup(artist)
                 if lookup_name != artist:
@@ -276,6 +285,11 @@ class EnrichStage(BaseStage):
         if enriched_from_library:
             result.notes.append(
                 f"{enriched_from_library} artist(s) resolved from existing library data (no API call)."
+            )
+        if would_query_artists:
+            result.notes.append(
+                f"{len(would_query_artists)} artist(s) would be queried via Last.fm in a "
+                f"real run — not looked up now, dry-run makes no network calls."
             )
         if skipped_no_tag:
             result.notes.append(f"{skipped_no_tag} artist(s) had no resolvable Last.fm tag.")

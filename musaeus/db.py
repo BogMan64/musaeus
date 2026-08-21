@@ -9,6 +9,7 @@ Rebuilding the DB from scratch is always possible.
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 # ── Schema ────────────────────────────────────────────────────────────────────
@@ -109,6 +110,23 @@ CREATE TABLE IF NOT EXISTS metadata_cache (
     raw_json        TEXT,
     scanned_at      TEXT DEFAULT (datetime('now'))
 );
+
+-- Bit-rot baseline for ALAC_Archive content (musaeus/stages/bitrot.py).
+-- Deliberately keyed by path, not archive.id -- ALAC_Archive is itself
+-- deliberately not DB-row-tracked (build_alac_library.py's own docstring:
+-- avoiding a second path column that could drift out of sync with real
+-- filesystem state), so this table follows the same philosophy rather
+-- than fighting it. Established once via `musaeus bitrot --rebaseline`
+-- (a deliberate, explicit action -- never automatic, since silently
+-- re-baselining on every run would absorb real corruption into the "new
+-- normal" instead of catching it), then verified against on every
+-- `musaeus bitrot` run afterward.
+CREATE TABLE IF NOT EXISTS archive_tier_hashes (
+    path          TEXT PRIMARY KEY,
+    sha256        TEXT NOT NULL,
+    size_bytes    INTEGER,
+    baselined_at  TEXT DEFAULT (datetime('now'))
+);
 """
 
 
@@ -124,6 +142,55 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     ("archive", "rg_tagged_at", "TEXT"),
     ("archive", "car_export_path", "TEXT"),
     ("archive", "noise_profile", "TEXT"),
+    # Act 3 — Canonicalize + Finalize (ALAC-Library). Nullable timestamp
+    # columns, same pattern as rg_tagged_at: NULL means "not done yet",
+    # set means "done", stages skip already-done rows unless --force.
+    ("archive", "canonicalized_at", "TEXT"),
+    # What Canonicalize actually did to this file:
+    #   PASSTHROUGH  — already ALAC-in-.m4a (or already AAC-in-.m4a for a
+    #                  sub-lossless source), no re-encode needed
+    #   CONVERTED    — lossless source (flac/wav/aiff) re-containered to
+    #                  ALAC-in-.m4a, no lossy re-encode
+    #   TRANSCODED   — sub-lossless source (mp3/ogg/etc) re-encoded to
+    #                  256k AAC-in-.m4a; a real lossy-to-lossy transcode,
+    #                  also logged to TuneMyMusic.csv
+    ("archive", "canon_action", "TEXT"),
+    ("archive", "finalized_at", "TEXT"),
+    # Phase 2A — ALAC-Library LUFS bake (scripts/alac_library/build_alac_library.py,
+    # standalone, not a pipeline stage). Same nullable-timestamp resumability
+    # pattern as canonicalized_at/finalized_at. lufs_baked_target records what
+    # target was actually baked to (-18.0 today), self-documenting without
+    # needing to re-derive it from the script's source.
+    ("archive", "lufs_baked_at", "TEXT"),
+    ("archive", "lufs_baked_target", "REAL"),
+    # BPM tagging (musaeus/stages/bpm.py, standalone -- not wired into
+    # DEFAULT_PIPELINE, same precedent as GhostStage/PermissionsStage).
+    # Same nullable-timestamp resumability pattern as the others above.
+    # bpm/musical_key/energy/danceability all come from one Essentia
+    # analysis pass over the same decoded audio -- ported together from
+    # orpheus_audio_analyzer.py since computing just one would still pay
+    # the full decode+analysis cost of the others. "key" avoided as a
+    # column name (reserved-word-adjacent); "musical_key" to be
+    # unambiguous.
+    ("archive", "bpm", "REAL"),
+    ("archive", "musical_key", "TEXT"),
+    ("archive", "energy", "REAL"),
+    ("archive", "danceability", "REAL"),
+    ("archive", "bpm_analyzed_at", "TEXT"),
+    # Bit-rot check (musaeus/stages/bitrot.py). First design (2026-08-19,
+    # same night): compared against archive.full_hash. Superseded within
+    # the same session once live-vault testing showed full_hash goes
+    # stale for any file that passes through Canonicalize/Forge/Tagger --
+    # all of which legitimately rewrite bytes AFTER Sentinel computes
+    # full_hash, which is nearly every finalized file, not just baked
+    # ones. full_hash is fine for what it was actually built for
+    # (Sentinel's own retag-vs-audio-change detection); it was never
+    # meant to survive the rest of the pipeline. bitrot_checked_at/
+    # bitrot_ok are dead columns from that superseded design -- left in
+    # place (SQLite ALTER TABLE can't cheaply drop columns) but unused;
+    # see archive_tier_hashes below for the real mechanism.
+    ("archive", "bitrot_checked_at", "TEXT"),
+    ("archive", "bitrot_ok", "INTEGER"),
 ]
 
 
@@ -200,7 +267,24 @@ def get_file_history(conn: sqlite3.Connection, file_path: str) -> list[sqlite3.R
 
 
 def upsert_archive(conn: sqlite3.Connection, row: dict) -> None:
-    """Insert or update an archive row."""
+    """
+    Insert or update an archive row.
+
+    On INSERT (new row), every field below gets a value (None where the
+    caller didn't supply one — that's a normal NULL for a brand-new row).
+
+    On UPDATE (existing row, i.e. ON CONFLICT), only fields the caller
+    ACTUALLY PASSED IN `row` are overwritten. This matters because
+    several callers intentionally update a narrow subset of columns —
+    e.g. sentinel.py's audio_hash/status pass, or scholar.py's metadata
+    pass which never mentions filename/ext at all. Before this fix, the
+    UPDATE clause unconditionally set every field to `row.get(f)`, which
+    is None for anything the caller omitted — so, concretely, every
+    Scholar run was silently nulling out filename and ext that Ingest
+    had correctly set moments earlier. Only including a field in the
+    UPDATE when `f in row` fixes that without changing INSERT behaviour
+    (a fresh row still gets every column, defaulting to None/NULL).
+    """
     fields = [
         "file_path",
         "audio_hash",
@@ -224,18 +308,24 @@ def upsert_archive(conn: sqlite3.Connection, row: dict) -> None:
         "last_modified",
     ]
     placeholders = ", ".join("?" for _ in fields)
-    updates = ", ".join(f"{f}=excluded.{f}" for f in fields if f != "file_path")
+    updates = ", ".join(f"{f}=excluded.{f}" for f in fields if f != "file_path" and f in row)
+    if not updates:
+        # Nothing but file_path was supplied (or ON CONFLICT would be a
+        # true no-op) — DO NOTHING avoids an invalid empty SET clause.
+        conflict_clause = "ON CONFLICT(file_path) DO NOTHING"
+    else:
+        conflict_clause = f"ON CONFLICT(file_path) DO UPDATE SET {updates}"
     conn.execute(
         f"""
         INSERT INTO archive ({", ".join(fields)}) VALUES ({placeholders})
-        ON CONFLICT(file_path) DO UPDATE SET {updates}
+        {conflict_clause}
         """,
         [row.get(f) for f in fields],
     )
 
 
 def get_archive_count(conn: sqlite3.Connection) -> int:
-    return conn.execute("SELECT COUNT(*) FROM archive").fetchone()[0]
+    return int(conn.execute("SELECT COUNT(*) FROM archive").fetchone()[0])
 
 
 def get_archive_by_status(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
@@ -243,3 +333,92 @@ def get_archive_by_status(conn: sqlite3.Connection, status: str) -> list[sqlite3
         "SELECT * FROM archive WHERE status = ? ORDER BY artist, album, title",
         (status,),
     ).fetchall()
+
+
+# ── Persistent hash index (survives a musaeus.db wipe) ───────────────────────
+#
+# musaeus.db is transient per-batch working state, wiped after every
+# completed batch (see config.alac_library / db_history_dir). Cross-batch
+# duplicate detection against already-finalized ALAC-Library content has
+# no DB rows to query once that wipe happens, so it needs its own tiny,
+# separate, persistent SQLite file living under ALAC-Library itself:
+# config.hash_index_path. This is intentionally a different schema/file
+# from the main vault DB -- it is never wiped and only ever grows.
+
+_HASH_INDEX_SCHEMA = """
+CREATE TABLE IF NOT EXISTS finalized_hashes (
+    audio_hash   TEXT NOT NULL,
+    file_path    TEXT NOT NULL,   -- final ALAC-Library path at time of finalize
+    finalized_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (audio_hash, file_path)
+);
+CREATE INDEX IF NOT EXISTS idx_finalized_hash ON finalized_hashes(audio_hash);
+"""
+
+
+def open_hash_index(path: Path) -> sqlite3.Connection:
+    """Open (or create) the persistent cross-batch audio-hash index."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.executescript(_HASH_INDEX_SCHEMA)
+    conn.commit()
+    return conn
+
+
+def record_finalized_hash(conn: sqlite3.Connection, audio_hash: str, file_path: str) -> None:
+    """Record that *file_path* (audio_hash) now exists in ALAC-Library."""
+    conn.execute(
+        "INSERT OR IGNORE INTO finalized_hashes (audio_hash, file_path) VALUES (?, ?)",
+        (audio_hash, file_path),
+    )
+
+
+def lookup_finalized_hash(conn: sqlite3.Connection, audio_hash: str) -> list[sqlite3.Row]:
+    """Return every ALAC-Library file_path already recorded for *audio_hash*."""
+    return conn.execute(
+        "SELECT file_path, finalized_at FROM finalized_hashes WHERE audio_hash = ?",
+        (audio_hash,),
+    ).fetchall()
+
+
+def snapshot_db_before_wipe(db_path: Path, history_dir: Path) -> Path | None:
+    """
+    Copy db_path to a timestamped file under history_dir before a reset
+    wipes it -- documented as intended behavior (config.db_history_dir's
+    own docstring) since 2026-08-17, but neither reset code path
+    (cli.py's _cmd_reset, console.py's _reset_menu hard reset) actually
+    called it. Returns None (no-op) if db_path doesn't exist yet -- a
+    fresh install with nothing to snapshot.
+
+    Uses sqlite3's backup API rather than a plain file copy: this
+    project's connections run in WAL mode (PRAGMA journal_mode=WAL), so
+    recent commits can still be sitting in a `-wal` sidecar file rather
+    than the main .db file -- a raw copy of just the main file could
+    silently miss them. backup() produces a correct, consistent
+    point-in-time snapshot regardless of WAL state, no manual checkpoint
+    step needed.
+    """
+    if not db_path.exists():
+        return None
+
+    history_dir.mkdir(parents=True, exist_ok=True)
+    # Microsecond resolution: two resets seconds apart are unlikely, but
+    # two calls within the same test/script run are not, and a collision
+    # would silently overwrite an earlier snapshot rather than error.
+    timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    snapshot_path = history_dir / f"musaeus_pre_reset_{timestamp}Z.db"
+
+    source = sqlite3.connect(str(db_path))
+    try:
+        dest = sqlite3.connect(str(snapshot_path))
+        try:
+            source.backup(dest)
+        finally:
+            dest.close()
+    finally:
+        source.close()
+
+    return snapshot_path

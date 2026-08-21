@@ -5,16 +5,15 @@ Creates a temporary vault with fake audio files, runs IngestStage,
 and verifies DB state. No actual audio content needed for ingest.
 """
 
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
+
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import get_archive_count, open_db
-from musaeus.stages.ingest import IngestStage, _scan_inbox
 from musaeus.stages.base import StageError
+from musaeus.stages.ingest import IngestStage, _scan_inbox
 
 
 @pytest.fixture
@@ -44,6 +43,7 @@ def cfg(vault: Path) -> MusicConfig:
         quarantine=vault / "QUARANTINE",
         runs_root=vault / "RUNS",
         meta_dir=vault / "MetaData",
+        alac_library=vault / "ALAC-Library",
         db_path=vault / "musaeus.db",
     )
 
@@ -61,6 +61,7 @@ def ctx_dry(cfg: MusicConfig) -> RunContext:
 
 
 # ── _scan_inbox ───────────────────────────────────────────────────────────────
+
 
 class TestScanInbox:
     def test_finds_audio_files(self, vault):
@@ -89,6 +90,7 @@ class TestScanInbox:
 
 # ── IngestStage.validate() ────────────────────────────────────────────────────
 
+
 class TestIngestValidate:
     def test_passes_with_existing_inbox(self, ctx):
         stage = IngestStage()
@@ -102,6 +104,7 @@ class TestIngestValidate:
             quarantine=tmp_path / "QUARANTINE",
             runs_root=tmp_path / "RUNS",
             meta_dir=tmp_path / "MetaData",
+            alac_library=tmp_path / "ALAC-Library",
             db_path=tmp_path / "musaeus.db",
         )
         conn = open_db(cfg2.db_path)
@@ -114,6 +117,7 @@ class TestIngestValidate:
 
 # ── IngestStage.run() ─────────────────────────────────────────────────────────
 
+
 class TestIngestRun:
     def test_registers_audio_files(self, ctx):
         stage = IngestStage()
@@ -125,7 +129,7 @@ class TestIngestRun:
 
     def test_skips_txt_files(self, ctx):
         stage = IngestStage()
-        result = stage.execute(ctx)
+        stage.execute(ctx)
         # notes.txt not in DB
         rows = ctx.conn.execute("SELECT file_path FROM archive").fetchall()
         paths = [r["file_path"] for r in rows]
@@ -133,7 +137,7 @@ class TestIngestRun:
 
     def test_idempotent_second_run(self, ctx, cfg):
         stage = IngestStage()
-        r1 = stage.execute(ctx)
+        stage.execute(ctx)
         ctx.conn.commit()
 
         # Second run on fresh context (same DB)
@@ -141,8 +145,8 @@ class TestIngestRun:
         ctx2 = RunContext.new(cfg, conn2, dry_run=False)
         r2 = stage.execute(ctx2)
 
-        assert r2.files_changed == 0      # nothing new
-        assert r2.files_skipped == 3      # all known
+        assert r2.files_changed == 0  # nothing new
+        assert r2.files_skipped == 3  # all known
         assert get_archive_count(conn2) == 3
 
     def test_status_is_pending(self, ctx):
@@ -161,13 +165,14 @@ class TestIngestRun:
 
 # ── IngestStage.dry_run() ─────────────────────────────────────────────────────
 
+
 class TestIngestDryRun:
     def test_dry_run_no_db_changes(self, ctx_dry):
         stage = IngestStage()
         result = stage.execute(ctx_dry)
 
         assert result.dry_run is True
-        assert result.files_changed == 3   # would change 3
+        assert result.files_changed == 3  # would change 3
         assert get_archive_count(ctx_dry.conn) == 0  # DB unchanged
 
     def test_dry_run_notes_list_files(self, ctx_dry):
@@ -189,6 +194,7 @@ class TestIngestDryRun:
             quarantine=root / "QUARANTINE",
             runs_root=root / "RUNS",
             meta_dir=root / "MetaData",
+            alac_library=root / "ALAC-Library",
             db_path=root / "musaeus.db",
         )
         (root / "INBOX").mkdir()

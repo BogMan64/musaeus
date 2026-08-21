@@ -15,8 +15,27 @@ What it does:
   - Re-run safe: already-transcoded files are skipped unless --force
 
 Design:
-  - Lossless only (FLAC, ALAC, WAV, AIFF) — no MP3→AAC re-encode
+  - Lossless only — determined by real ffprobe codec (archive.codec, via
+    config.LOSSLESS_CODECS), never by file extension. Fixes a real bug:
+    the old extension-based LOSSLESS_EXTENSIONS check excludes .m4a
+    entirely, which misses every ALAC-in-.m4a file in a real MUSAEUS
+    library (canonicalize.py already made this same fix; see its module
+    docstring for the full incident).
   - AAC 256k via libfdk_aac if available, falls back to aac encoder
+  - Embedded album art is detected via canonicalize.py's
+    _has_attached_picture()/_probe_streams() (reused, not reimplemented)
+    and explicitly re-mapped through with -c:v copy when present. Fixes a
+    second real bug: the ffmpeg command previously had an unconditional
+    -vn ("no video stream"), silently stripping art from every file
+    regardless of source content -- directly contradicting this
+    docstring's own "copies embedded album art" claim above. Confirmed via
+    the live archive.db that this bug never actually reached a real file:
+    transcode_path/transcode_at didn't exist as columns yet (auto-created
+    on first real run), zero TRANSCODE_DONE events, empty Transcoded/
+    output dir -- the stage had simply never been run for real, in part
+    because the .m4a-extension-filter bug above meant it had no eligible
+    real rows to process either. Both bugs fixed together in the same
+    change since the second was silently masking the first.
   - Output filenames are Windows-safe (strips :*?"<>|\ chars)
   - Periodic DB commits every _COMMIT_EVERY files
 
@@ -31,9 +50,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from ..config import LOSSLESS_EXTENSIONS
+from ..config import LOSSLESS_CODECS as _LOSSLESS_CODECS
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
+from .canonicalize import _has_attached_picture, _probe_streams
 
 logger = logging.getLogger(__name__)
 
@@ -94,12 +114,24 @@ def _transcode_file(
     """
     Transcode src → dst using ffmpeg.
     Raises ValueError on failure or timeout.
+
+    Art handling mirrors canonicalize.py's _convert_to_alac()/
+    _transcode_to_aac() exactly: probe for an attached_pic video stream
+    first, map + copy it through when present instead of unconditionally
+    dropping video via -vn.
     """
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise RuntimeError("ffmpeg not found in PATH")
 
     dst.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        has_art = _has_attached_picture(_probe_streams(src))
+    except Exception:
+        # Probe failure shouldn't block the transcode -- fall back to
+        # audio-only, same as if the source genuinely had no art.
+        has_art = False
 
     cmd = [
         ffmpeg,
@@ -108,11 +140,20 @@ def _transcode_file(
         "-nostats",
         "-i",
         str(src),
-        "-vn",  # no video stream
+    ]
+    if has_art:
+        cmd += ["-map", "0:a:0", "-map", "0:v:0"]
+    else:
+        cmd += ["-map", "0:a:0"]
+    cmd += [
         "-c:a",
         encoder,
         "-b:a",
         _TARGET_BITRATE,
+    ]
+    if has_art:
+        cmd += ["-c:v", "copy", "-disposition:v:0", "attached_pic"]
+    cmd += [
         "-movflags",
         "+faststart",  # web-friendly MP4 header
         # Tags
@@ -183,7 +224,7 @@ class TranscodeStage(BaseStage):
             where_extra = "" if force else "AND transcode_path IS NULL"
             rows = ctx.conn.execute(
                 f"""
-                SELECT file_path, artist, album, title, year, track, genre
+                SELECT file_path, artist, album, title, year, track, genre, codec
                 FROM archive
                 WHERE status = 'CATALOGUED'
                   {where_extra}
@@ -193,15 +234,18 @@ class TranscodeStage(BaseStage):
         except Exception:
             rows = ctx.conn.execute(
                 """
-                SELECT file_path, artist, album, title, year, track, genre
+                SELECT file_path, artist, album, title, year, track, genre, codec
                 FROM archive
                 WHERE status = 'CATALOGUED'
                 ORDER BY artist, album, track
                 """
             ).fetchall()
 
-        # Filter to lossless only in Python (avoids complex SQL)
-        rows = [r for r in rows if Path(r["file_path"]).suffix.lower() in LOSSLESS_EXTENSIONS]
+        # Filter to lossless only by real ffprobe codec (archive.codec),
+        # never by file extension -- .m4a can hold either ALAC (lossless)
+        # or AAC (lossy), so an extension-only check misses every
+        # ALAC-in-.m4a file. Matches canonicalize.py's own codec check.
+        rows = [r for r in rows if (r["codec"] or "").lower() in _LOSSLESS_CODECS]
 
         transcoded = 0
         skipped = 0

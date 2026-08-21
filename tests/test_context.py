@@ -2,9 +2,11 @@
 Tests for musaeus.context — RunContext, StageResult.
 """
 
+import contextlib
 from pathlib import Path
 
 import pytest
+
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext, StageResult
 from musaeus.db import open_db
@@ -19,6 +21,7 @@ def cfg(tmp_path: Path) -> MusicConfig:
         quarantine=tmp_path / "QUARANTINE",
         runs_root=tmp_path / "RUNS",
         meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "ALAC-Library",
         db_path=tmp_path / "musaeus.db",
     )
 
@@ -27,13 +30,12 @@ def cfg(tmp_path: Path) -> MusicConfig:
 def conn(cfg):
     c = open_db(cfg.db_path)
     yield c
-    try:
+    with contextlib.suppress(Exception):
         c.close()
-    except Exception:
-        pass
 
 
 # ── StageResult ───────────────────────────────────────────────────────────────
+
 
 class TestStageResult:
     def test_summarise_success(self):
@@ -53,6 +55,7 @@ class TestStageResult:
 
 
 # ── RunContext.new() ──────────────────────────────────────────────────────────
+
 
 class TestRunContextNew:
     def test_creates_run_id(self, cfg, conn):
@@ -81,6 +84,7 @@ class TestRunContextNew:
 
 
 # ── RunContext accessors ──────────────────────────────────────────────────────
+
 
 class TestRunContextAccessors:
     def test_path_accessors(self, cfg, conn):
@@ -112,6 +116,7 @@ class TestRunContextAccessors:
 
 # ── RunContext.record_stage() ─────────────────────────────────────────────────
 
+
 class TestRunContextRecordStage:
     def test_records_result(self, cfg, conn):
         ctx = RunContext.new(cfg, conn)
@@ -131,6 +136,7 @@ class TestRunContextRecordStage:
 
 
 # ── RunContext.finish() ───────────────────────────────────────────────────────
+
 
 class TestRunContextFinish:
     def test_logs_run_end(self, cfg, tmp_path):

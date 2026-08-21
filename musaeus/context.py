@@ -80,9 +80,12 @@ class RunContext:
         conn: sqlite3.Connection,
         dry_run: bool = False,
         run_id: str | None = None,
-    ) -> "RunContext":
+    ) -> RunContext:
         """Create a fresh RunContext and log the RUN_START event."""
-        rid = run_id or f"run_{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:6]}"
+        rid = (
+            run_id
+            or f"run_{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:6]}"
+        )
         started = _utc_now()
         ctx = cls(
             run_id=rid,
@@ -154,6 +157,10 @@ class RunContext:
     @property
     def runs_root(self) -> Path:
         return self.config.runs_root
+
+    @property
+    def alac_library(self) -> Path:
+        return self.config.alac_library
 
     # ── Stash: stages can store cross-stage data here ─────────────────────────
 

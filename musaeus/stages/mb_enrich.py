@@ -81,7 +81,8 @@ def _mb_get(path: str, params: dict[str, str]) -> dict:
     for attempt in range(2):
         try:
             with urlopen(req, timeout=_TIMEOUT_S) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                data: dict = json.loads(resp.read().decode("utf-8"))
+                return data
         except urllib.error.HTTPError as exc:
             if exc.code == 503 and attempt == 0:
                 logger.warning("[mb_enrich] rate-limited, backing off %ds", _RETRY_WAIT_S)
@@ -142,7 +143,8 @@ def _search_release(artist_mbid: str, album_name: str) -> str | None:
     if releases:
         score = int(releases[0].get("score", 0))
         if score >= 70:
-            return releases[0]["id"]
+            release_id: str = releases[0]["id"]
+            return release_id
     return None
 
 
@@ -159,20 +161,13 @@ class MBEnrichStage(BaseStage):
     # ── Validate ──────────────────────────────────────────────────────────────
 
     def validate(self, ctx: RunContext) -> None:
-        # Check connectivity (lightweight HEAD to MB)
-        try:
-            req = Request(
-                "https://musicbrainz.org/",
-                headers={"User-Agent": _USER_AGENT},
-                method="HEAD",
-            )
-            urlopen(req, timeout=5)
-        except Exception as exc:
-            from .base import StageError
-
-            raise StageError(
-                f"MusicBrainz not reachable: {exc}. Check network connectivity."
-            ) from exc
+        # Connectivity is no longer checked here as a hard failure (2026-08-17):
+        # this stage joined DEFAULT_PIPELINE's default-on chain, and a network
+        # hiccup must never block or fail the whole run -- matches EnrichStage's
+        # existing graceful-degradation pattern (missing API key -> warn +
+        # no-op, not a StageError). The actual connectivity check now lives in
+        # _enrich() itself, where a real StageResult can be returned instead of
+        # raising. See _enrich()'s early-return block below.
 
         # Count work to do (columns may not exist yet — use try/except)
         try:
@@ -194,6 +189,24 @@ class MBEnrichStage(BaseStage):
 
     def _enrich(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
+
+        # Graceful degradation (2026-08-17, matches EnrichStage's missing-
+        # API-key pattern): a single lightweight connectivity probe before
+        # doing any real work. Unreachable -> skip and report, never fail
+        # the stage/run over it. Real per-request failures further down are
+        # already caught individually (_search_artist/_search_release) and
+        # skip that one artist/release without aborting the rest.
+        try:
+            req = Request(
+                "https://musicbrainz.org/",
+                headers={"User-Agent": _USER_AGENT},
+                method="HEAD",
+            )
+            urlopen(req, timeout=5)
+        except Exception as exc:
+            result.notes.append(f"MusicBrainz not reachable — skipping mb_enrich this run. ({exc})")
+            ctx.record_stage(result)
+            return result
 
         if not dry_run:
             _ensure_columns(ctx.conn)
@@ -230,6 +243,7 @@ class MBEnrichStage(BaseStage):
         found_artists = 0
         found_releases = 0
         not_found = 0
+        would_query_artists: set[str] = set()
 
         from datetime import datetime, timezone
 
@@ -244,6 +258,16 @@ class MBEnrichStage(BaseStage):
 
             # ── Artist lookup ──────────────────────────────────────────────
             if artist_lower not in artist_cache:
+                if dry_run:
+                    # FIXED 2026-08-18: dry_run must not make the real
+                    # network call at all (previously only the DB write
+                    # was gated). Not populating artist_cache here is
+                    # deliberate -- the release lookup below is naturally
+                    # never reached for an uncached artist, since this
+                    # branch always continues past it.
+                    would_query_artists.add(artist_lower)
+                    result.files_skipped += 1
+                    continue
                 time.sleep(_RATE_LIMIT_S)
                 match = _search_artist(artist)
                 artist_cache[artist_lower] = match
@@ -319,6 +343,12 @@ class MBEnrichStage(BaseStage):
             result.notes.append(f"  {found_releases} release MBID(s) found.")
         if not_found:
             result.notes.append(f"  {not_found} artist(s) not found on MusicBrainz.")
+        if would_query_artists:
+            result.notes.append(
+                f"  {len(would_query_artists)} artist(s) would be queried via "
+                f"MusicBrainz in a real run — not looked up now, dry-run makes "
+                f"no network calls."
+            )
 
         ctx.record_stage(result)
         return result
