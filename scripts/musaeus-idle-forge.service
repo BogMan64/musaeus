@@ -1,0 +1,14 @@
+[Unit]
+Description=MUSAEUS Idle-Aware LUFS Forge
+Documentation=file:///mnt/FORGE2TB/Projects/MUSAEUS/scripts/idle_forge.sh
+After=graphical-session.target
+
+[Service]
+Type=simple
+Environment=DISPLAY=:0
+ExecStart=/mnt/FORGE2TB/Projects/MUSAEUS/scripts/idle_forge.sh
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
