@@ -124,6 +124,26 @@ def _read_all_tags(path: Path) -> dict[str, Any]:
     return out
 
 
+def _archive_twin(path: Path, cfg: MusicConfig) -> Path | None:
+    """The pristine ALAC_Archive counterpart of a library file, if present.
+
+    ALAC_Archive mirrors ALAC-Library's relative layout, so the twin is the
+    same relative path under the archive root. Deliberately re-derived from
+    the path rather than stored in a DB column -- build_alac_library.py's own
+    docstring explains why: a second path column would drift out of sync with
+    real filesystem state.
+    """
+    archive_root = cfg.vault_root / "ALAC_Archive"
+    if not archive_root.exists():
+        return None
+    try:
+        rel = path.relative_to(cfg.alac_library)
+    except ValueError:
+        return None
+    twin = archive_root / rel
+    return twin if twin.exists() else None
+
+
 def _status_for(path: Path, alac_library: Path) -> str:
     """Infer status from where the file actually sits.
 
@@ -157,7 +177,13 @@ def scan_and_rebuild(
     Never touches the existing `archive` table. Returns a summary dict.
     """
     lib = cfg.alac_library
-    summary: dict[str, Any] = {"scanned": 0, "rebuilt": 0, "errors": [], "table": table}
+    summary: dict[str, Any] = {
+        "scanned": 0,
+        "rebuilt": 0,
+        "hashed_from_archive": 0,
+        "errors": [],
+        "table": table,
+    }
 
     if not lib.exists():
         summary["errors"].append(f"library not found: {lib}")
@@ -205,12 +231,38 @@ def scan_and_rebuild(
             row.update(_read_all_tags(path))
 
             if compute_hashes:
-                ah, err = audio_hash_safe(path)
+                # Hash the PRISTINE archive copy when one exists, not the
+                # library copy.
+                #
+                # audio_hash is a PCM hash and is genuinely stable across
+                # re-tagging and container re-muxing (both verified). What it
+                # does not survive -- correctly -- is a deliberate change to
+                # the audio itself, and Phase 2A's build_alac_library.py bakes
+                # -18 LUFS into the ALAC-Library copy by re-encoding it.
+                # 91.8% of CATALOGUED rows carry lufs_baked_at.
+                #
+                # So hashing the library copy yields a value that is perfectly
+                # correct for that file and matches nothing in hash_index.db,
+                # silently breaking cross-batch dedup continuity on a rebuild.
+                # ALAC_Archive holds the un-baked original the stored hash was
+                # taken from -- verified 6/6 against the live DB. Prefer it.
+                archive_copy = _archive_twin(path, cfg)
+                hash_src = archive_copy if archive_copy is not None else path
+
+                ah, err = audio_hash_safe(hash_src)
                 if ah:
                     row["audio_hash"] = ah
+                    # Only claim archive provenance once a hash actually came
+                    # back from it. The count is what tells an operator how
+                    # much of a rebuild's hash continuity is real, so it must
+                    # never include a file whose hashing failed.
+                    if archive_copy is not None:
+                        row["_hashed_from_archive"] = True
                 elif err:
                     summary["errors"].append(f"{path.name}: audio_hash: {err}")
                 try:
+                    # full_hash describes the actual file at file_path, so it
+                    # is always taken from the library copy, never the twin.
                     row["full_hash"] = file_hash(path)
                 except OSError as exc:
                     summary["errors"].append(f"{path.name}: full_hash: {exc}")
@@ -222,6 +274,8 @@ def scan_and_rebuild(
                 row["finalized_at"] = row["last_modified"]
                 row["canonicalized_at"] = row["last_modified"]
 
+            from_archive = row.pop("_hashed_from_archive", False)
+
             usable = {k: v for k, v in row.items() if k in cols}
             placeholders = ", ".join("?" for _ in usable)
             conn.execute(
@@ -229,6 +283,10 @@ def scan_and_rebuild(
                 list(usable.values()),
             )
             summary["rebuilt"] += 1
+            # Counted only now: a row that failed to insert is not part of the
+            # rebuild, so its provenance should not be claimed either.
+            if from_archive:
+                summary["hashed_from_archive"] += 1
 
         except Exception as exc:  # one bad file must not end the rebuild
             summary["errors"].append(f"{path}: {exc}")
