@@ -399,41 +399,74 @@ class ForgeStage(BaseStage):
         result = self._make_result(dry_run=False)
         rows = ctx.conn.execute(
             """
-            SELECT file_path, lufs, rg_gain, rg_peak FROM archive
+            SELECT file_path, lufs, rg_gain, rg_peak, rg_tagged_at FROM archive
              WHERE status='CATALOGUED' AND rg_gain IS NOT NULL
              ORDER BY artist, album, track
             """
         ).fetchall()
 
         result.notes.append(f"files with stored loudness to embed: {len(rows)}")
-        written = skipped = failed = 0
+        written = skipped = failed = no_lufs = stamped = 0
+        now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
 
         for i, row in enumerate(rows, 1):
             path = Path(row["file_path"])
             if not path.exists():
                 skipped += 1
                 continue
+
             # rg_gain is stored against the -18 LUFS ReplayGain reference;
             # the Apple atom needs it against -23 LUFS EBU R128. Re-derive
             # from lufs so the written value matches what a fresh measurement
             # would have produced, rather than reusing the wrong reference.
             lufs = row["lufs"]
+            is_apple = path.suffix.lower() in (".m4a", ".alac")
+            if is_apple and lufs is None:
+                # write_rg_tags falls back to rg_gain when r128_gain is None,
+                # which would stamp a -18-referenced number into an atom that
+                # means -23 -- a silent ~5 dB error. Other containers store
+                # rg_gain directly and are unaffected, so only Apple skips.
+                no_lufs += 1
+                skipped += 1
+                result.notes.append(f"  no lufs, cannot derive R128 gain: {path.name}")
+                continue
             r128 = lufs_to_rg(lufs, reference=R128_APPLE_REFERENCE) if lufs is not None else None
             peak = row["rg_peak"] if row["rg_peak"] is not None else 0.0
+
             if write_rg_tags(path, row["rg_gain"], peak, r128_gain=r128):
                 written += 1
+                # The file now genuinely carries the tag, so rg_tagged_at must
+                # say so or the next ordinary Forge run re-measures it. Stamped
+                # with a targeted UPDATE rather than via _save_loudness(), which
+                # also rewrites lufs_tp from its argument -- this path never
+                # reads lufs_tp, so routing through it would null out true-peak
+                # on every repaired row. Nothing was measured here, so the
+                # measurements themselves are left exactly as they are.
+                if row["rg_tagged_at"] is None:
+                    ctx.conn.execute(
+                        "UPDATE archive SET rg_tagged_at = ? WHERE file_path = ?",
+                        (now, str(path)),
+                    )
+                    stamped += 1
             else:
                 failed += 1
                 result.errors.append(f"{path.name}: tag write failed")
+
             if i % _COMMIT_EVERY == 0:
+                ctx.conn.commit()
                 logger.info("forge embed: %d/%d", i, len(rows))
 
+        ctx.conn.commit()
         result.files_processed = len(rows)
         result.files_changed = written
         result.files_skipped = skipped
         result.files_errored = failed
         result.notes.append(f"  embedded: {written}")
-        result.notes.append(f"  missing on disk: {skipped}")
+        result.notes.append(f"  missing on disk: {skipped - no_lufs}")
+        if no_lufs:
+            result.notes.append(f"  skipped, no stored lufs: {no_lufs}")
+        if stamped:
+            result.notes.append(f"  newly marked rg_tagged_at: {stamped}")
         if failed:
             result.notes.append(f"  failed: {failed}")
             result.success = False

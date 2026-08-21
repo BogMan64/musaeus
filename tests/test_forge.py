@@ -553,15 +553,24 @@ def test_embed_from_db_writes_without_measuring(tmp_path, monkeypatch):
     conn.row_factory = sqlite3.Row
     conn.execute(
         "CREATE TABLE archive (file_path TEXT, status TEXT, artist TEXT, album TEXT, "
-        "track INT, lufs REAL, rg_gain REAL, rg_peak REAL)"
+        "track INT, lufs REAL, rg_gain REAL, rg_peak REAL, lufs_tp REAL, rg_tagged_at TEXT)"
     )
+    untagged = tmp_path / "untagged.m4a"
+    untagged.write_bytes(b"x")
+    no_lufs = tmp_path / "nolufs.m4a"
+    no_lufs.write_bytes(b"x")
     conn.executemany(
-        "INSERT INTO archive VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT INTO archive VALUES (?,?,?,?,?,?,?,?,?,?)",
         [
-            (str(real), "CATALOGUED", "A", "B", 1, -12.5, -5.5, 0.98),
-            (str(tmp_path / "gone.m4a"), "CATALOGUED", "A", "B", 2, -10.0, -8.0, 0.9),
+            (str(real), "CATALOGUED", "A", "B", 1, -12.5, -5.5, 0.98, -1.2, "2026-08-20"),
+            (str(tmp_path / "gone.m4a"), "CATALOGUED", "A", "B", 2, -10.0, -8.0, 0.9, -1.0, None),
             # No rg_gain: never measured, so there is nothing honest to embed.
-            (str(real), "CATALOGUED", "A", "B", 3, -9.0, None, 0.9),
+            (str(real), "CATALOGUED", "A", "B", 3, -9.0, None, 0.9, -1.0, None),
+            # Embedded successfully but never marked -- must get stamped.
+            (str(untagged), "CATALOGUED", "A", "B", 4, -11.0, -7.0, 0.95, -1.5, None),
+            # M4A with no lufs: the Apple atom's -23 reference cannot be
+            # derived, so it must be skipped rather than given a -18 number.
+            (str(no_lufs), "CATALOGUED", "A", "B", 5, None, -6.0, 0.9, -1.1, None),
         ],
     )
 
@@ -572,8 +581,27 @@ def test_embed_from_db_writes_without_measuring(tmp_path, monkeypatch):
     )
     result = forge_mod.ForgeStage().run(ctx)  # type: ignore[arg-type]
 
-    assert result.files_changed == 1
-    assert result.files_skipped == 1  # missing on disk
-    assert len(written) == 1
+    assert result.files_changed == 2
+    assert result.files_skipped == 2  # missing on disk + the lufs-less M4A
+    assert len(written) == 2
+    assert no_lufs not in [w[0] for w in written]
+
     # The Apple atom references -23 LUFS, not the -18 the DB's rg_gain uses.
     assert written[0][3] == pytest.approx(R128_APPLE_REFERENCE - (-12.5))
+
+    # A file that now genuinely carries the tag must be marked, or the next
+    # ordinary Forge run re-measures it.
+    stamped = conn.execute(
+        "SELECT rg_tagged_at FROM archive WHERE file_path = ?", (str(untagged),)
+    ).fetchone()[0]
+    assert stamped is not None
+
+    # ...but an already-stamped row keeps its original timestamp, and no row
+    # loses lufs_tp: this path repairs embedding and never rewrites
+    # measurements. Routing through _save_loudness() would have nulled these.
+    kept = conn.execute(
+        "SELECT rg_tagged_at, lufs_tp FROM archive WHERE file_path = ? AND track = 1",
+        (str(real),),
+    ).fetchone()
+    assert kept[0] == "2026-08-20"
+    assert kept[1] == pytest.approx(-1.2)

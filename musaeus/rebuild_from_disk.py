@@ -246,15 +246,18 @@ def scan_and_rebuild(
                 # silently breaking cross-batch dedup continuity on a rebuild.
                 # ALAC_Archive holds the un-baked original the stored hash was
                 # taken from -- verified 6/6 against the live DB. Prefer it.
-                hash_src = path
                 archive_copy = _archive_twin(path, cfg)
-                if archive_copy is not None:
-                    hash_src = archive_copy
-                    row["_hashed_from_archive"] = True
+                hash_src = archive_copy if archive_copy is not None else path
 
                 ah, err = audio_hash_safe(hash_src)
                 if ah:
                     row["audio_hash"] = ah
+                    # Only claim archive provenance once a hash actually came
+                    # back from it. The count is what tells an operator how
+                    # much of a rebuild's hash continuity is real, so it must
+                    # never include a file whose hashing failed.
+                    if archive_copy is not None:
+                        row["_hashed_from_archive"] = True
                 elif err:
                     summary["errors"].append(f"{path.name}: audio_hash: {err}")
                 try:
@@ -271,8 +274,7 @@ def scan_and_rebuild(
                 row["finalized_at"] = row["last_modified"]
                 row["canonicalized_at"] = row["last_modified"]
 
-            if row.pop("_hashed_from_archive", False):
-                summary["hashed_from_archive"] = summary.get("hashed_from_archive", 0) + 1
+            from_archive = row.pop("_hashed_from_archive", False)
 
             usable = {k: v for k, v in row.items() if k in cols}
             placeholders = ", ".join("?" for _ in usable)
@@ -281,6 +283,10 @@ def scan_and_rebuild(
                 list(usable.values()),
             )
             summary["rebuilt"] += 1
+            # Counted only now: a row that failed to insert is not part of the
+            # rebuild, so its provenance should not be claimed either.
+            if from_archive:
+                summary["hashed_from_archive"] += 1
 
         except Exception as exc:  # one bad file must not end the rebuild
             summary["errors"].append(f"{path}: {exc}")
