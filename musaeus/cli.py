@@ -1033,6 +1033,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--limit", type=int, default=0, help="Cap how many files to process this run (0 = all)"
     )
 
+    # rebuild-from-disk
+    rfd_p = sub.add_parser(
+        "rebuild-from-disk",
+        help="Rebuild the archive table from disk + embedded file tags (safe; never deletes)",
+    )
+    rfd_p.add_argument("--limit", type=int, default=0, help="Cap files scanned (0 = all)")
+    rfd_p.add_argument("--no-hashes", action="store_true", help="Skip re-hashing (much faster)")
+    rfd_p.add_argument(
+        "--promote",
+        action="store_true",
+        help="After a successful rebuild, swap the result into place as `archive`. "
+        "The existing archive is RENAMED aside, never dropped.",
+    )
+
     # permissions
     permissions_p = sub.add_parser(
         "permissions", help="Fix file/folder permissions under inbox (644/755)"
@@ -1384,6 +1398,33 @@ def main() -> None:
             from .stages import CorruptStage
 
             sys.exit(_run_pipeline([CorruptStage], dry_run=dry_run))
+
+        elif command == "rebuild-from-disk":
+            from .rebuild_from_disk import promote, scan_and_rebuild
+
+            cfg = get_config()
+            conn = open_db(cfg.db_path)
+            summary = scan_and_rebuild(
+                conn,
+                cfg,
+                limit=getattr(args, "limit", 0),
+                compute_hashes=not getattr(args, "no_hashes", False),
+            )
+            print(f"\n  scanned : {summary['scanned']:,}")
+            print(f"  rebuilt : {summary['rebuilt']:,}  -> table '{summary['table']}'")
+            print(f"  errors  : {len(summary['errors']):,}")
+            for e in summary["errors"][:10]:
+                print(f"    {e}")
+            if getattr(args, "promote", False):
+                if summary["rebuilt"] == 0:
+                    print("\n  refusing to promote an empty rebuild.", file=sys.stderr)
+                    sys.exit(1)
+                backup = promote(conn, table=summary["table"])
+                print(f"\n  promoted. previous archive preserved as: {backup}")
+            else:
+                print("\n  review it, then re-run with --promote to swap it in.")
+            conn.close()
+            sys.exit(0)
 
         elif command == "permissions":
             from .stages import PermissionsStage

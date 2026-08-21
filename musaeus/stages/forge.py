@@ -57,13 +57,42 @@ _COMMIT_EVERY = 25  # commit DB every N files (crash resilience)
 
 
 def _write_tags_m4a(path: Path, rg_gain: float, rg_peak: float) -> bool:
-    """Write R128 gain to M4A/ALAC using mutagen (Apple Q7.8 format)."""
-    try:
-        from mutagen.mp4 import MP4  # type: ignore[import-untyped]
+    """Write R128 gain to M4A/ALAC using mutagen (Apple Q7.8 format).
 
-        audio = MP4(str(path))
-        # Apple uses R128_TRACK_GAIN in Q7.8 fixed-point (gain × 256, integer)
-        audio["com.apple.iTunes.R128_TRACK_GAIN"] = [str(int(round(rg_gain * 256)))]
+    Uses the "----:mean:name" freeform atom form. The previous
+    implementation assigned to the dotted key
+    "com.apple.iTunes.R128_TRACK_GAIN", which mutagen's MP4 accepts as a
+    dict key but cannot serialise -- it is neither a 4-character atom nor a
+    freeform atom -- so save() succeeded, returned True, and silently wrote
+    nothing.
+
+    Confirmed 2026-08-21 against the real library: not one M4A carried an
+    R128 or ReplayGain tag despite 12,279 recorded FORGE_TAG events. It also
+    explains why Forge's own tag-read shortcut never once fired ("from
+    existing tags: 0" across a full 3,838-file run) -- the tags it looks for
+    had never actually been written. Caught by rebuild_from_disk failing to
+    recover lufs for files the DB said were forged.
+
+    Writes the plain ReplayGain pair alongside the Apple atom, since most
+    non-Apple players read those and they cost nothing to include.
+    """
+    try:
+        from mutagen.mp4 import MP4, MP4FreeForm  # type: ignore[import-untyped]
+
+        audio: Any = MP4(str(path))
+        if audio.tags is None:
+            audio.add_tags()
+        tags: Any = audio.tags
+        # Apple uses R128_TRACK_GAIN in Q7.8 fixed-point (gain x 256, integer)
+        tags["----:com.apple.iTunes:R128_TRACK_GAIN"] = [
+            MP4FreeForm(str(int(round(rg_gain * 256))).encode("utf-8"))
+        ]
+        tags["----:com.apple.iTunes:replaygain_track_gain"] = [
+            MP4FreeForm(f"{rg_gain:+.2f} dB".encode())
+        ]
+        tags["----:com.apple.iTunes:replaygain_track_peak"] = [
+            MP4FreeForm(f"{rg_peak:.8f}".encode())
+        ]
         audio.save()
         return True
     except Exception as exc:
@@ -167,10 +196,20 @@ def read_existing_rg_tags(path: Path) -> dict[str, float | None] | None:
             from mutagen.mp4 import MP4  # type: ignore[import-untyped]
 
             audio = MP4(str(path))
-            raw = audio.get("com.apple.iTunes.R128_TRACK_GAIN")
+            tags: Any = audio.tags or {}
+            # Freeform atom (the form _write_tags_m4a actually persists).
+            # The legacy dotted key is still checked so any file tagged by
+            # some other tool that did manage to write it is still readable.
+            raw = tags.get("----:com.apple.iTunes:R128_TRACK_GAIN") or tags.get(
+                "com.apple.iTunes.R128_TRACK_GAIN"
+            )
             if not raw:
                 return None
-            r128_gain = int(raw[0]) / 256.0  # Q7.8 fixed-point, dB @ -23 LUFS
+            first = raw[0]
+            text = (
+                bytes(first).decode("utf-8", "replace") if isinstance(first, bytes) else str(first)
+            )
+            r128_gain = int(text.strip()) / 256.0  # Q7.8 fixed-point, dB @ -23 LUFS
             lufs = R128_APPLE_REFERENCE - r128_gain
             return {
                 "lufs": lufs,

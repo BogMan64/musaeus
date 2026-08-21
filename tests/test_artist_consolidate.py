@@ -170,3 +170,58 @@ class TestArtistConsolidateStageLive:
         ).fetchall()
         artists = {row["artist"] for row in rows}
         assert artists == {"Chieftains, The"}
+
+
+# ── ArtistCanon is actually applied now ──────────────────────────────────────
+#
+# Until 2026-08-21 the canon was dead data for correction purposes:
+# organize.py's docstring claimed it used ArtistCanon but never imported it;
+# normalize.py said canon lookup was "Scholar/Enrich"'s job and neither
+# imported it either. Only neardupe.py touched it, and only to group
+# candidates -- nothing ever wrote a canonical name back to archive.artist.
+# That is why hand-curated mappings (including truncation repairs) never took
+# effect, and why a lone wrong name survived every run: the grouping pass
+# skips any key with a single variant.
+
+
+class TestArtistCanonApplied:
+    def _canon(self, tmp_path, rows):
+        p = tmp_path / "artist_canon.tsv"
+        p.write_text("# test canon\n" + "".join(f"{r}\t{c}\n" for r, c in rows), encoding="utf-8")
+        from musaeus.canon import ArtistCanon
+
+        return ArtistCanon(p)
+
+    def test_exact_mapping_resolves(self, tmp_path):
+        c = self._canon(tmp_path, [("nce boylan", "Terence Boylan")])
+        assert c.resolve_exact("nce Boylan") == "Terence Boylan"
+
+    def test_lookup_is_case_and_space_insensitive(self, tmp_path):
+        c = self._canon(tmp_path, [("nce boylan", "Terence Boylan")])
+        assert c.resolve_exact("  NCE   Boylan ") == "Terence Boylan"
+
+    def test_unmapped_name_returns_none_not_a_guess(self, tmp_path):
+        c = self._canon(tmp_path, [("nce boylan", "Terence Boylan")])
+        assert c.resolve_exact("Someone Else Entirely") is None
+
+    def test_similar_but_unmapped_names_are_left_alone(self, tmp_path):
+        """The protected-pair guarantee.
+
+        "Paul Young" (UK) and "John Paul Young" (Australian) are different
+        people. resolve()'s fuzzy fallback scores them 80 -- under the 88
+        threshold today, but only just. resolve_exact() removes the question
+        entirely: no canon entry, no rename, no matter the score.
+        """
+        c = self._canon(tmp_path, [("nce boylan", "Terence Boylan")])
+        assert c.resolve_exact("Paul Young") is None
+        assert c.resolve_exact("John Paul Young") is None
+        assert c.resolve_exact("Bon Jovi") is None
+
+    def test_resolve_exact_never_falls_back_to_fuzzy(self, tmp_path):
+        # resolve() may guess; resolve_exact() must not.
+        c = self._canon(tmp_path, [("terence boylan", "Terence Boylan")])
+        assert c.resolve_exact("Terrence Boylan") is None
+
+    def test_empty_input_is_safe(self, tmp_path):
+        c = self._canon(tmp_path, [("a", "B")])
+        assert c.resolve_exact("") is None

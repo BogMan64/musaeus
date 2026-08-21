@@ -236,8 +236,15 @@ class TestReadExistingRgTags:
         path = tmp_path / "track.m4a"
         path.write_bytes(b"fake")
         mock_audio = MagicMock()
-        # -3.5 dB gain @ -23 LUFS reference, Q7.8 fixed-point encoding
-        mock_audio.get = {"com.apple.iTunes.R128_TRACK_GAIN": [str(int(round(-3.5 * 256)))]}.get
+        # -3.5 dB gain @ -23 LUFS reference, Q7.8 fixed-point encoding.
+        # Keyed by the freeform atom the writer actually persists. This test
+        # previously mocked the dotted "com.apple.iTunes.R128_TRACK_GAIN"
+        # key -- which mutagen silently drops on save -- so it asserted the
+        # implementation's assumption rather than what a real file contains,
+        # and passed happily while no library file had the tag at all.
+        mock_audio.tags = {
+            "----:com.apple.iTunes:R128_TRACK_GAIN": [str(int(round(-3.5 * 256))).encode("utf-8")]
+        }
         with patch("mutagen.mp4.MP4", return_value=mock_audio):
             result = read_existing_rg_tags(path)
         assert result is not None
@@ -250,7 +257,7 @@ class TestReadExistingRgTags:
         path = tmp_path / "track.m4a"
         path.write_bytes(b"fake")
         mock_audio = MagicMock()
-        mock_audio.get = {}.get
+        mock_audio.tags = {}
         with patch("mutagen.mp4.MP4", return_value=mock_audio):
             assert read_existing_rg_tags(path) is None
 
@@ -427,3 +434,86 @@ class TestWriteRgTags:
         path = tmp_path / "song.wav"
         path.write_bytes(b"")
         assert write_rg_tags(path, 4.0, 0.9) is True
+
+
+class TestM4aR128TagActuallyPersists:
+    """Regression guard for a silent write failure found 2026-08-21.
+
+    _write_tags_m4a assigned to the dotted key
+    "com.apple.iTunes.R128_TRACK_GAIN". mutagen's MP4 accepts that as a dict
+    key but cannot serialise it -- it is neither a 4-character atom nor a
+    "----:mean:name" freeform atom -- so save() succeeded, the function
+    returned True, and nothing was written.
+
+    Real consequence: not one M4A in the library carried an R128 or
+    ReplayGain tag despite 12,279 recorded FORGE_TAG events, and Forge's own
+    tag-read shortcut could never fire ("from existing tags: 0" across a full
+    3,838-file run). Returning True while writing nothing is exactly the
+    failure shape that hides for months.
+    """
+
+    def _real_m4a(self, tmp_path):
+        import shutil
+        import subprocess
+
+        if not shutil.which("ffmpeg"):
+            pytest.skip("ffmpeg not available")
+        p = tmp_path / "t.m4a"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-c:a",
+                "alac",
+                str(p),
+            ],
+            capture_output=True,
+            check=True,
+        )
+        return p
+
+    def test_tag_survives_a_save_reload_cycle(self, tmp_path):
+        from mutagen.mp4 import MP4
+
+        from musaeus.stages.forge import _write_tags_m4a
+
+        p = self._real_m4a(tmp_path)
+        assert _write_tags_m4a(p, -5.25, 0.87) is True
+        tags = MP4(str(p)).tags or {}
+        assert "----:com.apple.iTunes:R128_TRACK_GAIN" in tags, (
+            "R128 gain did not persist -- the write silently did nothing"
+        )
+
+    def test_round_trip_through_the_real_reader(self, tmp_path):
+        from musaeus.stages.forge import _write_tags_m4a, read_existing_rg_tags
+
+        p = self._real_m4a(tmp_path)
+        _write_tags_m4a(p, -5.25, 0.87)
+        got = read_existing_rg_tags(p)
+        assert got is not None, "reader saw nothing -- shortcut can never fire"
+        # gain is stored relative to the -23 LUFS EBU reference
+        assert got["lufs"] == pytest.approx(-23 - (-5.25), abs=0.05)
+
+    def test_reader_still_accepts_the_legacy_dotted_key(self, tmp_path):
+        """Files tagged by some other tool that did write the dotted key
+        must stay readable -- the fix must not orphan them."""
+        from mutagen.mp4 import MP4
+
+        from musaeus.stages.forge import read_existing_rg_tags
+
+        p = self._real_m4a(tmp_path)
+        a = MP4(str(p))
+        if a.tags is None:
+            a.add_tags()
+        a.tags["com.apple.iTunes.R128_TRACK_GAIN"] = ["-1280"]
+        try:
+            a.save()
+        except Exception:
+            pytest.skip("mutagen refuses to serialise the legacy key at all")
+        got = read_existing_rg_tags(p)
+        if got is not None:
+            assert got["lufs"] == pytest.approx(-18.0, abs=0.05)
