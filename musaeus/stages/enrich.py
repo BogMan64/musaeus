@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 from urllib.parse import urlencode
 from urllib.request import urlopen
@@ -44,22 +43,14 @@ _TIMEOUT_S = 10
 _COMMIT_EVERY = 50
 
 # Article suffixes stored in DB as  "Beatles, The"  →  " (the)"  bracket form.
-# Strip these before querying Last.fm which expects plain "The Beatles".
-_ARTICLE_SUFFIX_RE = re.compile(
-    r"""
-    ,?\s*               # optional comma + whitespace
-    \(\s*               # opening paren (with optional inner space)
-    (the|a|an|le|la|les|el|los|las|de|het|een|die|das|ein|eine)
-    \s*\)               # closing paren
-    \s*$                # end of string
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
-# Bracket-free suffix variant: "Beatles, The"
-_ARTICLE_COMMA_RE = re.compile(
-    r",\s*(the|a|an|le|la|les|el|los|las|de|het|een|die|das|ein|eine)\s*$",
-    re.IGNORECASE,
-)
+# Strip these before querying Last.fm, which expects plain "The Beatles".
+#
+# Imported from normalize.py rather than redeclared here. They were
+# previously duplicated -- byte-identical copies in both modules -- and
+# duplicated article handling is exactly what let the article-suffix bug
+# regress three separate times (scope doc §5). One definition, one place to
+# fix. normalize.py owns them because it owns the canonical storage form.
+from .normalize import _ARTICLE_COMMA_RE, _ARTICLE_SUFFIX_RE  # noqa: E402
 
 
 def _clean_artist_for_lookup(artist: str) -> str:
@@ -76,19 +67,28 @@ def _clean_artist_for_lookup(artist: str) -> str:
     """
     name = artist.strip()
 
-    # Strip the parenthesised article suffix first
+    # Strip the parenthesised article suffix first.
     m = _ARTICLE_SUFFIX_RE.search(name)
     if m:
         article = m.group(1).strip().capitalize()
         base = name[: m.start()].strip().rstrip(",").strip()
-        return f"{article} {base}"
+        # The base can still carry the comma-article form -- the documented
+        # double spelling "Beatles, The (the)". Without this, the paren was
+        # consumed and the comma suffix left behind, producing
+        # "The Beatles, The" and sending a name to Last.fm that matches
+        # nothing, so those artists silently never got enriched. Same bug
+        # class as the one fixed in normalize.py's own suffix handling.
+        m_inner = _ARTICLE_COMMA_RE.search(base)
+        if m_inner:
+            base = base[: m_inner.start()].strip()
+        return f"{article} {base}" if base else name
 
     # Comma-article suffix without parens: "Beatles, The"
     m2 = _ARTICLE_COMMA_RE.search(name)
     if m2:
         article = m2.group(1).strip().capitalize()
         base = name[: m2.start()].strip()
-        return f"{article} {base}"
+        return f"{article} {base}" if base else name
 
     return name
 

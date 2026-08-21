@@ -89,6 +89,13 @@ VARIOUS_ARTISTS_FORMS = frozenset(
     }
 )
 
+# Forms safe to match as a PREFIX of a longer compound credit, e.g.
+# "Various Artists - The Eagles Tribute". Deliberately excludes the bare
+# "various" and "va" from VARIOUS_ARTISTS_FORMS above -- those remain
+# exact-match-only, since prefix-matching them would swallow real artists
+# ("Various Production").
+_VARIOUS_PREFIX_FORMS = frozenset({"various artists", "various artist"})
+
 # "Artist - Title [Real Artist]" or "Artist - Title [Real Artist-Label]"
 _BRACKET_RE = re.compile(r"\[([^\]]+)\]")
 
@@ -99,7 +106,32 @@ _MB_TIMEOUT_S = 15
 
 
 def is_various(artist: str) -> bool:
-    return (artist or "").strip().lower() in VARIOUS_ARTISTS_FORMS
+    a = (artist or "").strip().lower()
+    if a in VARIOUS_ARTISTS_FORMS:
+        return True
+
+    # Compound "Various Artists" credits. Exact matching alone missed every
+    # one of these -- confirmed live 2026-08-21 against the real vault:
+    #   "Various Artists - The Eagles Tribute"   (11 rows)
+    #   "Various Artists Interpreted by A.M.P"   (3 rows)
+    # all sailed straight through as if they were real artist names, so the
+    # stage never got a chance to resolve them.
+    #
+    # Only the unambiguous multi-word forms are matched as a PREFIX. The
+    # bare "various" and "va" stay exact-match-only on purpose: "Various
+    # Production" is a real electronic act, and prefix-matching bare
+    # "various" would swallow it (verified -- it did, on the first attempt
+    # at this). "va" as a prefix would be far worse still.
+    #
+    # The trailing boundary check then guards the remaining case: the form
+    # must be followed by a separator or end-of-string, never by more
+    # letters, so a hypothetical "Various Artistry" is not matched either.
+    for form in _VARIOUS_PREFIX_FORMS:
+        if a.startswith(form):
+            rest = a[len(form) :]
+            if not rest or not rest[0].isalnum():
+                return True
+    return False
 
 
 def extract_from_brackets(filename: str) -> str:
