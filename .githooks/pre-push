@@ -31,7 +31,10 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         echo ""
         echo "  If this push IS a fast-forward merge you already reviewed"
         echo "  via a PR merge button on GitHub, you don't need to push"
-        echo "  main locally at all — just 'git fetch' to sync."
+        echo "  main locally at all. To sync afterwards:"
+        echo "    git checkout main && git pull --ff-only"
+        echo "  ('git fetch' alone only updates origin/main, and leaves"
+        echo "   your local main branch behind.)"
         echo "───────────────────────────────────────────────────────────"
         exit 1
     fi

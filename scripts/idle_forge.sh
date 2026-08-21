@@ -230,6 +230,11 @@ except Exception as e:
 is_forge_complete() {
     local progress
     progress=$(get_progress)
+    # An empty CATALOGUED set is complete, not perpetually-incomplete. The
+    # percentage guard alone reports "0/0 (0.0%)" for an empty library, which
+    # never matches 100.0% -- the monitor would poll forever with nothing to
+    # forge and no way to finish.
+    [[ "$progress" == "0/0 "* ]] && return 0
     [[ "$progress" == *"100.0%"* ]]
 }
 
@@ -261,8 +266,17 @@ main() {
         fi
 
         if is_system_idle; then
+            # Called on EVERY idle poll, not just on the active->idle
+            # transition. If forge exits on its own while the system stays
+            # idle (crash, OOM kill, or a batch finishing with work still
+            # left), last_state is already "idle", so a transition-only call
+            # would never fire again -- the monitor would spin forever next
+            # to a dead forge with tracks still unforged. resume_forge is
+            # idempotent: it CONTs a paused child, returns immediately for a
+            # healthy running one, and only starts a fresh forge when there
+            # is no tracked child and no other musaeus process holding the DB.
+            resume_forge
             if [ "$last_state" != "idle" ]; then
-                resume_forge
                 last_state="idle"
             fi
         else
