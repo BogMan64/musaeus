@@ -4,7 +4,9 @@ Tests for ForgeStage — EBU R128 loudness measurement + ReplayGain tag embeddin
 All external dependencies (ffmpeg, mutagen) are mocked.
 """
 
+import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,6 +14,7 @@ import pytest
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db, upsert_archive
+from musaeus.loudness import R128_APPLE_REFERENCE
 from musaeus.stages.forge import ForgeStage, read_existing_rg_tags, write_rg_tags
 
 
@@ -517,3 +520,60 @@ class TestM4aR128TagActuallyPersists:
         got = read_existing_rg_tags(p)
         if got is not None:
             assert got["lufs"] == pytest.approx(-18.0, abs=0.05)
+
+
+def test_embed_from_db_writes_without_measuring(tmp_path, monkeypatch):
+    """The repair path must embed stored values and never invoke ffmpeg.
+
+    Forge measured 12,279 files correctly but `_write_tags_m4a` assigned to a
+    dotted key mutagen could not serialise, so the numbers only ever reached
+    the DB. Re-measuring to fix an embedding bug would be hours of ffmpeg to
+    recompute values already known-good, so this path reads them back out of
+    the DB instead -- and must stay measurement-free, which is what this test
+    pins.
+    """
+    from musaeus.stages import forge as forge_mod
+
+    def _explode(*_a, **_k):  # pragma: no cover - failure signal only
+        raise AssertionError("embed-from-db must not measure loudness")
+
+    monkeypatch.setattr(forge_mod, "measure_loudness", _explode)
+
+    written: list[tuple[Path, float, float, float | None]] = []
+    monkeypatch.setattr(
+        forge_mod,
+        "write_rg_tags",
+        lambda p, g, pk, r128_gain=None: (written.append((p, g, pk, r128_gain)), True)[1],
+    )
+
+    real = tmp_path / "song.m4a"
+    real.write_bytes(b"x")
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        "CREATE TABLE archive (file_path TEXT, status TEXT, artist TEXT, album TEXT, "
+        "track INT, lufs REAL, rg_gain REAL, rg_peak REAL)"
+    )
+    conn.executemany(
+        "INSERT INTO archive VALUES (?,?,?,?,?,?,?,?)",
+        [
+            (str(real), "CATALOGUED", "A", "B", 1, -12.5, -5.5, 0.98),
+            (str(tmp_path / "gone.m4a"), "CATALOGUED", "A", "B", 2, -10.0, -8.0, 0.9),
+            # No rg_gain: never measured, so there is nothing honest to embed.
+            (str(real), "CATALOGUED", "A", "B", 3, -9.0, None, 0.9),
+        ],
+    )
+
+    ctx = SimpleNamespace(
+        conn=conn,
+        get=lambda k, d=None: {"forge_embed_from_db": True}.get(k, d),
+        record_stage=lambda _r: None,
+    )
+    result = forge_mod.ForgeStage().run(ctx)  # type: ignore[arg-type]
+
+    assert result.files_changed == 1
+    assert result.files_skipped == 1  # missing on disk
+    assert len(written) == 1
+    # The Apple atom references -23 LUFS, not the -18 the DB's rg_gain uses.
+    assert written[0][3] == pytest.approx(R128_APPLE_REFERENCE - (-12.5))

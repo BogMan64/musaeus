@@ -967,6 +967,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip the existing-tag shortcut; always re-measure via ffmpeg",
     )
     forge_p.add_argument(
+        "--embed-from-db",
+        action="store_true",
+        help=(
+            "Repair path: embed loudness tags from values already stored in the DB, "
+            "with no ffmpeg re-measurement. Use after the 2026-08-21 silent-write fix."
+        ),
+    )
+    forge_p.add_argument(
         "--target-lufs",
         type=float,
         default=None,
@@ -1380,6 +1388,8 @@ def main() -> None:
                 stash["forge_force"] = True
             if getattr(args, "retag", False):
                 stash["forge_retag"] = True
+            if getattr(args, "embed_from_db", False):
+                stash["forge_embed_from_db"] = True
             target_lufs = getattr(args, "target_lufs", None)
             if target_lufs is not None:
                 stash["forge_target_lufs"] = float(target_lufs)

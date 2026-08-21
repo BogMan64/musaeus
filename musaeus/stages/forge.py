@@ -383,7 +383,67 @@ class ForgeStage(BaseStage):
 
     # ── run ───────────────────────────────────────────────────────────────────
 
+    def _embed_from_db(self, ctx: RunContext) -> StageResult:
+        """Write loudness tags onto files from values already in the DB.
+
+        Repair path for the silent-write bug fixed 2026-08-21: Forge measured
+        correctly and stored correct lufs/rg_gain for 12,279 files, but the
+        M4A tag write serialised nothing, so the values only ever existed in
+        the database. The measurements are not in doubt -- only the embedding
+        failed -- so re-running a full ffmpeg pass would burn hours to
+        recompute numbers already known to be right.
+
+        Skips any row without a stored rg_gain: this embeds what was
+        measured, and never invents a value.
+        """
+        result = self._make_result(dry_run=False)
+        rows = ctx.conn.execute(
+            """
+            SELECT file_path, lufs, rg_gain, rg_peak FROM archive
+             WHERE status='CATALOGUED' AND rg_gain IS NOT NULL
+             ORDER BY artist, album, track
+            """
+        ).fetchall()
+
+        result.notes.append(f"files with stored loudness to embed: {len(rows)}")
+        written = skipped = failed = 0
+
+        for i, row in enumerate(rows, 1):
+            path = Path(row["file_path"])
+            if not path.exists():
+                skipped += 1
+                continue
+            # rg_gain is stored against the -18 LUFS ReplayGain reference;
+            # the Apple atom needs it against -23 LUFS EBU R128. Re-derive
+            # from lufs so the written value matches what a fresh measurement
+            # would have produced, rather than reusing the wrong reference.
+            lufs = row["lufs"]
+            r128 = lufs_to_rg(lufs, reference=R128_APPLE_REFERENCE) if lufs is not None else None
+            peak = row["rg_peak"] if row["rg_peak"] is not None else 0.0
+            if write_rg_tags(path, row["rg_gain"], peak, r128_gain=r128):
+                written += 1
+            else:
+                failed += 1
+                result.errors.append(f"{path.name}: tag write failed")
+            if i % _COMMIT_EVERY == 0:
+                logger.info("forge embed: %d/%d", i, len(rows))
+
+        result.files_processed = len(rows)
+        result.files_changed = written
+        result.files_skipped = skipped
+        result.files_errored = failed
+        result.notes.append(f"  embedded: {written}")
+        result.notes.append(f"  missing on disk: {skipped}")
+        if failed:
+            result.notes.append(f"  failed: {failed}")
+            result.success = False
+        ctx.record_stage(result)
+        return result
+
     def run(self, ctx: RunContext) -> StageResult:
+        if ctx.get("forge_embed_from_db", False):
+            return self._embed_from_db(ctx)
+
         result = self._make_result(dry_run=False)
         force: bool = ctx.get("forge_force", False)
         retag: bool = ctx.get("forge_retag", False)
