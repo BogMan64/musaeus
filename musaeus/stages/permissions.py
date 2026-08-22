@@ -142,6 +142,22 @@ class PermissionsStage(BaseStage):
 
     # ── Run ───────────────────────────────────────────────────────────────────
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """After a repair pass, a re-scan must find fewer problems.
+
+        The fault this guards: the stage swept INBOX only, which is empty
+        or already-correct almost always, so it reported success for a
+        month without its chmod path ever executing.
+        """
+        bad_files, bad_dirs = _scan_all(ctx)
+        remaining = len(bad_files) + len(bad_dirs)
+        if remaining == 0:
+            return []
+        return [
+            f"fixed {result.files_changed} item(s) but a re-scan still finds "
+            f"{remaining} with wrong permissions"
+        ]
+
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)
 

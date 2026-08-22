@@ -38,11 +38,30 @@ class StageResult:
     notes: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
+    # Effect verification (2026-08-22). None = the stage does not claim a
+    # verifiable effect, or nothing changed. True/False = its claim was
+    # checked against the filesystem or DB after the fact and held / did not.
+    #
+    # This exists because five separate components were found reporting
+    # success while doing nothing at all: rebuild-db dispatching on event
+    # names that did not exist, Forge writing to an unserialisable tag key,
+    # GenreCanon parsing a separator the file never used, PermissionsStage
+    # sweeping an empty directory, and an overnight helper silently dropping
+    # its arguments. Every one passed its tests, because the tests asserted
+    # the shape of the call rather than its effect on disk.
+    verified: bool | None = None
+    verify_notes: list[str] = field(default_factory=list)
+
     def summarise(self) -> str:
         mode = " [DRY RUN]" if self.dry_run else ""
         status = "OK" if self.success else "FAILED"
+        seal = ""
+        if self.verified is True:
+            seal = " ✓verified"
+        elif self.verified is False:
+            seal = " ✗UNVERIFIED"
         return (
-            f"{self.stage_name}{mode}: {status} | "
+            f"{self.stage_name}{mode}: {status}{seal} | "
             f"processed={self.files_processed} "
             f"changed={self.files_changed} "
             f"skipped={self.files_skipped} "
