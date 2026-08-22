@@ -148,6 +148,7 @@ from .reviewer import ReviewerStage
 from .sanitize import SanitizeStage
 from .scholar import ScholarStage
 from .sentinel import SentinelStage
+from .spellcheck import SpellCheckStage  # noqa: E402
 from .tagger import TaggerStage
 from .transcode import TranscodeStage
 from .tribute_quarantine import TributeQuarantineStage
@@ -187,6 +188,7 @@ __all__ = [
     "AlbumArtStage",
     "TributeQuarantineStage",
     "GenreValidateStage",
+    "SpellCheckStage",
     "VariousArtistsFixStage",
     "BitRotStage",
 ]
@@ -262,6 +264,7 @@ ACT1_INTAKE_CORRECTION: list[type] = [
     CorruptStage,
     AlbumArtStage,
     NormalizeStage,
+    SpellCheckStage,
     SanitizeStage,
     ArtistConsolidateStage,
     VariousArtistsFixStage,

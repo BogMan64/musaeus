@@ -137,6 +137,7 @@ from .stages import (
     SanitizeStage,
     ScholarStage,
     SentinelStage,
+    SpellCheckStage,
     TaggerStage,
     TranscodeStage,
 )
@@ -1116,6 +1117,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "one, else the artist's dominant genre. Ties are left alone.",
     )
 
+    spell_p = sub.add_parser(
+        "spellcheck", help="Report artist names that look like misspellings (report-only)"
+    )
+    spell_p.add_argument(
+        "--dry-run", action="store_true", help="Same as a normal run: nothing is written"
+    )
+
     neardupe_p = sub.add_parser("neardupe", help="Metadata-based near-duplicate detection")
     neardupe_p.add_argument("--dry-run", action="store_true", help="Show matches without staging")
 
@@ -1557,6 +1565,9 @@ def main() -> None:
             if getattr(args, "consolidate", False):
                 stash["genre_consolidate"] = True
             sys.exit(_run_pipeline([GenreValidateStage], dry_run=dry_run, stash=stash))
+
+        elif command == "spellcheck":
+            sys.exit(_run_pipeline([SpellCheckStage], dry_run=dry_run))
 
         elif command == "neardupe":
             sys.exit(_run_pipeline([NearDupeStage], dry_run=dry_run))
