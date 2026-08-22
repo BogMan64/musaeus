@@ -143,8 +143,75 @@ class GenreValidateStage(BaseStage):
         ctx.record_stage(result)
         return result
 
+    def _consolidate(self, ctx: RunContext) -> StageResult:
+        """Enforce one genre per ARTIST, not per song.
+
+        Grey's rule, 2026-08-21: genre belongs to the artist. A library
+        where Bob Dylan is 84 tracks of "Rock" and 24 of "Folk Rock" is
+        not richer for the distinction, it is just harder to browse -- and
+        browsing by artist is how this library is actually used.
+
+        Which genre wins, in order:
+          1. MasterLaw, where it has an opinion. It is the curated
+             authority and the whole point of having one.
+          2. Otherwise the artist's dominant genre by file count. Not a
+             guess so much as a reading of what the library already
+             mostly says -- Rolling Stones at 114 Rock against 2 Blues
+             was never really two genres.
+
+        Ties are left ALONE rather than broken arbitrarily: a genuine
+        50/50 split is a decision, and this should not invent one.
+        """
+        result = self._make_result(dry_run=False)
+        law = self._law(ctx)
+
+        counts: dict[str, dict[str, int]] = {}
+        for row in ctx.conn.execute(
+            "SELECT artist, genre, COUNT(*) AS n FROM archive "
+            "WHERE status='CATALOGUED' AND genre IS NOT NULL AND trim(genre) != '' "
+            "GROUP BY artist, genre"
+        ):
+            counts.setdefault(row["artist"], {})[row["genre"]] = row["n"]
+
+        by_law = by_majority = ties = changed = 0
+        for artist, genres in counts.items():
+            if len(genres) < 2:
+                continue
+
+            winner = law.genre_for(artist)
+            if winner:
+                by_law += 1
+            else:
+                ranked = sorted(genres.items(), key=lambda kv: -kv[1])
+                if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
+                    ties += 1
+                    result.notes.append(
+                        f"  TIE, left alone: {artist} " + ", ".join(f"{g}:{n}" for g, n in ranked)
+                    )
+                    continue
+                winner = ranked[0][0]
+                by_majority += 1
+
+            cur = ctx.conn.execute(
+                "UPDATE archive SET genre = ? WHERE status='CATALOGUED' "
+                "AND artist = ? AND genre IS NOT ?",
+                (winner, artist, winner),
+            )
+            changed += cur.rowcount
+
+        ctx.conn.commit()
+        result.files_changed = changed
+        result.notes.insert(0, f"artists consolidated by MasterLaw:  {by_law}")
+        result.notes.insert(1, f"artists consolidated by majority:   {by_majority}")
+        result.notes.insert(2, f"ties left for a human:              {ties}")
+        result.notes.insert(3, f"files retagged:                     {changed}")
+        ctx.record_stage(result)
+        return result
+
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._check(ctx, dry_run=True)
 
     def run(self, ctx: RunContext) -> StageResult:
+        if ctx.get("genre_consolidate", False):
+            return self._consolidate(ctx)
         return self._check(ctx, dry_run=False)

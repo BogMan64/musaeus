@@ -1102,6 +1102,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Check library genres against MasterLaw.csv (fills empties, reports conflicts)",
     )
     genre_p.add_argument("--dry-run", action="store_true", help="Report only, fill nothing")
+    genre_p.add_argument(
+        "--consolidate",
+        action="store_true",
+        help="Enforce one genre per ARTIST: MasterLaw's answer where it has "
+        "one, else the artist's dominant genre. Ties are left alone.",
+    )
 
     neardupe_p = sub.add_parser("neardupe", help="Metadata-based near-duplicate detection")
     neardupe_p.add_argument("--dry-run", action="store_true", help="Show matches without staging")
@@ -1504,7 +1510,10 @@ def main() -> None:
             sys.exit(_run_pipeline([MBEnrichStage], dry_run=dry_run))
 
         elif command == "genre-validate":
-            sys.exit(_run_pipeline([GenreValidateStage], dry_run=dry_run))
+            stash = {}
+            if getattr(args, "consolidate", False):
+                stash["genre_consolidate"] = True
+            sys.exit(_run_pipeline([GenreValidateStage], dry_run=dry_run, stash=stash))
 
         elif command == "neardupe":
             sys.exit(_run_pipeline([NearDupeStage], dry_run=dry_run))
