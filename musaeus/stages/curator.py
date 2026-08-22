@@ -37,7 +37,16 @@ logger = logging.getLogger(__name__)
 
 _COMMIT_EVERY = 100
 
-# Ensemble/duo names that must never be split at " & " for folder naming.
+# Ensemble/duo names that must never be split at " & ", for folder naming
+# OR for artist-variant folding.
+#
+# Scope widened 2026-08-21: this list existed and was correct, but a
+# one-off artist-fold pass did not consult it and overrode two entries
+# (Big Brother & The Holding Company, Barney Bentall & The Legendary
+# Hearts) before the damage was spotted and reversed. Any code that
+# rewrites archive.artist must check here first -- the whole point of a
+# guard list is that it is consulted by everything, not just the stage it
+# happened to be written in.
 _PROTECTED_ARTIST_NAMES: frozenset[str] = frozenset(
     {
         "crosby, stills & nash",
@@ -51,6 +60,9 @@ _PROTECTED_ARTIST_NAMES: frozenset[str] = frozenset(
         "of monsters and men",
         "big brother & the holding company",
         "dr. hook & the medicine show",
+        # Unrelated to the 1960s solo artist "Keith" ("98.6") despite the
+        # shared first name -- a fold merged the two before this was added.
+        "keith & kristyn getty",
     }
 )
 
