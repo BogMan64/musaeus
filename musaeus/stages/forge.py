@@ -473,6 +473,31 @@ class ForgeStage(BaseStage):
         ctx.record_stage(result)
         return result
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A tag this stage claims to have written must read back.
+
+        This is the exact fault that made Forge a no-op for 12,279 files:
+        _write_tags_m4a assigned to a dotted key mutagen accepts as a dict
+        key but cannot serialise, so save() succeeded, the writer returned
+        True, and nothing reached disk. Reading one back would have caught
+        it the first time it ran.
+        """
+        rows = ctx.conn.execute(
+            "SELECT file_path FROM archive WHERE status='CATALOGUED' "
+            "AND rg_gain IS NOT NULL AND rg_tagged_at IS NOT NULL "
+            "ORDER BY rg_tagged_at DESC LIMIT 3"
+        ).fetchall()
+        checked = [Path(r["file_path"]) for r in rows if Path(r["file_path"]).exists()]
+        if not checked:
+            return []
+        for path in checked:
+            if read_existing_rg_tags(path):
+                return []
+        return [
+            f"wrote loudness tags to {result.files_changed} file(s) but none of "
+            f"{len(checked)} sampled files has a readable loudness tag"
+        ]
+
     def run(self, ctx: RunContext) -> StageResult:
         if ctx.get("forge_embed_from_db", False):
             return self._embed_from_db(ctx)

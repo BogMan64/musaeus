@@ -141,8 +141,19 @@ class SanitizeStage(BaseStage):
             file_path = row["file_path"]
             changes = {}
 
-            # Check each field
-            for field in ("artist", "album", "title", "genre"):
+            # genre is deliberately NOT sanitised (removed 2026-08-21).
+            #
+            # These rules exist to make a string safe as a Windows/ExFAT PATH
+            # COMPONENT, and artist/album/title genuinely become folder and
+            # file names. Genre never does -- it is only ever a tag, and
+            # playlist.py sanitises its own .m3u8 filenames separately via
+            # _safe_genre(). Running path rules over it stripped the "/" out
+            # of Apple's canonical genre names, turning "R&B/Funk/Soul" into
+            # "R&B-Funk-Soul" on 904 files and "Disco/Electronic" into
+            # "Disco-Electronic" -- silently inventing genre names that
+            # match no canon, and generating ~1,000 phantom conflicts
+            # against MasterLaw. Grey's preference is the "/" form.
+            for field in ("artist", "album", "title"):
                 original = row[field]
                 if not original:
                     continue

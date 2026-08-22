@@ -37,6 +37,7 @@ from musaeus.stages.preflight import PreflightStage
 from musaeus.stages.sanitize import SanitizeStage
 from musaeus.stages.scholar import ScholarStage
 from musaeus.stages.sentinel import SentinelStage
+from musaeus.stages.spellcheck import SpellCheckStage
 from musaeus.stages.tagger import TaggerStage
 from musaeus.stages.various_artists_fix import VariousArtistsFixStage
 
@@ -104,6 +105,10 @@ def test_full_default_pipeline_order_matches_current_design():
         CorruptStage,
         AlbumArtStage,
         NormalizeStage,
+        # Report-only, added 2026-08-22. Sits after Normalize so it compares
+        # names in canonical article form, and before Sanitize/dedupe so a
+        # flagged misspelling is visible before anything groups on it.
+        SpellCheckStage,
         SanitizeStage,
         ArtistConsolidateStage,
         VariousArtistsFixStage,

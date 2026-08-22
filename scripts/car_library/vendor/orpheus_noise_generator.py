@@ -28,8 +28,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-ORPHEUS_ROOT = Path("/mnt/FORGE2TB/ACTIVE_PROJECTS/ORPHEUS")
-NOISE_DIR = Path(os.environ.get("ORPHEUS_NOISE_DIR", str(ORPHEUS_ROOT / "RUNS" / "Noise")))
+# Repointed 2026-08-21 from /mnt/FORGE2TB/ACTIVE_PROJECTS/ORPHEUS, which is
+# being retired off FORGE2TB. That constant was already vestigial: the noise
+# files have lived under MUSAEUS_VAULT/RUNS/Noise for some time, and the old
+# default directory did not exist at all -- so only the ORPHEUS_NOISE_DIR
+# override was keeping this working. Named VAULT_ROOT now because that is
+# what it actually is, and env-overridable so the next move needs no code
+# change.
+VAULT_ROOT = Path(os.environ.get("MUSAEUS_VAULT_ROOT", "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT"))
+NOISE_DIR = Path(os.environ.get("ORPHEUS_NOISE_DIR", str(VAULT_ROOT / "RUNS" / "Noise")))
 
 TARGET_LUFS = -16.0
 TARGET_TP = -1.0

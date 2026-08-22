@@ -166,6 +166,17 @@ _KEEP_CAPS: frozenset[str] = frozenset(
         "AC",
         "DC",
         "AC/DC",
+        # Hyphenated forms added 2026-08-21. The slash forms alone were not
+        # enough, because Sanitize rewrites "/" to "-" for filesystem safety
+        # BEFORE Normalize runs -- so by the time the name reached this
+        # lookup it was "AC-DC", which was not in the set, and it got
+        # title-cased to "Ac-dc" on 92 files. The two stages were each
+        # behaving correctly in isolation; the bug lived in the handoff.
+        # Grey's call on the separator: hyphen, whatever is easiest on Linux.
+        "AC-DC",
+        "JAY-Z",
+        "RUN-DMC",
+        "D-A-D",
         "XL",  # XL Recordings -- also a Roman-numeral false friend (see below)
         "ACDC",
         "USA",

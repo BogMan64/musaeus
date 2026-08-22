@@ -17,7 +17,7 @@ import pytest
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db
-from musaeus.stages.dupe_resolver import DupeResolverStage
+from musaeus.stages.dupe_resolver import DupeResolverStage, _keeper_sort_key
 
 _TEST_BATCH_DATE = "2026-01-15"
 
@@ -703,3 +703,101 @@ class TestDupeResolverOverlappingGroups:
             "SELECT status FROM duplicates WHERE group_id = 'dup_group_b'"
         ).fetchone()["status"]
         assert b_status == "pending"
+
+
+class TestOriginalTrumpsRemaster:
+    """Grey's rule, 2026-08-21: a remaster and its original are the SAME
+    song for grouping, but when one must be kept the original wins."""
+
+    def _m(self, **kw):
+        base = {"codec": "alac", "bitrate": 1000, "size_bytes": 1000, "title": "", "album": ""}
+        base.update(kw)
+        return base
+
+    def test_original_beats_remaster(self):
+        original = self._m(title="A Monday Date")
+        remaster = self._m(title="A Monday Date (Remastered)")
+        assert sorted([remaster, original], key=_keeper_sort_key)[0] is original
+
+    def test_reissue_marker_read_from_album_too(self):
+        # The marker lands in whichever field the source used.
+        original = self._m(title="Song", album="Greatest Hits")
+        remaster = self._m(title="Song", album="Chicago High Life (2013 Remaster)")
+        assert sorted([remaster, original], key=_keeper_sort_key)[0] is original
+
+    def test_lossless_remaster_still_beats_lossy_original(self):
+        """Codec outranks the reissue rule deliberately.
+
+        The preference is about which *release* to keep, not a licence to
+        keep a worse file -- a lossless remaster is a better artifact than
+        a lossy original.
+        """
+        lossy_original = self._m(codec="aac", title="Song")
+        lossless_remaster = self._m(codec="alac", title="Song (Remastered)")
+        assert (
+            sorted([lossy_original, lossless_remaster], key=_keeper_sort_key)[0]
+            is lossless_remaster
+        )
+
+    def test_reissue_outranks_bitrate(self):
+        """A remaster is often louder and larger without being wanted."""
+        original = self._m(title="Song", bitrate=900)
+        remaster = self._m(title="Song (Remaster)", bitrate=1500)
+        assert sorted([remaster, original], key=_keeper_sort_key)[0] is original
+
+    def test_plain_titles_unaffected(self):
+        a = self._m(title="Song", bitrate=1200)
+        b = self._m(title="Song", bitrate=800)
+        assert sorted([b, a], key=_keeper_sort_key)[0] is a
+
+
+class TestStudioOverLive:
+    """Grey's third keeper rule, confirmed 2026-08-22.
+
+    Full order: (1) lossless over lossy, (2) original over remaster when
+    both are the same codec, (3) studio over live when both are the same
+    codec AND type. Each rank only decides groups the ranks above it tie
+    on -- which is why a live original still beats a studio remaster.
+    """
+
+    def _m(self, **kw):
+        base = {"codec": "alac", "bitrate": 1000, "size_bytes": 1000, "title": "", "album": ""}
+        base.update(kw)
+        return base
+
+    def test_studio_beats_live_all_else_equal(self):
+        studio = self._m(title="Stormy Monday")
+        live = self._m(title="Stormy Monday (live at Fillmore East)")
+        assert sorted([live, studio], key=_keeper_sort_key)[0] is studio
+
+    def test_live_marker_read_from_album_too(self):
+        studio = self._m(title="Layla", album="Layla and Other Assorted Love Songs")
+        live = self._m(title="Layla", album="Unplugged")
+        assert sorted([live, studio], key=_keeper_sort_key)[0] is studio
+
+    def test_lossless_live_still_beats_lossy_studio(self):
+        """Codec is the binding constraint; the room comes far behind it."""
+        lossy_studio = self._m(codec="aac", title="Song")
+        lossless_live = self._m(codec="alac", title="Song (Live)")
+        assert sorted([lossy_studio, lossless_live], key=_keeper_sort_key)[0] is lossless_live
+
+    def test_live_original_beats_studio_remaster(self):
+        """Rank 2 (reissue) outranks rank 3 (live), so this is correct.
+
+        Studio-over-live only decides groups that tie on codec AND reissue
+        status -- "same codec and type" in Grey's wording.
+        """
+        live_original = self._m(title="Song (Live)")
+        studio_remaster = self._m(title="Song (Remastered)")
+        assert sorted([live_original, studio_remaster], key=_keeper_sort_key)[0] is live_original
+
+    def test_studio_wins_before_bitrate_is_considered(self):
+        """A louder, larger live take must not outrank the studio cut."""
+        studio = self._m(title="Song", bitrate=900)
+        live = self._m(title="Song (Live)", bitrate=1500)
+        assert sorted([live, studio], key=_keeper_sort_key)[0] is studio
+
+    def test_plain_titles_unaffected(self):
+        hi = self._m(title="Song", bitrate=1200)
+        lo = self._m(title="Song", bitrate=800)
+        assert sorted([lo, hi], key=_keeper_sort_key)[0] is hi

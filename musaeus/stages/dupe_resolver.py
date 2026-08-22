@@ -83,6 +83,7 @@ from __future__ import annotations
 import csv
 import logging
 import os
+import re
 import shutil
 import stat
 from datetime import datetime, timezone
@@ -112,18 +113,101 @@ def _get_pending_groups(conn) -> list[str]:
     return [r[0] for r in rows]
 
 
-def _keeper_sort_key(m: dict) -> tuple[int, int, int]:
+# Markers of a reissued/reprocessed version rather than the original
+# release. Grey's rule (2026-08-21): a remaster and its original are the
+# SAME song for grouping purposes, but when one must be kept, "the
+# original trumps the remaster".
+_REISSUE_MARKERS: tuple[str, ...] = (
+    "remaster",
+    "remastered",
+    "remix",
+    "re-recorded",
+    "rerecorded",
+    "anniversary edition",
+    "deluxe edition",
+    "expanded edition",
+    "digital remaster",
+)
+_REISSUE_RE = re.compile(
+    r"\b(?:"
+    + "|".join(re.escape(w) for w in sorted(_REISSUE_MARKERS, key=len, reverse=True))
+    + r")\b",
+    re.IGNORECASE,
+)
+
+
+# A live recording is a different performance, not a worse copy -- but when
+# a duplicate group holds both and only one can be kept, Grey's rule
+# (confirmed 2026-08-22) is studio first. Ranked BELOW the reissue test so
+# a studio remaster does not beat a live original on this alone; the codec
+# constraint still outranks both.
+_LIVE_MARKERS: tuple[str, ...] = (
+    "live",
+    "in concert",
+    "unplugged",
+    "concert",
+    "at the bbc",
+    "bbc session",
+    "radio session",
+    "live session",
+)
+_LIVE_RE = re.compile(
+    r"\b(?:"
+    + "|".join(re.escape(w) for w in sorted(_LIVE_MARKERS, key=len, reverse=True))
+    + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_live(m: dict) -> bool:
+    """True if this copy advertises itself as a live recording.
+
+    Read from title AND album: sources put it in either -- "Stormy Monday
+    (live at Fillmore East)" as a title, "Unplugged" as an album.
+    """
+    haystack = f"{m.get('title') or ''} {m.get('album') or ''}"
+    return bool(_LIVE_RE.search(haystack))
+
+
+def _is_reissue(m: dict) -> bool:
+    """True if this copy advertises itself as a remaster/reissue.
+
+    Read from title AND album, because the marker lands in either
+    depending on the source -- "A Monday Date (Remastered)" as a title,
+    "Chicago High Life (2013 Remaster)" as an album.
+    """
+    haystack = f"{m.get('title') or ''} {m.get('album') or ''}"
+    return bool(_REISSUE_RE.search(haystack))
+
+
+def _keeper_sort_key(m: dict) -> tuple[int, int, int, int, int]:
     """Shared ordering rule: real lossless codec beats lossy
     UNCONDITIONALLY (a bitrate/size comparison across different codecs
     isn't a fair quality comparison -- a quiet, highly-compressible FLAC
     can report a lower bitrate than a dense, less-compressible lossy
-    file despite being the objectively better copy), then bitrate/size
-    as a tiebreak among files that are equally lossless or equally
-    lossy. Used both for duplicates-table-driven groups and for
+    file despite being the objectively better copy), THEN the original
+    release beats a remaster/reissue, then bitrate/size as a tiebreak
+    among files that are equally lossless or equally lossy.
+
+    The original-over-remaster rank sits BELOW codec deliberately: a
+    lossless remaster is still a better artifact than a lossy original,
+    and Grey's preference is about which *release* to keep, not a licence
+    to keep a worse file. Above bitrate, though -- a remaster is often
+    louder and larger without being the version wanted.
+
+    Third rank, studio over live, added 2026-08-22. It sits below the
+    reissue test so it only decides groups the earlier tests tie on, and
+    well below codec: a lossless live take still beats a lossy studio one,
+    because the constraint that matters most is what was thrown away in
+    encoding, not which room it was recorded in.
+
+    Used both for duplicates-table-driven groups and for
     audio_hash-derived live EXACT clusters (see
     _get_live_exact_clusters) -- one rule, not two copies of it."""
     return (
         0 if (m.get("codec") or "").lower() in LOSSLESS_CODECS else 1,
+        1 if _is_reissue(m) else 0,
+        1 if _is_live(m) else 0,
         -(m.get("bitrate") or 0),
         -(m.get("size_bytes") or 0),
     )

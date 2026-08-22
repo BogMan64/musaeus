@@ -90,9 +90,7 @@ def resolve_input_dir(profile_name: str) -> Path:
     if forge_src and forge_src.exists():
         audio_count = sum(1 for _ in forge_src.rglob("*.m4a"))
         if audio_count > 0:
-            print(
-                f"[Forge] Using LUFS-normalized source ({audio_count} files): {forge_src}"
-            )
+            print(f"[Forge] Using LUFS-normalized source ({audio_count} files): {forge_src}")
             return forge_src
 
     # Priority 2: ALAC Vault (primary, already populated)
@@ -106,18 +104,14 @@ def resolve_input_dir(profile_name: str) -> Path:
     if INPUT_DIR.exists():
         audio_count = sum(1 for _ in INPUT_DIR.rglob("*.m4a"))
         if audio_count > 0:
-            print(
-                f"[Source] Using ALAC batch folder ({audio_count} files): {INPUT_DIR}"
-            )
+            print(f"[Source] Using ALAC batch folder ({audio_count} files): {INPUT_DIR}")
             return INPUT_DIR
 
     # Priority 4: Conversion inbox fallback (rebuild from scratch)
     if FALLBACK_SOURCE.exists():
         audio_count = sum(1 for _ in FALLBACK_SOURCE.rglob("*"))
         if audio_count > 0:
-            print(
-                f"[Fallback] Using conversion inbox ({audio_count} files): {FALLBACK_SOURCE}"
-            )
+            print(f"[Fallback] Using conversion inbox ({audio_count} files): {FALLBACK_SOURCE}")
             return FALLBACK_SOURCE
 
     print(f"[Cache] Using original ALAC source: {INPUT_DIR}")
@@ -280,7 +274,18 @@ def derive_output_path(
 def ffmpeg_measure_loudnorm(path: Path, target_i: str, target_tp: str, target_lra: str) -> dict:
     """Pass 1: analysis-only loudnorm run, returns ffmpeg's measured_* JSON block."""
     filter_str = f"loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}:print_format=json"
-    cmd = [FFMPEG, "-hide_banner", "-nostats", "-i", str(path), "-af", filter_str, "-f", "null", "-"]
+    cmd = [
+        FFMPEG,
+        "-hide_banner",
+        "-nostats",
+        "-i",
+        str(path),
+        "-af",
+        filter_str,
+        "-f",
+        "null",
+        "-",
+    ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     stderr = result.stderr or ""
 
@@ -315,7 +320,16 @@ def _verify_bake(source: Path, output: Path) -> None:
     """
 
     def _probe(p: Path) -> dict:
-        cmd = [FFPROBE, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(p)]
+        cmd = [
+            FFPROBE,
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(p),
+        ]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if proc.returncode != 0:
             raise RuntimeError(f"ffprobe failed on {p} ({proc.returncode}): {proc.stderr[:200]}")
@@ -337,7 +351,11 @@ def _verify_bake(source: Path, output: Path) -> None:
 
     src_dur = _duration(src_probe)
     out_dur = _duration(out_probe)
-    if src_dur is not None and out_dur is not None and abs(src_dur - out_dur) > _DURATION_TOLERANCE_SEC:
+    if (
+        src_dur is not None
+        and out_dur is not None
+        and abs(src_dur - out_dur) > _DURATION_TOLERANCE_SEC
+    ):
         raise RuntimeError(
             f"verification failed: duration mismatch (source={src_dur:.2f}s, output={out_dur:.2f}s)"
         )
@@ -500,9 +518,7 @@ def copy_noise_tracks(output_root: Path) -> None:
 
     noise_files = sorted(noise_src.glob("*.m4a")) if noise_src.exists() else []
     if not noise_files:
-        print(
-            "[Noise] No noise tracks found in RUNS/Noise/ — run [NO] Noise Generator first."
-        )
+        print("[Noise] No noise tracks found in RUNS/Noise/ — run [NO] Noise Generator first.")
         return
 
     noise_dest.mkdir(parents=True, exist_ok=True)
@@ -516,9 +532,7 @@ def copy_noise_tracks(output_root: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Build ORPHEUS AAC library from ALAC/FLAC source."
-    )
+    parser = argparse.ArgumentParser(description="Build ORPHEUS AAC library from ALAC/FLAC source.")
     parser.add_argument(
         "--profile",
         choices=sorted(PROFILES.keys()),
@@ -560,9 +574,7 @@ def main() -> None:
     files = gather_input_files(effective_input)
     if not files:
         print(f"No supported audio files found in: {effective_input}")
-        print(
-            "Tip: run [17] Build ALAC first to populate EXPORTS/ALAC_LIBRARY/BATCH_001"
-        )
+        print("Tip: run [17] Build ALAC first to populate EXPORTS/ALAC_LIBRARY/BATCH_001")
         return
 
     print(f"Profile: {args.profile}")
@@ -582,9 +594,7 @@ def main() -> None:
     results: list[str] = []
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = [
-            executor.submit(convert_one, file_path, args.profile) for file_path in files
-        ]
+        futures = [executor.submit(convert_one, file_path, args.profile) for file_path in files]
         for future in as_completed(futures):
             result = future.result()
             results.append(result)

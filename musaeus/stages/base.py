@@ -145,6 +145,54 @@ class BaseStage(ABC):
             )
             return ""
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """Check that this stage's claimed effect actually happened.
+
+        Return a list of problems; an empty list means the claim held.
+        Return None-equivalent (an empty list) and set nothing if the stage
+        makes no verifiable claim -- override `claims_effect` to False for
+        those rather than lying with an empty problem list.
+
+        This is the counter-measure to the silent-no-op class of fault. In
+        two days five components were found reporting success while doing
+        nothing: rebuild-db dispatched on event names that did not exist,
+        Forge wrote to a tag key mutagen cannot serialise, GenreCanon parsed
+        a separator its file never used, PermissionsStage swept a directory
+        that is always empty, and a shell helper dropped its arguments. All
+        five passed their tests, because the tests asserted that the call
+        was made rather than that anything changed on disk.
+
+        Implementations should SAMPLE rather than re-check everything --
+        the point is to catch a stage that changed nothing, not to double
+        the runtime of one that worked.
+        """
+        return []
+
+    #: Whether this stage makes a claim worth verifying. Stages that only
+    #: report (Preflight, Audit, Health) set this False so their results
+    #: read "no claim" rather than a hollow "verified".
+    CLAIMS_EFFECT: bool = True
+
+    def _check_effect(self, ctx: RunContext, result: StageResult) -> None:
+        """Run verify_effect and fold the outcome into the result."""
+        if not self.CLAIMS_EFFECT or result.files_changed <= 0:
+            return
+        try:
+            problems = self.verify_effect(ctx, result)
+        except Exception as exc:  # verification must never break a good run
+            logger.warning("[%s] effect verification errored: %s", self.NAME, exc)
+            result.verify_notes.append(f"verification errored: {exc}")
+            return
+        result.verified = not problems
+        if problems:
+            result.verify_notes.extend(problems)
+            for p in problems:
+                logger.error("[%s] EFFECT NOT VERIFIED: %s", self.NAME, p)
+            result.errors.append(
+                f"stage reported {result.files_changed} change(s) but the effect "
+                f"could not be confirmed on disk"
+            )
+
     def execute(self, ctx: RunContext) -> StageResult:
         """
         Public entry point called by the pipeline runner.
@@ -171,7 +219,9 @@ class BaseStage(ABC):
         try:
             if ctx.dry_run:
                 return self.dry_run(ctx)
-            return self.run(ctx)
+            result = self.run(ctx)
+            self._check_effect(ctx, result)
+            return result
         except StageError as exc:
             logger.error("[%s] stage error: %s", self.NAME, exc)
             result = self._make_result(dry_run=ctx.dry_run)

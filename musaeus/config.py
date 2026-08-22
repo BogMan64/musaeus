@@ -159,14 +159,29 @@ class MusicConfig:
     def hash_index_path(self) -> Path:
         """Persistent audio-hash index of everything already finalized into
         ALAC-Library, used for cross-batch dedup once musaeus.db has been
-        wiped. A plain SQLite file, separate from the transient vault DB."""
-        return self.alac_library / "_history" / "hash_index.db"
+        wiped. A plain SQLite file, separate from the transient vault DB.
+
+        Lives OUTSIDE alac_library as of 2026-08-21 -- see db_history_dir
+        for why."""
+        return self.db_history_dir / "hash_index.db"
 
     @property
     def db_history_dir(self) -> Path:
         """Where a musaeus.db snapshot is copied before it's wiped at the
-        end of a completed batch."""
-        return self.alac_library / "_history"
+        end of a completed batch, and where the hash ledger lives.
+
+        Moved out of ALAC-Library/_history/ on 2026-08-21 after a
+        third-party duplicate-finder (PerfectTunes), pointed at the music
+        library, emptied it: the snapshots are ~464 MB near-identical
+        SQLite files, which is exactly what such a tool is built to find
+        and delete. It took the hash ledger with them, and the next audit
+        failed on 18,405 rows.
+
+        Nothing was lost that time -- the ledger rebuilds from the archive
+        table -- but a directory of backups sitting inside the directory
+        being scanned is a standing invitation. Anything that is not audio
+        now lives beside the library rather than within it."""
+        return self.vault_root / "_db_backups"
 
     @property
     def tunemymusic_csv_path(self) -> Path:
