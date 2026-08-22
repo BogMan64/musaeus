@@ -855,6 +855,13 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── run ──────────────────────────────────────────────────────────────────
     run_p = sub.add_parser("run", help="Run pipeline (Ingest→Sentinel→Scholar)")
     run_p.add_argument("--dry-run", action="store_true", help="Preview only, no mutations")
+    run_p.add_argument(
+        "--skip",
+        metavar="STAGE[,STAGE...]",
+        default="",
+        help="Drop named stages from the run, by stage NAME (e.g. 'dupe-resolver'). "
+        "Intended for unattended runs that should stage decisions but not act on them.",
+    )
     run_p.add_argument("--full", action="store_true", help="Also run Forge + Tagger stages")
     run_p.add_argument(
         "--archive",
@@ -1346,6 +1353,42 @@ def main() -> None:
             # various-artists-fix` run standalone still defaults to MB
             # lookups on.
             run_stash = {"various_artists_no_mb": True} if pipeline is DEFAULT_PIPELINE else {}
+
+            # --skip removes named stages from whichever pipeline was chosen.
+            #
+            # Added 2026-08-22 for the overnight cron. DupeResolver had
+            # physically relocated 6,480 files in a single unattended run,
+            # resolving 7,679 near-duplicate groups that were staged FOR
+            # REVIEW -- the documented rule is that near-duplicates are never
+            # auto-resolved, and it held for every interactive path while the
+            # scheduled one quietly did the opposite. Staging and resolving
+            # are different decisions and a cron should only ever do the
+            # first.
+            skip = {
+                s.strip().lower() for s in (getattr(args, "skip", "") or "").split(",") if s.strip()
+            }
+            if skip:
+                names: dict[str, str] = {
+                    str(getattr(st, "NAME", st.__name__)): str(
+                        getattr(st, "NAME", st.__name__)
+                    ).lower()
+                    for st in pipeline
+                }
+                kept = [
+                    st
+                    for st in pipeline
+                    if names[str(getattr(st, "NAME", st.__name__))] not in skip
+                ]
+                dropped = sorted(n for n, low in names.items() if low in skip)
+                unknown = skip - set(names.values())
+                if unknown:
+                    print(
+                        f"  ! --skip: no such stage in this pipeline: {', '.join(sorted(unknown))}"
+                    )
+                if dropped:
+                    print(f"  ↷ skipping stage(s): {', '.join(dropped)}")
+                pipeline = kept
+
             sys.exit(_run_pipeline(pipeline, dry_run=dry_run, stash=run_stash))
 
         elif command == "dry-run":
