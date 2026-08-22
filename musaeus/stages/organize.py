@@ -187,7 +187,12 @@ def sanitize_path_component(text: str) -> str:
     s = "".join(c for c in s if unicodedata.category(c)[0] != "C")
 
     # Replace forbidden characters with safe alternatives
-    s = _FORBIDDEN_RE.sub("_", s)
+    # "-" not "_", matching what the library already holds on disk: the
+    # AC/DC folders are "AC-DC" and the 2026-08-22 metadata split kept the
+    # hyphen at Grey's call ("whatever is easiest for Linux"). Switching to
+    # "_" here would rename ~90 folders for no gain and break every stored
+    # file_path that points at them.
+    s = _FORBIDDEN_RE.sub("-", s)
 
     # Collapse multiple spaces
     s = re.sub(r"\s+", " ", s).strip()
