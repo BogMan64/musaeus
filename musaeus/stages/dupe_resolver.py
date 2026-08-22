@@ -136,6 +136,39 @@ _REISSUE_RE = re.compile(
 )
 
 
+# A live recording is a different performance, not a worse copy -- but when
+# a duplicate group holds both and only one can be kept, Grey's rule
+# (confirmed 2026-08-22) is studio first. Ranked BELOW the reissue test so
+# a studio remaster does not beat a live original on this alone; the codec
+# constraint still outranks both.
+_LIVE_MARKERS: tuple[str, ...] = (
+    "live",
+    "in concert",
+    "unplugged",
+    "concert",
+    "at the bbc",
+    "bbc session",
+    "radio session",
+    "live session",
+)
+_LIVE_RE = re.compile(
+    r"\b(?:"
+    + "|".join(re.escape(w) for w in sorted(_LIVE_MARKERS, key=len, reverse=True))
+    + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_live(m: dict) -> bool:
+    """True if this copy advertises itself as a live recording.
+
+    Read from title AND album: sources put it in either -- "Stormy Monday
+    (live at Fillmore East)" as a title, "Unplugged" as an album.
+    """
+    haystack = f"{m.get('title') or ''} {m.get('album') or ''}"
+    return bool(_LIVE_RE.search(haystack))
+
+
 def _is_reissue(m: dict) -> bool:
     """True if this copy advertises itself as a remaster/reissue.
 
@@ -147,7 +180,7 @@ def _is_reissue(m: dict) -> bool:
     return bool(_REISSUE_RE.search(haystack))
 
 
-def _keeper_sort_key(m: dict) -> tuple[int, int, int, int]:
+def _keeper_sort_key(m: dict) -> tuple[int, int, int, int, int]:
     """Shared ordering rule: real lossless codec beats lossy
     UNCONDITIONALLY (a bitrate/size comparison across different codecs
     isn't a fair quality comparison -- a quiet, highly-compressible FLAC
@@ -162,12 +195,19 @@ def _keeper_sort_key(m: dict) -> tuple[int, int, int, int]:
     to keep a worse file. Above bitrate, though -- a remaster is often
     louder and larger without being the version wanted.
 
+    Third rank, studio over live, added 2026-08-22. It sits below the
+    reissue test so it only decides groups the earlier tests tie on, and
+    well below codec: a lossless live take still beats a lossy studio one,
+    because the constraint that matters most is what was thrown away in
+    encoding, not which room it was recorded in.
+
     Used both for duplicates-table-driven groups and for
     audio_hash-derived live EXACT clusters (see
     _get_live_exact_clusters) -- one rule, not two copies of it."""
     return (
         0 if (m.get("codec") or "").lower() in LOSSLESS_CODECS else 1,
         1 if _is_reissue(m) else 0,
+        1 if _is_live(m) else 0,
         -(m.get("bitrate") or 0),
         -(m.get("size_bytes") or 0),
     )

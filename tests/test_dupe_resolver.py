@@ -749,3 +749,55 @@ class TestOriginalTrumpsRemaster:
         a = self._m(title="Song", bitrate=1200)
         b = self._m(title="Song", bitrate=800)
         assert sorted([b, a], key=_keeper_sort_key)[0] is a
+
+
+class TestStudioOverLive:
+    """Grey's third keeper rule, confirmed 2026-08-22.
+
+    Full order: (1) lossless over lossy, (2) original over remaster when
+    both are the same codec, (3) studio over live when both are the same
+    codec AND type. Each rank only decides groups the ranks above it tie
+    on -- which is why a live original still beats a studio remaster.
+    """
+
+    def _m(self, **kw):
+        base = {"codec": "alac", "bitrate": 1000, "size_bytes": 1000, "title": "", "album": ""}
+        base.update(kw)
+        return base
+
+    def test_studio_beats_live_all_else_equal(self):
+        studio = self._m(title="Stormy Monday")
+        live = self._m(title="Stormy Monday (live at Fillmore East)")
+        assert sorted([live, studio], key=_keeper_sort_key)[0] is studio
+
+    def test_live_marker_read_from_album_too(self):
+        studio = self._m(title="Layla", album="Layla and Other Assorted Love Songs")
+        live = self._m(title="Layla", album="Unplugged")
+        assert sorted([live, studio], key=_keeper_sort_key)[0] is studio
+
+    def test_lossless_live_still_beats_lossy_studio(self):
+        """Codec is the binding constraint; the room comes far behind it."""
+        lossy_studio = self._m(codec="aac", title="Song")
+        lossless_live = self._m(codec="alac", title="Song (Live)")
+        assert sorted([lossy_studio, lossless_live], key=_keeper_sort_key)[0] is lossless_live
+
+    def test_live_original_beats_studio_remaster(self):
+        """Rank 2 (reissue) outranks rank 3 (live), so this is correct.
+
+        Studio-over-live only decides groups that tie on codec AND reissue
+        status -- "same codec and type" in Grey's wording.
+        """
+        live_original = self._m(title="Song (Live)")
+        studio_remaster = self._m(title="Song (Remastered)")
+        assert sorted([live_original, studio_remaster], key=_keeper_sort_key)[0] is live_original
+
+    def test_studio_wins_before_bitrate_is_considered(self):
+        """A louder, larger live take must not outrank the studio cut."""
+        studio = self._m(title="Song", bitrate=900)
+        live = self._m(title="Song (Live)", bitrate=1500)
+        assert sorted([live, studio], key=_keeper_sort_key)[0] is studio
+
+    def test_plain_titles_unaffected(self):
+        hi = self._m(title="Song", bitrate=1200)
+        lo = self._m(title="Song", bitrate=800)
+        assert sorted([lo, hi], key=_keeper_sort_key)[0] is hi
