@@ -64,7 +64,28 @@ class GenreLaw:
 
     @staticmethod
     def _key(artist: str) -> str:
-        return _WS_RE.sub(" ", artist.strip().lower())
+        """Lookup key for an artist, folding the article convention.
+
+        This used to lowercase and collapse whitespace only, which meant the
+        law and the library disagreed about what an artist is called. The
+        library stores "5th Dimension, The" (normalize._move_article_to_suffix),
+        while MasterLaw still held pre-normalisation spellings like
+        "5th Dimension (the)" and "The Byrds" -- so those rules simply never
+        fired. 246 rules were dormant for that reason alone, and because a
+        dormant rule looks exactly like an absent one, nothing reported it.
+
+        Folding here rather than rewriting the file means a hand-edited row
+        keeps working whichever way its author spells the article.
+        """
+        s = _WS_RE.sub(" ", artist.strip().lower())
+        # "the beatles" / "beatles, the" / "beatles (the)" -> "beatles"
+        if s.startswith("the "):
+            s = s[4:]
+        elif s.endswith(", the"):
+            s = s[:-5]
+        elif s.endswith(" (the)"):
+            s = s[:-6]
+        return s.strip()
 
     @staticmethod
     def _norm(genre: str) -> str:
