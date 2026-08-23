@@ -4,10 +4,13 @@ Tests for TaggerStage — writes normalised metadata from DB back to file tags.
 All mutagen interactions are mocked.
 """
 
+import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from mutagen.mp4 import MP4
 
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
@@ -356,3 +359,99 @@ class TestAlbumArtistRepair:
 
     def test_protected_stylized_name_not_touched(self):
         assert self._changes("De La Soul", "De La Soul") == {}
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not available")
+class TestTaggerActuallyWritesToDisk:
+    """Round-trip tests: run Tagger unmocked and read the tag back.
+
+    Everything above this asserts that _write_tags was CALLED. That is the
+    exact shape of assertion that let Forge report success for 12,279 files
+    while writing nothing: it assigned to a dotted key mutagen accepts as a
+    dict key but cannot serialise, so save() succeeded and the writer
+    returned True. A mock returning True is indistinguishable from that bug.
+
+    These tests mock nothing below the stage and ask the only question that
+    matters: is the tag on the file afterwards?
+    """
+
+    def _make_m4a(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-c:a",
+                "alac",
+                str(path),
+            ],
+            capture_output=True,
+            check=True,
+        )
+
+    def test_artist_and_title_are_readable_back_off_disk(self, ctx, tmp_path):
+        track = tmp_path / "song.m4a"
+        self._make_m4a(track)
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(track),
+                "status": "CATALOGUED",
+                "artist": "Beatles, The",
+                "album": "Revolver",
+                "title": "Taxman",
+                "genre": "Rock",
+                "year": "1966",
+                "track": 1,
+            },
+        )
+        ctx.conn.commit()
+
+        result = TaggerStage().run(ctx)
+        assert result.files_changed >= 1
+
+        tags = MP4(str(track)).tags or {}
+        assert (tags.get("\xa9ART") or [None])[0] == "Beatles, The"
+        assert (tags.get("\xa9nam") or [None])[0] == "Taxman"
+        assert (tags.get("\xa9alb") or [None])[0] == "Revolver"
+        assert (tags.get("\xa9gen") or [None])[0] == "Rock"
+
+    def test_a_slash_in_a_genre_survives_the_round_trip(self):
+        """R&B/Funk/Soul must come back exactly as written.
+
+        Sanitize used to strip "/" out of stored genres, inventing names
+        that matched no canon. Now that metadata keeps the real string, the
+        tag writer has to carry it intact.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            track = Path(d) / "s.m4a"
+            self._make_m4a(track)
+            audio = MP4(str(track))
+            audio["\xa9gen"] = ["R&B/Funk/Soul"]
+            audio.save()
+            assert (MP4(str(track)).tags["\xa9gen"] or [None])[0] == "R&B/Funk/Soul"
+
+    def test_stage_reports_verified_when_the_tag_is_really_there(self, ctx, tmp_path):
+        """The effect-verification seal must reflect reality, not optimism."""
+        track = tmp_path / "verified.m4a"
+        self._make_m4a(track)
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(track),
+                "status": "CATALOGUED",
+                "artist": "Queen",
+                "title": "Bicycle Race",
+                "album": "Jazz",
+            },
+        )
+        ctx.conn.commit()
+        result = TaggerStage().execute(ctx)
+        assert result.files_changed >= 1
+        assert result.verified is not False, result.verify_notes
