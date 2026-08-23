@@ -37,6 +37,7 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from ..context import RunContext, StageResult
+from ..network_policy import check as _network_check
 from .base import BaseStage
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,10 @@ def _mb_get(path: str, params: dict[str, str]) -> dict:
 
     for attempt in range(2):
         try:
+            # Ask the gateway before dispatching. Under LOCAL_ONLY this raises,
+            # and the attempt is recorded BEFORE raising so the broad except
+            # below cannot erase the evidence -- see network_policy.py.
+            _network_check(_MB_BASE)
             with urlopen(req, timeout=_TIMEOUT_S) as resp:
                 data: dict = json.loads(resp.read().decode("utf-8"))
                 return data

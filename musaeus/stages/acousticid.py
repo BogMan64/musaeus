@@ -45,6 +45,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 from ..context import RunContext, StageResult
+from ..network_policy import check as _network_check
 from .base import BaseStage, StageError
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,10 @@ def _acousticid_lookup(fingerprint: str, duration: float, api_key: str) -> tuple
 
     for attempt in range(2):
         try:
+            # Ask the gateway before dispatching. Under LOCAL_ONLY this raises,
+            # and the attempt is recorded BEFORE raising so the broad except
+            # below cannot erase the evidence -- see network_policy.py.
+            _network_check(_ACOUSTICID_URL)
             with urlopen(url, timeout=_TIMEOUT_S) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             break

@@ -280,6 +280,15 @@ def _run_pipeline(
     if guard_exit is not None:
         return guard_exit
 
+    # Execution has network authority; preview never does. The gateway
+    # defaults to LOCAL_ONLY so that anything which forgets to declare its
+    # mode is safe by omission rather than dangerous by omission -- which
+    # means the EXECUTE path has to grant it explicitly, here, at the one
+    # place a real run begins.
+    from .network_policy import NetworkPolicy, set_policy
+
+    set_policy(NetworkPolicy.ALLOWED)
+
     try:
         cfg = get_config()
         cfg.ensure_dirs()
