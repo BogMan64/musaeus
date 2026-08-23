@@ -144,7 +144,6 @@ from .organize import OrganizeStage
 from .permissions import PermissionsStage
 from .playlist import PlaylistStage
 from .preflight import PreflightStage
-from .reviewer import ReviewerStage
 from .sanitize import SanitizeStage
 from .scholar import ScholarStage
 from .sentinel import SentinelStage
@@ -183,7 +182,6 @@ __all__ = [
     "NearDupeStage",
     "AcousticIDStage",
     "TranscodeStage",
-    "ReviewerStage",
     "IntegrityStage",
     "AlbumArtStage",
     "TributeQuarantineStage",
@@ -333,31 +331,8 @@ ARCHIVE_PIPELINE: list[type] = [
     AcousticIDStage,
     AlbumArtStage,
     TaggerStage,
-    ReviewerStage,
 ]
 
-# Big Kahuna (run with `musaeus run --big-kahuna`) — everything including LUFS
-BIG_KAHUNA_PIPELINE: list[type] = [
-    PreflightStage,
-    IngestStage,
-    SentinelStage,
-    ScholarStage,
-    NormalizeStage,
-    SanitizeStage,
-    GhostStage,
-    HealthStage,
-    IntegrityStage,
-    EnrichStage,
-    MBEnrichStage,
-    NearDupeStage,
-    AcousticIDStage,
-    AlbumArtStage,
-    ForgeStage,
-    TaggerStage,
-    CuratorStage,
-    PlaylistStage,
-    ReviewerStage,
-]
 
 # Maintenance pipeline (run with `musaeus run --maintain`)
 MAINTAIN_PIPELINE: list[type] = [
@@ -377,5 +352,4 @@ ENRICH_PIPELINE: list[type] = [
     EnrichStage,
     MBEnrichStage,
     AcousticIDStage,
-    ReviewerStage,
 ]

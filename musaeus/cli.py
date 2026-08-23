@@ -10,7 +10,6 @@ Pipeline commands:
     run              Run the default pipeline (Preflight → Ingest → Sentinel → Scholar)
     run --full       Run the full pipeline  (+ Normalize → Forge → Tagger)
     run --maintain   Run the maintenance pipeline (Ghost→Health→Normalize→Enrich→MBEnrich→NearDupe)
-    run --enrich     Run the enrichment pipeline (Enrich→MBEnrich→AcousticID→Reviewer)
     dry-run          Preview the default pipeline without any mutations
     ingest           Run Ingest stage only
     sentinel         Run Sentinel stage only
@@ -36,9 +35,7 @@ Pipeline commands:
     neardupe         Metadata-based near-duplicate detection
     acousticid       Acoustic fingerprint dedup via fpcalc + AcousticID API
     transcode        Lossless → 256k AAC export via ffmpeg
-    reviewer         Groq AI metadata quality review
     report           Dashboard: library stats, genre/bitrate breakdown
-    review-report    Show AI reviewer issues summary
     upgrade-check    Find lossy tracks where a lossless version exists
 
 Review commands:
@@ -53,11 +50,10 @@ Options:
     --force          Re-process already-done files (forge, curator, transcode)
     --full           Include Forge + Tagger in `run` pipeline
     --maintain       Run Ghost + Health + Enrich + NearDupe in `run`
-    --enrich         Run Enrich + MBEnrich + AcousticID + Reviewer in `run`
     --auto           Auto-resolve duplicates (dedupe command)
     --export-root    Target path for curator/transcode export
     --noise          Noise profile for curator: clean|pink|brown|white|dual
-    --max-files      Cap files processed per run (auditor, reviewer)
+    --max-files      Cap files processed per run (auditor)
 
 Examples:
     musaeus run
@@ -77,11 +73,8 @@ Examples:
     musaeus acousticid --dry-run
     musaeus transcode --dry-run
     musaeus transcode --export-root /mnt/USB/AAC
-    musaeus reviewer --dry-run
-    musaeus reviewer --max-files 100
     musaeus report
     musaeus report --json
-    musaeus review-report
     musaeus upgrade-check
     musaeus upgrade-check --csv
     musaeus dedupe
@@ -106,7 +99,6 @@ from .context import RunContext
 from .db import open_db, snapshot_db_before_wipe
 from .stages import (
     ARCHIVE_PIPELINE,
-    BIG_KAHUNA_PIPELINE,
     DEFAULT_PIPELINE,
     ENRICH_PIPELINE,
     FULL_PIPELINE,
@@ -133,7 +125,6 @@ from .stages import (
     OrganizeStage,
     PlaylistStage,
     PreflightStage,
-    ReviewerStage,
     SanitizeStage,
     ScholarStage,
     SentinelStage,
@@ -263,31 +254,6 @@ def _reject_unsafe_dry_run(stages: list[type[BaseStage]], dry_run: bool) -> int 
 
     print(_dry_run_guard_message(reasons), file=sys.stderr)
     return 2
-
-
-def check_big_kahuna_export_root(export_root: object) -> str | None:
-    """Return an error message if Big Kahuna cannot safely start (P0-03).
-
-    None means "proceed". A string means "refuse, and show this".
-
-    Big Kahuna's nineteenth stage is Curator, which writes an export tree.
-    Without a root the old behaviour was to build the whole pipeline and
-    discover the problem after Ingest, Forge and Tagger had already
-    mutated the library.
-
-    Deliberately does not invent a default or create a directory: a guard
-    that helpfully picks a location is how an export lands somewhere
-    nobody chose, and a guard that makes state is not a guard. The full
-    typed configuration flow is P0-15.
-    """
-    if export_root:
-        return None
-    return (
-        "--big-kahuna needs an export root and none is resolved.\n"
-        "  Big Kahuna finishes with Curator, which writes an export tree, "
-        "and this refuses rather than choose a location for you.\n"
-        "  Pass --export-root /path/to/target."
-    )
 
 
 def _run_pipeline(
@@ -672,73 +638,6 @@ def _cmd_health_report() -> int:
 # ── Review report command ─────────────────────────────────────────────────────
 
 
-def _cmd_review_report() -> int:
-    try:
-        cfg = get_config()
-    except ValueError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-
-    conn = open_db(cfg.db_path)
-    try:
-        try:
-            total = conn.execute("SELECT COUNT(*) FROM review_issues").fetchone()[0]
-        except Exception:
-            print("\nNo review_issues table yet — run `musaeus reviewer` first.")
-            return 0
-
-        rows = conn.execute(
-            """
-            SELECT issue_type, COUNT(*) as cnt,
-                   AVG(confidence) as avg_conf
-            FROM review_issues
-            GROUP BY issue_type
-            ORDER BY cnt DESC
-            """
-        ).fetchall()
-
-        recent = conn.execute(
-            """
-            SELECT ri.issue_type, ri.detail, ri.confidence,
-                   a.artist, a.title
-            FROM review_issues ri
-            LEFT JOIN archive a ON a.file_path = ri.file_path
-            ORDER BY ri.id DESC
-            LIMIT 20
-            """
-        ).fetchall()
-    finally:
-        conn.close()
-
-    print("\nMusaeus Review Report")
-    print(f"  Total issues : {total:,}")
-
-    if rows:
-        print("\n  By issue type:")
-        for row in rows:
-            print(
-                f"    {row['issue_type']:<28}  "
-                f"{row['cnt']:>5}  "
-                f"(avg confidence {row['avg_conf']:.0%})"
-            )
-
-    if recent:
-        print("\n  Most recent issues (up to 20):")
-        for row in recent:
-            artist = row["artist"] or "?"
-            title = row["title"] or "?"
-            print(
-                f"    [{row['issue_type']}] {artist} — {title}  "
-                f"({row['confidence']:.0%})  {row['detail'] or ''}"
-            )
-
-    print()
-    return 0
-
-
-# ── DB-tune command ───────────────────────────────────────────────────────────
-
-
 def _cmd_db_tune() -> int:
     try:
         cfg = get_config()
@@ -918,11 +817,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--archive",
         action="store_true",
         help="Everything minus LUFS: Ingest→Scholar→Normalize→Health→Enrich→Dedup→Art→Tagger",
-    )
-    run_p.add_argument(
-        "--big-kahuna",
-        action="store_true",
-        help="ALL stages: full pipeline + health + enrich + dedup + art + curator + playlists",
     )
     run_p.add_argument(
         "--maintain", action="store_true", help="Run Ghost + Health + Enrich + NearDupe"
@@ -1230,17 +1124,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Output directory for transcoded files (default: vault/Transcoded)",
     )
 
-    # reviewer
-    reviewer_p = sub.add_parser("reviewer", help="Groq AI metadata quality review")
-    reviewer_p.add_argument("--dry-run", action="store_true", help="Show what would be reviewed")
-    reviewer_p.add_argument(
-        "--max-files",
-        type=int,
-        default=None,
-        metavar="N",
-        help="Cap tracks reviewed per run (default: 50)",
-    )
-
     # review-report
     sub.add_parser("review-report", help="Show AI reviewer issues summary")
 
@@ -1403,14 +1286,6 @@ def main() -> None:
                 print("  ✓ Resume state cleared.")
             if getattr(args, "maintain", False):
                 pipeline = MAINTAIN_PIPELINE
-            elif getattr(args, "big_kahuna", False):
-                # P0-03: fail closed BEFORE the graph is built. See
-                # check_big_kahuna_export_root() for the reasoning.
-                problem = check_big_kahuna_export_root(getattr(args, "export_root", None))
-                if problem:
-                    print(f"ERROR: {problem}", file=sys.stderr)
-                    sys.exit(2)
-                pipeline = BIG_KAHUNA_PIPELINE
             elif getattr(args, "full", False):
                 pipeline = FULL_PIPELINE
             elif getattr(args, "archive", False):
@@ -1698,16 +1573,6 @@ def main() -> None:
                 stash["transcode_force"] = True
             sys.exit(_run_pipeline([TranscodeStage], dry_run=dry_run, stash=stash))
 
-        elif command == "reviewer":
-            stash = {}
-            mf = getattr(args, "max_files", None)
-            if mf is not None:
-                stash["reviewer_max_files"] = int(mf)
-            sys.exit(_run_pipeline([ReviewerStage], dry_run=dry_run, stash=stash))
-
-        elif command == "review-report":
-            sys.exit(_cmd_review_report())
-
         elif command == "upgrade-check":
             sys.exit(
                 _cmd_upgrade_check(
@@ -1739,7 +1604,6 @@ def main() -> None:
                 EnrichStage,
                 MBEnrichStage,
                 NearDupeStage,
-                ReviewerStage,
             ]
             sys.exit(_run_pipeline(overnight_pipeline, dry_run=dry_run))
 
