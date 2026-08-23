@@ -58,6 +58,45 @@ class GenreValidateStage(BaseStage):
 
     NAME = "genre-validate"
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """Assert the two rules this stage exists to enforce still hold.
+
+        One genre per artist (never per song) is Grey's standing rule, and
+        it is the one a partial write breaks most quietly: consolidating
+        900 rows and missing 3 leaves an artist straddling two genres, which
+        no count in the result would reveal. Checked with a GROUP BY rather
+        than by re-reading what we just wrote, so a no-op cannot pass.
+        """
+        problems: list[str] = []
+        multi = ctx.conn.execute(
+            "SELECT artist, COUNT(DISTINCT genre) AS n FROM archive "
+            "WHERE status='CATALOGUED' AND genre IS NOT NULL AND trim(genre)!='' "
+            "GROUP BY artist HAVING n > 1 ORDER BY n DESC"
+        ).fetchall()
+        if multi:
+            names = ", ".join(f"{r['artist']} ({r['n']})" for r in multi[:3])
+            problems.append(
+                f"{len(multi)} artist(s) still carry more than one genre after "
+                f"genre-validate claimed {result.files_changed} change(s): {names}"
+            )
+
+        # A genre outside the closed vocabulary means the law was not applied,
+        # or something wrote around it.
+        law = self._law(ctx)
+        if len(law):
+            stray = ctx.conn.execute(
+                "SELECT DISTINCT genre FROM archive WHERE status='CATALOGUED' "
+                "AND genre IS NOT NULL AND trim(genre)!=''"
+            ).fetchall()
+            # permits() folds "/" against "-", so "R&B/Funk/Soul" is not
+            # reported as stray merely because the law spells it with a dash.
+            off = [r["genre"] for r in stray if not law.permits(r["genre"])]
+            if off:
+                problems.append(
+                    f"{len(off)} genre(s) outside the closed vocabulary: {', '.join(off[:5])}"
+                )
+        return problems
+
     def _law(self, ctx: RunContext) -> GenreLaw:
         return GenreLaw(ctx.config.meta_dir / "MasterLaw.csv")
 

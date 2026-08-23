@@ -188,13 +188,30 @@ class FinalizeStage(BaseStage):
         ]
 
     def validate(self, ctx: RunContext) -> None:
-        count = ctx.conn.execute(
+        """Report the work set, not the table.
+
+        This used to count every canonicalized row and announce it as "ready
+        to finalize" -- on a settled library that printed 10,746 when the
+        actual work was a handful of new files, which reads as though the
+        whole library is about to be re-normalised. _get_pending() has always
+        filtered on finalized_at, so nothing was ever re-baked; the number was
+        simply describing a different set than the one that gets processed.
+        Same shape as the ingest planner reporting 0 with 20 files waiting:
+        a count is only useful if it counts what the stage will actually do.
+        """
+        canonicalized, pending = ctx.conn.execute(
             """
-            SELECT COUNT(*) FROM archive
+            SELECT COUNT(*),
+                   COUNT(*) FILTER (WHERE finalized_at IS NULL OR finalized_at = '')
+              FROM archive
              WHERE status='CATALOGUED' AND canonicalized_at IS NOT NULL
             """
-        ).fetchone()[0]
-        logger.info("[finalize] %d canonicalized file(s) ready to finalize", count)
+        ).fetchone()
+        logger.info(
+            "[finalize] %d file(s) awaiting finalize (%d already finalized, skipped)",
+            pending,
+            canonicalized - pending,
+        )
 
     def _get_pending(self, ctx: RunContext, force: bool) -> list[dict]:
         if force:

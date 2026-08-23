@@ -135,6 +135,33 @@ class SanitizeStage(BaseStage):
 
     NAME = "sanitize"
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """Assert the post-condition: no CATALOGUED row still needs sanitising.
+
+        This is a stronger claim than "the UPDATE ran". A stage can execute
+        its writes and still leave the condition it exists to fix in place --
+        that is precisely how GenreCanon passed its tests while parsing a
+        separator its file never used. Re-running the predicate over the
+        table is cheap (no file I/O, one query) and cannot be satisfied by
+        a no-op.
+        """
+        rows = ctx.conn.execute(
+            "SELECT file_path, artist, album, title FROM archive WHERE status='CATALOGUED'"
+        ).fetchall()
+        still = [
+            r["file_path"]
+            for r in rows
+            if any(needs_sanitization(r[f]) for f in ("artist", "album", "title"))
+        ]
+        if still:
+            from pathlib import Path
+
+            return [
+                f"{len(still)} row(s) still hold unsafe metadata after sanitize "
+                f"claimed {result.files_changed} fix(es), e.g. {Path(still[0]).name}"
+            ]
+        return []
+
     def validate(self, ctx: RunContext) -> None:
         count = ctx.conn.execute(
             "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'"

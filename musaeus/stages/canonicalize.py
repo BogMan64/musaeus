@@ -326,6 +326,71 @@ class CanonicalizeStage(BaseStage):
 
     NAME = "canonicalize"
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """Sample this run's conversions and confirm they really landed.
+
+        Two specific regressions this catches, both seen in this project:
+
+        audio_hash going NULL through conversion. The hash is the PCM
+        identity that the dupe ledger and every cross-run "have I seen this"
+        check depend on. When it silently dropped, files became their own
+        duplicates on the next pass -- scope doc section 4.17.
+
+        A row that claims CANONICALIZE but whose file is not ALAC. The
+        conversion can report success and leave the original codec in place
+        if ffmpeg's exit status is trusted without re-probing the output.
+
+        Samples the rows this run touched rather than the whole library --
+        the point is to catch a stage that changed nothing, not to re-probe
+        10,000 files.
+        """
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path, a.audio_hash
+              FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.stage = ? AND e.event_type = 'CANONICALIZE'
+               AND e.run_id = ?
+             ORDER BY e.id DESC LIMIT 12
+            """,
+            (self.NAME, ctx.run_id),
+        ).fetchall()
+        if not rows:
+            return []
+
+        problems: list[str] = []
+        missing_hash = [r["file_path"] for r in rows if not r["audio_hash"]]
+        if missing_hash:
+            problems.append(
+                f"{len(missing_hash)} of {len(rows)} sampled conversion(s) lost audio_hash, "
+                f"e.g. {Path(missing_hash[0]).name}"
+            )
+        for r in rows[:5]:
+            p = Path(r["file_path"])
+            if not p.exists():
+                problems.append(f"canonicalized file is not on disk: {p.name}")
+                continue
+            try:
+                probe = _probe_streams(p)
+            except CanonicalizeError as exc:
+                problems.append(f"{p.name}: cannot probe after canonicalize: {exc}")
+                continue
+            # _probe_streams returns the whole ffprobe document, so the codec
+            # has to be read off the AUDIO stream -- a top-level
+            # probe.get("codec_name") is always None and would make this
+            # check quietly unfalsifiable.
+            codec = next(
+                (
+                    (s.get("codec_name") or "").lower()
+                    for s in probe.get("streams", [])
+                    if s.get("codec_type") == "audio"
+                ),
+                "",
+            )
+            if codec and codec != "alac":
+                problems.append(f"{p.name} is still {codec}, not alac, after canonicalize")
+        return problems
+
     def validate(self, ctx: RunContext) -> None:
         import shutil
 

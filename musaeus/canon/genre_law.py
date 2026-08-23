@@ -89,6 +89,23 @@ class GenreLaw:
             return None
         return self._norm(law) == self._norm(genre)
 
+    @property
+    def genres(self) -> set[str]:
+        """Every genre the law actually assigns -- the closed vocabulary.
+
+        Derived from the file rather than hardcoded, so it cannot drift from
+        what the law will really hand out. Callers checking membership should
+        compare through _norm(), since "R&B/Funk/Soul" and "R&B-Funk-Soul"
+        are the same genre spelled two ways.
+        """
+        return set(self._map.values())
+
+    def permits(self, genre: str) -> bool:
+        """True if *genre* is in the closed vocabulary, "/" vs "-" aside."""
+        if not genre:
+            return False
+        return self._norm(genre) in {self._norm(g) for g in self._map.values()}
+
     def __len__(self) -> int:
         return len(self._map)
 
