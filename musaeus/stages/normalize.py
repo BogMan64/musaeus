@@ -433,6 +433,12 @@ class NormalizeStage(BaseStage):
     Normalize — article-suffix fix + ALL-CAPS repair for archive metadata.
     """
 
+    @classmethod
+    def plan_candidates(cls, conn) -> tuple[int, str]:
+        """Rows this stage would act on. Read-only; see planner.py."""
+        n = conn.execute("SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'").fetchone()[0]
+        return int(n), "rows whose artist/title would be normalised"
+
     NAME = "normalize"
 
     # ── Validate ──────────────────────────────────────────────────────────────

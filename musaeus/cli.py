@@ -1124,6 +1124,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Same as a normal run: nothing is written"
     )
 
+    plan_p = sub.add_parser(
+        "plan", help="Preview what a run would do. Read-only, changes nothing (P0-04)."
+    )
+    plan_p.add_argument("--json", action="store_true", help="Machine-readable plan")
+    plan_p.add_argument("--full", action="store_true", help="Plan the full pipeline")
+    plan_p.add_argument("--maintain", action="store_true", help="Plan the maintenance pipeline")
+
     sub.add_parser("doctor", help="Read-only library integrity report (DB vs disk vs hash ledger)")
 
     neardupe_p = sub.add_parser("neardupe", help="Metadata-based near-duplicate detection")
@@ -1718,6 +1725,26 @@ def main() -> None:
                     report_only=getattr(args, "report", False),
                 )
             )
+
+        elif command == "plan":
+            from .planner import RunMode, build_plan, reject_persistence_flags
+
+            mode = RunMode.resolve(preview=True)
+            reject_persistence_flags(mode, args)
+            pipe = (
+                FULL_PIPELINE
+                if getattr(args, "full", False)
+                else MAINTAIN_PIPELINE
+                if getattr(args, "maintain", False)
+                else DEFAULT_PIPELINE
+            )
+            plan = build_plan(get_config(), list(pipe), mode)
+            print(
+                plan.to_json()
+                if getattr(args, "json", False)
+                else "\n  MUSAEUS — plan\n\n" + plan.render() + "\n"
+            )
+            sys.exit(0)
 
         elif command == "doctor":
             from .doctor import diagnose

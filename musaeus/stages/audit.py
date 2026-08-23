@@ -92,6 +92,14 @@ class AuditStage(BaseStage):
     DB-snapshot-and-wipe step. Never mutates anything.
     """
 
+    @classmethod
+    def plan_candidates(cls, conn) -> tuple[int, str]:
+        """Rows this stage would act on. Read-only; see planner.py."""
+        n = conn.execute("SELECT COUNT(*) FROM archive WHERE finalized_at IS NOT NULL").fetchone()[
+            0
+        ]
+        return int(n), "finalized rows to verify on disk"
+
     NAME = "audit"
 
     def validate(self, ctx: RunContext) -> None:

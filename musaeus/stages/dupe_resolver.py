@@ -316,6 +316,14 @@ class DupeResolverStage(BaseStage):
     Artist/Album/Track shape. Never deletes; always reversible.
     """
 
+    @classmethod
+    def plan_candidates(cls, conn) -> tuple[int, str]:
+        """Rows this stage would act on. Read-only; see planner.py."""
+        n = conn.execute(
+            "SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE status='pending'"
+        ).fetchone()[0]
+        return int(n), "duplicate groups awaiting resolution"
+
     NAME = "dupe-resolver"
 
     def validate(self, ctx: RunContext) -> None:

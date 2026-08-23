@@ -124,6 +124,14 @@ def find_suspects(
 class SpellCheckStage(BaseStage):
     """Report artist names that look like misspellings. Changes nothing."""
 
+    @classmethod
+    def plan_candidates(cls, conn) -> tuple[int, str]:
+        """Rows this stage would act on. Read-only; see planner.py."""
+        n = conn.execute(
+            "SELECT COUNT(DISTINCT artist) FROM archive WHERE status='CATALOGUED' AND artist IS NOT NULL"
+        ).fetchone()[0]
+        return int(n), "artists compared for misspellings"
+
     NAME = "spellcheck"
     CLAIMS_EFFECT = False  # report-only: it makes no claim about disk
 

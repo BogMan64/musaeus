@@ -61,6 +61,12 @@ class IngestStage(BaseStage):
     Stage 1 — Ingest inbox audio files into the archive.
     """
 
+    @classmethod
+    def plan_candidates(cls, conn) -> tuple[int, str]:
+        """Rows this stage would act on. Read-only; see planner.py."""
+        n = conn.execute("SELECT COUNT(*) FROM archive WHERE status='PENDING'").fetchone()[0]
+        return int(n), "pending files awaiting ingest"
+
     NAME = "ingest"
 
     # ── Validate ──────────────────────────────────────────────────────────────

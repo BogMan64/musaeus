@@ -48,6 +48,14 @@ _COMMIT_EVERY = 200
 class GenreValidateStage(BaseStage):
     """Validate library genres against the artist->genre law."""
 
+    @classmethod
+    def plan_candidates(cls, conn) -> tuple[int, str]:
+        """Rows this stage would act on. Read-only; see planner.py."""
+        n = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' AND (genre IS NULL OR trim(genre)='')"
+        ).fetchone()[0]
+        return int(n), "files with no genre that the law could fill"
+
     NAME = "genre-validate"
 
     def _law(self, ctx: RunContext) -> GenreLaw:

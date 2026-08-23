@@ -299,6 +299,14 @@ class ForgeStage(BaseStage):
     always re-measure via ffmpeg, even for files with a usable embedded tag.
     """
 
+    @classmethod
+    def plan_candidates(cls, conn) -> tuple[int, str]:
+        """Rows this stage would act on. Read-only; see planner.py."""
+        n = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' AND rg_tagged_at IS NULL"
+        ).fetchone()[0]
+        return int(n), "files needing loudness measurement"
+
     NAME = "forge"
 
     def validate(self, ctx: RunContext) -> None:

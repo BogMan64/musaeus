@@ -207,6 +207,12 @@ class TaggerStage(BaseStage):
     The stage never modifies the audio stream.
     """
 
+    @classmethod
+    def plan_candidates(cls, conn) -> tuple[int, str]:
+        """Rows this stage would act on. Read-only; see planner.py."""
+        n = conn.execute("SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'").fetchone()[0]
+        return int(n), "catalogued files whose tags would be checked"
+
     NAME = "tagger"
 
     def validate(self, ctx: RunContext) -> None:
