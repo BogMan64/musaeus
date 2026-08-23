@@ -317,6 +317,27 @@ class DupeResolverStage(BaseStage):
     """
 
     @classmethod
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A file this stage claims to have moved must be AT the new path.
+
+        Moves are the costliest thing to get silently wrong: a stage that
+        reports "moved 6,480 files" while the DB and disk disagree leaves
+        rows pointing at nothing, and that is precisely how a file ended up
+        treated as its own duplicate (scope doc section 4.17). Sampling a
+        few is enough to catch a wholesale failure.
+        """
+        rows = ctx.conn.execute(
+            "SELECT file_path FROM archive WHERE status = ? ORDER BY last_seen DESC LIMIT 5",
+            ("DUPE_REVIEW",),
+        ).fetchall()
+        missing = [r["file_path"] for r in rows if not Path(r["file_path"]).exists()]
+        if not rows or not missing:
+            return []
+        return [
+            f"reported {result.files_changed} change(s) but {len(missing)} of "
+            f"{len(rows)} sampled DUPE_REVIEW rows name a file that is not on disk"
+        ]
+
     def plan_candidates(cls, conn) -> tuple[int, str]:
         """Rows this stage would act on. Read-only; see planner.py."""
         n = conn.execute(
