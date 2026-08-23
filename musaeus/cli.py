@@ -265,6 +265,31 @@ def _reject_unsafe_dry_run(stages: list[type[BaseStage]], dry_run: bool) -> int 
     return 2
 
 
+def check_big_kahuna_export_root(export_root: object) -> str | None:
+    """Return an error message if Big Kahuna cannot safely start (P0-03).
+
+    None means "proceed". A string means "refuse, and show this".
+
+    Big Kahuna's nineteenth stage is Curator, which writes an export tree.
+    Without a root the old behaviour was to build the whole pipeline and
+    discover the problem after Ingest, Forge and Tagger had already
+    mutated the library.
+
+    Deliberately does not invent a default or create a directory: a guard
+    that helpfully picks a location is how an export lands somewhere
+    nobody chose, and a guard that makes state is not a guard. The full
+    typed configuration flow is P0-15.
+    """
+    if export_root:
+        return None
+    return (
+        "--big-kahuna needs an export root and none is resolved.\n"
+        "  Big Kahuna finishes with Curator, which writes an export tree, "
+        "and this refuses rather than choose a location for you.\n"
+        "  Pass --export-root /path/to/target."
+    )
+
+
 def _run_pipeline(
     stages: list[type[BaseStage]],
     dry_run: bool,
@@ -1379,6 +1404,12 @@ def main() -> None:
             if getattr(args, "maintain", False):
                 pipeline = MAINTAIN_PIPELINE
             elif getattr(args, "big_kahuna", False):
+                # P0-03: fail closed BEFORE the graph is built. See
+                # check_big_kahuna_export_root() for the reasoning.
+                problem = check_big_kahuna_export_root(getattr(args, "export_root", None))
+                if problem:
+                    print(f"ERROR: {problem}", file=sys.stderr)
+                    sys.exit(2)
                 pipeline = BIG_KAHUNA_PIPELINE
             elif getattr(args, "full", False):
                 pipeline = FULL_PIPELINE
