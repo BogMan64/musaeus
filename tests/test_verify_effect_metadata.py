@@ -68,3 +68,34 @@ def test_normalize_leaves_protected_names_alone():
     for a in ("AC/DC", "Beatles, The", "R.E.M."):
         c.execute("INSERT INTO archive VALUES ('/x.m4a',?,'A','T','Rock','CATALOGUED')", (a,))
     assert NormalizeStage().verify_effect(_ctx(c), _res(1)) == []
+
+
+class _RealLaw:
+    """A law with a real vocabulary, for the canonical-spelling check."""
+    def __init__(self, genres): self._g = set(genres)
+    def __len__(self): return len(self._g)
+    @property
+    def genres(self): return self._g
+    def permits(self, g):
+        n = lambda s: s.replace("/", "-").strip().lower()
+        return n(g) in {n(x) for x in self._g}
+
+
+def test_genre_validate_flags_non_canonical_spelling():
+    """'pop' is legal under permits() but is not how the law spells it."""
+    c = _db()
+    c.execute("INSERT INTO archive VALUES ('/a.m4a','Gwen Stefani','A','Hollaback Girl','pop','CATALOGUED')")
+    st = GenreValidateStage()
+    st._law = lambda ctx: _RealLaw({"Pop", "Rock"})
+    problems = st.verify_effect(_ctx(c), _res(1))
+    assert problems, "a case variant must not be absorbed silently"
+    assert "not spelled canonically" in problems[0] and "'pop'" in problems[0]
+
+
+def test_genre_validate_accepts_slash_variant():
+    """The '/' vs '-' fold is deliberate and must NOT be reported."""
+    c = _db()
+    c.execute("INSERT INTO archive VALUES ('/a.m4a','James Brown','A','T','R&B/Funk/Soul','CATALOGUED')")
+    st = GenreValidateStage()
+    st._law = lambda ctx: _RealLaw({"R&B/Funk/Soul"})
+    assert st.verify_effect(_ctx(c), _res(1)) == []

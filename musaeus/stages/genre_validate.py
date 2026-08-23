@@ -95,6 +95,25 @@ class GenreValidateStage(BaseStage):
                 problems.append(
                     f"{len(off)} genre(s) outside the closed vocabulary: {', '.join(off[:5])}"
                 )
+
+            # permits() is deliberately forgiving, which leaves a gap: a stored
+            # "pop" satisfies it because the law spells the same genre "Pop".
+            # The value is then legal but not canonical, and it hides from
+            # every check above -- found 2026-08-23 on a single track
+            # (Gwen Stefani, "Hollaback Girl") that had sat there through
+            # multiple clean audits. Compare exact spelling separately so a
+            # case or punctuation variant is reported rather than absorbed.
+            canon = {g: g for g in law.genres}
+            variants = [
+                r["genre"]
+                for r in stray
+                if r["genre"] not in canon and law.permits(r["genre"])
+            ]
+            if variants:
+                problems.append(
+                    f"{len(variants)} genre(s) legal but not spelled canonically: "
+                    + ", ".join(f"{v!r}" for v in variants[:5])
+                )
         return problems
 
     def _law(self, ctx: RunContext) -> GenreLaw:
