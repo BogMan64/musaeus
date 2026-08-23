@@ -113,3 +113,62 @@ def test_default_verify_effect_claims_nothing():
             return self._make_result(dry_run=False)
 
     assert Bare().verify_effect(None, StageResult("bare", True)) == []
+
+
+class TestStageHooksAreCorrectlyBound:
+    """Guards a mistake I made on 2026-08-23 and want caught next time.
+
+    Inserting verify_effect() at the top of two stage classes landed it
+    BETWEEN an existing @classmethod decorator and its function. The
+    decorator attached to verify_effect (which takes self) and
+    plan_candidates silently lost it, so the planner called it with the
+    wrong arity.
+
+    It surfaced only because the planner reports "preview failed: ..."
+    instead of substituting a zero -- had it defaulted to 0, the plan would
+    have quietly under-reported 1,735 pending duplicate groups.
+    """
+
+    def test_plan_candidates_is_a_classmethod_everywhere_it_exists(self):
+        from musaeus.stages import DEFAULT_PIPELINE, FULL_PIPELINE
+
+        for stage in {*DEFAULT_PIPELINE, *FULL_PIPELINE}:
+            fn = stage.__dict__.get("plan_candidates")
+            if fn is None:
+                continue
+            assert isinstance(fn, classmethod), (
+                f"{stage.__name__}.plan_candidates must be a @classmethod; "
+                "the planner calls it on the class and never instantiates a stage"
+            )
+
+    def test_verify_effect_is_an_instance_method_everywhere_it_exists(self):
+        from musaeus.stages import DEFAULT_PIPELINE, FULL_PIPELINE
+
+        for stage in {*DEFAULT_PIPELINE, *FULL_PIPELINE}:
+            fn = stage.__dict__.get("verify_effect")
+            if fn is None:
+                continue
+            assert not isinstance(fn, classmethod | staticmethod), (
+                f"{stage.__name__}.verify_effect takes self and is called on an instance"
+            )
+
+    def test_every_plan_candidates_is_callable_with_just_a_connection(self):
+        """Arity check: the exact failure that slipped through."""
+        import sqlite3
+
+        from musaeus.stages import DEFAULT_PIPELINE
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "CREATE TABLE archive (artist TEXT, genre TEXT, status TEXT, bpm REAL, "
+            "rg_tagged_at TEXT, finalized_at TEXT)"
+        )
+        conn.execute("CREATE TABLE duplicates (group_id TEXT, status TEXT)")
+        conn.commit()
+        for stage in DEFAULT_PIPELINE:
+            if "plan_candidates" not in stage.__dict__:
+                continue
+            count, desc = stage.plan_candidates(conn)
+            assert isinstance(count, int)
+            assert desc

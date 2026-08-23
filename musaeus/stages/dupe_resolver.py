@@ -316,7 +316,6 @@ class DupeResolverStage(BaseStage):
     Artist/Album/Track shape. Never deletes; always reversible.
     """
 
-    @classmethod
     def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
         """A file this stage claims to have moved must be AT the new path.
 
@@ -338,6 +337,7 @@ class DupeResolverStage(BaseStage):
             f"{len(rows)} sampled DUPE_REVIEW rows name a file that is not on disk"
         ]
 
+    @classmethod
     def plan_candidates(cls, conn) -> tuple[int, str]:
         """Rows this stage would act on. Read-only; see planner.py."""
         n = conn.execute(
