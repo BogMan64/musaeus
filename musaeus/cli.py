@@ -1124,6 +1124,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Same as a normal run: nothing is written"
     )
 
+    sub.add_parser("doctor", help="Read-only library integrity report (DB vs disk vs hash ledger)")
+
     neardupe_p = sub.add_parser("neardupe", help="Metadata-based near-duplicate detection")
     neardupe_p.add_argument("--dry-run", action="store_true", help="Show matches without staging")
 
@@ -1716,6 +1718,15 @@ def main() -> None:
                     report_only=getattr(args, "report", False),
                 )
             )
+
+        elif command == "doctor":
+            from .doctor import diagnose
+
+            rep = diagnose(get_config())
+            print("\n  MUSAEUS — library integrity\n")
+            print(rep.render())
+            print()
+            sys.exit(1 if rep.failed else 0)
 
         elif command == "status":
             sys.exit(_cmd_status())
