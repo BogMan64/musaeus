@@ -85,7 +85,7 @@ class _Stage:
         raise AssertionError("the planner must never instantiate a stage")
 
     @classmethod
-    def plan_candidates(cls, conn):
+    def plan_candidates(cls, conn, cfg=None):
         n = conn.execute("SELECT COUNT(*) FROM archive").fetchone()[0]
         return n, "rows this stage would touch"
 
@@ -182,3 +182,64 @@ class TestPurePlanner:
         p = Plan(mode=RunMode.PREVIEW, vault_root=Path("/x"))
         p.stages = [StagePlan("a", 5, ""), StagePlan("b", None, "")]
         assert p.total_candidates == 5
+
+
+class TestIngestPlanCountsTheInboxNotJustRows:
+    """Found by the batch-0 dry run on 2026-08-23.
+
+    The plan reported "ingest 0 pending files" while 20 files sat in
+    INBOX waiting. IngestStage.plan_candidates counted archive rows with
+    status='PENDING', but a file that has never been scanned has no row
+    yet -- so the count was structurally incapable of seeing the very
+    thing a run is about to do.
+
+    For the first stage of a pipeline, that is the worst number to get
+    wrong: it says "nothing to do" at precisely the moment there is.
+    """
+
+    def test_files_in_the_inbox_are_counted(self, tmp_path):
+        import sqlite3
+        from types import SimpleNamespace
+
+        from musaeus.stages.ingest import IngestStage
+
+        inbox = tmp_path / "INBOX"
+        (inbox / "sub").mkdir(parents=True)
+        (inbox / "a.m4a").write_bytes(b"x")
+        (inbox / "sub" / "b.m4a").write_bytes(b"x")
+        (inbox / "notes.txt").write_bytes(b"x")  # non-audio must not count
+
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE archive (status TEXT)")
+        conn.commit()
+
+        count, desc = IngestStage.plan_candidates(conn, SimpleNamespace(inbox=inbox))
+        assert count == 2, desc
+        assert "INBOX" in desc
+
+    def test_an_empty_inbox_reports_zero_honestly(self, tmp_path):
+        import sqlite3
+        from types import SimpleNamespace
+
+        from musaeus.stages.ingest import IngestStage
+
+        inbox = tmp_path / "INBOX"
+        inbox.mkdir()
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE archive (status TEXT)")
+        conn.commit()
+        count, _ = IngestStage.plan_candidates(conn, SimpleNamespace(inbox=inbox))
+        assert count == 0
+
+    def test_a_missing_inbox_does_not_raise(self, tmp_path):
+        """A vault that has never been set up must still be plannable."""
+        import sqlite3
+        from types import SimpleNamespace
+
+        from musaeus.stages.ingest import IngestStage
+
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE archive (status TEXT)")
+        conn.commit()
+        count, _ = IngestStage.plan_candidates(conn, SimpleNamespace(inbox=tmp_path / "nope"))
+        assert count == 0

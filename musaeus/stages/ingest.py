@@ -62,10 +62,25 @@ class IngestStage(BaseStage):
     """
 
     @classmethod
-    def plan_candidates(cls, conn) -> tuple[int, str]:
-        """Rows this stage would act on. Read-only; see planner.py."""
-        n = conn.execute("SELECT COUNT(*) FROM archive WHERE status='PENDING'").fetchone()[0]
-        return int(n), "pending files awaiting ingest"
+    def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
+        """Files actually waiting in INBOX, plus any PENDING rows.
+
+        Counted from the filesystem, not from archive rows: a file that has
+        never been scanned has no row yet, so a row count reports 0 while
+        the inbox is full. That is exactly what the first version did.
+        """
+        from ..config import AUDIO_EXTENSIONS
+
+        inbox = getattr(cfg, "inbox", None)
+        waiting = 0
+        if inbox is not None and Path(inbox).exists():
+            waiting = sum(
+                1
+                for p in Path(inbox).rglob("*")
+                if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS
+            )
+        pending = conn.execute("SELECT COUNT(*) FROM archive WHERE status='PENDING'").fetchone()[0]
+        return waiting + pending, f"files waiting in INBOX ({waiting}) + PENDING rows ({pending})"
 
     NAME = "ingest"
 

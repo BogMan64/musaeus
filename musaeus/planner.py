@@ -28,8 +28,15 @@ So this module:
 A stage opts in by defining:
 
     @classmethod
-    def plan_candidates(cls, conn) -> tuple[int, str]:
-        '''Return (rows this stage would act on, one-line description).'''
+    def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
+        '''Return (items this stage would act on, one-line description).'''
+
+Both arguments are read-only inputs: `conn` is opened mode=ro, and `cfg`
+is used for path lookups only. Ingest needs `cfg` because its real work is
+"files waiting in INBOX" -- a filesystem question. The first version passed
+only `conn`, so Ingest counted PENDING rows and reported 0 while 20 files
+sat in the inbox. For the stage that matters most at the start of a run,
+that is the worst possible number to get wrong.
 
 Stages that do not define it are reported as "not previewable" rather than
 as zero -- an unknown is not a zero, and reporting it as one is how a
@@ -193,7 +200,7 @@ def build_plan(cfg: MusicConfig, pipeline: list[type], mode: RunMode = RunMode.P
                 )
                 continue
             try:
-                count, desc = fn(conn)
+                count, desc = fn(conn, cfg)
                 plan.stages.append(StagePlan(_name(st), int(count), desc))
             except Exception as exc:  # a broken planner must not fake a zero
                 plan.stages.append(StagePlan(_name(st), None, f"preview failed: {exc}"))

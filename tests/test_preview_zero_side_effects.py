@@ -58,7 +58,7 @@ class _Stage:
         raise AssertionError("preview must never instantiate a stage")
 
     @classmethod
-    def plan_candidates(cls, conn):
+    def plan_candidates(cls, conn, cfg=None):
         return conn.execute("SELECT COUNT(*) FROM archive").fetchone()[0], "rows"
 
 

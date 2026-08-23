@@ -152,8 +152,14 @@ class TestStageHooksAreCorrectlyBound:
                 f"{stage.__name__}.verify_effect takes self and is called on an instance"
             )
 
-    def test_every_plan_candidates_is_callable_with_just_a_connection(self):
-        """Arity check: the exact failure that slipped through."""
+    def test_every_plan_candidates_is_callable_with_conn_and_cfg(self):
+        """Arity check: the exact failure that slipped through once.
+
+        Signature widened 2026-08-23 from (conn) to (conn, cfg) because
+        Ingest's real work is "files waiting in INBOX", a filesystem
+        question a DB handle cannot answer. This test caught the change
+        immediately, which is what it is for.
+        """
         import sqlite3
 
         from musaeus.stages import DEFAULT_PIPELINE
@@ -166,9 +172,10 @@ class TestStageHooksAreCorrectlyBound:
         )
         conn.execute("CREATE TABLE duplicates (group_id TEXT, status TEXT)")
         conn.commit()
+        cfg = SimpleNamespace(inbox=None, vault_root=None, alac_library=None)
         for stage in DEFAULT_PIPELINE:
             if "plan_candidates" not in stage.__dict__:
                 continue
-            count, desc = stage.plan_candidates(conn)
+            count, desc = stage.plan_candidates(conn, cfg)
             assert isinstance(count, int)
             assert desc

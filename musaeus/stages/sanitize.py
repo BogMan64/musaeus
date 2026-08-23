@@ -128,7 +128,7 @@ class SanitizeStage(BaseStage):
     """Normalize metadata for cross-platform filesystem compatibility."""
 
     @classmethod
-    def plan_candidates(cls, conn) -> tuple[int, str]:
+    def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
         """Rows this stage would act on. Read-only; see planner.py."""
         n = conn.execute("SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'").fetchone()[0]
         return int(n), "rows inspected for unsafe metadata"
