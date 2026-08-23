@@ -441,6 +441,40 @@ class NormalizeStage(BaseStage):
 
     NAME = "normalize"
 
+    # ── Effect verification ───────────────────────────────────────────────────
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """Assert idempotence: re-normalising a stored name must not change it.
+
+        This is the strongest post-condition available here and the cheapest
+        to check -- no file I/O, just the pure functions over DISTINCT
+        artists. If normalising a stored value would still change it, the
+        stage left work undone, whatever its change count claims.
+
+        It also pins the guards. "AC/DC" and the other PROTECTED_ARTIST_NAMES
+        must survive untouched; when sanitize was applying path rules to
+        metadata, "AC/DC" became "Ac-dc" on 92 files precisely because a
+        normalisation ran over a name it no longer recognised. A check that
+        the output is a fixed point catches that on the next pass instead of
+        letting it compound.
+        """
+        rows = ctx.conn.execute(
+            "SELECT DISTINCT artist FROM archive "
+            "WHERE status='CATALOGUED' AND artist IS NOT NULL AND trim(artist)!=''"
+        ).fetchall()
+        unstable = []
+        for r in rows:
+            again = _normalise_artist(r["artist"])
+            if again is not None and again != r["artist"]:
+                unstable.append((r["artist"], again))
+        if unstable:
+            shown = ", ".join(f"{a!r}→{b!r}" for a, b in unstable[:3])
+            return [
+                f"{len(unstable)} stored artist name(s) would still change if normalized "
+                f"again, after normalize claimed {result.files_changed} change(s): {shown}"
+            ]
+        return []
+
     # ── Validate ──────────────────────────────────────────────────────────────
 
     def validate(self, ctx: RunContext) -> None:

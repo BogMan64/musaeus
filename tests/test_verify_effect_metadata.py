@@ -51,3 +51,20 @@ def test_genre_validate_passes_one_genre_per_artist():
     st = GenreValidateStage()
     st._law = lambda ctx: _EmptyLaw()
     assert st.verify_effect(_ctx(c), _res(2)) == []
+
+
+def test_normalize_flags_unstable_name():
+    from musaeus.stages.normalize import NormalizeStage
+    c = _db()
+    # Lowercase artist that normalize would still title-case: not a fixed point.
+    c.execute("INSERT INTO archive VALUES ('/a.m4a','the beatles','A','T','Rock','CATALOGUED')")
+    problems = NormalizeStage().verify_effect(_ctx(c), _res(1))
+    assert problems and "would still change" in problems[0]
+
+
+def test_normalize_leaves_protected_names_alone():
+    from musaeus.stages.normalize import NormalizeStage
+    c = _db()
+    for a in ("AC/DC", "Beatles, The", "R.E.M."):
+        c.execute("INSERT INTO archive VALUES ('/x.m4a',?,'A','T','Rock','CATALOGUED')", (a,))
+    assert NormalizeStage().verify_effect(_ctx(c), _res(1)) == []
