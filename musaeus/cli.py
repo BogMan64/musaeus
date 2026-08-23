@@ -276,9 +276,25 @@ def _run_pipeline(
     Returns 0 on success, 1 on any stage failure, 2 if dry_run is rejected
     by the P0-02 fail-closed guard (see _reject_unsafe_dry_run above).
     """
-    guard_exit = _reject_unsafe_dry_run(stages, dry_run)
-    if guard_exit is not None:
-        return guard_exit
+    if dry_run:
+        # P0-02's blanket refusal is lifted here, and only here, because the
+        # condition the spec set for lifting it is now met: P0-04 (typed
+        # RunMode + pure planner) and P0-05 (zero-side-effect and
+        # transport-denial evidence) are both implemented and fixture-proven.
+        #
+        # --dry-run no longer means "execute with a flag set", which is what
+        # made it unsafe -- it routes to the planner, which never calls
+        # ensure_dirs(), never opens a writable connection, and never
+        # instantiates a stage. _reject_unsafe_dry_run is kept for any caller
+        # that still reaches it directly.
+        from .planner import RunMode, build_plan
+
+        cfg = get_config()
+        plan = build_plan(cfg, list(stages), RunMode.PREVIEW)
+        print("\n  MUSAEUS — plan (--dry-run)\n")
+        print(plan.render())
+        print()
+        return 0
 
     # Execution has network authority; preview never does. The gateway
     # defaults to LOCAL_ONLY so that anything which forgets to declare its
