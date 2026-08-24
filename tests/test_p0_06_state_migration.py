@@ -549,10 +549,16 @@ _BROKEN_SECOND = "CREATE TABLE p0_06_probe_b (id INTEGER PRIMARY KEY, THIS IS NO
 
 
 def _failing_chain() -> tuple[Migration, ...]:
+    """The shipped chain plus one deliberately broken step on the end.
+
+    Built from the whole of MIGRATIONS rather than from MIGRATIONS[0]:
+    validate_registry() requires a contiguous chain, so hardcoding the
+    first migration alone breaks the moment a real 0002 is added. It did,
+    which is the registry check doing its job."""
     return (
-        MIGRATIONS[0],
+        *MIGRATIONS,
         Migration(
-            migration_id="0002_deliberately_broken",
+            migration_id="9002_deliberately_broken",
             from_version=SCHEMA_VERSION,
             to_version=SCHEMA_VERSION + 1,
             statements=(_GOOD_FIRST, _BROKEN_SECOND),
@@ -570,7 +576,7 @@ class TestFailedMigrationLeavesPriorStateUsable:
             migrate(db, recovery_root=disposable_vault.recovery_root, migrations=chain)
 
         assert exc.value.reason_code == "migration_failed"
-        assert exc.value.details["migration_id"] == "0002_deliberately_broken"
+        assert exc.value.details["migration_id"] == "9002_deliberately_broken"
 
         conn = _connect(db)
         try:
@@ -591,8 +597,9 @@ class TestFailedMigrationLeavesPriorStateUsable:
             migrate(db, recovery_root=disposable_vault.recovery_root, migrations=_failing_chain())
 
         rows = {r["migration_id"]: r for r in _ledger_rows(db)}
-        assert rows[MIGRATIONS[0].migration_id]["outcome"] == OUTCOME_SUCCEEDED
-        failed = rows["0002_deliberately_broken"]
+        for shipped in MIGRATIONS:
+            assert rows[shipped.migration_id]["outcome"] == OUTCOME_SUCCEEDED
+        failed = rows["9002_deliberately_broken"]
         assert failed["outcome"] == OUTCOME_FAILED
         assert failed["finished_at"] is not None
         assert failed["error_code"] is not None
@@ -617,9 +624,9 @@ class TestFailedMigrationLeavesPriorStateUsable:
 
 def _candidate_chain(statements: tuple[str, ...]) -> tuple[Migration, ...]:
     return (
-        MIGRATIONS[0],
+        *MIGRATIONS,
         Migration(
-            migration_id="0002_candidate_swap",
+            migration_id="9002_candidate_swap",
             from_version=SCHEMA_VERSION,
             to_version=SCHEMA_VERSION + 1,
             statements=statements,
@@ -636,7 +643,7 @@ class TestCandidateSwap:
 
         result = migrate(db, recovery_root=disposable_vault.recovery_root, migrations=chain)
 
-        assert result.applied == (MIGRATIONS[0].migration_id, "0002_candidate_swap")
+        assert result.applied == (*[m.migration_id for m in MIGRATIONS], "9002_candidate_swap")
         conn = _connect(db)
         try:
             assert read_schema_version(conn) == SCHEMA_VERSION + 1

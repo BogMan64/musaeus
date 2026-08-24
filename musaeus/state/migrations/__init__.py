@@ -28,6 +28,8 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
+from musaeus.state.events import CANONICAL_EVENT_STATEMENTS
+from musaeus.state.projector import PROJECTION_STATEMENTS
 from musaeus.state.schema import (
     LEGACY_UNVERSIONED,
     SCHEMA_VERSION,
@@ -88,7 +90,25 @@ M0001_BASELINE = Migration(
     ),
 )
 
-MIGRATIONS: tuple[Migration, ...] = (M0001_BASELINE,)
+M0002_CANONICAL_EVENTS = Migration(
+    migration_id="0002_canonical_events_and_projection",
+    from_version=1,
+    to_version=2,
+    statements=(*CANONICAL_EVENT_STATEMENTS, *PROJECTION_STATEMENTS),
+    description=(
+        "Add the canonical event store and the three derived projection tables. "
+        "Additive only: the legacy `events` table is untouched and keeps its role as "
+        "a human-readable audit trail. It is deliberately NOT migrated into "
+        "canonical_events -- rebuild.py's investigation established that its payloads "
+        "are lossy (hashes truncated to 16 chars plus an ellipsis; album/genre/year/"
+        "track/duration/codec never recorded), so copying it across would manufacture "
+        "a source of truth out of evidence that cannot support one. Legacy rows are "
+        "adapted on demand, and anything unmappable is preserved as legacy.unmapped "
+        "and blocks the affected run's rebuild."
+    ),
+)
+
+MIGRATIONS: tuple[Migration, ...] = (M0001_BASELINE, M0002_CANONICAL_EVENTS)
 
 
 # ── Registry validation and planning ──────────────────────────────────────────
