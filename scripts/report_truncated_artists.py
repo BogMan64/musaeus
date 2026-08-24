@@ -55,6 +55,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from musaeus.stages.normalize import PROTECTED_ARTIST_NAMES  # noqa: E402
 
 VAULT = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT")
+ARTIST_CANON = VAULT / "MetaData" / "artist_canon.tsv"
 DB = VAULT / "musaeus.db"
 OUT = Path.home() / "Desktop" / "MUSAEUS_Truncated_Artist_Report.csv"
 
@@ -94,6 +95,20 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", s.lower())
 
 
+def load_artist_canon() -> dict[str, str]:
+    """raw name (lowercased) → canonical name, from artist_canon.tsv."""
+    if not ARTIST_CANON.exists():
+        return {}
+    out: dict[str, str] = {}
+    for line in ARTIST_CANON.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "\t" not in line:
+            continue
+        raw, canonical = line.split("\t", 1)
+        out[raw.strip().lower()] = canonical.strip()
+    return out
+
+
 def _is_stylised(artist: str) -> bool:
     low = artist.strip().lower()
     return low in PROTECTED_ARTIST_NAMES or low in _KNOWN_STYLISED
@@ -101,6 +116,7 @@ def _is_stylised(artist: str) -> bool:
 
 def collect(conn: sqlite3.Connection) -> dict[str, dict]:
     artists = _stored_artists(conn)
+    canon = load_artist_canon()
     findings: dict[str, dict] = defaultdict(
         lambda: {"tracks": 0, "signals": set(), "filename_form": "", "suffix_of": ""}
     )
@@ -131,6 +147,14 @@ def collect(conn: sqlite3.Connection) -> dict[str, dict]:
         # sank the first attempt at this. Only a stored name appearing
         # somewhere OTHER than the start counts.
         ns, nd = _norm(stored), _norm(on_disk)
+        # A file whose on-disk name maps to the stored artist through the
+        # artist canon is a rename that has not been relocated yet -- not
+        # damage. After the 2026-08-24 consolidation, "Dr. Dre" sat in a
+        # file still called "2Pac, Roger Troutman, Dr. Dre - ...", which
+        # this rule read as a front-truncation. The canon is the record of
+        # deliberate renames, so it is what tells the two apart.
+        if canon.get(on_disk.strip().lower(), "").strip().lower() == stored.lower():
+            continue
         if ns and ns in nd and not nd.startswith(ns):
             f = findings[stored]
             f["tracks"] = artists.get(stored, 0)

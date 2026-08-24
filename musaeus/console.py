@@ -25,12 +25,15 @@ import contextlib
 import logging
 import sys
 import traceback
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from .config import MusicConfig, get_config
 from .context import RunContext
 from .db import open_db, snapshot_db_before_wipe
 from .hasher import ffmpeg_available, ffprobe_available
+from .network_policy import NetworkPolicy, policy
 from .stages import (
     DEFAULT_PIPELINE,
     CuratorStage,
@@ -131,6 +134,29 @@ def _choose(prompt: str, options: list[str], default: str = "0") -> str:
 
 
 # ── Console class ─────────────────────────────────────────────────────────────
+
+
+@contextmanager
+def _network_authority(dry_run: bool) -> Iterator[None]:
+    """Grant network authority for a LIVE console run, and take it back after.
+
+    The console never touched network_policy at all, so the gateway stayed
+    at its LOCAL_ONLY default for everything launched from this menu. Every
+    network stage -- Enrich, MBEnrich, OriginalYear -- was therefore refused,
+    logged a warning and carried on, and the run reported success having done
+    no enrichment whatever. Found 2026-08-24; the CLI has granted this at its
+    execute path since the gateway was introduced, and the console was simply
+    never given the same treatment.
+
+    Scoped rather than set_policy, so an interactive session does not sit
+    permissive for the rest of its life after one live run. Preview gets
+    nothing, exactly as on the CLI side.
+    """
+    if dry_run:
+        yield
+        return
+    with policy(NetworkPolicy.ALLOWED):
+        yield
 
 
 class Console:
@@ -286,20 +312,21 @@ class Console:
                 ctx = RunContext.new(self._config, conn, dry_run=dry_run)
                 stages: list[BaseStage] = [cls() for cls in DEFAULT_PIPELINE]
 
-                for stage in stages:
-                    print()
-                    print(_c(f"  ── {stage.NAME.upper()} ──", _BOLD, _BLUE))
-                    result = stage.execute(ctx)
+                with _network_authority(dry_run):
+                    for stage in stages:
+                        print()
+                        print(_c(f"  ── {stage.NAME.upper()} ──", _BOLD, _BLUE))
+                        result = stage.execute(ctx)
 
-                    if result.success:
-                        _ok(result.summarise())
-                    else:
-                        _err(result.summarise())
+                        if result.success:
+                            _ok(result.summarise())
+                        else:
+                            _err(result.summarise())
 
-                    for note in result.notes:
-                        _info(note)
-                    for err in result.errors:
-                        _err(f"  ERROR: {err}")
+                        for note in result.notes:
+                            _info(note)
+                        for err in result.errors:
+                            _err(f"  ERROR: {err}")
 
                 print()
                 all_ok = all(r.success for r in ctx.stage_results)
@@ -339,7 +366,8 @@ class Console:
                 ctx = RunContext.new(self._config, conn, dry_run=dry_run)
                 stage = stage_cls()
                 _section(f"{stage.NAME.upper()}  [{mode}]")
-                result = stage.execute(ctx)
+                with _network_authority(dry_run):
+                    result = stage.execute(ctx)
                 if result.success:
                     _ok(result.summarise())
                 else:
@@ -631,7 +659,8 @@ class Console:
                         ctx.set(k, v)
                 stage = stage_cls()
                 _section(f"{stage.NAME.upper()}  [{mode}]")
-                result = stage.execute(ctx)
+                with _network_authority(dry_run):
+                    result = stage.execute(ctx)
                 if result.success:
                     _ok(result.summarise())
                 else:
