@@ -324,14 +324,28 @@ class AcousticIDStage(BaseStage):
                         )
                         if not dry_run:
                             for member in (fp, other_fp):
+                                # Column names verified against the real
+                                # schema, not against this statement's own
+                                # history. It previously named `type` and
+                                # `created_at`; the table has
+                                # `duplicate_type` and `staged_at`, so every
+                                # execution raised "table duplicates has no
+                                # column named type" -- which, together with
+                                # the five archive columns that did not
+                                # exist at all (see db.py's _MIGRATIONS), is
+                                # why this stage has never staged a row.
+                                # run_id is recorded too: the column has
+                                # always existed and was never populated,
+                                # leaving staged pairs unattributable to the
+                                # run that found them.
                                 ctx.conn.execute(
                                     """
                                     INSERT OR IGNORE INTO duplicates
-                                        (group_id, file_path, type, confidence,
-                                         status, created_at)
-                                    VALUES (?, ?, 'ACOUSTIC', ?, 'pending', ?)
+                                        (group_id, file_path, duplicate_type,
+                                         confidence, status, run_id, staged_at)
+                                    VALUES (?, ?, 'ACOUSTIC', ?, 'pending', ?, ?)
                                     """,
-                                    (group_id, member, score, now),
+                                    (group_id, member, score, ctx.run_id, now),
                                 )
                             ctx.log_event(
                                 "ACOUSTIC_DUPE_FOUND",
