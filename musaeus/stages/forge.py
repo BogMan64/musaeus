@@ -52,6 +52,20 @@ logger = logging.getLogger(__name__)
 
 _COMMIT_EVERY = 25  # commit DB every N files (crash resilience)
 
+#: Hard ceiling on what will be handed to ffmpeg for loudness measurement.
+#: Deliberately the same 45 minutes as BPMStage's decode ceiling, but for a
+#: different failure: loudness.py already scales its ffmpeg timeout to 30% of
+#: duration (capped at 600 s), so Forge degrades by *timing out* rather than
+#: OOM-ing. Survivable, but a 12-hour file burns ~20 min across two retries
+#: and produces nothing. BPM was bounded on 2026-08-23 and Forge was left
+#: unguarded that day; this closes it.
+#:
+#: Nothing above the ceiling is a track. The longest real music in the
+#: library is Miles Davis at 28.5 min, then the Allman Brothers' "Whipping
+#: Post" at 22.9 min. Measured 2026-08-23: 0 catalogued files exceed it, so
+#: this guards future ingests rather than anything currently held.
+_MAX_LOUDNESS_SECONDS = 45 * 60
+
 
 # ── Tag writers ───────────────────────────────────────────────────────────────
 
@@ -373,6 +387,35 @@ class ForgeStage(BaseStage):
                     )
                 return "tag_shortcut"
 
+        # Decided from what Scholar already recorded, before ffmpeg is spawned
+        # -- the same shape as BPMStage's pre-decode check, and for the same
+        # reason: reacting to the failure afterwards has already paid for it.
+        # Placed after the existing-tag shortcut above on purpose, so a long
+        # file that already carries ReplayGain tags still yields its values
+        # for free.
+        row = ctx.conn.execute(
+            "SELECT duration FROM archive WHERE file_path = ?", (file_path,)
+        ).fetchone()
+        duration = row["duration"] if row else None
+        if duration and duration > _MAX_LOUDNESS_SECONDS:
+            logger.warning(
+                "[forge] skipping %s: %.0f min exceeds the %.0f min measurement ceiling "
+                "(ffmpeg would time out after ~%.0f min across two retries)",
+                path.name,
+                duration / 60,
+                _MAX_LOUDNESS_SECONDS / 60,
+                (min(duration * 0.3, 600) * 2) / 60,
+            )
+            if not dry_run:
+                ctx.log_event(
+                    "FORGE_SKIPPED_TOO_LONG",
+                    file_path=file_path,
+                    new_value=f"{duration / 60:.0f} min",
+                    stage=self.NAME,
+                    note="exceeds the loudness measurement ceiling; not a track",
+                )
+            return "skip_too_long"
+
         lufs, tp, reason = measure_loudness(path)
 
         if reason != "ok":
@@ -542,7 +585,7 @@ class ForgeStage(BaseStage):
 
             if status in ("ok", "tag_shortcut"):
                 result.files_changed += 1
-            elif status in ("silence", "missing"):
+            elif status in ("silence", "missing", "skip_too_long"):
                 result.files_skipped += 1
             else:
                 result.files_errored += 1
