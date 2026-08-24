@@ -104,15 +104,29 @@ GATES: dict[str, tuple[str, str]] = {
         "MCR-008",
         "tests/test_p0_17_scheduled_runs.py",
     ),
+    "cli_authority_gate_is_opt_in_and_enforces": (
+        "MCR-002",
+        "tests/test_p0_11_cli_gate.py",
+    ),
+    "published_cli_surface_matches_implementation": (
+        "MCR-008",
+        "tests/test_p0_18_cli_inventory.py",
+    ),
+    "network_policy_does_not_leak_between_callers": (
+        "MCR-001",
+        "tests/test_network_policy_scope.py",
+    ),
 }
 
 # Required by P0-19 and NOT produced here. Listed explicitly so the bundle
 # cannot be mistaken for a complete rehearsal.
 NOT_COVERED: dict[str, str] = {
     "cli_level_rehearsal": (
-        "P0-19 requires representative flows through the real CLI and the scheduler "
-        "wrapper. The safety modules are proven in isolation; cli.py is not yet wired "
-        "to the preflight/authority gate."
+        "PARTIAL. cli.py IS now wired to the preflight/authority gate (opt-in via "
+        "--safety-gate / MUSAEUS_P0_SAFETY_GATE), and that path is exercised. What is "
+        "still missing is a representative END-TO-END flow: with stages still writing "
+        "directly, a rehearsal would prove the gate refuses correctly but not that an "
+        "authorised run is recoverable."
     ),
     "stages_routed_through_the_mutation_boundary": (
         "P0-13's other half. The ~30 existing stages still write to the filesystem "
@@ -123,7 +137,11 @@ NOT_COVERED: dict[str, str] = {
         "this codebase; the equivalent live gate is Curator's export root, which is "
         "covered above. The spec needs updating."
     ),
-    "documentation_consistency": ("P0-18 is not started."),
+    "documentation_consistency": (
+        "PARTIAL. A drift guard exists and two stale help lines are corrected. 24 of 57 "
+        "commands remain undocumented by deliberate decision -- publishing them requires "
+        "their behaviour to be fixture-proven first, which is Grey's call per command."
+    ),
     "fsync_durability": (
         "The journal's fsync guards machine-level crash, which cannot be simulated "
         "here. Covered by design, not by a passing test -- see "
