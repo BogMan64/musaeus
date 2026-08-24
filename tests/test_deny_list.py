@@ -146,3 +146,37 @@ class TestVerifyEffect:
         _incoming(ctx, "fine.m4a", "a" * 64, status="CATALOGUED")
 
         assert DenyListStage().verify_effect(ctx, DenyListStage()._make_result()) == []
+
+
+class TestTheLogIdentifiesTheFileBeforeScholarHasRun:
+    """This stage runs before Scholar, so artist/title are empty on a
+    freshly ingested row. A live run on 2026-08-24 logged
+    "refusing ? — <filename>", which is noise where the filename alone
+    reads fine."""
+
+    def test_label_falls_back_to_the_filename(self, ctx, caplog):
+        import logging
+
+        _deny(ctx, "h" * 64)
+        _incoming(ctx, "returning.m4a", "h" * 64)
+        ctx.conn.execute("UPDATE archive SET artist=NULL, title=NULL")
+        ctx.conn.commit()
+
+        with caplog.at_level(logging.INFO, logger="musaeus.stages.deny_list"):
+            DenyListStage().run(ctx)
+
+        line = next(r.getMessage() for r in caplog.records if "refusing" in r.getMessage())
+        assert "returning.m4a" in line
+        assert "?" not in line
+
+    def test_a_known_artist_and_title_are_used_when_present(self, ctx, caplog):
+        import logging
+
+        _deny(ctx, "h" * 64)
+        _incoming(ctx, "returning.m4a", "h" * 64)
+
+        with caplog.at_level(logging.INFO, logger="musaeus.stages.deny_list"):
+            DenyListStage().run(ctx)
+
+        line = next(r.getMessage() for r in caplog.records if "refusing" in r.getMessage())
+        assert "X — Y" in line

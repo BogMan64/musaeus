@@ -109,7 +109,12 @@ class DenyListStage(BaseStage):
                     continue
 
                 src = Path(row["file_path"])
-                label = f"{row.get('artist') or '?'} — {row.get('title') or src.name}"
+                # This stage runs before Scholar, so artist/title are still
+                # empty on a freshly ingested row -- the filename is the only
+                # thing that identifies it to a human at this point. Verified
+                # on a live run 2026-08-24, which logged "refusing ? — ...".
+                artist, title = row.get("artist"), row.get("title")
+                label = f"{artist} — {title}" if artist and title else src.name
                 logger.info(
                     "[deny-list] refusing %s (removed previously: %s)", label, entry["reason"]
                 )
