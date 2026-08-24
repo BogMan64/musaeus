@@ -340,7 +340,7 @@ class VariousArtistsFixStage(BaseStage):
 
         fixed = 0
         unknown = 0
-        for i, row in enumerate(candidates, 1):
+        for row in candidates:
             result.files_processed += 1
             source = Path(row["file_path"])
             if not source.exists():
@@ -366,14 +366,17 @@ class VariousArtistsFixStage(BaseStage):
             target = self._target_path(
                 ctx, {**row, "title": clean_title}, source, real_artist
             )
-            try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(source), str(target))
-            except OSError as exc:
-                result.files_errored += 1
-                result.errors.append(f"{source.name}: {exc}")
-                continue
-
+            # Database first, then the move, then commit -- so the two cannot
+            # disagree. A move is not transactional and cannot be rolled back;
+            # a DB write can. Doing it the other way round means a failed
+            # UPDATE leaves the file relocated and the row pointing at a path
+            # that no longer exists, and with a batched commit that is true
+            # for every row back to the last checkpoint.
+            #
+            # Measured 2026-08-24, in a script that made exactly this mistake:
+            # a constraint error rolled the DB back while the filesystem kept
+            # all 86 moves. Recovering it needed the destinations re-derived
+            # by hand.
             if new_genre:
                 ctx.conn.execute(
                     "UPDATE archive SET artist = ?, title = ?, genre = ?, file_path = ? "
@@ -385,6 +388,16 @@ class VariousArtistsFixStage(BaseStage):
                     "UPDATE archive SET artist = ?, title = ?, file_path = ? WHERE id = ?",
                     (real_artist, clean_title, str(target), row["id"]),
                 )
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(source), str(target))
+            except OSError as exc:
+                # Undo the row we just wrote, so neither half lands.
+                ctx.conn.rollback()
+                result.files_errored += 1
+                result.errors.append(f"{source.name}: {exc}")
+                continue
+
             ctx.log_event(
                 "VARIOUS_ARTISTS_FIXED",
                 file_path=str(target),
@@ -402,8 +415,10 @@ class VariousArtistsFixStage(BaseStage):
                 "[various-artists-fix] %s -> %s (%s)", row.get("artist"), real_artist, strategy
             )
 
-            if i % _COMMIT_EVERY == 0:
-                ctx.conn.commit()
+            # Committed per row, not per batch: rollback() above discards
+            # everything uncommitted, so a batched commit would undo earlier
+            # rows whose files had already moved.
+            ctx.conn.commit()
 
         ctx.conn.commit()
 

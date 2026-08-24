@@ -143,3 +143,53 @@ class TestArtistIsStoredInTheLibrarysForm:
 
         src = inspect.getsource(various_artists_fix.VariousArtistsFixStage.run)
         assert "_move_article_to_suffix(real_artist" in src
+
+
+class TestTheMoveAndTheRowStayInStep:
+    """A move is not transactional; a database write is.
+
+    On 2026-08-24 a script did the move first and batched its commits. A
+    constraint error rolled the database back while the filesystem kept
+    all 86 moves, and two files were destroyed outright. This stage had
+    the same ordering. Writing the row first, then moving, then
+    committing means a failure leaves neither half applied.
+    """
+
+    def test_a_failed_move_leaves_the_row_untouched(self, tmp_path, monkeypatch):
+        import shutil as _shutil
+
+        from musaeus.config import MusicConfig
+        from musaeus.context import RunContext
+        from musaeus.db import open_db, upsert_archive
+        from musaeus.stages.various_artists_fix import VariousArtistsFixStage
+
+        cfg = MusicConfig(
+            vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+            quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
+            meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+            db_path=tmp_path / "musaeus.db",
+        )
+        ctx = RunContext.new(cfg, open_db(cfg.db_path), dry_run=False)
+        src = cfg.alac_library / "2026-08-18" / "Various Artists" / "Unsorted"
+        src.mkdir(parents=True)
+        f = src / "Various Artists - Al Green - Let's Stay Together.m4a"
+        f.write_bytes(b"audio")
+        upsert_archive(ctx.conn, {"file_path": str(f), "status": "CATALOGUED",
+                                  "artist": "Various Artists",
+                                  "title": "Al Green - Let's Stay Together"})
+        ctx.conn.commit()
+
+        def boom(*a, **k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(_shutil, "move", boom)
+        monkeypatch.setattr(
+            "musaeus.stages.various_artists_fix.shutil.move", boom, raising=False
+        )
+
+        VariousArtistsFixStage().run(ctx)
+
+        row = ctx.conn.execute("SELECT artist, file_path FROM archive").fetchone()
+        assert row["artist"] == "Various Artists", "row must not claim a move that failed"
+        assert row["file_path"] == str(f)
+        assert f.exists()
