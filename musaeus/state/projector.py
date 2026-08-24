@@ -75,6 +75,7 @@ class RunProjection:
     status: str = PENDING
     mode: str | None = None
     authority: str | None = None
+    config_digest: str | None = None
     scope_id: str | None = None
     exit_code: int | None = None
     reason_code: str | None = None
@@ -156,6 +157,7 @@ def apply_event(state: ProjectedState, event: CanonicalEvent) -> ProjectedState:
             status=RUNNING,
             mode=_as_str(payload.get("mode")),
             authority=_as_str(payload.get("authority")),
+            config_digest=_as_str(payload.get("config_digest")),
             scope_id=event.scope_id,
         )
     elif event.event_type == RUN_PREFLIGHT_COMPLETED:
@@ -301,6 +303,7 @@ PROJECTION_STATEMENTS: tuple[str, ...] = (
         status                 TEXT NOT NULL,
         mode                   TEXT,
         authority              TEXT,
+        config_digest          TEXT,
         scope_id               TEXT,
         exit_code              INTEGER,
         reason_code            TEXT,
@@ -360,16 +363,17 @@ def write_projection(conn: sqlite3.Connection, state: ProjectedState) -> None:
         conn.execute(
             """
             INSERT INTO projected_runs
-                (run_id, status, mode, authority, scope_id, exit_code, reason_code,
-                 checkpoint_id, rollback_status, preflight_outcome,
+                (run_id, status, mode, authority, config_digest, scope_id, exit_code,
+                 reason_code, checkpoint_id, rollback_status, preflight_outcome,
                  cancellation_requested, blocked_reason, last_sequence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run.run_id,
                 run.status,
                 run.mode,
                 run.authority,
+                run.config_digest,
                 run.scope_id,
                 run.exit_code,
                 run.reason_code,
