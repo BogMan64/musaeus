@@ -31,14 +31,16 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import urllib.error
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from ..context import RunContext, StageResult
 from ..network_policy import check as _network_check
 from .base import BaseStage
+from .enrich import _clean_artist_for_lookup
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +99,22 @@ def _mb_get(path: str, params: dict[str, str]) -> dict:
     return {}  # unreachable but satisfies type checker
 
 
+def _same_artist(ours: str, theirs: str) -> bool:
+    """True when two artist names denote the same act.
+
+    Folded through the article transform first, so the library's storage
+    form matches the natural form MusicBrainz returns ("Beatles, The" ==
+    "The Beatles"), then reduced to alphanumerics so punctuation and case
+    differences survive ("R.e.m" == "R.E.M.", "a-ha" == "a\u2010ha").
+    Anything beyond that is a different artist.
+    """
+    def fold(name: str) -> str:
+        natural = _clean_artist_for_lookup((name or "").strip())
+        return re.sub(r"[^0-9a-z]+", "", natural.lower())
+
+    return bool(fold(ours)) and fold(ours) == fold(theirs)
+
+
 def _search_artist(artist_name: str) -> tuple[str, str] | None:
     """
     Search MusicBrainz for an artist by name.
@@ -105,7 +123,14 @@ def _search_artist(artist_name: str) -> tuple[str, str] | None:
     try:
         data = _mb_get(
             "artist",
-            {"query": f'artist:"{quote(artist_name)}"', "limit": "3"},
+            # NOT quote()d -- _mb_get's urlencode() encodes the whole query
+            # once. Pre-encoding here sent "Dusty%20Springfield" as a literal
+            # Lucene term, so every artist name containing a space matched
+            # nothing at all, silently, for as long as this file existed.
+            # Verified live 2026-08-23: single-word names ("Abba", "Cher")
+            # resolved; "Dusty Springfield" returned None, and did so again
+            # the moment the encoding was removed -- as a match.
+            {"query": f'artist:"{artist_name}"', "limit": "3"},
         )
     except Exception as exc:
         logger.warning("[mb_enrich] artist search error for %r: %s", artist_name, exc)
@@ -114,8 +139,25 @@ def _search_artist(artist_name: str) -> tuple[str, str] | None:
     artists = data.get("artists", [])
     for artist in artists:
         score = int(artist.get("score", 0))
-        if score >= _ARTIST_SCORE:
+        if score < _ARTIST_SCORE:
+            continue
+        # Score alone is not identity. MusicBrainz will score a containing
+        # name at 100 -- measured 2026-08-23 against the live vault, where
+        # this wrote 27 wrong MBIDs before it was caught:
+        #     "Red"            -> Red Hot Chili Peppers
+        #     "Little Feat"    -> Little Richard
+        #     "Dion"           -> Celine Dion
+        #     "Jan & Dean"     -> Jan Arnald
+        # Each was then stamped mb_enriched_at, so it would never have been
+        # revisited. The name has to actually agree.
+        if _same_artist(artist_name, artist.get("name", "")):
             return artist["id"], artist["name"]
+        logger.debug(
+            "[mb_enrich] rejecting %r for %r (score %d, different artist)",
+            artist.get("name"),
+            artist_name,
+            score,
+        )
 
     return None
 
@@ -131,7 +173,8 @@ def _search_release(artist_mbid: str, album_name: str) -> str | None:
         data = _mb_get(
             "release",
             {
-                "query": f'artist:"{artist_mbid}" AND release:"{quote(album_name)}"',
+                # Not quote()d, for the same reason as _search_artist above.
+                "query": f'artist:"{artist_mbid}" AND release:"{album_name}"',
                 "limit": "1",
             },
         )
