@@ -191,6 +191,20 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # see archive_tier_hashes below for the real mechanism.
     ("archive", "bitrot_checked_at", "TEXT"),
     ("archive", "bitrot_ok", "INTEGER"),
+    # AcoustID fingerprinting (musaeus/stages/acousticid.py). These five
+    # were MISSING ENTIRELY -- absent from _SCHEMA and from this list --
+    # while the stage has always UPDATEd all five of them. Verified
+    # against a real open_db() database: the UPDATE raises "no such
+    # column: chromaprint" on the first file, so the stage cannot reach
+    # even its second statement. That is why `musaeus acousticid` has
+    # never produced a row (MUSAEUS_TODO §8 records it as "never run";
+    # as written it could not have run). Same nullable pattern as every
+    # other addition here: NULL means not analysed yet.
+    ("archive", "chromaprint", "TEXT"),
+    ("archive", "chromaprint_duration", "REAL"),
+    ("archive", "acousticid_recording", "TEXT"),
+    ("archive", "acousticid_score", "REAL"),
+    ("archive", "acousticid_checked_at", "TEXT"),
 ]
 
 
