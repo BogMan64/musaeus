@@ -32,6 +32,8 @@ Two things follow:
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -98,3 +100,27 @@ def set_policy(policy: NetworkPolicy) -> None:
 def check(target: str) -> None:
     """Module-level convenience for call sites."""
     _gateway.check(target)
+
+
+@contextmanager
+def policy(policy: NetworkPolicy) -> Iterator[Gateway]:
+    """Set the process-wide policy for a block, and restore it after.
+
+    The gateway is module-level mutable state, which means a caller that
+    sets ALLOWED and does not put it back leaves *everything afterwards in
+    the process* running permissive -- including, in a test session, every
+    test that happens to run later. That is not hypothetical: a P0-14 test
+    read the policy and so passed in isolation and failed in the full
+    suite, which was the leak showing itself.
+
+    `set_policy` is kept for callers that genuinely want a lasting change,
+    but anything scoped should use this instead, because "restore it
+    afterwards" is exactly the discipline that gets skipped on the error
+    path.
+    """
+    previous = _gateway.policy
+    _gateway.policy = policy
+    try:
+        yield _gateway
+    finally:
+        _gateway.policy = previous
