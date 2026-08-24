@@ -96,6 +96,28 @@ class GenreValidateStage(BaseStage):
                     f"{len(off)} genre(s) outside the closed vocabulary: {', '.join(off[:5])}"
                 )
 
+            # ...and permits() cannot catch a value the law itself contains.
+            # Measured 2026-08-24: "Electronic/Dance" (64 tracks) and
+            # "Classic Rock" (11) sat in the library, absent from
+            # Genre_Allowed.txt, while Genre_Canonical_Map.txt already held
+            # rules mapping both to canonical values. ScholarStage writes the
+            # embedded genre tag verbatim and never consults GenreCanon;
+            # EnrichStage only fills EMPTY genres, so nothing revisited them;
+            # and once the value reached MasterLaw, permits() blessed it.
+            # Checking against the hand-written vocabulary is the only link
+            # in that chain that can actually fail.
+            allowed = self._allowed_vocabulary(ctx)
+            if allowed:
+                unlisted = sorted(
+                    {r["genre"] for r in stray} - allowed,
+                    key=str.lower,
+                )
+                if unlisted:
+                    problems.append(
+                        f"{len(unlisted)} genre(s) in use but absent from "
+                        f"Genre_Allowed.txt: {', '.join(unlisted[:5])}"
+                    )
+
             # permits() is deliberately forgiving, which leaves a gap: a stored
             # "pop" satisfies it because the law spells the same genre "Pop".
             # The value is then legal but not canonical, and it hides from
@@ -118,6 +140,29 @@ class GenreValidateStage(BaseStage):
 
     def _law(self, ctx: RunContext) -> GenreLaw:
         return GenreLaw(ctx.config.meta_dir / "MasterLaw.csv")
+
+    @staticmethod
+    def _allowed_vocabulary(ctx: RunContext) -> set[str]:
+        """The vocabulary from Genre_Allowed.txt, or empty if absent.
+
+        This is the only genre check in the project that is not
+        self-certifying. `GenreLaw.genres` is `set(self._map.values())` --
+        derived from MasterLaw's own contents -- so any value that reaches
+        the law becomes vocabulary and `permits()` returns True for it
+        forever. `Genre_Allowed.txt` is written by hand and is the file
+        GenreCanon actually enforces, so it can disagree with the library,
+        which is exactly what makes it worth checking.
+        """
+        # A context without config (unit tests stubbing the law) has no vault
+        # to read a vocabulary from, and an empty set correctly disables the
+        # check rather than reporting every genre as unlisted.
+        if getattr(ctx, "config", None) is None:
+            return set()
+        path = ctx.config.meta_dir / "Genre_Allowed.txt"
+        if not path.exists():
+            return set()
+        with open(path, encoding="utf-8") as fh:
+            return {ln.strip() for ln in fh if ln.strip() and not ln.startswith("#")}
 
     def validate(self, ctx: RunContext) -> None:
         law = self._law(ctx)
