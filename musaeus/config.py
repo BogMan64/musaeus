@@ -90,6 +90,18 @@ class MusicConfig:
     # Database
     db_path: Path
 
+    # Curator export target (exports.curator.root). None means "not
+    # configured", and Curator refuses rather than inventing a path.
+    #
+    # This field did not exist. CuratorStage._get_export_root has always
+    # ended in `getattr(ctx.config, "car_export_root", None)`, so its
+    # "fall back to config" branch could never return anything: the
+    # attribute was never declared here, and getattr's default hid that
+    # completely. Anyone who set a configuration value watched it be
+    # ignored in silence, and --export-root was in practice mandatory on
+    # every invocation.
+    curator_export_root: Path | None = None
+
     # API keys (may be None if not configured)
     groq_api_key: str | None = field(default=None, repr=False)
     lastfm_api_key: str | None = field(default=None, repr=False)
@@ -120,6 +132,8 @@ class MusicConfig:
         meta_dir = _p("MUSAEUS_META_DIR", vault_root / "MetaData")
         alac_library = _p("MUSAEUS_ALAC_LIBRARY", vault_root / "ALAC-Library")
 
+        curator_export_root_raw = os.environ.get("MUSAEUS_CURATOR_EXPORT_ROOT", "")
+
         return cls(
             vault_root=vault_root,
             inbox=inbox,
@@ -129,6 +143,9 @@ class MusicConfig:
             meta_dir=meta_dir,
             alac_library=alac_library,
             db_path=db_path,
+            curator_export_root=(
+                Path(curator_export_root_raw).expanduser() if curator_export_root_raw else None
+            ),
             groq_api_key=os.environ.get("GROQ_API_KEY") or None,
             lastfm_api_key=os.environ.get("LASTFM_API_KEY") or None,
             openrouter_api_key=os.environ.get("OPENROUTER_API_KEY") or None,
