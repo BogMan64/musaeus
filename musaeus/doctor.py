@@ -168,13 +168,34 @@ def diagnose(cfg: MusicConfig) -> Report:
             + (f"  {len(unindexed)} MISSING" if unindexed else ""),
             len(unindexed),
         )
-        # A ledger entry naming a file that no longer exists is what let a
-        # file be treated as its own duplicate -- scope doc section 4.17.
+        # Reported, not warned about. finalized_hashes.file_path is
+        # documented in db.py as the path "at time of finalize" -- an
+        # immutable historical snapshot -- and audit.py states that a row
+        # moved afterwards is *expected* not to match it. So a non-zero
+        # count here is the normal state of a library where anything has
+        # ever been renamed, moved or deliberately removed, and warning on
+        # it permanently just teaches the reader to ignore the report.
+        #
+        # The section 4.17 cascade came from CrossDupeStage *acting* on an
+        # unverified hit, and that is fixed where it belongs: cross_dupe.py
+        # confirms the twin exists on disk before believing it, and reports
+        # its own stale count. Nothing downstream is harmed by these
+        # entries.
+        #
+        # Grey's ruling, 2026-08-24: keep entries for deliberately removed
+        # content -- they are a true record of what was once held. Note
+        # this does NOT stop that content being re-ingested; the ledger
+        # cannot do that by design. A deny-list consulted by IngestStage
+        # would be the mechanism for that, and does not exist.
+        #
+        # The number still earns its place as a drift indicator: a sudden
+        # jump means files moved en masse, which is what 4.17 looked like
+        # from the outside.
         rep.add(
-            "warn" if dead else "ok",
+            "ok",
             "ledger entries naming a gone file",
-            str(dead),
-            dead,
+            f"{dead}  (finalize-time snapshots; expected)" if dead else "0",
+            0,
         )
     else:
         rep.add("warn", "hash ledger", f"not found at {cfg.hash_index_path}")

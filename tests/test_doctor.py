@@ -162,3 +162,58 @@ class TestDiagnose:
         before = vault.db_path.stat().st_mtime_ns
         diagnose(vault)
         assert vault.db_path.stat().st_mtime_ns == before
+
+
+class TestLedgerStalenessIsReportedNotWarned:
+    """`finalized_hashes.file_path` is documented in db.py as the path at
+    time of finalize -- an immutable snapshot -- and audit.py states a row
+    moved afterwards is *expected* not to match it.
+
+    So a non-zero count is the normal state of any library where something
+    has been renamed, moved or deliberately removed. Warning on it forever
+    trains the reader to ignore the whole report, and on 2026-08-24 it did
+    worse than that: it tempted a "repair" that rewrote 9 historical
+    snapshots to make the number smaller.
+
+    The 4.17 cascade came from CrossDupeStage acting on an unverified hit,
+    and is fixed there -- cross_dupe.py confirms the twin exists before
+    believing it. Nothing downstream is harmed by these entries.
+    """
+
+    def test_a_ledger_entry_for_a_removed_file_does_not_fail_the_report(self, vault):
+        import sqlite3
+
+        _add(vault, "kept.m4a", artist="Al Green", title="Call Me")
+        # An entry naming content deliberately purged: no archive row, no file.
+        ic = sqlite3.connect(vault.hash_index_path)
+        ic.execute(
+            "INSERT INTO finalized_hashes VALUES (?,?)",
+            ("deadbeef" * 8, str(vault.alac_library / "Knock Off - Hey Jude.m4a")),
+        )
+        ic.commit()
+        ic.close()
+
+        rep = diagnose(vault)
+
+        assert not rep.failed
+        assert "OK" in rep.render()
+
+    def test_the_count_is_still_reported_so_drift_stays_visible(self, vault):
+        import sqlite3
+
+        _add(vault, "kept.m4a", artist="Al Green", title="Call Me")
+        ic = sqlite3.connect(vault.hash_index_path)
+        ic.execute(
+            "INSERT INTO finalized_hashes VALUES (?,?)",
+            ("deadbeef" * 8, str(vault.alac_library / "Purged - Something.m4a")),
+        )
+        ic.commit()
+        ic.close()
+
+        rep = diagnose(vault)
+        line = next(f for f in rep.findings if "gone file" in f.check)
+
+        # Visible as a drift indicator -- a sudden jump is what 4.17 looked
+        # like from outside -- but it must not count against the report.
+        assert "1" in line.detail
+        assert line.count == 0
