@@ -46,6 +46,12 @@ Available stages:
                    (archive_tier_hashes) to catch silent bit rot, ported
                    from ORPHEUS's orpheus_integrity_check.py
   EnrichStage    — Last.fm genre enrichment for tracks with missing genre
+  DenyListStage  — refuse re-ingest of audio deliberately removed before.
+                   Sits immediately after Sentinel, the first point an
+                   audio_hash exists, and before any stage invests work in
+                   a file about to be refused. Quarantines, never deletes.
+                   Added 2026-08-24 after tracing that the finalized-hash
+                   ledger cannot prevent re-acquisition by design
   MBEnrichStage  — MusicBrainz artist + release MBID enrichment
   OriginalYearStage — recover a recording's FIRST release year from
                    MusicBrainz into original_year, leaving `year` (the
@@ -134,6 +140,7 @@ from .canonicalize import CanonicalizeStage
 from .corrupt import CorruptStage
 from .cross_dupe import CrossDupeStage
 from .curator import CuratorStage
+from .deny_list import DenyListStage
 from .dupe_resolver import DupeResolverStage
 from .enrich import EnrichStage
 from .finalize import FinalizeStage
@@ -169,6 +176,7 @@ __all__ = [
     "OrganizeStage",
     "SanitizeStage",
     "CrossDupeStage",
+    "DenyListStage",
     "DupeResolverStage",
     "CanonicalizeStage",
     "FinalizeStage",
@@ -265,6 +273,7 @@ ACT1_INTAKE_CORRECTION: list[type] = [
     IngestStage,
     PermissionsStage,
     SentinelStage,
+    DenyListStage,
     ScholarStage,
     HealthStage,
     CorruptStage,

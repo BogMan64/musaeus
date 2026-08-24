@@ -23,6 +23,7 @@ from musaeus.stages.bpm import BPMStage
 from musaeus.stages.canonicalize import CanonicalizeStage
 from musaeus.stages.corrupt import CorruptStage
 from musaeus.stages.cross_dupe import CrossDupeStage
+from musaeus.stages.deny_list import DenyListStage
 from musaeus.stages.dupe_resolver import DupeResolverStage
 from musaeus.stages.enrich import EnrichStage
 from musaeus.stages.finalize import FinalizeStage
@@ -100,6 +101,10 @@ def test_full_default_pipeline_order_matches_current_design():
         IngestStage,
         PermissionsStage,
         SentinelStage,
+        # Immediately after Sentinel: that is the first point an audio_hash
+        # exists, and it is before any stage invests work in a file that is
+        # about to be refused. Added 2026-08-24.
+        DenyListStage,
         ScholarStage,
         HealthStage,
         CorruptStage,

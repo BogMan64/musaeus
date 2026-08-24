@@ -376,6 +376,56 @@ def record_finalized_hash(conn: sqlite3.Connection, audio_hash: str, file_path: 
     )
 
 
+DENIED_HASHES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS denied_hashes (
+    audio_hash   TEXT PRIMARY KEY,
+    reason       TEXT NOT NULL,
+    source_path  TEXT,              -- what it was called when removed
+    denied_at    TEXT DEFAULT (datetime('now'))
+);
+"""
+
+
+def ensure_deny_list(conn: sqlite3.Connection) -> None:
+    """Create the deny-list table if it isn't there yet.
+
+    Lives in hash_index.db rather than the vault DB deliberately: like the
+    finalized-hash ledger, it has to survive a DB reset. A deny-list that
+    is wiped whenever musaeus.db is rebuilt would let every purged track
+    back in on the next ingest, which is the exact failure it exists to
+    prevent.
+    """
+    conn.executescript(DENIED_HASHES_SCHEMA)
+    conn.commit()
+
+
+def deny_hash(
+    conn: sqlite3.Connection, audio_hash: str, reason: str, source_path: str | None = None
+) -> None:
+    """Record that this audio must not be re-ingested."""
+    conn.execute(
+        "INSERT OR IGNORE INTO denied_hashes (audio_hash, reason, source_path) VALUES (?,?,?)",
+        (audio_hash, reason, source_path),
+    )
+
+
+def lookup_denied_hash(conn: sqlite3.Connection, audio_hash: str) -> sqlite3.Row | None:
+    """Return the deny-list entry for *audio_hash*, or None.
+
+    Keyed on the PCM audio hash, so it survives re-tagging and container
+    rewriting -- the same property that makes audio_hash the stable
+    identity everywhere else. It does NOT catch a different rip or a
+    different master of the same song: those are different audio and will
+    hash differently. This is a "do not re-add THIS recording" list, not a
+    "never acquire this song" list, and the difference matters when
+    explaining why something got through.
+    """
+    conn.row_factory = sqlite3.Row
+    return conn.execute(
+        "SELECT * FROM denied_hashes WHERE audio_hash = ?", (audio_hash,)
+    ).fetchone()
+
+
 def lookup_finalized_hash(conn: sqlite3.Connection, audio_hash: str) -> list[sqlite3.Row]:
     """Return every ALAC-Library file_path already recorded for *audio_hash*."""
     return conn.execute(
