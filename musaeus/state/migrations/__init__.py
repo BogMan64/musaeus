@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
+from musaeus.state.duplicates import DUPLICATES_STATEMENTS
 from musaeus.state.events import CANONICAL_EVENT_STATEMENTS
 from musaeus.state.projector import PROJECTION_STATEMENTS
 from musaeus.state.schema import (
@@ -108,7 +109,83 @@ M0002_CANONICAL_EVENTS = Migration(
     ),
 )
 
-MIGRATIONS: tuple[Migration, ...] = (M0001_BASELINE, M0002_CANONICAL_EVENTS)
+M0003_DUPLICATES_CONTRACT = Migration(
+    migration_id="0003_duplicates_contract",
+    from_version=2,
+    to_version=3,
+    statements=(
+        # A brand-new database has no legacy table to rename, and SQLite
+        # has no ALTER TABLE ... RENAME IF EXISTS. Declaring the legacy
+        # shape first gives the rename a target in both cases, so a fresh
+        # database and a legacy one converge on the same structure --
+        # `duplicates_legacy` present and empty rather than absent. A
+        # migration whose result depends on which kind of database it met
+        # is a migration with two outcomes to reason about.
+        """
+        CREATE TABLE IF NOT EXISTS duplicates (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id        TEXT NOT NULL,
+            file_path       TEXT NOT NULL,
+            duplicate_type  TEXT,
+            confidence      REAL,
+            status          TEXT DEFAULT 'pending',
+            run_id          TEXT,
+            staged_at       TEXT DEFAULT (datetime('now'))
+        )
+        """,
+        # The legacy table is RENAMED, never dropped. DR-07: "it does not
+        # silently discard old rows." Its rows stay exactly as they were,
+        # readable, under a name that says what they are.
+        "ALTER TABLE duplicates RENAME TO duplicates_legacy",
+        *DUPLICATES_STATEMENTS,
+        # Carry legacy rows across with their original values preserved in
+        # the evidence payload. group_id/file_path/duplicate_type have no
+        # lossless mapping onto the candidate/matched pair contract -- a
+        # legacy row names one file in a group, not a pair -- so the row is
+        # brought over as its own compatibility record rather than being
+        # guessed into a pair that was never recorded.
+        """
+        INSERT OR IGNORE INTO duplicates
+            (run_id, candidate_item_id, matched_item_id, detector,
+             provider_recording_id, fingerprint_digest, score,
+             evidence_json, decision_status, created_at, evidence_identity)
+        SELECT
+            COALESCE(run_id, 'legacy'),
+            'legacy:' || group_id,
+            'legacy:' || file_path,
+            'legacy_' || COALESCE(duplicate_type, 'unknown'),
+            NULL,
+            NULL,
+            confidence,
+            json_object(
+                'algorithm', 'legacy',
+                'provider', 'musaeus_legacy_duplicates',
+                'compatibility', json_object(
+                    'group_id', group_id,
+                    'file_path', file_path,
+                    'duplicate_type', duplicate_type,
+                    'status', status,
+                    'staged_at', staged_at
+                )
+            ),
+            'pending',
+            COALESCE(staged_at, '1970-01-01T00:00:00Z'),
+            'legacy:' || CAST(id AS TEXT)
+        FROM duplicates_legacy
+        """,
+    ),
+    description=(
+        "Replace the ad-hoc duplicates table with DR-07's typed contract. The legacy "
+        "table is renamed rather than dropped and every row is carried across into a "
+        "documented compatibility payload."
+    ),
+)
+
+MIGRATIONS: tuple[Migration, ...] = (
+    M0001_BASELINE,
+    M0002_CANONICAL_EVENTS,
+    M0003_DUPLICATES_CONTRACT,
+)
 
 
 # ── Registry validation and planning ──────────────────────────────────────────
