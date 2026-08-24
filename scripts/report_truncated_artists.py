@@ -162,10 +162,18 @@ def collect(conn: sqlite3.Connection) -> dict[str, dict]:
 
 def confirm(findings: dict[str, dict], limit: int) -> None:
     """Attach MusicBrainz's best match. Evidence only -- nothing is applied."""
-    from musaeus.network_policy import NetworkPolicy, set_policy
+    from musaeus.network_policy import NetworkPolicy, policy
     from musaeus.stages.mb_enrich import _search_artist
 
-    set_policy(NetworkPolicy.ALLOWED)
+    # Scoped, not set_policy: the gateway is module-level mutable state, so
+    # granting ALLOWED and not restoring it leaves everything afterwards in
+    # the process permissive. This function is one bounded piece of work,
+    # not a mode the whole process should stay in.
+    with policy(NetworkPolicy.ALLOWED):
+        _confirm_inner(findings, limit, _search_artist)
+
+
+def _confirm_inner(findings: dict[str, dict], limit: int, _search_artist) -> None:
     for i, (artist, f) in enumerate(sorted(findings.items())):
         if limit and i >= limit:
             break
