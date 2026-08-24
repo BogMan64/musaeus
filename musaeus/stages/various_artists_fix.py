@@ -74,6 +74,7 @@ from urllib.request import Request, urlopen
 
 from ..context import RunContext, StageResult
 from .base import BaseStage
+from .normalize import _move_article_to_suffix
 from .organize import build_track_filename, sanitize_path_component, unique_path
 
 logger = logging.getLogger(__name__)
@@ -134,6 +135,48 @@ def is_various(artist: str) -> bool:
     return False
 
 
+# Credits that name no performer at all. "Various Artists" is the familiar
+# case; "Soundtrack" is the same failure wearing different clothes -- a
+# genre this library already holds, doing duty as an artist name, with the
+# real performer sitting in the filename ("Soundtrack - Al Green - Let's
+# Stay Together"). Confirmed live 2026-08-23: 6 rows, one Pulp Fiction
+# album, and all six performers already in both the library and MasterLaw
+# with settled genres.
+#
+# Exact-match only, and deliberately so -- the opposite of the Various
+# prefix handling. Prefix-matching "soundtrack" would swallow The
+# Soundtrack of Our Lives, and there is no compound form here worth the
+# risk.
+_NON_ARTIST_CREDIT_FORMS = frozenset({"soundtrack", "original soundtrack"})
+
+
+def is_placeholder_credit(artist: str) -> bool:
+    """True when the artist field names no performer -- a Various Artists
+    credit, or a bare non-artist label like "Soundtrack"."""
+    if is_various(artist):
+        return True
+    return (artist or "").strip().lower() in _NON_ARTIST_CREDIT_FORMS
+
+
+def strip_leading_credit(title: str, real_artist: str) -> str:
+    """ "Al Green - Let's Stay Together" -> "Let's Stay Together".
+
+    When the real artist was recovered from the filename, the title tag
+    usually still carries it as a prefix. Left alone it reaches
+    _target_path and builds "Al Green - Al Green - Let's Stay Together.m4a"
+    -- the doubled name visible on the Eric Carmen row fixed on 2026-08-19.
+    Only an exact leading match is removed; anything else is left alone.
+    """
+    t = (title or "").strip()
+    a = (real_artist or "").strip()
+    if not t or not a:
+        return t
+    prefix = f"{a} - "
+    if t.lower().startswith(prefix.lower()):
+        return t[len(prefix) :].strip() or t
+    return t
+
+
 def extract_from_brackets(filename: str) -> str:
     """Extract artist from a "[Artist]" or "[Artist-Label]" bracket in the
     filename. "The Ronettes-Phil Spector" -> "The Ronettes" (heuristic:
@@ -157,7 +200,7 @@ def extract_from_filename_segments(filename: str) -> str:
     Various Artists marker, the second segment is the real artist."""
     stem = Path(filename).stem
     parts = [p.strip() for p in stem.split(" - ")]
-    if len(parts) >= 3 and is_various(parts[0]):
+    if len(parts) >= 3 and is_placeholder_credit(parts[0]):
         return parts[1]
     return ""
 
@@ -194,17 +237,17 @@ def find_real_artist(source: Path, title: str, album: str, use_mb: bool) -> tupl
     filename = source.name
 
     artist = extract_from_brackets(filename)
-    if artist and not is_various(artist):
+    if artist and not is_placeholder_credit(artist):
         return artist, "bracket"
 
     artist = extract_from_filename_segments(filename)
-    if artist and not is_various(artist):
+    if artist and not is_placeholder_credit(artist):
         return artist, "filename_segment"
 
     if use_mb and title:
         time.sleep(_MB_RATE_LIMIT_S)
         artist = _lookup_musicbrainz(title, album)
-        if artist and not is_various(artist):
+        if artist and not is_placeholder_credit(artist):
             return artist, "musicbrainz"
 
     return "", "unknown"
@@ -230,7 +273,7 @@ class VariousArtistsFixStage(BaseStage):
         rows = ctx.conn.execute(
             "SELECT id, file_path, artist, title, album FROM archive WHERE status='CATALOGUED'"
         ).fetchall()
-        return [dict(r) for r in rows if is_various(r["artist"])]
+        return [dict(r) for r in rows if is_placeholder_credit(r["artist"])]
 
     def _batch_date_for(self, ctx: RunContext, source: Path) -> str:
         """Reuse the row's own existing batch-date folder
@@ -246,6 +289,32 @@ class VariousArtistsFixStage(BaseStage):
         from datetime import datetime, timezone
 
         return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+
+    def _genre_from_library(self, ctx: RunContext, real_artist: str) -> str | None:
+        """The genre this artist already carries elsewhere in the library.
+
+        Deliberately NOT read from MasterLaw: sync runs library -> law, never
+        law -> library. The placeholder row's own genre came from the
+        placeholder ("Soundtrack" -> Rock), not from any owner decision,
+        while the artist's other rows do hold one. Returns None when the
+        artist is new to the library, leaving the genre untouched for a
+        later stage rather than guessing.
+        """
+        norm = _move_article_to_suffix(real_artist.strip())
+        row = ctx.conn.execute(
+            """
+            SELECT genre, COUNT(*) AS cnt
+            FROM archive
+            WHERE status = 'CATALOGUED'
+              AND LOWER(TRIM(artist)) = LOWER(?)
+              AND genre IS NOT NULL AND TRIM(genre) != ''
+            GROUP BY genre
+            ORDER BY cnt DESC
+            LIMIT 1
+            """,
+            (norm,),
+        ).fetchone()
+        return row["genre"] if row else None
 
     def _target_path(self, ctx: RunContext, row: dict, source: Path, real_artist: str) -> Path:
         album = row.get("album") or "Unsorted"
@@ -287,7 +356,16 @@ class VariousArtistsFixStage(BaseStage):
                 result.files_skipped += 1
                 continue
 
-            target = self._target_path(ctx, row, source, real_artist)
+            # The library stores "Revels, The", not "The Revels" -- 361 artists
+            # use the suffix form. Writing the natural form recovered from the
+            # filename splits an artist in two, which is what happened to The
+            # Revels and The Tornadoes on 2026-08-24 before this was added.
+            real_artist = _move_article_to_suffix(real_artist.strip())
+            clean_title = strip_leading_credit(row.get("title") or "", real_artist)
+            new_genre = self._genre_from_library(ctx, real_artist)
+            target = self._target_path(
+                ctx, {**row, "title": clean_title}, source, real_artist
+            )
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(source), str(target))
@@ -296,17 +374,27 @@ class VariousArtistsFixStage(BaseStage):
                 result.errors.append(f"{source.name}: {exc}")
                 continue
 
-            ctx.conn.execute(
-                "UPDATE archive SET artist = ?, file_path = ? WHERE id = ?",
-                (real_artist, str(target), row["id"]),
-            )
+            if new_genre:
+                ctx.conn.execute(
+                    "UPDATE archive SET artist = ?, title = ?, genre = ?, file_path = ? "
+                    "WHERE id = ?",
+                    (real_artist, clean_title, new_genre, str(target), row["id"]),
+                )
+            else:
+                ctx.conn.execute(
+                    "UPDATE archive SET artist = ?, title = ?, file_path = ? WHERE id = ?",
+                    (real_artist, clean_title, str(target), row["id"]),
+                )
             ctx.log_event(
                 "VARIOUS_ARTISTS_FIXED",
                 file_path=str(target),
                 old_value=str(source),
                 new_value=str(target),
                 stage=self.NAME,
-                note=f"{row.get('artist')} -> {real_artist} (via {strategy})",
+                note=(
+                    f"{row.get('artist')} -> {real_artist} (via {strategy})"
+                    + (f"; genre -> {new_genre}" if new_genre else "")
+                ),
             )
             fixed += 1
             result.files_changed += 1
