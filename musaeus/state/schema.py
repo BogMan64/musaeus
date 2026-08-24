@@ -32,7 +32,7 @@ from pathlib import Path
 # ── Version declarations ──────────────────────────────────────────────────────
 
 # The schema version this application writes and understands.
-SCHEMA_VERSION: int = 1
+SCHEMA_VERSION: int = 2
 
 # The oldest schema version this application can migrate forward from.
 # 0 is the sentinel for a legacy, unversioned MUSAEUS database -- one
