@@ -123,6 +123,30 @@ def path_guard() -> PathGuard:
     return _path_guard
 
 
+@pytest.fixture(autouse=True)
+def _restore_network_policy():
+    """Put the process-wide network policy back after every test.
+
+    The gateway in musaeus/network_policy.py is module-level mutable
+    state. Before this fixture, a test that set ALLOWED and did not
+    restore it left every later test in the session running against a
+    permissive gateway -- so a safety assertion could pass in isolation
+    and silently stop meaning anything in the full run. Found when a
+    P0-14 test that read the policy passed alone and failed in the suite.
+
+    Autouse and unconditional: a fixture that has to be requested is one
+    a new test can forget to request, and the failure mode is invisible.
+    """
+    from musaeus.network_policy import get_gateway
+
+    gateway = get_gateway()
+    previous = gateway.policy
+    try:
+        yield
+    finally:
+        gateway.policy = previous
+
+
 @pytest.fixture(scope="session")
 def transport_harness() -> TransportDenialHarness:
     """The session-wide TransportDenialHarness instance, for tests that
