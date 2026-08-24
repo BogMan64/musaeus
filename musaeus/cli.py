@@ -23,7 +23,8 @@ Pipeline commands:
     forge            Measure EBU R128 loudness + write ReplayGain tags
     tagger           Write normalised DB metadata back to file tags
     auditor          Pre-forge LUFS audit (flags out-of-window files)
-    curator          Build car-library export (requires --export-root)
+    curator          Build car-library export (--export-root, or set
+                     MUSAEUS_CURATOR_EXPORT_ROOT / exports.curator.root)
     ghost            Sweep for archive entries missing from disk
     health           Run library consistency + quality checks
     bpm              Extract + tag BPM/key/energy/danceability (requires 'bpm' extra)
@@ -52,9 +53,16 @@ Options:
     --full           Include Forge + Tagger in `run` pipeline
     --maintain       Run Ghost + Health + Enrich + NearDupe in `run`
     --auto           Auto-resolve duplicates (dedupe command)
-    --export-root    Target path for curator/transcode export
+    --export-root    Target path for curator/transcode export. Overrides
+                     MUSAEUS_CURATOR_EXPORT_ROOT for one invocation. Must be an
+                     existing, writable directory outside ALAC-Library; it is
+                     never created for you.
     --noise          Noise profile for curator: clean|pink|brown|white|dual
     --max-files      Cap files processed per run (auditor)
+    --safety-gate    Run the P0 preflight/authority gate before executing
+                     (also MUSAEUS_P0_SAFETY_GATE=1). OFF by default. It gates
+                     AUTHORITY only -- stages still write directly, so a run is
+                     not yet covered by checkpoint or rollback.
 
 Examples:
     musaeus run
