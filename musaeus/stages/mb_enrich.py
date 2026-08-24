@@ -110,7 +110,15 @@ def _same_artist(ours: str, theirs: str) -> bool:
     """
     def fold(name: str) -> str:
         natural = _clean_artist_for_lookup((name or "").strip())
-        return re.sub(r"[^0-9a-z]+", "", natural.lower())
+        # "&" and "and" are the same word in a band name, and the two forms
+        # are used interchangeably by tag sources and by MusicBrainz. Without
+        # this, stripping punctuation turns "Hall & Oates" into "halloates"
+        # and "Hall and Oates" into "hallandoates", and the guard rejects a
+        # correct match -- the mirror-image of the bug it was added to fix.
+        # Same for "+", which appears in credits like "Black Eyed Peas +
+        # Shakira".
+        natural = re.sub(r"\s*[&+]\s*", " and ", natural.lower())
+        return re.sub(r"[^0-9a-z]+", "", natural)
 
     return bool(fold(ours)) and fold(ours) == fold(theirs)
 

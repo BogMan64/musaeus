@@ -55,7 +55,7 @@ from datetime import datetime, timezone
 from ..context import RunContext, StageResult
 from .base import BaseStage
 from .enrich import _clean_artist_for_lookup
-from .mb_enrich import _mb_get
+from .mb_enrich import _mb_get, _same_artist
 
 logger = logging.getLogger(__name__)
 
@@ -117,12 +117,6 @@ def strip_edition_markers(title: str) -> str:
     """
     cleaned = _EDITION_MARKER_RE.sub("", title or "").strip()
     return cleaned or (title or "").strip()
-
-
-def _norm_name(name: str) -> str:
-    """Fold to a comparable form: article moved, case and punctuation out."""
-    natural = _clean_artist_for_lookup((name or "").strip())
-    return re.sub(r"[^a-z0-9]+", "", natural.lower())
 
 
 def _year_of(date_str: str | None) -> int | None:
@@ -221,7 +215,6 @@ def find_original_year(
     # and at a page size of 25 every result was a reissue -- the stage
     # returned 1990 with full confidence. At 100 the 1976 original is in
     # range and it returns 1976. Verified live 2026-08-23, both values.
-    ours = _norm_name(artist)
     best: int | None = None
     rejected = ""
 
@@ -229,7 +222,7 @@ def find_original_year(
         if int(rec.get("score", 0)) < _RECORDING_SCORE:
             continue
 
-        if ours and not any(_norm_name(n) == ours for n in _credited_artists(rec)):
+        if artist and not any(_same_artist(artist, n) for n in _credited_artists(rec)):
             rejected = rejected or "artist credit did not match"
             continue
 

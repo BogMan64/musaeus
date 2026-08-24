@@ -143,3 +143,50 @@ class TestArtistIdentityGuard:
     def test_empty_name_matches_nothing(self, monkeypatch):
         self._results(monkeypatch, ["Anything"])
         assert mb_enrich._search_artist("") is None
+
+
+class TestAmpersandEquivalence:
+    """"&" and "and" are the same word in a band name.
+
+    The identity guard was added to stop score>=85 writing wrong MBIDs, and
+    in doing so introduced the mirror-image bug: stripping punctuation made
+    "Hall & Oates" -> "halloates" and "Hall and Oates" -> "hallandoates", so
+    a correct match was rejected. Tag sources and MusicBrainz use the two
+    forms interchangeably, so this is not an edge case.
+    """
+
+    @pytest.mark.parametrize(
+        ("ours", "theirs"),
+        [
+            ("Freddie and the Dreamers", "Freddie & the Dreamers"),
+            ("Hall & Oates", "Hall and Oates"),
+            ("Simon & Garfunkel", "Simon and Garfunkel"),
+            ("Jan & Dean", "Jan and Dean"),
+            ("Earth, Wind & Fire", "Earth, Wind and Fire"),
+            ("Derek & The Dominos", "Derek and the Dominos"),
+            ("Black Eyed Peas + Shakira", "Black Eyed Peas and Shakira"),
+        ],
+    )
+    def test_the_two_forms_are_the_same_artist(self, ours, theirs):
+        assert mb_enrich._same_artist(ours, theirs) is True
+
+    @pytest.mark.parametrize(
+        ("ours", "theirs"),
+        [
+            ("Jan & Dean", "Jan Arnald"),
+            ("Simon & Garfunkel", "Simon Jager"),
+            ("Hall & Oates", "Hall"),
+        ],
+    )
+    def test_it_does_not_loosen_the_guard(self, ours, theirs):
+        # Folding "&" must not start admitting the wrong-artist matches the
+        # guard exists to reject.
+        assert mb_enrich._same_artist(ours, theirs) is False
+
+
+def test_artist_identity_has_exactly_one_definition():
+    """original_year compares artist credits for the same purpose. A second
+    copy would have kept the "&" gap after this one was fixed."""
+    from musaeus.stages import original_year
+
+    assert original_year._same_artist is mb_enrich._same_artist
