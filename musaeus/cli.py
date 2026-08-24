@@ -32,6 +32,7 @@ Pipeline commands:
     bitrot           Verify ALAC_Archive against a baseline (silent corruption)
     enrich           Last.fm genre enrichment for tracks with missing genre
     mb-enrich        MusicBrainz artist + release MBID enrichment
+    original-year    recover each recording's first release year from MusicBrainz
     neardupe         Metadata-based near-duplicate detection
     acousticid       Acoustic fingerprint dedup via fpcalc + AcousticID API
     transcode        Lossless → 256k AAC export via ffmpeg
@@ -123,6 +124,7 @@ from .stages import (
     NearDupeStage,
     NormalizeStage,
     OrganizeStage,
+    OriginalYearStage,
     PlaylistStage,
     PreflightStage,
     SanitizeStage,
@@ -208,7 +210,7 @@ def _clear_resume() -> None:
 # canon-review commands or musaeus/console.py's own interactive pipeline
 # runner, none of which call this function.
 _NETWORK_STAGES: frozenset[type[BaseStage]] = frozenset(
-    {EnrichStage, MBEnrichStage, AcousticIDStage}
+    {EnrichStage, MBEnrichStage, AcousticIDStage, OriginalYearStage}
 )
 
 _DRY_RUN_REASON_DIRS_DB = (
@@ -1048,6 +1050,27 @@ def _build_parser() -> argparse.ArgumentParser:
     mb_p = sub.add_parser("mb-enrich", help="MusicBrainz artist + release MBID enrichment")
     mb_p.add_argument("--dry-run", action="store_true", help="Show what would change, no DB writes")
 
+    # original-year
+    oy_p = sub.add_parser(
+        "original-year",
+        help="Recover each recording's FIRST release year from MusicBrainz "
+        "(writes original_year; never touches year)",
+    )
+    oy_p.add_argument("--dry-run", action="store_true", help="Show what would change, no DB writes")
+    oy_p.add_argument(
+        "--genre",
+        default="",
+        help="Only check tracks in this genre. A full pass is hours of "
+        "rate-limited lookups; this narrows it to what a pending decision needs.",
+    )
+    oy_p.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Only check this many tracks this pass (0 = all). One rate-limited "
+        "network call per track, so a first pass is usually worth bounding.",
+    )
+
     # neardupe
     genre_p = sub.add_parser(
         "genre-validate",
@@ -1499,6 +1522,13 @@ def main() -> None:
 
         elif command == "mb-enrich":
             sys.exit(_run_pipeline([MBEnrichStage], dry_run=dry_run))
+
+        elif command == "original-year":
+            stash = {
+                "original_year_limit": getattr(args, "limit", 0),
+                "original_year_genre": getattr(args, "genre", ""),
+            }
+            sys.exit(_run_pipeline([OriginalYearStage], dry_run=dry_run, stash=stash))
 
         elif command == "genre-validate":
             stash = {}

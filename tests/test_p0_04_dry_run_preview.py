@@ -42,6 +42,7 @@ from musaeus.stages import (
     EnrichStage,
     IngestStage,
     MBEnrichStage,
+    OriginalYearStage,
     PreflightStage,
 )
 from tests.disposable_vault import snapshot_vault_state
@@ -87,10 +88,19 @@ class TestRejectUnsafeDryRunHelper:
         assert cli_mod._reject_unsafe_dry_run(DEFAULT_PIPELINE, dry_run=True) == 2
         assert cli_mod._reject_unsafe_dry_run([], dry_run=True) == 2
 
-    def test_network_stage_membership_is_exactly_the_three_named_stages(self):
+    def test_network_stage_membership_is_exactly_the_named_stages(self):
+        """The set is pinned so a stage that reaches the network cannot join
+        it silently. OriginalYearStage was added 2026-08-23: it makes one
+        MusicBrainz call per track inside the shared _process() path, in both
+        run and dry_run, exactly like the other three."""
         import musaeus.cli as cli_mod
 
-        assert {EnrichStage, MBEnrichStage, AcousticIDStage} == cli_mod._NETWORK_STAGES
+        assert {
+            EnrichStage,
+            MBEnrichStage,
+            AcousticIDStage,
+            OriginalYearStage,
+        } == cli_mod._NETWORK_STAGES
         assert PreflightStage not in cli_mod._NETWORK_STAGES
         assert IngestStage not in cli_mod._NETWORK_STAGES
 

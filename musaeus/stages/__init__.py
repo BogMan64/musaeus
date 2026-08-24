@@ -47,6 +47,12 @@ Available stages:
                    from ORPHEUS's orpheus_integrity_check.py
   EnrichStage    — Last.fm genre enrichment for tracks with missing genre
   MBEnrichStage  — MusicBrainz artist + release MBID enrichment
+  OriginalYearStage — recover a recording's FIRST release year from
+                   MusicBrainz into original_year, leaving `year` (the
+                   edition year) untouched. Deliberately NOT in
+                   DEFAULT_PIPELINE: it is one rate-limited network
+                   call per track (~3h for the library), so it is run
+                   on demand via `musaeus original-year`
   NearDupeStage  — metadata-based near-duplicate detection (fuzzy title match)
   AcousticIDStage — acoustic fingerprint dedup via fpcalc + AcousticID API
   TranscodeStage  — lossless → 256k AAC export via ffmpeg
@@ -141,6 +147,7 @@ from .mb_enrich import MBEnrichStage
 from .neardupe import NearDupeStage
 from .normalize import NormalizeStage
 from .organize import OrganizeStage
+from .original_year import OriginalYearStage
 from .permissions import PermissionsStage
 from .playlist import PlaylistStage
 from .preflight import PreflightStage
@@ -179,6 +186,7 @@ __all__ = [
     "ArtistConsolidateStage",
     "EnrichStage",
     "MBEnrichStage",
+    "OriginalYearStage",
     "NearDupeStage",
     "AcousticIDStage",
     "TranscodeStage",
