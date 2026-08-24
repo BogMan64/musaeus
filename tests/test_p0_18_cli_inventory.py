@@ -107,12 +107,21 @@ class TestCommandInventory:
             f"newly documented: {sorted(KNOWN_UNDOCUMENTED - undocumented)}"
         )
 
-    def test_the_gap_is_material_and_recorded(self):
-        """States the number so it appears in test output rather than
-        having to be rediscovered."""
+    def test_the_undocumented_count_is_what_is_pinned_not_the_total(self):
+        """Pins the gap, not the command count.
+
+        The first version asserted `len(registered) == 57` as well, and it
+        false-alarmed the moment Grey added `original-year` -- which he
+        had documented correctly, so nothing was wrong. A guard that fires
+        on legitimate work trains people to bypass it. The undocumented
+        SET is the thing worth pinning exactly, and it is, above; the
+        total is recorded here only as context."""
         registered = _registered()
-        assert len(registered) == 57
-        assert len(KNOWN_UNDOCUMENTED) == 24
+        undocumented = registered - _documented(registered)
+        assert len(undocumented) == 24, (
+            f"{len(undocumented)} of {len(registered)} commands are undocumented"
+        )
+        assert len(registered) > len(undocumented), "context: the total should exceed the gap"
 
     def test_a_disabled_command_is_not_advertised_as_working(self):
         """`rebuild-db` raises RebuildDisabledError -- it would destroy the
