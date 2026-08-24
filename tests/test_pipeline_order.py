@@ -21,6 +21,7 @@ from musaeus.stages.artist_consolidate import ArtistConsolidateStage
 from musaeus.stages.audit import AuditStage
 from musaeus.stages.bpm import BPMStage
 from musaeus.stages.canonicalize import CanonicalizeStage
+from musaeus.stages.classical_composer import ClassicalComposerStage
 from musaeus.stages.corrupt import CorruptStage
 from musaeus.stages.cross_dupe import CrossDupeStage
 from musaeus.stages.deny_list import DenyListStage
@@ -28,6 +29,7 @@ from musaeus.stages.dupe_resolver import DupeResolverStage
 from musaeus.stages.enrich import EnrichStage
 from musaeus.stages.finalize import FinalizeStage
 from musaeus.stages.forge import ForgeStage
+from musaeus.stages.genre_validate import GenreValidateStage
 from musaeus.stages.health import HealthStage
 from musaeus.stages.ingest import IngestStage
 from musaeus.stages.mb_enrich import MBEnrichStage
@@ -117,6 +119,14 @@ def test_full_default_pipeline_order_matches_current_design():
         SanitizeStage,
         ArtistConsolidateStage,
         VariousArtistsFixStage,
+        # Genre is settled at the end of intake, once the artist is
+        # canonical: the law is keyed on artist. Added 2026-08-24 -- it had
+        # only ever run on demand, so a new file's genre came from its own
+        # tags and nothing checked it against MasterLaw.
+        GenreValidateStage,
+        # ...and only then can this ask who wrote it. Classical is filed
+        # under the composer, not the performer.
+        ClassicalComposerStage,
         CrossDupeStage,
         NearDupeStage,
         DupeResolverStage,

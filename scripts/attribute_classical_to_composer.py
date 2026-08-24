@@ -2,6 +2,10 @@
 """
 File classical recordings under the composer rather than the performer.
 
+The resolution logic lives in musaeus/stages/classical_composer.py and is
+imported, not duplicated -- this script is now just an on-demand runner
+for a stage that is in the pipeline.
+
 Grey's ruling, 2026-08-24: for classical, the composer is the identity
 that matters. A Bach cantata belongs with the other Bach, not scattered
 across whichever ensemble happened to record it.
@@ -42,7 +46,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import re
 import shutil
 import sqlite3
 import sys
@@ -51,6 +54,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from musaeus.stages.classical_composer import (  # noqa: E402
+    composer_for,
+    load_composer_canon,
+)
 from musaeus.stages.organize import (  # noqa: E402
     build_track_filename,
     sanitize_path_component,
@@ -61,59 +68,6 @@ VAULT = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT")
 DB = VAULT / "musaeus.db"
 CANON = VAULT / "MetaData" / "Composer_Canon.tsv"
 
-_TITLE_PREFIX = re.compile(r"^([^-–]{2,30}?)\s+[-–]\s+\S")
-
-# A thematic-catalogue number names its composer with no ambiguity at all --
-# that is the entire purpose of those systems, and it is a far stronger
-# signal than either the credit or the title prefix. Found by reading what
-# the first pass could not resolve: "Guitar Concerto in D Major, RV 93" is
-# Vivaldi whoever is playing it.
-#
-# K. is deliberately absent: Köchel numbers Mozart, but Kirkpatrick numbers
-# Scarlatti, and "Keyboard Sonata in D Minor, K. 1, L. 366" is Scarlatti.
-# L. (Longo) is Scarlatti-only and safe, so that case resolves through L.
-# An ambiguous marker earns nothing here -- a wrong composer is worse than
-# none, because it is indistinguishable from a right one once written.
-_CATALOGUE = [
-    (re.compile(r"\bBWV\s*\d", re.I), "Johann Sebastian Bach"),
-    (re.compile(r"\bRV\s*\d", re.I), "Antonio Vivaldi"),
-    (re.compile(r"\bHWV\s*\d", re.I), "George Frideric Handel"),
-    (re.compile(r"\bTWV\s*\d", re.I), "Georg Philipp Telemann"),
-    (re.compile(r"\bWWV\s*\d", re.I), "Richard Wagner"),
-    (re.compile(r"\bL\.\s*\d", re.I), "Domenico Scarlatti"),
-    (re.compile(r"\bZ\.?\s*\d{3}\b"), "Henry Purcell"),
-    (re.compile(r"\bD\.\s*\d{3}\b"), "Franz Schubert"),
-]
-
-
-def load_canon() -> dict[str, str]:
-    canon: dict[str, str] = {}
-    for line in CANON.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "\t" not in line:
-            continue
-        variant, canonical = line.split("\t", 1)
-        canon[variant.strip().lower()] = canonical.strip()
-    return canon
-
-
-def composer_for(artist: str, title: str, canon: dict[str, str]) -> tuple[str | None, str]:
-    """Return (canonical composer, how it was found)."""
-    # Catalogue number first: it is the only one of the three that cannot
-    # be wrong when it matches.
-    for pattern, composer in _CATALOGUE:
-        if pattern.search(title or ""):
-            return composer, "catalogue number"
-    for part in (artist or "").split(","):
-        hit = canon.get(part.strip().lower())
-        if hit:
-            return hit, "artist credit"
-    m = _TITLE_PREFIX.match((title or "").strip())
-    if m:
-        hit = canon.get(m.group(1).strip().lower())
-        if hit:
-            return hit, "title prefix"
-    return None, ""
 
 
 def main() -> int:
@@ -121,7 +75,7 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true", help="write; default is a dry run")
     args = ap.parse_args()
 
-    canon = load_canon()
+    canon = load_composer_canon(CANON)
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(

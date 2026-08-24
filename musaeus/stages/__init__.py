@@ -52,6 +52,10 @@ Available stages:
                    a file about to be refused. Quarantines, never deletes.
                    Added 2026-08-24 after tracing that the finalized-hash
                    ledger cannot prevent re-acquisition by design
+  ClassicalComposerStage — refile Classical under the composer rather than
+                   the performer, resolved from a thematic catalogue
+                   number, Composer_Canon.tsv, or a title prefix. Added to
+                   Act 1 2026-08-24, after GenreValidate
   MBEnrichStage  — MusicBrainz artist + release MBID enrichment
   OriginalYearStage — recover a recording's FIRST release year from
                    MusicBrainz into original_year, leaving `year` (the
@@ -137,6 +141,7 @@ from .auditor import AuditorStage
 from .bitrot import BitRotStage
 from .bpm import BPMStage
 from .canonicalize import CanonicalizeStage
+from .classical_composer import ClassicalComposerStage
 from .corrupt import CorruptStage
 from .cross_dupe import CrossDupeStage
 from .curator import CuratorStage
@@ -179,6 +184,7 @@ __all__ = [
     "DenyListStage",
     "DupeResolverStage",
     "CanonicalizeStage",
+    "ClassicalComposerStage",
     "FinalizeStage",
     "AuditStage",
     "ForgeStage",
@@ -283,6 +289,16 @@ ACT1_INTAKE_CORRECTION: list[type] = [
     SanitizeStage,
     ArtistConsolidateStage,
     VariousArtistsFixStage,
+    # Genre is settled here, at the end of intake, once the artist is
+    # canonical -- the law is keyed on artist, so it cannot be applied
+    # before ArtistConsolidate and VariousArtistsFix have run. Added to the
+    # pipeline 2026-08-24: it had only ever run on demand, which is why a
+    # file's genre came from its own tags via Scholar and nothing corrected
+    # it against MasterLaw.
+    GenreValidateStage,
+    # ...and only once the genre is settled can this ask "then who wrote
+    # it?". Classical is filed under the composer, not the performer.
+    ClassicalComposerStage,
 ]
 
 ACT2_DEDUP_STAGING: list[type] = [
