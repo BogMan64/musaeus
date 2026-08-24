@@ -305,6 +305,17 @@ def _run_pipeline(
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
+    # P0-11 execution-authority gate. OFF unless MUSAEUS_P0_SAFETY_GATE=1
+    # or --safety-gate: enabling it by default would make every run stop
+    # to ask, and would correctly make the unattended overnight script do
+    # nothing every night. Both are the right behaviours and both need to
+    # be adopted deliberately, not arrive with a merge.
+    from .cli_gate import enforce_execution_gate
+
+    gate_exit = enforce_execution_gate(cfg, dry_run=dry_run)
+    if gate_exit is not None:
+        return gate_exit
+
     conn = open_db(cfg.db_path)
     ctx = RunContext.new(cfg, conn, dry_run=dry_run)
     if stash:
