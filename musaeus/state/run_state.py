@@ -212,6 +212,7 @@ REASON_PREREQUISITE_NOT_SUCCEEDED = "prerequisite_not_succeeded"
 REASON_PREREQUISITE_ABSENT = "prerequisite_absent"
 REASON_PREREQUISITE_DIGEST_MISMATCH = "prerequisite_digest_mismatch"
 REASON_RUN_BLOCKED = "run_blocked_by_unmapped_evidence"
+REASON_RUN_CANCELLED = "run_cancellation_requested"
 
 
 @dataclass(frozen=True)
@@ -282,6 +283,12 @@ def evaluate_gating(
         if run is not None and run.status == BLOCKED:
             blockers.append(Blocker(run_id, BLOCKED, REASON_RUN_BLOCKED))
 
+        # MCR-005: once cancellation is requested, no new stage starts.
+        # Enforced here rather than in each stage, so a stage cannot be
+        # written that forgets to ask.
+        if run is not None and run.cancellation_requested:
+            blockers.append(Blocker(run_id, CANCELLED, REASON_RUN_CANCELLED))
+
         for dependency in stage.depends_on:
             recorded = _latest_attempt(state, run_id, dependency)
             if recorded is None:
@@ -308,6 +315,11 @@ def evaluate_gating(
 def _recovery_action(blockers: tuple[Blocker, ...]) -> str:
     """A named, actionable next step -- not a restatement of the problem."""
     first = blockers[0]
+    if first.reason_code == REASON_RUN_CANCELLED:
+        return (
+            "cancellation has been requested for this run; complete the recovery path "
+            "and record a terminal outcome -- do not start further work"
+        )
     if first.reason_code == REASON_RUN_BLOCKED:
         return (
             "resolve the run's unmapped legacy evidence, or rebuild state from the "
