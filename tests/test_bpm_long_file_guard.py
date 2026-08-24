@@ -1,7 +1,8 @@
 """A 12-hour file OOM-killed a whole run at the BPM stage (2026-08-23)."""
-import sqlite3, types
-import pytest
-from musaeus.stages.bpm import BPMStage, _MAX_ANALYSIS_SECONDS, _RHYTHM_MAX_SECONDS
+import sqlite3
+import types
+
+from musaeus.stages.bpm import _MAX_ANALYSIS_SECONDS, _RHYTHM_MAX_SECONDS, BPMStage
 
 
 def _ctx(duration, channels=2, tmp=None):
@@ -18,7 +19,8 @@ def _ctx(duration, channels=2, tmp=None):
 
 def test_absurdly_long_file_is_skipped_without_decoding(tmp_path):
     """The 12-hour sound bath must never reach Essentia."""
-    f = tmp_path / "sound_bath.m4a"; f.write_bytes(b"not really audio")
+    f = tmp_path / "sound_bath.m4a"
+    f.write_bytes(b"not really audio")
     ctx, ev = _ctx(720 * 60, tmp=f)
     # If the guard fails, analyze_file() runs on a junk file and raises --
     # so reaching "skip" without an exception is the assertion.

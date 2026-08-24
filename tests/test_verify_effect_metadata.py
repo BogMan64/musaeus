@@ -1,11 +1,15 @@
 """Do the new verify_effect hooks actually FAIL when the effect didn't happen?"""
-import sqlite3, types, pytest
-from musaeus.stages.sanitize import SanitizeStage
-from musaeus.stages.genre_validate import GenreValidateStage
+import sqlite3
+import types
+
 from musaeus.context import StageResult
+from musaeus.stages.genre_validate import GenreValidateStage
+from musaeus.stages.sanitize import SanitizeStage
+
 
 def _db():
-    c = sqlite3.connect(":memory:"); c.row_factory = sqlite3.Row
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
     c.execute("CREATE TABLE archive (file_path TEXT, artist TEXT, album TEXT, "
               "title TEXT, genre TEXT, status TEXT)")
     return c
@@ -19,7 +23,9 @@ class _EmptyLaw:
     def permits(self, g): return True
 
 def _res(n):
-    r = StageResult(stage_name="x", success=True); r.files_changed = n; return r
+    r = StageResult(stage_name="x", success=True)
+    r.files_changed = n
+    return r
 
 def test_sanitize_flags_unsanitised_row():
     c = _db()
@@ -77,7 +83,9 @@ class _RealLaw:
     @property
     def genres(self): return self._g
     def permits(self, g):
-        n = lambda s: s.replace("/", "-").strip().lower()
+        def n(s):
+            return s.replace("/", "-").strip().lower()
+
         return n(g) in {n(x) for x in self._g}
 
 

@@ -7,6 +7,7 @@ a dormant rule is indistinguishable from an absent one -- nothing reported
 it for as long as the file existed.
 """
 import csv
+
 from musaeus.canon.genre_law import GenreLaw
 
 
@@ -25,7 +26,8 @@ def test_key_does_not_strip_a_leading_the_inside_a_name():
 def test_law_lookup_survives_either_spelling(tmp_path):
     p = tmp_path / "MasterLaw.csv"
     with p.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f); w.writerow(["artist", "genre"])
+        w = csv.writer(f)
+        w.writerow(["artist", "genre"])
         w.writerow(["Byrds, The", "Rock"])
     law = GenreLaw(p)
     for spelling in ("Byrds, The", "The Byrds", "the byrds", "Byrds (the)"):
@@ -41,7 +43,8 @@ def test_duplicate_article_spellings_collapse_to_one_rule(tmp_path):
     """
     p = tmp_path / "MasterLaw.csv"
     with p.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f); w.writerow(["artist", "genre"])
+        w = csv.writer(f)
+        w.writerow(["artist", "genre"])
         w.writerow(["Beach Boys", "Pop"])
         w.writerow(["Beach Boys, The", "Surf Rock"])
     law = GenreLaw(p)
