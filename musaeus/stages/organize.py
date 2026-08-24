@@ -4,6 +4,26 @@ MUSAEUS — Organize Stage
 
 File organization and renaming stage for CATALOGUED archive rows.
 
+    ⚠  DO NOT RUN THIS AGAINST A FINALIZED LIBRARY.
+
+    Every target path is built under ``ctx.inbox`` (see _organize), but the
+    query selects ``status='CATALOGUED'`` -- and catalogued rows have not
+    lived in the INBOX since FinalizeStage moved them into ALAC-Library.
+
+    Measured 2026-08-24 against the live vault: running this would move
+    **10,660 of 10,660 catalogued files out of ALAC-Library and into the
+    INBOX**, where the pipeline would then treat the entire finalized
+    library as new arrivals awaiting ingest.
+
+    The stage is coherent for the job it documents -- tidying loose files
+    that are still IN the inbox, before finalize. It is dangerous only
+    because nothing in it restricts it to that case. It is deliberately
+    absent from DEFAULT_PIPELINE, and that absence is currently the only
+    thing protecting the library.
+
+    If this is ever wired up or run on demand, fix the target root first:
+    a catalogued row belongs under cfg.alac_library, not cfg.inbox.
+
 What it does:
   - Strips track number prefixes from filenames:
       "171. Artist - Title.m4a" → "Artist - Title.m4a"
