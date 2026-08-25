@@ -221,7 +221,24 @@ def diagnose(cfg: MusicConfig) -> Report:
     quarantined = [r for r in rows if r["status"] in ("DUPE_REVIEW", "TRIBUTE_REVIEW")]
     if quarantined:
         held = {song_key(r["artist"], r["title"]) for r in lib if r["file_path"] in on_disk}
-        solo = [r for r in quarantined if song_key(r["artist"], r["title"]) not in held]
+        # ...and by audio_hash, which is the stable identity for a recording
+        # and survives a rename. song_key alone cannot see a copy that is
+        # safely held under a different artist name, and that is now the
+        # normal case: ClassicalComposerStage renames the KEPT copy to the
+        # composer while the quarantined duplicate keeps its performer
+        # credit, so the pair can never match by name.
+        #
+        # Measured 2026-08-25: Carmignola's Four Seasons and Sarah Nemtanu's
+        # BWV 1043 both reported as sole copies while their audio sat
+        # catalogued under Vivaldi and Bach. Without this, every classical
+        # dedup produces a false FAIL.
+        held_audio = {r["audio_hash"] for r in lib if r["audio_hash"] and r["file_path"] in on_disk}
+        solo = [
+            r
+            for r in quarantined
+            if song_key(r["artist"], r["title"]) not in held
+            and not (r["audio_hash"] and r["audio_hash"] in held_audio)
+        ]
         rep.add(
             "fail" if solo else "ok",
             "quarantine holds a sole copy",

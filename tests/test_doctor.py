@@ -217,3 +217,55 @@ class TestLedgerStalenessIsReportedNotWarned:
         # like from outside -- but it must not count against the report.
         assert "1" in line.detail
         assert line.count == 0
+
+
+class TestSoleCopyFallsBackToAudioHash:
+    """song_key alone cannot see a copy held under a different artist name.
+
+    That is now the normal case, not an edge case: ClassicalComposerStage
+    renames the KEPT copy to the composer while the quarantined duplicate
+    keeps its performer credit, so the pair can never match by name.
+    Measured 2026-08-25 — Carmignola's Four Seasons and Sarah Nemtanu's
+    BWV 1043 both reported as sole copies while their audio sat safely
+    catalogued under Vivaldi and Bach.
+    """
+
+    def test_a_duplicate_kept_under_another_name_is_not_a_sole_copy(self, vault):
+        import sqlite3
+
+        kept = _add(vault, "kept.m4a", artist="Antonio Vivaldi", title="The Four Seasons")
+        gone = _add(vault, "dupe.m4a", artist="Giuliano Carmignola",
+                    title="The Four Seasons", on_disk=True)
+        # same recording, same audio, different credit
+        conn = sqlite3.connect(vault.db_path)
+        conn.execute("UPDATE archive SET audio_hash='deadbeef' WHERE file_path IN (?,?)",
+                     (str(kept), str(gone)))
+        conn.execute("UPDATE archive SET status='DUPE_REVIEW' WHERE file_path=?", (str(gone),))
+        conn.commit()
+        conn.close()
+
+        rep = diagnose(vault)
+
+        # Assert on the finding under test, not rep.failed: rewriting
+        # audio_hash after _add has indexed it deliberately desynchronises
+        # the hash ledger, which is a different check.
+        line = next(f for f in rep.findings if "sole copy" in f.check)
+        assert line.count == 0
+        assert line.level == "ok"
+
+    def test_a_quarantined_row_whose_audio_is_held_nowhere_still_fails(self, vault):
+        """The check must keep working — this is the 4.17 signal."""
+        import sqlite3
+
+        _add(vault, "other.m4a", artist="Someone Else", title="Different Song")
+        gone = _add(vault, "only.m4a", artist="Lost Artist", title="Only Copy")
+        conn = sqlite3.connect(vault.db_path)
+        conn.execute("UPDATE archive SET status='DUPE_REVIEW', audio_hash='uniquehash' "
+                     "WHERE file_path=?", (str(gone),))
+        conn.commit()
+        conn.close()
+
+        rep = diagnose(vault)
+
+        assert rep.failed
+        assert any("sole copy" in f.check and f.count == 1 for f in rep.findings)
