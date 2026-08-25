@@ -486,3 +486,85 @@ def snapshot_db_before_wipe(db_path: Path, history_dir: Path) -> Path | None:
         source.close()
 
     return snapshot_path
+
+
+# ── Persistent MusicBrainz lookup cache ──────────────────────────────────────
+#
+# Separate file, same reasoning as the hash index: musaeus.db is wiped
+# between batches, so a cache living there re-asks MusicBrainz about the
+# same artists every run. Negative answers are cached too -- "MB does not
+# know this artist" is as expensive to learn as a hit, and re-learning it
+# each batch costs the same rate-limited second.
+
+_MB_CACHE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS mb_artist (
+    artist_key TEXT PRIMARY KEY,
+    mbid       TEXT,
+    mb_name    TEXT,
+    found      INTEGER NOT NULL,
+    looked_up  TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS mb_release (
+    artist_mbid TEXT NOT NULL,
+    album_key   TEXT NOT NULL,
+    release_mbid TEXT,
+    found       INTEGER NOT NULL,
+    looked_up   TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (artist_mbid, album_key)
+);
+"""
+
+
+def open_mb_cache(path: Path) -> sqlite3.Connection:
+    """Open (or create) the persistent MusicBrainz lookup cache."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.executescript(_MB_CACHE_SCHEMA)
+    conn.commit()
+    return conn
+
+
+def mb_cache_get_artist(conn: sqlite3.Connection, artist_key: str):
+    """Return (mbid, name) for a hit, None for a cached miss, and raises
+    KeyError when the artist has never been looked up.
+
+    Three outcomes, not two. Collapsing "cached miss" into "unknown" would
+    make every negative answer cost a rate-limited request on every batch,
+    which is most of what this cache exists to avoid.
+    """
+    row = conn.execute(
+        "SELECT mbid, mb_name, found FROM mb_artist WHERE artist_key = ?", (artist_key,)
+    ).fetchone()
+    if row is None:
+        raise KeyError(artist_key)
+    return (row["mbid"], row["mb_name"]) if row["found"] else None
+
+
+def mb_cache_put_artist(conn: sqlite3.Connection, artist_key: str, match) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO mb_artist (artist_key, mbid, mb_name, found) VALUES (?,?,?,?)",
+        (artist_key, match[0] if match else None, match[1] if match else None, 1 if match else 0),
+    )
+    conn.commit()
+
+
+def mb_cache_get_release(conn: sqlite3.Connection, artist_mbid: str, album_key: str):
+    row = conn.execute(
+        "SELECT release_mbid, found FROM mb_release WHERE artist_mbid = ? AND album_key = ?",
+        (artist_mbid, album_key),
+    ).fetchone()
+    if row is None:
+        raise KeyError((artist_mbid, album_key))
+    return row["release_mbid"] if row["found"] else None
+
+
+def mb_cache_put_release(conn: sqlite3.Connection, artist_mbid: str, album_key: str, mbid) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO mb_release (artist_mbid, album_key, release_mbid, found) "
+        "VALUES (?,?,?,?)",
+        (artist_mbid, album_key, mbid, 1 if mbid else 0),
+    )
+    conn.commit()

@@ -183,6 +183,21 @@ class MusicConfig:
         return self.db_history_dir / "hash_index.db"
 
     @property
+    def mb_cache_path(self) -> Path:
+        """Persistent MusicBrainz lookup cache.
+
+        Same reasoning as hash_index_path: musaeus.db is transient
+        per-batch state, so a cache kept there is thrown away between
+        batches and every batch re-asks MusicBrainz about the same
+        artists. At ~3.9 tracks per artist that is most of a run's wall
+        clock -- an observed 10-file run spent its time on HTTP 503s and
+        repeated 5-second rate-limit backoffs, not on ffmpeg.
+
+        Answers are cached across runs so a given artist is asked once,
+        not once per batch."""
+        return self.db_history_dir / "mb_cache.db"
+
+    @property
     def db_history_dir(self) -> Path:
         """Where a musaeus.db snapshot is copied before it's wiped at the
         end of a completed batch, and where the hash ledger lives.

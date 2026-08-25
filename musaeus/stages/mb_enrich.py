@@ -38,6 +38,11 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from ..context import RunContext, StageResult
+from ..db import (
+    mb_cache_get_artist,
+    mb_cache_put_artist,
+    open_mb_cache,
+)
 from ..network_policy import check as _network_check
 from .base import BaseStage
 from .enrich import _clean_artist_for_lookup
@@ -46,6 +51,11 @@ logger = logging.getLogger(__name__)
 
 _MB_BASE = "https://musicbrainz.org/ws/2"
 _USER_AGENT = "Musaeus/1.0 (music-library-manager; contact@musaeus.local)"
+#: Distinguishes "never looked up" from "looked up, not found".
+#: None is a real cached answer here, so it cannot double as the
+#: absent marker -- doing so would re-query every negative result.
+_MISSING = object()
+
 _RATE_LIMIT_S = 1.1  # MB requires ≤ 1 req/s for unauthenticated access
 _TIMEOUT_S = 15
 _RETRY_WAIT_S = 5
@@ -108,6 +118,7 @@ def _same_artist(ours: str, theirs: str) -> bool:
     differences survive ("R.e.m" == "R.E.M.", "a-ha" == "a\u2010ha").
     Anything beyond that is a different artist.
     """
+
     def fold(name: str) -> str:
         natural = _clean_artist_for_lookup((name or "").strip())
         # "&" and "and" are the same word in a band name, and the two forms
@@ -291,11 +302,22 @@ class MBEnrichStage(BaseStage):
                 """
             ).fetchall()
 
+        # Persistent across runs. The dicts below stay as the in-run layer;
+        # this is what stops every batch re-asking MusicBrainz about the
+        # same artists. musaeus.db is wiped between batches, so the cache
+        # lives beside the hash index instead.
+        try:
+            mb_cache = open_mb_cache(ctx.config.mb_cache_path)
+        except Exception as exc:  # a cache failure must not stop enrichment
+            logger.warning("[mb_enrich] persistent cache unavailable: %s", exc)
+            mb_cache = None
+
         # Per-artist cache: artist_lower → (mbid, mb_name) | None
         artist_cache: dict[str, tuple[str, str] | None] = {}
         # Per-artist+album cache: (artist_mbid, album_lower) → release_mbid | None
         release_cache: dict[tuple[str, str], str | None] = {}
 
+        cache_hits = 0
         found_artists = 0
         found_releases = 0
         not_found = 0
@@ -324,9 +346,26 @@ class MBEnrichStage(BaseStage):
                     would_query_artists.add(artist_lower)
                     result.files_skipped += 1
                     continue
-                time.sleep(_RATE_LIMIT_S)
-                match = _search_artist(artist)
-                artist_cache[artist_lower] = match
+                cached = _MISSING
+                if mb_cache is not None:
+                    try:
+                        cached = mb_cache_get_artist(mb_cache, artist_lower)
+                    except KeyError:
+                        cached = _MISSING
+                    except Exception as exc:
+                        logger.debug("[mb_enrich] cache read failed: %s", exc)
+                if cached is not _MISSING:
+                    artist_cache[artist_lower] = cached
+                    cache_hits += 1
+                else:
+                    time.sleep(_RATE_LIMIT_S)
+                    match = _search_artist(artist)
+                    artist_cache[artist_lower] = match
+                    if mb_cache is not None:
+                        try:
+                            mb_cache_put_artist(mb_cache, artist_lower, match)
+                        except Exception as exc:
+                            logger.debug("[mb_enrich] cache write failed: %s", exc)
                 if match:
                     logger.info(
                         "[mb_enrich] artist found: %r → %r  mbid=%s",
