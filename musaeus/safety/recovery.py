@@ -37,7 +37,13 @@ import uuid
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
-from musaeus.safety.manifest import KIND_DATABASE, Manifest, build_manifest, sha256_file
+from musaeus.safety.manifest import (
+    KIND_DATABASE,
+    KIND_TAGGED_AUDIO,
+    Manifest,
+    build_manifest,
+    sha256_file,
+)
 from musaeus.state.policy import RECOVERY_CAP_BYTES, RECOVERY_CAP_LABEL
 from musaeus.state.schema import StateError, utc_now_iso
 
@@ -167,6 +173,7 @@ def create_checkpoint(
     now: str | None = None,
     reserve_bytes: int = 2 * 10**9,
     reserve_fraction: float = 0.05,
+    capture_tags: bool = False,
 ) -> Checkpoint:
     """
     Copy *source_root* into the recovery target, manifest it, and verify.
@@ -188,9 +195,14 @@ def create_checkpoint(
         checkpoint_id=identifier,
         created_at=timestamp,
         database_path=database_path,
+        capture_tags=capture_tags,
     )
+    # Tag-captured audio contributes no payload bytes -- its restorable
+    # state is the tag values held in the manifest, not a copy of the file.
+    # Counting its size here would make a 483 GB library look impossible to
+    # checkpoint when the thing being checkpointed is 15 MB of tags.
     assert_capacity(
-        manifest.total_bytes,
+        manifest.payload_bytes,
         recovery_root,
         reserve_bytes=reserve_bytes,
         reserve_fraction=reserve_fraction,
@@ -207,6 +219,8 @@ def create_checkpoint(
     (root / QUARANTINE_DIRNAME).mkdir()
 
     for entry in manifest.entries:
+        if entry.kind == KIND_TAGGED_AUDIO:
+            continue  # tags live in the manifest; the bytes are not copied
         if entry.kind == KIND_DATABASE:
             assert database_path is not None
             destination = payload / "__database__" / database_path.name
@@ -260,6 +274,16 @@ def verify_checkpoint(checkpoint: Checkpoint, *, database_path: Path | None = No
         )
 
     for entry in stored.entries:
+        if entry.kind == KIND_TAGGED_AUDIO:
+            # Verify the captured state exists, not a copy that was never made.
+            if entry.tags is None:
+                raise CheckpointError(
+                    f"tag-captured entry {entry.relative_path} has no tags recorded; "
+                    f"it is not restorable",
+                    checkpoint_id=checkpoint.checkpoint_id,
+                    item=entry.relative_path,
+                )
+            continue
         if entry.kind == KIND_DATABASE:
             name = entry.relative_path.rsplit("::", 1)[-1]
             copied = checkpoint.payload_root / "__database__" / name

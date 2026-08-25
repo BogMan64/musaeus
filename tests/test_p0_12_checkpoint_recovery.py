@@ -203,7 +203,7 @@ def _oversized_manifest(total: int):
     from musaeus.safety.manifest import Manifest as _M
     from musaeus.safety.manifest import ManifestEntry as _E
 
-    def fake(source_root, *, checkpoint_id, created_at, database_path=None):
+    def fake(source_root, *, checkpoint_id, created_at, database_path=None, capture_tags=False):
         return _M(
             checkpoint_id=checkpoint_id,
             created_at=created_at,
@@ -375,3 +375,197 @@ class TestQuarantine:
         source = Path(recovery_mod.__file__).read_text()
         assert "shutil.rmtree" not in source
         assert "os.remove" not in source
+
+
+# ── Tag capture: checkpointing a library too large to copy ───────────────────
+
+
+class TestTagCapture:
+    """ALAC-Library is 468 GB against a fixed 100 GB recovery cap, so a
+    byte-for-byte checkpoint of it is arithmetically impossible. It is also
+    unnecessary for the stages that modify it: ForgeStage states "Never
+    re-encodes audio. Tags only." and TaggerStage only saves changed
+    fields. What must be restorable is the tag VALUES -- ~15 MB for the
+    whole library against 483 GB of audio.
+
+    These use REAL tracks. Fake bytes cannot exercise tag capture at all
+    (mutagen reads nothing, so the entry correctly falls back to a byte
+    copy), and it was real files that exposed the type bug: MP4 stores
+    tmpo as an int, and the first version stringified every value.
+    """
+
+    @pytest.fixture
+    def real_audio(self, tmp_path):
+        """Two genuinely-parseable m4a files, synthesised here.
+
+        NOT copies of real library tracks: the P0-01 PathGuard blocks any
+        access under the real vault, and rightly so -- it caught this test
+        reaching for /mnt/FORGE2TB/.../ALAC-Library on its first version.
+        ffmpeg gives us a real MP4 container that mutagen can tag and read
+        back, which is what tag capture actually needs exercised.
+        """
+        import shutil as _sh
+        import subprocess
+
+        if _sh.which("ffmpeg") is None:
+            pytest.skip("ffmpeg unavailable")
+        try:
+            import mutagen
+        except ImportError:
+            pytest.skip("mutagen unavailable")
+
+        root = tmp_path / "lib" / "Artist"
+        root.mkdir(parents=True)
+        for i in range(2):
+            target = root / f"track{i}.m4a"
+            proc = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "anullsrc=r=44100:cl=stereo",
+                    "-t",
+                    "1",
+                    "-c:a",
+                    "alac",
+                    str(target),
+                ],
+                capture_output=True,
+            )
+            if proc.returncode != 0 or not target.is_file():
+                pytest.skip(f"ffmpeg could not produce alac: {proc.stderr[-200:]!r}")
+            audio = mutagen.File(str(target))
+            if audio.tags is None:
+                audio.add_tags()
+            audio.tags["\xa9nam"] = [f"Track {i}"]
+            audio.tags["\xa9ART"] = ["Bob Seger"]
+            audio.tags["tmpo"] = [110]  # int -- the type that broke v1
+            audio.tags["trkn"] = [(i + 1, 2)]  # int pair
+            audio.save()
+        return tmp_path / "lib"
+
+    def test_tagged_audio_contributes_no_payload_bytes(self, real_audio):
+        from musaeus.safety.manifest import KIND_TAGGED_AUDIO, build_manifest
+
+        (real_audio / "notes.csv").write_text("a,b\n")
+        m = build_manifest(real_audio, checkpoint_id="c", created_at=NOW, capture_tags=True)
+        kinds = {e.relative_path: e.kind for e in m.entries}
+        assert kinds["Artist/track0.m4a"] == KIND_TAGGED_AUDIO
+        assert kinds["notes.csv"] != KIND_TAGGED_AUDIO
+        assert m.payload_bytes == len("a,b\n")
+        assert m.total_bytes > len("a,b\n"), "the audio contributes real bytes"
+
+    def test_capacity_is_judged_on_payload_not_library_size(self, real_audio):
+        """The cap check must see what is copied, not what exists. Judging
+        by total_bytes makes an impossible checkpoint out of a tiny one."""
+        from musaeus.safety.manifest import build_manifest
+
+        m = build_manifest(real_audio, checkpoint_id="c", created_at=NOW, capture_tags=True)
+        assert m.payload_bytes == 0
+        assert m.total_bytes > m.payload_bytes
+
+    def test_tagged_entries_are_not_content_hashed(self, real_audio):
+        """A content hash means reading every file in full -- 483 GB for the
+        real library -- and buys nothing a rollback could use, since the
+        bytes are not copied. Prefixed so it cannot be mistaken for one."""
+        from musaeus.safety.manifest import build_manifest
+
+        m = build_manifest(real_audio, checkpoint_id="c", created_at=NOW, capture_tags=True)
+        for e in m.entries:
+            if e.relative_path.endswith(".m4a"):
+                assert e.sha256.startswith("tagged:")
+
+    def test_unreadable_audio_falls_back_to_a_byte_copy(self, tmp_path):
+        """An audio file whose tags cannot be read is not tag-restorable, so
+        its bytes are kept instead. Failing the whole checkpoint over one
+        odd file would make a 10,000-track library un-checkpointable."""
+        from musaeus.safety.manifest import KIND_FILE, build_manifest
+
+        root = tmp_path / "lib"
+        root.mkdir()
+        (root / "broken.m4a").write_bytes(b"NOT REALLY AUDIO")
+        m = build_manifest(root, checkpoint_id="c", created_at=NOW, capture_tags=True)
+        entry = next(e for e in m.entries if e.relative_path == "broken.m4a")
+        assert entry.kind == KIND_FILE
+        assert entry.tags is None
+        assert m.payload_bytes == len(b"NOT REALLY AUDIO")
+
+    def test_tag_values_round_trip_with_their_types(self):
+        """The failure this prevents: stringifying every value round-trips
+        text fine and throws MP4MetadataValueError on the first real track,
+        because MP4 stores tmpo as an int and trkn as an int pair."""
+        from musaeus.safety.manifest import decode_tag_values
+
+        encoded = [
+            {"t": "str", "v": "Night Moves"},
+            {"t": "int", "v": 110},
+            {"t": "seq", "v": [3, 12]},
+            {"t": "bool", "v": True},
+        ]
+        assert decode_tag_values(encoded) == ["Night Moves", 110, (3, 12), True]
+        assert isinstance(decode_tag_values(encoded)[1], int)
+        assert isinstance(decode_tag_values(encoded)[2], tuple)
+
+    def test_rollback_restores_tags_without_the_bytes(self, real_audio, tmp_path):
+        """End to end: capture, mangle the tags the way TaggerStage writes
+        them, roll back, and get the originals back -- with no copy of the
+        audio anywhere in the checkpoint."""
+        import mutagen
+
+        from musaeus.safety.manifest import item_ref_for, read_tags
+        from musaeus.safety.mutation import MutationBoundary
+
+        recovery = tmp_path / "rec"
+        recovery.mkdir()
+        before = {p.name: read_tags(p) for p in sorted(real_audio.rglob("*.m4a"))}
+
+        cp = create_checkpoint(real_audio, recovery, checkpoint_id="c1", now=NOW, capture_tags=True)
+        copied = sum(f.stat().st_size for f in cp.payload_root.rglob("*") if f.is_file())
+        assert copied == 0, "no audio bytes may be copied"
+
+        journal = OperationJournal(cp.root / JOURNAL_FILENAME)
+        boundary = MutationBoundary(cp, journal, run_id="run-T", source_root=real_audio)
+        for p in sorted(real_audio.rglob("*.m4a")):
+            rel = str(p.relative_to(real_audio))
+            audio = mutagen.File(str(p))
+            audio.tags["\xa9nam"] = ["MANGLED"]
+            audio.tags["\xa9ART"] = ["WRONG"]
+            audio.save()
+            journal.append(
+                operation_kind=OP_TAG_WRITE,
+                item_ref=item_ref_for(rel),
+                detail={"relative_path": rel},
+            )
+
+        result = boundary.rollback(now=NOW)
+        after = {p.name: read_tags(p) for p in sorted(real_audio.rglob("*.m4a"))}
+
+        assert result.outcome == "completed"
+        assert after == before, "every tag must come back exactly"
+        assert all(p.stat().st_size > 0 for p in real_audio.rglob("*.m4a"))
+
+    def test_verification_refuses_a_tagged_entry_with_no_tags(self, real_audio, tmp_path):
+        """Its bytes were never copied, so absent tags means nothing was
+        captured at all. Verifying such a checkpoint would report a backup
+        that cannot restore anything -- the exact shape this project keeps
+        finding, one level up."""
+        from dataclasses import replace
+
+        recovery = tmp_path / "rec2"
+        recovery.mkdir()
+        cp = create_checkpoint(real_audio, recovery, checkpoint_id="c9", now=NOW, capture_tags=True)
+        gutted = replace(
+            cp.manifest,
+            entries=tuple(replace(e, tags=None) for e in cp.manifest.entries),
+        )
+        cp.manifest_path.write_text(gutted.to_json())
+        broken = replace(cp, manifest=gutted, manifest_digest=gutted.digest)
+
+        with pytest.raises(CheckpointError) as exc:
+            verify_checkpoint(broken)
+        assert "not restorable" in str(exc.value)

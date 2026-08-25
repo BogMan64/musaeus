@@ -47,7 +47,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from musaeus.safety.manifest import item_ref_for, sha256_file
+from musaeus.safety.manifest import (
+    KIND_TAGGED_AUDIO,
+    decode_tag_values,
+    item_ref_for,
+    sha256_file,
+)
 from musaeus.safety.recovery import (
     OP_ARTWORK_WRITE,
     OP_DATABASE_WRITE,
@@ -496,11 +501,45 @@ class MutationBoundary:
             )
         return result
 
+    def _restore_tags(self, target: Path, tags: dict) -> None:
+        """Put the checkpointed tag values back on a file whose bytes were
+        never copied. This is what makes a 468 GB library rollback-able for
+        ForgeStage and TaggerStage, which change tags and nothing else."""
+        import mutagen  # type: ignore[import-untyped]
+
+        audio = mutagen.File(str(target))
+        if audio is None:
+            raise CollisionError(f"{target} cannot be opened to restore its tags", path=str(target))
+        if audio.tags is None:
+            audio.add_tags()
+        for key in [k for k in audio.tags if not str(k).startswith("covr")]:
+            del audio.tags[key]
+        for key, values in tags.items():
+            audio.tags[key] = decode_tag_values(values)
+        audio.save()
+
     def _restore_item(self, entry: Any) -> None:
         relative = entry.detail.get("relative_path")
         if relative is None:
             return
         target = self.source_root / relative
+
+        # A tag-captured entry has no copied bytes to put back -- its
+        # restorable state is the tag values in the manifest.
+        try:
+            manifest_entry = self.checkpoint.manifest.entry(item_ref_for(relative))
+        except KeyError:
+            manifest_entry = None
+        if manifest_entry is not None and manifest_entry.kind == KIND_TAGGED_AUDIO:
+            if manifest_entry.tags is None:
+                raise CollisionError(
+                    f"{relative} was tag-captured but no tags were recorded; it cannot be restored",
+                    relative_path=relative,
+                )
+            if target.exists():
+                self._restore_tags(target, manifest_entry.tags)
+            return
+
         checkpointed = self.checkpoint.payload_root / relative
 
         if target.exists():
