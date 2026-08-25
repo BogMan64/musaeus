@@ -180,3 +180,46 @@ class TestTheLogIdentifiesTheFileBeforeScholarHasRun:
 
         line = next(r.getMessage() for r in caplog.records if "refusing" in r.getMessage())
         assert "X — Y" in line
+
+
+class TestTheMoveAndTheRowStayInStep:
+    """A move cannot be rolled back; a database write can.
+
+    This stage was written move-first, which is the same shape that left 86
+    files relocated with the database rolled back behind them in a script
+    the same week. See scope §4.25.
+    """
+
+    def test_a_failed_move_leaves_the_row_untouched(self, ctx, monkeypatch):
+        import shutil as _shutil
+
+        _deny(ctx, "h" * 64)
+        src = _incoming(ctx, "returning.m4a", "h" * 64)
+
+        def boom(*a, **k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(_shutil, "move", boom)
+        monkeypatch.setattr("musaeus.stages.deny_list.shutil.move", boom, raising=False)
+
+        DenyListStage().run(ctx)
+
+        row = ctx.conn.execute("SELECT status, file_path FROM archive").fetchone()
+        assert row["status"] == "HASHED", "the row must not claim a quarantine that failed"
+        assert row["file_path"] == str(src)
+        assert src.exists()
+
+    def test_a_name_collision_in_quarantine_does_not_overwrite(self, ctx):
+        # Two different recordings can share a filename. shutil.move
+        # overwrites, so the destination has to be made unique first.
+        _deny(ctx, "h" * 64)
+        _deny(ctx, "g" * 64)
+        (ctx.config.quarantine / "denied").mkdir(parents=True, exist_ok=True)
+        (ctx.config.quarantine / "denied" / "same.m4a").write_bytes(b"first")
+
+        _incoming(ctx, "same.m4a", "h" * 64)
+        DenyListStage().run(ctx)
+
+        kept = list((ctx.config.quarantine / "denied").glob("*.m4a"))
+        assert len(kept) == 2, "the pre-existing file must survive"
+        assert (ctx.config.quarantine / "denied" / "same.m4a").read_bytes() == b"first"

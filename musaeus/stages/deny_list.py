@@ -47,6 +47,7 @@ from pathlib import Path
 from ..context import RunContext, StageResult
 from ..db import ensure_deny_list, lookup_denied_hash, open_hash_index
 from .base import BaseStage
+from .organize import unique_path
 
 logger = logging.getLogger(__name__)
 
@@ -125,20 +126,28 @@ class DenyListStage(BaseStage):
                     result.notes.append(f"  [DRY] would quarantine {label}")
                     continue
 
-                target = quarantine_dir / src.name
+                target = unique_path(quarantine_dir / src.name)
+
+                # Row first, then the move, then commit. A move cannot be
+                # rolled back and a DB write can, so this ordering leaves
+                # neither half applied on failure. Written the other way
+                # round originally -- the same mistake that, in a script the
+                # same week, left 86 files relocated with the database rolled
+                # back behind them. See scope §4.25.
+                ctx.conn.execute(
+                    "UPDATE archive SET status='QUARANTINED', file_path=? WHERE file_path=?",
+                    (str(target), str(src)),
+                )
                 try:
                     quarantine_dir.mkdir(parents=True, exist_ok=True)
                     if src.exists():
                         shutil.move(str(src), str(target))
                 except OSError as exc:
+                    ctx.conn.rollback()
                     result.files_errored += 1
                     result.errors.append(f"{src.name}: {exc}")
                     continue
 
-                ctx.conn.execute(
-                    "UPDATE archive SET status='QUARANTINED', file_path=? WHERE file_path=?",
-                    (str(target), str(src)),
-                )
                 ctx.log_event(
                     "DENIED_REINGEST",
                     file_path=str(target),
@@ -148,8 +157,10 @@ class DenyListStage(BaseStage):
                     note=f"previously removed as {entry['source_path'] or 'unknown'}",
                 )
 
-                if i % _COMMIT_EVERY == 0:
-                    ctx.conn.commit()
+                # Per row, not per batch: rollback() above discards
+                # everything uncommitted, so a batched commit would undo
+                # earlier rows whose files had already moved.
+                ctx.conn.commit()
         finally:
             conn.close()
 
