@@ -82,12 +82,15 @@ independent of which lossy container it happened to arrive in.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import sqlite3
 from pathlib import Path
 
 from ..context import RunContext, StageResult
 from ..db import open_hash_index, record_finalized_hash
+from ..safety.mutation import MutationBoundary
+from ..safety.recovery import JOURNAL_FILENAME, OperationJournal, create_checkpoint
 from .base import BaseStage
 from .organize import build_track_filename, sanitize_path_component, unique_path
 
@@ -309,6 +312,58 @@ class FinalizeStage(BaseStage):
 
     # ── run ───────────────────────────────────────────────────────────────────
 
+    #: Set MUSAEUS_FINALIZE_CHECKPOINT=0 to run without a recovery
+    #: boundary. Kept as an escape hatch, not a default: a finalize with no
+    #: journal is a finalize nobody can undo.
+    CHECKPOINT_ENV = "MUSAEUS_FINALIZE_CHECKPOINT"
+
+    def _open_boundary(self, ctx: RunContext, result: StageResult):
+        """Checkpoint the sources and open a journalled mutation boundary.
+
+        Scope is deliberate. The SOURCES (STAGING) are what finalize can
+        destroy, so those are checkpointed. The DESTINATION -- ALAC-Library,
+        468 GB against a 100 GB cap -- is not, and does not need to be:
+        finalize only adds to it, so undoing a finalize means moving the
+        file back out, which the journal alone supports.
+
+        source_root spans the vault because a move crosses from STAGING to
+        ALAC-Library and both ends must validate; the checkpoint stays
+        narrow regardless.
+
+        Returns None when disabled or when no checkpoint can be made, and
+        says which in the result -- a run with no boundary must announce
+        itself rather than look identical to one that has it.
+        """
+        if os.environ.get(self.CHECKPOINT_ENV, "1").strip().lower() in ("0", "false", "no"):
+            result.notes.append("recovery boundary: DISABLED by " + self.CHECKPOINT_ENV)
+            return None
+        try:
+            recovery_root = ctx.config.runs_root / "recovery"
+            recovery_root.mkdir(parents=True, exist_ok=True)
+            checkpoint = create_checkpoint(
+                ctx.config.staging,
+                recovery_root,
+                checkpoint_id=f"finalize_{ctx.run_id}",
+                capture_tags=True,
+            )
+            journal = OperationJournal(checkpoint.root / JOURNAL_FILENAME)
+            boundary = MutationBoundary(
+                checkpoint,
+                journal,
+                run_id=ctx.run_id,
+                source_root=ctx.config.vault_root,
+            )
+            coverage = checkpoint.coverage()
+            result.notes.append(
+                f"recovery boundary: checkpoint {checkpoint.checkpoint_id} "
+                f"({coverage['items']} item(s), journal at {journal.path})"
+            )
+            return boundary
+        except Exception as exc:
+            result.notes.append(f"recovery boundary: UNAVAILABLE ({exc})")
+            logger.warning("[finalize] no recovery boundary: %s", exc)
+            return None
+
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)
         force: bool = ctx.get("finalize_force", False)
@@ -323,6 +378,8 @@ class FinalizeStage(BaseStage):
 
         hash_conn = open_hash_index(ctx.config.hash_index_path)
         indexed = 0
+        boundary = self._open_boundary(ctx, result)
+        move_ops: dict[str, str] = {}  # source path -> journal operation id
 
         try:
             for i, row in enumerate(pending, 1):
@@ -355,7 +412,16 @@ class FinalizeStage(BaseStage):
                     continue
 
                 try:
-                    _copy_then_verify_then_swap(source, target)
+                    if boundary is not None:
+                        # Same copy -> verify -> atomic rename this stage has
+                        # always done; the boundary adopted it. The gain is
+                        # the journal: without it a finalize is unrecoverable
+                        # once the source is gone. release_source is deferred
+                        # until the archive row lands, because that UPDATE can
+                        # still hit a UNIQUE collision.
+                        move_ops[str(source)] = boundary.move(source, target, release_source=False)
+                    else:
+                        _copy_then_verify_then_swap(source, target)
                 except (FinalizeError, OSError) as exc:
                     result.files_errored += 1
                     result.errors.append(f"{source.name}: {exc}")
@@ -403,6 +469,7 @@ class FinalizeStage(BaseStage):
                         target,
                         exc,
                     )
+                    move_ops.pop(str(source), None)
                     try:
                         target.unlink(missing_ok=True)
                     except OSError as revert_exc:
@@ -438,7 +505,15 @@ class FinalizeStage(BaseStage):
                 # passthrough row. Either way this is what keeps STAGING
                 # trending back to empty.
                 try:
-                    source.unlink()
+                    op = move_ops.pop(str(source), None)
+                    if boundary is not None and op is not None:
+                        # Journals that the source went, so recovery can tell
+                        # "destination exists, source gone" from "destination
+                        # exists, source still there" -- different situations
+                        # that must not be inferred from one record.
+                        boundary.release_source(op, source)
+                    else:
+                        source.unlink()
                 except OSError as exc:
                     logger.warning(
                         "[finalize] %s finalized to %s but source could not be removed: %s",

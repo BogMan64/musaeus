@@ -464,3 +464,112 @@ class TestFinalizeDryRun:
 
         row = ctx_dry.conn.execute("SELECT finalized_at FROM archive").fetchone()
         assert row["finalized_at"] is None
+
+
+# ── Recovery boundary (P0-13 wiring) ──────────────────────────────────────────
+
+
+class TestFinalizeRecoveryBoundary:
+    """A finalize is unrecoverable once the source is gone unless something
+    recorded where the file came from. These prove the journal exists, that
+    the source outlives the DB write, and that a completed finalize can
+    actually be undone.
+    """
+
+    def _journal(self, ctx):
+        from musaeus.safety.recovery import JOURNAL_FILENAME, OperationJournal
+
+        root = ctx.config.runs_root / "recovery" / f"finalize_{ctx.run_id}"
+        return OperationJournal(root / JOURNAL_FILENAME)
+
+    def test_every_move_is_journalled_with_both_ends(self, ctx):
+        src = _make_staged_track(
+            ctx,
+            "Bob Seger - Night Moves.m4a",
+            artist="Bob Seger",
+            album="Night Moves",
+            title="Night Moves",
+        )
+        FinalizeStage().run(ctx)
+
+        entries = self._journal(ctx).entries()
+        moves = [e for e in entries if e.detail.get("moved_to")]
+        assert len(moves) == 1, "the move must be on the record"
+        assert "STAGING" in moves[0].detail["relative_path"]
+        assert "ALAC-Library" in moves[0].detail["moved_to"]
+        assert moves[0].result_digest, "the destination must be digested"
+
+    def test_source_release_is_recorded_separately(self, ctx):
+        """ "destination exists, source gone" and "destination exists, source
+        still there" need different recovery, so which happened is recorded
+        rather than inferred."""
+        _make_staged_track(
+            ctx,
+            "Bob Seger - Hollywood Nights.m4a",
+            artist="Bob Seger",
+            album="Night Moves",
+            title="Hollywood Nights",
+        )
+        FinalizeStage().run(ctx)
+
+        entries = self._journal(ctx).entries()
+        released = [e for e in entries if e.detail.get("source_released") is True]
+        assert released, "the source release must be journalled"
+        assert list(ctx.staging.rglob("*.m4a")) == []
+
+    def test_a_finalised_file_can_be_moved_back(self, ctx):
+        """The point of the whole exercise: undo a completed finalize."""
+        from musaeus.safety.mutation import MutationBoundary
+        from musaeus.safety.recovery import JOURNAL_FILENAME, OperationJournal, Checkpoint
+        from musaeus.safety.manifest import Manifest
+
+        src = _make_staged_track(
+            ctx,
+            "Bob Seger - Turn the Page.m4a",
+            artist="Bob Seger",
+            album="Night Moves",
+            title="Turn the Page",
+        )
+        original = src.read_bytes()
+        FinalizeStage().run(ctx)
+
+        landed = list(ctx.config.alac_library.rglob("*.m4a"))
+        assert len(landed) == 1 and not src.exists()
+
+        root = ctx.config.runs_root / "recovery" / f"finalize_{ctx.run_id}"
+        manifest = Manifest.from_json((root / "manifest.json").read_text())
+        checkpoint = Checkpoint(
+            checkpoint_id=manifest.checkpoint_id,
+            root=root,
+            manifest=manifest,
+            manifest_digest=manifest.digest,
+            created_at=manifest.created_at,
+            verified=True,
+            recovery_target=str(root.parent),
+        )
+        boundary = MutationBoundary(
+            checkpoint,
+            OperationJournal(root / JOURNAL_FILENAME),
+            run_id=ctx.run_id,
+            source_root=ctx.config.vault_root,
+        )
+        boundary.rollback()
+
+        assert src.exists(), "the staged source must come back"
+        assert src.read_bytes() == original
+        assert list(ctx.config.alac_library.rglob("*.m4a")) == []
+
+    def test_disabling_the_boundary_is_announced_not_silent(self, ctx, monkeypatch):
+        """A run with no boundary must not look identical to one that has
+        it -- that is the whole class of defect this project keeps finding."""
+        monkeypatch.setenv(FinalizeStage.CHECKPOINT_ENV, "0")
+        _make_staged_track(
+            ctx,
+            "Bob Seger - Mainstreet.m4a",
+            artist="Bob Seger",
+            album="Night Moves",
+            title="Mainstreet",
+        )
+        result = FinalizeStage().run(ctx)
+        assert any("DISABLED" in n for n in result.notes)
+        assert not (ctx.config.runs_root / "recovery").exists()
