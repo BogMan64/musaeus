@@ -483,7 +483,7 @@ class TestFinalizeRecoveryBoundary:
         return OperationJournal(root / JOURNAL_FILENAME)
 
     def test_every_move_is_journalled_with_both_ends(self, ctx):
-        src = _make_staged_track(
+        _make_staged_track(
             ctx,
             "Bob Seger - Night Moves.m4a",
             artist="Bob Seger",
@@ -519,9 +519,13 @@ class TestFinalizeRecoveryBoundary:
 
     def test_a_finalised_file_can_be_moved_back(self, ctx):
         """The point of the whole exercise: undo a completed finalize."""
-        from musaeus.safety.mutation import MutationBoundary
-        from musaeus.safety.recovery import JOURNAL_FILENAME, OperationJournal, Checkpoint
         from musaeus.safety.manifest import Manifest
+        from musaeus.safety.mutation import MutationBoundary
+        from musaeus.safety.recovery import (
+            JOURNAL_FILENAME,
+            Checkpoint,
+            OperationJournal,
+        )
 
         src = _make_staged_track(
             ctx,
