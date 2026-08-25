@@ -148,9 +148,24 @@ class TestQuarantineFirst:
             library / "Bob Seger" / "Hollywood Nights.m4a",
             library / "Bob Seger" / "Hollywood Nights (1978).m4a",
         )
-        kinds = [e.operation_kind for e in boundary.journal.applied()]
+        # Distinct OPERATIONS, not raw journal entries: a move now writes a
+        # second entry recording that its source was released, because "the
+        # destination exists and the source is gone" and "the destination
+        # exists and the source is still there" are different recovery
+        # situations and must not be inferred from one record.
+        seen, kinds = set(), []
+        for e in boundary.journal.applied():
+            if e.operation_id in seen:
+                continue
+            seen.add(e.operation_id)
+            kinds.append(e.operation_kind)
         assert kinds == [OP_TAG_WRITE, "artwork_write", OP_MOVE]
-        assert all(e.precondition_digest for e in boundary.journal.applied())
+        # Primary entries only, for the same reason as above: a
+        # release-of-source record has no precondition of its own.
+        primary = {}
+        for e in boundary.journal.applied():
+            primary.setdefault(e.operation_id, e)
+        assert all(e.precondition_digest for e in primary.values())
 
     def test_a_move_refuses_occupied_ground(self, boundary, library):
         with pytest.raises(CollisionError):
@@ -161,6 +176,63 @@ class TestQuarantineFirst:
 
 
 # ── Rollback restores exactly ─────────────────────────────────────────────────
+
+
+class TestDeferredSourceRelease:
+    """move(release_source=False) keeps a verified copy on disk across the
+    window where the caller's own work can still fail -- FinalizeStage's
+    archive-row UPDATE can hit a UNIQUE collision after the file is in
+    place, and losing the source at that moment is unrecoverable."""
+
+    def test_source_survives_until_released(self, boundary, library):
+        src = library / "Bob Seger" / "Night Moves.m4a"
+        dst = library / "The Byrds" / "Night Moves.m4a"
+        digest = sha256_file(src)
+
+        op = boundary.move(src, dst, release_source=False)
+        assert dst.is_file() and sha256_file(dst) == digest
+        assert src.is_file(), "source must remain until the caller releases it"
+
+        boundary.release_source(op, src)
+        assert not src.exists()
+        assert sha256_file(dst) == digest
+
+    def test_a_failed_copy_leaves_the_source_untouched(self, boundary, library, monkeypatch):
+        """The reason this is not shutil.move: a cross-filesystem move is
+        copy-then-delete with no verification between, so an interrupted
+        one can destroy the source having written a short destination."""
+        import musaeus.safety.mutation as mut
+
+        src = library / "Bob Seger" / "Night Moves.m4a"
+        before = sha256_file(src)
+        monkeypatch.setattr(
+            mut.shutil, "copy2", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full"))
+        )
+
+        with pytest.raises(OSError):
+            boundary.move(src, library / "The Byrds" / "Night Moves.m4a")
+
+        assert src.is_file() and sha256_file(src) == before
+        assert not (library / "The Byrds" / "Night Moves.m4a").exists()
+        assert not list(library.rglob("*.mutation_tmp"))
+
+    def test_a_short_copy_is_caught_and_the_source_kept(self, boundary, library, monkeypatch):
+        import musaeus.safety.mutation as mut
+
+        src = library / "Bob Seger" / "Night Moves.m4a"
+        before = sha256_file(src)
+        real = mut.shutil.copy2
+
+        def truncating(a, b, *args, **kw):
+            real(a, b, *args, **kw)
+            Path(b).write_bytes(Path(b).read_bytes()[:3])  # short write
+
+        monkeypatch.setattr(mut.shutil, "copy2", truncating)
+
+        with pytest.raises(CollisionError) as exc:
+            boundary.move(src, library / "The Byrds" / "Night Moves.m4a")
+        assert "size mismatch" in str(exc.value)
+        assert src.is_file() and sha256_file(src) == before
 
 
 class TestRollbackRestoresExactly:

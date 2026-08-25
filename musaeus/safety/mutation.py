@@ -56,6 +56,7 @@ from musaeus.safety.recovery import (
     OP_REPLACE,
     OP_TAG_WRITE,
     STATUS_APPLIED,
+    STATUS_FAILED,
     STATUS_RESTORED,
     Checkpoint,
     CollisionError,
@@ -289,9 +290,29 @@ class MutationBoundary:
         )
         return entry.operation_id
 
-    def move(self, source: Path, destination: Path) -> str:
-        """Move within the checkpointed root. Refuses to land on occupied
-        ground rather than overwriting it."""
+    def move(self, source: Path, destination: Path, *, release_source: bool = True) -> str:
+        """Move an item, copy-first, refusing to land on occupied ground.
+
+        Deliberately NOT shutil.move. This is FinalizeStage's sequence,
+        adopted here because it is strictly safer and the boundary should
+        not be the weaker of the two:
+
+            copy -> verify the copy's size -> atomic same-directory rename
+            -> only then release the source
+
+        shutil.move across a filesystem boundary is copy-then-delete with
+        no verification in between, so an interrupted move can destroy the
+        source having written a short destination. Here, if anything fails
+        before the rename, only a temp file is removed and the source is
+        untouched.
+
+        `release_source=False` leaves the source in place and returns with
+        the destination written. The caller then does whatever else must
+        succeed -- for finalize, the archive row UPDATE that can still hit
+        a UNIQUE collision -- and calls release_source() once it has. That
+        keeps a full, verified copy of the file on disk across the one
+        window where the operation can still fail.
+        """
         self._guard()
         source_rel = self._relative(source)
         destination_rel = self._relative(destination)
@@ -301,8 +322,21 @@ class MutationBoundary:
                 f"move destination {destination} is occupied; refusing to overwrite",
                 destination=str(destination),
             )
+
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(source), str(destination))
+        staged = destination.with_name(destination.name + ".mutation_tmp")
+        try:
+            shutil.copy2(str(source), str(staged))
+            src_size, copy_size = source.stat().st_size, staged.stat().st_size
+            if src_size != copy_size:
+                raise CollisionError(
+                    f"size mismatch after copy: source={src_size} bytes, copy={copy_size}",
+                    source=str(source),
+                )
+            staged.rename(destination)  # same parent -> atomic
+        except Exception:
+            staged.unlink(missing_ok=True)
+            raise
 
         self._record_mutation()
         entry = self.journal.append(
@@ -310,9 +344,44 @@ class MutationBoundary:
             item_ref=item_ref_for(source_rel),
             precondition_digest=before,
             result_digest=sha256_file(destination),
-            detail={"relative_path": source_rel, "moved_to": destination_rel},
+            detail={
+                "relative_path": source_rel,
+                "moved_to": destination_rel,
+                "source_released": release_source,
+            },
         )
+        if release_source:
+            self.release_source(entry.operation_id, source)
         return entry.operation_id
+
+    def release_source(self, operation_id: str, source: Path) -> None:
+        """Remove the source of a completed move, and record that it went.
+
+        Split out so a caller can keep the original until everything that
+        can still fail has succeeded. Journalled as its own entry: a move
+        whose source is still present is recoverable by deleting the
+        destination, and one whose source is gone is not, so which of the
+        two happened has to be on the record rather than inferred.
+        """
+        try:
+            source.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            self.journal.append(
+                operation_kind=OP_MOVE,
+                item_ref=item_ref_for(self._relative(source)),
+                status=STATUS_FAILED,
+                operation_id=operation_id,
+                detail={"source_release_failed": str(exc)},
+            )
+            raise
+        self.journal.append(
+            operation_kind=OP_MOVE,
+            item_ref=item_ref_for(self._relative(source)),
+            operation_id=operation_id,
+            detail={"source_released": True},
+        )
 
     def quarantine(self, path: Path, *, reason: str) -> str:
         self._guard()
@@ -368,7 +437,22 @@ class MutationBoundary:
 
         applied = [e for e in self.journal.entries() if e.status == STATUS_APPLIED]
         superseded = {e.operation_id for e in self.journal.entries() if e.status == STATUS_RESTORED}
-        pending = [e for e in applied if e.operation_id not in superseded]
+        # One operation can produce several journal entries -- a move writes
+        # a second when its source is released. Undo each OPERATION once,
+        # using the entry that carries the paths; the release record is
+        # bookkeeping, not a separate thing to reverse.
+        pending: list = []
+        _seen: set[str] = set()
+        for _e in applied:
+            if _e.operation_id in superseded or _e.operation_id in _seen:
+                continue
+            _seen.add(_e.operation_id)
+            pending.append(
+                max(
+                    (x for x in applied if x.operation_id == _e.operation_id),
+                    key=lambda x: len(x.detail or {}),
+                )
+            )
 
         for entry in reversed(pending):
             try:
@@ -446,8 +530,10 @@ class MutationBoundary:
         shutil.copy2(checkpointed, target)
 
     def _undo_move(self, entry: Any) -> None:
-        relative = entry.detail["relative_path"]
-        moved_to = entry.detail["moved_to"]
+        relative = (entry.detail or {}).get("relative_path")
+        moved_to = (entry.detail or {}).get("moved_to")
+        if not relative or not moved_to:
+            return  # release-of-source record; the move entry holds the paths
         origin = self.source_root / relative
         destination = self.source_root / moved_to
 
