@@ -4,7 +4,9 @@ MUSAEUS — Stage: MBEnrich
 MusicBrainz metadata enrichment for CATALOGUED archive rows.
 
 What it does:
-  - Finds CATALOGUED rows where mb_artist_id IS NULL (not yet enriched)
+  - Finds CATALOGUED rows where mb_enriched_at IS NULL (not yet looked up).
+    Deliberately NOT `mb_artist_id IS NULL`: that re-queries every track
+    MusicBrainz could not identify, on every run, for ever.
   - Queries MusicBrainz search API for artist MBID and canonical name
   - Queries MusicBrainz release API for album MBID when artist is found
   - Writes back to archive: mb_artist_id, mb_artist_name, mb_release_id
@@ -240,7 +242,7 @@ class MBEnrichStage(BaseStage):
         try:
             count = ctx.conn.execute(
                 "SELECT COUNT(*) FROM archive "
-                "WHERE status='CATALOGUED' AND mb_artist_id IS NULL "
+                "WHERE status='CATALOGUED' AND mb_enriched_at IS NULL "
                 "AND artist IS NOT NULL AND trim(artist) != ''"
             ).fetchone()[0]
         except Exception:
@@ -256,6 +258,13 @@ class MBEnrichStage(BaseStage):
 
     def _enrich(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
+        # Stamping a not-found row would otherwise be a one-way door: an
+        # artist MusicBrainz cannot identify today stays unqueried for
+        # ever, even after canon work corrects the name that failed. Same
+        # escape hatch the other resumable stages carry.
+        force: bool = bool(ctx.get("mb_enrich_force", False))
+        if force:
+            result.notes.append("force: re-querying rows already looked up")
 
         # Graceful degradation (2026-08-17, matches EnrichStage's missing-
         # API-key pattern): a single lightweight connectivity probe before
@@ -285,10 +294,11 @@ class MBEnrichStage(BaseStage):
                 SELECT file_path, artist, album
                 FROM archive
                 WHERE status = 'CATALOGUED'
-                  AND mb_artist_id IS NULL
+                  AND (mb_enriched_at IS NULL OR :force)
                   AND artist IS NOT NULL AND trim(artist) != ''
                 ORDER BY artist, album
-                """
+                """,
+                {"force": 1 if force else 0},
             ).fetchall()
         except Exception:
             # mb_artist_id column doesn't exist yet (dry-run before first real run)
@@ -382,6 +392,20 @@ class MBEnrichStage(BaseStage):
                 not_found += 1
                 result.files_skipped += 1
                 if not dry_run:
+                    # Stamp the row even though nothing was found. The
+                    # marker records that the LOOKUP HAPPENED, not that it
+                    # succeeded -- those are different facts, and only the
+                    # first is a reason not to repeat the work.
+                    #
+                    # Without this, a track MusicBrainz cannot identify
+                    # keeps every mb_ column NULL and is re-queried on every
+                    # run for ever, at a rate-limited second plus 503
+                    # backoffs each. On the live vault that is 2,328 of
+                    # 10,873 rows, asked again every single batch.
+                    ctx.conn.execute(
+                        "UPDATE archive SET mb_enriched_at=? WHERE file_path=?",
+                        (now, fp),
+                    )
                     ctx.log_event(
                         "MB_ARTIST_NOT_FOUND",
                         file_path=fp,

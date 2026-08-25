@@ -205,6 +205,19 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     ("archive", "acousticid_recording", "TEXT"),
     ("archive", "acousticid_score", "REAL"),
     ("archive", "acousticid_checked_at", "TEXT"),
+    # MusicBrainz enrichment (musaeus/stages/mb_enrich.py). Same nullable
+    # timestamp pattern as every other long-running stage above.
+    #
+    # It was the one stage without one, selecting on `mb_artist_id IS NULL`
+    # instead. That skips a track MusicBrainz FOUND, but a track it did not
+    # find keeps mb_artist_id NULL for ever and is re-queried on every
+    # single run -- at a rate-limited second each, plus 503 backoffs. "Not
+    # yet looked up" and "looked up, not found" were indistinguishable in
+    # the row, so the second was retried indefinitely.
+    #
+    # Set whether or not a match was found: it records that the lookup
+    # HAPPENED, which is the thing that must not be repeated.
+    ("archive", "mb_enriched_at", "TEXT"),
 ]
 
 
