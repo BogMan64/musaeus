@@ -277,41 +277,48 @@ def _transcode_to_aac(source: Path, output: Path) -> None:
 
 def _append_tunemymusic_row(ctx: RunContext, row: dict) -> None:
     """
-    Append one row to config.tunemymusic_csv_path. Header matches
-    ORPHEUS's generate_tunemymusic_csv.py convention exactly:
-      reason,codec,bitrate_kbps,sample_rate,channels,duration_sec,path
-    Written incrementally here (unlike ORPHEUS's full-report regeneration)
-    since Canonicalize processes one file at a time and the CSV must
-    survive a DB wipe — appending directly is simpler and equally safe.
+    Append one row to config.tunemymusic_csv_path, as Title,Artist,Album.
+
+    The header was previously ORPHEUS's diagnostic one --
+    reason,codec,bitrate_kbps,sample_rate,channels,duration_sec,path --
+    which carries no artist and no title. That made the file unusable for
+    the one job its name claims: importing these tracks into a streaming
+    service to re-source them. Uploading it searched for a file path.
+
+    It now matches the consolidated playlist batches
+    (~/Desktop/Playlists_Consolidated/batch_*.csv), so the two are
+    interchangeable at the import step. The diagnostic fields remain
+    recoverable from the archive row and the event log; the identity of
+    the track is not, which is why that is what gets written here.
     """
     csv_path = ctx.config.tunemymusic_csv_path
     is_new = not csv_path.exists()
     csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    title = (row.get("title") or "").strip()
+    artist = (row.get("artist") or "").strip()
+    album = (row.get("album") or "").strip()
+    if not title:
+        # Last resort: the archive row should carry these, but a row with
+        # no title at all is worse than one parsed from its filename.
+        stem = Path(str(row.get("file_path") or "")).stem
+        parsed_artist, sep, parsed_title = stem.partition(" - ")
+        if sep:
+            title = parsed_title.strip() or stem
+            artist = artist or parsed_artist.strip()
+        else:
+            # No separator: the whole stem is the title. Treating it as the
+            # artist too -- which the first version did -- writes rows like
+            # "surround,surround", an identity that is wrong twice.
+            title = stem
+    if not title:
+        return
+
     with open(csv_path, "a", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         if is_new:
-            writer.writerow(
-                [
-                    "reason",
-                    "codec",
-                    "bitrate_kbps",
-                    "sample_rate",
-                    "channels",
-                    "duration_sec",
-                    "path",
-                ]
-            )
-        writer.writerow(
-            [
-                row.get("reason", "sub-lossless"),
-                (row.get("codec") or "unknown").upper(),
-                f"{(row.get('bitrate') or 0) // 1000}" if row.get("bitrate") else "",
-                row.get("sample_rate") or "",
-                row.get("channels") or "",
-                f"{row.get('duration') or 0.0:.1f}",
-                row.get("file_path", ""),
-            ]
-        )
+            writer.writerow(["Title", "Artist", "Album"])
+        writer.writerow([title, artist, album])
 
 
 # ── Stage ──────────────────────────────────────────────────────────────────────

@@ -25,7 +25,7 @@ from musaeus.stages.bpm import (
     _is_multichannel_error,
     _is_skip_error,
     _mark_multichannel_skipped,
-    _tunemymusic_csv_has_path,
+    _tunemymusic_csv_has_track,
     read_existing_tags,
     write_bpm_tags,
 )
@@ -411,17 +411,35 @@ class TestMulitchannelDetection:
 
 
 class TestTuneMyMusicDedup:
-    def test_missing_csv_returns_false(self, tmp_path: Path):
-        assert _tunemymusic_csv_has_path(tmp_path / "TuneMyMusic.csv", "/a.m4a") is False
+    """Dedup is keyed on Title+Artist, not on the file path.
 
-    def test_finds_existing_path(self, tmp_path: Path):
-        csv_path = tmp_path / "TuneMyMusic.csv"
-        csv_path.write_text(
-            "reason,codec,bitrate_kbps,sample_rate,channels,duration_sec,path\n"
-            "multichannel,AAC,256,48000,6,200.0,/music/a.m4a\n"
+    TuneMyMusic.csv is written as Title,Artist,Album so it can actually be
+    imported -- its old diagnostic header carried no artist and no title,
+    which made it useless for the one job its name claims. A dedup check
+    still looking for a path in a file that no longer contains paths
+    matches nothing and appends a fresh duplicate on every run.
+    """
+
+    def test_missing_csv_returns_false(self, tmp_path: Path):
+        assert (
+            _tunemymusic_csv_has_track(tmp_path / "TuneMyMusic.csv", "Centerfold", "J. Geils Band")
+            is False
         )
-        assert _tunemymusic_csv_has_path(csv_path, "/music/a.m4a") is True
-        assert _tunemymusic_csv_has_path(csv_path, "/music/b.m4a") is False
+
+    def test_finds_an_existing_track(self, tmp_path: Path):
+        csv_path = tmp_path / "TuneMyMusic.csv"
+        csv_path.write_text('Title,Artist,Album\nCenterfold,"J. Geils Band, The",Freeze Frame\n')
+        assert _tunemymusic_csv_has_track(csv_path, "Centerfold", "J. Geils Band, The") is True
+        assert _tunemymusic_csv_has_track(csv_path, "Centerfold", "Someone Else") is False
+        assert (
+            _tunemymusic_csv_has_track(csv_path, "Angel Is a Centerfold", "J. Geils Band, The")
+            is False
+        )
+
+    def test_matching_ignores_case_and_padding(self, tmp_path: Path):
+        csv_path = tmp_path / "TuneMyMusic.csv"
+        csv_path.write_text("Title,Artist,Album\nCenterfold,J. Geils Band,\n")
+        assert _tunemymusic_csv_has_track(csv_path, " centerfold ", "j. geils band") is True
 
 
 class TestMarkMultichannelSkipped:
@@ -460,8 +478,13 @@ class TestMarkMultichannelSkipped:
 
         csv_path = ctx.config.tunemymusic_csv_path
         content = csv_path.read_text()
-        assert track in content
-        assert "multichannel" in content.lower()
+        assert "Song,Artist" in content  # the track's identity from the archive row,
+        # not its filename -- the CSV exists to be imported into a streaming
+        # service, which searches for artist and title, not a path
+        # The reason ("multichannel") is no longer in this file: it is
+        # diagnostic, and lives in the BPM_SKIPPED_MULTICHANNEL event.
+        # This CSV carries the identity a streaming service can search for.
+        assert "multichannel" not in content.lower()
         assert "6" in content  # channels column
 
     def test_does_not_duplicate_row_on_second_call(self, ctx, tmp_path):
@@ -472,7 +495,7 @@ class TestMarkMultichannelSkipped:
         _mark_multichannel_skipped(ctx, track)
 
         csv_path = ctx.config.tunemymusic_csv_path
-        assert csv_path.read_text().count(track) == 1
+        assert csv_path.read_text().count("Song,Artist") == 1  # deduped on Title+Artist
 
 
 class TestProcessOneMultichannel:

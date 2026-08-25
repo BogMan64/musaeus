@@ -228,9 +228,11 @@ class TestTranscode:
         csv_path = ctx.config.tunemymusic_csv_path
         assert csv_path.exists()
         content = csv_path.read_text()
-        assert "reason,codec,bitrate_kbps" in content  # header
-        assert "source.mp3" in content
-        assert "MP3" in content
+        assert "Title,Artist,Album" in content  # importable header, matches batch_*.csv
+        assert "source" in content  # the track identity, not its filename
+        # Codec is diagnostic and stays in the archive row; this file is
+        # Title,Artist,Album so it can be imported.
+        assert "MP3" not in content
 
 
 # ── Idempotency / re-run behaviour ─────────────────────────────────────────────

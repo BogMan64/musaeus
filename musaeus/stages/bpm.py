@@ -292,17 +292,29 @@ def write_bpm_tags(path: Path, features: dict[str, float | str]) -> bool:
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 
-def _tunemymusic_csv_has_path(csv_path: Path, file_path: str) -> bool:
-    """True if file_path is already logged in TuneMyMusic.csv -- guards
+def _tunemymusic_csv_has_track(csv_path: Path, title: str, artist: str) -> bool:
+    """True if this track is already logged in TuneMyMusic.csv -- guards
     against duplicate rows piling up every time a permanently-unanalyzable
-    file (multichannel audio) gets re-encountered across repeated runs."""
+    file (multichannel audio) is re-encountered across runs.
+
+    Keyed on Title+Artist, not on the file path. The CSV is now written as
+    Title,Artist,Album so it can actually be imported, and a dedup check
+    looking for a path in a file that no longer contains paths silently
+    matches nothing -- appending a fresh duplicate on every run.
+    """
     if not csv_path.exists():
         return False
     try:
         with open(csv_path, newline="", encoding="utf-8") as fh:
             reader = csv.reader(fh)
             next(reader, None)  # header
-            return any(row and row[-1] == file_path for row in reader)
+            key = ((title or "").strip().lower(), (artist or "").strip().lower())
+            return any(
+                row
+                and (row[0].strip().lower(), (row[1] if len(row) > 1 else "").strip().lower())
+                == key
+                for row in reader
+            )
     except OSError:
         return False
 
@@ -327,12 +339,17 @@ def _mark_multichannel_skipped(ctx: RunContext, file_path: str) -> None:
     )
 
     csv_path = ctx.config.tunemymusic_csv_path
-    if _tunemymusic_csv_has_path(csv_path, file_path):
-        return
     row = ctx.conn.execute(
-        "SELECT codec, bitrate, sample_rate, channels, duration FROM archive WHERE file_path = ?",
+        "SELECT codec, bitrate, sample_rate, channels, duration, artist, title, album "
+        "FROM archive WHERE file_path = ?",
         (file_path,),
     ).fetchone()
+    if _tunemymusic_csv_has_track(
+        csv_path,
+        (row["title"] if row else "") or Path(file_path).stem,
+        (row["artist"] if row else "") or "",
+    ):
+        return
     _append_tunemymusic_row(
         ctx,
         {
@@ -343,6 +360,9 @@ def _mark_multichannel_skipped(ctx: RunContext, file_path: str) -> None:
             "channels": row["channels"] if row else None,
             "duration": row["duration"] if row else None,
             "file_path": file_path,
+            "artist": row["artist"] if row else None,
+            "title": row["title"] if row else None,
+            "album": row["album"] if row else None,
         },
     )
 
