@@ -494,6 +494,69 @@ class DupeResolverStage(BaseStage):
                         )
                     continue
 
+                # Before calling it lost, ask the archive row where the file
+                # lives now. The events check above only recognises a move
+                # this stage itself made; a file relocated by any other
+                # stage -- ClassicalComposer refiling under a composer, a
+                # manual DUPE_REVIEW_REVERSED restore -- is equally moved,
+                # and equally not missing. Measured 2026-08-25: five such
+                # rows failed the whole stage (rc=1) when every one of the
+                # files was safely on disk under a new path.
+                relocated = ctx.conn.execute(
+                    "SELECT file_path FROM archive WHERE file_path != ? AND rowid IN "
+                    "(SELECT rowid FROM archive WHERE file_path = ?) LIMIT 1",
+                    (source_key, source_key),
+                ).fetchone()
+                moved_elsewhere = None
+                if relocated is None:
+                    ev = ctx.conn.execute(
+                        "SELECT file_path FROM events WHERE old_value = ? "
+                        "AND file_path IS NOT NULL ORDER BY id DESC LIMIT 1",
+                        (source_key,),
+                    ).fetchone()
+                    if ev and Path(ev["file_path"]).exists():
+                        moved_elsewhere = ev["file_path"]
+                if moved_elsewhere:
+                    result.files_skipped += 1
+                    result.notes.append(
+                        f"[{dtype}] skipped {source.name}: relocated by another stage"
+                    )
+                    if update_duplicates_table and not dry_run:
+                        ctx.conn.execute(
+                            "UPDATE duplicates SET status = 'archive' "
+                            "WHERE group_id = ? AND file_path = ?",
+                            (group_id, source_key),
+                        )
+                    continue
+
+                # No file, and no archive row either: this duplicates-table
+                # entry names a path the library stopped tracking long ago
+                # -- an old INBOX path from before ingest moved the file, or
+                # one already handled by a DUPE_RESTORED/STALE_ROW_DROPPED.
+                # It is stale history, not a lost file.
+                #
+                # Safe to key on the missing row: a genuinely lost file
+                # KEEPS its archive row pointing at the gone path, and
+                # doctor's "rows with a missing file" check is what catches
+                # that. This branch only fires where the library itself has
+                # no record of the path at all.
+                still_tracked = ctx.conn.execute(
+                    "SELECT 1 FROM archive WHERE file_path = ? LIMIT 1", (source_key,)
+                ).fetchone()
+                if not still_tracked:
+                    result.files_skipped += 1
+                    result.notes.append(
+                        f"[{dtype}] skipped {source.name}: stale duplicates-table row, "
+                        f"no archive row for this path"
+                    )
+                    if update_duplicates_table and not dry_run:
+                        ctx.conn.execute(
+                            "UPDATE duplicates SET status = 'archive' "
+                            "WHERE group_id = ? AND file_path = ?",
+                            (group_id, source_key),
+                        )
+                    continue
+
                 result.files_errored += 1
                 result.errors.append(f"{source}: file missing on disk")
                 continue
@@ -508,10 +571,18 @@ class DupeResolverStage(BaseStage):
                 already_moved[source_key] = group_id
                 continue
 
+            # Row first, then the move (scope section 4.25). A move cannot
+            # be rolled back and a database write can, so this ordering
+            # leaves neither half applied when something fails.
+            ctx.conn.execute(
+                "UPDATE archive SET status = 'DUPE_REVIEW', file_path = ? WHERE file_path = ?",
+                (str(target), str(source)),
+            )
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(source), str(target))
             except OSError as exc:
+                ctx.conn.rollback()
                 result.files_errored += 1
                 result.errors.append(f"{source}: {exc}")
                 logger.warning("[dupe-resolver] move failed %s: %s", source, exc)
@@ -532,10 +603,6 @@ class DupeResolverStage(BaseStage):
             # source). status='DUPE_REVIEW' is a new, distinct status
             # (not CATALOGUED, not GHOST -- this is an intentional,
             # tracked relocation, not a disappearance).
-            ctx.conn.execute(
-                "UPDATE archive SET status = 'DUPE_REVIEW', file_path = ? WHERE file_path = ?",
-                (str(target), str(source)),
-            )
             ctx.log_event(
                 "DUPE_MOVED_FOR_REVIEW",
                 file_path=str(target),

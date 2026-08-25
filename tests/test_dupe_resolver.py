@@ -801,3 +801,91 @@ class TestStudioOverLive:
         hi = self._m(title="Song", bitrate=1200)
         lo = self._m(title="Song", bitrate=800)
         assert sorted([lo, hi], key=_keeper_sort_key)[0] is hi
+
+
+class TestOrderingAndRelocation:
+    """Two defects found by a five-file test batch on 2026-08-25.
+
+    The stage moved the loser and then wrote its row, so a failed write
+    left the file relocated and the row pointing nowhere (scope §4.25).
+
+    And it treated any missing source as lost, recognising a prior move
+    only when *this stage* had recorded it. A file relocated by another
+    stage -- ClassicalComposer refiling under a composer, a manual
+    restore -- reads identically from here, and five such rows failed the
+    whole stage with rc=1 while every one of the files sat safely on disk.
+    """
+
+    def test_a_failed_move_leaves_the_row_untouched(self, ctx, monkeypatch):
+        keeper = _make_archive_row(ctx, "keep.m4a", "A", "Al", "Song", 900, 900)
+        loser = _make_archive_row(ctx, "lose.m4a", "A", "Al", "Song", 100, 100)
+        _stage_duplicate_pair(ctx, "grp1", keeper, loser)
+
+        def boom(*a, **k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("musaeus.stages.dupe_resolver.shutil.move", boom)
+
+        DupeResolverStage().run(ctx)
+
+        status = ctx.conn.execute(
+            "SELECT status FROM archive WHERE file_path = ?", (str(loser),)
+        ).fetchone()["status"]
+        assert status == "CATALOGUED", "the row must not claim a move that failed"
+        assert loser.exists()
+
+    def test_a_file_relocated_by_another_stage_is_skipped_not_failed(self, ctx):
+        keeper = _make_archive_row(ctx, "keep2.m4a", "B", "Al", "Song", 900, 900)
+        loser = _make_archive_row(ctx, "lose2.m4a", "B", "Al", "Song", 100, 100)
+        _stage_duplicate_pair(ctx, "grp2", keeper, loser)
+
+        # another stage moved it, recorded under its own event type
+        moved_to = ctx.inbox / "elsewhere.m4a"
+        loser.rename(moved_to)
+        ctx.conn.execute(
+            "INSERT INTO events (run_id,event_type,file_path,old_value,new_value,stage,note) "
+            "VALUES (?,?,?,?,?,?,?)",
+            ("x", "ARTIST_SET_TO_COMPOSER", str(moved_to), str(loser), str(moved_to), "other", ""),
+        )
+        ctx.conn.commit()
+
+        result = DupeResolverStage().run(ctx)
+
+        assert result.files_errored == 0, "a relocated file is not a lost file"
+        assert any("relocated by another stage" in n for n in result.notes)
+
+    def test_a_stale_row_with_no_archive_record_is_skipped_not_failed(self, ctx):
+        """A duplicates-table entry naming a path the library no longer
+        tracks is stale history — an old INBOX path from before ingest
+        moved the file, or one already handled. Not a lost file.
+
+        Safe to key on the missing archive row: a genuinely lost file KEEPS
+        its row pointing at the gone path, and doctor's "rows with a missing
+        file" check is what catches that.
+        """
+        keeper = _make_archive_row(ctx, "keep3.m4a", "C", "Al", "Song", 900, 900)
+        loser = _make_archive_row(ctx, "lose3.m4a", "C", "Al", "Song", 100, 100)
+        _stage_duplicate_pair(ctx, "grp3", keeper, loser)
+
+        # the library stopped tracking that path entirely, and the file is gone
+        ctx.conn.execute("DELETE FROM archive WHERE file_path = ?", (str(loser),))
+        ctx.conn.commit()
+        loser.unlink()
+
+        result = DupeResolverStage().run(ctx)
+
+        assert result.files_errored == 0
+        assert any("no archive row for this path" in n for n in result.notes)
+
+    def test_a_genuinely_lost_file_still_errors(self, ctx):
+        """The row survives, so this must NOT be swallowed as stale."""
+        keeper = _make_archive_row(ctx, "keep4.m4a", "D", "Al", "Song", 900, 900)
+        loser = _make_archive_row(ctx, "lose4.m4a", "D", "Al", "Song", 100, 100)
+        _stage_duplicate_pair(ctx, "grp4", keeper, loser)
+
+        loser.unlink()  # file gone, archive row intact
+
+        result = DupeResolverStage().run(ctx)
+
+        assert result.files_errored == 1
+        assert any("file missing on disk" in e for e in result.errors)
