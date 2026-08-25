@@ -124,12 +124,15 @@ def test_full_default_pipeline_order_matches_current_design():
         # only ever run on demand, so a new file's genre came from its own
         # tags and nothing checked it against MasterLaw.
         GenreValidateStage,
-        # ...and only then can this ask who wrote it. Classical is filed
-        # under the composer, not the performer.
-        ClassicalComposerStage,
         CrossDupeStage,
         NearDupeStage,
         DupeResolverStage,
+        # Composer attribution AFTER dedup. Filing classical under the
+        # composer collapses performers into a few artists, and NearDupe
+        # compares titles within an artist -- which quarantined 15 distinct
+        # recordings as near-duplicates on 2026-08-25, including two
+        # different movements of the same Handel suite at 89%.
+        ClassicalComposerStage,
         CanonicalizeStage,
         FinalizeStage,
         BPMStage,

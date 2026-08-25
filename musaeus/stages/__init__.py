@@ -296,15 +296,29 @@ ACT1_INTAKE_CORRECTION: list[type] = [
     # file's genre came from its own tags via Scholar and nothing corrected
     # it against MasterLaw.
     GenreValidateStage,
-    # ...and only once the genre is settled can this ask "then who wrote
-    # it?". Classical is filed under the composer, not the performer.
-    ClassicalComposerStage,
 ]
 
 ACT2_DEDUP_STAGING: list[type] = [
     CrossDupeStage,
     NearDupeStage,
     DupeResolverStage,
+    # Composer attribution runs AFTER dedup, not before. Filing classical
+    # under the composer collapses dozens of performers into a handful of
+    # artists -- Bach reached 60 tracks, Vivaldi 52 -- and NearDupeStage
+    # compares titles WITHIN an artist. Classical titles share long work
+    # prefixes, so inside those groups fuzzy matching produces false
+    # positives at scale.
+    #
+    # Measured 2026-08-25: 15 distinct recordings were quarantined as
+    # near-duplicates, among them "Water Music Suite No. 1 ... - Air"
+    # against "... - VIII. Hornpipe" at 89% -- different movements of the
+    # same suite. Under their original performer credits those tracks were
+    # never compared to each other; the attribution created the surface
+    # dedup then tripped on.
+    #
+    # So dedup sees the credits as they arrived, and only then is the
+    # recording re-filed under whoever wrote it.
+    ClassicalComposerStage,
 ]
 
 ACT3_CANONICALIZE_FINALIZE: list[type] = [
