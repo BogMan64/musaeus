@@ -142,6 +142,19 @@ class GenreValidateStage(BaseStage):
         return GenreLaw(ctx.config.meta_dir / "MasterLaw.csv")
 
     @staticmethod
+    def _canon(ctx: RunContext):
+        """GenreCanon, or None when the vault has no canon files."""
+        if getattr(ctx, "config", None) is None:
+            return None
+        from ..canon.genre import GenreCanon
+
+        allowed = ctx.config.meta_dir / "Genre_Allowed.txt"
+        mapping = ctx.config.meta_dir / "Genre_Canonical_Map.txt"
+        if not allowed.exists():
+            return None
+        return GenreCanon(allowed, mapping)
+
+    @staticmethod
     def _allowed_vocabulary(ctx: RunContext) -> set[str]:
         """The vocabulary from Genre_Allowed.txt, or empty if absent.
 
@@ -183,7 +196,10 @@ class GenreValidateStage(BaseStage):
         ).fetchall()
         result.files_processed = len(rows)
 
-        filled = conflicts = unknown = agreed = 0
+        filled = conflicts = unknown = agreed = illegal_fixed = 0
+        illegal_stuck: dict[str, int] = {}
+        allowed = self._allowed_vocabulary(ctx)
+        canon = self._canon(ctx)
         # Keyed by (artist, library genre, law genre), not per file. A
         # conflict is a property of the ARTIST: the first run printed the
         # same "Ac-dc: 'Rock' vs law 'Hard Rock'" line 25 times and filled
@@ -196,6 +212,43 @@ class GenreValidateStage(BaseStage):
             artist = (row["artist"] or "").strip()
             genre = (row["genre"] or "").strip()
             law_genre = law.genre_for(artist)
+
+            # A genre outside the closed vocabulary is not a disagreement --
+            # it is not a genre. Library-vs-law conflicts stay report-only
+            # because the library holds the owner's decision (section 4.19),
+            # but there is no decision to protect in a value the vocabulary
+            # does not contain, and leaving it means a retired genre walks
+            # back in on the next ingest.
+            #
+            # Measured 2026-08-25 on a five-file test batch: "Pop, Rock" --
+            # drained to zero and retired the day before -- returned on the
+            # very first new file, because ScholarStage writes the file's own
+            # genre tag verbatim and never consults GenreCanon. This stage
+            # ran and left it, because it only ever filled EMPTY genres.
+            if allowed and genre not in allowed:
+                replacement = law_genre if law_genre in allowed else None
+                if replacement is None:
+                    resolved = canon.resolve(genre) if canon else None
+                    replacement = resolved if resolved in allowed else None
+                if replacement:
+                    illegal_fixed += 1
+                    if not dry_run:
+                        ctx.conn.execute(
+                            "UPDATE archive SET genre = ? WHERE rowid = ?",
+                            (replacement, row["rid"]),
+                        )
+                        ctx.log_event(
+                            "GENRE_OUTSIDE_VOCABULARY",
+                            file_path=row["file_path"],
+                            old_value=genre,
+                            new_value=replacement,
+                            stage=self.NAME,
+                            note=f"{genre!r} is not in Genre_Allowed.txt ({artist})",
+                        )
+                    continue
+                illegal_stuck.setdefault(genre, 0)
+                illegal_stuck[genre] += 1
+                continue
 
             if law_genre is None:
                 unknown += 1
@@ -237,6 +290,14 @@ class GenreValidateStage(BaseStage):
         result.notes.append(f"  genre agrees:            {agreed}")
         result.notes.append(f"  {verb} empty genre:       {filled}")
         result.notes.append(f"  artist unknown to law:   {unknown}")
+        verb2 = "would correct" if dry_run else "corrected"
+        result.notes.append(f"  {verb2} genre outside the vocabulary: {illegal_fixed}")
+        if illegal_stuck:
+            result.notes.append(
+                "  OUTSIDE THE VOCABULARY and unresolvable -- these need a ruling:"
+            )
+            for g, n in sorted(illegal_stuck.items(), key=lambda kv: -kv[1]):
+                result.notes.append(f"    {g!r}  ({n} file{'s' if n != 1 else ''})")
         result.notes.append(
             f"  CONFLICTS (report only): {conflicts} file(s) "
             f"across {len(conflict_groups)} artist(s)"
