@@ -45,6 +45,7 @@ from .stages import (
     TaggerStage,
     TributeQuarantineStage,
 )
+from .safety.source_watch import SourceWatch, auto_restart_enabled
 from .stages.base import BaseStage
 
 logger = logging.getLogger(__name__)
@@ -173,6 +174,9 @@ class Console:
     def __init__(self) -> None:
         self._config: MusicConfig | None = None
         self._running = True
+        # Taken at construction, so it reflects the source as this process
+        # actually imported it -- not as it looks when a run is launched.
+        self._source = SourceWatch()
 
     # ── Boot ──────────────────────────────────────────────────────────────────
 
@@ -296,11 +300,60 @@ class Console:
         finally:
             conn.close()
 
+    # ── Source drift ──────────────────────────────────────────────────────────
+
+    def _check_source_drift(self) -> bool:
+        """True to proceed with the run, False to abort.
+
+        A process cannot pick up edits to its own source. On drift the
+        default is to replace this process with a fresh interpreter --
+        which does not return. If that is disabled or fails, refuse the
+        run and say why: proceeding would silently execute the old code,
+        which is the failure this exists to prevent.
+        """
+        if not self._source.drifted():
+            return True
+
+        changed = self._source.drifted_files()
+        _warn(f"Source has changed since this console started ({len(changed)} file(s)).")
+        for f in changed[:8]:
+            try:
+                _info(f"  {f.relative_to(Path(__file__).resolve().parent.parent)}")
+            except ValueError:
+                _info(f"  {f}")
+        if len(changed) > 8:
+            _info(f"  ... and {len(changed) - 8} more")
+        _info("A running process keeps the modules it imported at startup,")
+        _info("so a live run now would use the OLD code.")
+
+        if not auto_restart_enabled():
+            _err("Refusing the live run. Restart the console, or unset "
+                 "MUSAEUS_AUTO_RESTART to restart automatically.")
+            return False
+
+        _info("Restarting into a fresh interpreter...")
+        try:
+            # Nothing of this run has been opened yet, but the console may
+            # hold a connection from an earlier menu action; exec drops the
+            # fds either way, so flush first.
+            self._source.restart()  # does not return
+        except OSError as exc:
+            _err(f"Could not restart automatically ({exc}). Quit and relaunch "
+                 f"before running live.")
+            return False
+        return False  # unreachable; execv either replaces us or raised
+
     # ── Run pipeline ──────────────────────────────────────────────────────────
 
     def _run_pipeline(self, dry_run: bool) -> None:
         mode = "DRY RUN" if dry_run else "LIVE RUN"
         _section(f"Pipeline  [{mode}]")
+
+        # Checked here rather than at the menu: this is the moment stale
+        # code costs a batch, and it keeps ordinary browsing quiet. A dry
+        # run mutates nothing, so it is not worth interrupting.
+        if not dry_run and not self._check_source_drift():
+            return
 
         assert self._config is not None
         conn = self._open_db()
