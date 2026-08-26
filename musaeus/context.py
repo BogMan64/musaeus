@@ -206,12 +206,25 @@ class RunContext:
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    def finish(self) -> None:
-        """Log RUN_END, commit, and close the DB connection."""
-        success = all(r.success for r in self.stage_results)
+    def finish(self, interrupted: bool = False) -> None:
+        """Log RUN_END, commit, and close the DB connection.
+
+        `interrupted` records that the run was cut short rather than
+        reaching the end of the pipeline. Without it a Ctrl-C left no
+        RUN_END at all, and an aborted run was indistinguishable from one
+        still in progress -- the resume markers make relaunching safe, but
+        nothing said which stages never ran. Measured 2026-08-26: a batch
+        stopped after 22 of 27 stages, and only reading the stage list
+        revealed that forge, tagger, audit, enrich and mb_enrich had been
+        skipped.
+        """
+        success = all(r.success for r in self.stage_results) and not interrupted
         self.log_event(
             "RUN_END",
-            note=f"success={success} stages={len(self.stage_results)}",
+            note=(
+                f"success={success} stages={len(self.stage_results)}"
+                + (" interrupted=True" if interrupted else "")
+            ),
         )
         self.conn.commit()
         self.conn.close()

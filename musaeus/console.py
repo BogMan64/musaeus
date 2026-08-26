@@ -343,6 +343,68 @@ class Console:
             return False
         return False  # unreachable; execv either replaces us or raised
 
+    def _warn_incomplete_previous_run(self, conn) -> None:  # type: ignore[no-untyped-def]
+        """Say so when the last run never reached the end of the pipeline.
+
+        Resume is per-ROW, not per-stage: relaunching re-selects unfinished
+        rows, which is safe, but nothing recorded that a stage never ran at
+        all. An aborted batch therefore looked exactly like a completed one
+        on the next launch. Reported, not blocked -- relaunching IS the
+        recovery, and the point is that it stops being invisible.
+        """
+        try:
+            row = conn.execute(
+                """
+                SELECT run_id,
+                       MIN(ts) AS started,
+                       MAX(ts) AS last_seen,
+                       CAST((julianday('now') - julianday(MAX(ts))) * 1440 AS INTEGER)
+                           AS idle_minutes
+                  FROM events
+                 WHERE run_id LIKE 'run_%'
+                 GROUP BY run_id ORDER BY MIN(ts) DESC LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                return
+            prev = row["run_id"]
+            # A run still writing events is not an abandoned one. Without
+            # this, a run merely WAITING -- preflight blocks on an
+            # interactive [y/N] before it does anything -- gets announced
+            # as failed, and a warning that cries wolf is one nobody reads.
+            idle = row["idle_minutes"]
+            still_warm = idle is not None and idle < 5
+            ended = conn.execute(
+                "SELECT 1 FROM events WHERE run_id=? AND event_type='RUN_END'",
+                (prev,),
+            ).fetchone()
+            if ended:
+                return
+            done = [
+                r["stage"]
+                for r in conn.execute(
+                    "SELECT DISTINCT stage FROM events "
+                    "WHERE run_id=? AND event_type='STAGE_COMPLETE'",
+                    (prev,),
+                ).fetchall()
+            ]
+            missing = [c.NAME for c in DEFAULT_PIPELINE if c.NAME not in set(done)]
+        except Exception:
+            return  # a warning must never be the thing that breaks a run
+
+        if still_warm:
+            _warn(f"A previous run is unfinished and was active {idle} minute(s) ago: {prev}")
+            _warn("  It may still be running elsewhere — check before starting a second.")
+            print()
+            return
+
+        _warn(f"Previous run did not complete: {prev}")
+        _warn(f"  {len(done)} of {len(DEFAULT_PIPELINE)} stage(s) finished.")
+        if missing:
+            _warn("  Never ran: " + ", ".join(missing))
+        _info("  This run resumes them: each stage re-selects only unfinished rows.")
+        print()
+
     # ── Run pipeline ──────────────────────────────────────────────────────────
 
     def _run_pipeline(self, dry_run: bool) -> None:
@@ -359,6 +421,9 @@ class Console:
         conn = self._open_db()
         if conn is None:
             return
+
+        if not dry_run:
+            self._warn_incomplete_previous_run(conn)
 
         try:
             try:
@@ -390,6 +455,22 @@ class Console:
 
                 ctx.finish()
 
+            except KeyboardInterrupt:
+                # Ctrl-C is a BaseException, so it skipped ctx.finish()
+                # entirely and the run left no RUN_END -- indistinguishable
+                # from one still running. Record the abort and name the
+                # stages that never ran, then re-raise so the console's own
+                # handling is unchanged.
+                ran = {r.stage_name for r in ctx.stage_results}
+                remaining = [s_.NAME for s_ in stages if s_.NAME not in ran]
+                print()
+                _warn(f"Interrupted after {len(ctx.stage_results)} of {len(stages)} stage(s).")
+                if remaining:
+                    _warn("These stages did NOT run: " + ", ".join(remaining))
+                _info("Relaunching resumes: each stage re-selects only unfinished rows.")
+                with contextlib.suppress(Exception):
+                    ctx.finish(interrupted=True)
+                raise
             except Exception:
                 _err("Pipeline crashed — see traceback below")
                 traceback.print_exc()
