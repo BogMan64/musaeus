@@ -120,14 +120,23 @@ class TestRealStagesRespectThePolicy:
         get_gateway().reset()
         set_policy(NetworkPolicy.LOCAL_ONLY)
 
-    def test_mb_enrich_attempt_is_recorded_even_though_it_swallows(self):
-        from musaeus.stages.mb_enrich import _search_artist
+    def test_mb_enrich_attempt_is_recorded_and_the_refusal_reaches_the_caller(self):
+        import pytest
 
-        result = _search_artist("Simon & Garfunkel")
+        from musaeus.stages.mb_enrich import LookupUnavailable, _search_artist
+
+        # Was: `assert _search_artist(...) is None` -- the refusal was
+        # swallowed and reported as a clean miss. That is the same
+        # conflation as a timeout: under LOCAL_ONLY nothing was ever
+        # asked, so a caller that reads None as "MusicBrainz has no such
+        # artist" would stamp mb_enriched_at and never ask again. It now
+        # raises, and the caller leaves the row alone.
+        with pytest.raises(LookupUnavailable):
+            _search_artist("Simon & Garfunkel")
+
+        # The original point of this test, unchanged: the denial is
+        # recorded, so the evidence cannot be erased by a broad except.
         gw = get_gateway()
-        # The stage reports a clean miss...
-        assert result is None
-        # ...but the policy knows better.
         assert not gw.clean
         assert any("musicbrainz" in a for a in gw.denials)
 

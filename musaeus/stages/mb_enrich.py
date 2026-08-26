@@ -136,10 +136,31 @@ def _same_artist(ours: str, theirs: str) -> bool:
     return bool(fold(ours)) and fold(ours) == fold(theirs)
 
 
+class LookupUnavailable(Exception):
+    """MusicBrainz gave no answer: timeout, 503, DNS, or a policy refusal.
+
+    Distinct from "MusicBrainz answered, and has no such artist". Both used
+    to arrive here as None, and the caller stamped mb_enriched_at on the
+    strength of it -- so a network wobble permanently recorded a row as
+    looked-up, and a poisoned entry went into the persistent cache on top.
+    Measured in the 16:16 run on 2026-08-25: 32 transport failures against
+    3 successes. Under the marker written earlier that day, all 32 would
+    have been marked done and never asked again.
+
+    Three states, and the schema has to carry all three:
+        (mbid, name)        -- found
+        None                -- asked, definitively not found  -> stamp
+        LookupUnavailable   -- never asked successfully       -> leave alone
+    """
+
+
 def _search_artist(artist_name: str) -> tuple[str, str] | None:
     """
     Search MusicBrainz for an artist by name.
-    Returns (mbid, canonical_name) or None if not found / score too low.
+
+    Returns (mbid, canonical_name), or None when MusicBrainz answered and
+    had no match good enough. Raises LookupUnavailable when no answer was
+    obtained at all -- never conflate the two.
     """
     try:
         data = _mb_get(
@@ -154,8 +175,10 @@ def _search_artist(artist_name: str) -> tuple[str, str] | None:
             {"query": f'artist:"{artist_name}"', "limit": "3"},
         )
     except Exception as exc:
+        # Was `return None`, which the caller could not tell apart from a
+        # genuine miss.
         logger.warning("[mb_enrich] artist search error for %r: %s", artist_name, exc)
-        return None
+        raise LookupUnavailable(str(exc)) from exc
 
     artists = data.get("artists", [])
     for artist in artists:
@@ -328,6 +351,7 @@ class MBEnrichStage(BaseStage):
         release_cache: dict[tuple[str, str], str | None] = {}
 
         cache_hits = 0
+        unavailable = 0
         found_artists = 0
         found_releases = 0
         not_found = 0
@@ -369,22 +393,42 @@ class MBEnrichStage(BaseStage):
                     cache_hits += 1
                 else:
                     time.sleep(_RATE_LIMIT_S)
-                    match = _search_artist(artist)
+                    try:
+                        match = _search_artist(artist)
+                    except LookupUnavailable as exc:
+                        # No answer, so nothing is known and nothing may be
+                        # recorded: not the marker, and above all not the
+                        # persistent cache, which would carry the mistake
+                        # into every future run. The row keeps
+                        # mb_enriched_at NULL and is retried next batch --
+                        # the one case where re-querying IS the right call.
+                        unavailable += 1
+                        result.files_skipped += 1
+                        logger.warning(
+                            "[mb_enrich] no answer for %r (%s) -- left for a later run",
+                            artist,
+                            exc,
+                        )
+                        continue
                     artist_cache[artist_lower] = match
                     if mb_cache is not None:
                         try:
                             mb_cache_put_artist(mb_cache, artist_lower, match)
                         except Exception as exc:
                             logger.debug("[mb_enrich] cache write failed: %s", exc)
-                if match:
-                    logger.info(
-                        "[mb_enrich] artist found: %r → %r  mbid=%s",
-                        artist,
-                        match[1],
-                        match[0],
-                    )
-                else:
-                    logger.debug("[mb_enrich] artist not found: %r", artist)
+                    # Logged here rather than after the cache branch: `match`
+                    # is only bound on this path, and reading it after a
+                    # cache HIT used whatever the previous iteration left in
+                    # it -- or raised NameError on the very first row.
+                    if match:
+                        logger.info(
+                            "[mb_enrich] artist found: %r → %r  mbid=%s",
+                            artist,
+                            match[1],
+                            match[0],
+                        )
+                    else:
+                        logger.debug("[mb_enrich] artist not found: %r", artist)
 
             artist_match = artist_cache[artist_lower]
 
@@ -462,6 +506,13 @@ class MBEnrichStage(BaseStage):
             result.notes.append(f"  {found_releases} release MBID(s) found.")
         if not_found:
             result.notes.append(f"  {not_found} artist(s) not found on MusicBrainz.")
+        if unavailable:
+            # Deferred, not decided. Said plainly because the old code
+            # reported errors=0 here while marking these rows done.
+            result.notes.append(
+                f"  {unavailable} artist(s) got NO ANSWER (network/timeout/503) — "
+                f"not marked, will be retried on the next run."
+            )
         if would_query_artists:
             result.notes.append(
                 f"  {len(would_query_artists)} artist(s) would be queried via "
