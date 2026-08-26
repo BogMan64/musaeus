@@ -16,6 +16,13 @@ choice:
 
     how many files would a fail-CLOSED cross_dupe wrongly quarantine?
 
+These figures were measured from a 2026-08-26T09:31Z snapshot. They are
+a PRE-PURGE baseline: later that day an empty-genre purge hard-deleted 42
+files and their archive rows but left 36 of their finalized_hashes rows
+behind, so a ledger read after ~17:22Z carries 36 orphans that are
+deletions rather than drift. Re-derive the baseline after those are
+cleaned rather than comparing across that line.
+
 That count is the headline output. On the 2026-08-26 batch it was 849 of
 2,028 candidates (41.9%), of which 848 had exactly one dead twin -- i.e.
 they were the same audio re-finalized into a new dated folder, and

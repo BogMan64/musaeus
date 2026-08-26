@@ -80,12 +80,20 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 import sqlite3
 import subprocess
 from pathlib import Path
 
 from ..config import LOSSLESS_CODECS as _LOSSLESS_CODECS
 from ..context import RunContext, StageResult
+from ..safety.mutation import MutationBoundary, PreconditionError, UnmanagedPathError
+from ..safety.recovery import (
+    JOURNAL_FILENAME,
+    CollisionError,
+    OperationJournal,
+    create_checkpoint,
+)
 from .base import BaseStage, StageError
 
 logger = logging.getLogger(__name__)
@@ -531,6 +539,68 @@ class CanonicalizeStage(BaseStage):
             self._quarantine_failed_staging(ctx, tmp_output, staging_name, source, exc)
             return "ERROR", f"filesystem error: {exc}"
 
+    #: Set MUSAEUS_CANONICALIZE_CHECKPOINT=0 to run without a recovery
+    #: boundary. An escape hatch, not a default: this stage destroys the
+    #: only copy of a pre-conversion original.
+    CHECKPOINT_ENV = "MUSAEUS_CANONICALIZE_CHECKPOINT"
+
+    def _open_boundary(self, ctx: RunContext, result: StageResult):
+        """Open a journalled mutation boundary for the disposal of originals.
+
+        Scope is deliberate, and differs from finalize's. What this stage
+        destroys is the pre-conversion INBOX original, and INBOX holds the
+        whole incoming batch -- checkpointing it would mean copying every
+        file the run is about to read, which is the same capacity argument
+        that keeps finalize from checkpointing ALAC-Library.
+
+        It does not need to. The protection here is not the checkpoint's
+        payload, it is quarantine_item's contract: a move, never a delete,
+        so the original's bytes still exist at a recorded location when
+        disposal returns. The checkpoint is checkpointed over STAGING --
+        this stage's own output area, empty or near-empty at entry, so the
+        copy is cheap -- and serves as the quarantine container and journal
+        anchor. Rolling back therefore means restoring each original from
+        quarantine and clearing what was staged, which the journal alone
+        supports.
+
+        source_root spans the vault because the paths being disposed of
+        live under INBOX while the quarantine area lives under RUNS, and
+        both ends must validate.
+
+        Returns None when disabled or unavailable, and says which in the
+        result -- a run with no boundary must announce itself rather than
+        look identical to one that has it.
+        """
+        if os.environ.get(self.CHECKPOINT_ENV, "1").strip().lower() in ("0", "false", "no"):
+            result.notes.append("recovery boundary: DISABLED by " + self.CHECKPOINT_ENV)
+            return None
+        try:
+            recovery_root = ctx.config.runs_root / "recovery"
+            recovery_root.mkdir(parents=True, exist_ok=True)
+            ctx.staging.mkdir(parents=True, exist_ok=True)
+            checkpoint = create_checkpoint(
+                ctx.staging,
+                recovery_root,
+                checkpoint_id=f"canonicalize_{ctx.run_id}",
+                capture_tags=False,
+            )
+            journal = OperationJournal(checkpoint.root / JOURNAL_FILENAME)
+            boundary = MutationBoundary(
+                checkpoint,
+                journal,
+                run_id=ctx.run_id,
+                source_root=ctx.config.vault_root,
+            )
+            result.notes.append(
+                f"recovery boundary: checkpoint {checkpoint.checkpoint_id} "
+                f"(journal at {journal.path})"
+            )
+            return boundary
+        except Exception as exc:
+            result.notes.append(f"recovery boundary: UNAVAILABLE ({exc})")
+            logger.warning("[canonicalize] no recovery boundary: %s", exc)
+            return None
+
     # ── run ───────────────────────────────────────────────────────────────────
 
     def run(self, ctx: RunContext) -> StageResult:
@@ -546,6 +616,7 @@ class CanonicalizeStage(BaseStage):
             return result
 
         counters: dict[str, int] = {"PASSTHROUGH": 0, "CONVERTED": 0, "TRANSCODED": 0, "ERROR": 0}
+        boundary = self._open_boundary(ctx, result)
 
         for i, row in enumerate(pending, 1):
             outcome, detail = self._process_one(ctx, row, dry_run=False)
@@ -615,11 +686,56 @@ class CanonicalizeStage(BaseStage):
                 note=detail,
             )
 
-            # Only now, with the DB row safely pointing at the verified
-            # STAGING copy, is it safe to remove the pre-conversion
-            # original -- never before the DB write is confirmed.
             if new_path != old_path:
-                Path(old_path).unlink(missing_ok=True)
+                # The comment that stood here said the original is removed
+                # only once "the DB write is confirmed". It was confirmed in
+                # memory, not on disk. open_db() connects with sqlite3's
+                # default deferred isolation -- not autocommit, unlike
+                # state/migrator.py which sets isolation_level=None where it
+                # wants that -- and the commit below fired only every
+                # _COMMIT_EVERY rows. So up to 24 originals could be gone
+                # while the row naming their replacement sat in an open
+                # transaction. A kill in that window discarded the
+                # transaction: original deleted, converted file an
+                # unattributed orphan in STAGING, archive row still naming
+                # the deleted path with canonicalized_at NULL, and the next
+                # run erroring it as missing forever.
+                #
+                # So commit before disposing, per row. This stage is
+                # ffmpeg-bound at seconds per file; a commit costs nothing
+                # measurable against that.
+                ctx.conn.commit()
+                try:
+                    if boundary is not None:
+                        # A move into the checkpoint's quarantine area, never
+                        # a delete -- the bytes still exist at a recorded
+                        # location when this returns, and the journal says
+                        # where. Same filesystem, so it is a rename: peak
+                        # disk is unchanged from the pre-canonicalize state,
+                        # it just isn't reclaimed until the run is released.
+                        boundary.quarantine(
+                            Path(old_path), reason=f"canonicalized to {new_path}"
+                        )
+                    else:
+                        Path(old_path).unlink(missing_ok=True)
+                except (
+                    OSError,
+                    UnmanagedPathError,
+                    PreconditionError,
+                    CollisionError,
+                ) as exc:
+                    # One row's problem, not the stage's -- finalize's
+                    # 2026-08-25 lesson. The archive row already points at
+                    # the verified staged copy and that write is durable, so
+                    # the only consequence is an original left in place.
+                    result.files_errored += 1
+                    result.errors.append(
+                        f"{Path(old_path).name}: original not disposed: {exc}"
+                    )
+                    logger.warning(
+                        "[canonicalize] %s: original not disposed: %s", old_path, exc
+                    )
+                    continue
                 logger.info("[canonicalize] %s: %s -> %s", outcome, old_path, new_path)
             else:
                 logger.info("[canonicalize] %s: %s", outcome, new_path)
