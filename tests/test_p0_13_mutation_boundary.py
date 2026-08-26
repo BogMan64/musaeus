@@ -142,8 +142,8 @@ class TestQuarantineFirst:
         )
 
     def test_every_applied_operation_is_journalled(self, boundary, library):
-        boundary.write_tags(library / "Bob Seger" / "Night Moves.m4a", {"artist": "Bob Seger"})
-        boundary.write_artwork(library / "The Byrds" / "Eight Miles High.m4a", b"JPEGDATA")
+        boundary.fixture_write_tags(library / "Bob Seger" / "Night Moves.m4a", {"artist": "Bob Seger"})
+        boundary.fixture_write_artwork(library / "The Byrds" / "Eight Miles High.m4a", b"JPEGDATA")
         boundary.move(
             library / "Bob Seger" / "Hollywood Nights.m4a",
             library / "Bob Seger" / "Hollywood Nights (1978).m4a",
@@ -239,8 +239,8 @@ class TestRollbackRestoresExactly:
     def test_rollback_after_a_mixed_batch_restores_hashes_and_locations(self, boundary, library):
         before = _snapshot(library)
 
-        boundary.write_tags(library / "Bob Seger" / "Night Moves.m4a", {"artist": "Bob Seger"})
-        boundary.write_artwork(library / "The Byrds" / "Eight Miles High.m4a", b"JPEGDATA")
+        boundary.fixture_write_tags(library / "Bob Seger" / "Night Moves.m4a", {"artist": "Bob Seger"})
+        boundary.fixture_write_artwork(library / "The Byrds" / "Eight Miles High.m4a", b"JPEGDATA")
         boundary.move(
             library / "Bob Seger" / "Hollywood Nights.m4a",
             library / "Bob Seger" / "Hollywood Nights (1978).m4a",
@@ -315,7 +315,7 @@ class TestRollbackRestoresExactly:
         before = _snapshot(library)
         source = library / "Bob Seger" / "Night Moves.m4a"
         moved = library / "Bob Seger" / "Night Moves (1976).m4a"
-        boundary.write_tags(source, {"year": "1976"})
+        boundary.fixture_write_tags(source, {"year": "1976"})
         boundary.move(source, moved)
         assert moved.exists() and not source.exists()
 
@@ -373,3 +373,30 @@ class TestRollbackRefusesUnexpectedOverwrite:
         ]
         assert recovered, "the created file is retrievable, not destroyed"
         assert recovered[0].read_bytes() == b"NEWLY CREATED"
+
+
+class TestTheFixtureWritersCannotBeReachedByAccident:
+    """They append junk bytes and report success. The name is the hazard.
+
+    Measured 2026-08-26 on a real ffmpeg-encoded ALAC: appending
+    `\n#TAGS {json}` leaves the file still parsing as MP4, grown by the
+    appended length, carrying none of the requested tags -- and the method
+    returns a journal operation id reporting success. A reviewer nearly
+    wired IdentityTagStage to it before reading the body.
+    """
+
+    def test_the_unprefixed_names_do_not_exist(self):
+        from musaeus.safety.mutation import MutationBoundary
+
+        assert not hasattr(MutationBoundary, "write_tags"), (
+            "a plausible-looking name on the safety layer that silently "
+            "corrupts audio must not be reachable"
+        )
+        assert not hasattr(MutationBoundary, "write_artwork")
+
+    def test_the_fixture_names_are_present_and_warn(self):
+        from musaeus.safety.mutation import MutationBoundary
+
+        for name in ("fixture_write_tags", "fixture_write_artwork"):
+            doc = getattr(MutationBoundary, name).__doc__ or ""
+            assert "FIXTURE ONLY" in doc, f"{name} must warn in its docstring"

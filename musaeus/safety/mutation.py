@@ -241,13 +241,28 @@ class MutationBoundary:
         )
         return entry.operation_id
 
-    def write_tags(self, path: Path, tags: dict[str, str]) -> str:
-        """Fixture-level tag write.
+    def fixture_write_tags(self, path: Path, tags: dict[str, str]) -> str:
+        """FIXTURE ONLY — this does NOT write a readable tag. Never call it
+        on real audio.
 
-        Serialised as a sidecar-free byte rewrite in P0 so the boundary can
-        be exercised without depending on mutagen's behaviour for the fake
-        payloads fixtures use. The recorded operation kind is what matters
-        for rollback ordering."""
+        It APPENDS `\n#TAGS {json}` to the file's bytes. On a real ALAC that
+        is silent corruption wearing a helpful name: measured 2026-08-26 on
+        an encoded .m4a, the file still parses as MP4 (trailing bytes are
+        ignored), grows by the appended length, and carries none of the tags
+        you asked for -- mutagen reports only the encoder atom. It then
+        returns a journal operation id, reporting success.
+
+        Renamed from `write_tags` because that is exactly the name a careful
+        person reaches for when they want a journalled tag write, and one
+        did: a reviewer on 2026-08-26 nearly recommended wiring
+        IdentityTagStage to it before reading the body. There is currently
+        NO production-safe journalled tag-write primitive; if you need one,
+        build it on mutagen (see musaeus/identity_tags.py, which verifies by
+        reading back off disk) rather than on this.
+
+        Exists so the boundary's rollback ordering can be exercised against
+        the fake payloads fixtures use, without depending on mutagen's
+        behaviour for them. The recorded operation kind is the point."""
         self._guard()
         relative = self._relative(path)
         before = self._check_precondition(path, relative)
@@ -271,7 +286,11 @@ class MutationBoundary:
         )
         return entry.operation_id
 
-    def write_artwork(self, path: Path, artwork: bytes) -> str:
+    def fixture_write_artwork(self, path: Path, artwork: bytes) -> str:
+        """FIXTURE ONLY — appends `\n#ART <bytes>`, writes no real artwork.
+
+        Same hazard as fixture_write_tags above, and until this rename it
+        did not even carry that one's warning docstring."""
         self._guard()
         relative = self._relative(path)
         before = self._check_precondition(path, relative)
