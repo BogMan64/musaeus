@@ -223,3 +223,45 @@ class TestTheMoveAndTheRowStayInStep:
         kept = list((ctx.config.quarantine / "denied").glob("*.m4a"))
         assert len(kept) == 2, "the pre-existing file must survive"
         assert (ctx.config.quarantine / "denied" / "same.m4a").read_bytes() == b"first"
+
+
+class TestQuarantineClearsTheFinalizedMarker:
+    """`finalized_at` means "this row is filed in ALAC-Library".
+
+    A file finalized in an earlier batch can be re-ingested and denied.
+    Quarantine moved it and set status, but left finalized_at standing, so
+    the row claimed to be in the library while sitting in QUARANTINE.
+    AuditStage checks exactly that pair and reported 5 such rows on the
+    live vault 2026-08-26 -- one more every batch that denies a
+    previously-finalized file, each one permanent.
+    """
+
+    def test_a_previously_finalized_row_loses_the_marker(self, ctx):
+        _deny(ctx, "f" * 64)
+        src = _incoming(ctx, "returning.m4a", "f" * 64)
+        # The distinguishing state: finalized in an earlier batch.
+        ctx.conn.execute(
+            "UPDATE archive SET finalized_at='2026-08-25 19:01:40' WHERE file_path=?",
+            (str(src),),
+        )
+        ctx.conn.commit()
+
+        DenyListStage().run(ctx)
+
+        row = ctx.conn.execute(
+            "SELECT status, file_path, finalized_at FROM archive"
+        ).fetchone()
+        assert row["status"] == "QUARANTINED"
+        assert row["finalized_at"] is None, "a quarantined row is not finalized"
+        # And the audit invariant this exists to protect:
+        assert "/ALAC-Library/" not in row["file_path"]
+
+    def test_a_never_finalized_row_is_unaffected(self, ctx):
+        _deny(ctx, "g" * 64)
+        _incoming(ctx, "fresh.m4a", "g" * 64)
+
+        DenyListStage().run(ctx)
+
+        row = ctx.conn.execute("SELECT status, finalized_at FROM archive").fetchone()
+        assert row["status"] == "QUARANTINED"
+        assert row["finalized_at"] is None

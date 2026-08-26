@@ -134,8 +134,21 @@ class DenyListStage(BaseStage):
                 # round originally -- the same mistake that, in a script the
                 # same week, left 86 files relocated with the database rolled
                 # back behind them. See scope §4.25.
+                # finalized_at is cleared, not just status. It means "this
+                # row is filed in ALAC-Library"; once the file is in
+                # quarantine that is no longer true, and a marker left
+                # behind is a lie the next stage reads as fact. Audit
+                # checks exactly this pair -- finalized_at set, file not
+                # under ALAC-Library -- and reported 5 such rows on
+                # 2026-08-26: files finalized in an earlier batch, then
+                # re-ingested, denied, and quarantined here while keeping
+                # the old marker. Every batch that denies a
+                # previously-finalized file added one more, permanently,
+                # and a permanently failing audit is what hides the next
+                # real one.
                 ctx.conn.execute(
-                    "UPDATE archive SET status='QUARANTINED', file_path=? WHERE file_path=?",
+                    "UPDATE archive SET status='QUARANTINED', file_path=?, "
+                    "finalized_at=NULL WHERE file_path=?",
                     (str(target), str(src)),
                 )
                 try:
