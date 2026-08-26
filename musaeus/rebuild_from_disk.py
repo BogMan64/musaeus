@@ -72,7 +72,7 @@ _STATUS_BY_DIR = {
 }
 
 
-def _read_all_tags(path: Path) -> dict[str, Any]:
+def _read_all_tags(path: Path, known_duration: float | str | None = None) -> dict[str, Any]:
     """Read every tag-derived field MUSAEUS knows how to recover.
 
     Reuses the exact readers the pipeline stages use, rather than a second
@@ -141,11 +141,49 @@ def _read_all_tags(path: Path) -> dict[str, Any]:
         # is a property to depend on deliberately, not by accident. A
         # mismatch means the tag outlived the audio it described.
         fp = ident.get("chromaprint")
+        recorded = ident.get("chromaprint_duration")
         if fp:
-            recorded = ident.get("chromaprint_duration")
-            probed = _probe(path) or {}
-            actual = out.get("duration") or (probed.get("format", {}) or {}).get("duration")
-            if recorded and actual and abs(float(recorded) - float(actual)) > 2.0:
+            # Probe only if the duration is not already known. scan_and_rebuild
+            # has already run _probe on this file before calling us, so an
+            # unconditional second probe costs ~50-100ms per fingerprinted
+            # file -- 10-15 minutes across a 10,000-file rebuild, against a
+            # commit whose entire purpose is saving rebuild time. _probe
+            # RAISES on failure rather than returning falsy, so it is guarded
+            # rather than `or {}`-ed.
+            actual = known_duration
+            if not actual:
+                # Only probe when the caller could not tell us. scan_and_rebuild
+                # has already run _probe on this file, so probing again cost
+                # ~50-100ms per fingerprinted file -- 10-15 minutes across a
+                # 10,000-file rebuild, against a commit whose whole purpose is
+                # saving rebuild time. _probe RAISES rather than returning
+                # falsy, so it is guarded rather than `or {}`-ed.
+                try:
+                    probed = _probe(path)
+                except Exception:
+                    probed = {}
+                actual = (probed.get("format", {}) or {}).get("duration")
+
+            # Trust the fingerprint ONLY on positive evidence that it still
+            # describes this audio.
+            #
+            # The earlier form said `if recorded and actual and mismatch:
+            # distrust / else: trust`, which trusts whenever there is nothing
+            # to compare -- a file tagged before chromaprint_duration existed
+            # carries a fingerprint and no duration, so it fell straight into
+            # the trusting branch. That is the same check-that-cannot-fire
+            # this guard was written to remove, one step along.
+            #
+            # The costs are not symmetric: refusing to trust costs ~0.8s of
+            # fpcalc, while wrongly trusting yields an AcoustID recording ID
+            # for audio the file no longer holds.
+            if not (recorded and actual):
+                logger.debug(
+                    "chromaprint for %s cannot be checked (recorded=%r actual=%r) "
+                    "-- not trusted",
+                    path, recorded, actual,
+                )
+            elif abs(float(recorded) - float(actual)) > 2.0:
                 logger.debug(
                     "chromaprint for %s describes %.1fs but the audio is %.1fs "
                     "-- not trusted",
@@ -153,8 +191,7 @@ def _read_all_tags(path: Path) -> dict[str, Any]:
                 )
             else:
                 out["chromaprint"] = fp
-                if recorded:
-                    out["chromaprint_duration"] = float(recorded)
+                out["chromaprint_duration"] = float(recorded)
     except Exception as exc:
         logger.debug("identity tag read failed for %s: %s", path, exc)
 
@@ -265,7 +302,7 @@ def scan_and_rebuild(
             except Exception as exc:
                 summary["errors"].append(f"{path.name}: probe failed: {exc}")
 
-            row.update(_read_all_tags(path))
+            row.update(_read_all_tags(path, row.get("duration")))
 
             if compute_hashes:
                 # Hash the PRISTINE archive copy when one exists, not the

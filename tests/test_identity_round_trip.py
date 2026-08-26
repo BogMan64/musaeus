@@ -74,3 +74,68 @@ class TestIdentitySurvivesToTheRebuild:
     def test_the_duration_field_itself_round_trips(self, track):
         write_identity(track, {"chromaprint_duration": "3"})
         assert read_identity(track).get("chromaprint_duration") == "3"
+
+
+class TestUncheckableFingerprint:
+    """A fingerprint that cannot be checked must not be trusted.
+
+    The first guard read `if recorded and actual and mismatch: distrust /
+    else: trust`, so it trusted whenever there was nothing to compare --
+    and a file tagged before chromaprint_duration joined IDENTITY_FIELDS
+    carries exactly that: a fingerprint and no duration. Same
+    check-that-cannot-fire shape as the bug the guard replaced.
+    """
+
+    def test_a_fingerprint_without_a_recorded_duration_is_refused(self, track):
+        write_identity(track, {"chromaprint": FP})
+        assert read_identity(track).get("chromaprint") == FP, (
+            "precondition: the tag is on the file; only the duration is absent"
+        )
+
+        got = _read_all_tags(track)
+
+        assert "chromaprint" not in got, (
+            "a fingerprint with nothing to check it against was trusted"
+        )
+
+    def test_probing_is_skipped_when_the_duration_is_already_known(self, track, monkeypatch):
+        """scan_and_rebuild has already probed this file before calling us."""
+        import musaeus.rebuild_from_disk as rb
+
+        calls = {"n": 0}
+        real = rb._probe
+
+        def _counting(p):
+            calls["n"] += 1
+            return real(p)
+
+        monkeypatch.setattr(rb, "_probe", _counting)
+        write_identity(track, {"chromaprint": FP, "chromaprint_duration": "3"})
+
+        got = _read_all_tags(track, known_duration=3.0)
+
+        assert got.get("chromaprint") == FP, "the fingerprint should still be trusted"
+        assert calls["n"] == 0, (
+            "re-probed a file whose duration the caller already knew; "
+            "~50-100ms per file across a 10,000-file rebuild"
+        )
+
+    def test_it_still_probes_when_the_caller_knows_nothing(self, track, monkeypatch):
+        """The fallback must survive: a caller with no duration to offer
+        still gets the fingerprint checked rather than trusted blindly."""
+        import musaeus.rebuild_from_disk as rb
+
+        calls = {"n": 0}
+        real = rb._probe
+
+        def _counting(p):
+            calls["n"] += 1
+            return real(p)
+
+        monkeypatch.setattr(rb, "_probe", _counting)
+        write_identity(track, {"chromaprint": FP, "chromaprint_duration": "3"})
+
+        got = _read_all_tags(track)
+
+        assert calls["n"] == 1
+        assert got.get("chromaprint") == FP
