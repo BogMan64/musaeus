@@ -567,6 +567,18 @@ class CanonicalizeStage(BaseStage):
         live under INBOX while the quarantine area lives under RUNS, and
         both ends must validate.
 
+        WEAKER THAN FINALIZE'S, DELIBERATELY. Do not read this as parity.
+        MutationBoundary._expected_digest falls back to the checkpoint
+        manifest and returns None for an item the manifest does not hold,
+        so _check_precondition passes such an item straight through. The
+        originals disposed of here live under INBOX and are therefore NOT
+        in a STAGING checkpoint, which means they get no digest
+        verification -- nothing here detects that an original changed
+        underneath the run. What the boundary supplies for this stage is
+        journaling and recoverability: the operation is durably recorded
+        and the bytes are retrievable. finalize, whose sources ARE its
+        checkpointed root, additionally gets the precondition check.
+
         Returns None when disabled or unavailable, and says which in the
         result -- a run with no boundary must announce itself rather than
         look identical to one that has it.
