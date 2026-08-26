@@ -485,7 +485,12 @@ class TestMarkMultichannelSkipped:
         # diagnostic, and lives in the BPM_SKIPPED_MULTICHANNEL event.
         # This CSV carries the identity a streaming service can search for.
         assert "multichannel" not in content.lower()
-        assert "6" in content  # channels column
+        # The channel count is gone too, and for the same reason: a streaming
+        # service cannot search for "6". The header is now exactly the one
+        # Playlists_Consolidated/batch_*.csv uses, so the two are importable
+        # by the same route.
+        assert content.splitlines()[0] == "Title,Artist,Album"
+        assert "6" not in content
 
     def test_does_not_duplicate_row_on_second_call(self, ctx, tmp_path):
         track = str(tmp_path / "surround.m4a")

@@ -89,8 +89,13 @@ from pathlib import Path
 
 from ..context import RunContext, StageResult
 from ..db import open_hash_index, record_finalized_hash
-from ..safety.mutation import MutationBoundary
-from ..safety.recovery import JOURNAL_FILENAME, OperationJournal, create_checkpoint
+from ..safety.mutation import MutationBoundary, PreconditionError, UnmanagedPathError
+from ..safety.recovery import (
+    JOURNAL_FILENAME,
+    CollisionError,
+    OperationJournal,
+    create_checkpoint,
+)
 from .base import BaseStage
 from .organize import build_track_filename, sanitize_path_component, unique_path
 
@@ -422,7 +427,26 @@ class FinalizeStage(BaseStage):
                         move_ops[str(source)] = boundary.move(source, target, release_source=False)
                     else:
                         _copy_then_verify_then_swap(source, target)
-                except (FinalizeError, OSError) as exc:
+                except (
+                    FinalizeError,
+                    OSError,
+                    UnmanagedPathError,
+                    PreconditionError,
+                    CollisionError,
+                ) as exc:
+                    # The boundary's refusals are per-ROW facts, not stage
+                    # facts. Learned on 2026-08-25: exactly one of 10,873 rows
+                    # sits outside the vault (a stray Projects/<Artist>/INBOX/
+                    # directory), the boundary correctly refused to move what
+                    # it could not restore, UnmanagedPathError was in neither
+                    # arm of this tuple, and the escape took the whole stage
+                    # down -- four good files left unfinalized because of one
+                    # bad one. The refusal was right; letting it escape wasn't.
+                    #
+                    # RollbackFailedError is deliberately NOT caught. It cannot
+                    # arise from move(), and if it ever did it would mean the
+                    # world is inconsistent -- that must stop the stage, not
+                    # scroll past as one row's error.
                     result.files_errored += 1
                     result.errors.append(f"{source.name}: {exc}")
                     logger.warning("[finalize] %s: %s", source, exc)
