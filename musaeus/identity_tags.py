@@ -41,6 +41,11 @@ IDENTITY_FIELDS: dict[str, str] = {
     "mb_release_id": "MusicBrainz Album Id",
     "acousticid_recording": "Acoustid Id",
     "chromaprint": "Acoustid Fingerprint",
+    # Not a Picard field. Ours, and load-bearing: a fingerprint describes
+    # the PCM, so on rebuild we must be able to ask whether it still
+    # describes THIS audio. Without the duration alongside it there is no
+    # way to tell a valid fingerprint from one that outlived its file.
+    "chromaprint_duration": "Acoustid Fingerprint Duration",
 }
 
 # Vorbis/FLAC uses its own upper-case convention, not the Picard label.
@@ -49,6 +54,7 @@ _VORBIS = {
     "mb_release_id": "MUSICBRAINZ_ALBUMID",
     "acousticid_recording": "ACOUSTID_ID",
     "chromaprint": "ACOUSTID_FINGERPRINT",
+    "chromaprint_duration": "ACOUSTID_FINGERPRINT_DURATION",
 }
 
 

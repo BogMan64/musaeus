@@ -55,6 +55,7 @@ from typing import Any
 
 from .config import AUDIO_EXTENSIONS, MusicConfig
 from .hasher import audio_hash_safe, file_hash
+from .identity_tags import read_identity
 from .stages.bpm import read_existing_tags as _read_bpm_tags
 from .stages.forge import read_existing_rg_tags as _read_rg_tags
 from .stages.scholar import _extract_meta, _probe
@@ -120,6 +121,42 @@ def _read_all_tags(path: Path) -> dict[str, Any]:
             out["rg_peak"] = rg.get("rg_peak")
     except Exception as exc:
         logger.debug("rg tag read failed for %s: %s", path, exc)
+
+    # Recording identity -- MusicBrainz and AcoustID. IdentityTagStage
+    # writes these precisely so a rebuild never has to re-acquire them: an
+    # MBID costs a rate-limited second and a fingerprint ~0.8 s of fpcalc,
+    # so 10,000 files is hours either way. Without this read half the write
+    # half was pointless for rebuild, which is the shape of a round trip
+    # only half built.
+    try:
+        ident = read_identity(path)
+        for col in ("mb_artist_id", "mb_release_id", "acousticid_recording"):
+            if ident.get(col):
+                out[col] = ident[col]
+
+        # The fingerprint is trusted only when its recorded duration still
+        # matches the audio. A fingerprint describes the PCM: canonicalize's
+        # FLAC->ALAC is lossless so it survives, but a transcode to a lossy
+        # codec changes the samples. chromaprint tolerates that well -- which
+        # is a property to depend on deliberately, not by accident. A
+        # mismatch means the tag outlived the audio it described.
+        fp = ident.get("chromaprint")
+        if fp:
+            recorded = ident.get("chromaprint_duration")
+            probed = _probe(path) or {}
+            actual = out.get("duration") or (probed.get("format", {}) or {}).get("duration")
+            if recorded and actual and abs(float(recorded) - float(actual)) > 2.0:
+                logger.debug(
+                    "chromaprint for %s describes %.1fs but the audio is %.1fs "
+                    "-- not trusted",
+                    path, float(recorded), float(actual),
+                )
+            else:
+                out["chromaprint"] = fp
+                if recorded:
+                    out["chromaprint_duration"] = float(recorded)
+    except Exception as exc:
+        logger.debug("identity tag read failed for %s: %s", path, exc)
 
     return out
 
