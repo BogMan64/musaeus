@@ -164,3 +164,70 @@ class TestTheStage:
         stage = ClassicalComposerStage()
         stage.run(ctx)
         assert stage.verify_effect(ctx, stage._make_result()) == []
+
+
+def _inbox_track(ctx, artist, title, genre="Classical"):
+    """A track staged FLAT in the INBOX, the way the batch campaign stages them.
+
+    Not `_track`'s `<library>/<date>/<artist>/<album>/` layout. Measured on
+    the live vault 2026-08-25: all 9,866 queued files and the 500 in INBOX
+    sit at depth 1, with no artist or album directory at all. Every test
+    above used the deep layout, which is the only reason the stage could
+    move three tracks clean out of the vault without a test noticing.
+    """
+    ctx.config.inbox.mkdir(parents=True, exist_ok=True)
+    p = ctx.config.inbox / f"{artist} - {title}.m4a"
+    p.write_bytes(b"audio")
+    upsert_archive(ctx.conn, {"file_path": str(p), "status": "CATALOGUED",
+                              "artist": artist, "title": title, "genre": genre})
+    ctx.conn.commit()
+    return p
+
+
+class TestAFlatInboxTrackStaysInTheVault:
+    """The regression: deriving a destination from the source's grandparent.
+
+    For a flat INBOX file `src.parent.parent` IS the vault root, so
+    `.with_name(composer)` addressed a SIBLING of the vault and the track
+    was moved outside every root the run knows about.
+    """
+
+    def test_the_file_never_leaves_the_vault(self, ctx):
+        src = _inbox_track(ctx, "Academy of St Martin In the Fields", "Concerto, BWV 1043")
+        ClassicalComposerStage().run(ctx)
+        row = ctx.conn.execute("SELECT artist, file_path FROM archive").fetchone()
+        final = Path(row["file_path"]).resolve()
+        # The assertion that would have caught it: not "did it move" but
+        # "is it still somewhere this run can reach".
+        assert final.is_relative_to(ctx.config.vault_root.resolve()), final
+        assert final.exists()
+        assert src.exists(), "a pre-finalize track has no artist dir to rename"
+
+    def test_the_artist_is_still_set_to_the_composer(self, ctx):
+        # Not moving must not mean not doing the job: finalize files the
+        # track by the artist on the row, so the row is the whole job here.
+        _inbox_track(ctx, "Academy of St Martin In the Fields", "Concerto, BWV 1043")
+        ClassicalComposerStage().run(ctx)
+        row = ctx.conn.execute("SELECT artist FROM archive").fetchone()
+        assert row["artist"] == "Johann Sebastian Bach"
+
+    def test_the_vault_root_is_never_pruned(self, ctx):
+        # The cleanup loop called rmdir() on `artist_dir`, which for a flat
+        # INBOX file was the vault itself. It survived only because rmdir
+        # refuses a non-empty directory.
+        _inbox_track(ctx, "Academy of St Martin In the Fields", "Concerto, BWV 1043")
+        ClassicalComposerStage().run(ctx)
+        assert ctx.config.vault_root.exists()
+        assert ctx.config.inbox.exists()
+
+    def test_a_library_track_still_moves(self, ctx):
+        # The deep layout keeps its old behaviour: there IS an artist
+        # directory there, and renaming it is correct.
+        src = _track(ctx, "Academy of St Martin In the Fields", "Concerto, BWV 1043")
+        ClassicalComposerStage().run(ctx)
+        row = ctx.conn.execute("SELECT artist, file_path FROM archive").fetchone()
+        assert not src.exists()
+        assert "Johann Sebastian Bach" in row["file_path"]
+        assert Path(row["file_path"]).resolve().is_relative_to(
+            ctx.config.alac_library.resolve()
+        )

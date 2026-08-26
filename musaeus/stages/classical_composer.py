@@ -108,6 +108,36 @@ def composer_for(artist: str, title: str, canon: dict[str, str]) -> tuple[str | 
     return None, ""
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    """True if `path` is `root` or sits underneath it.
+
+    Compared on resolved paths so a symlink or a `..` segment cannot make
+    an outside path look inside one.
+    """
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _PROTECTED_DIRS(ctx: RunContext) -> set[Path]:
+    """Directories this stage must never delete, however empty they get."""
+    c = ctx.config
+    return {
+        d.resolve()
+        for d in (
+            c.vault_root,
+            c.inbox,
+            c.staging,
+            c.quarantine,
+            c.runs_root,
+            c.meta_dir,
+            c.alac_library,
+        )
+    }
+
+
 class ClassicalComposerStage(BaseStage):
     """Refile CATALOGUED Classical tracks under their composer."""
 
@@ -154,12 +184,42 @@ class ClassicalComposerStage(BaseStage):
                 result.files_changed += 1
                 continue
 
-            album_dir, artist_dir = src.parent, src.parent.parent
-            dst_dir = artist_dir.with_name(sanitize_path_component(composer)) / album_dir.name
-            dst = unique_path(
-                dst_dir / build_track_filename(composer, row["title"] or src.stem, src.suffix)
-            )
-            dst_dir.mkdir(parents=True, exist_ok=True)
+            # Only a file already filed in the library has an artist
+            # directory to rename. Before finalize, a file has no such
+            # layout -- the campaign stages them flat, straight into
+            # INBOX -- and deriving the destination from where the source
+            # happens to sit is then catastrophic:
+            #
+            #     src        = <vault>/INBOX/track.m4a
+            #     src.parent = <vault>/INBOX
+            #     src.parent.parent = <vault>          <-- the vault ITSELF
+            #     .with_name(composer) -> <vault>/../<Composer>
+            #
+            # which moved the track to a SIBLING of the vault
+            # (Projects/Johann Sebastian Bach/INBOX/...), outside every
+            # root the run knows about. Finalize's recovery boundary then
+            # correctly refused to move a file its checkpoint could not
+            # restore, and the row failed its batch. Measured on the live
+            # vault 2026-08-25: 3 tracks escaped this way (Bach, Handel,
+            # Vivaldi), growing by ~2 per 500-file batch.
+            #
+            # There is nothing to move in that case anyway. Finalize
+            # builds its own target as
+            # `alac_library / <batch date> / <artist> / <album>` from the
+            # archive row, so updating `artist` is the whole job: the file
+            # gets filed under the composer by the stage whose task that
+            # is. Move only what is already in the library.
+            in_library = _is_within(src, ctx.config.alac_library)
+            if in_library:
+                album_dir, artist_dir = src.parent, src.parent.parent
+                dst_dir = artist_dir.with_name(sanitize_path_component(composer)) / album_dir.name
+                dst = unique_path(
+                    dst_dir / build_track_filename(composer, row["title"] or src.stem, src.suffix)
+                )
+                dst_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                album_dir = artist_dir = None
+                dst = src
 
             # Row first, then the move, then commit. A move cannot be rolled
             # back and a DB write can, so this ordering means a failure leaves
@@ -169,13 +229,14 @@ class ClassicalComposerStage(BaseStage):
                 "UPDATE archive SET artist=?, file_path=? WHERE id=?",
                 (composer, str(dst), row["id"]),
             )
-            try:
-                shutil.move(str(src), str(dst))
-            except OSError as exc:
-                ctx.conn.rollback()
-                result.files_errored += 1
-                result.errors.append(f"{src.name}: {exc}")
-                continue
+            if dst != src:
+                try:
+                    shutil.move(str(src), str(dst))
+                except OSError as exc:
+                    ctx.conn.rollback()
+                    result.files_errored += 1
+                    result.errors.append(f"{src.name}: {exc}")
+                    continue
 
             ctx.log_event(
                 "ARTIST_SET_TO_COMPOSER",
@@ -187,7 +248,13 @@ class ClassicalComposerStage(BaseStage):
             )
             ctx.conn.commit()
             result.files_changed += 1
+            # Guarded because artist_dir used to resolve to the vault
+            # root itself (see above); this only ever failed to delete it
+            # because rmdir refuses a non-empty directory. Never prune a
+            # directory the configuration names.
             for d in (album_dir, artist_dir):
+                if d is None or d in _PROTECTED_DIRS(ctx):
+                    continue
                 try:
                     d.rmdir()
                 except OSError:
