@@ -41,6 +41,7 @@ import subprocess
 import time
 import urllib.error
 import uuid
+from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
@@ -100,24 +101,74 @@ def _fpcalc(path: str) -> tuple[float, str]:
     except subprocess.TimeoutExpired as exc:
         raise ValueError(f"fpcalc timed out after {_FPCALC_TIMEOUT_S}s") from exc
 
-    if res.returncode != 0:
-        raise ValueError(f"fpcalc failed (rc={res.returncode}): {res.stderr[:200]}")
+    # The verdict is the OUTPUT, not the exit code.
+    #
+    # fpcalc exits non-zero for any input shorter than its ~120s read
+    # window -- "ERROR: Error decoding audio frame (End of file)" on
+    # stderr -- while still writing a complete, usable fingerprint to
+    # stdout. Measured against real library audio (fpcalc 1.5.1), the same
+    # track trimmed to 45s/60s/90s/119s returns rc=3 with valid
+    # fingerprints of 1168/1595/2447/3258 chars, and returns 0 at 125s and
+    # above. Treating rc as the answer therefore discarded a good
+    # fingerprint for every track between _MIN_DURATION_S and ~120s: 59 of
+    # 2,028 rows (2.9%) in the 2026-08-26 batch, and far more of any
+    # spoken-word or classical set.
+    #
+    # A real failure is distinguishable and still raises: it produces no
+    # parseable JSON at all (rc=2, "Could not open the input file").
+    try:
+        data = json.loads(res.stdout)
+    except ValueError as exc:  # includes json.JSONDecodeError
+        raise ValueError(
+            f"fpcalc produced no parseable output (rc={res.returncode}): {res.stderr[:200]}"
+        ) from exc
 
-    data = json.loads(res.stdout)
     duration = float(data.get("duration", 0))
     fingerprint = data.get("fingerprint", "")
     if not fingerprint:
-        raise ValueError("fpcalc returned empty fingerprint")
+        raise ValueError(
+            f"fpcalc returned empty fingerprint (rc={res.returncode}): {res.stderr[:200]}"
+        )
+    if res.returncode != 0:
+        logger.debug(
+            "[acousticid] fpcalc rc=%s but produced a usable fingerprint for %s: %s",
+            res.returncode,
+            path,
+            res.stderr.strip()[:120],
+        )
     return duration, fingerprint
 
 
 # ── AcousticID API ────────────────────────────────────────────────────────────
 
 
+class LookupUnavailable(Exception):
+    """AcousticID gave no answer: timeout, DNS, 5xx, an unparseable body,
+    or a policy refusal.
+
+    Distinct from "AcousticID answered, and has no confident match". Both
+    used to arrive at the caller identically -- the transport errors as a
+    swallowed exception, the genuine miss as None -- and the caller then
+    wrote acousticid_checked_at either way. Selection was on
+    `chromaprint IS NULL`, written in that same statement, so a single
+    network wobble removed the track from the queue permanently. Not
+    "marked checked": structurally unreachable, past any force flag.
+
+    Same three states mb_enrich needed (see f84e643), for the same reason:
+
+        (recording_id, score)  found
+        None                   asked, definitively no match  -> stamp
+        LookupUnavailable      never asked successfully       -> leave alone
+    """
+
+
 def _acousticid_lookup(fingerprint: str, duration: float, api_key: str) -> tuple[str, float] | None:
     """
     Query AcousticID for a recording match.
-    Returns (recording_id, score) or None if no confident match.
+
+    Returns (recording_id, score), or None when AcousticID answered and had
+    no match scoring >= 0.80. Raises LookupUnavailable when no answer was
+    obtained at all -- never conflate the two.
     """
     params = {
         "client": api_key,
@@ -142,12 +193,18 @@ def _acousticid_lookup(fingerprint: str, duration: float, api_key: str) -> tuple
                 logger.warning("[acousticid] rate-limited, backing off 1s")
                 time.sleep(1.0)
                 continue
-            raise
-    else:
-        return None
+            raise LookupUnavailable(f"HTTP {exc.code}") from exc
+        except Exception as exc:
+            # Timeout, DNS, connection reset, an unparseable body, or a
+            # policy refusal. None of these are answers.
+            raise LookupUnavailable(str(exc)) from exc
+    else:  # pragma: no cover - both attempts exhausted without break
+        raise LookupUnavailable("no response after retry")
 
     if data.get("status") != "ok":
-        return None
+        # The service replied but not with a result. "error" is not "no
+        # such recording", so it must not settle the row.
+        raise LookupUnavailable(f"status={data.get('status')!r}")
 
     results = data.get("results", [])
     for r in results:
@@ -206,13 +263,27 @@ class AcousticIDStage(BaseStage):
 
         api_key = ctx.config.acousticid_api_key
 
+        # Selection is on acousticid_checked_at, NOT on chromaprint.
+        #
+        # chromaprint used to be the gate, and it is written from the local
+        # fpcalc result whether or not the lookup succeeded -- so one
+        # timeout retired the row for ever. The two facts have different
+        # lifetimes and now have different columns: the fingerprint is a
+        # property of the audio, computed locally and cached indefinitely;
+        # acousticid_checked_at means "AcousticID gave an answer about
+        # this", and only an answer writes it.
+        #
+        # This also makes the column load-bearing. It was written by this
+        # stage and read by nothing, which is a lie waiting for someone to
+        # trust it.
         try:
             rows = ctx.conn.execute(
                 """
-                SELECT file_path, duration FROM archive
-                WHERE status = 'CATALOGUED'
-                  AND chromaprint IS NULL
-                ORDER BY file_path
+                SELECT file_path, duration, chromaprint, chromaprint_duration
+                  FROM archive
+                 WHERE status = 'CATALOGUED'
+                   AND acousticid_checked_at IS NULL
+                 ORDER BY file_path
                 """
             ).fetchall()
         except Exception:
@@ -224,9 +295,17 @@ class AcousticIDStage(BaseStage):
                 """
             ).fetchall()
 
+        # Which columns the SELECT actually returned. The fallback query
+        # above omits the fingerprint columns, so this cannot be assumed.
+        # sqlite3.Row needs .keys(); `in row` would test values.
+        _cols = set(rows[0].keys()) if rows else set()
+
         # recording_id → [file_path] for dupe detection this run
         recording_map: dict[str, list[str]] = {}
         matched = 0
+        no_match = 0
+        unavailable = 0
+        reused = 0
         dupes_found = 0
 
         from datetime import datetime, timezone
@@ -243,14 +322,22 @@ class AcousticIDStage(BaseStage):
                 result.files_skipped += 1
                 continue
 
-            # Compute fingerprint
-            try:
-                duration, fingerprint = _fpcalc(fp)
-            except Exception as exc:
-                logger.warning("[acousticid] fpcalc error %s: %s", fp, exc)
-                result.files_skipped += 1
-                result.errors.append(f"{fp}: {exc}")
-                continue
+            # Reuse a fingerprint this row already carries. Now that a
+            # no-answer leaves the row selectable, the retry must not pay
+            # fpcalc again over the whole library on every run.
+            stored = row["chromaprint"] if "chromaprint" in _cols else None
+            stored_dur = row["chromaprint_duration"] if "chromaprint_duration" in _cols else None
+            if stored and stored_dur:
+                fingerprint, duration = stored, float(stored_dur)
+                reused += 1
+            else:
+                try:
+                    duration, fingerprint = _fpcalc(fp)
+                except Exception as exc:
+                    logger.warning("[acousticid] fpcalc error %s: %s", fp, exc)
+                    result.files_skipped += 1
+                    result.errors.append(f"{fp}: {exc}")
+                    continue
 
             if duration < _MIN_DURATION_S:
                 result.files_skipped += 1
@@ -259,10 +346,24 @@ class AcousticIDStage(BaseStage):
             # Look up AcousticID
             recording_id: str | None = None
             score: float = 0.0
+            answered = False
             if api_key:
                 time.sleep(_RATE_LIMIT_S)
                 try:
                     match = _acousticid_lookup(fingerprint, duration, api_key)
+                except LookupUnavailable as exc:
+                    # No answer, so nothing is known and nothing may be
+                    # settled. The fingerprint below is still stored -- it
+                    # is a local fact -- but acousticid_checked_at stays
+                    # NULL and the row is asked again next run.
+                    unavailable += 1
+                    logger.warning(
+                        "[acousticid] no answer for %s (%s) — not marked, will retry",
+                        fp,
+                        exc,
+                    )
+                else:
+                    answered = True
                     if match:
                         recording_id, score = match
                         matched += 1
@@ -272,23 +373,33 @@ class AcousticIDStage(BaseStage):
                             recording_id,
                             score,
                         )
-                except Exception as exc:
-                    logger.warning("[acousticid] API error %s: %s", fp, exc)
+                    else:
+                        no_match += 1
 
-            # Store results
+            # Store results. Two statements, because the two facts have
+            # different truth conditions: the fingerprint was computed
+            # locally and is true regardless of what the network did, while
+            # the marker asserts that AcousticID answered.
             if not dry_run:
                 ctx.conn.execute(
                     """
                     UPDATE archive
-                       SET chromaprint=?,
-                           chromaprint_duration=?,
-                           acousticid_recording=?,
-                           acousticid_score=?,
-                           acousticid_checked_at=?
+                       SET chromaprint=?, chromaprint_duration=?
                      WHERE file_path=?
                     """,
-                    (fingerprint, duration, recording_id, score if score else None, now, fp),
+                    (fingerprint, duration, fp),
                 )
+                if answered:
+                    ctx.conn.execute(
+                        """
+                        UPDATE archive
+                           SET acousticid_recording=?,
+                               acousticid_score=?,
+                               acousticid_checked_at=?
+                         WHERE file_path=?
+                        """,
+                        (recording_id, score if score else None, now, fp),
+                    )
                 if recording_id:
                     ctx.log_event(
                         "ACOUSTIC_MATCHED",
@@ -368,16 +479,71 @@ class AcousticIDStage(BaseStage):
             f"{prefix} {checked} file(s): {matched} AcousticID match(es), "
             f"{dupes_found} acoustic dupe(s) found."
         )
+        if reused:
+            result.notes.append(f"  {reused} fingerprint(s) reused from a previous run.")
+        if no_match:
+            result.notes.append(f"  {no_match} file(s) answered with no confident match.")
+        if unavailable:
+            # Deferred, not decided. Said plainly because the old code
+            # reported errors=0 while retiring these rows for ever.
+            result.notes.append(
+                f"  {unavailable} file(s) got NO ANSWER (network/timeout/5xx) — "
+                f"not marked, will be retried on the next run."
+            )
         if not api_key:
             result.notes.append(
                 "ACOUSTICID_API_KEY not set — recording IDs not looked up. "
-                "Fingerprints stored for future use."
+                "Fingerprints stored for future use; rows left unmarked so a "
+                "later run with a key still asks about them."
             )
         if dupes_found:
             result.notes.append(f"{dupes_found} acoustic duplicate(s) staged → `musaeus dedupe`")
 
         ctx.record_stage(result)
         return result
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """Re-derive a sample of what was stored, from the audio itself.
+
+        This stage's claim is that the stored fingerprint is that file's
+        fingerprint, and that a marked row was genuinely answered. Checking
+        the database against itself would prove neither -- the same reason
+        identity_tag re-reads tags off disk instead of trusting what it
+        believes it wrote. The stage previously claimed nothing at all
+        while writing four columns.
+        """
+        problems: list[str] = []
+        if result.dry_run or not result.files_processed:
+            return problems
+
+        try:
+            # The marker asserts an answer ABOUT a fingerprint, so a marked
+            # row carrying none is incoherent by construction.
+            orphaned = ctx.conn.execute(
+                "SELECT COUNT(*) FROM archive "
+                "WHERE acousticid_checked_at IS NOT NULL AND chromaprint IS NULL"
+            ).fetchone()[0]
+            rows = ctx.conn.execute(
+                "SELECT file_path, chromaprint FROM archive "
+                "WHERE chromaprint IS NOT NULL ORDER BY file_path LIMIT 2"
+            ).fetchall()
+        except Exception:  # columns absent -- nothing was claimed
+            return problems
+
+        if orphaned:
+            problems.append(f"{orphaned} row(s) marked as checked carry no fingerprint")
+
+        for row in rows:
+            path = row["file_path"]
+            if not Path(path).exists():
+                continue
+            try:
+                _, fresh = _fpcalc(path)
+            except Exception:
+                continue  # fpcalc being unavailable is not evidence of a bad store
+            if fresh != row["chromaprint"]:
+                problems.append(f"stored fingerprint does not match the audio: {path}")
+        return problems
 
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._run(ctx, dry_run=True)
