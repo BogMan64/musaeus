@@ -52,6 +52,18 @@ _VORBIS = {
 }
 
 
+# The two maps describe the same fields in two container conventions, so a
+# field added to one and not the other is a silent trap: _write_flac would
+# raise KeyError, write_identity's broad except would turn it into
+# (False, "'col'"), the marker would stay NULL, and that row would retry
+# for ever at warning level -- work removed from the queue by a typo.
+# Structural, so it cannot drift.
+assert IDENTITY_FIELDS.keys() == _VORBIS.keys(), (
+    "IDENTITY_FIELDS and _VORBIS must describe the same fields: "
+    f"{IDENTITY_FIELDS.keys() ^ _VORBIS.keys()}"
+)
+
+
 def _m4a_key(tag_name: str) -> str:
     """The freeform atom form. NEVER the dotted form -- see module docstring."""
     return f"----:com.apple.iTunes:{tag_name}"

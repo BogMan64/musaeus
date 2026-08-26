@@ -121,3 +121,30 @@ class TestVerificationActuallyVerifies:
         ok, detail = write_identity(m4a, {"mb_artist_id": MBID})
         assert not ok, "a write that never landed must not report success"
         assert "did not survive" in detail
+
+
+class TestTheTwoFieldMapsCannotDrift:
+    """A field in one map and not the other removes rows from the queue.
+
+    _write_flac indexes _VORBIS[col]; a missing key raises KeyError, which
+    write_identity's broad except turns into (False, "'col'"), which leaves
+    the marker NULL, which makes that row retry every run for ever -- at
+    warning level, so nothing fails. Caught by Code 2 in review.
+    """
+
+    def test_the_maps_describe_the_same_fields(self):
+        from musaeus.identity_tags import _VORBIS
+
+        assert IDENTITY_FIELDS.keys() == _VORBIS.keys()
+
+    def test_a_drifted_map_really_would_swallow_the_row(self, flac, monkeypatch):
+        # Prove the failure it prevents is real, not theoretical: the
+        # KeyError becomes (False, ...) and the caller leaves the marker
+        # NULL, so the row is retried for ever.
+        from musaeus.identity_tags import _VORBIS
+
+        monkeypatch.setitem(IDENTITY_FIELDS, "invented_column", "Invented")
+        assert "invented_column" not in _VORBIS
+        ok, detail = write_identity(flac, {"invented_column": "x"})
+        assert not ok
+        assert "invented_column" in detail
