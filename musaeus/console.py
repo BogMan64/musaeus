@@ -34,6 +34,7 @@ from .context import RunContext
 from .db import open_db, snapshot_db_before_wipe
 from .hasher import ffmpeg_available, ffprobe_available
 from .network_policy import NetworkPolicy, policy
+from .safety.source_watch import SourceWatch, auto_restart_enabled
 from .stages import (
     DEFAULT_PIPELINE,
     CuratorStage,
@@ -45,7 +46,6 @@ from .stages import (
     TaggerStage,
     TributeQuarantineStage,
 )
-from .safety.source_watch import SourceWatch, auto_restart_enabled
 from .stages.base import BaseStage
 
 logger = logging.getLogger(__name__)
