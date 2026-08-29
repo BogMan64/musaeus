@@ -222,9 +222,16 @@ class CorruptStage(BaseStage):
                     conn.execute(
                         """
                         INSERT INTO validation_issues
-                            (file_path, issue, severity, run_id)
-                        VALUES (?, ?, ?, ?)
-                        ON CONFLICT(file_path, issue, run_id) DO NOTHING
+                            (file_path, issue, severity, run_id, checked_at)
+                        VALUES (?, ?, ?, ?, datetime('now'))
+                        -- Keyed without run_id, so a recurring issue UPDATES
+                        -- its last-seen stamp instead of breeding a new row
+                        -- every run. DO NOTHING here would freeze checked_at
+                        -- at the first sighting and make the table look stale.
+                        ON CONFLICT(file_path, issue) DO UPDATE SET
+                            run_id     = excluded.run_id,
+                            severity   = excluded.severity,
+                            checked_at = excluded.checked_at
                         """,
                         (str(file_path), "CORRUPT_FILE", "error", ctx.run_id),
                     )

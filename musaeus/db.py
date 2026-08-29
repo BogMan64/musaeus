@@ -8,9 +8,12 @@ Rebuilding the DB from scratch is always possible.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -83,6 +86,16 @@ CREATE INDEX IF NOT EXISTS idx_dupes_group  ON duplicates(group_id);
 CREATE INDEX IF NOT EXISTS idx_dupes_path   ON duplicates(file_path);
 
 -- Validation issues logged by the Bouncer stage.
+--
+-- The uniqueness key deliberately EXCLUDES run_id. With run_id in the key,
+-- "the same problem on the same file" was a new row on every single run --
+-- the table reached 343,938 rows and was pruned to 15,604 on 2026-08-24,
+-- then regrew by 30-50k per run because the key had not changed. The prune
+-- was treating the symptom.
+--
+-- One row per (file_path, issue), with run_id and checked_at holding the
+-- MOST RECENT sighting. That is also the more useful question: "what is
+-- wrong with this file now", not "how many times have we noticed".
 CREATE TABLE IF NOT EXISTS validation_issues (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     file_path   TEXT NOT NULL,
@@ -90,7 +103,7 @@ CREATE TABLE IF NOT EXISTS validation_issues (
     severity    TEXT DEFAULT 'warning',
     run_id      TEXT,
     checked_at  TEXT DEFAULT (datetime('now')),
-    UNIQUE(file_path, issue, run_id)            -- no duplicate rows on re-run
+    UNIQUE(file_path, issue)
 );
 
 -- Metadata cache: raw ffprobe results, always rebuildable.
@@ -221,12 +234,74 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
 ]
 
 
+def _validation_issues_key_includes_run_id(conn: sqlite3.Connection) -> bool:
+    """True while the old UNIQUE(file_path, issue, run_id) key is in place."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='validation_issues'"
+    ).fetchone()
+    if row is None or not row[0]:
+        return False
+    sql = " ".join(row[0].split()).lower()
+    return "unique(file_path, issue, run_id)" in sql
+
+
+def _rebuild_validation_issues(conn: sqlite3.Connection) -> int:
+    """Drop run_id from the uniqueness key, collapsing the duplicates it bred.
+
+    SQLite cannot alter a UNIQUE constraint in place, so the table is rebuilt.
+    Duplicates collapse to the MOST RECENT sighting of each (file_path, issue)
+    -- `MAX(id)` rather than MIN, because the useful row is the current state
+    of the file, not the first time anyone noticed.
+
+    Returns the number of rows removed, so a caller can report it rather than
+    discovering the table silently changed size.
+    """
+    before = conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
+    conn.executescript(
+        """
+        CREATE TABLE validation_issues__new (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_path   TEXT NOT NULL,
+            issue       TEXT NOT NULL,
+            severity    TEXT DEFAULT 'warning',
+            run_id      TEXT,
+            checked_at  TEXT DEFAULT (datetime('now')),
+            UNIQUE(file_path, issue)
+        );
+        INSERT INTO validation_issues__new (file_path, issue, severity, run_id, checked_at)
+        SELECT v.file_path, v.issue, v.severity, v.run_id, v.checked_at
+          FROM validation_issues v
+          JOIN (
+                SELECT MAX(id) AS keep_id
+                  FROM validation_issues
+                 GROUP BY file_path, issue
+               ) latest ON latest.keep_id = v.id;
+        DROP TABLE validation_issues;
+        ALTER TABLE validation_issues__new RENAME TO validation_issues;
+        """
+    )
+    after = conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
+    conn.commit()
+    return before - after
+
+
 def _apply_migrations(conn: sqlite3.Connection) -> None:
     """Add new columns to existing tables when the schema evolves."""
     for table, col, coltype in _MIGRATIONS:
         existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if col not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
+
+    # A constraint change, not a column addition -- the loop above cannot
+    # express it. Idempotent: once the key is rebuilt this is a no-op.
+    if _validation_issues_key_includes_run_id(conn):
+        removed = _rebuild_validation_issues(conn)
+        logger.info(
+            "[db] validation_issues re-keyed on (file_path, issue); "
+            "%d duplicate row(s) collapsed",
+            removed,
+        )
+
     conn.commit()
 
 
