@@ -319,17 +319,23 @@ class TestTaggerRun:
 # ── albumartist repair ───────────────────────────────────────────────────────
 #
 # albumartist has no archive column and was never written by this stage, so it
-# kept whatever spelling the source file arrived with. Confirmed live
-# 2026-08-21: 2,035 of 5,894 article-artist files (34.5%) had artist and
-# albumartist disagreeing. It is repaired, not mirrored -- a genuinely
-# different albumartist (compilation / split credit) must survive untouched.
+# kept whatever spelling the source file arrived with. Measured on the live
+# library 2026-08-29: 1,735 of 10,588 files (16.4%) disagreed with artist.
+#
+# It is repaired, not mirrored. Album context is the discriminator, per Grey's
+# ruling 2026-08-29: a collaboration credit on a real album IS the album's
+# artist and survives; on a loose single it is a leftover the canon already
+# resolved. Compilations, classical performers, and pure casing differences
+# are all left alone -- see albumartist_should_follow for why each.
 
 
 class TestAlbumArtistRepair:
-    def _changes(self, db_artist, file_albumartist):
+    def _changes(self, db_artist, file_albumartist, album="", genre=""):
+        db_row = {"artist": db_artist, "album": album, "genre": genre}
         return TaggerStage()._compute_changes(
-            {"artist": db_artist},
-            {"artist": db_artist, "albumartist": file_albumartist},
+            db_row,
+            {"artist": db_artist, "albumartist": file_albumartist,
+             "album": album, "genre": genre},
         )
 
     def test_leading_the_variant_is_corrected(self):
@@ -347,8 +353,86 @@ class TestAlbumArtistRepair:
         # A compilation's albumartist is genuinely not the track artist.
         assert self._changes("Beatles, The", "Various Artists") == {}
 
-    def test_split_credit_is_preserved(self):
-        assert self._changes("Johnny Cash", "Johnny Cash, The Tennessee Two") == {}
+    def test_split_credit_on_a_real_album_is_preserved(self):
+        # On an album the credit IS the album's artist. Live example:
+        # "Art Blakey & The Jazz Messengers" on "Moanin'".
+        assert self._changes(
+            "Johnny Cash", "Johnny Cash, The Tennessee Two", album="At Folsom Prison"
+        ) == {}
+
+    def test_split_credit_on_a_loose_single_follows_the_artist(self):
+        # No album: the credit is a leftover, and the canon already collapsed
+        # artist to the solo name. 549 files in the library on 2026-08-29.
+        assert self._changes("Johnny Cash", "Johnny Cash, The Tennessee Two") == {
+            "albumartist": "Johnny Cash"
+        }
+
+    def test_classical_performer_is_never_overwritten(self):
+        # Classical is filed under composer by policy; albumartist holds the
+        # performer, and that is the only place the information exists.
+        assert self._changes("Antonio Vivaldi", "Anne-Sophie Mutter", genre="Classical") == {}
+
+    def test_an_ensemble_is_protected_even_with_no_genre_set(self):
+        assert self._changes("Antonio Vivaldi", "Salzburg Chamber Orchestra") == {}
+
+    def test_classical_guard_holds_where_the_credit_rule_would_otherwise_fire(self):
+        """The case the guard actually exists for.
+
+        "Antonio Vivaldi; Itzhak Perlman, Israel Philharmonic Orchestra" leads
+        with the composer, so the collaboration-credit rule matches it and --
+        with no album, as these have -- would mirror, erasing the performer.
+        A guard whose every test also passes without it is not a guard, so
+        this asserts the one input that separates them. Real row, 2026-08-29.
+        """
+        credit = "Antonio Vivaldi; Itzhak Perlman, Israel Philharmonic Orchestra"
+        assert self._changes("Antonio Vivaldi", credit, genre="Classical") == {}
+        # and again with genre unset, so the ensemble word carries it alone
+        assert self._changes("Antonio Vivaldi", credit) == {}
+
+    def test_compilation_guard_holds_where_the_spelling_rule_would_fire(self):
+        """Same shape: "Various Artists, The" folds onto "Various Artists".
+
+        Without the compilation guard the spelling rule sees one name in two
+        spellings and mirrors. A compilation marker is never a track artist.
+        """
+        assert self._changes("Various Artists", "Various Artists, The") == {}
+
+    def test_a_pure_casing_difference_is_refused(self):
+        # The artist field is the damaged one here -- `_smart_title()` made
+        # "Tlc" out of "TLC". Mirroring would destroy the last correct copy.
+        assert self._changes("Tlc", "TLC") == {}
+        assert self._changes("Abba", "ABBA") == {}
+        assert self._changes("Paul Mccartney", "Paul McCartney") == {}
+
+    def test_a_fold_equal_pair_with_no_article_is_refused(self):
+        """Folding equal is not enough -- only the article convention mirrors.
+
+        "A*Teens" and "1910 Fruitgum Co." fold onto the artist field's
+        "ATeens" and "1910 Fruitgum Co", but mirroring drops a character the
+        albumartist still carries. Nothing reconstructs it afterwards.
+        """
+        assert self._changes("ATeens", "A*Teens") == {}
+        assert self._changes("1910 Fruitgum Co", "1910 Fruitgum Co.") == {}
+        assert self._changes("Adam & The Ants", "Adam and the Ants") == {}
+
+    def test_a_credit_whose_lead_outspells_the_artist_is_refused(self):
+        """The casing trap one level down, inside a collaboration credit.
+
+        "24kGoldn, iann dior" leads with the correct spelling while the
+        artist field holds "24kgoldn". Mirroring writes the damage into the
+        last field that had it right. Real row, 2026-08-29.
+        """
+        assert self._changes("24kgoldn", "24kGoldn, iann dior") == {}
+        # ... but an exactly-matching lead still mirrors
+        assert self._changes("50 Cent", "50 Cent, Nate Dogg") == {
+            "albumartist": "50 Cent"
+        }
+
+    def test_article_convention_still_applies_despite_the_casing_guard(self):
+        # Differs by more than case, so it is convention, not damage.
+        assert self._changes("Ad Libs, The", "THE AD LIBS") == {
+            "albumartist": "Ad Libs, The"
+        }
 
     def test_unrelated_albumartist_is_preserved(self):
         assert self._changes("Beatles, The", "Rolling Stones, The") == {}
