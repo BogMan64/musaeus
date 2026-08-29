@@ -293,8 +293,10 @@ def cmd_rebuild_db(dry_run: bool = False) -> int:
 
     Deliberately refuses even with --dry-run: there is nothing safe to
     preview, and printing a plausible-looking plan would imply the real
-    run works. Exit code 2 matches the P0-02 dry-run guard's
-    "refused, did not run" convention rather than 1 ("ran and failed").
+    run works. Exit code 2 means "refused, did not run", as distinct from
+    1 ("ran and failed") -- a convention this command shares with the
+    former P0-02 dry-run guard, which has since been removed now that
+    previews are genuinely safe.
     """
     print(f"\nMusaeus rebuild-db\n\n{_DISABLED_MESSAGE}\n", file=sys.stderr)
     return 2

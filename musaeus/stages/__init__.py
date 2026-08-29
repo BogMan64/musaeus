@@ -294,9 +294,11 @@ CANONICAL_PIPELINE: list[type] = (
 )
 
 # Canonical run order for the default pipeline -- the full chain above.
-# `musaeus run --dry-run` remains the safe way to preview this before
-# ever running it live (subject to P0-02's current fail-closed guard --
-# see consumer-readiness safety spec).
+# `musaeus run --dry-run` is the safe way to preview this before ever
+# running it live. The blanket P0-02 fail-closed guard that used to refuse
+# every preview is gone; dry-run is now enforced structurally instead (a
+# read-only DB connection, buffered events, no ensure_dirs) -- see cli.py's
+# "Dry-run / preview safety" note and tests/test_dry_run_safety.py.
 DEFAULT_PIPELINE: list[type] = CANONICAL_PIPELINE
 
 # Extended pipeline (run with `musaeus run --full`)

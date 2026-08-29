@@ -53,8 +53,10 @@ class TestRebuildIsDisabled:
         assert conn.execute("SELECT COUNT(*) FROM archive").fetchone()[0] == 1
 
     def test_cli_entry_point_returns_refused_exit_code(self, capsys):
-        # 2 == "refused, did not run", matching the P0-02 dry-run guard,
-        # rather than 1 == "ran and failed".
+        # 2 == "refused, did not run", rather than 1 == "ran and failed".
+        # rebuild-db refuses even under --dry-run because there is nothing
+        # safe to preview -- unrelated to pipeline previews, which are now
+        # genuinely side-effect-free (tests/test_dry_run_safety.py).
         assert cmd_rebuild_db() == 2
         assert cmd_rebuild_db(dry_run=True) == 2
         assert "DISABLED" in capsys.readouterr().err

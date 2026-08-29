@@ -219,10 +219,11 @@ class TestResumeRecordsFailedStageAsCompleteCharacterization:
     prerequisite gating, safe resume) tracked under this name; P0-08's
     broader scope may still have other open items unrelated to this one.
 
-    UPDATED BY P0-02 (kept from the original test): dry_run=True is
-    rejected outright now, so this exercises dry_run=False (a real run)
-    against the disposable vault's empty inbox -- every other stage still
-    completes trivially with zero files to process.
+    This exercises dry_run=False (a real run) against the disposable
+    vault's empty inbox -- every other stage completes trivially with zero
+    files to process. Resume state is a live-run concern: a preview neither
+    consumes nor rewrites it (see test_dry_run_safety.py), so a real run is
+    the only thing that can exercise this path.
     """
 
     def test_failed_stage_is_retried_not_skipped_on_resume(
