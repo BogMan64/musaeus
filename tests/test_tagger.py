@@ -331,20 +331,34 @@ class TestTaggerRun:
 
 class TestAlbumArtistRepair:
     def _changes(self, db_artist, file_albumartist, album="", genre=""):
+        """Only the albumartist decision.
+
+        _compute_changes also performs the artist/sort-artist split (the tag
+        moved to the natural form 2026-08-29, with `soar` carrying the sort
+        form). That is a different rule with its own tests below; folding it
+        in here would make every case in this class assert two policies at
+        once and fail whenever either moved.
+        """
         db_row = {"artist": db_artist, "album": album, "genre": genre}
-        return TaggerStage()._compute_changes(
+        out = TaggerStage()._compute_changes(
             db_row,
             {"artist": db_artist, "albumartist": file_albumartist,
              "album": album, "genre": genre},
         )
+        return {k: v for k, v in out.items() if k == "albumartist"}
 
     def test_leading_the_variant_is_corrected(self):
+        # The value written is the NATURAL form -- albumartist follows artist,
+        # and artist moved to the natural form on 2026-08-29. `soaa` carries
+        # the sort form alongside it.
         assert self._changes("Cranberries, The", "The Cranberries") == {
-            "albumartist": "Cranberries, The"
+            "albumartist": "The Cranberries"
         }
 
     def test_parenthetical_variant_is_corrected(self):
-        assert self._changes("Ronettes, The", "Ronettes (the)") == {"albumartist": "Ronettes, The"}
+        assert self._changes("Ronettes, The", "Ronettes (the)") == {
+            "albumartist": "The Ronettes"
+        }
 
     def test_already_canonical_is_left_alone(self):
         assert self._changes("Beatles, The", "Beatles, The") == {}
@@ -431,7 +445,7 @@ class TestAlbumArtistRepair:
     def test_article_convention_still_applies_despite_the_casing_guard(self):
         # Differs by more than case, so it is convention, not damage.
         assert self._changes("Ad Libs, The", "THE AD LIBS") == {
-            "albumartist": "Ad Libs, The"
+            "albumartist": "The Ad Libs"
         }
 
     def test_unrelated_albumartist_is_preserved(self):
@@ -499,10 +513,54 @@ class TestTaggerActuallyWritesToDisk:
         assert result.files_changed >= 1
 
         tags = MP4(str(track)).tags or {}
-        assert (tags.get("\xa9ART") or [None])[0] == "Beatles, The"
+        # The DB stores the sort form; the TAG carries the natural form and
+        # `soar` carries the sort form. Changed 2026-08-29 -- "Beatles, The"
+        # is a MUSAEUS-only string, and MusicBrainz has never heard of it.
+        assert (tags.get("\xa9ART") or [None])[0] == "The Beatles"
+        assert (tags.get("soar") or [None])[0] == "Beatles, The"
         assert (tags.get("\xa9nam") or [None])[0] == "Taxman"
         assert (tags.get("\xa9alb") or [None])[0] == "Revolver"
         assert (tags.get("\xa9gen") or [None])[0] == "Rock"
+
+    def test_a_name_with_no_article_gets_no_redundant_sort_tag(self, ctx, tmp_path):
+        """A sort tag identical to the artist is noise on most of the library."""
+        track = tmp_path / "song2.m4a"
+        self._make_m4a(track)
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(track),
+                "status": "CATALOGUED",
+                "artist": "Dusty Springfield",
+                "title": "Son of a Preacher Man",
+            },
+        )
+        ctx.conn.commit()
+        TaggerStage().run(ctx)
+
+        tags = MP4(str(track)).tags or {}
+        assert (tags.get("\xa9ART") or [None])[0] == "Dusty Springfield"
+        assert not tags.get("soar"), "no article, so no sort tag"
+
+    def test_a_stylized_name_is_not_rearranged_on_disk(self, ctx, tmp_path):
+        """"De La Soul" -> "La Soul, De" was live corruption, 2026-08-16."""
+        track = tmp_path / "song3.m4a"
+        self._make_m4a(track)
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(track),
+                "status": "CATALOGUED",
+                "artist": "De La Soul",
+                "title": "Me Myself and I",
+            },
+        )
+        ctx.conn.commit()
+        TaggerStage().run(ctx)
+
+        tags = MP4(str(track)).tags or {}
+        assert (tags.get("\xa9ART") or [None])[0] == "De La Soul"
+        assert not tags.get("soar")
 
     def test_a_slash_in_a_genre_survives_the_round_trip(self):
         """R&B/Funk/Soul must come back exactly as written.

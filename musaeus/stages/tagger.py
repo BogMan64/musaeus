@@ -32,6 +32,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+from ..artist_form import has_article, natural_form, sort_form
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
 from .normalize import _move_article_to_suffix
@@ -223,6 +224,8 @@ def _read_tags(path: Path) -> dict[str, str]:
             return {
                 "artist": _g("\xa9ART"),
                 "albumartist": _g("aART"),
+                "sort_artist": _g("soar"),
+                "sort_albumartist": _g("soaa"),
                 "album": _g("\xa9alb"),
                 "title": _g("\xa9nam"),
                 "genre": _g("\xa9gen"),
@@ -291,6 +294,8 @@ def _write_tags(path: Path, changes: dict[str, str]) -> bool:
             _map = {
                 "artist": "\xa9ART",
                 "albumartist": "aART",
+                "sort_artist": "soar",
+                "sort_albumartist": "soaa",
                 "album": "\xa9alb",
                 "title": "\xa9nam",
                 "genre": "\xa9gen",
@@ -412,12 +417,40 @@ class TaggerStage(BaseStage):
             if db_val and db_val != file_val:
                 changes[db_field] = db_val
 
+        # ── the two forms of the artist name ──────────────────────────────
+        #
+        # The database stores the sort form ("Stooges, The"), inherited from
+        # ORPHEUS so that a folder listing sorts under S. That string was
+        # also going into the `artist` TAG, which is the field every external
+        # service reads -- and MusicBrainz has never heard of "Stooges, The".
+        # Measured 2026-08-29: 376 of 839 cached misses were in that form,
+        # and 0 of 2,158 hits were.
+        #
+        # So the two jobs get two fields. `soar`/`soaa` are the standard sort
+        # atoms; iTunes, Plex and mp3tag all honour them, and nothing in this
+        # project had ever written one. The path keeps the sort form too --
+        # see organize.py, which derives it independently of the tag.
         db_artist = str(db_row.get("artist") or "").strip()
+        if db_artist:
+            natural = natural_form(db_artist)
+            if natural != str(file_tags.get("artist") or "").strip():
+                changes["artist"] = natural
+
+            # Only when the two forms actually differ. Writing a sort tag
+            # identical to the artist is noise on every file without an
+            # article, and would rewrite the whole library to say nothing.
+            if has_article(db_artist):
+                sort = sort_form(db_artist)
+                if sort != str(file_tags.get("sort_artist") or "").strip():
+                    changes["sort_artist"] = sort
+
         file_aa = str(file_tags.get("albumartist") or "").strip()
         album = str(db_row.get("album") or file_tags.get("album") or "").strip()
         genre = str(db_row.get("genre") or file_tags.get("genre") or "").strip()
         if albumartist_should_follow(db_artist, file_aa, album=album, genre=genre):
-            changes["albumartist"] = db_artist
+            changes["albumartist"] = natural_form(db_artist)
+            if has_article(db_artist):
+                changes["sort_albumartist"] = sort_form(db_artist)
 
         return changes
 

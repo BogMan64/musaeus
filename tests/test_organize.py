@@ -376,3 +376,51 @@ class TestOrganizeStaysInsideItsRoot:
         OrganizeStage().dry_run(ctx_dry)
         assert src.exists()
         assert list(ctx_dry.inbox.rglob("*.m4a")) == []
+
+
+# ── paths use the sort form, whatever the tag holds ──────────────────────────
+#
+# The `artist` TAG is migrating to the natural form ("The Stooges") because
+# that is what MusicBrainz and every player expect. The PATH must keep the
+# sort form ("Stooges, The"), which is the entire reason the convention
+# exists. Deriving the path from sort_form rather than from the tag makes
+# the on-disk layout identical before and after that migration.
+
+
+class TestPathsUseTheSortForm:
+    def test_a_natural_form_artist_still_files_under_the_sort_form(self, ctx):
+        """THE guard on the tag migration: no file moves because of it."""
+        _make_track(ctx, "flat.m4a", "The Stooges", "Fun House", "Down on the Street")
+        OrganizeStage().run(ctx)
+
+        expected = (
+            ctx.inbox / "Stooges, The" / "Fun House"
+            / "Stooges, The - Down on the Street.m4a"
+        )
+        assert expected.exists(), "path must not follow the natural form"
+        assert not (ctx.inbox / "The Stooges").exists()
+
+    def test_both_artist_forms_land_on_the_same_path(self, ctx):
+        """A library mid-migration holds both; they must not split in two."""
+        _make_track(ctx, "a.m4a", "Stooges, The", "Fun House", "Loose")
+        _make_track(ctx, "b.m4a", "The Stooges", "Fun House", "Dirt")
+        OrganizeStage().run(ctx)
+
+        folder = ctx.inbox / "Stooges, The" / "Fun House"
+        assert sorted(f.name for f in folder.glob("*.m4a")) == [
+            "Stooges, The - Dirt.m4a",
+            "Stooges, The - Loose.m4a",
+        ]
+        assert not (ctx.inbox / "The Stooges").exists()
+
+    def test_a_stylized_name_is_not_rearranged_into_a_folder(self, ctx):
+        """"De La Soul" -> "La Soul, De" was live corruption, 2026-08-16."""
+        _make_track(ctx, "c.m4a", "De La Soul", "3 Feet High", "Me Myself and I")
+        OrganizeStage().run(ctx)
+        assert (ctx.inbox / "De La Soul" / "3 Feet High").is_dir()
+        assert not (ctx.inbox / "La Soul, De").exists()
+
+    def test_a_name_with_no_article_is_unaffected(self, ctx):
+        _make_track(ctx, "d.m4a", "Dusty Springfield", "Dusty in Memphis", "Son of a Preacher Man")
+        OrganizeStage().run(ctx)
+        assert (ctx.inbox / "Dusty Springfield" / "Dusty in Memphis").is_dir()

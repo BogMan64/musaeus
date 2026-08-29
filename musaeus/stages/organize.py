@@ -82,6 +82,7 @@ import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
 
+from ..artist_form import sort_form
 from ..context import RunContext, StageResult
 from .base import BaseStage
 
@@ -441,12 +442,26 @@ class OrganizeStage(BaseStage):
             album = row["album"] or "Unsorted"
             title = row["title"] or "Unknown Title"
 
+            # Paths use the SORT form, always, whichever form the tag holds.
+            #
+            # The `artist` tag is moving to the natural form ("The Stooges")
+            # because that is what MusicBrainz and every player expect. The
+            # filesystem wants the other one: "Stooges, The" sorts under S,
+            # which is the whole reason the convention exists.
+            #
+            # Deriving the path from sort_form rather than from the tag keeps
+            # the two decisions independent -- the on-disk layout is byte
+            # identical before and after the tag migration, so no file moves
+            # because of it. Both directions are idempotent, so this is also
+            # correct for a library holding a mix of the two forms.
+            path_artist = sort_form(artist)
+
             # Build new filename
             ext = current_path.suffix
-            new_filename = build_track_filename(artist, title, ext)
+            new_filename = build_track_filename(path_artist, title, ext)
 
             # Build target path: <root>/Artist/Album/filename
-            artist_safe = sanitize_path_component(artist)
+            artist_safe = sanitize_path_component(path_artist)
             album_safe = sanitize_path_component(album)
 
             target_dir = dest_root / artist_safe / album_safe
