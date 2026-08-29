@@ -75,17 +75,6 @@ def _safe_name(s: str, max_len: int = 60) -> str:
     return s[:max_len] if len(s) > max_len else s
 
 
-def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
-    for col, typedef in (
-        ("transcode_path", "TEXT"),
-        ("transcode_at", "TEXT"),
-    ):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
-    conn.commit()
-
-
 def _best_aac_encoder() -> str:
     """Return libfdk_aac if ffmpeg has it, else built-in aac."""
     ffmpeg = shutil.which("ffmpeg")
@@ -198,21 +187,13 @@ class TranscodeStage(BaseStage):
         transcode_root = ctx.get("transcode_root") or (ctx.config.vault_root / "Transcoded")
         logger.info("[transcode] output root: %s", transcode_root)
 
-        try:
-            count = ctx.conn.execute(
-                "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' AND transcode_path IS NULL"
-            ).fetchone()[0]
-        except Exception:
-            count = ctx.conn.execute(
-                "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'"
-            ).fetchone()[0]
+        count = ctx.conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' AND transcode_path IS NULL"
+        ).fetchone()[0]
         logger.info("[transcode] %d lossless file(s) to transcode", count)
 
     def _transcode(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
-
-        if not dry_run:
-            _ensure_columns(ctx.conn)
 
         transcode_root = Path(ctx.get("transcode_root") or (ctx.config.vault_root / "Transcoded"))
         force = ctx.get("transcode_force", False)
@@ -220,26 +201,16 @@ class TranscodeStage(BaseStage):
         logger.info("[transcode] using encoder: %s", encoder)
 
         # Only transcode lossless sources
-        try:
-            where_extra = "" if force else "AND transcode_path IS NULL"
-            rows = ctx.conn.execute(
-                f"""
-                SELECT file_path, artist, album, title, year, track, genre, codec
-                FROM archive
-                WHERE status = 'CATALOGUED'
-                  {where_extra}
-                ORDER BY artist, album, track
-                """
-            ).fetchall()
-        except Exception:
-            rows = ctx.conn.execute(
-                """
-                SELECT file_path, artist, album, title, year, track, genre, codec
-                FROM archive
-                WHERE status = 'CATALOGUED'
-                ORDER BY artist, album, track
-                """
-            ).fetchall()
+        where_extra = "" if force else "AND transcode_path IS NULL"
+        rows = ctx.conn.execute(
+            f"""
+            SELECT file_path, artist, album, title, year, track, genre, codec
+            FROM archive
+            WHERE status = 'CATALOGUED'
+              {where_extra}
+            ORDER BY artist, album, track
+            """
+        ).fetchall()
 
         # Filter to lossless only by real ffprobe codec (archive.codec),
         # never by file extension -- .m4a can hold either ALAC (lossless)

@@ -8,7 +8,7 @@ What it does:
   - Runs fpcalc to generate a Chromaprint fingerprint for each file
   - Queries AcousticID API to get the recording MBID for each fingerprint
   - Stores fingerprint + recording_id in archive
-    (columns auto-added on first run via _ensure_columns)
+    (columns declared in db.py's _MIGRATIONS, applied by open_db())
   - Detects ACOUSTIC duplicates: same recording_id → different file_path
   - Stages duplicate pairs in the duplicates table with type='ACOUSTIC'
   - Logs ACOUSTIC_MATCHED / ACOUSTIC_DUPE_FOUND events
@@ -58,20 +58,6 @@ _MIN_DURATION_S = 30  # skip clips shorter than 30s (too unreliable)
 
 
 # ── Column migration ──────────────────────────────────────────────────────────
-
-
-def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
-    for col, typedef in (
-        ("chromaprint", "TEXT"),
-        ("chromaprint_duration", "REAL"),
-        ("acousticid_recording", "TEXT"),
-        ("acousticid_score", "REAL"),
-        ("acousticid_checked_at", "TEXT"),
-    ):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
-    conn.commit()
 
 
 # ── fpcalc wrapper ────────────────────────────────────────────────────────────
@@ -183,42 +169,24 @@ class AcousticIDStage(BaseStage):
                 "Add key to ~/.config/musaeus/settings.env"
             )
 
-        try:
-            count = ctx.conn.execute(
-                "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' AND chromaprint IS NULL"
-            ).fetchone()[0]
-        except Exception:
-            count = ctx.conn.execute(
-                "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'"
-            ).fetchone()[0]
+        count = ctx.conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' AND chromaprint IS NULL"
+        ).fetchone()[0]
         logger.info("[acousticid] %d file(s) need fingerprinting", count)
 
     def _run(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
 
-        if not dry_run:
-            _ensure_columns(ctx.conn)
-
         api_key = ctx.config.acousticid_api_key
 
-        try:
-            rows = ctx.conn.execute(
-                """
-                SELECT file_path, duration FROM archive
-                WHERE status = 'CATALOGUED'
-                  AND chromaprint IS NULL
-                ORDER BY file_path
-                """
-            ).fetchall()
-        except Exception:
-            rows = ctx.conn.execute(
-                """
-                SELECT file_path, duration FROM archive
-                WHERE status = 'CATALOGUED'
-                ORDER BY file_path
-                """
-            ).fetchall()
-
+        rows = ctx.conn.execute(
+            """
+            SELECT file_path, duration FROM archive
+            WHERE status = 'CATALOGUED'
+              AND chromaprint IS NULL
+            ORDER BY file_path
+            """
+        ).fetchall()
         # recording_id → [file_path] for dupe detection this run
         recording_map: dict[str, list[str]] = {}
         matched = 0

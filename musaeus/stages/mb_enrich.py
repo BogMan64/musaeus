@@ -8,7 +8,7 @@ What it does:
   - Queries MusicBrainz search API for artist MBID and canonical name
   - Queries MusicBrainz release API for album MBID when artist is found
   - Writes back to archive: mb_artist_id, mb_artist_name, mb_release_id
-    (columns auto-added on first run via _ensure_columns)
+    (columns declared in db.py's _MIGRATIONS, applied by open_db())
   - Caches per-artist results in memory (avoids repeat queries)
   - Rate-limits to 1 request/second (MusicBrainz free tier requirement)
   - Logs MB_ARTIST_FOUND / MB_ARTIST_NOT_FOUND / MB_RELEASE_FOUND per file
@@ -51,20 +51,6 @@ _ARTIST_SCORE = 85  # minimum MB score to accept an artist match (0-100)
 
 
 # ── Column migration ──────────────────────────────────────────────────────────
-
-
-def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
-    """Add MB columns to archive if they don't exist yet (auto-migrate)."""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
-    for col, typedef in (
-        ("mb_artist_id", "TEXT"),
-        ("mb_artist_name", "TEXT"),
-        ("mb_release_id", "TEXT"),
-        ("mb_enriched_at", "TEXT"),
-    ):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
-    conn.commit()
 
 
 # ── MB API helpers ────────────────────────────────────────────────────────────
@@ -170,19 +156,11 @@ class MBEnrichStage(BaseStage):
         # raising. See _enrich()'s early-return block below.
 
         # Count work to do (columns may not exist yet — use try/except)
-        try:
-            count = ctx.conn.execute(
-                "SELECT COUNT(*) FROM archive "
-                "WHERE status='CATALOGUED' AND mb_artist_id IS NULL "
-                "AND artist IS NOT NULL AND trim(artist) != ''"
-            ).fetchone()[0]
-        except Exception:
-            count = ctx.conn.execute(
-                "SELECT COUNT(*) FROM archive "
-                "WHERE status='CATALOGUED' "
-                "AND artist IS NOT NULL AND trim(artist) != ''"
-            ).fetchone()[0]
-
+        count = ctx.conn.execute(
+            "SELECT COUNT(*) FROM archive "
+            "WHERE status='CATALOGUED' AND mb_artist_id IS NULL "
+            "AND artist IS NOT NULL AND trim(artist) != ''"
+        ).fetchone()[0]
         logger.info("[mb_enrich] %d track(s) need MusicBrainz enrichment", count)
 
     # ── Shared logic ──────────────────────────────────────────────────────────
@@ -208,32 +186,17 @@ class MBEnrichStage(BaseStage):
             ctx.record_stage(result)
             return result
 
-        if not dry_run:
-            _ensure_columns(ctx.conn)
-
         # Fetch rows that need enrichment
-        try:
-            rows = ctx.conn.execute(
-                """
-                SELECT file_path, artist, album
-                FROM archive
-                WHERE status = 'CATALOGUED'
-                  AND mb_artist_id IS NULL
-                  AND artist IS NOT NULL AND trim(artist) != ''
-                ORDER BY artist, album
-                """
-            ).fetchall()
-        except Exception:
-            # mb_artist_id column doesn't exist yet (dry-run before first real run)
-            rows = ctx.conn.execute(
-                """
-                SELECT file_path, artist, album
-                FROM archive
-                WHERE status = 'CATALOGUED'
-                  AND artist IS NOT NULL AND trim(artist) != ''
-                ORDER BY artist, album
-                """
-            ).fetchall()
+        rows = ctx.conn.execute(
+            """
+            SELECT file_path, artist, album
+            FROM archive
+            WHERE status = 'CATALOGUED'
+              AND mb_artist_id IS NULL
+              AND artist IS NOT NULL AND trim(artist) != ''
+            ORDER BY artist, album
+            """
+        ).fetchall()
 
         # Per-artist cache: artist_lower → (mbid, mb_name) | None
         artist_cache: dict[str, tuple[str, str] | None] = {}

@@ -57,17 +57,6 @@ _SIDECAR_NAMES = [
 # ── Column migration ──────────────────────────────────────────────────────────
 
 
-def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
-    for col, typedef in (
-        ("has_art", "INTEGER"),
-        ("art_checked_at", "TEXT"),
-    ):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
-    conn.commit()
-
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -183,39 +172,26 @@ class AlbumArtStage(BaseStage):
                 "Install ffmpeg to enable sidecar embedding."
             )
 
-        try:
-            count = ctx.conn.execute(
-                "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' AND art_checked_at IS NULL"
-            ).fetchone()[0]
-        except Exception:
-            count = ctx.conn.execute(
-                "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'"
-            ).fetchone()[0]
+        count = ctx.conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' AND art_checked_at IS NULL"
+        ).fetchone()[0]
         logger.info("[albumart] %d file(s) to check", count)
 
     def _audit(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
 
-        if not dry_run:
-            _ensure_columns(ctx.conn)
-
         force = ctx.get("albumart_force", False)
         embed = ctx.get("albumart_embed", True) and not dry_run and shutil.which("ffmpeg")
 
-        try:
-            where_extra = "" if force else "AND art_checked_at IS NULL"
-            rows = ctx.conn.execute(
-                f"""
-                SELECT file_path FROM archive
-                WHERE status = 'CATALOGUED'
-                  {where_extra}
-                ORDER BY file_path
-                """
-            ).fetchall()
-        except Exception:
-            rows = ctx.conn.execute(
-                "SELECT file_path FROM archive WHERE status='CATALOGUED' ORDER BY file_path"
-            ).fetchall()
+        where_extra = "" if force else "AND art_checked_at IS NULL"
+        rows = ctx.conn.execute(
+            f"""
+            SELECT file_path FROM archive
+            WHERE status = 'CATALOGUED'
+              {where_extra}
+            ORDER BY file_path
+            """
+        ).fetchall()
 
         from datetime import datetime, timezone
 

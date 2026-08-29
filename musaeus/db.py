@@ -191,6 +191,42 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # see archive_tier_hashes below for the real mechanism.
     ("archive", "bitrot_checked_at", "TEXT"),
     ("archive", "bitrot_ok", "INTEGER"),
+    # ── Columns reclaimed from per-stage ad-hoc migrations ───────────────────
+    # Six stages (integrity, acousticid, transcode, mb_enrich, auditor,
+    # albumart) each carried a private _ensure_columns() that ran its own
+    # PRAGMA table_info + ALTER TABLE at stage-run time, bypassing this list
+    # entirely. That had three real costs beyond the duplication:
+    #   1. A column existed only once its owning stage had run, so ordinary
+    #      SELECTs had to be wrapped in try/except and silently fall back to
+    #      a DIFFERENT row set when the column was missing (acousticid's
+    #      fallback dropped the `chromaprint IS NULL` filter entirely, so a
+    #      first run previewed and processed every CATALOGUED row).
+    #   2. _ensure_columns() called conn.commit(), which stages are
+    #      explicitly forbidden from doing (see stages/base.py).
+    #   3. Stages skipped it under dry_run, so a dry run took the fallback
+    #      branch and previewed a different row set than the run would touch.
+    # Declaring them here instead means open_db() has the full schema before
+    # any stage runs, which is what README's "you never need to run manual
+    # migrations" already promised.
+    ("archive", "integrity_ok", "INTEGER"),
+    ("archive", "integrity_checked_at", "TEXT"),
+    ("archive", "chromaprint", "TEXT"),
+    ("archive", "chromaprint_duration", "REAL"),
+    ("archive", "acousticid_recording", "TEXT"),
+    ("archive", "acousticid_score", "REAL"),
+    ("archive", "acousticid_checked_at", "TEXT"),
+    ("archive", "transcode_path", "TEXT"),
+    ("archive", "transcode_at", "TEXT"),
+    ("archive", "mb_artist_id", "TEXT"),
+    ("archive", "mb_artist_name", "TEXT"),
+    ("archive", "mb_release_id", "TEXT"),
+    ("archive", "mb_enriched_at", "TEXT"),
+    ("archive", "auditor_lufs", "REAL"),
+    ("archive", "auditor_tp", "REAL"),
+    ("archive", "auditor_flagged", "INTEGER DEFAULT 0"),
+    ("archive", "auditor_checked_at", "TEXT"),
+    ("archive", "has_art", "INTEGER"),
+    ("archive", "art_checked_at", "TEXT"),
 ]
 
 

@@ -45,17 +45,6 @@ _COMMIT_EVERY = 50
 # ── Column migration ──────────────────────────────────────────────────────────
 
 
-def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
-    for col, typedef in (
-        ("integrity_ok", "INTEGER"),
-        ("integrity_checked_at", "TEXT"),
-    ):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
-    conn.commit()
-
-
 # ── ffprobe check ─────────────────────────────────────────────────────────────
 
 
@@ -112,43 +101,25 @@ class IntegrityStage(BaseStage):
         if not shutil.which("ffmpeg"):
             raise StageError("ffmpeg not found in PATH — Integrity requires ffmpeg.")
 
-        try:
-            count = ctx.conn.execute(
-                "SELECT COUNT(*) FROM archive "
-                "WHERE status='CATALOGUED' AND integrity_checked_at IS NULL"
-            ).fetchone()[0]
-        except Exception:
-            count = ctx.conn.execute(
-                "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'"
-            ).fetchone()[0]
+        count = ctx.conn.execute(
+            "SELECT COUNT(*) FROM archive "
+            "WHERE status='CATALOGUED' AND integrity_checked_at IS NULL"
+        ).fetchone()[0]
         logger.info("[integrity] %d file(s) to check", count)
 
     def _check(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
 
-        if not dry_run:
-            _ensure_columns(ctx.conn)
-
         max_files = ctx.get("integrity_max_files", 0)  # 0 = no cap
 
-        try:
-            rows = ctx.conn.execute(
-                """
-                SELECT file_path FROM archive
-                WHERE status = 'CATALOGUED'
-                  AND integrity_checked_at IS NULL
-                ORDER BY file_path
-                """
-            ).fetchall()
-        except Exception:
-            rows = ctx.conn.execute(
-                """
-                SELECT file_path FROM archive
-                WHERE status = 'CATALOGUED'
-                ORDER BY file_path
-                """
-            ).fetchall()
-
+        rows = ctx.conn.execute(
+            """
+            SELECT file_path FROM archive
+            WHERE status = 'CATALOGUED'
+              AND integrity_checked_at IS NULL
+            ORDER BY file_path
+            """
+        ).fetchall()
         if max_files and len(rows) > max_files:
             logger.info("[integrity] capping %d rows to %d", len(rows), max_files)
             rows = rows[:max_files]

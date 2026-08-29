@@ -10,7 +10,7 @@ What it does:
   - Flags files whose integrated LUFS or true-peak fall outside tolerance
   - Writes a summary report to MUSAEUS_RUNS_ROOT/auditor_report.txt
   - Stores per-file results in archive.auditor_lufs / archive.auditor_flagged
-    (columns added on first run via _ensure_columns)
+    (columns declared in db.py's _MIGRATIONS, applied by open_db())
   - Logs AUDITOR_PASS / AUDITOR_FLAG event per file
   - dry_run() prints the report without updating DB or writing the file
 
@@ -44,20 +44,6 @@ _DEFAULT_TOLERANCE = 1.5
 _DEFAULT_MAX_FILES = 200
 _FILE_TIMEOUT_S = 90
 _COMMIT_EVERY = 50
-
-
-def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
-    """Add auditor columns to archive if they don't exist yet (auto-migrate)."""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
-    for col, typedef in (
-        ("auditor_lufs", "REAL"),
-        ("auditor_tp", "REAL"),
-        ("auditor_flagged", "INTEGER DEFAULT 0"),
-        ("auditor_checked_at", "TEXT"),
-    ):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
-    conn.commit()
 
 
 def _ffmpeg_lufs(path: Path, target_lufs: float, target_tp: float) -> tuple[float, float]:
@@ -126,9 +112,6 @@ class AuditorStage(BaseStage):
         target_tp = ctx.get("auditor_target_tp", _DEFAULT_TARGET_TP)
         tolerance = ctx.get("auditor_tolerance", _DEFAULT_TOLERANCE)
         max_files = ctx.get("auditor_max_files", _DEFAULT_MAX_FILES)
-
-        if not dry_run:
-            _ensure_columns(ctx.conn)
 
         rows = ctx.conn.execute(
             """
