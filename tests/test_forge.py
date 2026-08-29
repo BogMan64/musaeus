@@ -14,7 +14,7 @@ import pytest
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db, upsert_archive
-from musaeus.loudness import R128_APPLE_REFERENCE
+from musaeus.loudness import R128_APPLE_REFERENCE, lufs_to_rg
 from musaeus.stages.forge import ForgeStage, read_existing_rg_tags, write_rg_tags
 
 
@@ -413,7 +413,7 @@ class TestWriteRgTags:
         path.write_bytes(b"")
         mock_flac.return_value = True
         assert write_rg_tags(path, 4.5, 0.95) is True
-        mock_flac.assert_called_once_with(path, 4.5, 0.95)
+        mock_flac.assert_called_once_with(path, 4.5, 0.95, reference_lufs=-18.0)
 
     @patch("musaeus.stages.forge._write_tags_mp3")
     def test_mp3_dispatch(self, mock_mp3, tmp_path):
@@ -543,7 +543,10 @@ def test_embed_from_db_writes_without_measuring(tmp_path, monkeypatch):
     monkeypatch.setattr(
         forge_mod,
         "write_rg_tags",
-        lambda p, g, pk, r128_gain=None: (written.append((p, g, pk, r128_gain)), True)[1],
+        lambda p, g, pk, r128_gain=None, reference_lufs=-18.0: (
+            written.append((p, g, pk, r128_gain)),
+            True,
+        )[1],
     )
 
     real = tmp_path / "song.m4a"
@@ -605,3 +608,84 @@ def test_embed_from_db_writes_without_measuring(tmp_path, monkeypatch):
     ).fetchone()
     assert kept[0] == "2026-08-20"
     assert kept[1] == pytest.approx(-1.2)
+
+
+# ── FLAC ReplayGain reference tag (regression) ───────────────────────────────
+
+
+def _minimal_flac(path: Path) -> None:
+    """Write the smallest file mutagen will accept as a FLAC.
+
+    "fLaC" magic + a single STREAMINFO block. No audio frames -- these tests
+    only exercise tag serialisation, and building a real stream would need
+    ffmpeg, which is not a test dependency anywhere else in this suite.
+    """
+    import struct
+
+    streaminfo = bytearray(34)
+    struct.pack_into(">HH", streaminfo, 0, 4096, 4096)  # min/max blocksize
+    sample_rate, channels, bps, total_samples = 44100, 2, 16, 44100
+    packed = (sample_rate << 44) | ((channels - 1) << 41) | ((bps - 1) << 36) | total_samples
+    streaminfo[10:18] = packed.to_bytes(8, "big")
+    path.write_bytes(b"fLaC" + b"\x80" + (34).to_bytes(3, "big") + bytes(streaminfo))
+
+
+class TestFlacReferenceLoudnessTag:
+    """REPLAYGAIN_REFERENCE_LOUDNESS must describe the gain actually written.
+
+    It was hardcoded to "18.00 LUFS" while rg_gain came from the configurable
+    forge_target_lufs. With a non-default target the file carried a gain
+    referenced to one level under a tag claiming another -- and Forge's own
+    read-back shortcut parses that tag to recover lufs, so it would read a
+    wrong lufs out of a file it had written itself.
+    """
+
+    def test_default_target_writes_18(self, tmp_path):
+        from mutagen.flac import FLAC
+
+        path = tmp_path / "song.flac"
+        _minimal_flac(path)
+
+        assert write_rg_tags(path, 4.0, 0.5) is True
+        assert FLAC(str(path))["replaygain_reference_loudness"] == ["18.00 LUFS"]
+
+    def test_non_default_target_is_recorded_not_assumed(self, tmp_path):
+        from mutagen.flac import FLAC
+
+        path = tmp_path / "song.flac"
+        _minimal_flac(path)
+
+        # A -14 LUFS target: rg_gain = -14 - lufs.
+        lufs = -9.0
+        rg_gain = lufs_to_rg(lufs, reference=-14.0)
+        assert write_rg_tags(path, rg_gain, 0.5, reference_lufs=-14.0) is True
+
+        assert FLAC(str(path))["replaygain_reference_loudness"] == ["14.00 LUFS"]
+
+    def test_read_back_recovers_the_lufs_that_was_written(self, tmp_path):
+        path = tmp_path / "song.flac"
+        _minimal_flac(path)
+
+        lufs = -9.0
+        rg_gain = lufs_to_rg(lufs, reference=-14.0)
+        write_rg_tags(path, rg_gain, 0.5, reference_lufs=-14.0)
+
+        recovered = read_existing_rg_tags(path)
+        assert recovered is not None
+        assert recovered["lufs"] == pytest.approx(lufs, abs=0.01)
+
+    def test_signed_third_party_reference_tag_is_parsed_correctly(self, tmp_path):
+        """A conventional "-18.00 LUFS" must not be read as +18.0."""
+        from mutagen.flac import FLAC
+
+        path = tmp_path / "song.flac"
+        _minimal_flac(path)
+        audio = FLAC(str(path))
+        audio["REPLAYGAIN_TRACK_GAIN"] = ["-4.00 dB"]
+        audio["REPLAYGAIN_REFERENCE_LOUDNESS"] = ["-18.00 LUFS"]
+        audio.save()
+
+        recovered = read_existing_rg_tags(path)
+        assert recovered is not None
+        # reference -18, gain -4  ->  lufs = -18 - (-4) = -14
+        assert recovered["lufs"] == pytest.approx(-14.0, abs=0.01)

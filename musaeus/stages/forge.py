@@ -94,25 +94,52 @@ def _write_tags_m4a(path: Path, rg_gain: float, rg_peak: float) -> bool:
             MP4FreeForm(f"{rg_peak:.8f}".encode())
         ]
         audio.save()
+
+        # Read back and confirm the atom actually landed. mutagen's save()
+        # returning without raising is NOT proof of a write: the original
+        # 2026-08-21 bug was exactly a save() that succeeded while
+        # serialising nothing, and it stayed invisible across 12,279 files
+        # precisely because nothing verified. Re-opening costs one cheap
+        # header read per file and makes that failure mode impossible to
+        # miss again.
+        verify: Any = MP4(str(path)).tags or {}
+        if not verify.get("----:com.apple.iTunes:R128_TRACK_GAIN"):
+            logger.warning(
+                "m4a tag write reported success but R128_TRACK_GAIN is absent "
+                "on re-read -- treating as a failed write: %s",
+                path,
+            )
+            return False
         return True
     except Exception as exc:
-        logger.debug("m4a tag write failed %s: %s", path, exc)
+        logger.warning("m4a tag write failed %s: %s", path, exc)
         return False
 
 
-def _write_tags_flac(path: Path, rg_gain: float, rg_peak: float) -> bool:
-    """Write ReplayGain tags to FLAC."""
+def _write_tags_flac(
+    path: Path, rg_gain: float, rg_peak: float, reference_lufs: float = R128_REFERENCE
+) -> bool:
+    """Write ReplayGain tags to FLAC.
+
+    reference_lufs must be the reference *rg_gain was actually computed
+    against*, not a constant. It used to be hardcoded to "18.00 LUFS" while
+    rg_gain came from the configurable forge_target_lufs, so any non-default
+    target wrote a gain referenced to one level under a tag claiming another.
+    That is not cosmetic: _rg_dict_from_vorbis_style() below parses this very
+    tag to recover lufs on a later run, so Forge would read back a wrong lufs
+    from a file it had written itself.
+    """
     try:
         from mutagen.flac import FLAC  # type: ignore[import-untyped]
 
         audio = FLAC(str(path))
         audio["REPLAYGAIN_TRACK_GAIN"] = [f"{rg_gain:+.2f} dB"]
         audio["REPLAYGAIN_TRACK_PEAK"] = [f"{rg_peak:.8f}"]
-        audio["REPLAYGAIN_REFERENCE_LOUDNESS"] = ["18.00 LUFS"]
+        audio["REPLAYGAIN_REFERENCE_LOUDNESS"] = [f"{abs(reference_lufs):.2f} LUFS"]
         audio.save()
         return True
     except Exception as exc:
-        logger.debug("flac tag write failed %s: %s", path, exc)
+        logger.warning("flac tag write failed %s: %s", path, exc)
         return False
 
 
@@ -133,7 +160,7 @@ def _write_tags_mp3(path: Path, rg_gain: float, rg_peak: float) -> bool:
         audio.save()
         return True
     except Exception as exc:
-        logger.debug("mp3 tag write failed %s: %s", path, exc)
+        logger.warning("mp3 tag write failed %s: %s", path, exc)
         return False
 
 
@@ -152,24 +179,31 @@ def _write_tags_aiff(path: Path, rg_gain: float, rg_peak: float) -> bool:
         audio.save()
         return True
     except Exception as exc:
-        logger.debug("aiff tag write failed %s: %s", path, exc)
+        logger.warning("aiff tag write failed %s: %s", path, exc)
         return False
 
 
 def write_rg_tags(
-    path: Path, rg_gain: float, rg_peak: float, r128_gain: float | None = None
+    path: Path,
+    rg_gain: float,
+    rg_peak: float,
+    r128_gain: float | None = None,
+    reference_lufs: float = R128_REFERENCE,
 ) -> bool:
     """Dispatch to the right tag writer based on file extension.
 
     r128_gain — gain referenced to -23 LUFS (EBU R128), used for Apple M4A tags.
                 Falls back to rg_gain if not supplied.
+    reference_lufs — the reference rg_gain was computed against, recorded in
+                FLAC's REPLAYGAIN_REFERENCE_LOUDNESS so a later read-back
+                recovers the right lufs. Defaults to the -18 LUFS standard.
     """
     ext = path.suffix.lower()
     if ext in (".m4a", ".alac"):
         # Apple com.apple.iTunes.R128_TRACK_GAIN must reference -23 LUFS.
         return _write_tags_m4a(path, r128_gain if r128_gain is not None else rg_gain, rg_peak)
     if ext == ".flac":
-        return _write_tags_flac(path, rg_gain, rg_peak)
+        return _write_tags_flac(path, rg_gain, rg_peak, reference_lufs=reference_lufs)
     if ext == ".mp3":
         return _write_tags_mp3(path, rg_gain, rg_peak)
     if ext in (".aiff", ".aif"):
@@ -243,8 +277,14 @@ def _rg_dict_from_vorbis_style(audio: Any) -> dict[str, float | None] | None:
         return None
     rg_gain = float(str(gain_tag[0]).replace("dB", "").strip())
 
+    # Sign-tolerant: this project writes the reference unsigned ("18.00 LUFS"),
+    # but the conventional ReplayGain form is signed ("-18.00 LUFS"). Taking
+    # -abs() reads both as the same -18.0 instead of turning a third-party
+    # signed tag into +18.0 and inverting every lufs derived from it.
     ref_tag = audio.get("replaygain_reference_loudness")
-    reference = -float(str(ref_tag[0]).replace("LUFS", "").strip()) if ref_tag else R128_REFERENCE
+    reference = (
+        -abs(float(str(ref_tag[0]).replace("LUFS", "").strip())) if ref_tag else R128_REFERENCE
+    )
     lufs = reference - rg_gain
 
     peak_tag = audio.get("replaygain_track_peak")
@@ -376,7 +416,9 @@ class ForgeStage(BaseStage):
 
         tagged = False
         if not dry_run:
-            tagged = write_rg_tags(path, rg_gain, rg_peak, r128_gain=r128_gain)
+            tagged = write_rg_tags(
+                path, rg_gain, rg_peak, r128_gain=r128_gain, reference_lufs=target_lufs
+            )
             _save_loudness(ctx, file_path, lufs, tp, rg_gain, rg_peak, tagged)  # type: ignore[arg-type]
 
         return "ok" if tagged or dry_run else "tag_fail"
@@ -433,7 +475,15 @@ class ForgeStage(BaseStage):
             r128 = lufs_to_rg(lufs, reference=R128_APPLE_REFERENCE) if lufs is not None else None
             peak = row["rg_peak"] if row["rg_peak"] is not None else 0.0
 
-            if write_rg_tags(path, row["rg_gain"], peak, r128_gain=r128):
+            # rg_gain = reference - lufs, so the reference it was measured
+            # against is recoverable exactly rather than assumed: a row forged
+            # under a non-default --target-lufs gets a FLAC reference tag that
+            # matches its own stored gain. Falls back to the -18 standard only
+            # when lufs is unknown (non-Apple containers, which skip the
+            # no-lufs guard above).
+            reference = row["rg_gain"] + lufs if lufs is not None else R128_REFERENCE
+
+            if write_rg_tags(path, row["rg_gain"], peak, r128_gain=r128, reference_lufs=reference):
                 written += 1
                 # The file now genuinely carries the tag, so rg_tagged_at must
                 # say so or the next ordinary Forge run re-measures it. Stamped

@@ -159,14 +159,67 @@ class TestSentinelRun:
     @patch("musaeus.stages.sentinel.audio_hash_safe")
     @patch("musaeus.stages.sentinel.file_hash")
     def test_handles_missing_file(self, mock_fh, mock_ah, ctx, tmp_path):
-        """File removed between ingest and sentinel → errored."""
-        _insert_pending(ctx, str(tmp_path / "gone.flac"))
+        """File removed between ingest and sentinel → marked GHOST, row kept.
+
+        Sentinel used to DELETE the archive row here, which threw away the
+        row's hashes and history for what is usually a transient condition
+        (unmounted vault, slow share, a file another stage relocated mid-run).
+        The row must survive as status='GHOST' -- GhostStage's own state --
+        so the event log still describes a row that exists.
+        """
+        gone = tmp_path / "gone.flac"
+        _insert_pending(ctx, str(gone))
 
         stage = SentinelStage()
         result = stage.execute(ctx)
 
-        assert result.files_errored == 1
-        assert any("Missing" in e for e in result.errors)
+        assert result.files_skipped == 1
+        assert result.files_errored == 0
+
+        row = ctx.conn.execute(
+            "SELECT status FROM archive WHERE file_path = ?", (str(gone),)
+        ).fetchone()
+        assert row is not None, "archive row must not be deleted"
+        assert row["status"] == "GHOST"
+
+        events = ctx.conn.execute(
+            "SELECT event_type FROM events WHERE file_path = ?", (str(gone),)
+        ).fetchall()
+        assert any(e["event_type"] == "GHOST_DETECTED" for e in events)
+
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_ghost_row_is_not_seeded_as_a_duplicate_keeper(self, mock_fh, mock_ah, ctx, tmp_path):
+        """A GHOST row must not be flagged as the twin of a live incoming file.
+
+        Regression guard for the dupe-cascade family: a phantom seeded into
+        seen_hashes gets flagged EXACT against a real file, and DupeResolver
+        will happily rank the phantom as keeper and move the only live copy
+        into DUPES_MOVED_FOR_REVIEW.
+        """
+        shared_hash = "abcd1234" * 8
+
+        # A row whose file no longer exists, already marked GHOST.
+        ghost = tmp_path / "vanished.flac"
+        _insert_pending(ctx, str(ghost))
+        ctx.conn.execute(
+            "UPDATE archive SET status = 'GHOST', audio_hash = ? WHERE file_path = ?",
+            (shared_hash, str(ghost)),
+        )
+
+        # A live file with the same audio content.
+        live = tmp_path / "real.flac"
+        live.write_bytes(b"AUDIO")
+        _insert_pending(ctx, str(live))
+
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = (shared_hash, None)
+
+        result = SentinelStage().execute(ctx)
+
+        assert result.files_changed == 1
+        dupes = ctx.conn.execute("SELECT * FROM duplicates").fetchall()
+        assert dupes == [], "a GHOST row must never be staged as a duplicate twin"
 
     @patch("musaeus.stages.sentinel.audio_hash_safe")
     @patch("musaeus.stages.sentinel.file_hash")

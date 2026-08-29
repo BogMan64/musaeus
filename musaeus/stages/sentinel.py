@@ -36,8 +36,8 @@ def _get_pending(conn) -> list[dict]:  # type: ignore[type-arg]
     rows = conn.execute(
         """
         SELECT file_path, audio_hash FROM archive
-        WHERE status = 'PENDING'
-           OR audio_hash IS NULL
+        WHERE (status = 'PENDING' OR audio_hash IS NULL)
+          AND status NOT IN ('GHOST', 'DUPE_REVIEW')
         ORDER BY file_path
         """
     ).fetchall()
@@ -98,8 +98,17 @@ class SentinelStage(BaseStage):
         seen_hashes: dict[str, str] = {}  # audio_hash → first file_path
 
         # Pre-load existing hashes from DB into seen_hashes
+        # GHOST rows (file gone from disk) and DUPE_REVIEW rows (already
+        # relocated to DUPES_MOVED_FOR_REVIEW) must not seed this map. A
+        # phantom seeded here gets flagged EXACT against a real incoming
+        # file, and DupeResolver's _keeper_sort_key will happily rank the
+        # phantom as the keeper and move the only live copy to review.
+        # cross_dupe.py already learned to verify liveness before believing
+        # a hash match (see its 2026-08-17/18 cascade note); this is the
+        # same discipline applied to Sentinel's own in-batch detection.
         existing = ctx.conn.execute(
-            "SELECT file_path, audio_hash FROM archive WHERE audio_hash IS NOT NULL"
+            "SELECT file_path, audio_hash FROM archive "
+            "WHERE audio_hash IS NOT NULL AND status NOT IN ('GHOST', 'DUPE_REVIEW')"
         ).fetchall()
         for row in existing:
             h = row["audio_hash"]
@@ -114,10 +123,30 @@ class SentinelStage(BaseStage):
             result.files_processed += 1
 
             if not path.exists():
-                logger.warning("Missing file (stale DB record — removing): %s", path_str)
-                ctx.conn.execute("DELETE FROM archive WHERE file_path = ?", (path_str,))
-                result.files_errored += 1
-                result.errors.append(f"Missing file, removed from archive: {path_str}")
+                # Mark, never delete. A DELETE here threw away the row's
+                # hashes, loudness and history for what is often a transient
+                # condition (vault not mounted yet, slow network share, a file
+                # another stage relocated mid-run), and it contradicted two of
+                # this project's own invariants: GhostStage exists precisely to
+                # record this state as status='GHOST', and the event log is
+                # only the source of truth if the archive row it describes
+                # still exists. GhostStage's sweep, or a re-ingest, brings the
+                # row back to life if the file reappears.
+                logger.warning("Missing file (marking GHOST): %s", path_str)
+                ctx.conn.execute(
+                    "UPDATE archive SET status = 'GHOST' WHERE file_path = ?",
+                    (path_str,),
+                )
+                ctx.log_event(
+                    "GHOST_DETECTED",
+                    file_path=path_str,
+                    old_value="PENDING",
+                    new_value="GHOST",
+                    stage=self.NAME,
+                    note="file missing on disk at hash time",
+                )
+                result.files_skipped += 1
+                result.notes.append(f"missing on disk, marked GHOST: {path_str}")
                 continue
 
             # Full-file hash (always, cheap)

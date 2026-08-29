@@ -56,6 +56,7 @@ from pathlib import Path
 
 from ..context import RunContext, StageResult
 from .base import BaseStage
+from .sanitize import SMART_QUOTE_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -178,10 +179,19 @@ def sanitize_path_component(text: str) -> str:
     # Normalize unicode
     s = unicodedata.normalize("NFC", str(text))
 
-    # Normalize quotes and dashes
-    s = s.replace("'", "'").replace("'", "'").replace("`", "'")
-    s = s.replace(""", '"').replace(""", '"')
-    s = s.replace("–", "-").replace("—", "-").replace("−", "-")
+    # Normalize smart quotes and dashes to ASCII. Reuses sanitize.py's
+    # SMART_QUOTE_MAP rather than a second inline copy, so the two modules
+    # cannot disagree about what "normalised" means. The previous inline
+    # chain here was silently broken in both directions: its apostrophe
+    # replacements mapped ASCII "'" to ASCII "'" (a no-op, so curly
+    # U+2018/U+2019 were never touched), and its double-quote line was
+    # parsed by Python as replace(", '", '"') -- a stray triple-quote
+    # opened a string literal -- which rewrote the substring ", '" as a
+    # quote character that the forbidden-char pass below then turned into
+    # "_", mangling e.g. "Hello, 'Cause" into "Hello_Cause".
+    for _smart, _plain in SMART_QUOTE_MAP.items():
+        s = s.replace(_smart, _plain)
+    s = s.replace("`", "'")
 
     # Remove control characters
     s = "".join(c for c in s if unicodedata.category(c)[0] != "C")
@@ -244,6 +254,21 @@ def unique_path(target: Path) -> Path:
         if not new_path.exists():
             return new_path
         counter += 1
+
+
+def _display_path(path: Path, root: Path) -> str:
+    """Path relative to *root* for logging, falling back to the full path.
+
+    Path.relative_to() raises ValueError when the path is not under root, and
+    this is only ever used to make a log line shorter -- a cosmetic helper must
+    not be able to abort a stage. It previously could: the raise happened
+    before the dry-run check, so even `organize --dry-run` died on the first
+    row that had moved outside INBOX.
+    """
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
 
 
 # ── Stage ──────────────────────────────────────────────────────────────────────
@@ -319,6 +344,12 @@ class OrganizeStage(BaseStage):
         """Organize files: strip track numbers, rename, move to Artist/Album/."""
         result = self._make_result(dry_run=dry_run)
 
+        # finalized_at IS NULL keeps this stage off files Finalize has already
+        # moved into ALAC-Library. Those rows keep status='CATALOGUED', so
+        # without this predicate they were selected here and their target_dir
+        # was rebuilt under ctx.inbox -- i.e. Organize would have moved
+        # finished library files back into the inbox. (In practice it crashed
+        # first, on the relative_to() below, which masked the real hazard.)
         rows = ctx.conn.execute(
             """
             SELECT id, file_path, artist, album, title
@@ -326,6 +357,7 @@ class OrganizeStage(BaseStage):
             WHERE status = 'CATALOGUED'
               AND artist IS NOT NULL
               AND title IS NOT NULL
+              AND (finalized_at IS NULL OR finalized_at = '')
             ORDER BY file_path
             """
         ).fetchall()
@@ -342,6 +374,15 @@ class OrganizeStage(BaseStage):
                 logger.warning("[organize] file missing: %s", current_path)
                 result.files_errored += 1
                 result.errors.append(f"{current_path}: file missing on disk")
+                continue
+
+            # Second guard, independent of the finalized_at predicate above:
+            # this stage only ever builds targets under ctx.inbox, so a row
+            # living anywhere else (STAGING mid-canonicalize, ALAC-Library,
+            # a hand-edited path) is not ours to reorganise. Skipping is
+            # correct here, not an error.
+            if not current_path.is_relative_to(ctx.inbox):
+                skipped += 1
                 continue
 
             artist = row["artist"] or "Unknown Artist"
@@ -399,8 +440,8 @@ class OrganizeStage(BaseStage):
             elif current_path.parent != target_path.parent:
                 logger.info(
                     "[organize] move    %s\n                    → %s",
-                    current_path.relative_to(ctx.inbox),
-                    target_path.relative_to(ctx.inbox),
+                    _display_path(current_path, ctx.inbox),
+                    _display_path(target_path, ctx.inbox),
                 )
 
                 if not dry_run:

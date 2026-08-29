@@ -245,3 +245,98 @@ class TestOrganizeDryRun:
             "SELECT file_path FROM archive WHERE title='Song One'"
         ).fetchone()
         assert row["file_path"] == str(track)
+
+
+class TestSmartQuoteNormalization:
+    """Regression guard for the silently-broken quote normalisation.
+
+    The old inline chain in sanitize_path_component() was wrong in two ways:
+    its apostrophe replacements mapped ASCII "'" onto itself (so curly
+    U+2018/U+2019 survived untouched), and a stray triple-quote made Python
+    parse its double-quote line as replace(", '", '"'), rewriting the
+    substring ", '" into a quote that the forbidden-char pass then turned
+    into "_".
+    """
+
+    def test_curly_apostrophe_becomes_ascii(self):
+        assert sanitize_path_component("Don\u2019t Stop") == "Don't Stop"
+
+    def test_left_curly_apostrophe_becomes_ascii(self):
+        assert sanitize_path_component("\u2018Round Midnight") == "'Round Midnight"
+
+    def test_curly_double_quotes_are_normalised_then_stripped(self):
+        # Straightened to ASCII '"', which is forbidden in a path component
+        # and so becomes "_" -- the point is that the curly form no longer
+        # survives into the filename verbatim.
+        assert sanitize_path_component("\u201cHeroes\u201d") == "_Heroes_"
+
+    def test_comma_apostrophe_sequence_is_no_longer_mangled(self):
+        # Previously "Hello, 'Cause" -> "Hello_Cause".
+        assert sanitize_path_component("Hello, 'Cause") == "Hello, 'Cause"
+
+    def test_backtick_still_becomes_apostrophe(self):
+        assert sanitize_path_component("Don`t") == "Don't"
+
+    def test_en_and_em_dashes_still_normalise(self):
+        assert sanitize_path_component("A \u2013 B") == "A - B"
+        assert sanitize_path_component("A \u2014 B") == "A - B"
+
+    def test_filename_round_trip(self):
+        assert (
+            build_track_filename("Bj\u00f6rk", "It\u2019s Oh So Quiet", ".m4a")
+            == "Bj\u00f6rk - It's Oh So Quiet.m4a"
+        )
+
+
+class TestFinalizedRowsAreLeftAlone:
+    """Organize must ignore rows Finalize has already moved to ALAC-Library.
+
+    Finalize leaves finalised rows at status='CATALOGUED', so they used to be
+    selected here. Two consequences: the log line's relative_to(ctx.inbox)
+    raised ValueError and failed the whole stage (even under --dry-run, since
+    it ran before the dry-run check), and had it not raised, target_dir is
+    built under ctx.inbox -- so Organize would have moved finished library
+    files back into the inbox.
+    """
+
+    def _finalized_row(self, ctx, cfg):
+        lib_file = cfg.alac_library / "2026-08-29" / "Portishead" / "Dummy"
+        lib_file.mkdir(parents=True, exist_ok=True)
+        track = lib_file / "Portishead - Roads.m4a"
+        track.write_bytes(b"AUDIO")
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(track),
+                "artist": "Portishead",
+                "album": "Dummy",
+                "title": "Roads",
+                "status": "CATALOGUED",
+            },
+        )
+        ctx.conn.execute(
+            "UPDATE archive SET finalized_at = datetime('now') WHERE file_path = ?",
+            (str(track),),
+        )
+        ctx.conn.commit()
+        return track
+
+    def test_run_does_not_fail_or_move_finalized_file(self, ctx, cfg):
+        track = self._finalized_row(ctx, cfg)
+
+        result = OrganizeStage().execute(ctx)
+
+        assert result.success, f"stage failed: {result.errors}"
+        assert track.exists(), "finalised file must stay in ALAC-Library"
+        row = ctx.conn.execute(
+            "SELECT file_path FROM archive WHERE file_path = ?", (str(track),)
+        ).fetchone()
+        assert row is not None and row["file_path"] == str(track)
+
+    def test_dry_run_does_not_fail(self, ctx, cfg):
+        self._finalized_row(ctx, cfg)
+        ctx.dry_run = True
+
+        result = OrganizeStage().execute(ctx)
+
+        assert result.success, f"dry run failed: {result.errors}"
