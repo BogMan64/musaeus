@@ -64,6 +64,12 @@ def _get_candidates(conn) -> list[dict]:  # type: ignore[type-arg]
         SELECT a.file_path, a.audio_hash
           FROM archive a
          WHERE a.audio_hash IS NOT NULL
+           -- Rows already resolved have nothing to re-flag: a GHOST row's
+           -- file is gone, and a DUPE_REVIEW row has already been physically
+           -- relocated by DupeResolver. Without this, every run re-checked
+           -- the entire archive and paid a Path.exists() syscall per ledger
+           -- hit for rows whose outcome was already decided.
+           AND a.status NOT IN ('GHOST', 'DUPE_REVIEW')
            AND NOT EXISTS (
                  SELECT 1 FROM duplicates d
                   WHERE d.file_path = a.file_path

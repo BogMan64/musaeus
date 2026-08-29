@@ -239,6 +239,13 @@ class PreflightStage(BaseStage):
             return default
         return val in ("y", "yes")
 
+    # Generous, but bounded. These are real package installs over a network,
+    # so minutes are normal -- but no timeout at all means a wedged apt lock
+    # or a sudo prompt with nowhere to answer it hangs preflight, and so the
+    # whole pipeline, indefinitely. Every other subprocess call in musaeus/
+    # already sets one.
+    _INSTALL_TIMEOUT_SECS = 900
+
     def _offer_installs(self, ok: list, warn: list, fail: list) -> None:
         """
         One batch Y/n covering everything missing, not a prompt per item
@@ -262,11 +269,18 @@ class PreflightStage(BaseStage):
             cmd = ["sudo", "apt-get", "install", "-y", *apt_pkgs]
             print(f"    Running: {' '.join(cmd)}")
             try:
-                result = subprocess.run(cmd, capture_output=False)
+                result = subprocess.run(
+                    cmd, capture_output=False, timeout=self._INSTALL_TIMEOUT_SECS
+                )
                 if result.returncode == 0:
                     ok.append(f"apt install: {', '.join(apt_pkgs)} -- exit 0")
                 else:
                     fail.append(f"apt install: {', '.join(apt_pkgs)} -- exit {result.returncode}")
+            except subprocess.TimeoutExpired:
+                fail.append(
+                    f"apt install: {', '.join(apt_pkgs)} -- timed out after "
+                    f"{self._INSTALL_TIMEOUT_SECS}s"
+                )
             except OSError as exc:
                 fail.append(
                     f"apt install: {', '.join(apt_pkgs)} -- could not run sudo/apt-get: {exc}"
@@ -276,11 +290,18 @@ class PreflightStage(BaseStage):
             cmd = [sys.executable, "-m", "pip", "install", *pip_pkgs]
             print(f"    Running: {' '.join(cmd)}")
             try:
-                result = subprocess.run(cmd, capture_output=False)
+                result = subprocess.run(
+                    cmd, capture_output=False, timeout=self._INSTALL_TIMEOUT_SECS
+                )
                 if result.returncode == 0:
                     ok.append(f"pip install: {', '.join(pip_pkgs)} -- exit 0")
                 else:
                     fail.append(f"pip install: {', '.join(pip_pkgs)} -- exit {result.returncode}")
+            except subprocess.TimeoutExpired:
+                fail.append(
+                    f"pip install: {', '.join(pip_pkgs)} -- timed out after "
+                    f"{self._INSTALL_TIMEOUT_SECS}s"
+                )
             except OSError as exc:
                 fail.append(f"pip install: {', '.join(pip_pkgs)} -- could not run pip: {exc}")
 

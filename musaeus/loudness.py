@@ -126,7 +126,12 @@ def _run_loudnorm(path: Path, linear: bool, duration: float | None) -> tuple[int
         "-i",
         str(path),
         "-map",
-        "0:a",
+        # First audio stream only, matching hasher.audio_hash's "0:a:0".
+        # "0:a" maps EVERY audio stream, so on a multi-stream file (a
+        # commentary track, an alternate mix) loudnorm measured a different
+        # thing than the hash identified -- the two modules disagreed about
+        # what "the audio" of a file even is.
+        "0:a:0",
         "-af",
         af,
         "-f",

@@ -84,6 +84,7 @@ import csv
 import logging
 import os
 import shutil
+import sqlite3
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
@@ -218,11 +219,11 @@ def _pick_keeper_and_losers(members: list[dict]) -> tuple[dict | None, list[dict
     """
     if not members:
         return None, []
-    keep = members[0]
-    losers = members[1:] if len(members) > 1 else members
     if len(members) == 1:
-        return None, members  # CROSS_BATCH: nothing to keep, incoming file moves
-    return keep, losers
+        # CROSS_BATCH: the prior-batch copy isn't a row here at all, so the
+        # lone member is the one that moves, with nothing to keep.
+        return None, members
+    return members[0], members[1:]
 
 
 class DupeResolverStage(BaseStage):
@@ -419,10 +420,37 @@ class DupeResolverStage(BaseStage):
             # source). status='DUPE_REVIEW' is a new, distinct status
             # (not CATALOGUED, not GHOST -- this is an intentional,
             # tracked relocation, not a disappearance).
-            ctx.conn.execute(
-                "UPDATE archive SET status = 'DUPE_REVIEW', file_path = ? WHERE file_path = ?",
-                (str(target), str(source)),
-            )
+            # archive.file_path is UNIQUE, and the file has already moved by
+            # this point, so a collision here cannot be allowed to abort the
+            # stage mid-batch. finalize.py and organize.py both already
+            # catch-and-revert this exact case; this one was unguarded, so one
+            # stale row claiming the target path would fail the whole run and
+            # strand every remaining group. Move the file back and skip the
+            # row, matching the established pattern.
+            try:
+                ctx.conn.execute(
+                    "UPDATE archive SET status = 'DUPE_REVIEW', file_path = ? WHERE file_path = ?",
+                    (str(target), str(source)),
+                )
+            except sqlite3.IntegrityError as exc:
+                logger.error(
+                    "[dupe-resolver] DB collision for %s -> %s (%s); reverting move",
+                    source,
+                    target,
+                    exc,
+                )
+                try:
+                    shutil.move(str(target), str(source))
+                except OSError as revert_exc:
+                    logger.error(
+                        "[dupe-resolver] COULD NOT REVERT %s -- disk/DB now out of "
+                        "sync, needs manual fix: %s",
+                        target,
+                        revert_exc,
+                    )
+                result.files_errored += 1
+                result.errors.append(f"{source}: DB collision on {target}: {exc}")
+                continue
             ctx.log_event(
                 "DUPE_MOVED_FOR_REVIEW",
                 file_path=str(target),

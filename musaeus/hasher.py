@@ -149,6 +149,25 @@ def audio_hash(path: Path) -> str:
 
     import threading
 
+    # stderr MUST be drained concurrently with stdout. Previously it was left
+    # in an unread PIPE until after the process exited: on a file that makes
+    # ffmpeg emit more than the ~64 KB pipe buffer of diagnostics (a damaged
+    # or unusual stream -- exactly the files worth hashing carefully), the
+    # child blocks writing stderr, therefore stops producing stdout, and the
+    # reader below blocks forever on a stream that will never advance. The
+    # watchdog turned that deadlock into a timeout rather than a hang, so it
+    # showed up as an inexplicably slow file, not as an error.
+    stderr_chunks: list[bytes] = []
+
+    def _drain_stderr() -> None:
+        if proc.stderr is None:
+            return
+        try:
+            for line in iter(proc.stderr.readline, b""):
+                stderr_chunks.append(line)
+        except (OSError, ValueError):
+            pass  # pipe closed underneath us -- nothing useful left to read
+
     def _kill_on_timeout(p: subprocess.Popen, timeout: int) -> None:  # type: ignore[type-arg]
         try:
             p.wait(timeout=timeout)
@@ -156,20 +175,29 @@ def audio_hash(path: Path) -> str:
             logger.warning("ffmpeg timed out after %ds for %s — killing", timeout, path)
             p.kill()
 
+    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    stderr_thread.start()
     timer = threading.Thread(target=_kill_on_timeout, args=(proc, _TIMEOUT_SECS), daemon=True)
     timer.start()
 
     h = hashlib.sha256()
     assert proc.stdout is not None
-    while chunk := proc.stdout.read(_READ_BYTES):
-        h.update(chunk)
-
-    proc.stdout.close()
-    rc = proc.wait()
-    timer.join(timeout=1)
+    try:
+        while chunk := proc.stdout.read(_READ_BYTES):
+            h.update(chunk)
+    finally:
+        # Both pipes are closed on every path, including an exception mid-read.
+        # Leaving them open leaked two file descriptors per hashed file, which
+        # over a full library run is thousands.
+        proc.stdout.close()
+        rc = proc.wait()
+        stderr_thread.join(timeout=1)
+        timer.join(timeout=1)
+        if proc.stderr is not None:
+            proc.stderr.close()
 
     if rc != 0:
-        stderr = proc.stderr.read().decode("utf-8", errors="replace").strip() if proc.stderr else ""
+        stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace").strip()
         if rc == -9:  # SIGKILL from timeout
             raise HasherError(f"ffmpeg timed out (>{_TIMEOUT_SECS}s) for {path}")
         raise HasherError(f"ffmpeg exited {rc} for {path}: {stderr[:200]}")

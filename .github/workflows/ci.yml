@@ -17,8 +17,15 @@ jobs:
       - name: Install ruff
         run: pip install ruff
       - name: Ruff check
-        run: ruff check musaeus/ tests/
+        # scripts/ included: it was previously unlinted only by omission, not
+        # by decision, and had accumulated 28 findings nobody was seeing.
+        run: ruff check musaeus/ tests/ scripts/
       - name: Ruff format check
+        # Deliberately NOT scripts/. It holds one-off operational scripts and
+        # vendored ORPHEUS code (scripts/car_library/vendor/); reformatting
+        # those would be pure churn and would complicate re-vendoring
+        # upstream changes. Lint catches real problems there; formatting is
+        # enforced only on code this project actually authors and maintains.
         run: ruff format --check musaeus/ tests/
 
   typecheck:

@@ -445,20 +445,37 @@ class FinalizeStage(BaseStage):
         total = len(pending)
 
         result.files_processed = total
-        result.files_changed = total
-        result.notes.append(f"[DRY RUN] would finalize {total} file(s)")
 
+        # Count what would ACTUALLY move, inside the loop. Setting
+        # files_changed = total up front counted rows whose source is missing
+        # from disk -- rows the loop below skips and a real run would report
+        # as errors -- so the preview overstated the move count by exactly the
+        # number of broken rows, which is the case an operator most wants the
+        # preview to warn them about.
+        movable = 0
+        missing = 0
         shown = 0
         for row in pending:
             source = Path(row["file_path"])
             if not source.exists():
+                missing += 1
                 continue
+            movable += 1
             target = self._target_path(ctx, row, source)
             if shown < 10:
                 result.notes.append(f"  {source.name} -> {target}")
                 shown += 1
-        if total > shown:
-            result.notes.append(f"  ... and {total - shown} more")
+
+        result.files_changed = movable
+        result.files_errored = missing
+        result.notes.insert(0, f"[DRY RUN] would finalize {movable} file(s)")
+        if movable > shown:
+            result.notes.append(f"  ... and {movable - shown} more")
+        if missing:
+            result.notes.append(
+                f"  {missing} row(s) point at a file missing on disk — "
+                f"a real run would report these as errors"
+            )
 
         result.notes.append("  no files will be written, no DB changes")
 

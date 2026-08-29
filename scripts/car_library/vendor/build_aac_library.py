@@ -12,10 +12,10 @@ import argparse
 import contextlib
 import json
 import os
+import shutil as _shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, Optional, Tuple
 
 from lib.orpheus_naming import (
     AUDIO_EXTENSIONS,
@@ -27,20 +27,18 @@ from lib.orpheus_naming import (
     log_naming_event,
     resolve_album_artist_for_path,
 )
-from source_quality_policy import should_make_aac
-import shutil as _shutil
-
 from lib.orpheus_paths import (
     AAC_CAR_EXPORT,
     AAC_PORT_EXPORT,
     ALAC_BATCH_001,
     INBOX_CURRENT,
-    LUFS_ARCHIVE_NORMALIZED,
     LUFS_AAC_CAR_NORMALIZED,
     LUFS_AAC_PORTABLE_NORMALIZED,
+    LUFS_ARCHIVE_NORMALIZED,
     MUSIC_VAULT_ALAC,
     RUNS_ROOT,
 )
+from source_quality_policy import should_make_aac
 
 INPUT_DIR = ALAC_BATCH_001
 FALLBACK_SOURCE = INBOX_CURRENT
@@ -167,11 +165,11 @@ PROFILES = {
 }
 
 
-def normalize_tag_dict(tags: Dict[str, str]) -> Dict[str, str]:
+def normalize_tag_dict(tags: dict[str, str]) -> dict[str, str]:
     return {str(k).lower(): str(v) for k, v in tags.items()}
 
 
-def first_nonempty(*values: Optional[str]) -> Optional[str]:
+def first_nonempty(*values: str | None) -> str | None:
     for value in values:
         if value is not None:
             value = str(value).strip()
@@ -180,7 +178,7 @@ def first_nonempty(*values: Optional[str]) -> Optional[str]:
     return None
 
 
-def ffprobe_metadata(file_path: Path) -> Tuple[Dict[str, str], bool]:
+def ffprobe_metadata(file_path: Path) -> tuple[dict[str, str], bool]:
     cmd = [
         FFPROBE,
         "-v",
@@ -197,7 +195,7 @@ def ffprobe_metadata(file_path: Path) -> Tuple[Dict[str, str], bool]:
     format_tags = normalize_tag_dict(data.get("format", {}).get("tags", {}) or {})
     streams = data.get("streams", []) or []
 
-    stream_tags: Dict[str, str] = {}
+    stream_tags: dict[str, str] = {}
     has_attached_picture = False
 
     for stream in streams:
@@ -219,7 +217,7 @@ def ffprobe_metadata(file_path: Path) -> Tuple[Dict[str, str], bool]:
 
 
 def derive_output_path(
-    file_path: Path, tags: Dict[str, str], output_root: Path, profile_folder: str
+    file_path: Path, tags: dict[str, str], output_root: Path, profile_folder: str
 ) -> tuple[Path, dict[str, str]]:
     clean_tags = clean_metadata_from_tags(tags, fallback_title=file_path.stem)
 
