@@ -190,3 +190,69 @@ def test_artist_identity_has_exactly_one_definition():
     from musaeus.stages import original_year
 
     assert original_year._same_artist is mb_enrich._same_artist
+
+
+# ── the query must also use MusicBrainz's NATURAL name form ───────────────────
+#
+# Sibling of the encoding bug above, and found the same way -- by looking at
+# the string sent rather than at whether a call was made.
+#
+# MUSAEUS stores the article as a suffix ("Stooges, The"); MusicBrainz only
+# knows "The Stooges". The stored form was sent verbatim, matched nothing,
+# and the row was cached as "no such artist" permanently.
+#
+# Measured on the live mb_cache.db 2026-08-29:
+#     376 of 839 cached MISSES  are in `X, The` form   (45%)
+#       0 of 2,158 cached HITS  are in `X, The` form   (none, ever)
+# Confirmed live the same day: 'Stooges, The' -> no match;
+# 'The Stooges' -> 794c6bf2-3241-416f-9b8f-24e2d84a1c4b. Likewise The
+# Crickets and The Pogues.
+#
+# `_clean_artist_for_lookup` already existed and already did this correctly.
+# `_same_artist` had been folding through it to ACCEPT results all along; it
+# was simply never applied to the query it was written for.
+
+
+class TestArtistSearchUsesTheNaturalNameForm:
+    def test_an_article_suffix_name_is_flipped_for_the_query(self, sent):
+        mb_enrich._search_artist("Stooges, The")
+        assert sent == ['artist:"The Stooges"']
+
+    @pytest.mark.parametrize(
+        "stored,expected",
+        [
+            ("Beatles, The", "The Beatles"),
+            ("Pogues, The", "The Pogues"),
+            ("Crickets, The", "The Crickets"),
+        ],
+    )
+    def test_the_whole_article_family_is_flipped(self, sent, stored, expected):
+        mb_enrich._search_artist(stored)
+        assert sent == [f'artist:"{expected}"']
+
+    @pytest.mark.parametrize("name", ["Dusty Springfield", "Hall & Oates", "Cher"])
+    def test_a_name_with_no_article_suffix_is_sent_unchanged(self, sent, name):
+        mb_enrich._search_artist(name)
+        assert sent == [f'artist:"{name}"']
+
+    def test_flipping_the_query_does_not_loosen_the_identity_guard(self, monkeypatch):
+        """A near-miss must still be rejected, article form or not."""
+
+        monkeypatch.setattr(
+            mb_enrich,
+            "_mb_get",
+            lambda p, q: {
+                "artists": [{"id": "wrong", "name": "The Rolling Stones", "score": 100}]
+            },
+        )
+        assert mb_enrich._search_artist("Stooges, The") is None
+
+    def test_a_genuine_article_form_match_is_accepted(self, monkeypatch):
+        monkeypatch.setattr(
+            mb_enrich,
+            "_mb_get",
+            lambda p, q: {
+                "artists": [{"id": "794c6bf2", "name": "The Stooges", "score": 100}]
+            },
+        )
+        assert mb_enrich._search_artist("Stooges, The") == ("794c6bf2", "The Stooges")

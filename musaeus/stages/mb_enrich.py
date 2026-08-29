@@ -172,7 +172,22 @@ def _search_artist(artist_name: str) -> tuple[str, str] | None:
             # Verified live 2026-08-23: single-word names ("Abba", "Cher")
             # resolved; "Dusty Springfield" returned None, and did so again
             # the moment the encoding was removed -- as a match.
-            {"query": f'artist:"{artist_name}"', "limit": "3"},
+            # Searched in MusicBrainz's natural form, not the library's
+            # storage form. MUSAEUS files "The Stooges" as "Stooges, The";
+            # MusicBrainz has never heard of that, so the query returned no
+            # match and the row was cached as "no such artist" -- FOREVER.
+            #
+            # Measured on mb_cache.db 2026-08-29: 376 of 839 cached misses
+            # (45%) are in `X, The` form, and **0 of 2,158 successes are**.
+            # Not one article-suffix lookup has ever succeeded. Confirmed
+            # live the same day: 'Stooges, The' -> no match, 'The Stooges'
+            # -> 794c6bf2. Same for The Crickets and The Pogues.
+            #
+            # `_clean_artist_for_lookup` already existed and already did
+            # this correctly -- `_same_artist` has been folding through it
+            # to ACCEPT results all along. It was simply never applied to
+            # the query it was written for.
+            {"query": f'artist:"{_clean_artist_for_lookup(artist_name)}"', "limit": "3"},
         )
     except Exception as exc:
         # Was `return None`, which the caller could not tell apart from a
