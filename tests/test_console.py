@@ -84,8 +84,8 @@ def console(cfg: MusicConfig, monkeypatch) -> tuple[Console, list[_CloseTracking
     tracked: list[_CloseTrackingConn] = []
     real_open_db = c._open_db
 
-    def tracking_open_db():
-        conn = real_open_db()
+    def tracking_open_db(dry_run: bool = False):
+        conn = real_open_db(dry_run=dry_run)
         if conn is None:
             return None
         wrapper = _CloseTrackingConn(conn)

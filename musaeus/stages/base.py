@@ -121,7 +121,14 @@ class BaseStage(ABC):
         This function must never itself raise — a broken reporter must not
         mask or replace the real error. Returns the report path, or "" if
         writing the report failed for any reason.
+
+        Writes nothing under dry_run: a preview that leaves JSON files (and
+        creates the RUNS/FAILURES tree to hold them) is not side-effect-free.
+        The error itself is still reported through result.errors and the log,
+        so nothing is lost from the operator's view -- only the artifact.
         """
+        if ctx.dry_run:
+            return ""
         try:
             report_path = self._failure_report_path(ctx)
             report = {

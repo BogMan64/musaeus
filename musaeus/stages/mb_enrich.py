@@ -174,17 +174,30 @@ class MBEnrichStage(BaseStage):
         # the stage/run over it. Real per-request failures further down are
         # already caught individually (_search_artist/_search_release) and
         # skip that one artist/release without aborting the rest.
-        try:
-            req = Request(
-                "https://musicbrainz.org/",
-                headers={"User-Agent": _USER_AGENT},
-                method="HEAD",
+        # ...but not under dry_run. The probe is a real outbound request, and
+        # it sat ahead of every dry_run check in this method -- so the
+        # 2026-08-18 fix that stopped previews from making per-artist lookups
+        # still left a preview making this one. Under a preview there is also
+        # nothing to degrade gracefully *to*: no lookup is going to happen
+        # either way, so reachability cannot change what is reported.
+        if dry_run:
+            result.notes.append(
+                "[DRY RUN] skipping MusicBrainz connectivity probe — a preview makes no requests"
             )
-            urlopen(req, timeout=5)
-        except Exception as exc:
-            result.notes.append(f"MusicBrainz not reachable — skipping mb_enrich this run. ({exc})")
-            ctx.record_stage(result)
-            return result
+        else:
+            try:
+                req = Request(
+                    "https://musicbrainz.org/",
+                    headers={"User-Agent": _USER_AGENT},
+                    method="HEAD",
+                )
+                urlopen(req, timeout=5)
+            except Exception as exc:
+                result.notes.append(
+                    f"MusicBrainz not reachable — skipping mb_enrich this run. ({exc})"
+                )
+                ctx.record_stage(result)
+                return result
 
         # Fetch rows that need enrichment
         rows = ctx.conn.execute(

@@ -55,119 +55,151 @@ class TestDefaultPipelineDryRunCharacterization:
         )
         return cli_mod._run_pipeline(DEFAULT_PIPELINE, dry_run=True)
 
-    def test_characterization_dry_run_creates_the_vault_directory_skeleton(
+    def test_dry_run_does_not_create_the_vault_directory_skeleton(
         self, disposable_vault, monkeypatch, tmp_path
     ):
         """
-        UPDATED BY P0-02 (musaeus-consumer-readiness spec): this test
-        originally documented an UNSAFE-BY-DESIGN-INTENT finding --
-        `dry-run` called cfg.ensure_dirs() unconditionally before any
-        stage ran (see musaeus/cli.py's _run_pipeline()), mkdir()ing the
-        entire vault skeleton (INBOX/STAGING/QUARANTINE/RUNS/MetaData/
-        ALAC-Library/etc) even in dry-run mode. That finding is exactly
-        what task P0-02 added a temporary, blunt, fail-closed guard for:
-        _reject_unsafe_dry_run() now rejects dry_run=True before
-        cfg.ensure_dirs() (or anything else) runs, so the directory
-        skeleton must NOT be created. This is a compatibility patch, not
-        the real preview fix -- P0-04/P0-05 still need to build a
-        truthful RunMode.PREVIEW.
+        Originally an UNSAFE-BY-DESIGN finding: dry-run called
+        cfg.ensure_dirs() unconditionally before any stage ran, mkdir()ing
+        the whole vault skeleton (INBOX/STAGING/QUARANTINE/RUNS/MetaData/
+        ALAC-Library). P0-02 answered that by refusing every dry-run
+        outright (exit 2). The refusal is now gone and the defect is fixed
+        at its source instead: _run_pipeline() skips ensure_dirs() under
+        dry_run, and a preview of a vault with no database says so and
+        exits 0 rather than creating one.
         """
         assert not disposable_vault.root.exists()
         rc = self._run_cli_dry_run(disposable_vault, monkeypatch, tmp_path)
-        assert rc == 2, "P0-02 guard must reject an unsafe dry-run with exit code 2"
+        assert rc == 0, "a preview with nothing to preview is not an error"
         assert not disposable_vault.root.exists(), (
-            "P0-02 guard must fire before cfg.ensure_dirs() -- no vault "
-            "directory skeleton may be created by a rejected dry-run"
+            "dry-run must not run cfg.ensure_dirs() -- no vault directory "
+            "skeleton may be created by a preview"
         )
 
-    def test_characterization_dry_run_creates_and_writes_to_the_db(
-        self, disposable_vault, monkeypatch, tmp_path
-    ):
+    def test_dry_run_does_not_create_the_db(self, disposable_vault, monkeypatch, tmp_path):
         """
-        UPDATED BY P0-02: this test originally documented an
-        UNSAFE-BY-DESIGN-INTENT finding -- dry-run created the SQLite DB
-        file (via db.open_db()) and committed RUN_START/STAGE_COMPLETE/
-        RUN_END events to it unconditionally (RunContext.new() and
-        record_stage() have no dry_run gate). P0-02's guard now rejects
-        dry_run=True before get_config()/cfg.ensure_dirs()/open_db() are
-        ever called, so the DB file itself must not exist afterwards.
+        Originally an UNSAFE-BY-DESIGN finding: dry-run created the SQLite
+        file via open_db() and committed RUN_START/STAGE_COMPLETE/RUN_END
+        to it, because RunContext had no dry_run gate. Now open_db() is
+        called with read_only=True, which raises FileNotFoundError rather
+        than creating a database that does not exist.
         """
         rc = self._run_cli_dry_run(disposable_vault, monkeypatch, tmp_path)
-        assert rc == 2
+        assert rc == 0
         assert not disposable_vault.cfg.db_path.exists(), (
-            "P0-02 guard must fire before open_db()/RunContext.new() -- "
-            "no database file may be created by a rejected dry-run"
+            "dry-run must never create the database file"
         )
 
-    def test_characterization_dry_run_rejection_is_stable_across_repeated_calls(
+    def test_dry_run_writes_no_events_to_an_existing_db(
         self, disposable_vault, monkeypatch, tmp_path
     ):
+        """The real guarantee, now that previews actually execute.
+
+        Against a database that DOES exist, a full DEFAULT_PIPELINE preview
+        must leave it byte-identical: no RUN_START/STAGE_COMPLETE/RUN_END,
+        no archive or duplicates rows. RunContext buffers events under
+        dry_run and never commits, and the connection itself is read-only,
+        so a stage attempting a write fails loudly instead of succeeding.
         """
-        UPDATED BY P0-02: this test originally proved a SAFE finding --
-        against an empty inbox, archive/duplicates/validation_issues all
-        stayed at zero rows after a dry-run. That finding is now
-        subsumed by the stronger guarantee proven above (the DB is never
-        created at all), so this test is repurposed to prove the P0-02
-        guard's rejection is stable and side-effect-free across repeated
-        calls, not just a one-off first call.
-        """
+        import hashlib
+        import sqlite3
+
+        from musaeus.db import open_db
+
+        disposable_vault.cfg.ensure_dirs()
+        open_db(disposable_vault.cfg.db_path).close()
+
+        def fingerprint() -> str:
+            conn = sqlite3.connect(str(disposable_vault.cfg.db_path))
+            try:
+                return hashlib.sha256("".join(conn.iterdump()).encode()).hexdigest()
+            finally:
+                conn.close()
+
+        before = fingerprint()
+        rc = self._run_cli_dry_run(disposable_vault, monkeypatch, tmp_path)
+        after = fingerprint()
+
+        assert rc in (0, 1), f"preview should run, not be refused (rc={rc})"
+        assert before == after, "a dry run must leave the database byte-identical"
+
+    def test_dry_run_is_stable_and_side_effect_free_across_repeated_calls(
+        self, disposable_vault, monkeypatch, tmp_path
+    ):
+        """Repeating a preview must stay side-effect-free, not just the first."""
         rc1 = self._run_cli_dry_run(disposable_vault, monkeypatch, tmp_path)
         rc2 = self._run_cli_dry_run(disposable_vault, monkeypatch, tmp_path)
-        assert rc1 == 2
-        assert rc2 == 2
+        assert rc1 == 0
+        assert rc2 == 0
         assert not disposable_vault.root.exists()
         assert not disposable_vault.cfg.db_path.exists()
+
+    def test_dry_run_does_not_disturb_a_real_runs_resume_state(
+        self, disposable_vault, monkeypatch, tmp_path
+    ):
+        """Resume state is a live run's bookmark; a preview must not touch it.
+
+        Without this, previewing after an interrupted run would rewrite (or
+        clear) the bookmark and make the real run forget where it stopped.
+        """
+        import json
+
+        import musaeus.cli as cli_mod
+
+        resume_file = disposable_vault.config_home / "resume_state.json"
+        resume_file.parent.mkdir(parents=True, exist_ok=True)
+        original = {"completed": ["SentinelStage"], "all_stages": ["SentinelStage"]}
+        resume_file.write_text(json.dumps(original))
+
+        monkeypatch.setattr(cli_mod, "get_config", lambda: disposable_vault.cfg)
+        monkeypatch.setattr(cli_mod, "_RESUME_FILE", resume_file)
+        cli_mod._run_pipeline(DEFAULT_PIPELINE, dry_run=True)
+
+        assert json.loads(resume_file.read_text()) == original
 
     def test_characterization_dry_run_makes_no_network_connection(
         self, disposable_vault, monkeypatch, tmp_path, transport_harness
     ):
         """
-        SAFE FINDING, still true after the 2026-08-17 reorder for a
-        different reason than originally: DEFAULT_PIPELINE now DOES
-        include EnrichStage/MBEnrichStage (default-on, last in the
-        chain), but P0-02's fail-closed guard rejects `--dry-run`
-        outright, before any stage's dry_run() ever runs — so a CLI
-        dry-run still makes zero outbound network connection attempts,
-        just via a different mechanism (blocked at the guard, not by
-        pipeline composition). AcousticIDStage/ReviewerStage remain
-        on-demand only. This test runs under the session-wide
-        transport_harness every other test already runs under, so any
-        connection attempt would raise NetworkAccessDeniedError and fail
-        this test rather than silently succeed.
+        SAFE FINDING, and now true for the right reason. DEFAULT_PIPELINE
+        includes EnrichStage/MBEnrichStage (default-on, last in the chain)
+        and both gate their own network calls behind dry_run (fixed
+        2026-08-18). AcousticIDStage does too now -- its per-file fpcalc
+        subprocess and rate-limited HTTP lookup used to run under dry_run
+        with only the DB write afterwards gated, which was the last
+        remaining reason the blanket refusal existed. So a CLI dry-run
+        makes zero outbound connections because no stage attempts one,
+        not because the command is refused before it starts. This test
+        runs under the session-wide transport_harness, so any connection
+        attempt raises NetworkAccessDeniedError and fails the test rather
+        than silently succeeding.
         """
         transport_harness_attempts_before = len(transport_harness.attempts)
         self._run_cli_dry_run(disposable_vault, monkeypatch, tmp_path)
         assert len(transport_harness.attempts) == transport_harness_attempts_before
 
-    def test_characterization_dry_run_rejection_message_is_honest_and_on_stderr(
+    def test_nothing_to_preview_message_is_honest_and_on_stderr(
         self, disposable_vault, monkeypatch, tmp_path, capsys
     ):
-        """
-        UPDATED BY P0-02: this test originally captured that dry-run's
-        stdout output never made MCR-001's required "no managed state
-        was changed" statement, while also never printing anything that
-        contradicted it outright. Now that dry-run is rejected instead
-        of executed, the risk flips: a rejection message MUST NOT be
-        mistaken for a successful (if silent) preview -- it must not
-        claim success or "no changes made" while staying silent about
-        the fact that nothing ran. This test proves the P0-02 guard's
-        message lands on stderr (not stdout, so it can't be confused
-        with real preview output) and is honest about being a refusal,
-        not a completed no-op preview.
+        """A preview that could not run must not read as a completed preview.
+
+        When there is no database yet there is genuinely nothing to preview.
+        That message goes to stderr, so it cannot be mistaken for real
+        preview output on stdout, and it must not claim success or that
+        changes were checked -- silence plus a zero exit code would let an
+        operator believe a preview had run clean.
         """
         rc = self._run_cli_dry_run(disposable_vault, monkeypatch, tmp_path)
         captured = capsys.readouterr()
 
-        assert rc == 2
-        assert captured.out == "", "a rejected dry-run must print nothing to stdout"
+        assert rc == 0
+        assert captured.out == "", "the nothing-to-preview path must print nothing to stdout"
         stderr_lower = captured.err.lower()
-        assert "temporarily disabled" in stderr_lower
-        assert "refused and did not run" in stderr_lower
-        # Must NOT claim success or a completed no-op preview.
+        assert "nothing to preview" in stderr_lower
+        assert "without --dry-run" in stderr_lower
+        # Must NOT claim a completed preview.
+        assert "pipeline complete" not in stderr_lower
         assert "no changes made" not in stderr_lower
-        assert "no managed state was changed" not in stderr_lower
-        assert "success" not in stderr_lower
-        assert "complete" not in stderr_lower
 
 
 # ── Resume-records-failed-as-complete baseline defect (reproduced) ───────────

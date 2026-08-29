@@ -201,10 +201,23 @@ class Console:
 
     # ── DB helpers ────────────────────────────────────────────────────────────
 
-    def _open_db(self):  # type: ignore[return]
+    def _open_db(self, dry_run: bool = False):  # type: ignore[return]
+        """Open the vault DB, read-only when previewing.
+
+        The console has always run its own pipeline separately from cli.py's,
+        so cli.py's dry-run protections never applied to menu option 1
+        ("Run full pipeline [DRY RUN]") -- the console was a straight bypass.
+        Routing every console runner through the same read_only connection
+        closes that: a stage that writes during a console preview raises
+        instead of succeeding, exactly as it does from the CLI.
+        """
         assert self._config is not None
         try:
-            return open_db(self._config.db_path)
+            return open_db(self._config.db_path, read_only=dry_run)
+        except FileNotFoundError:
+            _err(f"No database at {self._config.db_path} — nothing to preview.")
+            _info("  Run the pipeline live once to create it.")
+            return None
         except Exception as exc:
             _err(f"Cannot open DB: {exc}")
             return None
@@ -277,7 +290,7 @@ class Console:
         _section(f"Pipeline  [{mode}]")
 
         assert self._config is not None
-        conn = self._open_db()
+        conn = self._open_db(dry_run=dry_run)
         if conn is None:
             return
 
@@ -331,7 +344,7 @@ class Console:
     def _run_stage(self, stage_cls: type[BaseStage], dry_run: bool) -> None:
         mode = "DRY RUN" if dry_run else "LIVE RUN"
         assert self._config is not None
-        conn = self._open_db()
+        conn = self._open_db(dry_run=dry_run)
         if conn is None:
             return
         try:
@@ -620,7 +633,7 @@ class Console:
         """Like _run_stage but pre-loads ctx stash keys (for curator, forge --force, etc.)."""
         mode = "DRY RUN" if dry_run else "LIVE RUN"
         assert self._config is not None
-        conn = self._open_db()
+        conn = self._open_db(dry_run=dry_run)
         if conn is None:
             return
         try:

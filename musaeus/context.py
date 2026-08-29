@@ -70,6 +70,10 @@ class RunContext:
     started_at: str
     stage_results: list[StageResult] = field(default_factory=list)
     _extra: dict[str, Any] = field(default_factory=dict, repr=False)
+    #: Under dry_run, events are collected here instead of being written to
+    #: the events table. Preserved so a preview can still report what it
+    #: *would* have logged, without the log itself being a side effect.
+    previewed_events: list[dict[str, Any]] = field(default_factory=list, repr=False)
 
     # ── Factory ───────────────────────────────────────────────────────────────
 
@@ -98,7 +102,8 @@ class RunContext:
             "RUN_START",
             note=f"dry_run={dry_run}",
         )
-        conn.commit()
+        if not dry_run:
+            conn.commit()
         return ctx
 
     # ── Event log passthrough ─────────────────────────────────────────────────
@@ -112,7 +117,26 @@ class RunContext:
         stage: str | None = None,
         note: str | None = None,
     ) -> None:
-        """Append an event to the immutable log."""
+        """Append an event to the immutable log.
+
+        Under dry_run the event is buffered in previewed_events instead of
+        being inserted. A preview that writes to the append-only log is not
+        a preview -- and since every stage routes its file-level logging
+        through here, gating it once at this level is what makes dry-run
+        genuinely side-effect-free without each stage having to remember.
+        """
+        if self.dry_run:
+            self.previewed_events.append(
+                {
+                    "event_type": event_type,
+                    "file_path": file_path,
+                    "old_value": old_value,
+                    "new_value": new_value,
+                    "stage": stage,
+                    "note": note,
+                }
+            )
+            return
         log_event(
             self.conn,
             run_id=self.run_id,
@@ -127,14 +151,15 @@ class RunContext:
     # ── Stage result tracking ─────────────────────────────────────────────────
 
     def record_stage(self, result: StageResult) -> None:
-        """Store a stage result and commit the DB."""
+        """Store a stage result and commit the DB (no commit under dry_run)."""
         self.stage_results.append(result)
         self.log_event(
             "STAGE_COMPLETE",
             stage=result.stage_name,
             note=result.summarise(),
         )
-        self.conn.commit()
+        if not self.dry_run:
+            self.conn.commit()
 
     # ── Convenience accessors ─────────────────────────────────────────────────
 
@@ -188,13 +213,18 @@ class RunContext:
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def finish(self) -> None:
-        """Log RUN_END, commit, and close the DB connection."""
+        """Log RUN_END, commit, and close the DB connection.
+
+        Under dry_run the RUN_END event is buffered like every other event
+        and nothing is committed -- the connection is still closed.
+        """
         success = all(r.success for r in self.stage_results)
         self.log_event(
             "RUN_END",
             note=f"success={success} stages={len(self.stage_results)}",
         )
-        self.conn.commit()
+        if not self.dry_run:
+            self.conn.commit()
         self.conn.close()
 
     def __repr__(self) -> str:

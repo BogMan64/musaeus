@@ -41,6 +41,7 @@ import subprocess
 import time
 import urllib.error
 import uuid
+from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
@@ -204,6 +205,20 @@ class AcousticIDStage(BaseStage):
             # Skip short clips
             if dur_db and float(dur_db) < _MIN_DURATION_S:
                 result.files_skipped += 1
+                continue
+
+            # A preview must not spend the real cost or reach the network.
+            # _fpcalc() shells out to fpcalc per file and
+            # _acousticid_lookup() makes a rate-limited HTTP request per
+            # file; both used to run under dry_run, with only the DB write
+            # afterwards gated. That made --dry-run the most expensive way
+            # to find out what this stage would do, and it was the last
+            # remaining reason the pipeline-level dry-run guard existed.
+            # Report the candidate instead.
+            if dry_run:
+                result.files_changed += 1
+                if len(result.notes) < 10:
+                    result.notes.append(f"  would fingerprint: {Path(fp).name}")
                 continue
 
             # Compute fingerprint

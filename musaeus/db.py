@@ -242,7 +242,7 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
 # ── Connection factory ────────────────────────────────────────────────────────
 
 
-def open_db(db_path: Path) -> sqlite3.Connection:
+def open_db(db_path: Path, read_only: bool = False) -> sqlite3.Connection:
     """
     Open (or create) the Musaeus SQLite DB.
     - WAL mode for crash safety + concurrent reads
@@ -250,7 +250,32 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     - Schema applied on first open
     - Live column migrations applied on every open (idempotent)
     Returns an open connection. Caller is responsible for closing.
+
+    read_only=True opens the existing database through SQLite's `mode=ro`
+    URI and skips both the schema script and the migrations, since each of
+    those writes. This is how dry-run mode is *enforced* rather than merely
+    intended: any stage that tries to INSERT/UPDATE/DELETE under a preview
+    raises sqlite3.OperationalError("attempt to write a readonly database"),
+    which BaseStage.execute already turns into a reported stage failure.
+    Trusting 30+ stages to each remember to gate their own writes is what
+    let dry-run drift into being unsafe in the first place.
+
+    Note: SQLite may create -wal/-shm sidecars alongside a WAL database even
+    for a read-only connection -- that is its read machinery, not a change
+    to any stored data, and the same files appear on any ordinary read.
+
+    Raises FileNotFoundError if read_only is requested for a database that
+    does not exist yet: creating it would be precisely the side effect the
+    caller is trying to avoid.
     """
+    if read_only:
+        if not db_path.exists():
+            raise FileNotFoundError(db_path)
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=10000")
+        return conn
+
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row

@@ -184,83 +184,52 @@ def _clear_resume() -> None:
 
 # ── Pipeline runner ───────────────────────────────────────────────────────────
 
-# P0-02 (musaeus-consumer-readiness spec): temporary, blunt, fail-closed
-# guard for --dry-run / preview.
+# ── Dry-run / preview safety ─────────────────────────────────────────────────
 #
-# This is a compatibility patch, NOT the real preview fix -- the real fix
-# (a typed RunMode.PREVIEW with a pure in-memory planner, MCR-001/DR-01) is
-# P0-04/P0-05 and does not exist in this repository yet. Until it does,
-# dry_run=True is REJECTED outright rather than allowed to keep doing the
-# two confirmed-unsafe things below (see tests/test_p0_01_characterization.py
-# for the live reproduction each of these is based on):
+# HISTORY. A blunt fail-closed guard used to reject every --dry-run outright
+# (exit 2), because a preview was demonstrably not side-effect-free: it ran
+# cfg.ensure_dirs() and created/wrote the real SQLite DB before any stage
+# executed, and three stages made live network calls with only the DB write
+# afterwards gated. That guard was correct about the defects but wrong as a
+# permanent answer -- --dry-run is advertised throughout README, this module's
+# own docstring and musaeus_overnight.sh, so "documented but always refused"
+# was its own kind of lie, and it never covered console.py's separate runner
+# anyway.
 #
-#   1. Every dry_run=True call into _run_pipeline() unconditionally runs
-#      cfg.ensure_dirs() (creates the real vault directory skeleton) and
-#      RunContext.new()/record_stage() (creates/writes the real SQLite DB
-#      and commits RUN_START/STAGE_COMPLETE/RUN_END events) before any
-#      stage executes. None of that is gated behind dry_run at this layer
-#      -- only each individual stage's own archive/duplicates/
-#      validation_issues writes are.
-#   2. EnrichStage/MBEnrichStage/AcousticIDStage make their Last.fm/
-#      MusicBrainz/AcoustID network calls unconditionally inside their
-#      shared _enrich()/_run() methods -- only the DB write *after* the
-#      network call is gated behind dry_run, not the network call itself.
+# All three defects are now fixed at their source rather than papered over:
+#   1. cfg.ensure_dirs() is skipped under dry_run (see _run_pipeline below),
+#      and a preview against a vault with no database reports that and exits
+#      rather than creating one.
+#   2. The database is opened READ-ONLY under dry_run (db.open_db(read_only=
+#      True)), so a stage that tries to write raises OperationalError and is
+#      reported as a stage failure. Dry-run is now enforced by SQLite, not by
+#      each of 30+ stages remembering to gate itself.
+#   3. RunContext buffers events instead of inserting them and never commits
+#      under dry_run (see context.py), so RUN_START/STAGE_COMPLETE/RUN_END no
+#      longer land in the append-only log for a run that did not happen.
+#      EnrichStage/MBEnrichStage were fixed 2026-08-18; AcousticIDStage's
+#      fpcalc + HTTP calls are now gated too.
 #
-# This guard fires before get_config()/cfg.ensure_dirs()/open_db() -- i.e.
-# before ANY configuration, directory, database, or network initialisation
-# -- so a rejected invocation touches nothing. It applies uniformly to
-# every command that routes through _run_pipeline() (see tasks.md's P0-02
-# completion evidence for the exact command list); it does not apply when
-# dry_run is False, and it does not touch the separate rebuild-db/review/
-# canon-review commands or musaeus/console.py's own interactive pipeline
-# runner, none of which call this function.
-_NETWORK_STAGES: frozenset[type[BaseStage]] = frozenset(
-    {EnrichStage, MBEnrichStage, AcousticIDStage}
-)
-
-_DRY_RUN_REASON_DIRS_DB = (
-    "dry-run unconditionally creates real directories (cfg.ensure_dirs()) and "
-    "writes real database/event records (RunContext.new()/record_stage()) "
-    "before any stage runs -- this is not a safe, side-effect-free preview today."
-)
-_DRY_RUN_REASON_NETWORK = (
-    "{stages} make live network call(s) unconditionally even under --dry-run "
-    "-- only the database write afterwards is currently skipped, not the "
-    "network request itself."
-)
+# What a preview may still touch: SQLite can create -wal/-shm sidecars next to
+# a WAL database even for a read-only connection. That is its read machinery,
+# identical to what any ordinary read produces, and changes no stored data.
 
 
-def _dry_run_guard_message(reasons: list[str]) -> str:
-    reason_lines = "\n".join(f"  Reason: {r}" for r in reasons)
-    return (
-        "ERROR: --dry-run / preview is temporarily disabled -- this command "
-        "was refused and did not run.\n"
-        f"{reason_lines}\n"
-        "  This is a temporary compatibility patch (musaeus-consumer-readiness "
-        "spec, task P0-02), not the real preview fix -- see tasks P0-04/P0-05.\n"
-        "  Run the same command without --dry-run for a real run, or wait for "
-        "the safety fix that restores a truthful preview mode."
-    )
-
-
-def _reject_unsafe_dry_run(stages: list[type[BaseStage]], dry_run: bool) -> int | None:
-    """
-    P0-02 fail-closed guard. Returns exit code 2 if *dry_run* must be
-    rejected, or None if the caller should proceed normally.
-
-    Must be called before get_config()/cfg.ensure_dirs()/open_db() in
-    _run_pipeline() -- see the module comment above for why.
-    """
+def _open_for_run(cfg, dry_run: bool):
+    """Open the DB for a pipeline run. Returns None if a preview has nothing
+    to preview (no database yet), having already explained why."""
     if not dry_run:
+        cfg.ensure_dirs()
+        return open_db(cfg.db_path)
+    try:
+        return open_db(cfg.db_path, read_only=True)
+    except FileNotFoundError:
+        print(
+            f"No database at {cfg.db_path} — nothing to preview.\n"
+            "  Run the same command without --dry-run to create it and ingest.",
+            file=sys.stderr,
+        )
         return None
-
-    reasons = [_DRY_RUN_REASON_DIRS_DB]
-    offending_network = [cls.__name__ for cls in stages if cls in _NETWORK_STAGES]
-    if offending_network:
-        reasons.append(_DRY_RUN_REASON_NETWORK.format(stages=", ".join(offending_network)))
-
-    print(_dry_run_guard_message(reasons), file=sys.stderr)
-    return 2
 
 
 def _run_pipeline(
@@ -271,21 +240,17 @@ def _run_pipeline(
     """
     Run a sequence of stages.
     stash: optional dict of key→value to pre-load into ctx before running.
-    Returns 0 on success, 1 on any stage failure, 2 if dry_run is rejected
-    by the P0-02 fail-closed guard (see _reject_unsafe_dry_run above).
+    Returns 0 on success, 1 on any stage failure.
     """
-    guard_exit = _reject_unsafe_dry_run(stages, dry_run)
-    if guard_exit is not None:
-        return guard_exit
-
     try:
         cfg = get_config()
-        cfg.ensure_dirs()
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    conn = open_db(cfg.db_path)
+    conn = _open_for_run(cfg, dry_run)
+    if conn is None:
+        return 0
     ctx = RunContext.new(cfg, conn, dry_run=dry_run)
     if stash:
         for k, v in stash.items():
@@ -309,8 +274,11 @@ def _run_pipeline(
     stage_names = [cls.__name__ for cls in stages]
     completed_names: list[str] = []
 
-    # Check for resume
-    resume_from = _load_resume(stage_names)
+    # Resume state is a real run's bookmark. A preview must neither consume
+    # it (silently skipping the very stages the operator asked to preview)
+    # nor rewrite it -- a dry run must not be able to make a genuinely
+    # interrupted live run forget where it stopped.
+    resume_from = None if dry_run else _load_resume(stage_names)
     if resume_from:
         print(f"  ⚠  Incomplete run detected — {len(resume_from)} stage(s) done.")
         if not sys.stdin.isatty():
@@ -344,7 +312,8 @@ def _run_pipeline(
         except KeyboardInterrupt:
             print(f"\n\n  ⚠  Interrupted during {stage_name}.")
             print("  Progress saved — run 'musaeus run' again to resume.\n")
-            _save_resume(completed_names, stage_names)
+            if not dry_run:
+                _save_resume(completed_names, stage_names)
             return 1
 
         status = "✓" if result.success else "✗"
@@ -365,14 +334,16 @@ def _run_pipeline(
         # what counts as resumable-skip changes.
         if result.success:
             completed_names.append(stage_name)
-            _save_resume(completed_names, stage_names)
+            if not dry_run:
+                _save_resume(completed_names, stage_names)
         else:
             exit_code = 1
 
     print()
     all_ok = all(r.success for r in ctx.stage_results)
     if all_ok:
-        _clear_resume()
+        if not dry_run:
+            _clear_resume()
         print(f"  Pipeline complete.  run_id={ctx.run_id}")
     else:
         print(f"  Pipeline finished with errors.  run_id={ctx.run_id}", file=sys.stderr)
