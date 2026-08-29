@@ -27,6 +27,7 @@ import sys
 import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 from .config import MusicConfig, get_config
@@ -47,6 +48,7 @@ from .stages import (
     TributeQuarantineStage,
 )
 from .stages.base import BaseStage
+from .workspace import doc_root, list_docs, list_worktrees, unmerged_commits
 
 logger = logging.getLogger(__name__)
 
@@ -875,6 +877,79 @@ class Console:
         elif mode_idx == 1:
             self._run_stage_with_stash(cls, dry_run=False, stash=stash)
 
+    # ── Workspace: worktrees & docs ───────────────────────────────────────────
+
+    def _show_workspace(self) -> None:
+        """Which checkout is running, what else is parked, and where the docs are.
+
+        Read-only on purpose. Switching branches under a console that has
+        already imported its modules is exactly finding #17, so this shows
+        and does not touch.
+        """
+        _section("Workspace")
+
+        trees = list_worktrees()
+        if not trees:
+            _warn("Not a git checkout (or git unavailable) — no worktrees to show.")
+        else:
+            _info("Checkouts  (* = the one THIS console is running from)")
+            print()
+            for t in trees:
+                for line in t.describe().splitlines():
+                    _info(line)
+            print()
+            _info("Unmerged vs main:")
+            for t in trees:
+                commits = unmerged_commits(t)
+                if not commits:
+                    continue
+                _info(f"  {t.label}: {len(commits)} commit(s)")
+                for c in commits[:3]:
+                    _info(f"      {c}")
+                if len(commits) > 3:
+                    _info(f"      ... and {len(commits) - 3} more")
+            print()
+            _warn("A console only ever runs the checkout it was launched from.")
+            _info("To run another branch's code, quit and relaunch from that path.")
+
+        print()
+        docs = list_docs()
+        root = doc_root()
+        if not docs:
+            _warn(f"No MUSAEUS docs found under {root}")
+        else:
+            _info(f"Documentation archive: {root}")
+            _info("Most recent MUSAEUS documents:")
+            for d in docs[:12]:
+                stamp = datetime.fromtimestamp(d.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+                _info(f"  {stamp}  {d.name}")
+            print()
+            self._read_doc(docs)
+
+    def _read_doc(self, docs: list[Path]) -> None:
+        """Optionally print one document. Head only — these run to 90 KB."""
+        labels = [d.name for d in docs[:12]] + ["(back)"]
+        choice = _choose("Read one", labels, default=str(len(labels) - 1))
+        try:
+            idx = int(choice)
+        except ValueError:
+            return
+        if not (0 <= idx < len(labels) - 1):
+            return
+        doc = docs[idx]
+        try:
+            text = doc.read_text(errors="replace")
+        except OSError as exc:
+            _err(f"Could not read {doc.name}: {exc}")
+            return
+        lines = text.splitlines()
+        _section(doc.name)
+        for line in lines[:120]:
+            print(f"    {line}")
+        if len(lines) > 120:
+            print()
+            _info(f"... {len(lines) - 120} more line(s). Full file: {doc}")
+
     # ── Main menu ─────────────────────────────────────────────────────────────
 
     def _main_menu(self) -> None:
@@ -890,6 +965,7 @@ class Console:
             ("Configuration", self._show_config),
             ("Enter/Update API Keys", self._manage_api_keys),
             ("Reset / fresh start", self._reset_menu),
+            ("Workspace — worktrees & docs", self._show_workspace),
             ("Quit", self._quit),
         ]
 
@@ -940,7 +1016,7 @@ class Console:
                 self._main_menu()
             except KeyboardInterrupt:
                 print()
-                _warn("Use option 11 (Quit) to exit cleanly.")
+                _warn("Choose the Quit option to exit cleanly.")
             except Exception:
                 _err("Unexpected error in console loop:")
                 traceback.print_exc()
