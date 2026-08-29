@@ -20,6 +20,7 @@ from musaeus.db import open_db, upsert_archive
 from musaeus.stages.organize import (
     OrganizeStage,
     build_track_filename,
+    destination_root,
     sanitize_path_component,
     strip_track_number_prefix,
     unique_path,
@@ -245,3 +246,133 @@ class TestOrganizeDryRun:
             "SELECT file_path FROM archive WHERE title='Song One'"
         ).fetchone()
         assert row["file_path"] == str(track)
+
+
+# ── Root containment: the 10,660-file hazard ──────────────────────────────────
+#
+# Every target used to be built under ctx.inbox while the query selects
+# status='CATALOGUED'. Measured 2026-08-24: that moves 10,660 of 10,660
+# catalogued files OUT of ALAC-Library and into the INBOX, where the pipeline
+# treats the whole finalized library as new arrivals.
+#
+# The assertion that catches this is not "did it move" -- it moved, briskly --
+# but "is it still somewhere this run can reach" (finding #14).
+
+
+def _make_track_under(
+    ctx: RunContext, root: Path, relpath: str, artist: str, album: str, title: str
+) -> Path:
+    """A real file and a CATALOGUED row under an arbitrary root."""
+    path = root / relpath
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"FAKE AUDIO DATA")
+    upsert_archive(
+        ctx.conn,
+        {
+            "file_path": str(path),
+            "status": "CATALOGUED",
+            "artist": artist,
+            "album": album,
+            "title": title,
+        },
+    )
+    ctx.conn.commit()
+    return path
+
+
+class TestDestinationRoot:
+    def test_picks_the_root_the_file_is_under(self, tmp_path):
+        lib, inbox = tmp_path / "ALAC-Library", tmp_path / "INBOX"
+        assert destination_root(lib / "a" / "b.m4a", [lib, inbox]) == lib
+        assert destination_root(inbox / "a" / "b.m4a", [lib, inbox]) == inbox
+
+    def test_a_file_under_no_root_gets_none(self, tmp_path):
+        lib, inbox = tmp_path / "ALAC-Library", tmp_path / "INBOX"
+        outside = tmp_path / "Projects" / "Antonio Vivaldi" / "x.m4a"
+        assert destination_root(outside, [lib, inbox]) is None
+
+    def test_the_most_specific_root_wins(self, tmp_path):
+        """A nested root must beat its parent regardless of list order."""
+        vault = tmp_path / "vault"
+        lib = vault / "ALAC-Library"
+        target = lib / "Artist" / "x.m4a"
+        assert destination_root(target, [vault, lib]) == lib
+        assert destination_root(target, [lib, vault]) == lib
+
+    def test_an_unresolvable_path_is_none_not_an_exception(self, tmp_path):
+        assert destination_root(Path("relative/x.m4a"), [tmp_path]) is None
+
+
+class TestOrganizeStaysInsideItsRoot:
+    def test_a_library_file_is_organized_within_the_library(self, ctx):
+        """THE regression. A catalogued file must never land in the INBOX."""
+        ctx.alac_library.mkdir(parents=True, exist_ok=True)
+        src = _make_track_under(
+            ctx, ctx.alac_library, "flat.m4a", "Test Artist", "Test Album", "Song One"
+        )
+
+        OrganizeStage().run(ctx)
+
+        expected = ctx.alac_library / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
+        assert expected.exists(), "file left the library"
+        assert not src.exists()
+
+        # The real assertion: still reachable from a known root.
+        assert destination_root(expected, OrganizeStage._roots(ctx)) == ctx.alac_library
+
+        moved_into_inbox = list(ctx.inbox.rglob("*.m4a"))
+        assert moved_into_inbox == [], f"files escaped into the INBOX: {moved_into_inbox}"
+
+        row = ctx.conn.execute(
+            "SELECT file_path FROM archive WHERE title = 'Song One'"
+        ).fetchone()
+        assert Path(row["file_path"]) == expected
+
+    def test_an_inbox_file_is_still_organized_within_the_inbox(self, ctx):
+        """The fix must not push INBOX files into the library either."""
+        src = _make_track(ctx, "flat.m4a", "Test Artist", "Test Album", "Song One")
+        OrganizeStage().run(ctx)
+
+        expected = ctx.inbox / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
+        assert expected.exists()
+        assert not src.exists()
+        assert list(ctx.alac_library.rglob("*.m4a")) == []
+
+    def test_a_file_outside_every_root_is_refused_not_relocated(self, ctx):
+        """Finding #14: never invent a root for a file that is under none."""
+        outside_root = ctx.vault_root.parent / "Elsewhere"
+        stray = _make_track_under(
+            ctx, outside_root, "stray.m4a", "Test Artist", "Test Album", "Stray"
+        )
+
+        result = OrganizeStage().run(ctx)
+
+        assert stray.exists(), "a file with no safe destination must be left alone"
+        assert result.files_errored == 1
+        assert any("outside every known root" in e for e in result.errors)
+        assert list(ctx.inbox.rglob("*.m4a")) == []
+        assert list(ctx.alac_library.rglob("*.m4a")) == []
+
+    def test_a_library_move_does_not_crash_on_logging(self, ctx, caplog):
+        """`relative_to(ctx.inbox)` raised for any file outside the INBOX.
+
+        Logger arguments are evaluated eagerly, so this fired BEFORE the move
+        -- the traceback, not the relocation, was what a live run hit first.
+        """
+        ctx.alac_library.mkdir(parents=True, exist_ok=True)
+        _make_track_under(
+            ctx, ctx.alac_library, "flat.m4a", "Test Artist", "Test Album", "Song One"
+        )
+        with caplog.at_level("INFO"):
+            result = OrganizeStage().run(ctx)
+        assert result.success
+        assert result.files_errored == 0
+
+    def test_dry_run_moves_nothing_out_of_the_library(self, ctx_dry):
+        ctx_dry.alac_library.mkdir(parents=True, exist_ok=True)
+        src = _make_track_under(
+            ctx_dry, ctx_dry.alac_library, "flat.m4a", "A", "B", "C"
+        )
+        OrganizeStage().dry_run(ctx_dry)
+        assert src.exists()
+        assert list(ctx_dry.inbox.rglob("*.m4a")) == []

@@ -4,25 +4,32 @@ MUSAEUS — Organize Stage
 
 File organization and renaming stage for CATALOGUED archive rows.
 
-    ⚠  DO NOT RUN THIS AGAINST A FINALIZED LIBRARY.
+The hazard this used to carry, and how it is now closed
+-------------------------------------------------------
+Every target path used to be built under ``ctx.inbox``, while the query
+selects ``status='CATALOGUED'`` -- and catalogued rows have not lived in
+the INBOX since FinalizeStage moved them into ALAC-Library.
 
-    Every target path is built under ``ctx.inbox`` (see _organize), but the
-    query selects ``status='CATALOGUED'`` -- and catalogued rows have not
-    lived in the INBOX since FinalizeStage moved them into ALAC-Library.
+Measured 2026-08-24 against the live vault: running it would have moved
+**10,660 of 10,660 catalogued files out of ALAC-Library and into the
+INBOX**, where the pipeline would then treat the entire finalized library
+as new arrivals awaiting ingest. Its absence from DEFAULT_PIPELINE was the
+only thing protecting the library.
 
-    Measured 2026-08-24 against the live vault: running this would move
-    **10,660 of 10,660 catalogued files out of ALAC-Library and into the
-    INBOX**, where the pipeline would then treat the entire finalized
-    library as new arrivals awaiting ingest.
+Fixed 2026-08-29. A file is now organized **within the root it already
+lives in** -- see `destination_root`. Organize tidies; it does not
+relocate between roots, and it never invents a root for a file that is
+under none, because that is how three tracks were flung outside the vault
+entirely (finding #14: `classical-composer` built its destination from the
+source's grandparent, which for a flat INBOX file is the vault itself).
 
-    The stage is coherent for the job it documents -- tidying loose files
-    that are still IN the inbox, before finalize. It is dangerous only
-    because nothing in it restricts it to that case. It is deliberately
-    absent from DEFAULT_PIPELINE, and that absence is currently the only
-    thing protecting the library.
+The lesson from #14 is the shape of the assertion. "Did it move" passes
+for a file moved somewhere nothing can reach. The question worth asking is
+**"is it still somewhere this run can find it"**, and that is what the
+tests for this module now check.
 
-    If this is ever wired up or run on demand, fix the target root first:
-    a catalogued row belongs under cfg.alac_library, not cfg.inbox.
+Still absent from DEFAULT_PIPELINE. Wiring it is a separate decision from
+fixing it, and this change does not make it.
 
 What it does:
   - Strips track number prefixes from filenames:
@@ -72,6 +79,7 @@ import logging
 import re
 import sqlite3
 import unicodedata
+from collections.abc import Iterable
 from pathlib import Path
 
 from ..context import RunContext, StageResult
@@ -248,6 +256,38 @@ def build_track_filename(artist: str, title: str, ext: str) -> str:
     return f"{artist_safe} - {title_safe}{ext}"
 
 
+def destination_root(current_path: Path, roots: Iterable[Path]) -> Path | None:
+    """The root *current_path* already lives under, or None if it lives under none.
+
+    Organize renames and tidies within a root; it must never carry a file
+    across one. Returning None is the whole point of the function -- a file
+    outside every known root has no safe destination, and the caller refuses
+    it rather than picking a root for it.
+
+    The MOST SPECIFIC match wins, so a root nested inside another (a library
+    under the vault root, say) is preferred over its parent. Comparing on
+    resolved paths, because a symlinked or relative root would otherwise
+    silently match nothing.
+    """
+    try:
+        here = current_path.resolve()
+    except OSError:
+        return None
+
+    best: Path | None = None
+    best_len = -1
+    for root in roots:
+        try:
+            resolved = root.resolve()
+            here.relative_to(resolved)
+        except (ValueError, OSError):
+            continue
+        depth = len(resolved.parts)
+        if depth > best_len:
+            best, best_len = root, depth
+    return best
+
+
 def unique_path(target: Path) -> Path:
     """
     Return a unique path by appending (N) if target already exists.
@@ -280,6 +320,16 @@ class OrganizeStage(BaseStage):
     """
 
     NAME = "organize"
+
+    @staticmethod
+    def _roots(ctx: RunContext) -> list[Path]:
+        """Every root a managed file may legitimately live under.
+
+        Ordered most-specific-first for readability only -- `destination_root`
+        picks by path depth, not by position, so a caller cannot break the
+        choice by reordering this list.
+        """
+        return [ctx.alac_library, ctx.inbox, ctx.staging]
 
     def _apply_rename(
         self,
@@ -369,6 +419,24 @@ class OrganizeStage(BaseStage):
                 result.errors.append(f"{current_path}: file missing on disk")
                 continue
 
+            # Organize WITHIN the root this file already lives in. Building
+            # every target under ctx.inbox is what would have moved 10,660 of
+            # 10,660 catalogued files out of ALAC-Library; a catalogued row
+            # lives under alac_library, an un-finalized one under inbox, and
+            # the stage has no business carrying either across to the other.
+            dest_root = destination_root(current_path, self._roots(ctx))
+            if dest_root is None:
+                # No safe destination. Refusing is the correct answer -- the
+                # alternative is picking a root and putting the file where
+                # nothing in this run can find it again (finding #14).
+                logger.error(
+                    "[organize] %s is under no known root; refusing to move it",
+                    current_path,
+                )
+                result.files_errored += 1
+                result.errors.append(f"{current_path}: outside every known root, skipped")
+                continue
+
             artist = row["artist"] or "Unknown Artist"
             album = row["album"] or "Unsorted"
             title = row["title"] or "Unknown Title"
@@ -377,11 +445,11 @@ class OrganizeStage(BaseStage):
             ext = current_path.suffix
             new_filename = build_track_filename(artist, title, ext)
 
-            # Build target path: INBOX/Artist/Album/filename
+            # Build target path: <root>/Artist/Album/filename
             artist_safe = sanitize_path_component(artist)
             album_safe = sanitize_path_component(album)
 
-            target_dir = ctx.inbox / artist_safe / album_safe
+            target_dir = dest_root / artist_safe / album_safe
             candidate_path = target_dir / new_filename
 
             # unique_path() checks disk existence to avoid collisions, but
@@ -422,10 +490,14 @@ class OrganizeStage(BaseStage):
 
             # Needs move (different directory)
             elif current_path.parent != target_path.parent:
+                # Relative to the file's OWN root. `relative_to(ctx.inbox)`
+                # raises ValueError for anything outside the INBOX -- which is
+                # every catalogued file -- and logger arguments are evaluated
+                # eagerly, so this crashed before the move rather than after.
                 logger.info(
                     "[organize] move    %s\n                    → %s",
-                    current_path.relative_to(ctx.inbox),
-                    target_path.relative_to(ctx.inbox),
+                    current_path.relative_to(dest_root),
+                    target_path.relative_to(dest_root),
                 )
 
                 if not dry_run:
