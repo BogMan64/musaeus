@@ -121,6 +121,73 @@ PROTECTED_ARTIST_NAMES: frozenset[str] = frozenset(
     }
 )
 
+# Artist names whose CASING is canonical and must survive normalisation.
+#
+# `_normalise_artist` title-cases anything `_is_all_caps` matches, which
+# turns 'TLC' into 'Tlc', 'SZA' into 'Sza' and 'N.W.A' into 'N.w.a'. Those
+# are the names the library files under, and the damage was invisible until
+# a 2026-08-29 repair found albumartist holding the correct spelling on 181
+# files while artist held the corruption.
+#
+# Seeded from MusicBrainz rather than from judgement: every entry below is a
+# canonical `mb_name` that MusicBrainz returned for an artist in this
+# library, filtered to those `_normalise_artist` would otherwise re-damage.
+# 'SOUL ARCHIVE ROOM' and 'WALK THE MOON' show why no heuristic can replace
+# the list -- they are stylized all-caps band names, structurally identical
+# to a shouted tag value.
+#
+# This is a seed, not a solution. It cannot know about an artist nobody has
+# ingested yet. The durable fix is to consult `mb_cache.db` at normalise
+# time; that needs the cache plumbed into this stage and is not built.
+PROTECTED_ARTIST_CASING: frozenset[str] = frozenset(
+    {
+        "ABC",
+        "ACE",
+        "ALA.NI",
+        "B2K",
+        "BLACKPINK",
+        "BTS",
+        "CMAT",
+        "DEV",
+        "DEVO",
+        "DNCE",
+        "EMF",
+        "EXILE",
+        "GBX",
+        "JAŸ-Z",
+        "KATO",
+        "KISS",
+        "LEN",
+        "LFO",
+        "LMFAO",
+        "MARUV",
+        "MC5",
+        "MGMT",
+        "MUTO",
+        "N.W.A",
+        "NF",
+        "OMC",
+        "OMI",
+        "PARTYNEXTDOOR",
+        "PSY",
+        "R A Y",
+        "SCANDAL",
+        "SOUL ARCHIVE ROOM",
+        "SZA",
+        "UGK",
+        "WALK THE MOON",
+        "XXXTENTACION",
+        "YUNGBLUD",
+        "ZAYN",
+    }
+)
+
+# Lowercased for lookup, since a tag arrives in whatever case it likes.
+_PROTECTED_CASING_LOOKUP: dict[str, str] = {
+    name.lower(): name for name in PROTECTED_ARTIST_CASING
+}
+
+
 # Short words that stay lowercase in title-case (MusicBrainz standard)
 _LOWERCASE_WORDS: frozenset[str] = frozenset(
     {
@@ -403,6 +470,14 @@ def _normalise_artist(artist: str) -> str | None:
     Order: caps fix first, then article move to suffix.
     """
     fixed = artist
+
+    # A name whose casing MusicBrainz confirms is canonical is returned in
+    # THAT casing and never title-cased. Checked before the all-caps fix,
+    # which is the step that produced 'Tlc', 'Sza' and 'N.w.a' -- and those
+    # are what the library is filed under. See PROTECTED_ARTIST_CASING.
+    protected = _PROTECTED_CASING_LOOKUP.get(fixed.lower())
+    if protected is not None:
+        return protected if protected != artist else None
 
     # Fix ALL-CAPS first
     if _is_all_caps(fixed):
