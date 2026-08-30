@@ -105,6 +105,28 @@ _COMMIT_EVERY = 25
 _ALAC_CODECS = frozenset({"alac"})
 _AAC_CODECS = frozenset({"aac"})
 
+# Sub-lossless codecs this stage knows how to normalise into 256k AAC.
+#
+# An explicit list, because the alternative -- "anything not recognised gets
+# transcoded" -- meant an unidentified file was lossily re-encoded by
+# default. A destructive operation must be opted into by name.
+_TRANSCODABLE_CODECS: frozenset[str] = frozenset(
+    {
+        "aac",
+        "mp3",
+        "vorbis",
+        "opus",
+        "wmav1",
+        "wmav2",
+        "ac3",
+        "eac3",
+        "musepack",
+        "mp2",
+        "amrnb",
+        "amrwb",
+    }
+)
+
 AAC_TRANSCODE_BITRATE = "256k"
 
 # Tolerance for post-conversion duration comparison (seconds). ffprobe
@@ -435,10 +457,49 @@ class CanonicalizeStage(BaseStage):
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def _decide_action(self, row: dict) -> str:
-        """Return 'PASSTHROUGH' | 'CONVERT' | 'TRANSCODE' for this row."""
+    def _decide_action(self, row: dict, source: Path | None = None) -> str:
+        """Return 'PASSTHROUGH' | 'CONVERT' | 'TRANSCODE' | 'UNKNOWN'.
+
+        The decision is which of two irreversible things to do to real audio,
+        so it is taken from the FILE where possible, not from the row.
+
+        Two defects this closes, both reproduced 2026-08-29 against a real
+        pipeline run in a disposable vault:
+
+        `ext` was read from the DB column. It is a property of the path and
+        the path is right here -- when the column was empty (as it is for
+        every row whose ingest never populated it) an AAC-in-.m4a file, which
+        the documented policy PASSES THROUGH, was classified TRANSCODE and
+        given a needless 256k lossy re-encode. `alac` with an empty `ext`
+        went to CONVERT and was re-converted to what it already was.
+
+        Worse, the fall-through for an UNRECOGNISED codec was TRANSCODE --
+        a lossy re-encode. "We do not know what this file is" therefore meant
+        "re-encode it destructively". The live database holds 63 rows with no
+        codec recorded at all. An unknown codec now returns UNKNOWN and the
+        caller skips the row, leaving the audio untouched for a human. A
+        default has to fail towards the reversible answer.
+        """
         codec = (row.get("codec") or "").lower()
         ext = (row.get("ext") or "").lower()
+
+        # The path is the authority on the container.
+        if source is not None:
+            ext = source.suffix.lower()
+
+        # ...and ffprobe is the authority on the codec. Only asked when the
+        # row cannot answer, so the common path stays free.
+        if not codec and source is not None and source.exists():
+            try:
+                probe = _probe_streams(source)
+                audio = [
+                    st for st in probe.get("streams", [])
+                    if st.get("codec_type") == "audio"
+                ]
+                if audio:
+                    codec = str(audio[0].get("codec_name") or "").lower()
+            except Exception as exc:  # a probe failure is not a licence to re-encode
+                logger.warning("[canonicalize] codec probe failed for %s: %s", source, exc)
 
         if codec in _ALAC_CODECS and ext == ".m4a":
             return "PASSTHROUGH"
@@ -446,7 +507,9 @@ class CanonicalizeStage(BaseStage):
             return "PASSTHROUGH"
         if codec in _LOSSLESS_CODECS:
             return "CONVERT"
-        return "TRANSCODE"
+        if codec in _TRANSCODABLE_CODECS:
+            return "TRANSCODE"
+        return "UNKNOWN"
 
     def _quarantine_failed_staging(
         self, ctx: RunContext, tmp_output: Path, staging_name: str, source: Path, exc: Exception
@@ -491,10 +554,18 @@ class CanonicalizeStage(BaseStage):
         if not source.exists():
             return "ERROR", "file missing on disk"
 
-        action = self._decide_action(row)
+        action = self._decide_action(row, source)
 
         if action == "PASSTHROUGH":
             return "PASSTHROUGH", "already canonical codec/container"
+
+        if action == "UNKNOWN":
+            # Refusing is the answer. The alternative is a lossy re-encode of
+            # a file nobody has identified.
+            return "ERROR", (
+                f"unrecognised codec {row.get('codec') or '(none recorded)'!r} "
+                f"for {source.name} -- refusing to re-encode blindly"
+            )
 
         if dry_run:
             return ("CONVERTED" if action == "CONVERT" else "TRANSCODED"), "[dry run]"
