@@ -29,6 +29,7 @@ import json
 import logging
 import math
 import subprocess
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -147,8 +148,6 @@ def audio_hash(path: Path) -> str:
     except FileNotFoundError as exc:
         raise HasherError(f"ffmpeg not found — cannot compute audio hash for {path}") from exc
 
-    import threading
-
     def _kill_on_timeout(p: subprocess.Popen, timeout: int) -> None:  # type: ignore[type-arg]
         try:
             p.wait(timeout=timeout)
@@ -159,17 +158,54 @@ def audio_hash(path: Path) -> str:
     timer = threading.Thread(target=_kill_on_timeout, args=(proc, _TIMEOUT_SECS), daemon=True)
     timer.start()
 
+    # stderr MUST be drained while stdout is being read.
+    #
+    # Both are pipes. Reading stdout to exhaustion and only then reading
+    # stderr deadlocks the moment ffmpeg writes more than the pipe buffer
+    # (~64 KB on Linux) to stderr: the child blocks writing, so it stops
+    # producing stdout, so this loop never ends and proc.wait() never
+    # returns. ffmpeg is verbose on stderr and gets more so on a damaged
+    # file -- precisely when hashing matters.
+    #
+    # Reproduced 2026-08-30 against a child emitting 2 MB of stderr: the
+    # old order was still blocked after 20s, with only the kill-timer
+    # eventually freeing it, and that timer scales with track duration.
+    stderr_chunks: list[bytes] = []
+
+    def _drain_stderr() -> None:
+        if proc.stderr is None:
+            return
+        try:
+            for line in iter(lambda: proc.stderr.read(_READ_BYTES), b""):  # type: ignore[union-attr]
+                # Bounded: a runaway child must not be able to exhaust
+                # memory through the error path either.
+                if len(stderr_chunks) < 64:
+                    stderr_chunks.append(line)
+        except (OSError, ValueError):
+            pass  # closed underneath us; the exit code still tells the story
+
+    drainer = threading.Thread(target=_drain_stderr, daemon=True)
+    drainer.start()
+
     h = hashlib.sha256()
     assert proc.stdout is not None
-    while chunk := proc.stdout.read(_READ_BYTES):
-        h.update(chunk)
+    try:
+        while chunk := proc.stdout.read(_READ_BYTES):
+            h.update(chunk)
+    finally:
+        proc.stdout.close()
 
-    proc.stdout.close()
     rc = proc.wait()
+    drainer.join(timeout=5)
     timer.join(timeout=1)
 
+    # Closed explicitly: Popen only closes these on garbage collection, and
+    # this runs once per file across tens of thousands of files.
+    if proc.stderr is not None:
+        proc.stderr.close()
+
     if rc != 0:
-        stderr = proc.stderr.read().decode("utf-8", errors="replace").strip() if proc.stderr else ""
+        stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace").strip()
         if rc == -9:  # SIGKILL from timeout
             raise HasherError(f"ffmpeg timed out (>{_TIMEOUT_SECS}s) for {path}")
         raise HasherError(f"ffmpeg exited {rc} for {path}: {stderr[:200]}")
