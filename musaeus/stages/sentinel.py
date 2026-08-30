@@ -193,15 +193,22 @@ class SentinelStage(BaseStage):
                 continue
 
             assert ah is not None
-            upsert_archive(
-                ctx.conn,
-                {
-                    "file_path": path_str,
-                    "audio_hash": ah,
-                    "full_hash": fh,
-                    "status": "HASHED",
-                },
-            )
+            # Hashing advances a NEW file to HASHED. It must not DEMOTE a row
+            # that is already further along.
+            #
+            # This wrote status='HASHED' unconditionally, so re-hashing a
+            # finalized library file knocked it out of CATALOGUED and made it
+            # invisible to Tagger, Organize and Audit -- all of which select
+            # status='CATALOGUED' -- while making it eligible for the whole
+            # downstream chain again. Measured 2026-08-30: a re-hash pass over
+            # the library demoted 1,100 finalized rows before it was stopped,
+            # and would have taken all 9,556.
+            #
+            # A row is re-hashed for its hashes, not for its position.
+            fields = {"file_path": path_str, "audio_hash": ah, "full_hash": fh}
+            if (row.get("status") or "PENDING") == "PENDING":
+                fields["status"] = "HASHED"
+            upsert_archive(ctx.conn, fields)
             ctx.log_event(
                 "HASH_COMPUTED",
                 file_path=path_str,

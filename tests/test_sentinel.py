@@ -409,3 +409,58 @@ class TestPhantomsAreNotDuplicateTargets:
             "SELECT COUNT(*) c FROM events WHERE event_type = 'DUPLICATE_FOUND'"
         ).fetchone()["c"]
         assert dupes >= 1, "a real duplicate against a live file must still be found"
+
+
+# ── re-hashing must not demote a row ─────────────────────────────────────────
+#
+# Sentinel wrote status='HASHED' unconditionally. Hashing a file that was
+# already CATALOGUED and finalized therefore knocked it BACKWARDS out of the
+# status every later stage selects on -- Tagger, Organize and Audit all read
+# status='CATALOGUED' -- while making it eligible for the whole downstream
+# chain again.
+#
+# Measured 2026-08-30: a re-hash pass over the library demoted 1,100
+# finalized rows before it was stopped. It would have taken all 9,556.
+
+
+class TestReHashingDoesNotDemote:
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_finalized_catalogued_row_keeps_its_status(
+        self, mock_fh, mock_ah, ctx, tmp_path
+    ):
+        track = tmp_path / "finalized.flac"
+        track.write_bytes(b"AUDIO")
+        ctx.conn.execute(
+            "INSERT INTO archive (file_path, status, finalized_at) "
+            "VALUES (?, 'CATALOGUED', '2026-08-27 00:00:00')",
+            (str(track),),
+        )
+        ctx.conn.commit()
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = ("a" * 64, None)
+
+        SentinelStage().execute(ctx)
+
+        row = ctx.conn.execute(
+            "SELECT status, audio_hash FROM archive WHERE file_path = ?", (str(track),)
+        ).fetchone()
+        assert row["status"] == "CATALOGUED", "re-hashing demoted a finalized row"
+        assert row["audio_hash"] == "a" * 64, "the hash must still be updated"
+
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_pending_row_still_advances_to_hashed(self, mock_fh, mock_ah, ctx, tmp_path):
+        """The guard must not stop a new file progressing."""
+        track = tmp_path / "new.flac"
+        track.write_bytes(b"AUDIO")
+        _insert_pending(ctx, str(track))
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = ("b" * 64, None)
+
+        SentinelStage().execute(ctx)
+
+        row = ctx.conn.execute(
+            "SELECT status FROM archive WHERE file_path = ?", (str(track),)
+        ).fetchone()
+        assert row["status"] == "HASHED"
