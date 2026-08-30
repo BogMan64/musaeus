@@ -153,6 +153,7 @@ from .forge import ForgeStage
 from .genre_validate import GenreValidateStage  # noqa: E402
 from .ghost import GhostStage
 from .health import HealthStage
+from .identity_tag import IdentityTagStage
 from .ingest import IngestStage
 from .integrity import IntegrityStage
 from .mb_enrich import MBEnrichStage
@@ -203,6 +204,7 @@ __all__ = [
     "OriginalYearStage",
     "NearDupeStage",
     "AcousticIDStage",
+    "IdentityTagStage",
     "TranscodeStage",
     "IntegrityStage",
     "AlbumArtStage",
@@ -328,11 +330,37 @@ ACT3_CANONICALIZE_FINALIZE: list[type] = [
     ForgeStage,
     TaggerStage,
     AuditStage,
+    # Wired 2026-08-30 at Grey's instruction, after the hazard that kept it
+    # out was fixed and tested. It ran nowhere before: every target was built
+    # under ctx.inbox while the query selects CATALOGUED, so it would have
+    # moved 10,660 of 10,660 files OUT of ALAC-Library. A file now organizes
+    # within the root it already lives in, and a finalized file's root is its
+    # BATCH directory -- ALAC-Library itself as the root would have flattened
+    # <batch>/ and moved the entire library, measured 2026-08-30.
+    #
+    # Last in Act 3, after Finalize has placed the file and Tagger has settled
+    # the metadata the path is derived from. Organizing earlier would name
+    # folders from tags that Tagger is about to change.
+    OrganizeStage,
 ]
 
 ENRICHMENT: list[type] = [
     EnrichStage,
     MBEnrichStage,
+    # Wired 2026-08-30 at Grey's instruction; his earlier ruling was "after
+    # the campaign, as a deliberate change", and the campaign is over.
+    #
+    # AFTER MBEnrich, not before: MusicBrainz by name is cheap and settles
+    # most rows, and AcoustID is the answer for what text cannot identify --
+    # 744 files as of 2026-08-30, down from 2,152 once the article-form
+    # lookup bug was fixed. Fingerprinting costs ~0.8s/file, so it should ask
+    # about the remainder, not the library.
+    AcousticIDStage,
+    # LAST. It writes identity to the FILES, so it must run after everything
+    # that resolves identity -- otherwise it writes what the run is about to
+    # learn. This is the stage whose absence let ~8,074 MBIDs live only in a
+    # database that was later reset to 87 rows.
+    IdentityTagStage,
 ]
 
 # The full canonical pipeline: Act 1 + Act 2 + Act 3 + Enrichment, in

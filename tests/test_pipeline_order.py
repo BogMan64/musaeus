@@ -16,6 +16,7 @@ VariousArtistsFix at the end of Act 1 right after ArtistConsolidate.
 from __future__ import annotations
 
 from musaeus.stages import DEFAULT_PIPELINE
+from musaeus.stages.acousticid import AcousticIDStage
 from musaeus.stages.albumart import AlbumArtStage
 from musaeus.stages.artist_consolidate import ArtistConsolidateStage
 from musaeus.stages.audit import AuditStage
@@ -31,10 +32,12 @@ from musaeus.stages.finalize import FinalizeStage
 from musaeus.stages.forge import ForgeStage
 from musaeus.stages.genre_validate import GenreValidateStage
 from musaeus.stages.health import HealthStage
+from musaeus.stages.identity_tag import IdentityTagStage
 from musaeus.stages.ingest import IngestStage
 from musaeus.stages.mb_enrich import MBEnrichStage
 from musaeus.stages.neardupe import NearDupeStage
 from musaeus.stages.normalize import NormalizeStage
+from musaeus.stages.organize import OrganizeStage
 from musaeus.stages.permissions import PermissionsStage
 from musaeus.stages.preflight import PreflightStage
 from musaeus.stages.sanitize import SanitizeStage
@@ -92,9 +95,25 @@ def test_enrichment_is_default_on_and_positioned_last():
     2026-08-18 Canonicalize revert."""
     assert EnrichStage in DEFAULT_PIPELINE
     assert MBEnrichStage in DEFAULT_PIPELINE
-    last_two = DEFAULT_PIPELINE[-2:]
-    assert last_two == [EnrichStage, MBEnrichStage]
+
+    # Enrichment grew on 2026-08-30 (AcousticID, IdentityTag), so this
+    # asserts the PROPERTY Grey's call was about -- the whole enrichment
+    # block is contiguous and strictly last, isolated from the
+    # file-safety-critical stages -- rather than a fixed pair.
+    from musaeus.stages import ENRICHMENT
+
+    assert DEFAULT_PIPELINE[-len(ENRICHMENT):] == ENRICHMENT
     assert _index(AuditStage) < _index(EnrichStage)
+
+    # Within the block, order is a dependency chain, not a preference.
+    assert _index(MBEnrichStage) < _index(AcousticIDStage), (
+        "text lookup is cheap and settles most rows; fingerprinting should "
+        "ask about the remainder, not the library"
+    )
+    assert _index(AcousticIDStage) < _index(IdentityTagStage), (
+        "identity is written to the files last, after everything that "
+        "resolves it -- otherwise it writes what the run is about to learn"
+    )
 
 
 def test_full_default_pipeline_order_matches_current_design():
@@ -139,7 +158,13 @@ def test_full_default_pipeline_order_matches_current_design():
         ForgeStage,
         TaggerStage,
         AuditStage,
+        # Wired 2026-08-30, once the hazard that kept it out was fixed: it
+        # built every target under ctx.inbox while selecting CATALOGUED rows,
+        # so it would have moved 10,660 of 10,660 files out of the library.
+        OrganizeStage,
         EnrichStage,
         MBEnrichStage,
+        AcousticIDStage,
+        IdentityTagStage,
     ]
     assert expected == DEFAULT_PIPELINE

@@ -317,8 +317,13 @@ class TestOrganizeStaysInsideItsRoot:
         assert expected.exists(), "file left the library"
         assert not src.exists()
 
-        # The real assertion: still reachable from a known root.
-        assert destination_root(expected, OrganizeStage._roots(ctx)) == ctx.alac_library
+        # The real assertion: still reachable from a known root. Compared as
+        # "under the library", not "root is exactly the library" -- _roots is
+        # computed live, so a batch directory created by this very run is a
+        # legitimate deeper answer.
+        root = destination_root(expected, OrganizeStage._roots(ctx))
+        assert root is not None
+        assert str(root).startswith(str(ctx.alac_library))
 
         moved_into_inbox = list(ctx.inbox.rglob("*.m4a"))
         assert moved_into_inbox == [], f"files escaped into the INBOX: {moved_into_inbox}"
@@ -493,3 +498,94 @@ class TestSmartQuoteNormalisation:
                 old, new = (a.value for a in node.args)
                 assert old != new, f"no-op replace still present: {old!r}"
                 assert ".replace(" not in str(old), f"mangled literal: {old!r}"
+
+
+# ── the batch tier is a root of its own ──────────────────────────────────────
+#
+# FinalizeStage writes ALAC-Library/<batch>/<artist>/<album>/. Treating
+# ALAC-Library itself as the root makes Organize rebuild every path as
+# ALAC-Library/<artist>/<album>/ -- flattening the batch directory and moving
+# the whole finalized library. Measured on the real layout 2026-08-30, just
+# before wiring this stage into DEFAULT_PIPELINE: one finalized file in, one
+# move out. That is 10,588 moves on the live vault.
+
+
+class TestBatchTierIsPreserved:
+    def _finalized(self, ctx, batch, artist, album, title):
+        path = ctx.alac_library / batch / artist / album / f"{artist} - {title}.m4a"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"FAKE AUDIO DATA")
+        upsert_archive(ctx.conn, {
+            "file_path": str(path), "status": "CATALOGUED",
+            "artist": artist, "album": album, "title": title,
+        })
+        ctx.conn.commit()
+        return path
+
+    def test_an_already_organized_finalized_file_is_left_alone(self, ctx):
+        ctx.alac_library.mkdir(parents=True, exist_ok=True)
+        src = self._finalized(ctx, "2026-08-27A", "Cranberries, The", "Unsorted", "Zombie")
+
+        OrganizeStage().run(ctx)
+
+        assert src.exists(), "the batch directory was flattened"
+        assert not (ctx.alac_library / "Cranberries, The").exists()
+
+    def test_a_messy_file_is_tidied_inside_its_own_batch(self, ctx):
+        ctx.alac_library.mkdir(parents=True, exist_ok=True)
+        batch = ctx.alac_library / "2026-08-27A"
+        batch.mkdir(parents=True, exist_ok=True)
+        flat = batch / "flat.m4a"
+        flat.write_bytes(b"FAKE AUDIO DATA")
+        upsert_archive(ctx.conn, {
+            "file_path": str(flat), "status": "CATALOGUED",
+            "artist": "Weezer", "album": "Blue Album", "title": "Buddy Holly",
+        })
+        ctx.conn.commit()
+
+        OrganizeStage().run(ctx)
+
+        assert (batch / "Weezer" / "Blue Album" / "Weezer - Buddy Holly.m4a").exists()
+        assert not (ctx.alac_library / "Weezer").exists(), "escaped its batch"
+
+    def test_two_batches_do_not_merge(self, ctx):
+        """Each batch organizes independently; neither absorbs the other."""
+        ctx.alac_library.mkdir(parents=True, exist_ok=True)
+        a = self._finalized(ctx, "2026-08-27A", "Weezer", "Blue Album", "Undone")
+        b = self._finalized(ctx, "2026-08-28B", "Weezer", "Blue Album", "Say It Aint So")
+
+        OrganizeStage().run(ctx)
+
+        assert a.exists() and b.exists()
+        assert not (ctx.alac_library / "Weezer").exists()
+
+    def test_an_artist_directory_is_not_mistaken_for_a_batch(self, ctx):
+        """A library shaped ALAC-Library/<artist>/<album>/ must still work.
+
+        An earlier draft enumerated EVERY child of ALAC-Library as a root, so
+        the artist directory became the root and Organize nested artist
+        inside artist. Batches are matched on FinalizeStage's own
+        YYYY-MM-DD[suffix] shape instead.
+        """
+        ctx.alac_library.mkdir(parents=True, exist_ok=True)
+        path = ctx.alac_library / "Weezer" / "Blue Album" / "Weezer - Undone.m4a"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"FAKE AUDIO DATA")
+        upsert_archive(ctx.conn, {
+            "file_path": str(path), "status": "CATALOGUED",
+            "artist": "Weezer", "album": "Blue Album", "title": "Undone",
+        })
+        ctx.conn.commit()
+
+        OrganizeStage().run(ctx)
+
+        assert path.exists(), "already correct; should not have moved"
+        assert not (ctx.alac_library / "Weezer" / "Weezer").exists(), "nested artist"
+
+    def test_review_folders_beside_the_batches_are_not_roots(self, ctx):
+        """DUPES_MOVED_FOR_REVIEW sits next to the batches and is not one."""
+        from musaeus.stages.organize import _BATCH_DIR_RE
+
+        assert _BATCH_DIR_RE.match("2026-08-27A")
+        assert not _BATCH_DIR_RE.match("DUPES_MOVED_FOR_REVIEW")
+        assert not _BATCH_DIR_RE.match("TRIBUTE_REMOVED_FOR_REVIEW")

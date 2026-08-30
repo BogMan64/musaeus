@@ -75,6 +75,7 @@ ORPHEUS equivalents:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import sqlite3
@@ -105,6 +106,13 @@ _TRACK_NUMBER_PATTERNS = [
     # "171.Title" or "05.Title" (no space)
     re.compile(r"^\s*\d{2,3}[._]\s*"),
 ]
+
+# FinalizeStage's batch folder: a YYYY-MM-DD stamp, optionally suffixed when
+# more than one batch lands in a day ("2026-08-27A", "2026-08-27B"). Matched
+# by shape so that DUPES_MOVED_FOR_REVIEW and TRIBUTE_REMOVED_FOR_REVIEW --
+# which sit beside the batches -- are not mistaken for one.
+_BATCH_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[A-Za-z0-9_-]*$")
+
 
 # ── Windows/ExFAT Forbidden Characters ────────────────────────────────────────
 
@@ -345,11 +353,32 @@ class OrganizeStage(BaseStage):
     def _roots(ctx: RunContext) -> list[Path]:
         """Every root a managed file may legitimately live under.
 
-        Ordered most-specific-first for readability only -- `destination_root`
-        picks by path depth, not by position, so a caller cannot break the
-        choice by reordering this list.
+        Order is for readability only -- `destination_root` picks by path
+        depth, so reordering cannot change the answer.
+
+        The batch tier matters. FinalizeStage writes
+        `ALAC-Library/<batch>/<artist>/<album>/`, so treating ALAC-Library
+        itself as the root makes Organize want to rebuild every path as
+        `ALAC-Library/<artist>/<album>/` -- flattening the batch directory
+        and moving the entire finalized library. Measured on the real layout
+        2026-08-30: one file in, one move out.
+
+        So a BATCH directory is a root in its own right -- matched on
+        FinalizeStage's own YYYY-MM-DD[suffix] naming, not on "any child".
+        Enumerating every child would break a library shaped
+        ALAC-Library/<artist>/<album>/: the artist directory would become
+        the root and Organize would nest artist inside artist.
+        `destination_root` prefers the most specific, so a finalized file
+        organizes inside its own batch and stays there.
         """
-        return [ctx.alac_library, ctx.inbox, ctx.staging]
+        roots = [ctx.alac_library, ctx.inbox, ctx.staging]
+        # No library yet, or unreadable: the bare roots still answer.
+        with contextlib.suppress(OSError):
+            roots.extend(
+                d for d in ctx.alac_library.iterdir()
+                if d.is_dir() and _BATCH_DIR_RE.match(d.name)
+            )
+        return roots
 
     def _apply_rename(
         self,
