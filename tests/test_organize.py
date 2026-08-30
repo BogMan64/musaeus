@@ -424,3 +424,72 @@ class TestPathsUseTheSortForm:
         _make_track(ctx, "d.m4a", "Dusty Springfield", "Dusty in Memphis", "Son of a Preacher Man")
         OrganizeStage().run(ctx)
         assert (ctx.inbox / "Dusty Springfield" / "Dusty in Memphis").is_dir()
+
+
+# ── smart-quote normalisation, which was silently a no-op ────────────────────
+#
+# The three replace() lines in sanitize_path_component were written out by
+# hand and the file had lost its non-ASCII characters. Confirmed by AST
+# 2026-08-29:
+#
+#     .replace("'", "'")                 ASCII -> ASCII. A no-op. Twice.
+#     .replace(', \'"\').replace(', '"')  a stray `"""` opened a triple-quoted
+#                                        string, so this line replaced the
+#                                        literal text `, '"').replace(` with `"`
+#
+# So no curly quote was ever normalised and one line was nonsense, while the
+# function looked entirely reasonable. Only the dash line survived intact.
+#
+# Found by an independent review on a 2026-08-21 base; the defect was still
+# live on this branch eight days later.
+
+
+class TestSmartQuoteNormalisation:
+    def test_curly_single_quotes_become_ascii(self):
+        assert sanitize_path_component("Hello ‘Cause’") == "Hello 'Cause'"
+
+    def test_curly_double_quotes_are_normalised_then_stripped(self):
+        # -> ASCII '"', which _FORBIDDEN_RE then replaces: '"' is not legal
+        # in a Windows/ExFAT path.
+        assert sanitize_path_component("Say “Hi”") == "Say -Hi-"
+
+    def test_dashes_become_hyphens(self):
+        assert sanitize_path_component("A – B — C − D") == "A - B - C - D"
+
+    def test_backtick_becomes_an_apostrophe(self):
+        assert sanitize_path_component("back`tick") == "back'tick"
+
+    def test_a_plain_apostrophe_is_untouched(self):
+        assert sanitize_path_component("It's Fine") == "It's Fine"
+
+    def test_a_comma_apostrophe_sequence_survives(self):
+        """The mangled line replaced a literal `, '"').replace(` fragment.
+
+        Nothing real contained it, which is why the damage stayed invisible --
+        but the normalisation it was supposed to perform never happened.
+        """
+        assert sanitize_path_component("Hello, 'Cause") == "Hello, 'Cause"
+
+    def test_the_function_no_longer_contains_a_mangled_replace(self):
+        """Pins the parse itself, since the source is what went wrong.
+
+        A string comparison would pass against a file that still parsed into
+        nonsense; this asserts what Python actually built.
+        """
+        import ast
+        import inspect
+
+        from musaeus.stages import organize as _organize
+
+        tree = ast.parse(inspect.getsource(_organize.sanitize_path_component))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "replace"
+                and len(node.args) == 2
+                and all(isinstance(a, ast.Constant) for a in node.args)
+            ):
+                old, new = (a.value for a in node.args)
+                assert old != new, f"no-op replace still present: {old!r}"
+                assert ".replace(" not in str(old), f"mangled literal: {old!r}"

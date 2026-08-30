@@ -85,6 +85,7 @@ from pathlib import Path
 from ..artist_form import sort_form
 from ..context import RunContext, StageResult
 from .base import BaseStage
+from .sanitize import SMART_QUOTE_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -208,9 +209,27 @@ def sanitize_path_component(text: str) -> str:
     s = unicodedata.normalize("NFC", str(text))
 
     # Normalize quotes and dashes
-    s = s.replace("'", "'").replace("'", "'").replace("`", "'")
-    s = s.replace(""", '"').replace(""", '"')
-    s = s.replace("–", "-").replace("—", "-").replace("−", "-")
+    # Smart quotes and dashes -> ASCII, via sanitize.py's map.
+    #
+    # These three lines used to be written out by hand and were silently
+    # broken. Confirmed by AST on 2026-08-29, the file having lost its
+    # non-ASCII characters at some point:
+    #
+    #     .replace("'", "'")                   ASCII -> ASCII. A no-op. Twice.
+    #     .replace(', \'"\').replace(', '"')    a stray `"""` opened a
+    #                                          triple-quoted string, so this
+    #                                          line replaced the literal text
+    #                                          `, '"').replace(` with `"`
+    #
+    # So no curly quote was ever normalised, and one line was nonsense. Only
+    # the dash line survived intact -- it still had its real U+2013/2014/2212.
+    #
+    # Reusing SMART_QUOTE_MAP instead of rewriting the literals: it is
+    # already correct, already tested, and written with \u escapes, which is
+    # what makes it survive an encoding round-trip that ate these.
+    for _smart, _plain in SMART_QUOTE_MAP.items():
+        s = s.replace(_smart, _plain)
+    s = s.replace("`", "'")
 
     # Remove control characters
     s = "".join(c for c in s if unicodedata.category(c)[0] != "C")

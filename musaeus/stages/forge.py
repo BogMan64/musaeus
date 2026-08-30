@@ -114,15 +114,26 @@ def _write_tags_m4a(path: Path, rg_gain: float, rg_peak: float) -> bool:
         return False
 
 
-def _write_tags_flac(path: Path, rg_gain: float, rg_peak: float) -> bool:
-    """Write ReplayGain tags to FLAC."""
+def _write_tags_flac(
+    path: Path, rg_gain: float, rg_peak: float, reference: float = R128_REFERENCE
+) -> bool:
+    """Write ReplayGain tags to FLAC.
+
+    `reference` MUST be the same value the gain was computed against.
+    It was hardcoded to "18.00 LUFS" while the gain came from the
+    configurable `forge_target_lufs`, so at any target other than -18 the
+    two disagreed -- and _rg_dict_from_vorbis_style reads this very tag back
+    to recover LUFS, so Forge mis-read the loudness of files it had written
+    itself, by exactly (target - (-18)) dB.
+    """
     try:
         from mutagen.flac import FLAC  # type: ignore[import-untyped]
 
         audio = FLAC(str(path))
         audio["REPLAYGAIN_TRACK_GAIN"] = [f"{rg_gain:+.2f} dB"]
         audio["REPLAYGAIN_TRACK_PEAK"] = [f"{rg_peak:.8f}"]
-        audio["REPLAYGAIN_REFERENCE_LOUDNESS"] = ["18.00 LUFS"]
+        # Stored as a positive magnitude, which is what the reader negates.
+        audio["REPLAYGAIN_REFERENCE_LOUDNESS"] = [f"{-reference:.2f} LUFS"]
         audio.save()
         return True
     except Exception as exc:
@@ -130,8 +141,15 @@ def _write_tags_flac(path: Path, rg_gain: float, rg_peak: float) -> bool:
         return False
 
 
-def _write_tags_mp3(path: Path, rg_gain: float, rg_peak: float) -> bool:
-    """Write ReplayGain tags to MP3."""
+def _write_tags_mp3(
+    path: Path, rg_gain: float, rg_peak: float, reference: float = R128_REFERENCE
+) -> bool:
+    """Write ReplayGain tags to MP3.
+
+    Writes the reference too. Without it the reader falls back to
+    R128_REFERENCE, which is right only when the target happens to be -18 --
+    the same defect as FLAC's, just silent instead of wrong-on-disk.
+    """
     try:
         from mutagen.easyid3 import EasyID3  # type: ignore[import-untyped]
 
@@ -144,6 +162,13 @@ def _write_tags_mp3(path: Path, rg_gain: float, rg_peak: float) -> bool:
             audio = ID3(str(path))
         audio["replaygain_track_gain"] = [f"{rg_gain:+.2f} dB"]
         audio["replaygain_track_peak"] = [f"{rg_peak:.8f}"]
+        try:
+            audio["replaygain_reference_loudness"] = [f"{-reference:.2f} LUFS"]
+        except (KeyError, ValueError):
+            # EasyID3 only accepts keys it knows; a raw ID3 handle does not
+            # take this one. Losing the reference is a degradation, not a
+            # failure -- the gain and peak still landed.
+            logger.debug("mp3 reference tag unsupported for %s", path)
         audio.save()
         return True
     except Exception as exc:
@@ -171,7 +196,11 @@ def _write_tags_aiff(path: Path, rg_gain: float, rg_peak: float) -> bool:
 
 
 def write_rg_tags(
-    path: Path, rg_gain: float, rg_peak: float, r128_gain: float | None = None
+    path: Path,
+    rg_gain: float,
+    rg_peak: float,
+    r128_gain: float | None = None,
+    reference: float = R128_REFERENCE,
 ) -> bool:
     """Dispatch to the right tag writer based on file extension.
 
@@ -183,9 +212,9 @@ def write_rg_tags(
         # Apple com.apple.iTunes.R128_TRACK_GAIN must reference -23 LUFS.
         return _write_tags_m4a(path, r128_gain if r128_gain is not None else rg_gain, rg_peak)
     if ext == ".flac":
-        return _write_tags_flac(path, rg_gain, rg_peak)
+        return _write_tags_flac(path, rg_gain, rg_peak, reference)
     if ext == ".mp3":
-        return _write_tags_mp3(path, rg_gain, rg_peak)
+        return _write_tags_mp3(path, rg_gain, rg_peak, reference)
     if ext in (".aiff", ".aif"):
         return _write_tags_aiff(path, rg_gain, rg_peak)
     # WAV: no standard RG tag container — store in DB only
@@ -427,7 +456,10 @@ class ForgeStage(BaseStage):
 
         tagged = False
         if not dry_run:
-            tagged = write_rg_tags(path, rg_gain, rg_peak, r128_gain=r128_gain)
+            # Same reference the gain was computed against, two lines up.
+            tagged = write_rg_tags(
+                path, rg_gain, rg_peak, r128_gain=r128_gain, reference=target_lufs
+            )
             _save_loudness(ctx, file_path, lufs, tp, rg_gain, rg_peak, tagged)  # type: ignore[arg-type]
 
         return "ok" if tagged or dry_run else "tag_fail"
@@ -435,6 +467,16 @@ class ForgeStage(BaseStage):
     # ── run ───────────────────────────────────────────────────────────────────
 
     def _embed_from_db(self, ctx: RunContext) -> StageResult:
+        """Embed tags from gains already in the DB.
+
+        NOTE on the reference: `archive.rg_gain` records a gain but not the
+        target it was computed against, so a row written under a different
+        `forge_target_lufs` cannot be re-referenced from the row alone. The
+        current target is used, which is correct whenever the target has not
+        changed since the gain was measured, and is the only defensible
+        assumption available without a column to say otherwise.
+        """
+        target_lufs: float = ctx.get("forge_target_lufs", R128_REFERENCE)
         """Write loudness tags onto files from values already in the DB.
 
         Repair path for the silent-write bug fixed 2026-08-21: Forge measured
@@ -484,7 +526,9 @@ class ForgeStage(BaseStage):
             r128 = lufs_to_rg(lufs, reference=R128_APPLE_REFERENCE) if lufs is not None else None
             peak = row["rg_peak"] if row["rg_peak"] is not None else 0.0
 
-            if write_rg_tags(path, row["rg_gain"], peak, r128_gain=r128):
+            if write_rg_tags(
+                path, row["rg_gain"], peak, r128_gain=r128, reference=target_lufs
+            ):
                 written += 1
                 # The file now genuinely carries the tag, so rg_tagged_at must
                 # say so or the next ordinary Forge run re-measures it. Stamped

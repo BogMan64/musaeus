@@ -35,7 +35,7 @@ def _get_pending(conn) -> list[dict]:  # type: ignore[type-arg]
     """Return archive rows that need hashing."""
     rows = conn.execute(
         """
-        SELECT file_path, audio_hash FROM archive
+        SELECT file_path, audio_hash, status FROM archive
         WHERE status = 'PENDING'
            OR audio_hash IS NULL
         ORDER BY file_path
@@ -47,7 +47,9 @@ def _get_pending(conn) -> list[dict]:  # type: ignore[type-arg]
 def _hash_group_for(conn, audio_hash_val: str) -> list[str]:
     """Return all file_paths that share the given audio_hash."""
     rows = conn.execute(
-        "SELECT file_path FROM archive WHERE audio_hash = ?",
+        "SELECT file_path FROM archive "
+        " WHERE audio_hash = ? "
+        "   AND status NOT IN ('GHOST', 'QUARANTINED', 'DELETED')",
         (audio_hash_val,),
     ).fetchall()
     return [r["file_path"] for r in rows]
@@ -98,13 +100,30 @@ class SentinelStage(BaseStage):
         seen_hashes: dict[str, str] = {}  # audio_hash → first file_path
 
         # Pre-load existing hashes from DB into seen_hashes
+        # A row whose file is gone is not something a new file can duplicate.
+        #
+        # This preloaded EVERY row with an audio_hash, so a GHOST or
+        # QUARANTINED phantom -- a row for a file already moved away or
+        # deleted -- was a valid match target, and an incoming file was
+        # quarantined as a duplicate of something that no longer exists.
+        # Same family as the dupe cascade cross_dupe.py was hardened against;
+        # it learned to verify liveness, Sentinel had not.
+        #
+        # Filtered on status AND checked on disk: the status is the cheap
+        # answer and the filesystem is the true one, and they disagree
+        # exactly when a row is stale, which is the case that matters.
         existing = ctx.conn.execute(
-            "SELECT file_path, audio_hash FROM archive WHERE audio_hash IS NOT NULL"
+            "SELECT file_path, audio_hash FROM archive "
+            " WHERE audio_hash IS NOT NULL "
+            "   AND status NOT IN ('GHOST', 'QUARANTINED', 'DELETED')"
         ).fetchall()
         for row in existing:
             h = row["audio_hash"]
-            if h not in seen_hashes:
-                seen_hashes[h] = row["file_path"]
+            if h in seen_hashes:
+                continue
+            if not Path(row["file_path"]).exists():
+                continue
+            seen_hashes[h] = row["file_path"]
 
         _COMMIT_EVERY = 50  # commit progress incrementally
 
@@ -114,10 +133,32 @@ class SentinelStage(BaseStage):
             result.files_processed += 1
 
             if not path.exists():
-                logger.warning("Missing file (stale DB record — removing): %s", path_str)
-                ctx.conn.execute("DELETE FROM archive WHERE file_path = ?", (path_str,))
+                # Mark, do not DELETE.
+                #
+                # This used to DELETE the archive row, which contradicted two
+                # things at once: GhostStage exists precisely to mark missing
+                # files as status='GHOST' and log GHOST_FOUND, and the event
+                # log is meant to be the source of truth -- a deleted row
+                # leaves nothing to reconcile when the file comes back. A
+                # temporarily-unmounted drive silently erased its own history.
+                #
+                # Same transition GhostStage performs, so the two agree.
+                logger.warning("Missing file — marking GHOST: %s", path_str)
+                ctx.conn.execute(
+                    "UPDATE archive SET status='GHOST', last_seen=datetime('now') "
+                    "WHERE file_path=?",
+                    (path_str,),
+                )
+                ctx.log_event(
+                    "GHOST_FOUND",
+                    file_path=path_str,
+                    old_value=row.get("status"),
+                    new_value="GHOST",
+                    stage=self.NAME,
+                    note="missing on disk during sentinel scan",
+                )
                 result.files_errored += 1
-                result.errors.append(f"Missing file, removed from archive: {path_str}")
+                result.errors.append(f"Missing file, marked GHOST: {path_str}")
                 continue
 
             # Full-file hash (always, cheap)
