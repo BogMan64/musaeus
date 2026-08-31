@@ -376,6 +376,45 @@ def _quarantine_failed_tmp(tmp_output: Path | None) -> None:
         tmp_output.rename(failed_path)
 
 
+def car_sample_rate(source_rate: int | None) -> int | None:
+    """Target sample rate for a car head unit, or None to leave it alone.
+
+    Nothing pinned the rate, so ffmpeg's AAC encoder simply capped at its own
+    maximum: a 192 kHz master came out as 96 kHz AAC. 44.1 and 48 kHz AAC-LC
+    are supported essentially everywhere; above 48 kHz support is patchy and
+    a head unit that cannot decode it fails on the whole file, not gracefully.
+    Measured on the live library 2026-08-31: 4,862 of 10,545 catalogued files
+    (46%) are above 48 kHz -- 4,223 of them at 192 kHz.
+
+    Capped, not forced. Forcing 48 would resample the 5,439 files already at
+    44.1 kHz (52% of the library) at a non-integer ratio, which adds no
+    information, grows the file, and risks artefacts for nothing.
+
+    Each rate stays inside its own clock family so the ratio is an exact
+    power of two -- 192->48 and 96->48 are /4 and /2, 88.2->44.1 is /2 --
+    rather than crossing families and resampling at 160/147.
+    """
+    if not source_rate or source_rate <= 48_000:
+        return None                      # already safe; do not touch it
+    return 44_100 if source_rate % 44_100 == 0 else 48_000
+
+
+def probe_sample_rate(file_path: Path) -> int | None:
+    """Source sample rate, or None when it cannot be read (leave it alone)."""
+    proc = subprocess.run(
+        [FFPROBE, "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=sample_rate", "-of", "csv=p=0", str(file_path)],
+        capture_output=True, text=True,
+    )
+    raw = (proc.stdout or "").strip().splitlines()
+    if proc.returncode != 0 or not raw:
+        return None
+    try:
+        return int(raw[0].strip().rstrip(","))
+    except ValueError:
+        return None
+
+
 def build_ffmpeg_command(
     input_file: Path,
     output_file: Path,
@@ -383,6 +422,7 @@ def build_ffmpeg_command(
     has_attached_picture: bool,
     clean_tags: dict[str, str],
     loudnorm_filter: str,
+    target_rate: int | None = None,
 ) -> list[str]:
     cmd = [FFMPEG]
 
@@ -405,6 +445,7 @@ def build_ffmpeg_command(
             "aac",
             "-b:a",
             bitrate,
+            *(["-ar", str(target_rate)] if target_rate else []),
             "-af",
             loudnorm_filter,
             "-c:v",
@@ -426,6 +467,7 @@ def build_ffmpeg_command(
             "aac",
             "-b:a",
             bitrate,
+            *(["-ar", str(target_rate)] if target_rate else []),
             "-af",
             loudnorm_filter,
             "-map_metadata",
@@ -480,6 +522,7 @@ def convert_one(file_path: Path, profile_name: str) -> str:
             has_attached_picture=has_attached_picture,
             clean_tags=clean_tags,
             loudnorm_filter=loudnorm_filter,
+            target_rate=car_sample_rate(probe_sample_rate(file_path)),
         )
 
         subprocess.run(cmd, capture_output=True, text=True, check=True)
