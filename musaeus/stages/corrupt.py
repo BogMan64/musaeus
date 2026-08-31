@@ -30,6 +30,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# A whole-file decode of a long hi-res track is minutes, not seconds.
+_DECODE_TIMEOUT_S = 600
+
 # ── Thresholds ────────────────────────────────────────────────────────────────
 
 # Minimum expected bytes per second for each codec (conservative lower bound)
@@ -154,6 +157,41 @@ def check_file(path: Path, codec: str | None, duration_db: float | None) -> tupl
             return True, reason
 
     return False, ""
+
+
+
+def ffmpeg_decode_check(path: Path, seconds: int = 0) -> tuple[bool, str]:
+    """Actually DECODE the audio and report whether ffmpeg found errors.
+
+    CorruptStage's other checks are heuristics on the container -- filesize
+    against duration, suspiciously short tracks. They describe the file's
+    shape, never its contents, so a file whose header is fine and whose
+    audio is damaged passes them cleanly.
+
+    Two such files sat in the library undetected: `Aerosmith - What It
+    Takes` and `Diana Ross - The Boss`, both raising "invalid zero block
+    size" on decode. They surfaced 2026-08-31 only as a side effect of a
+    full re-hash, which decodes as a byproduct -- not because anything was
+    checking.
+
+    Ported from ORPHEUS's SCRIPTS/orpheus_accurip_checker.py, with one
+    change: ORPHEUS decodes the first 10 seconds, which cannot see damage
+    later in the track. `seconds=0` decodes the whole file. The caller
+    chooses, because a full decode over a large library is not free.
+    """
+    cmd = ["ffmpeg", "-v", "error", "-i", str(path)]
+    if seconds:
+        cmd += ["-t", str(seconds)]
+    cmd += ["-f", "null", "-"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_DECODE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return False, f"decode timed out after {_DECODE_TIMEOUT_S}s"
+    except OSError as exc:
+        return False, f"ffmpeg unavailable: {exc}"
+    if proc.returncode != 0 or proc.stderr.strip():
+        return False, (proc.stderr or f"ffmpeg exited {proc.returncode}").strip()[:200]
+    return True, ""
 
 
 class CorruptStage(BaseStage):

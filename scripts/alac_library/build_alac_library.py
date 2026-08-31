@@ -69,6 +69,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -178,7 +179,26 @@ def _has_attached_picture(probe: dict) -> bool:
     return False
 
 
-def verify_bake(source: Path, output: Path) -> None:
+# How far the baked result may sit from the target before it is a failure.
+# loudnorm's linear mode is accurate to well inside this; a miss of more than
+# 1 dB means the filter did not do what was asked.
+_LUFS_TOLERANCE = 1.0
+
+_OUTPUT_I_RE = re.compile(r"Output Integrated:\s*(-?\d+(?:\.\d+)?)\s*LUFS", re.I)
+
+
+def parse_output_loudness(stderr: str) -> float | None:
+    """The integrated loudness ffmpeg says it ACHIEVED, from loudnorm's summary.
+
+    None when it cannot be read -- which is reported, never treated as a pass.
+    """
+    m = _OUTPUT_I_RE.search(stderr or "")
+    return float(m.group(1)) if m else None
+
+
+def verify_bake(
+    source: Path, output: Path, achieved: float | None = None, target_i: str = TARGET_I
+) -> None:
     """Same discipline as canonicalize.py's _verify_conversion: output must
     have an audio stream, duration must match source within tolerance."""
     src_probe = _probe_streams(source)
@@ -194,6 +214,32 @@ def verify_bake(source: Path, output: Path) -> None:
             return float(d) if d else None
         except (TypeError, ValueError):
             return None
+
+    # Did the LOUDNESS actually land?
+    #
+    # This function checked only that an audio stream existed and the
+    # duration matched -- i.e. that a file came out the other end. Neither
+    # says anything about the one thing the bake exists to do. A loudnorm
+    # that silently no-ops, or a second pass fed wrong measured values,
+    # produces a perfectly valid file at the wrong loudness, and
+    # lufs_baked_at is stamped anyway so it is never retried. That is the
+    # same shape as Forge reporting 12,279 successful tag writes while
+    # writing nothing.
+    #
+    # Free to check: the second pass already runs with print_format=summary,
+    # so ffmpeg reports the achieved integrated loudness on stderr.
+    if achieved is not None:
+        want = float(target_i)
+        if abs(achieved - want) > _LUFS_TOLERANCE:
+            raise RuntimeError(
+                f"verification failed: baked to {achieved:.2f} LUFS, "
+                f"wanted {want:.2f} (tolerance {_LUFS_TOLERANCE})"
+            )
+    else:
+        print(
+            f"  WARNING: could not read achieved loudness for {output.name} -- "
+            f"the bake is UNVERIFIED on the thing it exists to do"
+        )
 
     src_dur, out_dur = _duration(src_probe), _duration(out_probe)
     if (
@@ -335,8 +381,9 @@ def _process_one(conn, row: dict, archive_dir: Path, library_dir: Path, execute:
         loudnorm_filter = build_second_pass_filter(measured, TARGET_I, TARGET_TP, TARGET_LRA)
 
         cmd = build_bake_command(source, tmp_output, loudnorm_filter, has_art)
-        subprocess.run(cmd, capture_output=True, text=True, check=True)
-        verify_bake(source, tmp_output)
+        bake = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        achieved = parse_output_loudness(bake.stderr)
+        verify_bake(source, tmp_output, achieved=achieved)
 
         tmp_output.rename(target)
     except subprocess.CalledProcessError as e:
