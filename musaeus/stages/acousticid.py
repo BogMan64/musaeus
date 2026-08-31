@@ -364,6 +364,13 @@ class AcousticIDStage(BaseStage):
         # This also makes the column load-bearing. It was written by this
         # stage and read by nothing, which is a lie waiting for someone to
         # trust it.
+        # A whole-library pass holds the write lock for hours, which is why
+        # this stage is deliberately outside DEFAULT_PIPELINE. A limit makes
+        # the backlog drainable in sittings: selection is already
+        # "acousticid_checked_at IS NULL", so consecutive runs resume rather
+        # than repeat, and an interrupted chunk costs only that chunk.
+        limit = int(ctx.get("acousticid_limit", 0)) or -1  # -1 = SQLite "no limit"
+
         try:
             rows = ctx.conn.execute(
                 """
@@ -373,7 +380,9 @@ class AcousticIDStage(BaseStage):
                  WHERE status = 'CATALOGUED'
                    AND acousticid_checked_at IS NULL
                  ORDER BY file_path
-                """
+                 LIMIT ?
+                """,
+                (limit,),
             ).fetchall()
         except Exception:
             rows = ctx.conn.execute(
@@ -381,7 +390,9 @@ class AcousticIDStage(BaseStage):
                 SELECT file_path, duration, artist, title FROM archive
                 WHERE status = 'CATALOGUED'
                 ORDER BY file_path
-                """
+                LIMIT ?
+                """,
+                (limit,),
             ).fetchall()
 
         # Which columns the SELECT actually returned. The fallback query

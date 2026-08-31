@@ -1153,6 +1153,11 @@ def _build_parser() -> argparse.ArgumentParser:
     acousticid_p.add_argument(
         "--dry-run", action="store_true", help="Fingerprint + report, no DB writes"
     )
+    acousticid_p.add_argument(
+        "--limit", type=int, metavar="N", default=0,
+        help="Process at most N files, so the backlog can be drained in "
+             "sittings rather than one lock-holding pass (0 = no limit)",
+    )
 
     # transcode
     transcode_p = sub.add_parser("transcode", help="Lossless → 256k AAC export via ffmpeg")
@@ -1611,7 +1616,11 @@ def main() -> None:
             sys.exit(_run_pipeline([CuratorStage], dry_run=dry_run, stash=stash))
 
         elif command == "acousticid":
-            sys.exit(_run_pipeline([AcousticIDStage], dry_run=dry_run))
+            stash = {}
+            limit = getattr(args, "limit", 0)
+            if limit:
+                stash["acousticid_limit"] = int(limit)
+            sys.exit(_run_pipeline([AcousticIDStage], dry_run=dry_run, stash=stash))
 
         elif command == "transcode":
             stash = {}

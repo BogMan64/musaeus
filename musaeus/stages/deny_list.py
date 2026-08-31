@@ -51,6 +51,32 @@ from .organize import unique_path
 
 logger = logging.getLogger(__name__)
 
+# Reasons that are NOT evidence of an owner decision, and so must never
+# quarantine on their own.
+#
+# The 82 entries reading "removed from the library by owner decision" were
+# all written in the SAME SECOND -- 2026-08-24 18:25:31 -- by a bulk
+# backfill seeded from "ledger entries with no live file". A file can be
+# absent for reasons that are not a decision: the corroborating case is
+# The Communards, whose sibling track in the same batch is GHOST carrying
+# the pipeline's own note "file absent from the vault after an interrupted
+# run". Cross-referenced against every removal log (DupeGuru, PerfectTunes,
+# KnockOffs, Unwanted_Artists, Knockoff_Removal_List): 15 of the 82 were
+# real removals, 67 were not.
+#
+# A deny-list entry is permanent and its message asserts the owner's
+# intent. Those 67 asserted an intent the data could not support and
+# silently refused genuine records. Re-labelled on Grey's instruction
+# 2026-08-31; kept on the list, because the observation is still true and
+# worth surfacing, but downgraded to advisory.
+_ADVISORY_REASONS = (
+    "absent from the library at the 2026-08-24 backfill; cause unrecorded",
+)
+
+
+def _is_advisory(reason: str | None) -> bool:
+    return (reason or "").strip() in _ADVISORY_REASONS
+
 _COMMIT_EVERY = 25
 
 
@@ -102,6 +128,7 @@ class DenyListStage(BaseStage):
         quarantine_dir = ctx.config.quarantine / "denied"
 
         blocked = 0
+        advisory = 0
         try:
             for i, row in enumerate(rows, 1):
                 result.files_processed += 1
@@ -116,6 +143,19 @@ class DenyListStage(BaseStage):
                 # on a live run 2026-08-24, which logged "refusing ? — ...".
                 artist, title = row.get("artist"), row.get("title")
                 label = f"{artist} — {title}" if artist and title else src.name
+
+                if _is_advisory(entry["reason"]):
+                    # Report and let it through. Quarantining on this reason
+                    # is what put a genuine 1986 record in QUARANTINE/denied
+                    # with a message claiming the owner had chosen it.
+                    logger.info(
+                        "[deny-list] noting %s (%s) — advisory, not blocked",
+                        label, entry["reason"],
+                    )
+                    advisory += 1
+                    result.notes.append(f"  [advisory] previously absent: {label}")
+                    continue
+
                 logger.info(
                     "[deny-list] refusing %s (removed previously: %s)", label, entry["reason"]
                 )
@@ -182,6 +222,10 @@ class DenyListStage(BaseStage):
 
         verb = "would refuse" if dry_run else "refused"
         result.notes.append(f"{verb}: {blocked}")
+        if advisory:
+            result.notes.append(
+                f"noted but allowed through (advisory reason): {advisory}"
+            )
         if blocked:
             result.notes.append("quarantined, not deleted — reversible if any was wanted")
         ctx.record_stage(result)
