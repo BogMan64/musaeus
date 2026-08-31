@@ -127,15 +127,29 @@ def audio_hash(path: Path) -> str:
 
     sample_rate, duration = _probe_audio_meta(path)
 
-    # Hi-res audio (≥96 kHz) decodes 2-4× more PCM data per second than 48 kHz.
-    # On spinning disk this reliably exceeds any sane timeout, so fall back to
-    # a full-file SHA-256 which is O(read) and finishes in seconds.
+    # Hi-res audio used to be diverted to a full-file SHA-256 here, on the
+    # assumption that decoding ≥96 kHz PCM "reliably exceeds any sane timeout
+    # on spinning disk".
+    #
+    # Measured on this vault 2026-08-30, while a full re-hash was saturating
+    # the same disk: five 192 kHz tracks of 3.5-5.5 minutes decoded in
+    # 1.4-2.8 s each, against computed timeouts of 874-1334 s. Roughly 400x
+    # headroom. The assumption does not hold here.
+    #
+    # It was not a cheap assumption. A full-file hash covers the CONTAINER,
+    # so it changes when tags change -- which breaks this module's own
+    # contract, stated in sentinel.py: "re-tagging a file: full_hash changes,
+    # audio_hash unchanged → NO duplicate". It also cannot match the same
+    # audio in a different container, which is the entire point of hashing
+    # the stream. 3,975 of the first 8,500 rows in that re-hash -- 47% -- were
+    # taking this path.
+    #
+    # So: attempt the real decode, and fall back only on an ACTUAL timeout,
+    # not on a prediction of one. The timeout already scales with sample rate
+    # (see _audio_hash_timeout), so a genuinely slow disk still degrades
+    # gracefully rather than failing.
     if sample_rate >= 96000:
-        logger.info("hi-res audio (%d Hz) — full-file hash fallback: %s", sample_rate, path.name)
-        try:
-            return file_hash(path)
-        except OSError as exc:
-            raise HasherError(f"full-file hash fallback failed for {path}: {exc}") from exc
+        logger.debug("hi-res audio (%d Hz), decoding normally: %s", sample_rate, path.name)
 
     _TIMEOUT_SECS = _audio_hash_timeout(sample_rate, duration)
 

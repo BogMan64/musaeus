@@ -133,3 +133,62 @@ def test_missing_ffmpeg_raises_rather_than_hanging(tmp_path, monkeypatch):
     finished, box, _ = _run_with_deadlock_guard(lambda: audio_hash(src))
     assert finished
     assert isinstance(box.get("error"), HasherError)
+
+
+# ── hi-res audio gets a real PCM hash, not a container hash ──────────────────
+#
+# audio_hash used to divert any file at >=96 kHz to a full-file SHA-256, on
+# the assumption that decoding that much PCM "reliably exceeds any sane
+# timeout on spinning disk".
+#
+# Measured on the live vault 2026-08-30, while a re-hash was saturating the
+# same disk: five 192 kHz tracks decoded in 1.4-2.8 s against computed
+# timeouts of 874-1334 s. The assumption did not hold, and it was expensive:
+# a full-file hash covers the CONTAINER, so it changes when tags change --
+# breaking sentinel.py's stated contract that re-tagging leaves audio_hash
+# alone -- and it cannot match the same audio in a different container,
+# which is the whole point. 47% of the library was taking that path.
+
+
+def _ffmpeg_available():
+    import shutil
+
+    return bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+
+
+@pytest.mark.skipif(not _ffmpeg_available(), reason="needs real ffmpeg")
+@pytest.mark.parametrize("rate", [96000, 192000])
+def test_hi_res_is_hashed_from_pcm_not_from_the_container(tmp_path, rate, monkeypatch):
+    """The PCM hash must differ from the file hash, and survive a re-tag."""
+    import subprocess
+
+    from musaeus.hasher import audio_hash, file_hash
+
+    monkeypatch.setenv("PATH", os.environ["PATH"])  # keep the real ffmpeg
+    src = tmp_path / f"hires_{rate}.m4a"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+         "-i", f"sine=frequency=440:duration=1:sample_rate={rate}",
+         "-c:a", "alac", str(src)],
+        check=True,
+    )
+
+    a1 = audio_hash(src)
+    assert a1 != file_hash(src), (
+        "audio_hash equals the container hash -- the hi-res fallback is back"
+    )
+
+    # Re-tagging changes the container but not a single audio sample.
+    from mutagen.mp4 import MP4
+
+    m = MP4(str(src))
+    if m.tags is None:
+        m.add_tags()
+    m["\xa9nam"] = ["a different title"]
+    m.save()
+
+    assert file_hash(src) != a1, "fixture did not actually change the container"
+    assert audio_hash(src) == a1, (
+        "re-tagging changed audio_hash -- sentinel's 'no duplicate on re-tag' "
+        "contract is broken"
+    )
