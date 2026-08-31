@@ -152,4 +152,4 @@ def test_itunes_prefers_an_exact_album_match(monkeypatch):
     monkeypatch.setattr(A, "_get", fake_get)
     A.fetch_itunes("Artist", "Right Album")
     assert "right" in seen["url"], f"took the wrong album: {seen['url']}"
-    assert "600x600" in seen["url"], "did not upgrade the thumbnail size"
+    assert "1200x1200" in seen["url"], "did not upgrade the thumbnail size"

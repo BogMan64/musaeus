@@ -36,7 +36,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import quote, urlencode
 
-from .art_quality import describe, is_too_small
+from .art_quality import MIN_EDGE_PX, describe, image_dimensions, is_too_small
 from .network_policy import check as _network_check
 
 logger = logging.getLogger(__name__)
@@ -129,10 +129,45 @@ def fetch_itunes(artist: str, album: str) -> bytes | None:
         art = r.get("artworkUrl100")
         if not art:
             continue
-        # iTunes serves any size by substitution; ask for something usable.
-        blob = _get(art.replace("100x100bb", "600x600bb"))
+        # iTunes serves any size by substitution. Measured 2026-08-31: it
+        # honours 1200x1200 and caps around 2400x2400. 600 was only just over
+        # the 500px floor, so a replacement pass had almost nothing to gain;
+        # 1200 leaves real headroom and still costs ~400KB rather than ~950KB.
+        blob = _get(art.replace("100x100bb", "1200x1200bb"))
         if _looks_like_image(blob):
             return blob
+    return None
+
+
+def fetch_deezer(artist: str, album: str) -> bytes | None:
+    """Deezer search. Keyless like iTunes, and `cover_xl` is 1000x1000.
+
+    Added 2026-08-31 when Grey asked about Amazon as a source. Amazon has no
+    open cover endpoint -- its Product Advertising API needs an Associates
+    account with qualifying sales -- so this fills the same gap: a second
+    keyless, high-resolution source that answers when iTunes does not.
+    """
+    if not artist:
+        return None
+    term = f"{artist} {album}".strip()
+    data = _get_json("https://api.deezer.com/search/album?" + urlencode(
+        {"q": term, "limit": 5}
+    ))
+    if not data:
+        return None
+    want = _norm(album)
+    results = data.get("data", []) or []
+    ordered = [r for r in results if want and _norm(r.get("title", "")) == want]
+    if not ordered:
+        ordered = results if not want else []
+    for r in ordered:
+        for key in ("cover_xl", "cover_big"):
+            u = r.get(key)
+            if not u:
+                continue
+            blob = _get(u)
+            if _looks_like_image(blob):
+                return blob
     return None
 
 
@@ -182,14 +217,25 @@ def fetch_lastfm(artist: str, album: str, api_key: str) -> bytes | None:
     return None
 
 
+def _longest_edge(blob: bytes) -> int:
+    dims = image_dimensions(blob)
+    return max(dims) if dims else 0
+
+
 def _norm(s: str) -> str:
     return "".join(c for c in (s or "").lower() if c.isalnum())
 
 
 def fetch_album_art(
-    artist: str, album: str, lastfm_key: str = ""
+    artist: str, album: str, lastfm_key: str = "", min_edge: int = MIN_EDGE_PX
 ) -> tuple[bytes, str] | None:
     """First usable image from any source, with the source that supplied it.
+
+    `min_edge` is the longest-edge floor an image must clear to be returned
+    outright. It exists so a REPLACEMENT can ask for something better than
+    what the file already carries: passing the current art's longest edge
+    means a source offering the same small image again is not accepted as an
+    improvement. Defaults to the library-wide MIN_EDGE_PX.
 
     Returns None when every source ANSWERED and none had art. Raises
     ArtUnavailable only when nothing answered at all, so a caller can tell
@@ -197,9 +243,10 @@ def fetch_album_art(
     """
     attempts = 0
     unavailable = 0
-    best: tuple[bytes, str] | None = None   # undersized fallback
+    best: tuple[bytes, str] | None = None   # largest sub-threshold fallback
     for name, fn in (
         ("itunes", lambda: fetch_itunes(artist, album)),
+        ("deezer", lambda: fetch_deezer(artist, album)),
         ("coverartarchive", lambda: fetch_coverartarchive(artist, album)),
         ("lastfm", lambda: fetch_lastfm(artist, album, lastfm_key)),
     ):
@@ -216,10 +263,12 @@ def fetch_album_art(
         # Keep the best seen, but keep looking -- a 300x300 from the first
         # source is worse than a 600x600 from the second, and embedding the
         # small one just moves the file from "no art" to "bad art".
-        if is_too_small(blob):
+        if is_too_small(blob, min_edge):
             logger.debug("[art] %s gave %s for %r / %r -- holding, trying next",
                          name, describe(blob), artist, album)
-            if best is None:
+            # Keep the LARGEST sub-threshold image, not the first one seen:
+            # if nothing clears the floor we still want the best on offer.
+            if best is None or _longest_edge(blob) > _longest_edge(best[0]):
                 best = (blob, name)
             continue
         logger.info("[art] %s supplied %s for %r / %r", name, describe(blob), artist, album)

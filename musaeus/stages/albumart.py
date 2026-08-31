@@ -30,7 +30,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from ..art_quality import describe
+from ..art_quality import MIN_EDGE_PX, describe, image_dimensions
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
 
@@ -63,6 +63,7 @@ def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
     for col, typedef in (
         ("has_art", "INTEGER"),
         ("art_checked_at", "TEXT"),
+        ("art_px", "INTEGER"),
     ):
         if col not in existing:
             conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
@@ -72,11 +73,18 @@ def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _has_embedded_art(path: str) -> bool:
-    """Return True if the file has at least one embedded image stream."""
+def _embedded_art(path: str) -> tuple[bool, int]:
+    """(has_art, longest_edge_px) for the file's embedded cover.
+
+    The stage used to ask only "is there art?", which reported 99.9% coverage
+    while 257 files carried covers under 500px. Width and height come from the
+    same ffprobe call that answers the first question, so asking the better
+    question costs nothing extra. A longest edge of 0 means "art present but
+    dimensions unreadable" -- not a reason to replace it.
+    """
     ffprobe = shutil.which("ffprobe")
     if not ffprobe:
-        return False
+        return False, 0
     try:
         res = subprocess.run(
             [
@@ -86,7 +94,7 @@ def _has_embedded_art(path: str) -> bool:
                 "-select_streams",
                 "v",
                 "-show_entries",
-                "stream=codec_type",
+                "stream=width,height",
                 "-of",
                 "csv=p=0",
                 path,
@@ -95,9 +103,23 @@ def _has_embedded_art(path: str) -> bool:
             text=True,
             timeout=_FFPROBE_TIMEOUT,
         )
-        return bool(res.stdout.strip())
     except Exception:
-        return False
+        return False, 0
+
+    line = res.stdout.strip().splitlines()[0] if res.stdout.strip() else ""
+    if not line:
+        return False, 0
+    try:
+        w, h = (int(v) for v in line.split(",")[:2])
+        return True, max(w, h)
+    except ValueError:
+        return True, 0
+
+
+def _has_embedded_art(path: str) -> bool:
+    """Kept as the plain yes/no question -- used by tests and callers that
+    only care whether art exists."""
+    return _embedded_art(path)[0]
 
 
 def _find_sidecar(folder: Path) -> Path | None:
@@ -124,7 +146,11 @@ def _embed_art(audio_path: str, art_path: Path) -> bool:
         return False
 
     src = Path(audio_path)
-    tmp = src.with_suffix(src.suffix + ".artmp")
+    # ffmpeg picks its muxer from the output extension, so the real extension
+    # has to come last. "foo.m4a.artmp" makes it exit with "Unable to find a
+    # suitable output format" -- every embed failed that way, silently, and
+    # ART_EMBEDDED had never once been logged.
+    tmp = src.with_name(src.stem + ".artmp" + src.suffix)
 
     cmd = [
         ffmpeg,
@@ -213,6 +239,54 @@ def _fetch_sidecar(ctx: RunContext, fp: str, result: StageResult) -> Path | None
     return target
 
 
+def _replace_undersized(
+    ctx: RunContext, fp: str, current_px: int, result: StageResult
+) -> bytes | None:
+    """Look for a cover BIGGER than the one the file already carries.
+
+    Returns the new image, or None to keep what is there. The floor passed to
+    the sources is the current size, not MIN_EDGE_PX: a source offering the
+    same 300x300 back is not an improvement, and swapping like for like would
+    rewrite the audio for nothing.
+    """
+    from ..art_sources import ArtUnavailable, fetch_album_art
+
+    row = ctx.conn.execute(
+        "SELECT artist, album FROM archive WHERE file_path=?", (fp,)
+    ).fetchone()
+    if row is None:
+        return None
+    artist = str(row["artist"] or "").strip()
+    album = str(row["album"] or "").strip()
+    if not artist:
+        return None
+
+    try:
+        got = fetch_album_art(artist, album, ctx.config.lastfm_api_key or "",
+                              min_edge=max(current_px + 1, MIN_EDGE_PX))
+    except ArtUnavailable as exc:
+        logger.debug("[albumart] could not ask for %r/%r: %s", artist, album, exc)
+        return None
+    if not got:
+        return None
+
+    blob, source = got
+    dims = image_dimensions(blob)
+    new_px = max(dims) if dims else 0
+    if new_px <= current_px:
+        logger.debug("[albumart] %s offered %dpx for %s, not better than %dpx",
+                     source, new_px, Path(fp).name, current_px)
+        return None
+
+    ctx.log_event(
+        "ART_UPGRADED", file_path=fp, old_value=f"{current_px}px",
+        new_value=f"{new_px}px from {source}", stage="albumart",
+    )
+    logger.info("[albumart] upgrading %s: %dpx -> %s from %s",
+                Path(fp).name, current_px, describe(blob), source)
+    return blob
+
+
 class AlbumArtStage(BaseStage):
     """
     AlbumArt — audit for missing embedded art, embed sidecars where found.
@@ -246,6 +320,10 @@ class AlbumArtStage(BaseStage):
             _ensure_columns(ctx.conn)
 
         force = ctx.get("albumart_force", False)
+        # Replacing a too-small cover reaches the network and rewrites audio,
+        # so it is live-run only, exactly like the missing-art fetch.
+        replace_small = ctx.get("albumart_replace_small", True) and not dry_run \
+            and bool(shutil.which("ffmpeg"))
         embed = ctx.get("albumart_embed", True) and not dry_run and shutil.which("ffmpeg")
 
         try:
@@ -275,6 +353,8 @@ class AlbumArtStage(BaseStage):
         missing_art: list[str] = []
         embedded_count = 0
         embed_failed: list[str] = []
+        undersized: list[str] = []
+        upgraded_count = 0
 
         for row in rows:
             result.files_processed += 1
@@ -284,17 +364,42 @@ class AlbumArtStage(BaseStage):
                 result.files_skipped += 1
                 continue
 
-            has = _has_embedded_art(fp)
+            has, art_px = _embedded_art(fp)
 
             if not dry_run:
                 ctx.conn.execute(
-                    "UPDATE archive SET has_art=?, art_checked_at=? WHERE file_path=?",
-                    (1 if has else 0, now, fp),
+                    "UPDATE archive SET has_art=?, art_checked_at=?, art_px=? "
+                    "WHERE file_path=?",
+                    (1 if has else 0, now, art_px or None, fp),
                 )
 
             if has:
                 has_art_count += 1
                 result.files_changed += 1
+                # Present but too small still counts as a defect worth fixing.
+                # 0 means the header would not parse -- leave those alone
+                # rather than replacing art we could not measure.
+                if replace_small and 0 < art_px < MIN_EDGE_PX:
+                    undersized.append(fp)
+                    blob = _replace_undersized(ctx, fp, art_px, result)
+                    if blob:
+                        target = Path(fp).parent / "cover.jpg"
+                        try:
+                            target.write_bytes(blob)
+                        except OSError as exc:
+                            logger.warning("[albumart] could not write %s: %s", target, exc)
+                        else:
+                            if _embed_art(fp, target):
+                                upgraded_count += 1
+                                new_px = max(image_dimensions(blob) or (0, 0))
+                                ctx.conn.execute(
+                                    "UPDATE archive SET art_px=? WHERE file_path=?",
+                                    (new_px, fp),
+                                )
+                            else:
+                                embed_failed.append(fp)
+                                logger.warning("[albumart] upgrade embed failed: %s",
+                                               Path(fp).name)
             else:
                 missing_art.append(fp)
                 # Try sidecar embed
@@ -354,6 +459,11 @@ class AlbumArtStage(BaseStage):
             result.notes.append(f"Embedded sidecar art in {embedded_count} file(s).")
         if embed_failed:
             result.notes.append(f"{len(embed_failed)} embed failure(s) — check logs.")
+        if undersized:
+            result.notes.append(
+                f"{len(undersized)} file(s) carried art under {MIN_EDGE_PX}px; "
+                f"upgraded {upgraded_count}."
+            )
         if missing_art and not dry_run:
             result.notes.append(
                 f"{len(missing_art)} file(s) still missing art — "
