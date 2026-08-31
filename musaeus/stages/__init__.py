@@ -361,7 +361,25 @@ ENRICHMENT: list[type] = [
     # 744 files as of 2026-08-30, down from 2,152 once the article-form
     # lookup bug was fixed. Fingerprinting costs ~0.8s/file, so it should ask
     # about the remainder, not the library.
-    AcousticIDStage,
+    # AcousticIDStage is DEFERRED out of the default chain, 2026-08-31.
+    #
+    # Wiring it in on 08-30 made the first run a full-library fingerprint
+    # pass -- every row had acousticid_checked_at NULL -- which ran for 21
+    # hours, reached 7,545 of 10,656, and held the database write lock the
+    # whole time, blocking everything else. That is a one-time migration
+    # cost, not a per-run cost, and it does not belong inside the nightly
+    # chain while it is being paid.
+    #
+    # The work is NOT lost and NOT repeated: acousticid_checked_at is
+    # stamped per row, so resuming picks up at 7,545 rather than at zero.
+    # Run it deliberately -- `musaeus acousticid`, or the console's Act
+    # menu -- until the remaining ~3,100 are done, then wire it back here
+    # so new arrivals are fingerprinted as they land.
+    #
+    # It found 319 acoustic duplicates in that first pass: files with
+    # DIFFERENT audio hashes that are the same recording, which PCM
+    # hashing structurally cannot detect. That is why it is worth
+    # finishing rather than abandoning.
     # LAST. It writes identity to the FILES, so it must run after everything
     # that resolves identity -- otherwise it writes what the run is about to
     # learn. This is the stage whose absence let ~8,074 MBIDs live only in a

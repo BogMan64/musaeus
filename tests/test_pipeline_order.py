@@ -106,11 +106,12 @@ def test_enrichment_is_default_on_and_positioned_last():
     assert _index(AuditStage) < _index(EnrichStage)
 
     # Within the block, order is a dependency chain, not a preference.
-    assert _index(MBEnrichStage) < _index(AcousticIDStage), (
-        "text lookup is cheap and settles most rows; fingerprinting should "
-        "ask about the remainder, not the library"
+    assert AcousticIDStage not in DEFAULT_PIPELINE, (
+        "AcoustID is deferred: its first run is a full-library fingerprint "
+        "migration that held the write lock for 21 hours. Re-wire it only "
+        "once the backlog is fingerprinted."
     )
-    assert _index(AcousticIDStage) < _index(IdentityTagStage), (
+    assert _index(MBEnrichStage) < _index(IdentityTagStage), (
         "identity is written to the files last, after everything that "
         "resolves it -- otherwise it writes what the run is about to learn"
     )
@@ -164,7 +165,9 @@ def test_full_default_pipeline_order_matches_current_design():
         AuditStage,
         EnrichStage,
         MBEnrichStage,
-        AcousticIDStage,
+        # AcousticIDStage deferred out 2026-08-31 -- its first run is a
+        # full-library fingerprint migration, not a per-run cost. See
+        # stages/__init__.py.
         IdentityTagStage,
     ]
     assert expected == DEFAULT_PIPELINE
