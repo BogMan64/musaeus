@@ -329,7 +329,13 @@ ACT3_CANONICALIZE_FINALIZE: list[type] = [
     BPMStage,
     ForgeStage,
     TaggerStage,
-    AuditStage,
+    OrganizeStage,
+    # Organize BEFORE Audit. Audit reconciles archive.file_path against what
+    # is on disk and is documented above as "the gate before a future
+    # DB-snapshot-and-wipe step"; with Organize after it, every audit result
+    # described a layout Organize then rewrote, and the gate passed on
+    # pre-move state.
+    #
     # Wired 2026-08-30 at Grey's instruction, after the hazard that kept it
     # out was fixed and tested. It ran nowhere before: every target was built
     # under ctx.inbox while the query selects CATALOGUED, so it would have
@@ -341,7 +347,7 @@ ACT3_CANONICALIZE_FINALIZE: list[type] = [
     # Last in Act 3, after Finalize has placed the file and Tagger has settled
     # the metadata the path is derived from. Organizing earlier would name
     # folders from tags that Tagger is about to change.
-    OrganizeStage,
+    AuditStage,
 ]
 
 ENRICHMENT: list[type] = [

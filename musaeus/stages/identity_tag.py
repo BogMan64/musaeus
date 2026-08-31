@@ -96,8 +96,12 @@ class IdentityTagStage(BaseStage):
 
     def _process(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
-        if not dry_run:
-            _ensure_columns(ctx.conn)
+        # Unconditional. _rows() names identity_tagged_at in its WHERE
+        # clause, so a preview on a database where this stage has never run
+        # live raised "no such column" -- the dry run failed on exactly the
+        # databases it exists to be safe on. Adding a nullable column is not
+        # a mutation anyone needs protecting from.
+        _ensure_columns(ctx.conn)
         present = self._present(ctx.conn)
         if not present:
             result.notes.append("no identity columns in this database yet — nothing to do")

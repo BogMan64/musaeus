@@ -206,7 +206,13 @@ class SentinelStage(BaseStage):
             #
             # A row is re-hashed for its hashes, not for its position.
             fields = {"file_path": path_str, "audio_hash": ah, "full_hash": fh}
-            if (row.get("status") or "PENDING") == "PENDING":
+            # PENDING advances. A GHOST whose file is back RECOVERS -- it is
+            # here because the file exists again, and GhostStage only ever
+            # SETS ghost, so this is the one automatic un-ghost path; without
+            # it a remounted drive left every row invisible to Scholar,
+            # Canonicalize, Tagger, Organize and Audit for ever.
+            # Anything further along keeps its position (see above).
+            if (row.get("status") or "PENDING") in ("PENDING", "GHOST"):
                 fields["status"] = "HASHED"
             upsert_archive(ctx.conn, fields)
             ctx.log_event(

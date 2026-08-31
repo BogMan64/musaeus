@@ -113,6 +113,29 @@ _TRACK_NUMBER_PATTERNS = [
 # which sit beside the batches -- are not mistaken for one.
 _BATCH_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[A-Za-z0-9_-]*$")
 
+# Folders that sit beside the batches under ALAC-Library but are NOT library
+# content: files were deliberately moved OUT of the library into them.
+#
+# These must never be organized. Because they are not batches,
+# `destination_root` used to fall through to ALAC-Library itself, and Organize
+# then "tidied" a quarantined file into ALAC-Library/<Artist>/<Album>/ --
+# re-merging a duplicate that dupe_resolver had deliberately set aside.
+# Reproduced 2026-08-31: one file in DUPES_MOVED_FOR_REVIEW, one move into the
+# live library. A console soft reset (which resets every row to PENDING) is
+# all it takes to walk the whole review folder back in.
+_NON_LIBRARY_DIRS: frozenset[str] = frozenset(
+    {"DUPES_MOVED_FOR_REVIEW", "TRIBUTE_REMOVED_FOR_REVIEW", "QUARANTINE"}
+)
+
+
+def in_non_library_area(path: Path, alac_library: Path) -> bool:
+    """True when *path* sits inside a deliberate set-aside folder."""
+    try:
+        rel = path.resolve().relative_to(alac_library.resolve())
+    except (ValueError, OSError):
+        return False
+    return bool(rel.parts) and rel.parts[0] in _NON_LIBRARY_DIRS
+
 
 # ── Windows/ExFAT Forbidden Characters ────────────────────────────────────────
 
@@ -454,6 +477,14 @@ class OrganizeStage(BaseStage):
             """
         ).fetchall()
 
+        # Hoisted out of the loop: _roots() lists ALAC-Library and stats every
+        # child, and destination_root resolve()s each result. Called per row
+        # that was 10,660 directory listings plus thousands of syscalls per
+        # file, on the disk this project already measures as the bottleneck.
+        # The only roots created during a run are batch directories Finalize
+        # makes before Organize starts, so one snapshot is equivalent.
+        roots = self._roots(ctx)
+
         renamed = 0
         moved = 0
         skipped = 0
@@ -473,7 +504,14 @@ class OrganizeStage(BaseStage):
             # 10,660 catalogued files out of ALAC-Library; a catalogued row
             # lives under alac_library, an un-finalized one under inbox, and
             # the stage has no business carrying either across to the other.
-            dest_root = destination_root(current_path, self._roots(ctx))
+            # A file someone deliberately moved OUT of the library is not
+            # content to tidy back in.
+            if in_non_library_area(current_path, ctx.alac_library):
+                logger.debug("[organize] set-aside area, leaving alone: %s", current_path)
+                result.files_skipped += 1
+                continue
+
+            dest_root = destination_root(current_path, roots)
             if dest_root is None:
                 # No safe destination. Refusing is the correct answer -- the
                 # alternative is picking a root and putting the file where

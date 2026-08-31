@@ -464,3 +464,31 @@ class TestReHashingDoesNotDemote:
             "SELECT status FROM archive WHERE file_path = ?", (str(track),)
         ).fetchone()
         assert row["status"] == "HASHED"
+
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_ghost_whose_file_returns_recovers(self, mock_fh, mock_ah, ctx, tmp_path):
+        """The anti-demotion guard must not make GHOST a one-way door.
+
+        GhostStage only ever SETS ghost; nothing else clears it, and the only
+        other reset is the console's manual soft reset. So an unmounted drive
+        that comes back left every row permanently invisible to Scholar,
+        Canonicalize, Tagger, Organize and Audit -- which is precisely the
+        case the GHOST design exists to survive.
+        """
+        back = tmp_path / "returned.flac"
+        back.write_bytes(b"AUDIO")
+        ctx.conn.execute(
+            "INSERT INTO archive (file_path, status, audio_hash) VALUES (?, 'GHOST', NULL)",
+            (str(back),),
+        )
+        ctx.conn.commit()
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = ("a" * 64, None)
+
+        SentinelStage().execute(ctx)
+
+        row = ctx.conn.execute(
+            "SELECT status FROM archive WHERE file_path = ?", (str(back),)
+        ).fetchone()
+        assert row["status"] == "HASHED", "a returning GHOST never recovers"

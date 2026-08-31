@@ -261,6 +261,25 @@ def _transcode_to_aac(source: Path, output: Path) -> None:
     probe = _probe_streams(source)
     has_art = _has_attached_picture(probe)
 
+    # If the source is ALREADY AAC, copy the stream instead of re-encoding.
+    #
+    # The docstring above has always promised "a cheap remux ... when it
+    # already is", but the command was `-c:a aac -b:a 256k` unconditionally,
+    # so AAC in a .mp4/.m4b/.aac container -- which needs nothing but a new
+    # container -- got a generation-two lossy re-encode. The same harm this
+    # stage was just changed to stop defaulting to, left standing one branch
+    # over. A stream copy is bit-exact.
+    _src_audio = [st for st in probe.get("streams", []) if st.get("codec_type") == "audio"]
+    _already_aac = (
+        bool(_src_audio)
+        and str(_src_audio[0].get("codec_name", "")).lower() == "aac"
+    )
+    audio_args = (
+        ["-c:a", "copy"]
+        if _already_aac
+        else ["-c:a", "aac", "-b:a", AAC_TRANSCODE_BITRATE]
+    )
+
     cmd = ["ffmpeg", "-y" if output.exists() else "-n", "-i", str(source), "-threads", "2"]
     if has_art:
         cmd += [
@@ -268,10 +287,7 @@ def _transcode_to_aac(source: Path, output: Path) -> None:
             "0:a:0",
             "-map",
             "0:v:0",
-            "-c:a",
-            "aac",
-            "-b:a",
-            AAC_TRANSCODE_BITRATE,
+            *audio_args,
             "-c:v",
             "copy",
             "-disposition:v:0",
@@ -286,10 +302,7 @@ def _transcode_to_aac(source: Path, output: Path) -> None:
         cmd += [
             "-map",
             "0:a:0",
-            "-c:a",
-            "aac",
-            "-b:a",
-            AAC_TRANSCODE_BITRATE,
+            *audio_args,
             "-map_metadata",
             "0",
             "-f",
@@ -457,6 +470,28 @@ class CanonicalizeStage(BaseStage):
             ).fetchall()
         return [dict(r) for r in rows]
 
+    @staticmethod
+    def _resolve_codec(row: dict, source: Path | None) -> str:
+        """The codec of this file: the row's if it has one, else ffprobe's.
+
+        Shared by the decision and by the refusal message, so the operator is
+        told the codec that was actually determined rather than an empty DB
+        column.
+        """
+        codec = (row.get("codec") or "").lower()
+        if codec or source is None or not source.exists():
+            return codec
+        try:
+            probe = _probe_streams(source)
+            audio = [
+                st for st in probe.get("streams", []) if st.get("codec_type") == "audio"
+            ]
+            if audio:
+                return str(audio[0].get("codec_name") or "").lower()
+        except Exception as exc:  # a probe failure is not a licence to re-encode
+            logger.warning("[canonicalize] codec probe failed for %s: %s", source, exc)
+        return ""
+
     def _decide_action(self, row: dict, source: Path | None = None) -> str:
         """Return 'PASSTHROUGH' | 'CONVERT' | 'TRANSCODE' | 'UNKNOWN'.
 
@@ -480,26 +515,12 @@ class CanonicalizeStage(BaseStage):
         caller skips the row, leaving the audio untouched for a human. A
         default has to fail towards the reversible answer.
         """
-        codec = (row.get("codec") or "").lower()
+        codec = self._resolve_codec(row, source)
         ext = (row.get("ext") or "").lower()
 
         # The path is the authority on the container.
         if source is not None:
             ext = source.suffix.lower()
-
-        # ...and ffprobe is the authority on the codec. Only asked when the
-        # row cannot answer, so the common path stays free.
-        if not codec and source is not None and source.exists():
-            try:
-                probe = _probe_streams(source)
-                audio = [
-                    st for st in probe.get("streams", [])
-                    if st.get("codec_type") == "audio"
-                ]
-                if audio:
-                    codec = str(audio[0].get("codec_name") or "").lower()
-            except Exception as exc:  # a probe failure is not a licence to re-encode
-                logger.warning("[canonicalize] codec probe failed for %s: %s", source, exc)
 
         if codec in _ALAC_CODECS and ext == ".m4a":
             return "PASSTHROUGH"
@@ -562,8 +583,13 @@ class CanonicalizeStage(BaseStage):
         if action == "UNKNOWN":
             # Refusing is the answer. The alternative is a lossy re-encode of
             # a file nobody has identified.
+            # Report the codec actually DETERMINED, not the DB column. For a
+            # row whose codec was empty and got probed from the file, naming
+            # the column says "(none recorded)" and hides the one fact needed
+            # to act: which codec to add to a set.
+            probed = self._resolve_codec(row, source)
             return "ERROR", (
-                f"unrecognised codec {row.get('codec') or '(none recorded)'!r} "
+                f"unrecognised codec {probed or '(none recorded)'!r} "
                 f"for {source.name} -- refusing to re-encode blindly"
             )
 
@@ -850,14 +876,29 @@ class CanonicalizeStage(BaseStage):
         result.files_processed = total
         result.notes.append(f"[DRY RUN] would inspect {total} file(s)")
 
-        counters: dict[str, int] = {"PASSTHROUGH": 0, "CONVERTED": 0, "TRANSCODED": 0}
+        counters: dict[str, int] = {
+            "PASSTHROUGH": 0,
+            "CONVERTED": 0,
+            "TRANSCODED": 0,
+            # A refusal is its own outcome, not a transcode.
+            "REFUSED (unrecognised codec)": 0,
+        }
         for row in pending:
-            action = self._decide_action(row)
-            key = (
-                "PASSTHROUGH"
-                if action == "PASSTHROUGH"
-                else ("CONVERTED" if action == "CONVERT" else "TRANSCODED")
-            )
+            # The SAME inputs run() uses. Passing only the row made the
+            # preview disagree with the run in both directions: an
+            # AAC-in-.m4a row with an empty `ext` column previewed as a 256k
+            # lossy TRANSCODE that run() actually passes through, and an
+            # UNKNOWN codec -- which run() REFUSES -- previewed as
+            # TRANSCODED because the ternary had no branch for it. A preview
+            # of an irreversible operation has to be the operation's own
+            # answer, not an approximation of it.
+            action = self._decide_action(row, Path(row["file_path"]))
+            key = {
+                "PASSTHROUGH": "PASSTHROUGH",
+                "CONVERT": "CONVERTED",
+                "TRANSCODE": "TRANSCODED",
+                "UNKNOWN": "REFUSED (unrecognised codec)",
+            }[action]
             counters[key] += 1
 
         for k, v in counters.items():

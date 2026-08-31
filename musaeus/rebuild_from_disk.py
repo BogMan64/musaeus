@@ -62,6 +62,8 @@ from .stages.scholar import _extract_meta, _probe
 
 logger = logging.getLogger(__name__)
 
+_ARCHIVE = "archive"
+
 _COMMIT_EVERY = 50
 
 # Directory names under ALAC-Library that carry a status other than the
@@ -237,6 +239,39 @@ def _status_for(path: Path, alac_library: Path) -> str:
     return "CATALOGUED"
 
 
+def create_rebuild_table(conn: sqlite3.Connection, table: str) -> None:
+    # Mirror archive's shape so the result is directly comparable, and so a
+    # later --replace is a rename rather than a schema translation.
+    #
+    # NOT `CREATE TABLE ... AS SELECT`. That copies column names and types
+    # and NOTHING else -- no PRIMARY KEY, no AUTOINCREMENT, no
+    # UNIQUE(file_path), no NOT NULL, no DEFAULTs. promote() then renames
+    # that constraint-less table over `archive`, after which every
+    # upsert_archive() dies on "ON CONFLICT clause does not match any PRIMARY
+    # KEY or UNIQUE constraint", rows insert with id=NULL and status=NULL,
+    # and duplicate file_paths become possible. Observed on the live vault
+    # 2026-08-30: ingest and sentinel both failed on their first row.
+    #
+    # The real DDL is taken from sqlite_master and re-pointed at the new
+    # name, so the rebuild is the same table in every respect but its name.
+    ddl_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='archive'"
+    ).fetchone()
+    if ddl_row is None or not ddl_row[0]:
+        raise RuntimeError("cannot read archive's schema; refusing to rebuild")
+    ddl = ddl_row[0]
+    # `CREATE TABLE archive(` or `CREATE TABLE "archive"(`
+    for pattern in (f'CREATE TABLE "{_ARCHIVE}"', f"CREATE TABLE {_ARCHIVE}"):
+        if ddl.startswith(pattern):
+            ddl = f'CREATE TABLE "{table}"' + ddl[len(pattern):]
+            break
+    else:
+        raise RuntimeError(f"unrecognised archive DDL, refusing to rebuild: {ddl[:60]}")
+
+    conn.execute(f"DROP TABLE IF EXISTS {table}")
+    conn.execute(ddl)
+
+
 def scan_and_rebuild(
     conn: sqlite3.Connection,
     cfg: MusicConfig,
@@ -272,10 +307,7 @@ def scan_and_rebuild(
         files = files[:limit]
     summary["scanned"] = len(files)
 
-    # Mirror archive's shape so the result is directly comparable, and so a
-    # later --replace is a rename rather than a schema translation.
-    conn.execute(f"DROP TABLE IF EXISTS {table}")
-    conn.execute(f"CREATE TABLE {table} AS SELECT * FROM archive WHERE 0")
+    create_rebuild_table(conn, table)
 
     cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
     now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
@@ -383,7 +415,37 @@ def promote(conn: sqlite3.Connection, *, table: str = "archive_rebuilt") -> str:
     """
     stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup = f"archive_pre_rebuild_{stamp}"
+
+    # SQLite carries a table's INDEXES along with an ALTER TABLE RENAME, so
+    # `idx_archive_hash/artist/status` follow the old table to the backup
+    # name and the promoted table has none. Worse, the names are then TAKEN,
+    # so db.py's `CREATE INDEX IF NOT EXISTS` on the next open finds them and
+    # silently no-ops -- the live archive is left permanently unindexed.
+    # Observed on the vault 2026-08-30: 1 index on archive, 4 on the backup.
+    #
+    # So capture the index DDL first, drop the indexes off the old table
+    # before renaming, and recreate them on the promoted one.
+    index_ddl = [
+        row[0]
+        for row in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='archive' "
+            "AND sql IS NOT NULL"
+        )
+    ]
+    index_names = [
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='archive' "
+            "AND sql IS NOT NULL"
+        )
+    ]
+    for name in index_names:
+        conn.execute(f"DROP INDEX IF EXISTS {name}")
+
     conn.execute(f"ALTER TABLE archive RENAME TO {backup}")
     conn.execute(f"ALTER TABLE {table} RENAME TO archive")
+    for ddl in index_ddl:
+        conn.execute(ddl)
     conn.commit()
+    logger.info("promoted; restored %d index(es)", len(index_ddl))
     return backup

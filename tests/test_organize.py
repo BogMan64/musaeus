@@ -589,3 +589,54 @@ class TestBatchTierIsPreserved:
         assert _BATCH_DIR_RE.match("2026-08-27A")
         assert not _BATCH_DIR_RE.match("DUPES_MOVED_FOR_REVIEW")
         assert not _BATCH_DIR_RE.match("TRIBUTE_REMOVED_FOR_REVIEW")
+
+
+# ── deliberate set-aside folders are not content to tidy ─────────────────────
+#
+# DUPES_MOVED_FOR_REVIEW and TRIBUTE_REMOVED_FOR_REVIEW sit beside the batch
+# directories under ALAC-Library. Files were deliberately moved OUT of the
+# library into them. Because they are not batches, _BATCH_DIR_RE does not
+# match, so destination_root fell through to ALAC-Library itself and Organize
+# "tidied" a quarantined file into ALAC-Library/<Artist>/<Album>/ --
+# re-merging a duplicate dupe_resolver had deliberately set aside.
+#
+# Reproduced 2026-08-31: one file in, one move out. The console soft reset
+# resets every row to PENDING with no WHERE clause, so that is all it takes
+# to walk the whole review folder back into the library.
+
+
+class TestSetAsideFoldersAreLeftAlone:
+    @pytest.mark.parametrize(
+        "folder", ["DUPES_MOVED_FOR_REVIEW", "TRIBUTE_REMOVED_FOR_REVIEW", "QUARANTINE"]
+    )
+    def test_a_set_aside_file_is_never_moved(self, ctx, folder):
+        ctx.alac_library.mkdir(parents=True, exist_ok=True)
+        src = ctx.alac_library / folder / "Weezer - Undone.m4a"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(b"FAKE AUDIO DATA")
+        upsert_archive(ctx.conn, {
+            "file_path": str(src), "status": "CATALOGUED",
+            "artist": "Weezer", "album": "Blue Album", "title": "Undone",
+        })
+        ctx.conn.commit()
+
+        OrganizeStage().run(ctx)
+
+        assert src.exists(), f"a file in {folder} was moved"
+        assert not (ctx.alac_library / "Weezer").exists(), "re-merged into the library"
+
+    def test_a_real_batch_file_is_still_organized(self, ctx):
+        """The guard must not stop Organize doing its job."""
+        ctx.alac_library.mkdir(parents=True, exist_ok=True)
+        batch = ctx.alac_library / "2026-08-27A"
+        batch.mkdir(parents=True, exist_ok=True)
+        flat = batch / "flat.m4a"
+        flat.write_bytes(b"FAKE AUDIO DATA")
+        upsert_archive(ctx.conn, {
+            "file_path": str(flat), "status": "CATALOGUED",
+            "artist": "Weezer", "album": "Blue Album", "title": "Undone",
+        })
+        ctx.conn.commit()
+
+        OrganizeStage().run(ctx)
+        assert (batch / "Weezer" / "Blue Album" / "Weezer - Undone.m4a").exists()

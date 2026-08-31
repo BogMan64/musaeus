@@ -120,3 +120,40 @@ class TestVerifyEffectReadsDisk:
         a.tags.clear()
         a.save()
         assert stage.verify_effect(ctx, result), "must read disk, not its own bookkeeping"
+
+
+def test_dry_run_works_on_a_database_lacking_the_marker_column(tmp_path):
+    """_rows() names identity_tagged_at, so a preview crashed on any database
+    where this stage had never run live -- i.e. the preview failed on exactly
+    the databases it exists to make safe. _ensure_columns is now unconditional.
+    """
+    from musaeus.config import MusicConfig
+    from musaeus.context import RunContext
+    from musaeus.db import open_db
+    from musaeus.stages.identity_tag import IdentityTagStage
+
+    cfg = MusicConfig(
+        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+        db_path=tmp_path / "musaeus.db",
+    )
+    cfg.ensure_dirs()
+    conn = open_db(cfg.db_path)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(archive)")]
+    if "identity_tagged_at" in cols:
+        conn.execute("ALTER TABLE archive RENAME COLUMN identity_tagged_at TO _removed")
+        conn.commit()
+    # The state this reproduces: at least one identity column present (so
+    # _present() does not early-return) while identity_tagged_at is absent.
+    if "mb_artist_id" not in [r[1] for r in conn.execute("PRAGMA table_info(archive)")]:
+        conn.execute("ALTER TABLE archive ADD COLUMN mb_artist_id TEXT")
+    conn.execute(
+        "INSERT INTO archive (file_path, status, mb_artist_id) "
+        "VALUES ('/x/a.m4a', 'CATALOGUED', 'some-mbid')"
+    )
+    conn.commit()
+
+    ctx = RunContext.new(cfg, conn, dry_run=True)
+    result = IdentityTagStage().dry_run(ctx)   # must not raise
+    assert result is not None

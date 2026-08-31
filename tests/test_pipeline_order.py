@@ -157,11 +157,11 @@ def test_full_default_pipeline_order_matches_current_design():
         BPMStage,
         ForgeStage,
         TaggerStage,
-        AuditStage,
-        # Wired 2026-08-30, once the hazard that kept it out was fixed: it
-        # built every target under ctx.inbox while selecting CATALOGUED rows,
-        # so it would have moved 10,660 of 10,660 files out of the library.
+        # Organize BEFORE Audit: Audit is the documented gate, and with
+        # Organize after it every audit result described a layout Organize
+        # then rewrote.
         OrganizeStage,
+        AuditStage,
         EnrichStage,
         MBEnrichStage,
         AcousticIDStage,

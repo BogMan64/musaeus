@@ -139,10 +139,15 @@ PROTECTED_ARTIST_NAMES: frozenset[str] = frozenset(
 # This is a seed, not a solution. It cannot know about an artist nobody has
 # ingested yet. The durable fix is to consult `mb_cache.db` at normalise
 # time; that needs the cache plumbed into this stage and is not built.
+# "ACE" was removed 2026-08-30: the library's "Ace" is the 1974 British band
+# ("How Long"), and MusicBrainz's "ACE" (16563fb9) is a different act. The
+# identity fold that makes "same name, different spelling" work also makes
+# "different artist, same letters" indistinguishable, so a SHORT name is not
+# safe evidence for a case-only rename. 31 more entries are in that class and
+# await a ruling; see MUSAEUS_TODO.md.
 PROTECTED_ARTIST_CASING: frozenset[str] = frozenset(
     {
         "ABC",
-        "ACE",
         "ALA.NI",
         "B2K",
         "BLACKPINK",

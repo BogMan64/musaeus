@@ -148,8 +148,9 @@ def audio_hash(path: Path) -> str:
     # not on a prediction of one. The timeout already scales with sample rate
     # (see _audio_hash_timeout), so a genuinely slow disk still degrades
     # gracefully rather than failing.
-    if sample_rate >= 96000:
-        logger.debug("hi-res audio (%d Hz), decoding normally: %s", sample_rate, path.name)
+    # (No hi-res special case: see above. The branch that used to live here
+    # is gone rather than hollowed out, so nobody has to prove to themselves
+    # that hi-res is still handled differently.)
 
     _TIMEOUT_SECS = _audio_hash_timeout(sample_rate, duration)
 
@@ -193,7 +194,11 @@ def audio_hash(path: Path) -> str:
             for line in iter(lambda: proc.stderr.read(_READ_BYTES), b""):  # type: ignore[union-attr]
                 # Bounded: a runaway child must not be able to exhaust
                 # memory through the error path either.
-                if len(stderr_chunks) < 64:
+                # Only the first chunk can ever reach the 200-char excerpt,
+                # so keep one and read-and-discard the rest. Retaining 64
+                # chunks meant holding 4 MB, then decoding all of it, to
+                # print 200 bytes.
+                if not stderr_chunks:
                     stderr_chunks.append(line)
         except (OSError, ValueError):
             pass  # closed underneath us; the exit code still tells the story
@@ -206,22 +211,47 @@ def audio_hash(path: Path) -> str:
     try:
         while chunk := proc.stdout.read(_READ_BYTES):
             h.update(chunk)
+        rc = proc.wait()
     finally:
+        # All of this has to happen even when the read loop raises -- an
+        # OSError from a failing disk used to propagate past the wait() and
+        # the close(), leaving a zombie child and a leaked stderr fd on every
+        # bad file. Across tens of thousands of files that reaches the
+        # process fd limit and then healthy files start failing too, which
+        # is the opposite of the cost this cleanup was added to avoid.
         proc.stdout.close()
-
-    rc = proc.wait()
-    drainer.join(timeout=5)
-    timer.join(timeout=1)
-
-    # Closed explicitly: Popen only closes these on garbage collection, and
-    # this runs once per file across tens of thousands of files.
-    if proc.stderr is not None:
-        proc.stderr.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        drainer.join(timeout=5)
+        timer.join(timeout=1)
 
     if rc != 0:
         stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace").strip()
-        if rc == -9:  # SIGKILL from timeout
-            raise HasherError(f"ffmpeg timed out (>{_TIMEOUT_SECS}s) for {path}")
+        if rc == -9:  # SIGKILL from the timeout thread
+            # An ACTUAL timeout, which is the only thing that now justifies
+            # the container-hash fallback. Predicting one from the sample
+            # rate sent 47% of the library down this path unnecessarily; a
+            # timeout that really happened is different evidence.
+            #
+            # Without this, a timed-out file gets no audio_hash at all, and
+            # sentinel re-selects it on `audio_hash IS NULL` every run --
+            # timing out again, for ever.
+            logger.warning(
+                "audio decode timed out (>%ss) for %s — falling back to a "
+                "full-file hash. NOTE: this hash covers the container, so it "
+                "changes on re-tag and cannot match across containers.",
+                _TIMEOUT_SECS, path.name,
+            )
+            try:
+                return file_hash(path)
+            except OSError as exc:
+                raise HasherError(
+                    f"ffmpeg timed out (>{_TIMEOUT_SECS}s) for {path} and the "
+                    f"full-file fallback also failed: {exc}"
+                ) from exc
         raise HasherError(f"ffmpeg exited {rc} for {path}: {stderr[:200]}")
 
     return h.hexdigest()
