@@ -187,14 +187,21 @@ class MusicConfig:
             self.playlists = self.libraries / "Playlists"
 
     # ── ALAC-Library derived paths ───────────────────────────────────────────
-    # Everything here lives under alac_library itself (not the vault DB) so
+    # Everything here lives under alac_archive itself (not the vault DB) so
     # it survives a DB wipe between batches.
+    #
+    # Moved from alac_library to alac_archive 2026-08-31 with the masters.
+    # All three hold or describe MASTER files: two are review folders full
+    # of masters set aside rather than deleted, and the third is the
+    # re-sourcing list for masters that could not be archived losslessly.
+    # An edition is derived and disposable -- parking the only copy of a
+    # removed master inside one would lose it on the next rebuild.
 
     @property
     def dupes_review_dir(self) -> Path:
         """Losing duplicates land here, never deleted. ORPHEUS
         LESSER_DUPES_MOVED_FOR_REVIEW convention."""
-        return self.alac_library / "DUPES_MOVED_FOR_REVIEW"
+        return self.alac_archive / "DUPES_MOVED_FOR_REVIEW"
 
     @property
     def tribute_review_dir(self) -> Path:
@@ -204,7 +211,7 @@ class MusicConfig:
         script already used (TRIBUTE_REMOVED_FOR_REVIEW), for consistency
         with that precedent rather than introducing a second name for the
         same concept."""
-        return self.alac_library / "TRIBUTE_REMOVED_FOR_REVIEW"
+        return self.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW"
 
     @property
     def hash_index_path(self) -> Path:
@@ -255,7 +262,7 @@ class MusicConfig:
         Canonicalize transcoded rather than archived losslessly. Appended
         across batches, lives at the top of ALAC-Library so it survives a
         DB wipe."""
-        return self.alac_library / "TuneMyMusic.csv"
+        return self.alac_archive / "TuneMyMusic.csv"
 
     def ensure_dirs(self) -> None:
         """Create all required directories if they don't exist."""
