@@ -46,7 +46,7 @@ class TestHardResetSnapshots:
         conn.close()
 
         con = _console_with_config(cfg)
-        responses = iter(["1", "DELETE", "DELETE"])
+        responses = iter(["2", "DELETE", "DELETE"])
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
 
         con._reset_menu()
@@ -71,7 +71,7 @@ class TestHardResetSnapshots:
         conn.close()
 
         con = _console_with_config(cfg)
-        responses = iter(["1", "DELETE", "not-delete"])
+        responses = iter(["2", "DELETE", "not-delete"])
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
 
         con._reset_menu()
@@ -100,3 +100,93 @@ class TestHardResetSnapshots:
         assert not cfg.db_history_dir.exists() or not list(
             cfg.db_history_dir.glob("musaeus_pre_reset_*.db")
         )
+
+
+class TestSoftResetPreservesDecisions:
+    """The soft reset's UPDATE had no WHERE clause and set EVERY row to
+    PENDING -- including QUARANTINED and DUPE_REVIEW (judgements Grey made)
+    and GHOST (a claim that the file is gone from disk).
+
+    GHOST is the sharpest case: PENDING means "not yet processed", so
+    resetting a GHOST row does not merely forget a decision, it asserts
+    something false and leaves the pipeline to rediscover the truth by
+    failing to find the file. The reset also nulls audio_hash, which on a
+    GHOST row is the last surviving record of what the file was.
+
+    Restricted 2026-08-31 on Grey's instruction, with the unrestricted
+    behaviour kept as a separately named menu option.
+    """
+
+    def _seeded(self, cfg: MusicConfig):
+        cfg.ensure_dirs()
+        conn = open_db(cfg.db_path)
+        for path, status in (
+            ("/vault/catalogued.m4a", "CATALOGUED"),
+            ("/vault/quarantined.m4a", "QUARANTINED"),
+            ("/vault/dupe.m4a", "DUPE_REVIEW"),
+            ("/vault/ghost.m4a", "GHOST"),
+        ):
+            upsert_archive(conn, {"file_path": path, "status": status,
+                                  "audio_hash": "deadbeef"})
+        conn.commit()
+        conn.close()
+
+    def _statuses(self, cfg: MusicConfig) -> dict[str, str]:
+        conn = open_db(cfg.db_path)
+        rows = conn.execute("SELECT file_path, status FROM archive").fetchall()
+        conn.close()
+        return {r["file_path"]: r["status"] for r in rows}
+
+    def test_default_soft_reset_leaves_decisions_alone(self, cfg, monkeypatch):
+        self._seeded(cfg)
+        con = _console_with_config(cfg)
+        responses = iter(["0", "YES"])
+        monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
+
+        con._reset_menu()
+
+        st = self._statuses(cfg)
+        assert st["/vault/catalogued.m4a"] == "PENDING", "the ordinary case must reset"
+        assert st["/vault/quarantined.m4a"] == "QUARANTINED"
+        assert st["/vault/dupe.m4a"] == "DUPE_REVIEW"
+        assert st["/vault/ghost.m4a"] == "GHOST"
+
+    def test_ghost_keeps_its_audio_hash(self, cfg, monkeypatch):
+        """audio_hash on a GHOST row is the last record of what the file was."""
+        self._seeded(cfg)
+        con = _console_with_config(cfg)
+        responses = iter(["0", "YES"])
+        monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
+
+        con._reset_menu()
+
+        conn = open_db(cfg.db_path)
+        h = conn.execute(
+            "SELECT audio_hash FROM archive WHERE file_path='/vault/ghost.m4a'"
+        ).fetchone()[0]
+        conn.close()
+        assert h == "deadbeef"
+
+    def test_including_decisions_resets_everything(self, cfg, monkeypatch):
+        """The blunt instrument still exists -- it just has to be asked for."""
+        self._seeded(cfg)
+        con = _console_with_config(cfg)
+        responses = iter(["1", "RESET-ALL"])
+        monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
+
+        con._reset_menu()
+
+        assert set(self._statuses(cfg).values()) == {"PENDING"}
+
+    def test_including_decisions_requires_its_own_confirmation_word(self, cfg, monkeypatch):
+        """Typing the ordinary YES must not trigger the destructive variant."""
+        self._seeded(cfg)
+        con = _console_with_config(cfg)
+        responses = iter(["1", "YES"])
+        monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
+
+        con._reset_menu()
+
+        st = self._statuses(cfg)
+        assert st["/vault/quarantined.m4a"] == "QUARANTINED", "YES must not arm RESET-ALL"
+        assert st["/vault/catalogued.m4a"] == "CATALOGUED", "cancel must change nothing"

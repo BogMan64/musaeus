@@ -683,7 +683,8 @@ class Console:
         print()
 
         opts = [
-            "Soft reset  — re-queue all CATALOGUED files (keeps event log, re-runs pipeline)",
+            "Soft reset  — re-queue processed files, KEEPS quarantine/dupe/ghost decisions",
+            "Soft reset (including decisions) — also re-queues QUARANTINED, DUPE_REVIEW, GHOST",
             "Hard reset  — delete the entire database (true blank slate, irreversible)",
             "Back",
         ]
@@ -693,48 +694,100 @@ class Console:
         except ValueError:
             return
 
-        if idx == 2:
+        if idx == 3:
             return
 
         assert self._config is not None
 
         # ── Soft reset ────────────────────────────────────────────────────────
-        if idx == 0:
+        if idx in (0, 1):
+            include_decisions = idx == 1
             conn = self._open_db()
             if conn is None:
                 return
             try:
+                # QUARANTINED and DUPE_REVIEW are judgements Grey made.
+                # GHOST is stronger still -- not an opinion but a claim that
+                # the file is gone from disk. PENDING means "not yet
+                # processed", so resetting a GHOST row does not merely forget
+                # a decision, it asserts something false and leaves the
+                # pipeline to rediscover the truth by failing to find the
+                # file. The reset also nulls audio_hash, which on a GHOST row
+                # is the last record of what the file was.
+                #
+                # Sentinel was fixed 2026-08-31 to make GHOST a one-way door;
+                # an unfiltered reset walked straight back through it.
+                protected = ("QUARANTINED", "DUPE_REVIEW", "GHOST")
+                where = "status != 'PENDING'"
+                if not include_decisions:
+                    where += " AND status NOT IN ('QUARANTINED','DUPE_REVIEW','GHOST')"
+
                 count = conn.execute(
-                    "SELECT COUNT(*) FROM archive WHERE status != 'PENDING'"
+                    f"SELECT COUNT(*) FROM archive WHERE {where}"
                 ).fetchone()[0]
+                kept = conn.execute(
+                    "SELECT status, COUNT(*) FROM archive "
+                    "WHERE status IN ('QUARANTINED','DUPE_REVIEW','GHOST') "
+                    "GROUP BY status ORDER BY status"
+                ).fetchall()
+                kept_total = sum(r[1] for r in kept)
+                kept_desc = ", ".join(f"{r[1]:,} {r[0]}" for r in kept) or "none"
+
                 _warn(f"This will mark {count:,} file(s) back to PENDING.")
-                confirm = _prompt("Type YES to confirm")
-                if confirm != "YES":
+                if include_decisions:
+                    if kept_total:
+                        _warn(
+                            f"This INCLUDES {kept_total:,} file(s) carrying decisions "
+                            f"({kept_desc}). Those judgements will be lost."
+                        )
+                    confirm_word = "RESET-ALL"
+                else:
+                    _info(
+                        f"{kept_total:,} file(s) carrying decisions will be LEFT ALONE "
+                        f"({kept_desc})."
+                    )
+                    confirm_word = "YES"
+
+                confirm = _prompt(f"Type {confirm_word} to confirm")
+                if confirm != confirm_word:
                     _info("Cancelled.")
                     return
+
                 conn.execute(
-                    """
+                    f"""
                     UPDATE archive
                        SET status       = 'PENDING',
                            audio_hash   = NULL,
                            full_hash    = NULL,
                            rg_tagged_at = NULL
+                     WHERE {where}
                     """
                 )
+                note = (
+                    "console soft-reset (including decisions): "
+                    f"{count} files → PENDING, {kept_total} decisions discarded"
+                    if include_decisions
+                    else (
+                        f"console soft-reset: {count} files → PENDING, "
+                        f"{kept_total} decision-carrying rows preserved "
+                        f"({'/'.join(protected)})"
+                    )
+                )
                 conn.execute(
-                    """
-                    INSERT INTO events (run_id, event_type, note)
-                    VALUES ('manual', 'SOFT_RESET', 'console soft-reset: all files → PENDING')
-                    """
+                    "INSERT INTO events (run_id, event_type, note) "
+                    "VALUES ('manual', 'SOFT_RESET', ?)",
+                    (note,),
                 )
                 conn.commit()
                 _ok(f"Soft reset complete — {count:,} file(s) queued for re-processing.")
+                if not include_decisions and kept_total:
+                    _ok(f"Preserved {kept_total:,} decision-carrying row(s).")
                 _info("Run the full pipeline to re-hash and re-catalogue.")
             finally:
                 conn.close()
 
         # ── Hard reset ────────────────────────────────────────────────────────
-        elif idx == 1:
+        elif idx == 2:
             db_path = self._config.db_path
             _warn(f"This will PERMANENTLY DELETE: {db_path}")
             _warn("All run history, hashes, metadata, and duplicate decisions will be lost.")
