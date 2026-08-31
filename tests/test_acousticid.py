@@ -128,7 +128,12 @@ def _row(conn):
 
 
 _MATCH = {"status": "ok", "results": [
-    {"score": 0.95, "recordings": [{"id": "rec-abc-123"}]}]}
+    # The recording now has to AGREE with the row it is for (artist "A",
+    # title "T"). A bare id would be rejected -- deliberately: an id that
+    # cannot be checked against the file is exactly what let one polluted
+    # AcoustID entry become the identity of 14 unrelated tracks.
+    {"score": 0.95, "recordings": [
+        {"id": "rec-abc-123", "title": "T", "artists": [{"name": "A"}]}]}]}
 _NO_MATCH = {"status": "ok", "results": []}
 _LOW_SCORE = {"status": "ok", "results": [
     {"score": 0.42, "recordings": [{"id": "rec-should-be-ignored"}]}]}
@@ -329,3 +334,99 @@ class TestShortFileFingerprinting:
         junk.write_bytes(b"this is not audio")
         with pytest.raises(ValueError):
             acoustic_mod._fpcalc(str(junk))
+
+
+# ── a fingerprint match is not a recording identity ──────────────────────────
+#
+# _acousticid_lookup returned recordings[0]. An AcoustID result carries EVERY
+# MusicBrainz recording associated with that fingerprint cluster, in no
+# meaningful order, and the cluster 172884e7 ("Metro Station - Now That We're
+# Done") is listed first in a great many of them.
+#
+# Measured on the live library 2026-08-31: 14 unrelated tracks -- ABC, Lenny
+# Kravitz, Bruno Mars, Mariah Carey, Billy Joel -- all carried that one
+# recording id, and their durations clustered in a 10-second band (203-213s),
+# which is what made it visible. 217 files were moved as "duplicates" on that
+# basis before it was caught.
+#
+# Verified against the live API the same day: for both "ABC - Poison Arrow"
+# and "98 Degrees - Give Me Just One Night" the CORRECT recording was present
+# in the list, at positions 2 and 3, behind the polluted entry.
+
+_POLLUTED = {"id": "172884e7", "title": "Now That We're Done",
+             "artists": [{"name": "Metro Station"}]}
+
+
+class TestRecordingMustAgreeWithTheFile:
+    def _recs(self, *extra):
+        return [_POLLUTED, *extra]
+
+    def test_the_matching_recording_is_chosen_not_the_first(self):
+        from musaeus.stages.acousticid import _pick_matching_recording
+
+        recs = self._recs({"id": "4892a9a2", "title": "Poison Arrow",
+                           "artists": [{"name": "ABC"}]})
+        assert _pick_matching_recording(recs, "ABC", "Poison Arrow") == "4892a9a2"
+
+    def test_a_file_matching_nothing_gets_none_not_the_first(self):
+        """The 14-track failure, directly."""
+        from musaeus.stages.acousticid import _pick_matching_recording
+
+        recs = self._recs({"id": "4892a9a2", "title": "Poison Arrow",
+                           "artists": [{"name": "ABC"}]})
+        assert _pick_matching_recording(recs, "Bruno Mars", "That's What I Like") is None
+
+    def test_a_cover_is_rejected_on_artist(self):
+        """Same title, different artist, is a different recording."""
+        from musaeus.stages.acousticid import _pick_matching_recording
+
+        recs = [{"id": "cover", "title": "Hurt", "artists": [{"name": "Johnny Cash"}]}]
+        assert _pick_matching_recording(recs, "Nine Inch Nails", "Hurt") is None
+        assert _pick_matching_recording(recs, "Johnny Cash", "Hurt") == "cover"
+
+    def test_punctuation_and_case_are_not_identity(self):
+        from musaeus.stages.acousticid import _pick_matching_recording
+
+        recs = [{"id": "x", "title": "Don't Stop Me Now", "artists": [{"name": "Queen"}]}]
+        assert _pick_matching_recording(recs, "queen", "dont stop me now") == "x"
+
+    def test_no_title_to_check_against_refuses(self):
+        """Refusing beats guessing when there is nothing to verify with."""
+        from musaeus.stages.acousticid import _pick_matching_recording
+
+        assert _pick_matching_recording(self._recs(), "ABC", "") is None
+
+    def test_the_lookup_itself_rejects_the_polluted_first_entry(self, monkeypatch):
+        """Through _acousticid_lookup, not the matcher alone.
+
+        The matcher tests above pass even if the CALLER goes back to
+        recordings[0], so this exercises the real path with the exact shape
+        the live API returned on 2026-08-31.
+        """
+        import json as _json
+
+        from musaeus.stages import acousticid as _a
+
+        payload = {"status": "ok", "results": [{"score": 1.0, "recordings": [
+            {"id": "172884e7", "title": "Now That We're Done",
+             "artists": [{"name": "Metro Station"}]},
+            {"id": "4892a9a2", "title": "Poison Arrow", "artists": [{"name": "ABC"}]},
+        ]}]}
+
+        class _Resp:
+            def read(self): return _json.dumps(payload).encode()
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        monkeypatch.setattr(_a, "urlopen", lambda *a, **k: _Resp())
+        monkeypatch.setattr(_a, "_network_check", lambda *a, **k: None)
+
+        got = _a._acousticid_lookup("FP", 203.0, "key",
+                                    want_artist="ABC", want_title="Poison Arrow")
+        assert got is not None
+        assert got[0] == "4892a9a2", "took the polluted first entry again"
+
+        # ...and a file that matches nothing in the cluster gets no answer
+        assert _a._acousticid_lookup("FP", 206.0, "key",
+                                     want_artist="Bruno Mars",
+                                     want_title="That's What I Like") is None

@@ -37,8 +37,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import time
+import unicodedata
 import urllib.error
 import uuid
 from pathlib import Path
@@ -52,6 +54,11 @@ from .base import BaseStage, StageError
 logger = logging.getLogger(__name__)
 
 _ACOUSTICID_URL = "https://api.acoustid.org/v2/lookup"
+# Two files more than this far apart in length are not the same
+# recording. Generous enough for fade/gap differences between
+# masterings, tight enough to reject a different song.
+_DUPE_DURATION_TOLERANCE_S = 3.0
+
 _RATE_LIMIT_S = 0.34  # 3 req/s limit for free tier
 _TIMEOUT_S = 15
 _FPCALC_TIMEOUT_S = 60  # fpcalc on a large FLAC can take ~10s
@@ -162,7 +169,61 @@ class LookupUnavailable(Exception):
     """
 
 
-def _acousticid_lookup(fingerprint: str, duration: float, api_key: str) -> tuple[str, float] | None:
+def _row_get(row: object, key: str) -> str:
+    """A column that may not exist on an older schema. Absent reads as empty.
+
+    sqlite3.Row raises IndexError for an unknown key rather than returning
+    None, and the fallback SELECT in _run does not always carry these.
+    """
+    try:
+        return str(row[key] or "")  # type: ignore[index]
+    except (IndexError, KeyError, TypeError):
+        return ""
+
+
+def _norm_for_match(value: str) -> str:
+    """Letters and digits only -- punctuation and case are not identity."""
+    return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", value or "").lower())
+
+
+def _pick_matching_recording(
+    recordings: list[dict], want_artist: str, want_title: str
+) -> str | None:
+    """The recording that actually agrees with this file, or None.
+
+    Returns None rather than guessing. A fingerprint match with no agreeing
+    recording means "AcoustID knows this audio but cannot tell us which of
+    several recordings it is" -- which is not the same as an answer, and
+    must not be recorded as one.
+    """
+    wa, wt = _norm_for_match(want_artist), _norm_for_match(want_title)
+    if not wt:
+        return None  # nothing to check against; refusing beats guessing
+
+    best: str | None = None
+    for rec in recordings:
+        rid = rec.get("id")
+        if not rid:
+            continue
+        rt = _norm_for_match(rec.get("title", ""))
+        if not rt or (rt not in wt and wt not in rt):
+            continue
+        artists = [_norm_for_match(a.get("name", "")) for a in rec.get("artists", [])]
+        if wa and artists and not any(a and (a in wa or wa in a) for a in artists):
+            continue          # title agrees, artist does not -- a cover
+        if wa and artists:
+            return rid        # both agree: done
+        best = best or rid    # title agrees, no artist to check
+    return best
+
+
+def _acousticid_lookup(
+    fingerprint: str,
+    duration: float,
+    api_key: str,
+    want_artist: str = "",
+    want_title: str = "",
+) -> tuple[str, float] | None:
     """
     Query AcousticID for a recording match.
 
@@ -212,8 +273,35 @@ def _acousticid_lookup(fingerprint: str, duration: float, api_key: str) -> tuple
         if score < 0.80:
             continue
         recordings = r.get("recordings", [])
-        if recordings:
-            return recordings[0]["id"], score
+        if not recordings:
+            continue
+
+        # NEVER recordings[0].
+        #
+        # An AcoustID result carries every MusicBrainz recording associated
+        # with that fingerprint cluster, and the order is not meaningful. The
+        # cluster 172884e7 ("Metro Station - Now That We're Done") is listed
+        # FIRST in a great many of them, so taking [0] tagged 14 unrelated
+        # tracks -- ABC, Lenny Kravitz, Bruno Mars, Mariah Carey -- as the
+        # same recording. Verified against the live API 2026-08-31: for both
+        # "ABC - Poison Arrow" and "98 Degrees - Give Me Just One Night" the
+        # CORRECT recording was present in the list, at positions 2 and 3,
+        # behind that same polluted entry.
+        #
+        # A score says the audio matched the cluster. It does not say which
+        # recording in the cluster this file is. That is the same distinction
+        # mb_enrich's _same_artist exists for -- "Red" scoring 100 against
+        # "Red Hot Chili Peppers".
+        #
+        # So the caller supplies what it already knows about the file, and
+        # the recording has to agree with it.
+        chosen = _pick_matching_recording(recordings, want_artist, want_title)
+        if chosen:
+            return chosen, score
+        logger.debug(
+            "[acousticid] %d recording(s) scored %.2f but none matched %r / %r",
+            len(recordings), score, want_artist, want_title,
+        )
 
     return None
 
@@ -279,7 +367,8 @@ class AcousticIDStage(BaseStage):
         try:
             rows = ctx.conn.execute(
                 """
-                SELECT file_path, duration, chromaprint, chromaprint_duration
+                SELECT file_path, duration, chromaprint, chromaprint_duration,
+                       artist, title
                   FROM archive
                  WHERE status = 'CATALOGUED'
                    AND acousticid_checked_at IS NULL
@@ -289,7 +378,7 @@ class AcousticIDStage(BaseStage):
         except Exception:
             rows = ctx.conn.execute(
                 """
-                SELECT file_path, duration FROM archive
+                SELECT file_path, duration, artist, title FROM archive
                 WHERE status = 'CATALOGUED'
                 ORDER BY file_path
                 """
@@ -350,7 +439,11 @@ class AcousticIDStage(BaseStage):
             if api_key:
                 time.sleep(_RATE_LIMIT_S)
                 try:
-                    match = _acousticid_lookup(fingerprint, duration, api_key)
+                    match = _acousticid_lookup(
+                        fingerprint, duration, api_key,
+                        want_artist=_row_get(row, "artist"),
+                        want_title=_row_get(row, "title"),
+                    )
                 except LookupUnavailable as exc:
                     # No answer, so nothing is known and nothing may be
                     # settled. The fingerprint below is still stored -- it
@@ -425,6 +518,38 @@ class AcousticIDStage(BaseStage):
 
                 if recording_map[recording_id]:
                     for other_fp in recording_map[recording_id]:
+                        # Two recordings of different LENGTH are not the same
+                        # recording, whatever the fingerprint service says.
+                        # A cheap second opinion: the 217 files wrongly moved
+                        # on 2026-08-31 included pairs 212s vs 207s and 218s
+                        # vs 198s, every one of which this rejects.
+                        other = ctx.conn.execute(
+                            "SELECT duration, artist FROM archive WHERE file_path=?", (other_fp,)
+                        ).fetchone()
+                        other_dur = (other["duration"] if other else None) or 0.0
+
+                        # ORPHEUS's own net, adopted: classify_acousticid_groups.py
+                        # flags a group as CROSS_ARTIST_COVER when its members
+                        # disagree on artist. Duration alone cannot catch a cover
+                        # -- same song, same length, different act -- and a cover
+                        # is a different recording.
+                        other_artist = _row_get(other, "artist") if other else ""
+                        mine = _norm_for_match(_row_get(row, "artist"))
+                        theirs = _norm_for_match(other_artist)
+                        if mine and theirs and mine != theirs \
+                                and mine not in theirs and theirs not in mine:
+                            logger.info(
+                                "[acousticid] REJECTED pair, cross-artist (%s vs %s): %s == %s",
+                                _row_get(row, "artist"), other_artist, fp, other_fp,
+                            )
+                            continue
+
+                        if other_dur and abs(other_dur - duration) > _DUPE_DURATION_TOLERANCE_S:
+                            logger.info(
+                                "[acousticid] REJECTED pair, %.0fs vs %.0fs: %s == %s",
+                                duration, other_dur, fp, other_fp,
+                            )
+                            continue
                         dupes_found += 1
                         group_id = f"acoustic_{uuid.uuid4().hex[:8]}"
                         logger.info(
