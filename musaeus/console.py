@@ -37,7 +37,11 @@ from .hasher import ffmpeg_available, ffprobe_available
 from .network_policy import NetworkPolicy, policy
 from .safety.source_watch import SourceWatch, auto_restart_enabled
 from .stages import (
+    ACT1_INTAKE_CORRECTION,
+    ACT2_DEDUP_STAGING,
+    ACT3_CANONICALIZE_FINALIZE,
     DEFAULT_PIPELINE,
+    ENRICHMENT,
     CuratorStage,
     ForgeStage,
     IngestStage,
@@ -409,9 +413,21 @@ class Console:
 
     # ── Run pipeline ──────────────────────────────────────────────────────────
 
-    def _run_pipeline(self, dry_run: bool) -> None:
+    def _run_pipeline(
+        self,
+        dry_run: bool,
+        stage_classes: list[type[BaseStage]] | None = None,
+        label: str = "Pipeline",
+    ) -> None:
+        """Run *stage_classes* (default: the whole pipeline) through one context.
+
+        Taking a list lets the Act menu reuse this exact path -- the same
+        drift check, the same network authority, the same incomplete-run
+        warning -- instead of growing a second, subtly different runner.
+        """
+        selected = list(stage_classes) if stage_classes is not None else list(DEFAULT_PIPELINE)
         mode = "DRY RUN" if dry_run else "LIVE RUN"
-        _section(f"Pipeline  [{mode}]")
+        _section(f"{label}  [{mode}]  —  {len(selected)} stage(s)")
 
         # Checked here rather than at the menu: this is the moment stale
         # code costs a batch, and it keeps ordinary browsing quiet. A dry
@@ -430,7 +446,7 @@ class Console:
         try:
             try:
                 ctx = RunContext.new(self._config, conn, dry_run=dry_run)
-                stages: list[BaseStage] = [cls() for cls in DEFAULT_PIPELINE]
+                stages: list[BaseStage] = [cls() for cls in selected]
 
                 with _network_authority(dry_run):
                     for stage in stages:
@@ -451,9 +467,9 @@ class Console:
                 print()
                 all_ok = all(r.success for r in ctx.stage_results)
                 if all_ok:
-                    _ok(f"Pipeline complete  run_id={ctx.run_id}")
+                    _ok(f"{label} complete  run_id={ctx.run_id}")
                 else:
-                    _warn(f"Pipeline finished with errors  run_id={ctx.run_id}")
+                    _warn(f"{label} finished with errors  run_id={ctx.run_id}")
 
                 ctx.finish()
 
@@ -950,6 +966,53 @@ class Console:
             print()
             _info(f"... {len(lines) - 120} more line(s). Full file: {doc}")
 
+    # ── Acts ──────────────────────────────────────────────────────────────────
+
+    def _act_menu(self) -> None:
+        """Run one Act as a unit.
+
+        The Act lists have existed in stages/__init__.py since the pipeline
+        was split, but nothing outside that module imported them -- so the
+        console could offer the whole 30-stage chain or one hand-picked
+        stage, and nothing in between. Re-running a single Act over the
+        library is exactly what you want when Act 1 is settled and only the
+        later work needs redoing.
+        """
+        _section("Run an Act")
+        acts: list[tuple[str, list[type[BaseStage]]]] = [
+            ("Act 1 — Intake & Correction", list(ACT1_INTAKE_CORRECTION)),
+            ("Act 2 — Dedup & Staging", list(ACT2_DEDUP_STAGING)),
+            ("Act 3 — Canonicalize & Finalize", list(ACT3_CANONICALIZE_FINALIZE)),
+            ("Enrichment — Last.fm / MusicBrainz / AcoustID / identity", list(ENRICHMENT)),
+            ("Acts 2 + 3 together", list(ACT2_DEDUP_STAGING) + list(ACT3_CANONICALIZE_FINALIZE)),
+        ]
+        labels = [f"{name}  ({len(stages)} stages)" for name, stages in acts] + ["Back"]
+        choice = _choose("Select act", labels)
+        try:
+            idx = int(choice)
+        except ValueError:
+            return
+        if not (0 <= idx < len(acts)):
+            return
+
+        name, stages = acts[idx]
+        print()
+        _info(f"{name}:")
+        for cls in stages:
+            _info(f"    {cls.NAME}")
+
+        # Act 2 moves duplicates and Act 3 rewrites audio and moves files.
+        # Preview is the default, and it is listed first for that reason.
+        mode = _choose("Mode", ["Preview  [DRY RUN]", "Run  [LIVE]", "Back"])
+        try:
+            m = int(mode)
+        except ValueError:
+            return
+        if m == 0:
+            self._run_pipeline(dry_run=True, stage_classes=stages, label=name)
+        elif m == 1:
+            self._run_pipeline(dry_run=False, stage_classes=stages, label=name)
+
     # ── Main menu ─────────────────────────────────────────────────────────────
 
     def _main_menu(self) -> None:
@@ -957,6 +1020,7 @@ class Console:
             ("Status", self._show_status),
             ("Run full pipeline  [DRY RUN]", lambda: self._run_pipeline(dry_run=True)),
             ("Run full pipeline  [LIVE]", lambda: self._run_pipeline(dry_run=False)),
+            ("Run an Act…  (1 / 2 / 3 / Enrichment)", self._act_menu),
             ("Run single stage…", self._stage_menu),
             ("Dedupe review", self._run_dedupe),
             ("View recent runs", self._show_runs),
