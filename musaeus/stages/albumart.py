@@ -30,6 +30,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from ..art_quality import describe
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
 
@@ -167,6 +168,51 @@ def _embed_art(audio_path: str, art_path: Path) -> bool:
 # ── Stage ─────────────────────────────────────────────────────────────────────
 
 
+
+def _fetch_sidecar(ctx: RunContext, fp: str, result: StageResult) -> Path | None:
+    """Fetch cover art from the network and drop it beside the file.
+
+    Returns the sidecar path, or None when no art exists or nothing could
+    be asked. Network failure is never fatal to the stage: art is a nicety
+    and the run has audio to finish processing.
+    """
+    from ..art_sources import ArtUnavailable, fetch_album_art
+
+    row = ctx.conn.execute(
+        "SELECT artist, album FROM archive WHERE file_path=?", (fp,)
+    ).fetchone()
+    if row is None:
+        return None
+    artist = str(row["artist"] or "").strip()
+    album = str(row["album"] or "").strip()
+    if not artist:
+        return None
+
+    try:
+        got = fetch_album_art(artist, album, ctx.config.lastfm_api_key or "")
+    except ArtUnavailable as exc:
+        logger.debug("[albumart] could not ask for %r/%r: %s", artist, album, exc)
+        result.notes.append(f"art lookup unavailable for {artist} — {album}")
+        return None
+    if not got:
+        return None
+
+    blob, source = got
+    target = Path(fp).parent / "cover.jpg"
+    try:
+        target.write_bytes(blob)
+    except OSError as exc:
+        logger.warning("[albumart] could not write %s: %s", target, exc)
+        return None
+
+    ctx.log_event(
+        "ART_FETCHED", file_path=fp, new_value=source, stage="albumart",
+        note=describe(blob),
+    )
+    logger.info("[albumart] fetched %s from %s for %s", describe(blob), source, Path(fp).name)
+    return target
+
+
 class AlbumArtStage(BaseStage):
     """
     AlbumArt — audit for missing embedded art, embed sidecars where found.
@@ -221,6 +267,10 @@ class AlbumArtStage(BaseStage):
 
         now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
 
+        # Network fetch is a live-run behaviour. A preview must not reach out,
+        # and the gateway would refuse it anyway.
+        fetched_ok = None if dry_run else _fetch_sidecar
+
         has_art_count = 0
         missing_art: list[str] = []
         embedded_count = 0
@@ -250,6 +300,18 @@ class AlbumArtStage(BaseStage):
                 # Try sidecar embed
                 if embed:
                     sidecar = _find_sidecar(Path(fp).parent)
+
+                    # No sidecar on disk used to end it -- this stage made
+                    # zero network calls, so a folder without a cover.jpg
+                    # meant the file stayed without art for ever. Fetch one.
+                    #
+                    # Written to the folder as a sidecar rather than embedded
+                    # directly, so the existing embed path stays the single
+                    # place that mutates audio, and so the next file in the
+                    # same album reuses it instead of asking again.
+                    if sidecar is None and fetched_ok is not None:
+                        sidecar = fetched_ok(ctx, fp, result)
+
                     if sidecar:
                         logger.info(
                             "[albumart] embedding %s → %s",
