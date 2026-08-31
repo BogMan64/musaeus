@@ -54,7 +54,7 @@ def _sweep_roots(ctx: RunContext) -> list[Path]:
     ALAC_Archive only exists once Phase 2A has run.
     """
     roots = [ctx.inbox, ctx.config.staging, ctx.alac_library]
-    archive = ctx.config.vault_root / "ALAC_Archive"
+    archive = ctx.config.alac_archive
     if archive.exists():
         roots.append(archive)
     return [r for r in roots if r is not None and r.exists()]

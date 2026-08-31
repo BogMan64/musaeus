@@ -89,6 +89,11 @@ class MusicConfig:
 
     # Database
     db_path: Path
+    libraries: Path = None  # type: ignore[assignment]
+    alac_archive: Path = None  # type: ignore[assignment]
+    car_library: Path = None  # type: ignore[assignment]
+    iphone_library: Path = None  # type: ignore[assignment]
+    playlists: Path = None  # type: ignore[assignment]
 
     # Curator export target (exports.curator.root). None means "not
     # configured", and Curator refuses rather than inventing a path.
@@ -130,7 +135,16 @@ class MusicConfig:
         quarantine = _p("MUSAEUS_QUARANTINE", vault_root / "QUARANTINE")
         runs_root = _p("MUSAEUS_RUNS_ROOT", vault_root / "RUNS")
         meta_dir = _p("MUSAEUS_META_DIR", vault_root / "MetaData")
-        alac_library = _p("MUSAEUS_ALAC_LIBRARY", vault_root / "ALAC-Library")
+        # The four library trees live under one parent as of 2026-08-31 (Grey's
+        # call) so the vault root lists as workflow folders + one Libraries/.
+        # Each keeps its own env override, so an existing deployment that sets
+        # MUSAEUS_ALAC_LIBRARY is unaffected by the move.
+        libraries = _p("MUSAEUS_LIBRARIES", vault_root / "Libraries")
+        alac_library = _p("MUSAEUS_ALAC_LIBRARY", libraries / "ALAC-Library")
+        alac_archive = _p("MUSAEUS_ALAC_ARCHIVE", libraries / "ALAC_Archive")
+        car_library = _p("MUSAEUS_CAR_LIBRARY", libraries / "CAR_Library")
+        iphone_library = _p("MUSAEUS_IPHONE_LIBRARY", libraries / "iPHONE_Library")
+        playlists = _p("MUSAEUS_PLAYLISTS", libraries / "Playlists")
 
         curator_export_root_raw = os.environ.get("MUSAEUS_CURATOR_EXPORT_ROOT", "")
 
@@ -141,7 +155,12 @@ class MusicConfig:
             quarantine=quarantine,
             runs_root=runs_root,
             meta_dir=meta_dir,
+            libraries=libraries,
             alac_library=alac_library,
+            alac_archive=alac_archive,
+            car_library=car_library,
+            iphone_library=iphone_library,
+            playlists=playlists,
             db_path=db_path,
             curator_export_root=(
                 Path(curator_export_root_raw).expanduser() if curator_export_root_raw else None
@@ -151,6 +170,21 @@ class MusicConfig:
             openrouter_api_key=os.environ.get("OPENROUTER_API_KEY") or None,
             acousticid_api_key=os.environ.get("ACOUSTICID_API_KEY") or None,
         )
+
+    def __post_init__(self) -> None:
+        # from_env() fills these, but Config is also constructed directly
+        # (tests, tooling). Derive the same layout from vault_root rather
+        # than leaving None for a caller to trip over at use time.
+        if self.libraries is None:
+            self.libraries = self.vault_root / "Libraries"
+        if self.alac_archive is None:
+            self.alac_archive = self.libraries / "ALAC_Archive"
+        if self.car_library is None:
+            self.car_library = self.libraries / "CAR_Library"
+        if self.iphone_library is None:
+            self.iphone_library = self.libraries / "iPHONE_Library"
+        if self.playlists is None:
+            self.playlists = self.libraries / "Playlists"
 
     # ── ALAC-Library derived paths ───────────────────────────────────────────
     # Everything here lives under alac_library itself (not the vault DB) so

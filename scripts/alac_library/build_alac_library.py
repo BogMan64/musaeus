@@ -99,7 +99,7 @@ def _archive_dir(cli_value: str | None, vault_root: Path) -> Path:
     env_value = os.environ.get("MUSAEUS_ALAC_ARCHIVE")
     if env_value:
         return Path(env_value).resolve()
-    return vault_root / "ALAC_Archive"
+    return vault_root / "Libraries" / "ALAC_Archive"
 
 
 def _library_path_for(source: Path, archive_dir: Path, library_dir: Path) -> Path:

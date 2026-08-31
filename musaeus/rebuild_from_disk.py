@@ -209,7 +209,7 @@ def _archive_twin(path: Path, cfg: MusicConfig) -> Path | None:
     docstring explains why: a second path column would drift out of sync with
     real filesystem state.
     """
-    archive_root = cfg.vault_root / "ALAC_Archive"
+    archive_root = cfg.alac_archive
     if not archive_root.exists():
         return None
     try:

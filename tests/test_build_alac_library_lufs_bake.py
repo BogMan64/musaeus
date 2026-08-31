@@ -149,7 +149,7 @@ def _run_script(
 
 class TestPhase2ABake:
     def test_dry_run_makes_no_changes(self, cfg: MusicConfig) -> None:
-        archive_dir = cfg.vault_root / "ALAC_Archive"
+        archive_dir = cfg.alac_archive
         archive_dir.mkdir(parents=True)
         src = archive_dir / "Artist" / "Album" / "track.m4a"
         src.parent.mkdir(parents=True)
@@ -183,7 +183,7 @@ class TestPhase2ABake:
         assert row["lufs_baked_at"] is None
 
     def test_execute_bakes_and_updates_db(self, cfg: MusicConfig) -> None:
-        archive_dir = cfg.vault_root / "ALAC_Archive"
+        archive_dir = cfg.alac_archive
         archive_dir.mkdir(parents=True)
         src = archive_dir / "Artist" / "Album" / "track.m4a"
         src.parent.mkdir(parents=True)
@@ -242,7 +242,7 @@ class TestPhase2ABake:
         assert not list(cfg.alac_library.rglob("*.FAILED_VERIFY"))
 
     def test_second_run_skips_already_baked_row(self, cfg: MusicConfig) -> None:
-        archive_dir = cfg.vault_root / "ALAC_Archive"
+        archive_dir = cfg.alac_archive
         archive_dir.mkdir(parents=True)
         src = archive_dir / "Artist" / "Album" / "track.m4a"
         src.parent.mkdir(parents=True)
@@ -281,7 +281,7 @@ class TestUnmigratedWarning:
     than silently bake nothing and look like there's simply no work."""
 
     def test_warns_when_finalized_rows_never_migrated(self, cfg: MusicConfig) -> None:
-        archive_dir = cfg.vault_root / "ALAC_Archive"
+        archive_dir = cfg.alac_archive
         archive_dir.mkdir(parents=True)
         # A finalized row still in ALAC-Library -- never migrated.
         stuck = cfg.alac_library / "Artist" / "Album" / "stuck.m4a"
@@ -314,7 +314,7 @@ class TestUnmigratedWarning:
         assert "migrate_to_archive.py" in result.stdout
 
     def test_no_warning_when_everything_migrated(self, cfg: MusicConfig) -> None:
-        archive_dir = cfg.vault_root / "ALAC_Archive"
+        archive_dir = cfg.alac_archive
         archive_dir.mkdir(parents=True)
         src = archive_dir / "Artist" / "Album" / "track.m4a"
         src.parent.mkdir(parents=True)

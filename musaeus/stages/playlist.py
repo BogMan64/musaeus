@@ -100,7 +100,7 @@ class PlaylistStage(BaseStage):
         result = self._make_result(dry_run=dry_run)
         assert ctx.config is not None
 
-        playlist_dir = ctx.config.vault_root / "Playlists"
+        playlist_dir = ctx.config.playlists
 
         rows = ctx.conn.execute(
             """
