@@ -108,7 +108,11 @@ PROTECTED_ARTISTS: frozenset[str] = frozenset(
         "spirit",
         "blondie",
         "led zeppelin",
-        "jan",
+        # Was a bare "jan", which protected every artist with those three
+        # letters anywhere in the name. The canonical form is what the
+        # artist canon settles on, so protect that instead (Grey,
+        # 2026-09-01) -- "Dean" -> "Jan & Dean" is an open canon item.
+        "jan & dean",
         "mary wells",
         "refreshments",
         "monks",
@@ -123,14 +127,41 @@ PROTECTED_ARTISTS: frozenset[str] = frozenset(
 )
 
 
+def _strip_article(name: str) -> str:
+    """ "Pretenders, The" and "The Pretenders" are the same artist.
+
+    The library stores the comma form and MusicBrainz returns the leading
+    form, so a protected entry written either way has to match both.
+    """
+    return re.sub(r"^the\s+|,\s*the$", "", name).strip()
+
+
 def is_junk(artist: str, title: str, album: str) -> tuple[bool, str]:
     """Check whether a row's metadata matches any junk pattern. Returns
     (is_junk, reason). Protected artists are checked first and always win,
     even against a matching title/album pattern."""
     artist_lower = (artist or "").lower().strip()
-
-    for protected in PROTECTED_ARTISTS:
-        if protected in artist_lower:
+    # Match the WHOLE artist name, not a fragment of it.
+    #
+    # This was `if protected in artist_lower` -- a substring test -- which
+    # inverted the list's purpose in both directions. It protected junk:
+    # "neil young" shielded "The Neil Young Tribute Band" (4 tracks in the
+    # library on 2026-09-01), and "sleep" shielded "Deep Sleep Music
+    # Collective". And it made two junk patterns unreachable, since
+    # \bsleep\b and \bhealing\b can never fire for an artist the words
+    # "sleep" or "the healing" already protect.
+    #
+    # The entries mean the ARTIST NAMED "Sleep", not everyone with the
+    # word in their name. Article forms are normalised because the library
+    # stores "Pretenders, The" and MusicBrainz says "The Pretenders".
+    #
+    # Measured before changing: catches 5 more knock-offs across the 10,446
+    # catalogued rows and loses nothing. Real records with a trigger word
+    # in the name -- Asleep at the Wheel, Sleeping at Last, ZZ Top's
+    # "Sleeping Bag", the Beatles' "I'm Only Sleeping" -- are untouched,
+    # because the junk patterns are word-bounded and none of them match.
+    for candidate in (artist_lower, _strip_article(artist_lower)):
+        if candidate in PROTECTED_ARTISTS:
             return False, ""
 
     for known in KNOWN_JUNK_ARTISTS:
