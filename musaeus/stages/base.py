@@ -34,6 +34,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class _NoVerification:
+    """Sentinel: this stage did not check its own effect.
+
+    Distinct from an empty problem list, which asserts a check ran and
+    found nothing wrong. Falsy so a careless `if problems:` still reads as
+    "no problems found", but identity-checked before that so the honest
+    path is taken first.
+    """
+
+    __slots__ = ()
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __repr__(self) -> str:
+        return "NO_VERIFICATION"
+
+
+#: Returned by BaseStage.verify_effect when a stage implements no check.
+NO_VERIFICATION = _NoVerification()
+
+
 class StageError(Exception):
     """
     Raised by a stage when it cannot proceed.
@@ -165,8 +187,23 @@ class BaseStage(ABC):
         Implementations should SAMPLE rather than re-check everything --
         the point is to catch a stage that changed nothing, not to double
         the runtime of one that worked.
+
+        The default returns NO_VERIFICATION, not an empty list. An empty
+        list means "I looked and found nothing wrong"; NO_VERIFICATION
+        means "I did not look". Those are different claims and conflating
+        them is the exact fault this hook exists to catch.
+
+        Until 2026-09-01 the default was `[]`, so `verified = not problems`
+        made every stage without a real check report ✓verified -- 25 of 39
+        of them. AlbumArt was one, which is why a run that failed every
+        single embed still printed:
+
+            albumart: OK ✓verified | processed=10554 changed=10549
+
+        A verification system whose default is a false positive is worse
+        than none, because it converts silence into evidence.
         """
-        return []
+        return NO_VERIFICATION
 
     #: Whether this stage makes a claim worth verifying. Stages that only
     #: report (Preflight, Audit, Health) set this False so their results
@@ -182,6 +219,13 @@ class BaseStage(ABC):
         except Exception as exc:  # verification must never break a good run
             logger.warning("[%s] effect verification errored: %s", self.NAME, exc)
             result.verify_notes.append(f"verification errored: {exc}")
+            return
+        if problems is NO_VERIFICATION:
+            # No claim, rather than a hollow one. The seal stays unprinted.
+            result.verified = None
+            result.verify_notes.append(
+                "no effect verification implemented for this stage"
+            )
             return
         result.verified = not problems
         if problems:

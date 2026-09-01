@@ -100,7 +100,19 @@ def test_dry_run_is_never_verified(ctx):
 
 
 def test_default_verify_effect_claims_nothing():
-    """Stages that have not opted in must not report a hollow 'verified'."""
+    """Stages that have not opted in must not report a hollow 'verified'.
+
+    This test's name and docstring were right from the start; its
+    assertion was not. It asserted `== []`, and an empty problem list is
+    exactly what made `verified = not problems` come out True -- so the
+    test that existed to prevent hollow verification was pinning the
+    behaviour that caused it. 25 of 39 stages inherited a ✓verified seal
+    for looking at nothing, AlbumArt among them: the run in which every
+    embed failed still printed "OK ✓verified".
+
+    Corrected 2026-09-01 to assert the sentinel, which is what "claims
+    nothing" actually looks like.
+    """
 
     class Bare(BaseStage):
         NAME = "bare"
@@ -112,7 +124,11 @@ def test_default_verify_effect_claims_nothing():
         def run(self, ctx):
             return self._make_result(dry_run=False)
 
-    assert Bare().verify_effect(None, StageResult("bare", True)) == []
+    from musaeus.stages.base import NO_VERIFICATION
+
+    result = Bare().verify_effect(None, StageResult("bare", True))
+    assert result is NO_VERIFICATION, "the default must make no claim at all"
+    assert result != [], "an empty list would mean 'checked, found nothing'"
 
 
 class TestStageHooksAreCorrectlyBound:
