@@ -124,6 +124,7 @@ FFPROBE = "ffprobe"
 
 MAX_WORKERS = 4
 OVERWRITE = True
+FORCE_REENCODE = bool(os.environ.get("MUSAEUS_FORCE_REENCODE"))
 
 DEFAULT_LUFS = -16.0
 
@@ -491,6 +492,38 @@ def build_ffmpeg_command(
     return cmd
 
 
+def _output_matches_source(source: Path, output: Path) -> bool:
+    """True when *output* is a usable encode of *source*.
+
+    Existence alone is not enough: a truncated file from an interrupted run
+    would then be preserved permanently. Duration is the cheap check that
+    catches it -- a partial encode is short, and a file ffprobe cannot read
+    returns nothing.
+    """
+    try:
+        src = _probe_duration(source)
+        out = _probe_duration(output)
+    except Exception:
+        return False
+    if src is None or out is None or src <= 0:
+        return False
+    return abs(src - out) <= max(1.0, src * 0.02)
+
+
+def _probe_duration(path: Path) -> float | None:
+    res = subprocess.run(
+        [FFPROBE, "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    )
+    if res.returncode != 0:
+        return None
+    try:
+        return float(res.stdout.strip().rstrip(","))
+    except ValueError:
+        return None
+
+
 def convert_one(file_path: Path, profile_name: str) -> str:
     allowed, policy = should_make_aac(file_path)
     if not allowed:
@@ -521,6 +554,22 @@ def convert_one(file_path: Path, profile_name: str) -> str:
         )
         output_file.parent.mkdir(parents=True, exist_ok=True)
         tmp_output = output_file.with_name(output_file.name + ".bake_tmp")
+
+        # Resume rather than redo. There was no completed-work check at all,
+        # so a re-run re-encoded everything: after the 2026-09-01 staging
+        # collision stopped a Car build at 4,858 of 10,545, restarting it
+        # began the whole library again -- roughly nine hours to reproduce
+        # files already sitting correct on disk.
+        #
+        # The check is deliberately not just "the path exists". A partial or
+        # corrupt output would then be kept for ever, which is worse than
+        # re-encoding it. It has to be a readable audio file whose duration
+        # matches the source, which is the same thing _verify_bake asks of a
+        # fresh encode. --force re-encodes regardless.
+        if output_file.exists() and not FORCE_REENCODE:
+            if _output_matches_source(file_path, output_file):
+                return f"SKIP DONE | {file_path.name} | already encoded"
+            output_file.unlink()  # unusable: fall through and redo it
 
         measured = ffmpeg_measure_loudnorm(file_path, target_i, TARGET_TP, TARGET_LRA)
         loudnorm_filter = build_second_pass_filter(measured, target_i, TARGET_TP, TARGET_LRA)
