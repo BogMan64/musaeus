@@ -106,6 +106,69 @@ def _batch_date(ctx: RunContext) -> str:
     return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
 
 
+def _connected_groups(conn, group_ids: list[str]) -> list[list[str]]:
+    """Merge groups that share a file into single components.
+
+    Groups overlap. NEAR matching is fuzzy, so one recording lands in
+    several groups, and resolving each independently lets them contradict
+    each other: measured on the live vault 2026-08-31, 2,918 NEAR files sit
+    in more than one group, and one -- "Al Green - Let's Stay Together" --
+    is marked `keep` in near_f122326e and `archive` in near_2231ee82 at the
+    same time. Nothing reconciles those. Which one wins is decided by
+    whichever group happens to be processed last.
+
+    `already_moved` in _resolve() was the previous mitigation, but it only
+    stops a later group MISREPORTING an earlier group's move as "file
+    missing". It does not stop that group deciding to move a file an
+    earlier group had chosen to keep -- it just makes the outcome quiet.
+
+    Merging first makes the contradiction unrepresentable: one keeper per
+    component, and every other member of it is a loser. This is the same
+    correction applied by hand to the 102 ACOUSTIC groups on 2026-08-31,
+    where 102 groups collapsed to 95 components.
+
+    EXACT clusters keyed by audio_hash cannot overlap -- a file has exactly
+    one hash -- so this only concerns the duplicates-table path.
+    """
+    if not group_ids:
+        return []
+
+    parent: dict[str, str] = {g: g for g in group_ids}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    placeholders = ",".join("?" for _ in group_ids)
+    rows = conn.execute(
+        f"""
+        SELECT file_path, group_id FROM duplicates
+         WHERE group_id IN ({placeholders}) AND status = 'pending'
+        """,
+        group_ids,
+    ).fetchall()
+
+    by_path: dict[str, list[str]] = {}
+    for r in rows:
+        by_path.setdefault(r["file_path"], []).append(r["group_id"])
+    for shared in by_path.values():
+        for g in shared[1:]:
+            if g in parent and shared[0] in parent:
+                union(shared[0], g)
+
+    components: dict[str, list[str]] = {}
+    for g in group_ids:
+        components.setdefault(find(g), []).append(g)
+    return [sorted(v) for v in components.values()]
+
+
 def _get_pending_groups(conn) -> list[str]:
     rows = conn.execute(
         "SELECT DISTINCT group_id FROM duplicates WHERE status = 'pending' ORDER BY group_id"
@@ -658,10 +721,23 @@ class DupeResolverStage(BaseStage):
 
         # ── Source 1: duplicates-table-driven groups (NEAR, CROSS_BATCH,
         # and any freshly-detected EXACT group still genuinely 'pending') ──
-        for group_id in groups:
-            members = _get_group_members(ctx.conn, group_id)
+        # Resolve COMPONENTS, not groups. Overlapping groups otherwise reach
+        # contradictory verdicts on the same file -- see _connected_groups.
+        for component in _connected_groups(ctx.conn, groups):
+            group_id = component[0]
+            members = []
+            seen_paths: set[str] = set()
+            for gid in component:
+                for m in _get_group_members(ctx.conn, gid):
+                    if m["file_path"] in seen_paths:
+                        continue
+                    seen_paths.add(m["file_path"])
+                    members.append(m)
             if not members:
                 continue
+            # One keeper for the whole component, so a file kept by one of
+            # its groups can no longer be moved as another's loser.
+            members.sort(key=_keeper_sort_key)
             keeper, losers = _pick_keeper_and_losers(members)
             self._move_losers(
                 ctx,

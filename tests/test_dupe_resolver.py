@@ -691,18 +691,51 @@ class TestDupeResolverOverlappingGroups:
         result = DupeResolverStage().execute(ctx)
 
         assert result.files_changed == 1  # moved exactly once
-        assert result.files_skipped == 1  # second group's reference, not an error
         assert result.files_errored == 0  # NOT reported as "file missing on disk"
-        assert any("already resolved under group" in n for n in result.notes)
         assert not low.exists()  # actually moved
+        assert high.exists()  # the keeper stays
 
-        # The group_b row is still 'pending' -- it was never a real decision,
-        # just a stale reference to an already-resolved file. Left alone,
-        # same as any other group whose file no longer needs action.
-        b_status = ctx.conn.execute(
-            "SELECT status FROM duplicates WHERE group_id = 'dup_group_b'"
-        ).fetchone()["status"]
-        assert b_status == "pending"
+    def test_a_file_kept_by_one_group_is_not_moved_as_anothers_loser(self, ctx):
+        """The gap `already_moved` never closed.
+
+        Overlapping groups reached contradictory verdicts on the same file
+        and nothing reconciled them: measured on the live vault 2026-08-31,
+        2,918 NEAR files sit in more than one group, and "Al Green - Let's
+        Stay Together" is `keep` in near_f122326e and `archive` in
+        near_2231ee82 simultaneously. Which verdict won was decided by
+        whichever group happened to be processed last.
+
+        `already_moved` only suppressed the misleading "file missing on
+        disk" error when a later group met an earlier group's move. It did
+        not stop that group deciding to move a file an earlier group had
+        chosen to keep -- it made the wrong outcome quiet rather than
+        preventing it.
+
+        Groups are now merged into connected components before resolution,
+        so one keeper serves the whole component and the contradiction is
+        unrepresentable rather than merely unlikely.
+        """
+        best = _make_archive_row(
+            ctx, "best.flac", "Artist", "Album", "Title", bitrate=900_000, size_bytes=500
+        )
+        middle = _make_archive_row(
+            ctx, "middle.m4a", "Artist", "Album", "Title", bitrate=500_000, size_bytes=300
+        )
+        worst = _make_archive_row(
+            ctx, "worst.m4a", "Artist", "Album", "Title", bitrate=128_000, size_bytes=200
+        )
+        # middle LOSES to best in one group and WINS over worst in another.
+        # Resolved per-group, group two keeps a file group one just moved.
+        _stage_duplicate_pair(ctx, "grp_one", best, middle)
+        _stage_duplicate_pair(ctx, "grp_two", middle, worst)
+
+        result = DupeResolverStage().execute(ctx)
+
+        assert best.exists(), "the component's single best copy must survive"
+        assert not middle.exists(), "middle loses to best and must move"
+        assert not worst.exists(), "worst loses to best and must move"
+        assert result.files_errored == 0
+        assert result.files_changed == 2, "exactly the two non-keepers move"
 
 
 class TestOriginalTrumpsRemaster:
