@@ -9,6 +9,7 @@ Rebuilding the DB from scratch is always possible.
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -327,7 +328,15 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA busy_timeout=10000")
+    # 10s was not enough once two heavy writers existed. A Car build died
+    # outright on "database is locked" 2026-08-31 because an acousticid
+    # drain held it, losing the bookkeeping for hours of finished encoding.
+    # An encode or a pipeline stage holds the write lock for as long as its
+    # current row takes; waiting is nearly always right, and failing after
+    # ten seconds nearly always wrong. Overridable for tests and for tools
+    # that genuinely want to fail fast.
+    _busy_ms = int(os.environ.get("MUSAEUS_BUSY_TIMEOUT_MS", "300000"))
+    conn.execute(f"PRAGMA busy_timeout={_busy_ms}")
     conn.executescript(_SCHEMA)
     conn.commit()
     _apply_migrations(conn)
