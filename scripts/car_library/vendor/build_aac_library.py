@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import os as _os
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -565,7 +566,14 @@ def gather_input_files(input_dir: Path) -> list[Path]:
 
 def copy_noise_tracks(output_root: Path) -> None:
     """Copy generated noise tracks into the car library Artist/Album structure."""
-    noise_src = RUNS_ROOT / "Noise"
+    # RUNS_ROOT is ORPHEUS's own constant and points at
+    # /mnt/FORGE2TB/Projects/ORPHEUS/RUNS, which has no Noise/ -- MUSAEUS's
+    # noise tracks live under MUSAEUS_VAULT/RUNS/Noise. The wrapper already
+    # passes ORPHEUS_NOISE_DIR for the masking step; honour it here too,
+    # rather than reporting "no noise tracks found" while four of them sit
+    # on disk. Found 2026-08-31.
+    env_noise = _os.environ.get("ORPHEUS_NOISE_DIR")
+    noise_src = Path(env_noise) if env_noise else RUNS_ROOT / "Noise"
     noise_dest = output_root / "ORPHEUS" / "Acoustic Treatment"
 
     noise_files = sorted(noise_src.glob("*.m4a")) if noise_src.exists() else []
@@ -577,10 +585,31 @@ def copy_noise_tracks(output_root: Path) -> None:
     copied = 0
     for src in noise_files:
         dst = noise_dest / src.name
-        _shutil.copy2(src, dst)
+
+        # These were raw-copied, which bypassed the encoder entirely and so
+        # bypassed the sample-rate cap with it: three of the four noise
+        # tracks are 96 kHz at source and shipped at 96 kHz, exactly the
+        # rate a head unit is least likely to decode. The music was capped
+        # and the filler beside it was not. Measured 2026-08-31.
+        target = car_sample_rate(probe_sample_rate(src))
+        if target is not None and target < (probe_sample_rate(src) or 0):
+            cmd = [FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
+                   "-i", str(src), "-c:a", "aac", "-b:a", "256k",
+                   "-ar", str(target), "-map_metadata", "0", "-f", "mp4", str(dst)]
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode != 0:
+                print(f"[Noise] re-encode failed for {src.name}, copying as-is")
+                _shutil.copy2(src, dst)
+            else:
+                print(f"[Noise] {src.name}  →  {dst.relative_to(output_root)}  "
+                      f"(resampled to {target} Hz)")
+                copied += 1
+                continue
+        else:
+            _shutil.copy2(src, dst)
         print(f"[Noise] {src.name}  →  {dst.relative_to(output_root)}")
         copied += 1
-    print(f"[Noise] {copied} file(s) copied to {noise_dest}")
+    print(f"[Noise] {copied} file(s) placed in {noise_dest}")
 
 
 def main() -> None:

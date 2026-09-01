@@ -273,6 +273,9 @@ def main() -> int:
     env = os.environ.copy()
     env["ORPHEUS_AAC_INPUT_DIR"] = str(input_dir)
     env["ORPHEUS_AAC_OUTPUT_DIR"] = str(encoded_dir)
+    # Also needed by the encode step's copy_noise_tracks(), not just by the
+    # masker below -- without it the vendor falls back to ORPHEUS's RUNS.
+    env["ORPHEUS_NOISE_DIR"] = str(cfg.runs_root / "Noise")
     print("\n=== Encoding (ALAC/FLAC -> 256k AAC) ===")
     result = subprocess.run(
         [sys.executable, str(VENDOR_DIR / "build_aac_library.py"), "--profile", "car", "--apply"],
