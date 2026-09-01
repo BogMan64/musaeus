@@ -80,6 +80,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from musaeus.config import get_config  # noqa: E402
 from musaeus.db import open_db  # noqa: E402
+from musaeus.idle_throttle import IdleThrottle  # noqa: E402
 
 FFMPEG = "ffmpeg"
 FFPROBE = "ffprobe"
@@ -260,14 +261,48 @@ def quarantine_failed_tmp(tmp_output: Path | None) -> None:
         tmp_output.rename(failed_path)
 
 
+def source_sample_fmt(path: Path) -> str | None:
+    """The sample format to encode the bake in: the SOURCE's own.
+
+    loudnorm outputs float, and ffmpeg's ALAC encoder then picks the widest
+    depth it supports rather than the one the master actually used. Measured
+    2026-08-31: a 16-bit master baked out as 24-bit -- 16.7 MB became
+    26.9 MB, a 61% increase carrying no additional information, because the
+    extra 8 bits are padding.
+
+    75% of the live library is 16-bit, so unpinned this would have added
+    roughly 222 GB of zeros to a 486 GB edition. A "lossless" edition that
+    is half padding is not more faithful to the master, just larger.
+
+    ALAC stores 16-bit as s16p and higher depths as s32p. Anything we cannot
+    read returns None and is left to ffmpeg, rather than guessing a depth
+    and risking truncating a 24-bit master down to 16.
+    """
+    out = subprocess.run(
+        [FFPROBE, "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=bits_per_raw_sample,sample_fmt",
+         "-of", "default=nw=1:nk=1", str(path)],
+        capture_output=True, text=True,
+    )
+    if out.returncode != 0:
+        return None
+    lines = [x.strip() for x in out.stdout.splitlines() if x.strip()]
+    depth = next((x for x in lines if x.isdigit()), None)
+    if depth is None:
+        return None
+    return "s16p" if int(depth) <= 16 else "s32p"
+
+
 def build_bake_command(
-    source: Path, tmp_output: Path, loudnorm_filter: str, has_art: bool
+    source: Path, tmp_output: Path, loudnorm_filter: str, has_art: bool,
+    sample_fmt: str | None = None,
 ) -> list[str]:
     """ALAC -> ALAC, codec unchanged -- this bakes loudness, not format. Same
     -map/-c:v copy/attached_pic/-map_metadata shape as canonicalize.py's
     _convert_to_alac, plus the -af loudnorm filter. -f mp4 forced explicitly
     since tmp_output's on-disk extension (.m4a.bake_tmp) isn't a real hint."""
     cmd = [FFMPEG, "-y", "-i", str(source), "-threads", "2"]
+    fmt_args = ["-sample_fmt", sample_fmt] if sample_fmt else []
     if has_art:
         cmd += [
             "-map",
@@ -276,6 +311,7 @@ def build_bake_command(
             "0:v:0",
             "-c:a",
             "alac",
+            *fmt_args,
             "-af",
             loudnorm_filter,
             "-c:v",
@@ -294,6 +330,7 @@ def build_bake_command(
             "0:a:0",
             "-c:a",
             "alac",
+            *fmt_args,
             "-af",
             loudnorm_filter,
             "-map_metadata",
@@ -380,7 +417,10 @@ def _process_one(conn, row: dict, archive_dir: Path, library_dir: Path, execute:
         measured = ffmpeg_measure_loudnorm(source, TARGET_I, TARGET_TP, TARGET_LRA)
         loudnorm_filter = build_second_pass_filter(measured, TARGET_I, TARGET_TP, TARGET_LRA)
 
-        cmd = build_bake_command(source, tmp_output, loudnorm_filter, has_art)
+        cmd = build_bake_command(
+            source, tmp_output, loudnorm_filter, has_art,
+            sample_fmt=source_sample_fmt(source),
+        )
         bake = subprocess.run(cmd, capture_output=True, text=True, check=True)
         achieved = parse_output_loudness(bake.stderr)
         verify_bake(source, tmp_output, achieved=achieved)
@@ -448,6 +488,12 @@ def main() -> int:
     library_dir = cfg.alac_library
 
     conn = open_db(cfg.db_path)
+    # A full bake is 10,446 rows and many hours, and it writes to the DB on
+    # every row. open_db's 10 s timeout is not enough against a concurrent
+    # stage: the Car build died outright on "database is locked" 2026-08-31
+    # because an acousticid drain held it. Wait rather than abort a run that
+    # has already spent hours of CPU.
+    conn.execute("PRAGMA busy_timeout = 300000")  # 5 minutes
 
     unmigrated = _unmigrated_count(conn, library_dir)
     if unmigrated:
@@ -468,15 +514,19 @@ def main() -> int:
     print(f"  library: {library_dir}\n")
 
     baked = skipped = errored = 0
-    for row in rows:
-        result = _process_one(conn, row, archive_dir, library_dir, args.execute)
-        print(f"  {result}")
-        if result.startswith("BAKED") or result.startswith("WOULD BAKE"):
-            baked += 1
-        elif result.startswith("SKIP"):
-            skipped += 1
-        else:
-            errored += 1
+    # Same reasoning as the Car build: hours of ffmpeg at load 9+ on 8 cores
+    # is fine overnight and miserable at the keyboard. Pauses on input,
+    # resumes after 40s quiet. MUSAEUS_NO_IDLE_THROTTLE=1 opts out.
+    with IdleThrottle():
+        for row in rows:
+            result = _process_one(conn, row, archive_dir, library_dir, args.execute)
+            print(f"  {result}")
+            if result.startswith("BAKED") or result.startswith("WOULD BAKE"):
+                baked += 1
+            elif result.startswith("SKIP"):
+                skipped += 1
+            else:
+                errored += 1
 
     conn.close()
     verb = "baked" if args.execute else "would bake"
