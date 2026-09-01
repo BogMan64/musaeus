@@ -20,6 +20,9 @@ Pipeline commands:
     audit            Physical-presence gate before DB snapshot+wipe (Act 3)
     dupe-resolver    Physically relocate duplicate losers to review folder (Act 2)
     cross-dupe       Flag files already in ALAC-Library from a prior batch (Act 2)
+    edition          Preview what would go into an edition (lossless/car/
+                     iphone) with an optional --budget-gb; selection only,
+                     encodes nothing
     forge            Measure EBU R128 loudness + write ReplayGain tags
     tagger           Write normalised DB metadata back to file tags
     auditor          Pre-forge LUFS audit (flags out-of-window files)
@@ -718,6 +721,66 @@ def _cmd_db_tune() -> int:
 # ── Upgrade check command ─────────────────────────────────────────────────────
 
 
+def _cmd_edition(args) -> int:
+    """Preview an edition's selection. Reads only -- encodes nothing.
+
+    Exists because the expensive half of building an edition is the encode,
+    and until now there was no way to see WHAT would be encoded without
+    running it. A 32 GB device budget has to be checked before six hours of
+    ffmpeg, not after.
+    """
+    from .editions import EDITIONS, select_edition
+
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    spec = EDITIONS[args.name]
+    budget = int(args.budget_gb * 1_000_000_000) if args.budget_gb else None
+
+    conn = open_db(cfg.db_path)
+    try:
+        sel = select_edition(
+            conn, spec,
+            genres=set(args.genre) if args.genre else None,
+            artists=set(args.artist) if args.artist else None,
+            budget_bytes=budget,
+        )
+    finally:
+        conn.close()
+
+    print()
+    print(f"  Edition : {spec.name}")
+    print(f"  Format  : {spec.codec.upper()}"
+          + (f" {spec.bitrate_kbps}k" if spec.bitrate_kbps else " (lossless)")
+          + f", {spec.lufs_target} LUFS"
+          + (f", capped at {spec.max_sample_rate} Hz" if spec.max_sample_rate else ""))
+    print(f"  {sel.summary()}")
+
+    if sel.skipped_for_budget:
+        print(f"\n  {len(sel.skipped_for_budget):,} track(s) did not fit. "
+              f"Lowest-priority genres are dropped first.")
+
+    if args.list:
+        print()
+        for t in sel.included:
+            print(f"    [{t.genre or '-'}] {t.artist} — {t.title}")
+    else:
+        by_genre: dict[str, int] = {}
+        for t in sel.included:
+            by_genre[t.genre or "(none)"] = by_genre.get(t.genre or "(none)", 0) + 1
+        print()
+        for g, n in sorted(by_genre.items(), key=lambda kv: (-kv[1], kv[0]))[:12]:
+            print(f"    {n:>6,}  {g}")
+        if len(by_genre) > 12:
+            print(f"    {'':>6}  ... and {len(by_genre) - 12} more genre(s)")
+
+    print("\n  Selection only — nothing was encoded or written.\n")
+    return 0
+
+
 def _cmd_upgrade_check(write_csv: bool = False, min_gap: int = 0) -> int:
     try:
         cfg = get_config()
@@ -1218,6 +1281,23 @@ def _build_parser() -> argparse.ArgumentParser:
     overnight_p.add_argument("--dry-run", action="store_true", help="Preview only")
 
     # playlist
+    # edition
+    edition_p = sub.add_parser(
+        "edition",
+        help="Preview what would go into an edition (selection only — encodes nothing)",
+    )
+    edition_p.add_argument("name", choices=("lossless", "car", "iphone"),
+                           help="Which edition to select for")
+    edition_p.add_argument("--budget-gb", type=float, metavar="GB", default=None,
+                           help="Device budget; fills in genre-priority order and "
+                                "reports what did not fit")
+    edition_p.add_argument("--genre", action="append", metavar="NAME", default=None,
+                           help="Restrict to this genre (exact match; repeatable)")
+    edition_p.add_argument("--artist", action="append", metavar="NAME", default=None,
+                           help="Restrict to this artist (exact match; repeatable)")
+    edition_p.add_argument("--list", action="store_true",
+                           help="Print every selected track, not just the summary")
+
     playlist_p = sub.add_parser(
         "playlist",
         help="Build M3U8 playlists (genre + All) with relative paths — works on Android & Apple",
@@ -1664,6 +1744,9 @@ def main() -> None:
                 NearDupeStage,
             ]
             sys.exit(_run_pipeline(overnight_pipeline, dry_run=dry_run))
+
+        elif command == "edition":
+            sys.exit(_cmd_edition(args))
 
         elif command == "playlist":
             sys.exit(_run_pipeline([PlaylistStage], dry_run=dry_run))
