@@ -294,6 +294,49 @@ class AlbumArtStage(BaseStage):
 
     NAME = "albumart"
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A file this stage says it gave art to must actually have art.
+
+        This is the stage that made the case for the whole mechanism. On
+        2026-08-31 it reported "OK ✓verified | changed=10549" while every
+        single embed failed -- `_embed_art` had named its temp file
+        `track.m4a.artmp`, ffmpeg could not infer a muxer from `.artmp`,
+        and the encode died every time. ART_EMBEDDED had been zero for the
+        project's entire history. Nothing noticed, because the stage's
+        claim was checked against nothing.
+
+        So the check is deliberately against the FILE, not the row: read
+        has_art back from ffprobe rather than from the database column
+        this stage just wrote. A stage confirming its own bookkeeping
+        proves only that it can write to SQLite.
+
+        Samples rather than re-probing 10,000 files -- the point is to
+        catch a wholesale failure, not to double the runtime.
+        """
+        rows = ctx.conn.execute(
+            "SELECT file_path FROM archive "
+            " WHERE has_art = 1 AND art_checked_at IS NOT NULL "
+            " ORDER BY art_checked_at DESC LIMIT 5"
+        ).fetchall()
+        if not rows:
+            return []
+
+        checked = [r for r in rows if Path(r["file_path"]).is_file()]
+        if not checked:
+            return []
+
+        artless = [
+            Path(r["file_path"]).name
+            for r in checked
+            if not _has_embedded_art(r["file_path"])
+        ]
+        if not artless:
+            return []
+        return [
+            f"{len(artless)} of {len(checked)} sampled file(s) are recorded as "
+            f"having art but ffprobe finds none: {', '.join(artless[:3])}"
+        ]
+
     def validate(self, ctx: RunContext) -> None:
         if not shutil.which("ffprobe"):
             raise StageError("ffprobe not found — AlbumArt requires ffprobe.")
