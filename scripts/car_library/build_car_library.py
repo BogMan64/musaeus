@@ -76,6 +76,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 from musaeus.config import get_config  # noqa: E402
 from musaeus.db import open_db  # noqa: E402
 from musaeus.hasher import audio_hash_safe  # noqa: E402
+from musaeus.idle_throttle import IdleThrottle  # noqa: E402
 
 VENDOR_DIR = Path(__file__).resolve().parent / "vendor"
 AUDIO_EXTENSIONS = {".m4a", ".flac", ".alac", ".wav", ".aiff"}
@@ -277,11 +278,17 @@ def main() -> int:
     # masker below -- without it the vendor falls back to ORPHEUS's RUNS.
     env["ORPHEUS_NOISE_DIR"] = str(cfg.runs_root / "Noise")
     print("\n=== Encoding (ALAC/FLAC -> 256k AAC) ===")
-    result = subprocess.run(
-        [sys.executable, str(VENDOR_DIR / "build_aac_library.py"), "--profile", "car", "--apply"],
-        cwd=str(VENDOR_DIR),
-        env=env,
-    )
+    # A full edition is ~44 h of ffmpeg and drives load past 9 on 8 cores.
+    # Always on: it costs nothing when the machine is idle, and it is the
+    # difference between a build you can leave running and one you cannot
+    # use the machine through. MUSAEUS_NO_IDLE_THROTTLE=1 opts out.
+    with IdleThrottle():
+        result = subprocess.run(
+            [sys.executable, str(VENDOR_DIR / "build_aac_library.py"),
+             "--profile", "car", "--apply"],
+            cwd=str(VENDOR_DIR),
+            env=env,
+        )
     if result.returncode != 0:
         print("Encode step failed -- aborting.", file=sys.stderr)
         cfg_db.close()
@@ -295,14 +302,15 @@ def main() -> int:
         env = os.environ.copy()
         env["ORPHEUS_NOISE_DIR"] = str(cfg.runs_root / "Noise")
         print("\n=== Masking (mixing car-cabin noise under tracks) ===")
-        result = subprocess.run(
-            [
-                sys.executable, str(VENDOR_DIR / "orpheus_noise_masker.py"),
-                "--apply", "--src", str(encoded_dir), "--out", str(masked_dir), "--yes",
-            ],
-            cwd=str(VENDOR_DIR),
-            env=env,
-        )
+        with IdleThrottle():
+            result = subprocess.run(
+                [
+                    sys.executable, str(VENDOR_DIR / "orpheus_noise_masker.py"),
+                    "--apply", "--src", str(encoded_dir), "--out", str(masked_dir), "--yes",
+                ],
+                cwd=str(VENDOR_DIR),
+                env=env,
+            )
         if result.returncode != 0:
             print("Masking step failed -- output stops at the unmasked encode.", file=sys.stderr)
         else:
