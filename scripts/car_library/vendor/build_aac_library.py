@@ -394,8 +394,17 @@ def car_sample_rate(source_rate: int | None) -> int | None:
     power of two -- 192->48 and 96->48 are /4 and /2, 88.2->44.1 is /2 --
     rather than crossing families and resampling at 160/147.
     """
-    if not source_rate or source_rate <= 48_000:
-        return None                      # already safe; do not touch it
+    if not source_rate:
+        return None                      # unreadable: do not guess
+    if source_rate <= 48_000:
+        # Pin it to itself rather than returning None. The rate must ALWAYS
+        # be stated: ffmpeg's loudnorm filter resamples internally and emits
+        # at its own rate, so an unpinned encode takes the FILTER's rate,
+        # not the source's. Measured 2026-08-31: a 44,100 Hz master came out
+        # as 96,000 Hz AAC through the loudnorm chain, with no downsample
+        # anywhere in sight to blame. Capping only on the way down left every
+        # other file exposed to that.
+        return source_rate
     return 44_100 if source_rate % 44_100 == 0 else 48_000
 
 

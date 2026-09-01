@@ -27,9 +27,18 @@ from build_aac_library import build_ffmpeg_command, car_sample_rate  # noqa: E40
 
 class TestCarSampleRate:
     @pytest.mark.parametrize("rate", [8_000, 22_050, 44_100, 48_000])
-    def test_at_or_below_48k_is_left_alone(self, rate: int) -> None:
-        """Half the library is already 44.1 -- resampling it gains nothing."""
-        assert car_sample_rate(rate) is None
+    def test_at_or_below_48k_is_pinned_to_itself_not_changed(self, rate: int) -> None:
+        """Half the library is already 44.1 -- resampling it gains nothing,
+        but the rate must still be STATED.
+
+        ffmpeg's loudnorm filter resamples internally and emits at its own
+        rate, so an encode with no -ar takes the FILTER's rate rather than
+        the source's. Measured 2026-08-31: a 44,100 Hz master came out as
+        96,000 Hz AAC through the loudnorm chain with no downsample involved.
+        Returning None here (the first version of this fix) left every file
+        at or below 48k exposed to exactly that.
+        """
+        assert car_sample_rate(rate) == rate
 
     @pytest.mark.parametrize("source,expected", [
         (192_000, 48_000),   # /4  -- 40% of the library
@@ -51,6 +60,13 @@ class TestCarSampleRate:
         """A probe that fails must not silently force a resample."""
         assert car_sample_rate(None) is None
         assert car_sample_rate(0) is None
+
+    def test_every_readable_rate_produces_an_explicit_ar(self) -> None:
+        """The property that actually protects the encode: whatever the
+        source, the command states a rate rather than inheriting one."""
+        for rate in (22_050, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000):
+            assert car_sample_rate(rate) is not None
+            assert car_sample_rate(rate) <= 48_000
 
 
 class TestFfmpegCommand:

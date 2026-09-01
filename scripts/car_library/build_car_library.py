@@ -65,6 +65,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -117,6 +118,45 @@ def _find_output_by_tags(output_dir: Path, artist: str, title: str) -> Path | No
     return None
 
 
+def stage_from_catalogue(
+    conn, staging_dir: Path, limit: int | None = None
+) -> tuple[list[Path], list]:
+    """Symlink every CATALOGUED master into *staging_dir* for the encoder.
+
+    The vendor encoder discovers work by walking a directory with
+    rglob("*.m4a") and accepts no file list, so aiming it straight at
+    ALAC_Archive is not an option: the review folders now live inside the
+    archive, and DUPES_MOVED_FOR_REVIEW / TRIBUTE_REMOVED_FOR_REVIEW hold
+    masters deliberately set aside. Walking the archive would encode
+    removed knock-offs back into the car and quietly undo the removal.
+
+    So the catalogue decides, not the filesystem. Selection returns only
+    CATALOGUED rows, which by definition excludes anything quarantined,
+    staged for dupe review, or gone.
+
+    Symlinks rather than copies: 453 GB of masters staged by reference
+    costs nothing and cannot modify the originals. rglob sees a symlink to
+    a file as a file, and ffmpeg reads through it.
+    """
+    from musaeus.editions import CAR, output_path_for, select_edition
+
+    sel = select_edition(conn, CAR)
+    tracks = sel.included[:limit] if limit else sel.included
+
+    staged: list[Path] = []
+    for t in tracks:
+        src = Path(t.file_path)
+        if not src.is_file():
+            continue
+        link = output_path_for(t, CAR, staging_dir)
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(src)
+        staged.append(link)
+    return staged, tracks
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="MUSAEUS Car-Library Export -- AAC encode + optional noise masking"
@@ -124,6 +164,13 @@ def main() -> int:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--mask", action="store_true", help="Apply noise masking, skip the prompt")
     group.add_argument("--no-mask", action="store_true", help="Skip masking, skip the prompt")
+    parser.add_argument("--from-catalogue", action="store_true",
+                        help="Build from every CATALOGUED master rather than from "
+                             "files hand-dropped into the input folder")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Report the plan and encode nothing")
+    parser.add_argument("--limit", type=int, metavar="N", default=None,
+                        help="Stage at most N tracks (for a test build)")
     args = parser.parse_args()
 
     cfg = get_config()
@@ -134,7 +181,31 @@ def main() -> int:
 
     input_dir.mkdir(parents=True, exist_ok=True)
 
-    files = find_input_files(input_dir)
+    if args.from_catalogue:
+        staging_dir = input_dir / "_staged"
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir)
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        conn_sel = open_db(cfg.db_path)
+        try:
+            files, tracks = stage_from_catalogue(conn_sel, staging_dir, args.limit)
+        finally:
+            conn_sel.close()
+        input_dir = staging_dir
+        est_gb = sum(
+            t.duration * 256 * 1000 / 8 * 1.02 for t in tracks
+        ) / 1_000_000_000
+        print(f"Staged {len(files):,} master(s) from the catalogue "
+              f"(~{est_gb:.1f} GB of AAC to write).")
+        if args.dry_run:
+            print("\n[DRY RUN] Nothing encoded. First 10 of the plan:")
+            for t in tracks[:10]:
+                print(f"    [{t.genre or '-'}] {t.artist} — {t.title}")
+            print(f"\n    ... {len(tracks):,} track(s) total.")
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            return 0
+    else:
+        files = find_input_files(input_dir)
     if not files:
         print(f"No audio files found in {input_dir}")
         print("Place the ALAC/FLAC files you want converted there and re-run.")
@@ -157,19 +228,45 @@ def main() -> int:
     # only matches files that are already real CATALOGUED library content,
     # not arbitrary drops).
     cfg_db = open_db(cfg.db_path)
+    # An encode runs for hours and only writes to the DB at the very end.
+    # Losing that write to a lock means the files are on disk but unrecorded,
+    # and the next run re-encodes all of them. Measured 2026-08-31: a 5-track
+    # build died with "database is locked" because an acousticid drain held
+    # the write lock -- the audio was fine, the bookkeeping was gone. Wait for
+    # the lock rather than throwing away the work.
+    cfg_db.execute("PRAGMA busy_timeout = 300000")  # 5 minutes
     source_rows: dict[Path, dict | None] = {}
-    for src in files:
-        digest, err = audio_hash_safe(src)
-        if err or not digest:
-            print(f"  WARNING: could not hash {src.name}: {err}")
-            source_rows[src] = None
-            continue
-        row = cfg_db.execute(
-            "SELECT file_path, artist, title FROM archive WHERE audio_hash = ?", (digest,)
-        ).fetchone()
-        source_rows[src] = dict(row) if row else None
-        if row is None:
-            print(f"  WARNING: {src.name} has no matching archive row (not a known MUSAEUS file)")
+    if args.from_catalogue:
+        # The staged entries are symlinks to masters we selected FROM the
+        # database, so the row is already known. Re-deriving it by hashing
+        # would decode all 10,545 files to rediscover what selection just
+        # told us -- hours of CPU to answer a question we already answered.
+        for link in files:
+            target = str(Path(link).resolve())
+            row = cfg_db.execute(
+                "SELECT file_path, artist, title FROM archive WHERE file_path = ?",
+                (target,),
+            ).fetchone()
+            source_rows[Path(link)] = dict(row) if row else None
+            if row is None:
+                print(f"  WARNING: staged {Path(link).name} resolves to {target}, "
+                      "which has no archive row")
+    else:
+        # Hand-dropped files: identity has to be rediscovered from the audio
+        # itself, because nothing says where they came from.
+        for src in files:
+            digest, err = audio_hash_safe(src)
+            if err or not digest:
+                print(f"  WARNING: could not hash {src.name}: {err}")
+                source_rows[src] = None
+                continue
+            row = cfg_db.execute(
+                "SELECT file_path, artist, title FROM archive WHERE audio_hash = ?", (digest,)
+            ).fetchone()
+            source_rows[src] = dict(row) if row else None
+            if row is None:
+                print(f"  WARNING: {src.name} has no matching archive row "
+                      "(not a known MUSAEUS file)")
 
     # Stage 1: encode
     encoded_dir.mkdir(parents=True, exist_ok=True)
