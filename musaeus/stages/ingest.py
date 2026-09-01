@@ -63,24 +63,42 @@ class IngestStage(BaseStage):
 
     @classmethod
     def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
-        """Files actually waiting in INBOX, plus any PENDING rows.
+        """INBOX files with no archive row — the ones ingest would add.
 
         Counted from the filesystem, not from archive rows: a file that has
         never been scanned has no row yet, so a row count reports 0 while
         the inbox is full. That is exactly what the first version did.
-        """
-        from ..config import AUDIO_EXTENSIONS
 
+        The SECOND version over-corrected into `waiting + pending`, which
+        breaks the planner's contract -- "items this stage would act on" --
+        in both directions at once. run() skips every path already in the
+        archive, so the PENDING rows are not work; and on 2026-09-01 all
+        10,489 of them were files still sitting in INBOX, so they were
+        already inside `waiting` and were added to themselves. The preview
+        offered 30,257 for a run that ingested 9,279.
+
+        Nothing it said was false -- there really were 19,768 files in
+        INBOX and 10,489 PENDING rows. Only the sum meant nothing, and the
+        sum is the number a person reads.
+
+        So: ask the same question run() asks, with the same definition of
+        "known", and report the overlap rather than folding it in.
+        """
         inbox = getattr(cfg, "inbox", None)
-        waiting = 0
-        if inbox is not None and Path(inbox).exists():
-            waiting = sum(
-                1
-                for p in Path(inbox).rglob("*")
-                if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS
+        if inbox is None or not Path(inbox).exists():
+            return 0, "INBOX does not exist — nothing to ingest"
+
+        found = _scan_inbox(Path(inbox))
+        known = _known_paths(conn)
+        new_files = sum(1 for p in found if str(p) not in known)
+        already = len(found) - new_files
+
+        if already:
+            return new_files, (
+                f"new files in INBOX ({new_files}); "
+                f"{already} already have rows and would be skipped"
             )
-        pending = conn.execute("SELECT COUNT(*) FROM archive WHERE status='PENDING'").fetchone()[0]
-        return waiting + pending, f"files waiting in INBOX ({waiting}) + PENDING rows ({pending})"
+        return new_files, "new files in INBOX"
 
     NAME = "ingest"
 

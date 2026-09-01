@@ -210,7 +210,7 @@ class TestIngestPlanCountsTheInboxNotJustRows:
         (inbox / "notes.txt").write_bytes(b"x")  # non-audio must not count
 
         conn = sqlite3.connect(":memory:")
-        conn.execute("CREATE TABLE archive (status TEXT)")
+        conn.execute("CREATE TABLE archive (file_path TEXT, status TEXT)")
         conn.commit()
 
         count, desc = IngestStage.plan_candidates(conn, SimpleNamespace(inbox=inbox))
@@ -226,7 +226,7 @@ class TestIngestPlanCountsTheInboxNotJustRows:
         inbox = tmp_path / "INBOX"
         inbox.mkdir()
         conn = sqlite3.connect(":memory:")
-        conn.execute("CREATE TABLE archive (status TEXT)")
+        conn.execute("CREATE TABLE archive (file_path TEXT, status TEXT)")
         conn.commit()
         count, _ = IngestStage.plan_candidates(conn, SimpleNamespace(inbox=inbox))
         assert count == 0
@@ -239,7 +239,7 @@ class TestIngestPlanCountsTheInboxNotJustRows:
         from musaeus.stages.ingest import IngestStage
 
         conn = sqlite3.connect(":memory:")
-        conn.execute("CREATE TABLE archive (status TEXT)")
+        conn.execute("CREATE TABLE archive (file_path TEXT, status TEXT)")
         conn.commit()
         count, _ = IngestStage.plan_candidates(conn, SimpleNamespace(inbox=tmp_path / "nope"))
         assert count == 0

@@ -45,6 +45,7 @@ from musaeus.stages.scholar import ScholarStage
 from musaeus.stages.sentinel import SentinelStage
 from musaeus.stages.spellcheck import SpellCheckStage
 from musaeus.stages.tagger import TaggerStage
+from musaeus.stages.tribute_quarantine import TributeQuarantineStage
 from musaeus.stages.various_artists_fix import VariousArtistsFixStage
 
 
@@ -102,7 +103,7 @@ def test_enrichment_is_default_on_and_positioned_last():
     # file-safety-critical stages -- rather than a fixed pair.
     from musaeus.stages import ENRICHMENT
 
-    assert DEFAULT_PIPELINE[-len(ENRICHMENT):] == ENRICHMENT
+    assert DEFAULT_PIPELINE[-len(ENRICHMENT) :] == ENRICHMENT
     assert _index(AuditStage) < _index(EnrichStage)
 
     # Within the block, order is a dependency chain, not a preference.
@@ -139,6 +140,15 @@ def test_full_default_pipeline_order_matches_current_design():
         SanitizeStage,
         ArtistConsolidateStage,
         VariousArtistsFixStage,
+        # Wired in 2026-09-01, having been standalone since the ORPHEUS
+        # port. It is the only stage that REMOVES work rather than doing
+        # it, so everything after it -- the genre law, dedup, the encoder
+        # -- is cost it can avoid paying. After ArtistConsolidate and
+        # VariousArtistsFix so it matches the settled artist name rather
+        # than the raw tag; before GenreValidate so junk artists never
+        # reach the genre law. Measured at 27 of 10,446 rows before
+        # wiring.
+        TributeQuarantineStage,
         # Genre is settled at the end of intake, once the artist is
         # canonical: the law is keyed on artist. Added 2026-08-24 -- it had
         # only ever run on demand, so a new file's genre came from its own

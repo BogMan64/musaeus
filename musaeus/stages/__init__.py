@@ -130,7 +130,10 @@ own network calls. `musaeus various-artists-fix` run standalone still
 defaults to MB lookups on.
 On-demand only (not part of the canonical chain): Auditor, Curator,
            Playlist, Ghost, AcousticID, Transcode, Reviewer, Organize,
-           IntegrityStage, TributeQuarantineStage, BitRotStage.
+           IntegrityStage, BitRotStage.
+TributeQuarantine moved out of that list into Act 1 on 2026-09-01 --
+see the comment at its position for why it sits after VariousArtistsFix
+and before GenreValidate.
 """
 
 from .acousticid import AcousticIDStage
@@ -291,6 +294,31 @@ ACT1_INTAKE_CORRECTION: list[type] = [
     SanitizeStage,
     ArtistConsolidateStage,
     VariousArtistsFixStage,
+    # Wired into Act 1 on 2026-09-01 (Grey's call); it had been standalone
+    # since it was ported from ORPHEUS.
+    #
+    # HERE, and not later, for one reason: it is the only stage that
+    # removes work rather than doing it. Everything after this point --
+    # GenreValidate's per-artist law, Act 2's dedup, Act 3's transcode --
+    # is cost paid per row, and a row this stage takes out is cost not
+    # paid. The 2026-09-01 INBOX brought in 175 filename-flagged karaoke
+    # files and 113 "originally performed by"; transcoding those to ALAC
+    # before deciding to remove them is the expensive order.
+    #
+    # AFTER ArtistConsolidate and VariousArtistsFix, because it matches on
+    # artist/title/album and those two stages are what make those columns
+    # canonical -- it should read the settled name, not the raw tag.
+    #
+    # BEFORE GenreValidate, so junk artists never reach the genre law.
+    #
+    # Its selection needed no change to be wired here: it queries
+    # status='CATALOGUED', which Scholar sets earlier in this same Act,
+    # and VariousArtistsFix directly above runs off the identical query.
+    #
+    # Measured against the live library before wiring, 2026-09-01: 27 of
+    # 10,446 catalogued rows (0.26%), small enough to read in full. It
+    # moves and never deletes, and writes a manifest and restore script.
+    TributeQuarantineStage,
     # Genre is settled here, at the end of intake, once the artist is
     # canonical -- the law is keyed on artist, so it cannot be applied
     # before ArtistConsolidate and VariousArtistsFix have run. Added to the

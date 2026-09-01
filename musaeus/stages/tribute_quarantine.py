@@ -158,9 +158,11 @@ def is_junk(artist: str, title: str, album: str) -> tuple[bool, str]:
 class TributeQuarantineStage(BaseStage):
     """
     Detect and quarantine tribute-band/karaoke/meditation-type content.
-    Standalone -- not part of DEFAULT_PIPELINE. Files are moved, never
-    deleted, into config.tribute_review_dir, mirroring DupeResolverStage's
-    DUPES_MOVED_FOR_REVIEW convention exactly.
+    Wired into Act 1 on 2026-09-01, after VariousArtistsFix and before
+    GenreValidate -- see stages/__init__.py for the ordering reasoning.
+    Files are moved, never deleted, into config.tribute_review_dir,
+    mirroring DupeResolverStage's DUPES_MOVED_FOR_REVIEW convention
+    exactly.
     """
 
     NAME = "tribute-quarantine"
@@ -222,6 +224,86 @@ class TributeQuarantineStage(BaseStage):
         restore_path.chmod(restore_path.stat().st_mode | stat.S_IEXEC)
 
         return manifest_path, restore_path
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """Confirm the quarantine moved files, and left a way back.
+
+        This stage moves real music out of the library on a regex match,
+        and as of 2026-09-01 it does so automatically inside Act 1 rather
+        than only when a human runs it. Three of the four checks are the
+        ones OrganizeStage needs for the same reason -- it is the same
+        operation -- and the fourth is specific to what makes this stage
+        safe to automate at all.
+
+        The file is not at the new path. The move reported success and did
+        not happen, and the row now points at nothing.
+
+        The file is at BOTH paths. A "move" that copied looks perfect
+        per-row and silently doubles the library; nothing that counts
+        successes can see it.
+
+        The row is still CATALOGUED. Then the DB says a quarantined file
+        is still in the library, and the next run quarantines it again.
+
+        The restore script is missing. "Moved, never deleted" is this
+        stage's entire safety argument, and the restore script is the only
+        thing that makes it true. A quarantine with no way back is a
+        deletion with extra steps, and it would be invisible: the files
+        moved, the rows updated, the count was right.
+        """
+        rows = ctx.conn.execute(
+            """
+            SELECT old_value AS source, new_value AS target
+              FROM events
+             WHERE stage = ? AND event_type = 'TRIBUTE_QUARANTINED'
+               AND run_id = ?
+             ORDER BY id DESC LIMIT 12
+            """,
+            (self.NAME, ctx.run_id),
+        ).fetchall()
+        if not rows:
+            return [
+                f"stage reported {result.files_changed} quarantined file(s) but the "
+                f"event log has no TRIBUTE_QUARANTINED for this run"
+            ]
+
+        problems: list[str] = []
+        for r in rows:
+            source, target = Path(r["source"]), Path(r["target"])
+            if not target.exists():
+                problems.append(f"quarantined file is not at the new path: {target.name}")
+            elif source.exists():
+                problems.append(
+                    f"{source.name} is at BOTH paths — the move copied, and the "
+                    f"library still holds it"
+                )
+
+        still_catalogued = ctx.conn.execute(
+            """
+            SELECT COUNT(*) FROM archive
+             WHERE status = 'CATALOGUED'
+               AND file_path IN (
+                   SELECT new_value FROM events
+                    WHERE stage = ? AND event_type = 'TRIBUTE_QUARANTINED'
+                      AND run_id = ?
+               )
+            """,
+            (self.NAME, ctx.run_id),
+        ).fetchone()[0]
+        if still_catalogued:
+            problems.append(
+                f"{still_catalogued} quarantined row(s) are still CATALOGUED — the "
+                f"library still counts them, and the next run moves them again"
+            )
+
+        review_dir = ctx.config.tribute_review_dir / self._batch_date(ctx)
+        if not any(review_dir.glob("restore_*.sh")):
+            problems.append(
+                f"no restore script in {review_dir} — files were moved with no "
+                f"way back, which is the one thing this stage promises"
+            )
+
+        return problems
 
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)

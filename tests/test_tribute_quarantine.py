@@ -1,6 +1,7 @@
 """
 Tests for TributeQuarantineStage — detect + quarantine tribute-band/
-karaoke/meditation content. Standalone stage, not part of DEFAULT_PIPELINE.
+karaoke/meditation content. Wired into Act 1 on 2026-09-01; see
+test_tribute_quarantine_wiring.py for its position and verification.
 
 Uses real files on disk (not mocked): this stage's whole purpose is a
 real filesystem move, a real manifest, and a real restore script -- same
