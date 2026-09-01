@@ -120,7 +120,8 @@ def _find_output_by_tags(output_dir: Path, artist: str, title: str) -> Path | No
 
 
 def stage_from_catalogue(
-    conn, staging_dir: Path, limit: int | None = None
+    conn, staging_dir: Path, limit: int | None = None,
+    edition: str = "car", budget_bytes: int | None = None,
 ) -> tuple[list[Path], list]:
     """Symlink every CATALOGUED master into *staging_dir* for the encoder.
 
@@ -139,9 +140,14 @@ def stage_from_catalogue(
     costs nothing and cannot modify the originals. rglob sees a symlink to
     a file as a file, and ffmpeg reads through it.
     """
-    from musaeus.editions import CAR, output_path_for, select_edition
+    from musaeus.editions import EDITIONS, output_path_for, select_edition
 
-    sel = select_edition(conn, CAR)
+    spec = EDITIONS[edition]
+    sel = select_edition(conn, spec, budget_bytes=budget_bytes)
+    if sel.skipped_for_budget:
+        print(f"  {len(sel.skipped_for_budget):,} track(s) do not fit the "
+              f"{budget_bytes / 1_000_000_000:.0f} GB budget; lowest-priority "
+              "genres are dropped first.")
     tracks = sel.included[:limit] if limit else sel.included
 
     staged: list[Path] = []
@@ -149,7 +155,7 @@ def stage_from_catalogue(
         src = Path(t.file_path)
         if not src.is_file():
             continue
-        link = output_path_for(t, CAR, staging_dir)
+        link = output_path_for(t, spec, staging_dir)
         link.parent.mkdir(parents=True, exist_ok=True)
         if link.is_symlink() or link.exists():
             link.unlink()
@@ -172,6 +178,15 @@ def main() -> int:
                         help="Report the plan and encode nothing")
     parser.add_argument("--limit", type=int, metavar="N", default=None,
                         help="Stage at most N tracks (for a test build)")
+    parser.add_argument("--edition", choices=("car", "iphone"), default="car",
+                        help="Which edition to build. iPhone is the same format "
+                             "(AAC 256k, -14 LUFS, <=48 kHz) with a size budget "
+                             "and no masking -- headphones have no road noise to "
+                             "mask. Not a fourth script with its own spelling of "
+                             "--execute; an edition differing only in selection.")
+    parser.add_argument("--budget-gb", type=float, metavar="GB", default=None,
+                        help="Device budget. Required in practice for iphone: "
+                             "81.7 GB of library does not fit a 30 GB phone.")
     args = parser.parse_args()
 
     cfg = get_config()
@@ -183,13 +198,25 @@ def main() -> int:
     input_dir.mkdir(parents=True, exist_ok=True)
 
     if args.from_catalogue:
-        staging_dir = input_dir / "_staged"
+        # Per-process staging. A shared "_staged" is not safe: this function
+        # rmtree's it on entry and again after a dry run, so a preview run
+        # deletes the symlink tree a LIVE encode is reading from. That
+        # happened 2026-09-01 -- an iPhone dry run pulled the staging out
+        # from under a running Car build at file 4,860, and the encoder
+        # spent the next 3,713 files reporting "No such file or directory".
+        # The encode was unharmed (already-converted output is skipped on a
+        # re-run) but hours of wall clock were lost to a preview.
+        staging_dir = input_dir / f"_staged_{os.getpid()}"
         if staging_dir.exists():
             shutil.rmtree(staging_dir)
         staging_dir.mkdir(parents=True, exist_ok=True)
         conn_sel = open_db(cfg.db_path)
         try:
-            files, tracks = stage_from_catalogue(conn_sel, staging_dir, args.limit)
+            files, tracks = stage_from_catalogue(
+                conn_sel, staging_dir, args.limit,
+                edition=args.edition,
+                budget_bytes=int(args.budget_gb * 1_000_000_000) if args.budget_gb else None,
+            )
         finally:
             conn_sel.close()
         input_dir = staging_dir
@@ -216,7 +243,12 @@ def main() -> int:
     for f in files:
         print(f"  {f.name}")
 
-    if args.mask:
+    if args.edition == "iphone" and not args.mask:
+        # Masking exists to sit under road noise in a car. On headphones it
+        # is just noise mixed into the music.
+        apply_masking = False
+        print("iPhone edition: masking off (no cabin noise to mask).")
+    elif args.mask:
         apply_masking = True
     elif args.no_mask:
         apply_masking = False
