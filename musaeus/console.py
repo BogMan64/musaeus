@@ -1068,6 +1068,75 @@ class Console:
 
     # ── Main menu ─────────────────────────────────────────────────────────────
 
+    def _edition_menu(self) -> None:
+        """Preview an edition's selection. Shows what WOULD be built and
+        what it would cost; never encodes.
+
+        The expensive half of building an edition is the encode -- the full
+        Car edition is ~44 hours -- so the useful question is what you would
+        get, answered before committing to it rather than after.
+        """
+        from .editions import EDITIONS, select_edition
+
+        _section("Build an Edition")
+        names = ["lossless", "car", "iphone"]
+        labels = [
+            "Lossless  — ALAC, -18 LUFS  → /home/grey/Music",
+            "Car       — AAC 256k, -14 LUFS, ≤48 kHz  → USB",
+            "iPhone    — AAC 256k, -14 LUFS, size-budgeted",
+            "Back",
+        ]
+        choice = _choose("Which edition", labels)
+        try:
+            idx = int(choice)
+        except ValueError:
+            return
+        if idx == 3:
+            return
+
+        spec = EDITIONS[names[idx]]
+
+        budget = None
+        if spec.name == "iphone":
+            # The only edition where a budget is not optional: 81.7 GB of
+            # library will not go into a 30 GB phone, so something must be
+            # dropped and the owner chooses how much.
+            raw = _prompt("Device budget in GB (blank = no limit)").strip()
+            if raw:
+                try:
+                    budget = int(float(raw) * 1_000_000_000)
+                except ValueError:
+                    _warn(f"Not a number: {raw!r}")
+                    return
+
+        conn = self._open_db()
+        if conn is None:
+            return
+        try:
+            sel = select_edition(conn, spec, budget_bytes=budget)
+        finally:
+            conn.close()
+
+        _ok(sel.summary())
+        _info(f"Format: {spec.codec.upper()}"
+              + (f" {spec.bitrate_kbps}k" if spec.bitrate_kbps else " (lossless)")
+              + f", {spec.lufs_target} LUFS"
+              + (f", capped at {spec.max_sample_rate} Hz" if spec.max_sample_rate else ""))
+
+        by_genre: dict[str, int] = {}
+        for t in sel.included:
+            by_genre[t.genre or "(none)"] = by_genre.get(t.genre or "(none)", 0) + 1
+        for g, n in sorted(by_genre.items(), key=lambda kv: (-kv[1], kv[0]))[:10]:
+            print(f"      {n:>6,}  {g}")
+
+        if sel.skipped_for_budget:
+            _warn(f"{len(sel.skipped_for_budget):,} track(s) do not fit. "
+                  "Lowest-priority genres are dropped first.")
+
+        _info("Selection only — nothing was encoded or written.")
+        _info("To build it, run the builder for that edition; "
+              "both pause while you use the machine.")
+
     def _main_menu(self) -> None:
         options = [
             ("Status", self._show_status),
@@ -1075,6 +1144,7 @@ class Console:
             ("Run full pipeline  [LIVE]", lambda: self._run_pipeline(dry_run=False)),
             ("Run an Act…  (1 / 2 / 3 / Enrichment)", self._act_menu),
             ("Run single stage…", self._stage_menu),
+            ("Build an Edition…  (Lossless / Car / iPhone)", self._edition_menu),
             ("Dedupe review", self._run_dedupe),
             ("View recent runs", self._show_runs),
             ("Inspect a run", self._show_run_detail),
