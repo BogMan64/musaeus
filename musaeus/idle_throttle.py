@@ -133,6 +133,16 @@ class IdleThrottle:
         self._thread: threading.Thread | None = None
         self._paused = False
         self.pause_count = 0
+        # Cumulative seconds spent deliberately stopped.
+        #
+        # A caller that puts a timeout on a child needs this: SIGSTOP time
+        # is wall-clock time in which the child was FORBIDDEN to work, and
+        # counting it towards a hang deadline kills exactly the work the
+        # throttle is protecting. The deadline has to measure working
+        # time, and only this class knows the difference.
+        self._paused_total = 0.0
+        self._paused_since: float | None = None
+        self._paused_lock = threading.Lock()
 
     def __enter__(self) -> IdleThrottle:
         if os.environ.get("MUSAEUS_NO_IDLE_THROTTLE"):
@@ -156,7 +166,23 @@ class IdleThrottle:
             self._thread.join(timeout=5)
         # Never leave children frozen because the build ended mid-pause.
         self._signal(signal.SIGCONT)
+        self._mark_paused(False)
         return None
+
+    @property
+    def paused_seconds(self) -> float:
+        """Seconds this throttle has held children stopped, so far."""
+        with self._paused_lock:
+            live = (time.monotonic() - self._paused_since) if self._paused_since else 0.0
+            return self._paused_total + live
+
+    def _mark_paused(self, paused: bool) -> None:
+        with self._paused_lock:
+            if paused and self._paused_since is None:
+                self._paused_since = time.monotonic()
+            elif not paused and self._paused_since is not None:
+                self._paused_total += time.monotonic() - self._paused_since
+                self._paused_since = None
 
     def _signal(self, sig) -> int:
         pids = _descendants(os.getpid())
@@ -181,15 +207,18 @@ class IdleThrottle:
                 if n:
                     self._paused = True
                     self.pause_count += 1
+                    self._mark_paused(True)
                     logger.info("[idle] paused %d encoder process(es) — machine in use", n)
             elif not busy and self._paused:
                 n = self._signal(signal.SIGCONT)
                 self._paused = False
+                self._mark_paused(False)
                 logger.info("[idle] resumed %d encoder process(es)", n)
             self._stop.wait(_POLL_S)
         if self._paused:
             self._signal(signal.SIGCONT)
             self._paused = False
+            self._mark_paused(False)
 
 
 # ── Idle-only work ────────────────────────────────────────────────────────────
