@@ -20,6 +20,7 @@ Pipeline commands:
     audit            Physical-presence gate before DB snapshot+wipe (Act 3)
     dupe-resolver    Physically relocate duplicate losers to review folder (Act 2)
     cross-dupe       Flag files already in ALAC-Library from a prior batch (Act 2)
+    deep-scan        Decode-verify masters for silent truncation (idle-only)
     edition          Preview what would go into an edition (lossless/car/
                      iphone) with an optional --budget-gb; selection only,
                      encodes nothing
@@ -721,6 +722,69 @@ def _cmd_db_tune() -> int:
 # ── Upgrade check command ─────────────────────────────────────────────────────
 
 
+def _cmd_deep_scan(args) -> int:
+    """Decode every master and report the ones that no longer play.
+
+    Two masters were found truncated on 2026-09-01 -- intact container
+    header, missing audio -- by the Car encoder refusing to ship a
+    55-second version of a 5-minute song. Nothing was looking for them.
+    """
+    from .deep_scan import ensure_columns, pending_rows, scan
+
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    conn = open_db(cfg.db_path)
+    try:
+        ensure_columns(conn)
+        if args.reset:
+            conn.execute("UPDATE archive SET decode_checked_at=NULL, "
+                         "decode_ok=NULL, decode_errors=NULL")
+            conn.commit()
+            print("  previous results cleared.")
+
+        total = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'").fetchone()[0]
+        done = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' "
+            "AND decode_checked_at IS NOT NULL").fetchone()[0]
+        pending = len(pending_rows(conn))
+        print(f"\n  Deep integrity scan — {done:,} of {total:,} checked, "
+              f"{pending:,} pending")
+        if not args.now:
+            print("  Idle-only: runs while the machine is untouched, yields on input.")
+            print("  Interruptible and resumable — Ctrl-C loses nothing.\n")
+        else:
+            print("  Running at full speed (--now).\n")
+
+        def report(row, ok, n_err):
+            if not ok:
+                print(f"    CORRUPT  {(row['artist'] or '')[:24]:24} — "
+                      f"{(row['title'] or '')[:34]}  ({n_err} error(s))")
+
+        prog = scan(conn, limit=args.limit, idle_only=not args.now,
+                    decode_seconds=args.seconds, on_result=report)
+
+        print(f"\n  Checked {prog.checked:,} file(s). "
+              f"Corrupt: {len(prog.corrupt)}.")
+        if prog.yielded_to_user:
+            print(f"  Yielded to you {prog.yielded_to_user} time(s).")
+        bad = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE decode_ok = 0").fetchone()[0]
+        if bad:
+            print(f"  {bad} master(s) fail to decode overall — "
+                  "candidates for TuneMyMusic.csv re-sourcing.")
+    except KeyboardInterrupt:
+        print("\n  Interrupted. Progress is saved; re-run to continue.")
+        return 0
+    finally:
+        conn.close()
+    return 0
+
+
 def _cmd_edition(args) -> int:
     """Preview an edition's selection. Reads only -- encodes nothing.
 
@@ -1281,6 +1345,22 @@ def _build_parser() -> argparse.ArgumentParser:
     overnight_p.add_argument("--dry-run", action="store_true", help="Preview only")
 
     # playlist
+    # deep-scan
+    deepscan_p = sub.add_parser(
+        "deep-scan",
+        help="Decode-verify masters for silent truncation; runs only while idle",
+    )
+    deepscan_p.add_argument("--limit", type=int, metavar="N", default=None,
+                            help="Check at most N files this pass")
+    deepscan_p.add_argument("--now", action="store_true",
+                            help="Run immediately at full speed instead of waiting "
+                                 "for the machine to be idle")
+    deepscan_p.add_argument("--seconds", type=int, metavar="S", default=0,
+                            help="Decode only the first S seconds (0 = whole file). "
+                                 "A partial decode cannot see damage later in a track")
+    deepscan_p.add_argument("--reset", action="store_true",
+                            help="Clear all previous results and start a fresh pass")
+
     # edition
     edition_p = sub.add_parser(
         "edition",
@@ -1744,6 +1824,9 @@ def main() -> None:
                 NearDupeStage,
             ]
             sys.exit(_run_pipeline(overnight_pipeline, dry_run=dry_run))
+
+        elif command == "deep-scan":
+            sys.exit(_cmd_deep_scan(args))
 
         elif command == "edition":
             sys.exit(_cmd_edition(args))

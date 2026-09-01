@@ -190,3 +190,46 @@ class IdleThrottle:
         if self._paused:
             self._signal(signal.SIGCONT)
             self._paused = False
+
+
+# ── Idle-only work ────────────────────────────────────────────────────────────
+#
+# The throttle above pauses work while the machine is in use. This is the
+# inverse: work that runs ONLY while the machine is idle and yields the
+# instant someone touches it.
+#
+# The distinction matters for a job with no deadline. A full decode of
+# 10,446 masters is hours of CPU that nobody is waiting on, so it should
+# never compete for the machine at all -- not "run more politely", but
+# "do not exist while Grey is here". Anything using this must be resumable,
+# because it will be interrupted constantly and may take days of real time
+# to finish. That is fine; it is looking for damage that has already
+# happened.
+
+
+def is_idle(threshold_s: float = DEFAULT_IDLE_S) -> bool:
+    """True when the machine has been untouched for *threshold_s*.
+
+    False wherever idle cannot be measured -- headless, cron, Wayland
+    without the extension. Idle-ONLY work must not run when it cannot tell,
+    which is the opposite of the throttle's default: the throttle runs at
+    full speed when blind, this stays stopped.
+    """
+    probe = _XIdle()
+    if not probe.available:
+        return False
+    try:
+        return probe.idle_ms() >= threshold_s * 1000
+    except Exception:
+        return False
+
+
+def idle_seconds() -> float | None:
+    """Seconds since the last input, or None when unmeasurable."""
+    probe = _XIdle()
+    if not probe.available:
+        return None
+    try:
+        return probe.idle_ms() / 1000.0
+    except Exception:
+        return None
