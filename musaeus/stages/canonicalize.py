@@ -396,7 +396,7 @@ class CanonicalizeStage(BaseStage):
         """
         rows = ctx.conn.execute(
             """
-            SELECT a.file_path, a.audio_hash
+            SELECT a.file_path, a.audio_hash, a.duration
               FROM archive a
               JOIN events e ON e.file_path = a.file_path
              WHERE e.stage = ? AND e.event_type = 'CANONICALIZE'
@@ -439,6 +439,32 @@ class CanonicalizeStage(BaseStage):
             )
             if codec and codec != "alac":
                 problems.append(f"{p.name} is still {codec}, not alac, after canonicalize")
+
+            # Duration, added 2026-09-01. Codec + hash + existence all pass
+            # for a TRUNCATED conversion: right format, right identity, half
+            # the audio. Four masters were found that same day with intact
+            # container headers over missing audio -- a 5-minute song
+            # decoding to 55 seconds -- and none of them would have been
+            # caught by the three checks above.
+            #
+            # Read off the audio stream, not the container: a truncated file
+            # frequently keeps a correct-looking format-level duration,
+            # which is exactly what made those four invisible.
+            recorded = r["duration"]
+            if recorded and recorded > 0:
+                actual = next(
+                    (
+                        float(s2["duration"])
+                        for s2 in probe.get("streams", [])
+                        if s2.get("codec_type") == "audio" and s2.get("duration")
+                    ),
+                    None,
+                )
+                if actual is not None and abs(actual - recorded) > max(2.0, recorded * 0.02):
+                    problems.append(
+                        f"{p.name}: {actual:.1f}s after canonicalize but "
+                        f"{recorded:.1f}s recorded — conversion truncated the audio"
+                    )
         return problems
 
     def validate(self, ctx: RunContext) -> None:
