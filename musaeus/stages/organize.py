@@ -370,6 +370,58 @@ class OrganizeStage(BaseStage):
     Organize — rename and reorganize files into Artist/Album/ structure.
     """
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A file this stage says it moved must be at the new path.
+
+        Moves are the costliest thing to get quietly wrong, and this stage
+        has the worst near-miss on record: it would have flattened the
+        library, and after that fix would have re-merged
+        DUPES_MOVED_FOR_REVIEW back into it (both caught 2026-08-31,
+        before either ran).
+
+        The check is against DISK, using the new_value this run recorded in
+        its own events. A row whose file_path was updated to a path that
+        does not exist is the exact shape of a move that reported success
+        and did not happen — and it leaves the DB pointing at nothing,
+        which is how a file ended up treated as its own duplicate (scope
+        doc section 4.17).
+
+        The OLD path mattering too is deliberate: a "move" that copied
+        rather than moved leaves both, which looks fine per-row and
+        silently doubles the library.
+        """
+        rows = ctx.conn.execute(
+            """
+            SELECT old_value, new_value FROM events
+             WHERE run_id = ? AND stage = ?
+               AND event_type IN ('ORGANIZE_MOVE', 'ORGANIZE_RENAME')
+               AND new_value IS NOT NULL
+             ORDER BY id DESC LIMIT 8
+            """,
+            (ctx.run_id, self.NAME),
+        ).fetchall()
+        if not rows:
+            return []
+
+        problems: list[str] = []
+        absent = [r["new_value"] for r in rows if not Path(r["new_value"]).exists()]
+        if absent:
+            problems.append(
+                f"{len(absent)} of {len(rows)} file(s) this run reports moving are "
+                f"not at the new path, e.g. {Path(absent[0]).name}"
+            )
+        left_behind = [
+            r["old_value"] for r in rows
+            if r["old_value"] and Path(r["old_value"]).exists()
+            and Path(r["new_value"]).exists()
+        ]
+        if left_behind:
+            problems.append(
+                f"{len(left_behind)} file(s) exist at BOTH the old and new path — "
+                f"copied rather than moved, e.g. {Path(left_behind[0]).name}"
+            )
+        return problems
+
     NAME = "organize"
 
     @staticmethod
