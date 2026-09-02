@@ -90,7 +90,7 @@ FFPROBE = "ffprobe"
 TARGET_I = "-18.0"
 TARGET_TP = "-1.0"
 TARGET_LRA = "11.0"
-_DURATION_TOLERANCE_SEC = 1.5
+_DURATION_TOLERANCE_SEC = 2.0
 
 
 # ── Path resolution ──────────────────────────────────────────────────────────

@@ -139,7 +139,7 @@ TARGET_LRA = "11.0"
 # same value as canonicalize.py's _DURATION_TOLERANCE_SEC: container/codec
 # differences (and AAC encoder priming samples) can shift reported duration
 # slightly even when the audio content is correct.
-_DURATION_TOLERANCE_SEC = 1.5
+_DURATION_TOLERANCE_SEC = 2.0
 
 PROFILES = {
     "car": {

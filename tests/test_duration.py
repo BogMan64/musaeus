@@ -117,3 +117,45 @@ def test_unreadable_file_answers_none_rather_than_guessing(tmp_path: Path) -> No
     assert stream_seconds(missing) is None
     assert duration_with_source(missing) == (None, None)
     assert decodes_cleanly(missing)[0] is False
+
+
+# ── One tolerance, not five ───────────────────────────────────────────────────
+
+
+def test_the_tolerance_has_one_definition() -> None:
+    """It was 1.5 in four places and 2.0 in a fifth, whose comment cited
+    "the same rationale" as one of the 1.5s. Same stated reasoning,
+    different number, and nobody had decided. Grey ruled 2.0, 2026-09-02.
+    """
+    from musaeus.duration import TOLERANCE_SEC
+
+    assert TOLERANCE_SEC == 2.0
+
+
+def test_the_package_stages_take_it_from_that_definition() -> None:
+    """Not a copied literal -- the same object, so changing it moves them."""
+    from musaeus.duration import TOLERANCE_SEC
+    from musaeus.stages.auditor import _DEFAULT_TOLERANCE
+    from musaeus.stages.canonicalize import _DURATION_TOLERANCE_SEC
+
+    assert _DURATION_TOLERANCE_SEC == TOLERANCE_SEC
+    assert _DEFAULT_TOLERANCE == TOLERANCE_SEC
+
+
+def test_the_standalone_scripts_agree_on_the_value() -> None:
+    """They run as subprocesses with their own sys.path, so they carry a
+    literal rather than an import. It still has to be the same number."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    for rel in (
+        "scripts/alac_library/build_alac_library.py",
+        "scripts/car_library/vendor/build_aac_library.py",
+        "scripts/car_library/vendor/orpheus_noise_generator.py",
+        "scripts/car_library/vendor/orpheus_noise_masker.py",
+    ):
+        src = (root / rel).read_text()
+        found = re.findall(r"_DURATION_TOLERANCE_SEC\s*=\s*([0-9.]+)", src)
+        assert found, f"{rel} lost its tolerance constant"
+        assert float(found[0]) == 2.0, f"{rel} has {found[0]}, expected 2.0"

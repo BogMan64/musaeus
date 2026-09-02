@@ -87,6 +87,7 @@ from pathlib import Path
 
 from ..config import LOSSLESS_CODECS as _LOSSLESS_CODECS
 from ..context import RunContext, StageResult
+from ..duration import TOLERANCE_SEC
 from ..safety.mutation import MutationBoundary, PreconditionError, UnmanagedPathError
 from ..safety.recovery import (
     JOURNAL_FILENAME,
@@ -132,7 +133,10 @@ AAC_TRANSCODE_BITRATE = "256k"
 # Tolerance for post-conversion duration comparison (seconds). ffprobe
 # duration reporting can differ slightly between containers even when the
 # actual audio is identical.
-_DURATION_TOLERANCE_SEC = 1.5
+# Single definition in musaeus/duration.py (Grey's ruling 2026-09-02:
+# 2.0 everywhere; it was 1.5 in four places and 2.0 in a fifth whose
+# comment cited the same rationale as one of the 1.5s).
+_DURATION_TOLERANCE_SEC = TOLERANCE_SEC
 
 
 class CanonicalizeError(Exception):

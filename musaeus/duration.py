@@ -47,6 +47,18 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+#: How far a duration may drift before it means something.
+#:
+#: Container and codec rounding, and AAC encoder priming, shift a reported
+#: duration slightly even on a correct encode -- so a tolerance of zero
+#: cries wolf on working files, and verification that cries wolf gets
+#: switched off.
+#:
+#: Was 1.5 in four places and 2.0 in a fifth, whose comment cited "the same
+#: rationale" as one of the 1.5s. Same stated reasoning, different number,
+#: nobody deciding. Grey's ruling 2026-09-02: 2.0 everywhere.
+TOLERANCE_SEC = 2.0
+
 _TIMEOUT_S = 15
 #: A full decode of a long track is minutes, not seconds.
 _DECODE_TIMEOUT_S = 900

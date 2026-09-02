@@ -34,13 +34,17 @@ import subprocess
 from pathlib import Path
 
 from ..context import RunContext, StageResult
+from ..duration import TOLERANCE_SEC
 from .base import BaseStage, StageError
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TARGET_LUFS = -18.0
 _DEFAULT_TARGET_TP = -1.0
-_DEFAULT_TOLERANCE = 1.5
+# Single definition in musaeus/duration.py (Grey's ruling 2026-09-02:
+# 2.0 everywhere; it was 1.5 in four places and 2.0 in a fifth whose
+# comment cited the same rationale as one of the 1.5s).
+_DEFAULT_TOLERANCE = TOLERANCE_SEC
 _DEFAULT_MAX_FILES = 200
 _FILE_TIMEOUT_S = 90
 _COMMIT_EVERY = 50
