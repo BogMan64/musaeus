@@ -44,6 +44,11 @@ TARGET_LRA = 11.0
 BITRATE = "256k"
 SAMPLE_RATE = 44100
 
+# Container/codec rounding and AAC encoder priming shift reported duration
+# slightly even on a correct encode; same rationale as build_aac_library.py's
+# _DURATION_TOLERANCE_SEC.
+_DURATION_TOLERANCE_SEC = 2.0
+
 # (colour, duration_min, track_num)
 TRACKS = [
     ("pink", 30, 1),
@@ -117,6 +122,10 @@ def _measure(tmp: Path) -> dict:
         "-",
     ]
     res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise RuntimeError(
+            f"loudnorm measurement failed for {tmp.name}:\n{res.stderr[-400:]}"
+        )
     start = res.stderr.rfind("{")
     end = res.stderr.rfind("}")
     if start == -1 or end == -1:
@@ -150,6 +159,16 @@ def _encode(
         "aac",
         "-b:a",
         BITRATE,
+        # Pin the output rate. loudnorm silently ignores linear=true and
+        # falls back to dynamic mode -- ffmpeg prints "Normalization Type:
+        # Dynamic" -- which runs the graph at 192 kHz; the AAC encoder then
+        # caps at its own maximum and the bed lands at 96 kHz. Measured
+        # 2026-09-01: a 44,100 Hz anoisesrc came out as a 96,000 Hz bed for
+        # brown and white and 44,100 for pink, the rate depending purely on
+        # whether loudnorm happened to fall back for that colour. An
+        # unstated rate is decided by the filter, not by the source.
+        "-ar",
+        str(SAMPLE_RATE),
         "-vn",
         "-sn",
         "-metadata",
@@ -166,6 +185,12 @@ def _encode(
         "date=2026",
         "-metadata",
         f"track={track_num}",
+        # Forced, not inferred from the extension: the caller writes to a
+        # .part path first and publishes only after verification, so the
+        # on-disk name at write time is not ".m4a". Same reason
+        # build_aac_library.py forces it.
+        "-f",
+        "mp4",
         str(out),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -174,17 +199,98 @@ def _encode(
     return result.returncode == 0
 
 
+def _probe(path: Path) -> tuple[float | None, int | None]:
+    """(duration_sec, sample_rate) of the first audio stream; (None, None) if unreadable."""
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        raise RuntimeError("ffprobe not found in PATH.")
+    res = subprocess.run(
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=sample_rate",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "json",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode != 0:
+        return None, None
+    try:
+        data = json.loads(res.stdout)
+        streams = data.get("streams") or []
+        if not streams:
+            return None, None
+        return float(data["format"]["duration"]), int(streams[0]["sample_rate"])
+    except (ValueError, TypeError, KeyError):
+        return None, None
+
+
+def _is_good_track(path: Path, duration_min: int) -> bool:
+    """True when *path* is already a complete bed at the intended rate.
+
+    Existence alone is not enough. _encode used to write straight to the
+    final path, so an interrupted run left a truncated file that looked
+    finished and was skipped for ever after: Pink_Noise_60min.m4a sat at
+    3,064 s of an intended 3,600 and could never regenerate itself.
+    Measured 2026-09-01.
+    """
+    if not path.is_file():
+        return False
+    duration, rate = _probe(path)
+    if duration is None or rate is None:
+        return False
+    if rate != SAMPLE_RATE:
+        return False
+    if abs(duration - duration_min * 60) > _DURATION_TOLERANCE_SEC:
+        return False
+    return _decodes_cleanly(path)
+
+
+def _decodes_cleanly(path: Path) -> bool:
+    """Decode the whole file and report whether ffmpeg found it intact.
+
+    The duration check above reads the container, and a file truncated
+    mid-mdat still carries an honest duration in its moov -- so metadata
+    alone cannot tell a complete bed from a cut-off one. Decoding can.
+    Affordable here because the generator only ever deals with six files;
+    the masker keeps the cheaper metadata check because it faces ten
+    thousand, and relies on its own atomic publish instead.
+    """
+    result = subprocess.run(
+        [_ffmpeg(), "-v", "error", "-nostats", "-i", str(path), "-f", "null", "-"],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and not result.stderr.strip()
+
+
 # ── Per-track generation ───────────────────────────────────────────────────────
 
 
 def generate_track(colour: str, duration_min: int, track_num: int, overwrite: bool) -> bool:
     out = _output_path(colour, duration_min)
-    if out.exists() and not overwrite:
-        print(f"  SKIP   {out.name}  (already exists — use --overwrite to replace)")
+    if not overwrite and _is_good_track(out, duration_min):
+        print(f"  SKIP   {out.name}  (already complete — use --overwrite to replace)")
         return True
+    if out.exists() and not overwrite:
+        print(f"  REDO   {out.name}  (present but truncated or wrong sample rate)")
 
     duration_sec = duration_min * 60
     tmp = NOISE_DIR / f"_tmp_{colour}_{duration_min}min.flac"
+    # Encode to a side path and publish only after verification, so an
+    # interrupted run can never leave a half-written bed sitting at the name
+    # a later run will skip. Same discipline as build_aac_library.py's
+    # .bake_tmp -> _verify_bake -> rename.
+    part = out.with_name(out.name + ".part")
 
     print(f"  GEN    {out.name}  ({duration_min}min, {TARGET_LUFS}LUFS)", flush=True)
 
@@ -197,18 +303,30 @@ def generate_track(colour: str, duration_min: int, track_num: int, overwrite: bo
         stats = _measure(tmp)
 
         print(f"         step 3/3  encoding AAC {BITRATE} ...", flush=True)
-        ok = _encode(tmp, out, stats, colour, duration_min, track_num)
-        if ok:
-            dur_h = (
-                f"{duration_min // 60}h{duration_min % 60:02d}m"
-                if duration_min >= 60
-                else f"{duration_min}min"
+        if not _encode(tmp, part, stats, colour, duration_min, track_num):
+            return False
+
+        if not _is_good_track(part, duration_min):
+            duration, rate = _probe(part)
+            print(
+                f"  FAIL   {out.name}  (verify failed: duration={duration}, "
+                f"rate={rate}; expected {duration_sec}s at {SAMPLE_RATE} Hz)",
+                file=sys.stderr,
             )
-            print(f"  OK     {out.name}  ({dur_h}, {TARGET_LUFS} LUFS)")
-        return ok
+            return False
+
+        part.replace(out)
+        dur_h = (
+            f"{duration_min // 60}h{duration_min % 60:02d}m"
+            if duration_min >= 60
+            else f"{duration_min}min"
+        )
+        print(f"  OK     {out.name}  ({dur_h}, {TARGET_LUFS} LUFS, {SAMPLE_RATE} Hz)")
+        return True
     finally:
-        if tmp.exists():
-            tmp.unlink()
+        for leftover in (tmp, part):
+            if leftover.exists():
+                leftover.unlink()
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -235,7 +353,12 @@ def main() -> None:
     args = parser.parse_args()
     if not args.apply:
         print("\n>>> DRY-RUN: NO changes will be written.")
-        response = input("Apply changes? [y/N] ").strip().lower()
+        try:
+            response = input("Apply changes? [y/N] ").strip().lower()
+        except EOFError:
+            # Non-interactive caller. build_aac_library.py already guards
+            # its identical prompt this way; this one raised instead.
+            response = ""
         if response == "y":
             args.apply = True
         else:
@@ -259,11 +382,22 @@ def main() -> None:
     NOISE_DIR.mkdir(parents=True, exist_ok=True)
 
     ok_count = 0
+    failures: list[str] = []
     for colour, duration_min, track_num in tracks:
-        if generate_track(colour, duration_min, track_num, args.overwrite):
-            ok_count += 1
+        # _measure raises and nothing caught it, so a failure on track 4
+        # meant tracks 5 and 6 were never attempted.
+        try:
+            if generate_track(colour, duration_min, track_num, args.overwrite):
+                ok_count += 1
+            else:
+                failures.append(_stem(colour, duration_min))
+        except Exception as exc:  # noqa: BLE001 — reported, batch continues
+            print(f"  ERROR  {_stem(colour, duration_min)}: {exc}", file=sys.stderr)
+            failures.append(_stem(colour, duration_min))
 
     print(f"\n  ✓ {ok_count}/{len(tracks)} tracks generated  →  {NOISE_DIR}")
+    if failures:
+        print(f"  ✗ {len(failures)} failed: {', '.join(failures)}")
 
 
 if __name__ == "__main__":

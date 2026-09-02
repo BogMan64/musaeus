@@ -64,6 +64,10 @@ NOISE_FILES = {
 
 OUTPUT_BITRATE = "256k"
 
+# Container/codec rounding shifts reported duration slightly on a correct
+# encode; same value and rationale as the generator's.
+_DURATION_TOLERANCE_SEC = 2.0
+
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 
@@ -101,14 +105,67 @@ def get_duration(path: Path) -> float | None:
         return None
 
 
+def get_sample_rate(path: Path) -> int | None:
+    """Sample rate of the first audio stream, or None when unreadable."""
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=sample_rate",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        return int(result.stdout.strip().rstrip(","))
+    except (ValueError, AttributeError):
+        return None
+
+
+def _output_is_complete(src: Path, dst: Path) -> bool:
+    """True when *dst* is a finished mask of *src*.
+
+    Existence alone is not enough: an interrupted run leaves a short file
+    that a later run would skip for ever. Duration against the source is the
+    cheap check that catches it, and the rate has to match too -- an output
+    written before the rate was pinned is wrong even at full length.
+    """
+    if not dst.is_file():
+        return False
+    src_dur, dst_dur = get_duration(src), get_duration(dst)
+    if src_dur is None or dst_dur is None:
+        return False
+    if abs(src_dur - dst_dur) > _DURATION_TOLERANCE_SEC:
+        return False
+    return get_sample_rate(dst) == get_sample_rate(src)
+
+
 def mix_track(job: Job) -> tuple[bool, str]:
     """Mix noise under one track. Returns (success, message)."""
-    if job.dst.exists():
-        return True, f"SKIP (exists): {job.dst.name}"
+    if _output_is_complete(job.src, job.dst):
+        return True, f"SKIP (done): {job.dst.name}"
 
     duration = get_duration(job.src)
     if duration is None:
         return False, f"FAIL (no duration): {job.src.name}"
+
+    # State the output rate explicitly instead of leaving it to filter-graph
+    # negotiation. Measured 2026-09-01: the graph does resolve to the music's
+    # rate today, including against the 96 kHz beds sitting in the live
+    # library -- so this is not repairing an active defect. But nothing in the
+    # command said so, and the rate the car library ships at should not depend
+    # on how amix happens to negotiate between four inputs. The encoder decides
+    # the rate; the masker's job is to not change it, in writing.
+    src_rate = get_sample_rate(job.src)
+    if src_rate is None:
+        return False, f"FAIL (no sample rate): {job.src.name}"
 
     job.dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = job.dst.with_suffix(".tmp.m4a")
@@ -157,6 +214,8 @@ def mix_track(job: Job) -> tuple[bool, str]:
         "aac",
         "-b:a",
         OUTPUT_BITRATE,
+        "-ar",
+        str(src_rate),
         "-movflags",
         "+faststart",
         str(tmp),
@@ -168,6 +227,14 @@ def mix_track(job: Job) -> tuple[bool, str]:
             tmp.unlink()
         err = result.stderr[-200:].decode(errors="replace").strip()
         return False, f"FAIL: {job.src.name} — {err}"
+
+    # Verify before publishing. ffmpeg can exit 0 having written a file that
+    # is short or at the wrong rate; renaming it into place would make it
+    # indistinguishable from a good one on the next run.
+    if not _output_is_complete(job.src, tmp):
+        detail = f"duration={get_duration(tmp)}, rate={get_sample_rate(tmp)}"
+        tmp.unlink(missing_ok=True)
+        return False, f"FAIL (verify): {job.src.name} — {detail}"
 
     tmp.rename(job.dst)
     return True, f"OK: {job.dst.name}"
