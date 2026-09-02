@@ -41,6 +41,7 @@ from urllib.request import Request, urlopen
 
 from ..context import RunContext, StageResult
 from ..db import (
+    ensure_columns,
     mb_cache_get_artist,
     mb_cache_put_artist,
     open_mb_cache,
@@ -69,22 +70,17 @@ _ARTIST_SCORE = 85  # minimum MB score to accept an artist match (0-100)
 
 
 def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
-    """Add MB columns to archive if they don't exist yet (auto-migrate)."""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
-    for col, typedef in (
-        ("mb_artist_id", "TEXT"),
-        ("mb_artist_name", "TEXT"),
-        ("mb_release_id", "TEXT"),
-        ("mb_enriched_at", "TEXT"),
-    ):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
-    conn.commit()
-
-
-# ── MB API helpers ────────────────────────────────────────────────────────────
-
-
+    """Columns this stage owns. Mechanism shared via db.ensure_columns;
+    the list stays here, next to the code that reads them."""
+    ensure_columns(
+        conn,
+        (
+            ("mb_artist_id", "TEXT"),
+            ("mb_artist_name", "TEXT"),
+            ("mb_release_id", "TEXT"),
+            ("mb_enriched_at", "TEXT"),
+        ),
+    )
 def _mb_get(path: str, params: dict[str, str]) -> dict:
     """
     Perform a GET request to the MusicBrainz JSON API.

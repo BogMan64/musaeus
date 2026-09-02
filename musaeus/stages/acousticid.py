@@ -48,6 +48,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 from ..context import RunContext, StageResult
+from ..db import ensure_columns
 from ..network_policy import check as _network_check
 from .base import BaseStage, StageError
 
@@ -70,22 +71,18 @@ _MIN_DURATION_S = 30  # skip clips shorter than 30s (too unreliable)
 
 
 def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
-    for col, typedef in (
-        ("chromaprint", "TEXT"),
-        ("chromaprint_duration", "REAL"),
-        ("acousticid_recording", "TEXT"),
-        ("acousticid_score", "REAL"),
-        ("acousticid_checked_at", "TEXT"),
-    ):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
-    conn.commit()
-
-
-# ── fpcalc wrapper ────────────────────────────────────────────────────────────
-
-
+    """Columns this stage owns. Mechanism shared via db.ensure_columns;
+    the list stays here, next to the code that reads them."""
+    ensure_columns(
+        conn,
+        (
+            ("chromaprint", "TEXT"),
+            ("chromaprint_duration", "REAL"),
+            ("acousticid_recording", "TEXT"),
+            ("acousticid_score", "REAL"),
+            ("acousticid_checked_at", "TEXT"),
+        ),
+    )
 def _fpcalc(path: str) -> tuple[float, str]:
     """
     Run fpcalc on an audio file.

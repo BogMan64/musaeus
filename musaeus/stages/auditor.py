@@ -34,6 +34,7 @@ import subprocess
 from pathlib import Path
 
 from ..context import RunContext, StageResult
+from ..db import ensure_columns
 from ..duration import TOLERANCE_SEC
 from .base import BaseStage, StageError
 
@@ -51,19 +52,17 @@ _COMMIT_EVERY = 50
 
 
 def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
-    """Add auditor columns to archive if they don't exist yet (auto-migrate)."""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
-    for col, typedef in (
-        ("auditor_lufs", "REAL"),
-        ("auditor_tp", "REAL"),
-        ("auditor_flagged", "INTEGER DEFAULT 0"),
-        ("auditor_checked_at", "TEXT"),
-    ):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
-    conn.commit()
-
-
+    """Columns this stage owns. Mechanism shared via db.ensure_columns;
+    the list stays here, next to the code that reads them."""
+    ensure_columns(
+        conn,
+        (
+            ("auditor_lufs", "REAL"),
+            ("auditor_tp", "REAL"),
+            ("auditor_flagged", "INTEGER DEFAULT 0"),
+            ("auditor_checked_at", "TEXT"),
+        ),
+    )
 def _ffmpeg_lufs(path: Path, target_lufs: float, target_tp: float) -> tuple[float, float]:
     """
     Run ffmpeg loudnorm pass-1 analysis.

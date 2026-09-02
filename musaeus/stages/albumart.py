@@ -32,6 +32,7 @@ from pathlib import Path
 
 from ..art_quality import MIN_EDGE_PX, describe, image_dimensions
 from ..context import RunContext, StageResult
+from ..db import ensure_columns
 from .base import BaseStage, StageError
 
 logger = logging.getLogger(__name__)
@@ -59,20 +60,16 @@ _SIDECAR_NAMES = [
 
 
 def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
-    for col, typedef in (
-        ("has_art", "INTEGER"),
-        ("art_checked_at", "TEXT"),
-        ("art_px", "INTEGER"),
-    ):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
-    conn.commit()
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-
+    """Columns this stage owns. Mechanism shared via db.ensure_columns;
+    the list stays here, next to the code that reads them."""
+    ensure_columns(
+        conn,
+        (
+            ("has_art", "INTEGER"),
+            ("art_checked_at", "TEXT"),
+            ("art_px", "INTEGER"),
+        ),
+    )
 def _embedded_art(path: str) -> tuple[bool, int]:
     """(has_art, longest_edge_px) for the file's embedded cover.
 

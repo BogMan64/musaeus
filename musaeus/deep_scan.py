@@ -47,6 +47,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .db import ensure_columns as db_ensure_columns
 from .idle_throttle import DEFAULT_IDLE_S, is_idle
 
 logger = logging.getLogger(__name__)
@@ -59,16 +60,15 @@ _LOSSLESS = ("alac", "flac", "wav", "aiff")
 
 
 def ensure_columns(conn: sqlite3.Connection) -> None:
-    """Add the scan's bookkeeping columns if they are not there yet."""
-    existing = {r[1] for r in conn.execute("PRAGMA table_info(archive)").fetchall()}
-    for col, decl in (
-        ("decode_checked_at", "TEXT"),
-        ("decode_ok", "INTEGER"),
-        ("decode_errors", "INTEGER"),
-    ):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {decl}")
-    conn.commit()
+    """The columns this scan owns. Name kept: cli.py and corrupt.py import it."""
+    db_ensure_columns(
+        conn,
+        (
+            ("decode_checked_at", "TEXT"),
+            ("decode_ok", "INTEGER"),
+            ("decode_errors", "INTEGER"),
+        ),
+    )
 
 
 def pcm_bytes_per_second(sample_rate: int | None) -> int:

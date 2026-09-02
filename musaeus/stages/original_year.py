@@ -54,6 +54,7 @@ from datetime import datetime, timezone
 
 from ..brackets import strip_bracketed
 from ..context import RunContext, StageResult
+from ..db import ensure_columns
 from .base import BaseStage
 from .enrich import _clean_artist_for_lookup
 from .mb_enrich import _mb_get, _same_artist
@@ -253,18 +254,16 @@ def find_original_year(
 
 
 def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
-    """Add the original-year columns if they aren't there yet."""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
-    for col, typedef in (
-        ("original_year", "TEXT"),
-        ("original_year_source", "TEXT"),
-        ("original_year_checked_at", "TEXT"),
-    ):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
-    conn.commit()
-
-
+    """Columns this stage owns. Mechanism shared via db.ensure_columns;
+    the list stays here, next to the code that reads them."""
+    ensure_columns(
+        conn,
+        (
+            ("original_year", "TEXT"),
+            ("original_year_source", "TEXT"),
+            ("original_year_checked_at", "TEXT"),
+        ),
+    )
 class OriginalYearStage(BaseStage):
     """
     Fill `original_year` from MusicBrainz for catalogued tracks.

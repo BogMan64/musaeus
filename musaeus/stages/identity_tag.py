@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..context import RunContext, StageResult
+from ..db import ensure_columns
 from ..identity_tags import IDENTITY_FIELDS, read_identity, write_identity
 from .base import BaseStage
 
@@ -42,10 +43,8 @@ _MARKER = "identity_tagged_at"
 
 
 def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
-    if _MARKER not in existing:
-        conn.execute(f"ALTER TABLE archive ADD COLUMN {_MARKER} TEXT")
-        conn.commit()
+    """The single column this stage owns."""
+    ensure_columns(conn, ((_MARKER, "TEXT"),))
 
 
 class IdentityTagStage(BaseStage):

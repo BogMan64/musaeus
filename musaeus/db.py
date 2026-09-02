@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -284,6 +285,48 @@ def _rebuild_validation_issues(conn: sqlite3.Connection) -> int:
     after = conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
     conn.commit()
     return before - after
+
+
+def ensure_columns(
+    conn: sqlite3.Connection,
+    specs: Iterable[tuple[str, str]],
+    table: str = "archive",
+) -> int:
+    """Add columns the caller owns, if they are not there yet.
+
+    Returns the number added, so a caller can log a migration rather than
+    performing one silently.
+
+    WHY THIS EXISTS. Nine modules had written this same eight-line function
+    -- integrity, mb_enrich, transcode, original_year, identity_tag,
+    acousticid, auditor, albumart and deep_scan -- each reading
+    PRAGMA table_info, diffing a set, and ALTERing in a loop. Not one of
+    them was wrong. That is the point: it is a shape small enough that
+    writing it again is easier than finding it, which is exactly how three
+    bracket regexes, five duration-tolerance constants and seven duration
+    readers accumulated in this codebase in the same way.
+
+    WHAT IT DELIBERATELY DOES NOT DO. It does not decide WHICH columns a
+    stage needs. Each stage still declares its own, next to the code that
+    reads them, because that ownership is real -- acousticid's columns mean
+    nothing to albumart. Only the mechanism is shared. Same split as
+    brackets.py (share the alphabet, not the judgement) and duration.py
+    (share the reading, not the choice).
+
+    Distinct from _MIGRATIONS, which carries the columns the core schema
+    owns and applies them at open_db. A stage's own columns are added when
+    the stage first runs, so a vault that never runs AcousticID never grows
+    its five columns.
+    """
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    added = 0
+    for col, decl in specs:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+            added += 1
+    if added:
+        conn.commit()
+    return added
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
