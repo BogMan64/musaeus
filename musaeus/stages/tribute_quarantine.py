@@ -39,6 +39,7 @@ import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..artist_form import comparison_key
 from ..context import RunContext, StageResult
 from .base import BaseStage
 from .organize import build_track_filename, sanitize_path_component, unique_path
@@ -127,13 +128,14 @@ PROTECTED_ARTISTS: frozenset[str] = frozenset(
 )
 
 
-def _strip_article(name: str) -> str:
-    """ "Pretenders, The" and "The Pretenders" are the same artist.
-
-    The library stores the comma form and MusicBrainz returns the leading
-    form, so a protected entry written either way has to match both.
-    """
-    return re.sub(r"^the\s+|,\s*the$", "", name).strip()
+#: PROTECTED_ARTISTS keyed the same way the incoming artist will be.
+#:
+#: The 2026-09-01 version article-stripped only the ARTIST and compared it
+#: against the raw list, so a band called "Healing, The" reduced to
+#: "healing", missed the protected entry "the healing", and was
+#: quarantined as junk. Both sides must go through the same transform;
+#: deriving the set here is what makes forgetting impossible.
+_PROTECTED_KEYS = frozenset(comparison_key(p) for p in PROTECTED_ARTISTS)
 
 
 def is_junk(artist: str, title: str, album: str) -> tuple[bool, str]:
@@ -160,9 +162,8 @@ def is_junk(artist: str, title: str, album: str) -> tuple[bool, str]:
     # in the name -- Asleep at the Wheel, Sleeping at Last, ZZ Top's
     # "Sleeping Bag", the Beatles' "I'm Only Sleeping" -- are untouched,
     # because the junk patterns are word-bounded and none of them match.
-    for candidate in (artist_lower, _strip_article(artist_lower)):
-        if candidate in PROTECTED_ARTISTS:
-            return False, ""
+    if comparison_key(artist) in _PROTECTED_KEYS:
+        return False, ""
 
     for known in KNOWN_JUNK_ARTISTS:
         if known in artist_lower:

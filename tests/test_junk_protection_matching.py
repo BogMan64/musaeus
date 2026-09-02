@@ -106,3 +106,52 @@ def test_the_bare_jan_entry_is_gone() -> None:
     name. The canonical form is what the artist canon settles on."""
     assert "jan" not in PROTECTED_ARTISTS
     assert "jan & dean" in PROTECTED_ARTISTS
+
+
+# ── Both sides of the comparison must be keyed the same way ───────────────────
+#
+# Found 2026-09-02 by auditing for duplicated text logic. The 2026-09-01
+# version article-stripped only the ARTIST and compared it against the raw
+# PROTECTED_ARTISTS list. So "Healing, The" reduced to "healing", missed the
+# protected entry "the healing", and was quarantined as junk by the
+# \bhealing\b pattern -- a real band, moved out of the library, by a guard
+# written to protect it.
+#
+# The article rule also already existed in artist_form.py, whose own
+# docstring says "the honest test is that the transforms disagree, not a
+# regex of our own". A fresh regex was written anyway.
+
+
+@pytest.mark.parametrize(
+    "stored,leading",
+    [("Healing, The", "The Healing"), ("Monks, The", "The Monks"), ("Sleep", "Sleep")],
+)
+def test_both_article_forms_reach_the_protected_entry(stored, leading) -> None:
+    """The library stores the comma form; MusicBrainz returns the leading
+    form. A protected entry written either way has to match both."""
+    assert not is_junk(stored, "Some Song", "A Tribute Album")[0], stored
+    assert not is_junk(leading, "Some Song", "A Tribute Album")[0], leading
+
+
+def test_the_protected_list_is_keyed_by_the_same_transform() -> None:
+    """Deriving the set through comparison_key is what makes it impossible
+    to strip one side and not the other."""
+    from musaeus.artist_form import comparison_key
+    from musaeus.stages.tribute_quarantine import _PROTECTED_KEYS, PROTECTED_ARTISTS
+
+    assert frozenset(comparison_key(p) for p in PROTECTED_ARTISTS) == _PROTECTED_KEYS
+    assert comparison_key("Healing, The") in _PROTECTED_KEYS
+
+
+def test_a_comma_that_is_not_an_article_is_not_truncated() -> None:
+    """has_article() guards the split, so "Peter, Paul and Mary" does not
+    become "Peter" -- which would key it to a different act entirely."""
+    from musaeus.artist_form import comparison_key
+
+    assert comparison_key("Peter, Paul and Mary") == "peter, paul and mary"
+
+
+def test_the_hand_rolled_article_regex_is_gone() -> None:
+    import musaeus.stages.tribute_quarantine as tq
+
+    assert not hasattr(tq, "_strip_article"), "article logic belongs in artist_form"

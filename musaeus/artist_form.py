@@ -94,6 +94,32 @@ def has_article(name: str) -> bool:
     return natural_form(n) != sort_form(n)
 
 
+def comparison_key(name: str) -> str:
+    r"""A key under which every form of one name compares equal.
+
+    "The Pretenders", "Pretenders, The" and "Pretenders" all key to
+    "pretenders". For matching a name against a hand-written list where
+    nobody can be sure which form the entry used.
+
+    Built from this module's own transforms rather than a fresh regex.
+    tribute_quarantine grew its own `re.sub(r"^the\s+|,\s*the$", ...)` on
+    2026-09-01 and it stripped only the artist, never the list entries, so
+    a band called "Healing, The" reduced to "healing", missed the protected
+    entry "the healing", and was quarantined as junk. Deriving the key the
+    same way on both sides is what makes that impossible.
+
+    has_article() guards the split, so a name with a comma that is NOT an
+    article -- "Peter, Paul and Mary" -- is left alone rather than becoming
+    "Peter".
+    """
+    n = (name or "").strip()
+    if not n:
+        return ""
+    if has_article(n):
+        return sort_form(n).rsplit(",", 1)[0].strip().lower()
+    return n.lower()
+
+
 def tag_values(stored_artist: str) -> dict[str, str]:
     """What the artist and sort-artist tags should hold for a stored name.
 
