@@ -50,6 +50,7 @@ try:
 except ImportError:
     _HAVE_RAPIDFUZZ = False
 
+from ..brackets import CLOSE, OPEN
 from ..canon import ArtistCanon
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
@@ -82,13 +83,17 @@ STRIP_WORDS: tuple[str, ...] = (
 # arbitrary parentheticals can be part of the real title (e.g. "Here I Am
 # (Come and Take Me)" must not collapse to "Here I Am").
 _VERSION_BRACKET_WORDS = re.compile(
-    r"[\(\[]\s*(?:(?:19|20)\d{2}\s+)?(?:"
+    rf"[{OPEN}]\s*(?:(?:19|20)\d{{2}}\s+)?(?:"
     + r"|".join(re.escape(w) for w in sorted(STRIP_WORDS, key=len, reverse=True))
-    + r")[\s\d,./+-]*[\)\]]",
+    + rf")[\s\d,./+-]*[{CLOSE}]",
     re.IGNORECASE,
 )
-_YEAR_BRACKET_RE = re.compile(r"[\(\[]\s*(?:19|20)\d{2}\s*[\)\]]")  # "(2015)"
-_NUM_BRACKET_RE = re.compile(r"[\(\[]\s*\d{1,2}\s*[\)\]]")  # "[2]"
+# Bracket characters come from brackets.py so this file cannot drift
+# from the others again -- all three earlier copies knew ( ) and [ ]
+# and none knew { }. Only the ALPHABET is shared: WHICH annotations are
+# safe to strip stays here, deliberately, per the comment above.
+_YEAR_BRACKET_RE = re.compile(rf"[{OPEN}]\s*(?:19|20)\d{{2}}\s*[{CLOSE}]")  # "(2015)"
+_NUM_BRACKET_RE = re.compile(rf"[{OPEN}]\s*\d{{1,2}}\s*[{CLOSE}]")  # "[2]"
 
 # Same words also stripped as bare whole-words (catches "Song Title Remix"
 # with no surrounding parens at all).

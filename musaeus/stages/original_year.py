@@ -52,6 +52,7 @@ import re
 import time
 from datetime import datetime, timezone
 
+from ..brackets import strip_bracketed
 from ..context import RunContext, StageResult
 from .base import BaseStage
 from .enrich import _clean_artist_for_lookup
@@ -105,7 +106,6 @@ _EDITION_MARKER_RE = re.compile(
 
 # Any bracketed suffix at all -- the fallback when the targeted edition
 # markers above leave a title MusicBrainz still cannot find.
-_ALL_BRACKETS_RE = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]")
 
 
 def strip_edition_markers(title: str) -> str:
@@ -181,7 +181,7 @@ def find_original_year(
     # index -- "Downtown (64 Original Release with Orchestra)" finds nothing
     # under its full title. Only tried when the first attempt misses, and only
     # when stripping actually leaves a title behind.
-    bare = _ALL_BRACKETS_RE.sub("", lookup_title).strip()
+    bare = strip_bracketed(lookup_title)
     if bare and bare != lookup_title:
         attempts.append(bare)
 

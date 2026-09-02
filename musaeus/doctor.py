@@ -39,6 +39,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .brackets import strip_bracketed
 from .config import MusicConfig
 
 # The marker is often preceded by a year or a qualifier: "Slow Ride - 2016
@@ -49,7 +50,6 @@ _EDITION_RE = re.compile(
     r"(remaster|remastered|live|mono|stereo|single|album|radio|rerecorded|version|mix|edit)\b.*$",
     re.IGNORECASE,
 )
-_BRACKET_RE = re.compile(r"[\(\[].*?[\)\]]")
 _NOISE_RE = re.compile(r"[^a-z0-9]")
 
 
@@ -60,7 +60,7 @@ def song_key(artist: str | None, title: str | None) -> tuple[str, str]:
     same song; treating them as different is what produced a phantom
     "500 songs lost" report.
     """
-    t = _EDITION_RE.sub("", _BRACKET_RE.sub("", title or ""))
+    t = _EDITION_RE.sub("", strip_bracketed(title or ""))
     return (_NOISE_RE.sub("", (artist or "").lower()), _NOISE_RE.sub("", t.lower()))
 
 
