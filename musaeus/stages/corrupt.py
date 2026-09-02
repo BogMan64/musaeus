@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..context import StageResult
+from ..deep_scan import ensure_columns as deep_scan_ensure_columns
 from .base import BaseStage
 
 if TYPE_CHECKING:
@@ -72,7 +73,17 @@ SHORT_OK_KEYWORDS = re.compile(
 
 
 def ffprobe_duration(path: Path) -> float | None:
-    """Get actual decoded duration in seconds via ffprobe."""
+    """The duration ffprobe REPORTS. Metadata, never a measurement.
+
+    Asks the audio stream first and falls back to the container. In MP4 --
+    every file in this library -- both live in the same moov atom, written
+    before the audio, so both survive the audio being cut off. Measured
+    2026-09-02 on a truncated 30 s file: stream said 30.0, container said
+    30.0, and 409 frames actually decoded.
+
+    This said "actual decoded duration" until then, which is exactly
+    backwards: nothing here decodes. Use ffmpeg_decode_check for that.
+    """
     cmd = [
         "ffprobe",
         "-v",
@@ -159,7 +170,6 @@ def check_file(path: Path, codec: str | None, duration_db: float | None) -> tupl
     return False, ""
 
 
-
 def ffmpeg_decode_check(path: Path, seconds: int = 0) -> tuple[bool, str]:
     """Actually DECODE the audio and report whether ffmpeg found errors.
 
@@ -209,6 +219,11 @@ class CorruptStage(BaseStage):
         """Scan for corrupt files, optionally quarantine them."""
         result = self._make_result(dry_run=dry_run)
         conn = ctx.conn
+        # The decode columns are owned by deep_scan and added lazily, so on
+        # a database where deep_scan has never run they do not exist yet.
+        # Reusing its helper rather than adding a sixth _ensure_columns.
+        if not dry_run:
+            deep_scan_ensure_columns(conn)
 
         # Get all CATALOGUED tracks with file specs
         rows = conn.execute(
@@ -230,6 +245,7 @@ class CorruptStage(BaseStage):
         logger.info(f"[{self.NAME}] Scanning {len(rows):,} tracks for corruption...")
 
         suspects: list[dict] = []
+        cleared = 0
         quarantine_dir = ctx.vault_root / "QUARANTINE" / "corrupted"
 
         for row in rows:
@@ -240,7 +256,43 @@ class CorruptStage(BaseStage):
                 result.files_skipped += 1
                 continue
 
-            is_corrupt, reason = check_file(file_path, row["codec"], row["duration"])
+            is_suspect, reason = check_file(file_path, row["codec"], row["duration"])
+
+            # The size ratio is a PRIORITISER, not a verdict -- deep_scan.py
+            # says so and has the numbers: it flagged 418 files, of which 2
+            # were damaged and 91 were undamaged Bing Crosby / Count Basie
+            # mono recordings that genuinely compress to ~13% of PCM.
+            #
+            # This stage MOVES files to QUARANTINE. Acting on the ratio alone
+            # meant physically removing ~91 good masters on a heuristic that
+            # was right about 0.5% of the time. ffmpeg_decode_check has sat
+            # in this same module since the day before deep_scan was written,
+            # correct and never called from here.
+            #
+            # Only suspects are decoded, so the cost is bounded by how many
+            # the cheap check flags rather than by the size of the library.
+            if is_suspect:
+                decoded_ok, decode_err = ffmpeg_decode_check(file_path, seconds=0)
+                if not dry_run:
+                    conn.execute(
+                        "UPDATE archive SET decode_checked_at = datetime('now'), "
+                        "decode_ok = ?, decode_errors = ? WHERE file_path = ?",
+                        (1 if decoded_ok else 0, 0 if decoded_ok else 1, str(file_path)),
+                    )
+                if decoded_ok:
+                    # Flagged by shape, intact on inspection. Not corrupt.
+                    result.files_skipped += 1
+                    logger.info(
+                        "[%s] cleared: %s — %s, but decodes cleanly",
+                        self.NAME,
+                        file_path.name,
+                        reason,
+                    )
+                    cleared += 1
+                    continue
+                reason = f"{reason}; decode failed: {decode_err}"
+
+            is_corrupt = is_suspect
 
             if is_corrupt:
                 result.files_changed += 1
@@ -327,6 +379,16 @@ class CorruptStage(BaseStage):
                 result.notes.append(f"  ... and {len(suspects) - 10} more")
         else:
             result.notes.append("✓ No corrupt files detected")
+
+        # Say how many the cheap check accused and the decode acquitted.
+        # Silence here would hide the whole point of the change: on this
+        # library the ratio is expected to be wrong far more often than it
+        # is right, and a stage that quietly drops those would look
+        # identical to one that never flagged them.
+        if cleared:
+            result.notes.append(
+                f"{cleared} file(s) flagged by size ratio but decoded cleanly — not corrupt"
+            )
 
         ctx.record_stage(result)
         return result
