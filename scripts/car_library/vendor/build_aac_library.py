@@ -426,6 +426,26 @@ def probe_sample_rate(file_path: Path) -> int | None:
         return None
 
 
+def probe_channels(file_path: Path) -> int | None:
+    """Source channel count, or None when unreadable (leave it alone).
+
+    Mirrors probe_sample_rate deliberately: the two format properties that
+    must be STATED rather than inherited are read the same way.
+    """
+    proc = subprocess.run(
+        [FFPROBE, "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=channels", "-of", "csv=p=0", str(file_path)],
+        capture_output=True, text=True,
+    )
+    raw = (proc.stdout or "").strip().splitlines()
+    if proc.returncode != 0 or not raw:
+        return None
+    try:
+        return int(raw[0].strip().rstrip(","))
+    except ValueError:
+        return None
+
+
 def build_ffmpeg_command(
     input_file: Path,
     output_file: Path,
@@ -434,6 +454,7 @@ def build_ffmpeg_command(
     clean_tags: dict[str, str],
     loudnorm_filter: str,
     target_rate: int | None = None,
+    source_channels: int | None = None,
 ) -> list[str]:
     cmd = [FFMPEG]
 
@@ -457,6 +478,18 @@ def build_ffmpeg_command(
             "-b:a",
             bitrate,
             *(["-ar", str(target_rate)] if target_rate else []),
+            # Channels, stated. Left unsaid, ffmpeg inherits the source's
+            # layout: three 5.1 masters (Beck, Billy Squier, Hoobastank)
+            # shipped to the car as 5.1 AAC on 2026-09-01, which many head
+            # units will not decode. Same shape as the sample rate above,
+            # in the same command -- an unstated format property is decided
+            # by the input, not by the target.
+            #
+            # MONO STAYS MONO (Grey, 2026-09-02): -ac 2 would upmix the one
+            # genuinely mono master, a 1940s Ink Spots recording, inventing
+            # a channel that was never recorded. So this downmixes only
+            # what has MORE than two channels.
+            *(["-ac", "2"] if (source_channels or 0) > 2 else []),
             "-af",
             loudnorm_filter,
             "-c:v",
@@ -479,6 +512,8 @@ def build_ffmpeg_command(
             "-b:a",
             bitrate,
             *(["-ar", str(target_rate)] if target_rate else []),
+            # See the note in the branch above: stated, not inherited.
+            *(["-ac", "2"] if (source_channels or 0) > 2 else []),
             "-af",
             loudnorm_filter,
             "-map_metadata",
@@ -582,6 +617,7 @@ def convert_one(file_path: Path, profile_name: str) -> str:
             clean_tags=clean_tags,
             loudnorm_filter=loudnorm_filter,
             target_rate=car_sample_rate(probe_sample_rate(file_path)),
+            source_channels=probe_channels(file_path),
         )
 
         subprocess.run(cmd, capture_output=True, text=True, check=True)
