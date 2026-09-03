@@ -33,6 +33,36 @@ def _rec(score=100, artist="Al Green", length_ms=195000, **kw):
     return rec
 
 
+class TestEditionMarkerBracketStyles:
+    """_EDITION_MARKER_RE hardcoded ( and [ until 2026-09-03, missing the
+    curly-brace style the same way three other regexes did on 2026-09-02
+    -- found this time by a semgrep rule written specifically to catch a
+    fourth copy, the day after the first three were consolidated.
+    """
+
+    def test_curly_brace_edition_markers_are_removed(self):
+        assert strip_edition_markers("Song {Remastered}") == "Song"
+        assert strip_edition_markers("Song {2012 Remaster}") == "Song"
+
+    def test_mixed_bracket_styles_still_work(self):
+        assert strip_edition_markers("409 (Remastered 2012)") == "409"
+        assert strip_edition_markers("409 [Remastered 2012]") == "409"
+
+    def test_quantifiers_survived_sharing_the_bracket_alphabet(self):
+        """Interpolating brackets.OPEN/CLOSE turns the pattern into an
+        f-string, and an f-string silently eats \\d{4} into \\d4 -- hit
+        for real fixing neardupe.py's equivalent regexes on 2026-09-02.
+        Both instances in this pattern must have survived: the leading
+        year ("2012 Remaster)") and the trailing year ("Remastered 2012)").
+        """
+        from musaeus.stages.original_year import _EDITION_MARKER_RE
+
+        assert r"\d{4}" in _EDITION_MARKER_RE.pattern
+        assert r"\d4" not in _EDITION_MARKER_RE.pattern.replace(r"\d{4}", "")
+        assert strip_edition_markers("Song (2012 Remaster)") == "Song"
+        assert strip_edition_markers("Song (Remastered 2012)") == "Song"
+
+
 class TestEditionMarkerStripping:
     @pytest.mark.parametrize(
         ("raw", "expected"),

@@ -21,6 +21,7 @@ dev = [
     "pytest-cov",
     "ruff",
     "mypy>=1.5",
+    "semgrep",
 ]
 fuzzy = [
     "rapidfuzz>=3",

@@ -15,7 +15,6 @@ Based on ORPHEUS orpheus_corrupt_detector.py
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import subprocess
@@ -24,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from ..context import StageResult
 from ..deep_scan import ensure_columns as deep_scan_ensure_columns
+from ..duration import duration_with_source
 from .base import BaseStage
 
 if TYPE_CHECKING:
@@ -75,51 +75,23 @@ SHORT_OK_KEYWORDS = re.compile(
 def ffprobe_duration(path: Path) -> float | None:
     """The duration ffprobe REPORTS. Metadata, never a measurement.
 
-    Asks the audio stream first and falls back to the container. In MP4 --
-    every file in this library -- both live in the same moov atom, written
-    before the audio, so both survive the audio being cut off. Measured
-    2026-09-02 on a truncated 30 s file: stream said 30.0, container said
-    30.0, and 409 frames actually decoded.
+    Delegates to musaeus.duration.duration_with_source, which does exactly
+    this (stream first, container fallback) and is the single definition
+    after 2026-09-02's audit found seven independent copies of "read the
+    duration", split unnamed between container and stream. This function
+    used to carry its own copy of the same two ffprobe calls; a semgrep
+    rule written to guard against a THIRD copy caught this one still
+    standing the same day.
 
-    This said "actual decoded duration" until then, which is exactly
-    backwards: nothing here decodes. Use ffmpeg_decode_check for that.
+    In MP4 -- every file in this library -- both stream and container
+    duration live in the same moov atom, written before the audio, so both
+    survive the audio being cut off. Measured 2026-09-02 on a truncated
+    30 s file: stream said 30.0, container said 30.0, and 409 frames
+    actually decoded. This docstring said "actual decoded duration" until
+    that measurement -- exactly backwards, since nothing here decodes.
+    Use ffmpeg_decode_check for that.
     """
-    cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-select_streams",
-        "a:0",
-        "-show_entries",
-        "stream=duration",
-        "-of",
-        "json",
-        str(path),
-    ]
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        data = json.loads(r.stdout)
-        streams = data.get("streams", [])
-        if streams and streams[0].get("duration"):
-            return float(streams[0]["duration"])
-
-        # Fallback: format duration
-        cmd2 = [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "json",
-            str(path),
-        ]
-        r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=15)
-        data2 = json.loads(r2.stdout)
-        dur = data2.get("format", {}).get("duration")
-        return float(dur) if dur else None
-    except Exception:
-        return None
+    return duration_with_source(path)[0]
 
 
 def check_file(path: Path, codec: str | None, duration_db: float | None) -> tuple[bool, str]:

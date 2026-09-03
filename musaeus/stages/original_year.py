@@ -52,7 +52,7 @@ import re
 import time
 from datetime import datetime, timezone
 
-from ..brackets import strip_bracketed
+from ..brackets import CLOSE, OPEN, strip_bracketed
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
 from .base import BaseStage
@@ -93,15 +93,23 @@ def is_transient(reason: str) -> bool:
 # "Live", "Acoustic", "Demo" and "Radio Edit" are deliberately absent —
 # those name a genuinely different recording with its own release date.
 _EDITION_MARKER_RE = re.compile(
-    r"""\s*[\(\[]\s*
-        (?:\d{4}\s+)?
+    # Bracket characters come from brackets.py, not hardcoded, so this
+    # cannot drift from the others -- the earlier version hardcoded a
+    # parenthesis-and-square-bracket class only, the same blind spot as
+    # the three regexes fixed 2026-09-02 (missing the curly-brace form).
+    # Quantifiers are escaped as {{4}} rather
+    # than {4}: interpolating OPEN/CLOSE turns this into an f-string, and
+    # an f-string silently eats an un-escaped \d{4} into \d4 -- hit for
+    # real fixing neardupe.py's equivalent regexes the same day.
+    rf"""\s*[{OPEN}]\s*
+        (?:\d{{4}}\s+)?
         (?:digitally\s+)?
         (?:remaster(?:ed)?|re-?master(?:ed)?|mono|stereo|mono\s+version|
            stereo\s+version|album\s+version|single\s+version|
            \d+(?:st|nd|rd|th)\s+anniversary(?:\s+edition)?|
            deluxe(?:\s+edition)?|reissue|expanded(?:\s+edition)?)
-        (?:\s+\d{4})?
-        \s*[\)\]]""",
+        (?:\s+\d{{4}})?
+        \s*[{CLOSE}]""",
     re.IGNORECASE | re.VERBOSE,
 )
 
