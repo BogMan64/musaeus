@@ -46,6 +46,11 @@ def test_a_verification_failure_is_the_priority_section(tmp_path: Path) -> None:
     path = write_handoff_doc(ctx)
 
     assert path is not None
+    # The name is half the point: a fresh session is handed this doc, and
+    # must not mistake it for one of Grey's hand-written MUSAEUS_HANDOFF_*
+    # notes. Asserted positively -- naming the value that is wanted, not
+    # the one to avoid.
+    assert path.name == "ForClaudeHandoff_run_test.md"
     text = path.read_text()
     assert "Verification failures" in text
     assert "corrupt" in text

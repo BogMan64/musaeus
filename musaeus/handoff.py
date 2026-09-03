@@ -105,7 +105,7 @@ def _crash_reports(runs_root: Path, run_id: str) -> list[dict[str, Any]]:
 def _render(run_id: str, issues: list[dict[str, Any]], crashes: list[dict[str, Any]]) -> str:
     now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
     lines = [
-        f"# MUSAEUS run handoff — {run_id}",
+        f"# MUSAEUS ForClaudeHandoff — {run_id}",
         "",
         f"Generated {now}. This file exists because something in this run",
         "needs a human decision or a code fix -- see the sections below.",
@@ -178,7 +178,7 @@ def _render(run_id: str, issues: list[dict[str, Any]], crashes: list[dict[str, A
 
 
 def write_handoff_doc(ctx: RunContext) -> Path | None:
-    """Write RUNS/HANDOFFS/handoff_<run_id>.md if this run has anything
+    """Write RUNS/HANDOFFS/ForClaudeHandoff_<run_id>.md if this run has anything
     worth a second look; return its path, or None (writing nothing) for
     a clean run.
 
@@ -193,6 +193,6 @@ def write_handoff_doc(ctx: RunContext) -> Path | None:
 
     out_dir = ctx.runs_root / "HANDOFFS"
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"handoff_{ctx.run_id}.md"
+    path = out_dir / f"ForClaudeHandoff_{ctx.run_id}.md"
     path.write_text(_render(ctx.run_id, issues, crashes), encoding="utf-8")
     return path

@@ -429,7 +429,7 @@ def _run_pipeline(
 
     handoff_path = write_handoff_doc(ctx)
     if handoff_path is not None:
-        print(f"  Handoff doc (needs attention): {handoff_path}", file=sys.stderr)
+        print(f"  ForClaudeHandoff doc (needs attention): {handoff_path}", file=sys.stderr)
 
     ctx.finish()
     return exit_code
