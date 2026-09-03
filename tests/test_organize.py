@@ -640,3 +640,43 @@ class TestSetAsideFoldersAreLeftAlone:
 
         OrganizeStage().run(ctx)
         assert (batch / "Weezer" / "Blue Album" / "Weezer - Undone.m4a").exists()
+
+
+def test_a_path_component_never_exceeds_the_filesystem_byte_limit() -> None:
+    """Linux caps each path component at 255 BYTES, whatever the total path
+    length. Nothing enforced it, so the 388-byte 24-artist credit on
+    "Why Me (Live)" raised OSError 36 from unique_path()'s exists() check
+    and took dupe-resolver down mid-run on 2026-09-03. Six stages build
+    paths through these helpers, so the cap belongs here.
+
+    Asserts bytes, not characters: s[:255] counts codepoints and would
+    still overflow for any non-ASCII name."""
+    from musaeus.stages.organize import (
+        build_track_filename,
+        sanitize_path_component,
+        truncate_to_bytes,
+    )
+
+    long_artist = (
+        "Kris Kristofferson, Alison Krauss, Reba McEntire, Lady A, Willie Nelson, "
+        "Jon Randall, Larry Gatlin, Jessi Alexander, Jessi Colter, Jack Ingram, "
+        "Buddy Miller, Martina McBride, Ryan Bingham, Lee Ann Womack, Jennifer "
+        "Nettles, Rosanne Cash, Emmylou Harris, Rodney Crowell, Dierks Bentley & "
+        "The Travelin' McCourys, Darius Rucker, Jamey Johnson, Hank Williams Jr., "
+        "Eric Church, Shooter Jennings"
+    )
+    assert len(long_artist.encode("utf-8")) > 255, "fixture must actually be over the limit"
+
+    assert len(sanitize_path_component(long_artist).encode("utf-8")) <= 255
+    assert len(build_track_filename(long_artist, "Why Me (Live)", ".flac").encode("utf-8")) <= 255
+    # the extension survives -- a truncated one would break codec routing
+    assert build_track_filename(long_artist, "Why Me (Live)", ".flac").endswith(".flac")
+
+    # multi-byte characters are cut on a character boundary, never mid-sequence
+    cut = truncate_to_bytes("é" * 400)
+    assert len(cut.encode("utf-8")) <= 255
+    assert cut == "é" * (255 // 2)
+
+    # short names are returned untouched
+    assert sanitize_path_component("Neil Young") == "Neil Young"
+    assert truncate_to_bytes("Neil Young") == "Neil Young"

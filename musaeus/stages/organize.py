@@ -287,7 +287,30 @@ def sanitize_path_component(text: str) -> str:
     if name_upper in _WINDOWS_RESERVED_NAMES:
         s = f"_{s}"
 
-    return s
+    return truncate_to_bytes(s)
+
+
+# Linux caps each PATH COMPONENT at 255 bytes (NAME_MAX), independently of
+# how long the whole path is. Nothing here enforced that, so a long enough
+# artist string raised OSError 36 from the os.stat() inside unique_path()
+# and took the whole stage down: dupe-resolver died on 2026-09-03 building
+# a directory out of a 388-byte 24-artist credit, and Finalize, Organize,
+# VariousArtistsFix, ClassicalComposer, DenyList and TributeQuarantine all
+# build paths through these same two helpers.
+#
+# Truncation is on ENCODED BYTES, not characters: s[:255] counts codepoints,
+# so any non-ASCII name would still overflow. encode/truncate/decode with
+# errors="ignore" drops a partial trailing character rather than emitting
+# invalid UTF-8.
+_MAX_COMPONENT_BYTES = 255
+
+
+def truncate_to_bytes(text: str, limit: int = _MAX_COMPONENT_BYTES) -> str:
+    """*text* shortened so it encodes to at most *limit* UTF-8 bytes."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    return encoded[:limit].decode("utf-8", errors="ignore").rstrip(". ")
 
 
 def build_track_filename(artist: str, title: str, ext: str) -> str:
@@ -304,7 +327,12 @@ def build_track_filename(artist: str, title: str, ext: str) -> str:
         ext = f".{ext}"
     ext = ext.lower()
 
-    return f"{artist_safe} - {title_safe}{ext}"
+    # Both halves are already capped, but "artist - title.ext" is the
+    # component the filesystem sees, so the join needs its own budget --
+    # two 255-byte halves make a 513-byte filename. The extension is kept
+    # whole; only the stem gives ground.
+    stem = truncate_to_bytes(f"{artist_safe} - {title_safe}", _MAX_COMPONENT_BYTES - len(ext.encode("utf-8")))
+    return f"{stem}{ext}"
 
 
 def destination_root(current_path: Path, roots: Iterable[Path]) -> Path | None:

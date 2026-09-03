@@ -624,7 +624,21 @@ class DupeResolverStage(BaseStage):
                 result.errors.append(f"{source}: file missing on disk")
                 continue
 
-            target = self._target_path(ctx, loser, source, batch_date)
+            # Inside the guard, not above it. The move below has isolated
+            # per-item OSErrors since it was written, but _target_path was
+            # one line outside that guard -- and it does filesystem work
+            # (unique_path's exists() check), so it raises the same class of
+            # error. On 2026-09-03 one 388-byte artist name raised OSError 36
+            # here and aborted every remaining move in the run, leaving the
+            # dedupe half-done. One bad path should cost one file, not the
+            # stage. No rollback needed: nothing has been written yet.
+            try:
+                target = self._target_path(ctx, loser, source, batch_date)
+            except OSError as exc:
+                result.files_errored += 1
+                result.errors.append(f"{source}: cannot build a target path: {exc}")
+                logger.warning("[dupe-resolver] target path failed %s: %s", source, exc)
+                continue
 
             if dry_run:
                 result.notes.append(

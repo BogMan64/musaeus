@@ -131,6 +131,50 @@ class TestDupeResolverSameBatchGroup:
         assert keep_status == "keep"
         assert archive_status == "archive"
 
+    def test_one_unbuildable_target_path_costs_one_file_not_the_stage(self, ctx, monkeypatch):
+        """_target_path sat one line ABOVE the try/except that already
+        isolated per-item OSErrors from the move. It does filesystem work
+        (unique_path's exists() check), so it raises the same class of
+        error -- and on 2026-09-03 a 388-byte artist name raised OSError 36
+        there and aborted every remaining move, leaving the dedupe half
+        done. A path that cannot be built should cost its own file only."""
+        from musaeus.stages import dupe_resolver as dr
+
+        good_hi = _make_archive_row(
+            ctx, "g_hi.flac", "Good", "Album", "Keeper", bitrate=900_000, size_bytes=500
+        )
+        good_lo = _make_archive_row(
+            ctx, "g_lo.m4a", "Good", "Album", "Keeper", bitrate=128_000, size_bytes=200
+        )
+        bad_hi = _make_archive_row(
+            ctx, "b_hi.flac", "Bad", "Album", "Doomed", bitrate=900_000, size_bytes=500
+        )
+        bad_lo = _make_archive_row(
+            ctx, "b_lo.m4a", "Bad", "Album", "Doomed", bitrate=128_000, size_bytes=200
+        )
+        _stage_duplicate_pair(ctx, "dup_bad", bad_hi, bad_lo)
+        _stage_duplicate_pair(ctx, "dup_good", good_hi, good_lo)
+
+        real = dr.DupeResolverStage._target_path
+
+        def explode(self, ctx_, loser, source, batch_date):
+            if Path(source).name == "b_lo.m4a":
+                raise OSError(36, "File name too long")
+            return real(self, ctx_, loser, source, batch_date)
+
+        monkeypatch.setattr(dr.DupeResolverStage, "_target_path", explode)
+
+        result = DupeResolverStage().execute(ctx)
+
+        # the poisoned file is counted and named, and nothing crashed
+        assert result.files_errored == 1
+        assert any("File name too long" in e for e in result.errors)
+        assert bad_lo.exists(), "the file it could not place must be left alone"
+
+        # and the unrelated group still got resolved -- the point of the fix
+        assert not good_lo.exists(), "a later group must still be processed"
+        assert good_hi.exists()
+
     def test_manifest_and_restore_script_written(self, ctx):
         high = _make_archive_row(
             ctx, "high.flac", "Artist", "Album", "Title", bitrate=900_000, size_bytes=500
