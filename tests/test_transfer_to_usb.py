@@ -30,6 +30,7 @@ from musaeus.config import MusicConfig  # noqa: E402
 from scripts.usb_transfer.transfer_to_usb import (  # noqa: E402
     BlockDevice,
     CopyResult,
+    build_unmount_commands,
     build_wipe_and_format_commands,
     confirm_wipe,
     copy_playlists,
@@ -41,7 +42,9 @@ from scripts.usb_transfer.transfer_to_usb import (  # noqa: E402
 )
 
 
-def _device(path="/dev/sdb", size=64_000_000_000, removable=True) -> BlockDevice:
+def _device(
+    path="/dev/sdb", size=64_000_000_000, removable=True, mountpoints=None
+) -> BlockDevice:
     return BlockDevice(
         path=path,
         size_bytes=size,
@@ -50,7 +53,7 @@ def _device(path="/dev/sdb", size=64_000_000_000, removable=True) -> BlockDevice
         serial="TESTSERIAL123",
         tran="usb",
         removable=removable,
-        mountpoints=[],
+        mountpoints=mountpoints if mountpoints is not None else [],
     )
 
 
@@ -235,6 +238,34 @@ class TestBuildCommands:
         called = []
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: called.append(a))
         build_wipe_and_format_commands("/dev/sdb")
+        assert called == []
+
+
+class TestBuildUnmountCommands:
+    """2026-09-03: a real run hit wipefs failing with "Device or resource
+    busy" because the target was still auto-mounted (e.g. at
+    /media/grey/MyTunes from being plugged in) and nothing unmounted it
+    first."""
+
+    def test_no_mountpoints_means_no_commands(self):
+        dev = _device(mountpoints=[])
+        assert build_unmount_commands(dev) == []
+
+    def test_one_mountpoint_becomes_one_umount(self):
+        dev = _device(mountpoints=["/media/grey/MyTunes"])
+        assert build_unmount_commands(dev) == [["umount", "/media/grey/MyTunes"]]
+
+    def test_multiple_mountpoints_each_get_their_own_umount(self):
+        dev = _device(mountpoints=["/media/grey/MyTunes", "/mnt/other"])
+        assert build_unmount_commands(dev) == [
+            ["umount", "/media/grey/MyTunes"],
+            ["umount", "/mnt/other"],
+        ]
+
+    def test_does_not_execute_anything(self, monkeypatch):
+        called = []
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: called.append(a))
+        build_unmount_commands(_device(mountpoints=["/media/grey/MyTunes"]))
         assert called == []
 
 
@@ -647,6 +678,110 @@ class TestMainEndToEnd:
 
         out = capsys.readouterr().out
         assert "1 copied+verified, 0 failed" in out
+
+    def test_dry_run_previews_the_unmount_when_device_is_mounted(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        cfg = _cfg(tmp_path)
+        cfg.alac_library.mkdir(parents=True)
+        (cfg.alac_library / "track.m4a").write_bytes(b"x")
+        dev = _device(path="/dev/sdz", mountpoints=["/media/grey/MyTunes"])
+        monkeypatch.setattr(usb_mod, "get_config", lambda: cfg)
+        monkeypatch.setattr(usb_mod, "list_removable_devices", lambda: [dev])
+        monkeypatch.setattr(usb_mod, "critical_backing_disks", lambda *a, **k: set())
+        monkeypatch.setattr(sys, "argv", ["prog", "--library", "alac", "--device", "/dev/sdz"])
+
+        calls = []
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
+        assert usb_mod.main() == 0
+        assert calls == []
+        out = capsys.readouterr().out
+        assert "would run: umount /media/grey/MyTunes" in out
+
+    def test_execute_unmounts_a_busy_device_before_wiping(self, tmp_path, monkeypatch):
+        """The real failure this guards against: wipefs refuses on a
+        mounted device with "Device or resource busy". umount must run,
+        and must run before wipefs, not after."""
+        cfg = _cfg(tmp_path)
+        cfg.alac_library.mkdir(parents=True)
+        (cfg.alac_library / "track.m4a").write_bytes(b"x")
+        dev = _device(path="/dev/sdz", mountpoints=["/media/grey/MyTunes"])
+
+        monkeypatch.setattr(usb_mod, "get_config", lambda: cfg)
+        monkeypatch.setattr(usb_mod, "list_removable_devices", lambda: [dev])
+        monkeypatch.setattr(usb_mod, "critical_backing_disks", lambda *a, **k: set())
+        monkeypatch.setattr(usb_mod, "confirm_wipe", lambda device: True)
+        monkeypatch.setattr(usb_mod.os, "geteuid", lambda: 0)
+        monkeypatch.setattr(usb_mod.Path, "mkdir", lambda self, **kw: None)
+
+        subprocess_calls = []
+
+        def _fake_run(cmd, **kwargs):
+            subprocess_calls.append(cmd)
+
+            class _R:
+                returncode = 0
+                stderr = ""
+
+            return _R()
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        monkeypatch.setattr(
+            usb_mod, "copy_with_verification",
+            lambda files, source_root, dest_root, **kw: CopyResult(ok=[str(f) for f in files]),
+        )
+        monkeypatch.setattr(
+            sys, "argv", ["prog", "--library", "alac", "--device", "/dev/sdz", "--execute"]
+        )
+
+        assert usb_mod.main() == 0
+
+        cmd_names = [c[0] for c in subprocess_calls]
+        assert cmd_names[0] == "umount", "must unmount before wipefs, not after"
+        assert cmd_names[1] == "wipefs"
+        assert subprocess_calls[0] == ["umount", "/media/grey/MyTunes"]
+
+    def test_execute_unmounts_using_freshly_refetched_mount_state(self, tmp_path, monkeypatch):
+        """Mount state can change between the initial listing and the
+        moment execution actually starts (same reasoning as the existing
+        denylist recheck) -- the unmount must use a fresh re-fetch, not
+        the mountpoints captured before the typed confirmation."""
+        cfg = _cfg(tmp_path)
+        cfg.alac_library.mkdir(parents=True)
+        (cfg.alac_library / "track.m4a").write_bytes(b"x")
+        stale = _device(path="/dev/sdz", mountpoints=[])
+        fresh = _device(path="/dev/sdz", mountpoints=["/media/grey/MyTunes"])
+
+        listings = iter([[stale], [fresh]])
+        monkeypatch.setattr(usb_mod, "get_config", lambda: cfg)
+        monkeypatch.setattr(usb_mod, "list_removable_devices", lambda: next(listings))
+        monkeypatch.setattr(usb_mod, "critical_backing_disks", lambda *a, **k: set())
+        monkeypatch.setattr(usb_mod, "confirm_wipe", lambda device: True)
+        monkeypatch.setattr(usb_mod.os, "geteuid", lambda: 0)
+        monkeypatch.setattr(usb_mod.Path, "mkdir", lambda self, **kw: None)
+
+        subprocess_calls = []
+
+        def _fake_run(cmd, **kwargs):
+            subprocess_calls.append(cmd)
+
+            class _R:
+                returncode = 0
+                stderr = ""
+
+            return _R()
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        monkeypatch.setattr(
+            usb_mod, "copy_with_verification",
+            lambda files, source_root, dest_root, **kw: CopyResult(ok=[str(f) for f in files]),
+        )
+        monkeypatch.setattr(
+            sys, "argv", ["prog", "--library", "alac", "--device", "/dev/sdz", "--execute"]
+        )
+
+        assert usb_mod.main() == 0
+        assert subprocess_calls[0] == ["umount", "/media/grey/MyTunes"]
 
     def test_execute_still_umounts_after_copy_raises(self, tmp_path, monkeypatch):
         """finally: must run even if copy_with_verification itself blows up --

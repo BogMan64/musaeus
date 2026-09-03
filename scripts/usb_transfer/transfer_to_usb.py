@@ -275,6 +275,15 @@ def confirm_wipe(device: BlockDevice) -> bool:
 # ── Wipe + format (command construction is pure; execution is separate) ─────
 
 
+def build_unmount_commands(device: BlockDevice) -> list[list[str]]:
+    """Pure: unmount commands for every currently-mounted partition of
+    *device*. wipefs refuses to touch a busy/mounted device -- hit for
+    real 2026-09-03: /dev/sde was still auto-mounted at /media/grey/MyTunes
+    from being plugged in, and wipefs failed with "Device or resource
+    busy" instead of unmounting it first."""
+    return [["umount", mp] for mp in device.mountpoints]
+
+
 def build_wipe_and_format_commands(device_path: str, label: str = "MUSAEUS") -> list[list[str]]:
     """Pure: returns the argv lists that would wipe+partition+format
     *device_path* to a single ExFAT partition. Does not execute anything --
@@ -588,7 +597,7 @@ def main() -> int:
 
     if not args.execute:
         print("\nDRY RUN (pass --execute to actually wipe + transfer)")
-        for cmd in build_wipe_and_format_commands(device.path):
+        for cmd in build_unmount_commands(device) + build_wipe_and_format_commands(device.path):
             print(f"  would run: {' '.join(cmd)}")
         print(f"  would copy {len(files)} file(s) to a fresh ExFAT filesystem on {device.path}")
         return 0
@@ -606,6 +615,11 @@ def main() -> int:
         print(f"ERROR: {device.path} became denylisted — refusing.", file=sys.stderr)
         return 1
 
+    # Mount state can also change between the initial listing and now, same
+    # reasoning as the denylist recheck above -- re-fetch it fresh rather
+    # than trusting the mountpoints captured before the typed confirmation.
+    refreshed = next((d for d in list_removable_devices() if d.path == device.path), device)
+    execute_commands(build_unmount_commands(refreshed), dry_run=False)
     execute_commands(build_wipe_and_format_commands(device.path), dry_run=False)
 
     partition = f"{device.path}1" if not device.path[-1].isdigit() else f"{device.path}p1"
