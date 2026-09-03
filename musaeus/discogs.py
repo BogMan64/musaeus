@@ -39,10 +39,25 @@ because that answer is permanent (nothing re-queries a stamped row).
     None                 -- asked, definitively not found  -> stamp
     LookupUnavailable    -- never asked successfully        -> leave alone
 
-Auth: `Authorization: Discogs token=<key>`. Rate limit: 60 req/min
-authenticated (Discogs's own published number); rate-limited to a
-conservative 1.1 s between requests here, matching mb_enrich's own MB
-rate limit rather than trying to hug the ceiling.
+Auth: Discogs's "app auth" -- a consumer key/secret pair sent as query
+parameters, NOT the full OAuth 1.0a dance (request token -> browser
+authorization -> access token), which is for apps acting on behalf of a
+specific Discogs USER's private data (their collection, wantlist). This
+only ever calls the public database/search endpoint, so app auth is
+correct and sufficient, and avoids a browser-interactive step that has
+no meaning in an unattended batch run.
+
+A personal access token (`Authorization: Discogs token=<token>`) was
+tried first and rejected live 2026-09-03 with HTTP 401 "Invalid consumer
+token. Please register an app before making requests." -- despite the
+header format matching ORPHEUS's own previously-working
+orpheus_genre_classify.py exactly, ruling out a format bug. The
+key/secret pair Grey supplied afterward was verified live the same day
+against the real endpoint before any code was written against it.
+
+Rate limit: 60 req/min authenticated (Discogs's own published number);
+rate-limited to a conservative 1.1 s between requests here, matching
+mb_enrich's own MB rate limit rather than trying to hug the ceiling.
 """
 
 from __future__ import annotations
@@ -67,12 +82,6 @@ _RETRY_WAIT_S = 5
 #: rather than trying to run right up against the ceiling.
 RATE_LIMIT_S = 1.1
 
-#: Discogs requires a score this confident before a match is trusted --
-#: mirrors mb_enrich._ARTIST_SCORE's reasoning: a name merely CONTAINING
-#: the query is not the same artist. Discogs search results are not
-#: consistently scored the way MusicBrainz's are, so this is applied to
-#: the exact-name-match test below rather than to a numeric field.
-
 
 class LookupUnavailable(Exception):
     """Discogs gave no answer: timeout, 5xx, DNS, auth failure, or a
@@ -82,7 +91,7 @@ class LookupUnavailable(Exception):
 
 
 class DiscogsAuthError(LookupUnavailable):
-    """The credential itself was rejected (invalid/expired token).
+    """The credential itself was rejected (invalid/expired/revoked).
 
     Split out from LookupUnavailable so a caller CAN distinguish "my
     network is down right now" from "this key needs to be replaced" if it
@@ -91,16 +100,16 @@ class DiscogsAuthError(LookupUnavailable):
     """
 
 
-def _discogs_get(path: str, params: dict[str, str], api_key: str) -> dict:
-    """GET against the Discogs API. Retries once on 429/503."""
-    url = f"{_DISCOGS_BASE}/{path}?{urlencode(params)}"
-    req = Request(
-        url,
-        headers={
-            "User-Agent": _USER_AGENT,
-            "Authorization": f"Discogs token={api_key}",
-        },
-    )
+def _discogs_get(
+    path: str, params: dict[str, str], consumer_key: str, consumer_secret: str
+) -> dict:
+    """GET against the Discogs API using app (key/secret) auth.
+
+    Retries once on 429/503.
+    """
+    full_params = {**params, "key": consumer_key, "secret": consumer_secret}
+    url = f"{_DISCOGS_BASE}/{path}?{urlencode(full_params)}"
+    req = Request(url, headers={"User-Agent": _USER_AGENT})
     for attempt in range(2):
         try:
             _network_check(_DISCOGS_BASE)
@@ -108,14 +117,14 @@ def _discogs_get(path: str, params: dict[str, str], api_key: str) -> dict:
                 data: dict = json.loads(resp.read().decode("utf-8"))
                 return data
         except urllib.error.HTTPError as exc:
-            if exc.code == 401:
-                # Discogs's own wording for a bad/expired token is
+            if exc.code in (401, 403):
+                # Discogs's wording for a bad/expired credential is
                 # "Invalid consumer token. Please register an app before
                 # making requests." -- reported here rather than retried,
                 # since retrying a bad credential wastes the retry budget
                 # on a failure that will not change.
                 raise DiscogsAuthError(
-                    f"Discogs rejected the API key (HTTP 401): {exc}"
+                    f"Discogs rejected the key/secret pair (HTTP {exc.code}): {exc}"
                 ) from exc
             if exc.code in (429, 503) and attempt == 0:
                 logger.warning(
@@ -133,7 +142,7 @@ def _discogs_get(path: str, params: dict[str, str], api_key: str) -> dict:
     raise LookupUnavailable("exhausted retries")  # unreachable but explicit
 
 
-def search_artist(name: str, api_key: str) -> tuple[str, str] | None:
+def search_artist(name: str, consumer_key: str, consumer_secret: str) -> tuple[str, str] | None:
     """Search Discogs for an artist by name.
 
     Returns (discogs_id, canonical_name), or None when Discogs answered
@@ -145,7 +154,8 @@ def search_artist(name: str, api_key: str) -> tuple[str, str] | None:
         data = _discogs_get(
             "database/search",
             {"q": name, "type": "artist"},
-            api_key,
+            consumer_key,
+            consumer_secret,
         )
     except LookupUnavailable:
         raise

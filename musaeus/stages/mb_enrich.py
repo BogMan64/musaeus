@@ -561,8 +561,9 @@ class MBEnrichStage(BaseStage):
         own. If Discogs's own backlog ever does grow large on its own
         (independent of MB's), a budget would be the right next step.
         """
-        api_key = getattr(ctx.config, "discogs_api_key", None)
-        if not api_key:
+        consumer_key = getattr(ctx.config, "discogs_consumer_key", None)
+        consumer_secret = getattr(ctx.config, "discogs_consumer_secret", None)
+        if not (consumer_key and consumer_secret):
             return  # optional; silently a no-op when not configured
 
         if not dry_run:
@@ -631,7 +632,7 @@ class MBEnrichStage(BaseStage):
             artist = (row["artist"] or "").strip()
             time.sleep(discogs.RATE_LIMIT_S)
             try:
-                match = discogs.search_artist(artist, api_key)
+                match = discogs.search_artist(artist, consumer_key, consumer_secret)
             except discogs.LookupUnavailable as exc:
                 unavailable += 1
                 logger.warning("[mb_enrich] discogs: no answer for %r (%s)", artist, exc)
