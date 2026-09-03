@@ -53,7 +53,7 @@ API_KEYS = {
         "label": "Discogs",
         "url": "https://www.discogs.com/settings/developers",
         "required": False,
-        "used_by": "Genre classification (5-source voting)",
+        "used_by": "Artist identity fallback (mb-enrich stage, when MusicBrainz has no match)",
     },
     "SPOTIFY_CLIENT_ID": {
         "label": "Spotify Client ID",

@@ -39,6 +39,7 @@ import urllib.error
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from .. import discogs
 from ..context import RunContext, StageResult
 from ..db import (
     ensure_columns,
@@ -511,6 +512,8 @@ class MBEnrichStage(BaseStage):
                 ctx.conn.commit()
                 logger.info("[mb_enrich] checkpoint %d", result.files_processed)
 
+        self._discogs_fallback(ctx, result, dry_run)
+
         prefix = "Would enrich" if dry_run else "Enriched"
         result.notes.append(f"{prefix} {found_artists} artist(s) with MusicBrainz MBID.")
         if found_releases:
@@ -538,6 +541,145 @@ class MBEnrichStage(BaseStage):
 
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._enrich(ctx, dry_run=True)
+
+
+    def _discogs_fallback(self, ctx: RunContext, result: StageResult, dry_run: bool) -> None:
+        """Try Discogs for artists MusicBrainz already asked about and
+        could not identify. See musaeus/discogs.py's module docstring for
+        the full reasoning; this is deliberately a SEPARATE pass over its
+        own row selection rather than woven into the loop above --
+        selection here is "MB checked, MB failed, Discogs never checked",
+        which is a genuinely different set of rows from "MB never
+        checked", and keeping the two loops apart means neither can
+        silently break the other's caching.
+
+        No per-run budget, unlike CorruptStage's decode discovery or
+        deep_scan: measured against the live backlog 2026-09-03, 499
+        never-Discogs-checked rows at the 1.1 s rate limit is ~9 minutes,
+        not hours, and this loop only ever processes the subset the MB
+        loop above already touched -- it cannot grow unbounded on its
+        own. If Discogs's own backlog ever does grow large on its own
+        (independent of MB's), a budget would be the right next step.
+        """
+        api_key = getattr(ctx.config, "discogs_api_key", None)
+        if not api_key:
+            return  # optional; silently a no-op when not configured
+
+        if not dry_run:
+            ensure_columns(
+                ctx.conn,
+                (
+                    ("discogs_artist_id", "TEXT"),
+                    ("discogs_artist_name", "TEXT"),
+                    ("discogs_checked_at", "TEXT"),
+                ),
+            )
+
+        try:
+            rows = ctx.conn.execute(
+                """
+                SELECT DISTINCT artist FROM archive
+                WHERE status = 'CATALOGUED'
+                  AND mb_enriched_at IS NOT NULL
+                  AND (mb_artist_id IS NULL OR mb_artist_id = '')
+                  AND (discogs_checked_at IS NULL OR discogs_checked_at = '')
+                  AND artist IS NOT NULL AND trim(artist) != ''
+                ORDER BY artist
+                """
+            ).fetchall()
+        except Exception:
+            # discogs_checked_at doesn't exist yet -- the realistic case
+            # right after this feature is deployed: mb_enrich has already
+            # run for real (mb_artist_id exists), but no run has added
+            # this stage's own columns yet. Same shape as the main loop's
+            # own fallback a few lines above -- a dry run must still say
+            # something useful rather than silently reporting nothing.
+            try:
+                rows = ctx.conn.execute(
+                    """
+                    SELECT DISTINCT artist FROM archive
+                    WHERE status = 'CATALOGUED'
+                      AND mb_enriched_at IS NOT NULL
+                      AND (mb_artist_id IS NULL OR mb_artist_id = '')
+                      AND artist IS NOT NULL AND trim(artist) != ''
+                    ORDER BY artist
+                    """
+                ).fetchall()
+            except Exception:
+                # mb_artist_id/mb_enriched_at do not exist either -- a
+                # database that has never run mb_enrich at all. Nothing
+                # to fall back for; the main MB loop's own dry-run note
+                # already covers this database's state.
+                return
+
+        if not rows:
+            return
+
+        if dry_run:
+            result.notes.append(
+                f"  {len(rows)} artist(s) not on MusicBrainz would be tried on "
+                f"Discogs in a real run."
+            )
+            return
+
+        from datetime import datetime, timezone
+
+        found = 0
+        not_found = 0
+        unavailable = 0
+        for row in rows:
+            artist = (row["artist"] or "").strip()
+            time.sleep(discogs.RATE_LIMIT_S)
+            try:
+                match = discogs.search_artist(artist, api_key)
+            except discogs.LookupUnavailable as exc:
+                unavailable += 1
+                logger.warning("[mb_enrich] discogs: no answer for %r (%s)", artist, exc)
+                continue
+
+            now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+            if match:
+                discogs_id, discogs_name = match
+                found += 1
+                ctx.conn.execute(
+                    "UPDATE archive SET discogs_artist_id=?, discogs_artist_name=?, "
+                    "discogs_checked_at=? WHERE artist=? AND status='CATALOGUED'",
+                    (discogs_id, discogs_name, now, artist),
+                )
+                ctx.log_event(
+                    "DISCOGS_ARTIST_FOUND",
+                    stage=self.NAME,
+                    note=f"artist={artist!r} discogs_id={discogs_id} name={discogs_name!r}",
+                )
+                logger.info(
+                    "[mb_enrich] discogs found: %r -> %r  id=%s", artist, discogs_name, discogs_id
+                )
+            else:
+                not_found += 1
+                # Stamped even on a miss, same reasoning as MB's own
+                # not-found stamp above: the marker records that the
+                # lookup happened, and its absence is what re-queries an
+                # artist forever.
+                ctx.conn.execute(
+                    "UPDATE archive SET discogs_checked_at=? "
+                    "WHERE artist=? AND status='CATALOGUED'",
+                    (now, artist),
+                )
+                ctx.log_event(
+                    "DISCOGS_ARTIST_NOT_FOUND",
+                    stage=self.NAME,
+                    note=f"artist={artist!r}",
+                )
+            ctx.conn.commit()
+
+        if found:
+            result.notes.append(f"  {found} artist(s) found on Discogs after MusicBrainz missed them.")
+        if not_found:
+            result.notes.append(f"  {not_found} artist(s) not found on Discogs either.")
+        if unavailable:
+            result.notes.append(
+                f"  {unavailable} artist(s) got no answer from Discogs — retried next run."
+            )
 
     def run(self, ctx: RunContext) -> StageResult:
         return self._enrich(ctx, dry_run=False)
