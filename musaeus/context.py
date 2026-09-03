@@ -24,6 +24,31 @@ def _utc_now() -> str:
     return datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
 
 
+MAX_LISTED = 20
+
+
+def head_with_remainder(items: list[str], limit: int = MAX_LISTED) -> tuple[list[str], int]:
+    """The first `limit` items, and how many were left out.
+
+    Beside StageResult because notes/errors/verify_notes are its fields
+    and every consumer needs the same answer. A stage's error list is one
+    entry per file -- scholar.py appends "Missing: <path>" for every row
+    whose file has gone -- so its length is bounded by the batch, not by
+    anything a reader can use. Clearing one 3,142-file directory out of
+    INBOX on 2026-09-03 put 3,133 near-identical lines on the console and
+    would have put the same into the ForClaudeHandoff doc, whose whole
+    purpose is to be pasted into a session with no file access.
+
+    Returns the split rather than rendered lines because the callers
+    format differently -- handoff.py wants markdown bullets, cli.py wants
+    indented console lines across two streams. The `... and N more`
+    wording is this repo's existing idiom (ingest.py, scholar.py,
+    sentinel.py, tribute_quarantine.py, console.py); this is the one
+    place the arithmetic behind it lives.
+    """
+    return items[:limit], max(0, len(items) - limit)
+
+
 @dataclass
 class StageResult:
     """What a stage returns after execution."""

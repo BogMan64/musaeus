@@ -46,6 +46,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .context import head_with_remainder
+
 if TYPE_CHECKING:
     from .context import RunContext, StageResult
 
@@ -102,11 +104,8 @@ def _crash_reports(runs_root: Path, run_id: str) -> list[dict[str, Any]]:
     return reports
 
 
-_MAX_INLINED_LINES = 20
-
-
 def _capped(items: list[str], prefix: str = "") -> list[str]:
-    """Render at most _MAX_INLINED_LINES entries, then say how many are left.
+    """Render a bounded number of entries, then say how many are left.
 
     Unbounded here is not a cosmetic problem. A stage's error list is one
     entry per file -- scholar.py appends "Missing: <path>" for every row
@@ -121,9 +120,9 @@ def _capped(items: list[str], prefix: str = "") -> list[str]:
     in ingest.py, scholar.py, sentinel.py, tribute_quarantine.py and
     console.py -- matched here rather than invented again.
     """
-    lines = [f"- {prefix}{item}" for item in items[:_MAX_INLINED_LINES]]
-    hidden = len(items) - _MAX_INLINED_LINES
-    if hidden > 0:
+    shown, hidden = head_with_remainder(items)
+    lines = [f"- {prefix}{item}" for item in shown]
+    if hidden:
         lines.append(f"- ... and {hidden} more")
     return lines
 

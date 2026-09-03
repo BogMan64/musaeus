@@ -201,3 +201,27 @@ def test_a_stage_with_thousands_of_errors_stays_pasteable(tmp_path: Path) -> Non
     # the scale must survive the truncation, not be hidden by it
     assert "3094 file(s) errored" in text
     assert len(text) < 20_000
+
+
+def test_the_console_printer_is_bounded_too(tmp_path: Path) -> None:
+    """handoff.py was capped first, but cli.py's stage-result printer walked
+    the same unbounded list -- so clearing a directory out of INBOX still
+    put 3,133 ERROR lines on the terminal. Both now go through
+    head_with_remainder, which is why it lives beside StageResult rather
+    than being inlined an eighth time. Asserts the split itself, the piece
+    both callers depend on."""
+    from musaeus.context import MAX_LISTED, head_with_remainder
+
+    shown, hidden = head_with_remainder([f"Missing: /vault/{n}.m4a" for n in range(3094)])
+    assert len(shown) == MAX_LISTED == 20
+    assert hidden == 3074
+
+    # a short list is returned whole, with nothing to announce
+    shown, hidden = head_with_remainder(["one", "two"])
+    assert shown == ["one", "two"]
+    assert hidden == 0
+
+    # and cli.py actually routes through it rather than looping the raw list
+    source = Path("musaeus/cli.py").read_text(encoding="utf-8")
+    assert "head_with_remainder(result.errors)" in source
+    assert "for err in result.errors:" not in source

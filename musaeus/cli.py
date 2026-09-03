@@ -108,7 +108,7 @@ from pathlib import Path
 
 from . import __version__
 from .config import get_config
-from .context import RunContext
+from .context import RunContext, head_with_remainder
 from .db import open_db, snapshot_db_before_wipe
 from .stages import (
     ARCHIVE_PIPELINE,
@@ -392,10 +392,19 @@ def _run_pipeline(
 
         status = "✓" if result.success else "✗"
         print(f"  {status}  {result.summarise()}")
-        for note in result.notes:
+        shown_notes, more_notes = head_with_remainder(result.notes)
+        for note in shown_notes:
             print(f"       {note}")
-        for err in result.errors:
+        if more_notes:
+            print(f"       ... and {more_notes} more")
+        # Bounded for the same reason handoff.py bounds its own render:
+        # one entry per file makes this as long as the batch. Every entry
+        # is still in the run log -- the stages log each one themselves.
+        shown_errors, more_errors = head_with_remainder(result.errors)
+        for err in shown_errors:
             print(f"       ERROR: {err}", file=sys.stderr)
+        if more_errors:
+            print(f"       ... and {more_errors} more (full list in the run log)", file=sys.stderr)
 
         # Only a genuinely successful stage counts as "done" for resume
         # purposes (2026-08-18 fix). Previously this ran unconditionally,
