@@ -41,6 +41,7 @@ from pathlib import Path
 
 from ..artist_form import comparison_key
 from ..context import RunContext, StageResult
+from ..wanted_list import wanted_lines
 from .base import BaseStage
 from .organize import build_track_filename, sanitize_path_component, unique_path
 
@@ -241,7 +242,14 @@ class TributeQuarantineStage(BaseStage):
 
         manifest_path = review_dir / f"tribute_manifest_{stamp}.csv"
         with open(manifest_path, "w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=["source", "destination", "reason"])
+            # extrasaction="ignore": moved dicts now also carry artist/title
+            # for the wanted-list export below, and DictWriter otherwise
+            # raises on any key not in fieldnames -- the manifest's own
+            # three columns are the contract, unaffected by what else the
+            # dict carries.
+            writer = csv.DictWriter(
+                fh, fieldnames=["source", "destination", "reason"], extrasaction="ignore"
+            )
             writer.writeheader()
             writer.writerows(moved)
 
@@ -256,6 +264,31 @@ class TributeQuarantineStage(BaseStage):
         restore_path.chmod(restore_path.stat().st_mode | stat.S_IEXEC)
 
         return manifest_path, restore_path
+
+    def _write_wanted_list(
+        self, ctx: RunContext, batch_date: str, moved: list[dict]
+    ) -> Path | None:
+        """TuneMyMusic-ready "Artist - Title" lines for this batch's
+        quarantined tracks, wherever their own title credits the
+        original -- see musaeus/wanted_list.py for the extraction and
+        already-owned logic. Grey's own instruction, 2026-09-04: this
+        used to be a one-off manual export; now every quarantine run
+        produces its own.
+
+        Returns None (and writes nothing) when no line in this batch had
+        an extractable, not-already-owned credit -- an empty file that
+        looks like "nothing found" is worse than no file, since the
+        stage's notes already say how many were quarantined.
+        """
+        lines = wanted_lines(ctx.conn, moved)
+        if not lines:
+            return None
+        review_dir = ctx.config.tribute_review_dir / batch_date
+        review_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        wanted_path = review_dir / f"tunemymusic_{stamp}.csv"
+        wanted_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return wanted_path
 
     def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
         """Confirm the quarantine moved files, and left a way back.
@@ -387,7 +420,10 @@ class TributeQuarantineStage(BaseStage):
                 stage=self.NAME,
                 note=reason,
             )
-            moved.append({"source": str(source), "destination": str(target), "reason": reason})
+            moved.append({
+                "source": str(source), "destination": str(target), "reason": reason,
+                "artist": row.get("artist") or "", "title": row.get("title") or "",
+            })
             result.files_changed += 1
             logger.info("[tribute-quarantine] %s -> %s (%s)", source, target, reason)
 
@@ -400,6 +436,10 @@ class TributeQuarantineStage(BaseStage):
             result.notes.append(f"quarantined {len(moved)} file(s)")
             result.notes.append(f"manifest: {manifest_path}")
             result.notes.append(f"restore script: {restore_path}")
+
+            wanted_path = self._write_wanted_list(ctx, batch_date, moved)
+            if wanted_path is not None:
+                result.notes.append(f"wanted list: {wanted_path}")
 
         if result.files_errored:
             result.success = False

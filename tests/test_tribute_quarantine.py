@@ -225,3 +225,96 @@ class TestTributeQuarantineRun:
             "SELECT status FROM archive WHERE artist = 'Karaoke Channel, The'"
         ).fetchone()
         assert row["status"] == "CATALOGUED"
+
+
+# ── TuneMyMusic export ──────────────────────────────────────────────────────
+#
+# Built by hand once as a one-off (2026-09-02); automated the next day
+# after Grey asked for it not to require asking again. Reuses
+# musaeus.wanted_list rather than a fresh extraction attempt -- see that
+# module's own docstring for why (a fresh attempt is exactly the shape
+# this project keeps finding duplicated).
+
+
+class TestWantedListExport:
+    def test_a_credited_knockoff_produces_a_wanted_list(self, ctx, cfg) -> None:
+        _make_row(
+            ctx, "Steely Dan Tribute/song.m4a",
+            artist="Karaoke Channel, The",
+            title="Midnight Cruiser [In the Style of Steely Dan]",
+        )
+        result = TributeQuarantineStage().run(ctx)
+
+        wanted_files = list((cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+            "tunemymusic_*.csv"
+        ))
+        assert len(wanted_files) == 1
+        assert wanted_files[0].read_text().strip() == "Steely Dan - Midnight Cruiser"
+        assert any("wanted list" in n for n in result.notes)
+
+    def test_an_already_owned_knockoff_writes_no_wanted_list(self, ctx, cfg) -> None:
+        """The whole point of checking ownership before exporting: Grey
+        should never be asked to re-acquire something he already has."""
+        _make_row(ctx, "Real/song.m4a", artist="Steely Dan", title="Midnight Cruiser")
+        _make_row(
+            ctx, "Fake/song.m4a",
+            artist="Karaoke Channel, The",
+            title="Midnight Cruiser [In the Style of Steely Dan]",
+        )
+        TributeQuarantineStage().run(ctx)
+
+        wanted_files = list((cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+            "tunemymusic_*.csv"
+        ))
+        assert wanted_files == []
+
+    def test_an_uncredited_knockoff_writes_no_wanted_list(self, ctx, cfg) -> None:
+        _make_row(ctx, "Fake/song.m4a", artist="Karaoke Channel, The", title="What's Up")
+        result = TributeQuarantineStage().run(ctx)
+
+        wanted_files = list((cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+            "tunemymusic_*.csv"
+        ))
+        assert wanted_files == []
+        assert not any("wanted list" in n for n in result.notes)
+
+    def test_the_manifest_still_writes_normally_alongside_it(self, ctx, cfg) -> None:
+        """Guards against the exact regression hit while building this:
+        moved dicts gained artist/title keys for the export, and
+        csv.DictWriter raises on any row key outside its declared
+        fieldnames unless told to ignore extras."""
+        _make_row(
+            ctx, "Steely Dan Tribute/song.m4a",
+            artist="Karaoke Channel, The",
+            title="Midnight Cruiser [In the Style of Steely Dan]",
+        )
+        result = TributeQuarantineStage().run(ctx)
+
+        assert not result.errors
+        manifest_files = list(
+            (cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+                "tribute_manifest_*.csv"
+            )
+        )
+        assert len(manifest_files) == 1
+        header = manifest_files[0].read_text().splitlines()[0]
+        assert header == "source,destination,reason"
+
+    def test_multiple_credited_tracks_all_appear(self, ctx, cfg) -> None:
+        _make_row(
+            ctx, "A/song.m4a",
+            artist="Karaoke Channel, The",
+            title="Song A [In the Style of Artist One]",
+        )
+        _make_row(
+            ctx, "B/song.m4a",
+            artist="Karaoke Channel, The",
+            title="Song B [In the Style of Artist Two]",
+        )
+        TributeQuarantineStage().run(ctx)
+
+        wanted_files = list((cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+            "tunemymusic_*.csv"
+        ))
+        lines = wanted_files[0].read_text().strip().splitlines()
+        assert set(lines) == {"Artist One - Song A", "Artist Two - Song B"}
