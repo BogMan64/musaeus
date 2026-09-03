@@ -209,6 +209,12 @@ class CorruptStage(BaseStage):
 
     NAME = "corrupt"
 
+    #: Bound on how many never-checked, non-suspect files get decoded per
+    #: run for the "right-sized but damaged" class check_file() cannot see
+    #: at all. Overridable per-instance for tests. See the comment at its
+    #: use site in _scan for why this exists and how the number was picked.
+    NEW_ARRIVAL_DECODE_BUDGET = 200
+
     def validate(self, ctx: RunContext) -> None:
         count = ctx.conn.execute(
             "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'"
@@ -225,10 +231,25 @@ class CorruptStage(BaseStage):
         if not dry_run:
             deep_scan_ensure_columns(conn)
 
+        # decode_ok/decode_checked_at exist once deep_scan_ensure_columns
+        # has run at least once with dry_run=False. A dry run never calls
+        # it (a preview must not alter schema), so on a database that has
+        # never done a real run, selecting those columns would raise
+        # "no such column". Select them only if they are actually there;
+        # NULL stands in otherwise, which is exactly what "never checked"
+        # means anyway.
+        _has_decode_cols = {"decode_ok", "decode_checked_at"} <= {
+            r[1] for r in conn.execute("PRAGMA table_info(archive)").fetchall()
+        }
+        decode_cols_sql = (
+            "decode_ok, decode_checked_at" if _has_decode_cols
+            else "NULL AS decode_ok, NULL AS decode_checked_at"
+        )
+
         # Get all CATALOGUED tracks with file specs
         rows = conn.execute(
-            """
-            SELECT file_path, codec, duration, title
+            f"""
+            SELECT file_path, codec, duration, title, {decode_cols_sql}
             FROM archive
             WHERE status = 'CATALOGUED'
               AND file_path IS NOT NULL
@@ -246,6 +267,22 @@ class CorruptStage(BaseStage):
 
         suspects: list[dict] = []
         cleared = 0
+        # Files never decode-checked by ANYTHING (this stage's suspect
+        # path or deep_scan) that the size ratio does not flag either --
+        # the class that hid Billy Joel, The Who, Billy Ocean, and others:
+        # right-sized files with damage inside the stream, invisible to
+        # check_file() by construction. Decoded here too, but BOUNDED.
+        #
+        # Unbounded would repeat the exact AcousticID mistake this project
+        # already lived through: wired in unconditionally, its first run
+        # was a full-library migration that held the DB write lock for
+        # 21 hours. deep_scan exists precisely to pay that backlog down
+        # -- idle-only, resumable, outside any pipeline run -- and this
+        # budget exists so Act 1 never tries to do deep_scan's job
+        # synchronously. 200 files at the ~1.46s/file measured 2026-09-02
+        # is ~5 minutes added to a run with many new arrivals; a genuinely
+        # large backlog is left for deep_scan rather than blocking here.
+        new_arrival_decodes = 0
         quarantine_dir = ctx.vault_root / "QUARANTINE" / "corrupted"
 
         for row in rows:
@@ -256,43 +293,70 @@ class CorruptStage(BaseStage):
                 result.files_skipped += 1
                 continue
 
-            is_suspect, reason = check_file(file_path, row["codec"], row["duration"])
+            # Already known undecodable -- by THIS stage on a prior run, or
+            # by deep_scan, which shares these columns rather than keeping
+            # its own. Trust it rather than paying for a second decode of
+            # a file already proven bad.
+            if row["decode_ok"] == 0:
+                is_corrupt = True
+                reason = "previously found undecodable on decode (see decode_errors)"
+                is_suspect = False
+            else:
+                is_suspect, reason = check_file(file_path, row["codec"], row["duration"])
 
-            # The size ratio is a PRIORITISER, not a verdict -- deep_scan.py
-            # says so and has the numbers: it flagged 418 files, of which 2
-            # were damaged and 91 were undamaged Bing Crosby / Count Basie
-            # mono recordings that genuinely compress to ~13% of PCM.
-            #
-            # This stage MOVES files to QUARANTINE. Acting on the ratio alone
-            # meant physically removing ~91 good masters on a heuristic that
-            # was right about 0.5% of the time. ffmpeg_decode_check has sat
-            # in this same module since the day before deep_scan was written,
-            # correct and never called from here.
-            #
-            # Only suspects are decoded, so the cost is bounded by how many
-            # the cheap check flags rather than by the size of the library.
-            if is_suspect:
-                decoded_ok, decode_err = ffmpeg_decode_check(file_path, seconds=0)
-                if not dry_run:
-                    conn.execute(
-                        "UPDATE archive SET decode_checked_at = datetime('now'), "
-                        "decode_ok = ?, decode_errors = ? WHERE file_path = ?",
-                        (1 if decoded_ok else 0, 0 if decoded_ok else 1, str(file_path)),
-                    )
-                if decoded_ok:
-                    # Flagged by shape, intact on inspection. Not corrupt.
-                    result.files_skipped += 1
-                    logger.info(
-                        "[%s] cleared: %s — %s, but decodes cleanly",
-                        self.NAME,
-                        file_path.name,
-                        reason,
-                    )
-                    cleared += 1
-                    continue
-                reason = f"{reason}; decode failed: {decode_err}"
+                # The size ratio is a PRIORITISER, not a verdict -- deep_scan.py
+                # says so and has the numbers: it flagged 418 files, of which 2
+                # were damaged and 91 were undamaged Bing Crosby / Count Basie
+                # mono recordings that genuinely compress to ~13% of PCM.
+                #
+                # This stage MOVES files to QUARANTINE. Acting on the ratio
+                # alone meant physically removing ~91 good masters on a
+                # heuristic that was right about 0.5% of the time.
+                should_decode = is_suspect
+                # The class the ratio cannot see at all: right-sized files
+                # with the damage inside the stream. Decode a BOUNDED number
+                # of never-checked, non-suspect files too, so genuinely new
+                # arrivals get a real answer before dedup -- not just files
+                # the shape heuristic happened to flag.
+                if (
+                    not is_suspect
+                    and row["decode_checked_at"] is None
+                    and new_arrival_decodes < self.NEW_ARRIVAL_DECODE_BUDGET
+                ):
+                    should_decode = True
+                    new_arrival_decodes += 1
 
-            is_corrupt = is_suspect
+                if should_decode:
+                    decoded_ok, decode_err = ffmpeg_decode_check(file_path, seconds=0)
+                    if not dry_run:
+                        conn.execute(
+                            "UPDATE archive SET decode_checked_at = datetime('now'), "
+                            "decode_ok = ?, decode_errors = ? WHERE file_path = ?",
+                            (1 if decoded_ok else 0, 0 if decoded_ok else 1, str(file_path)),
+                        )
+                    if decoded_ok:
+                        # Either flagged by shape and intact on inspection,
+                        # or a never-checked file that turned out fine.
+                        result.files_skipped += 1
+                        if is_suspect:
+                            logger.info(
+                                "[%s] cleared: %s — %s, but decodes cleanly",
+                                self.NAME,
+                                file_path.name,
+                                reason,
+                            )
+                            cleared += 1
+                        continue
+                    reason = f"{reason}; decode failed: {decode_err}" if is_suspect else (
+                        f"decode failed: {decode_err}"
+                    )
+
+                # Reaching here without the "decoded cleanly" continue
+                # above means: either should_decode was True and the decode
+                # failed, or should_decode was False and nothing was
+                # attempted this row. should_decode already equals
+                # is_suspect in the second case, so this covers both.
+                is_corrupt = should_decode
 
             if is_corrupt:
                 result.files_changed += 1
