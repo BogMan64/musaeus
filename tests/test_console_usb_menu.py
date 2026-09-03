@@ -102,6 +102,7 @@ class TestUSBMenu:
         con._usb_menu()
         assert len(rec.calls) == 2
         assert rec.calls[1][0] == "sudo"
+        assert rec.calls[1][1] == "-E", "plain sudo resets HOME and breaks config file lookup"
         assert "--execute" in rec.calls[1]
 
     def test_root_does_not_get_an_unnecessary_sudo_prefix(self, cfg, monkeypatch, capsys) -> None:

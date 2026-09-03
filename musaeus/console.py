@@ -1187,8 +1187,12 @@ class Console:
 
         execute_cmd = cmd + ["--execute"]
         if os.geteuid() != 0:
+            # Plain `sudo` resets HOME to /root, and config.py resolves
+            # ~/.config/musaeus/settings.env from HOME -- without -E the
+            # script can't find MUSAEUS_VAULT_ROOT even though it works
+            # fine un-prefixed (2026-09-03, caught before any wipe ran).
             _info("This needs root for the wipe/format step — running it under sudo now.")
-            execute_cmd = ["sudo"] + execute_cmd
+            execute_cmd = ["sudo", "-E"] + execute_cmd
 
         _info("Handing off to the transfer script's own device confirmation now.")
         subprocess.run(execute_cmd)
