@@ -420,6 +420,17 @@ def _run_pipeline(
     else:
         print(f"  Pipeline finished with errors.  run_id={ctx.run_id}", file=sys.stderr)
 
+    # One self-contained doc per run with anything worth a second look --
+    # see handoff.py. Written even on a clean run (it just writes
+    # nothing and returns None); the point is that NOTHING extra has to
+    # be remembered to get this, it falls out of stage results and
+    # FAILURES/ reports that already exist.
+    from .handoff import write_handoff_doc
+
+    handoff_path = write_handoff_doc(ctx)
+    if handoff_path is not None:
+        print(f"  Handoff doc (needs attention): {handoff_path}", file=sys.stderr)
+
     ctx.finish()
     return exit_code
 
