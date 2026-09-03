@@ -180,3 +180,24 @@ def test_run_pipeline_actually_calls_write_handoff_doc() -> None:
 
     source = inspect.getsource(cli_mod._run_pipeline)
     assert "write_handoff_doc(ctx)" in source
+
+
+def test_a_stage_with_thousands_of_errors_stays_pasteable(tmp_path: Path) -> None:
+    """The document exists to be PASTED into a session with no file access,
+    so its size is a correctness property, not formatting. Scholar appends
+    one "Missing: <path>" error per row whose file has gone -- clearing a
+    3,000-file tree out of INBOX mid-run produces exactly that -- and
+    rendering all of them made a ~400KB file that could not be pasted
+    anywhere. Asserts the positive: twenty entries, then an honest count."""
+    flood = StageResult(
+        stage_name="scholar", success=False, files_errored=3094,
+        errors=[f"Missing: /vault/INBOX/track_{n}.m4a" for n in range(3094)],
+    )
+    ctx = _ctx(tmp_path, [flood])
+    text = write_handoff_doc(ctx).read_text()
+
+    assert text.count("ERROR: Missing:") == 20
+    assert "- ... and 3074 more" in text
+    # the scale must survive the truncation, not be hidden by it
+    assert "3094 file(s) errored" in text
+    assert len(text) < 20_000

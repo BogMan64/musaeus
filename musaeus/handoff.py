@@ -102,6 +102,32 @@ def _crash_reports(runs_root: Path, run_id: str) -> list[dict[str, Any]]:
     return reports
 
 
+_MAX_INLINED_LINES = 20
+
+
+def _capped(items: list[str], prefix: str = "") -> list[str]:
+    """Render at most _MAX_INLINED_LINES entries, then say how many are left.
+
+    Unbounded here is not a cosmetic problem. A stage's error list is one
+    entry per file -- scholar.py appends "Missing: <path>" for every row
+    whose file has gone -- so one bad batch can put thousands of
+    near-identical lines into a document whose whole purpose is to be
+    PASTED into a session that has no file access. Past twenty the reader
+    has learned everything the list can teach and the paste stops being
+    possible; the count carries the scale, and the section header already
+    carries files_errored.
+
+    `... and N more` is the idiom this repo already uses for the same job
+    in ingest.py, scholar.py, sentinel.py, tribute_quarantine.py and
+    console.py -- matched here rather than invented again.
+    """
+    lines = [f"- {prefix}{item}" for item in items[:_MAX_INLINED_LINES]]
+    hidden = len(items) - _MAX_INLINED_LINES
+    if hidden > 0:
+        lines.append(f"- ... and {hidden} more")
+    return lines
+
+
 def _render(run_id: str, issues: list[dict[str, Any]], crashes: list[dict[str, Any]]) -> str:
     now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
     lines = [
@@ -157,8 +183,7 @@ def _render(run_id: str, issues: list[dict[str, Any]], crashes: list[dict[str, A
         for i in verify_failures:
             lines.append(f"### {i['stage']}")
             lines.append("")
-            for note in i["verify_notes"]:
-                lines.append(f"- {note}")
+            lines.extend(_capped(i["verify_notes"]))
             lines.append("")
 
     stage_failures = [i for i in issues if i["kind"] == "stage_reported_failure"]
@@ -168,10 +193,8 @@ def _render(run_id: str, issues: list[dict[str, Any]], crashes: list[dict[str, A
         for i in stage_failures:
             lines.append(f"### {i['stage']}  ({i['files_errored']} file(s) errored)")
             lines.append("")
-            for err in i["errors"]:
-                lines.append(f"- ERROR: {err}")
-            for note in i["notes"]:
-                lines.append(f"- {note}")
+            lines.extend(_capped(i["errors"], "ERROR: "))
+            lines.extend(_capped(i["notes"]))
             lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
