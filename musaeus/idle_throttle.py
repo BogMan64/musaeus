@@ -26,6 +26,7 @@ On by default. `MUSAEUS_NO_IDLE_THROTTLE=1` turns it off.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import ctypes.util
 import logging
@@ -77,6 +78,19 @@ class _XIdle:
         except Exception:
             self._ok = False
 
+    def close(self) -> None:
+        """Release the X11 connection this instance opened.
+
+        XOpenDisplay is never implicitly closed by process exit cleanup
+        in a way that matters here -- see the module-level SHARED_XIDLE
+        below for why this must be called at most once per Python
+        process, not once per idle check.
+        """
+        if getattr(self, "_ok", False) and getattr(self, "_dpy", None):
+            with contextlib.suppress(Exception):
+                self._x11.XCloseDisplay(ctypes.c_void_p(self._dpy))
+            self._ok = False
+
     @property
     def available(self) -> bool:
         return self._ok
@@ -113,11 +127,42 @@ def _descendants(pid: int) -> list[int]:
     return found
 
 
+# A fresh _XIdle() calls XOpenDisplay, which opens a real X11 socket that
+# is never closed anywhere on this path -- only IdleThrottle.__enter__
+# constructed one per throttle CONTEXT and reused it for that context's
+# lifetime, which is why that path never leaked.
+#
+# is_idle()/idle_seconds()/available() are meant to be called in a POLLING
+# LOOP -- deep_scan.py's own resume loop calls is_idle() every 5 seconds
+# for as long as the machine is in use, which can be hours. Each of those
+# three functions used to construct its own _XIdle() per call, leaking one
+# X11 connection every single time.
+#
+# Measured 2026-09-03: deep_scan, left running unattended, leaked a
+# connection every 5 s and exhausted the X server's MaxClients ceiling in
+# roughly 20 minutes -- at which point EVERY X client on the machine,
+# including Grey's own desktop, started failing with "Maximum number of
+# clients reached". `xdpyinfo` itself could not connect. Confirmed the
+# leak was the sole cause: killing the one leaking process (which frees
+# all its file descriptors, X sockets included, on exit) restored the X
+# server immediately with no other intervention.
+#
+# One shared instance for the life of the process, not one per call.
+_SHARED_XIDLE: _XIdle | None = None
+
+
+def _shared_xidle() -> _XIdle:
+    global _SHARED_XIDLE
+    if _SHARED_XIDLE is None:
+        _SHARED_XIDLE = _XIdle()
+    return _SHARED_XIDLE
+
+
 def available() -> bool:
     """True when idle can actually be measured and throttling is wanted."""
     if os.environ.get("MUSAEUS_NO_IDLE_THROTTLE"):
         return False
-    return _XIdle().available
+    return _shared_xidle().available
 
 
 class IdleThrottle:
@@ -243,8 +288,12 @@ def is_idle(threshold_s: float = DEFAULT_IDLE_S) -> bool:
     without the extension. Idle-ONLY work must not run when it cannot tell,
     which is the opposite of the throttle's default: the throttle runs at
     full speed when blind, this stays stopped.
+
+    Uses the one shared _XIdle connection (see _shared_xidle) rather than
+    opening a new X11 connection on every call -- this is meant to be
+    polled every few seconds for hours by deep_scan's resume loop.
     """
-    probe = _XIdle()
+    probe = _shared_xidle()
     if not probe.available:
         return False
     try:
@@ -254,8 +303,11 @@ def is_idle(threshold_s: float = DEFAULT_IDLE_S) -> bool:
 
 
 def idle_seconds() -> float | None:
-    """Seconds since the last input, or None when unmeasurable."""
-    probe = _XIdle()
+    """Seconds since the last input, or None when unmeasurable.
+
+    Uses the shared _XIdle connection -- see is_idle's docstring.
+    """
+    probe = _shared_xidle()
     if not probe.available:
         return None
     try:

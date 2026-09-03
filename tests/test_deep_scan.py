@@ -27,8 +27,12 @@ import sqlite3
 import pytest
 
 from musaeus.deep_scan import (
-    SUSPICIOUS_RATIO, ensure_columns, looks_suspicious, pcm_bytes_per_second,
-    pending_rows, size_ratio,
+    SUSPICIOUS_RATIO,
+    ensure_columns,
+    looks_suspicious,
+    pcm_bytes_per_second,
+    pending_rows,
+    size_ratio,
 )
 
 
@@ -154,17 +158,63 @@ class TestIdleOnly:
         assert it.idle_seconds() is None
 
     def test_idle_threshold_is_respected(self, monkeypatch) -> None:
+        """A single persistent probe whose queried value changes between
+        calls -- the real shape (see below), not two separate probes.
+
+        is_idle()/idle_seconds() share ONE _XIdle instance across the
+        whole process (musaeus.idle_throttle._shared_xidle) rather than
+        opening a fresh X11 connection on every call. Fixed 2026-09-03:
+        deep_scan's own resume loop polls is_idle() every 5 s for as long
+        as the machine is busy, and the old per-call construction leaked
+        one X11 connection per poll -- exhausted the X server's MaxClients
+        ceiling in about 20 minutes on a live run, at which point every X
+        client on the machine, Grey's own desktop included, started
+        failing with "Maximum number of clients reached". This test's
+        fake now models what a real X11 connection actually does: the
+        SAME connection re-queried, its answer changing as idle time
+        actually passes -- not a fresh connection each time.
+        """
         import musaeus.idle_throttle as it
 
         class _Fake:
             available = True
-            def __init__(self, ms): self._ms = ms
-            def idle_ms(self): return self._ms
+            def __init__(self):
+                self.ms = 10_000
+            def idle_ms(self):
+                return self.ms
 
-        monkeypatch.setattr(it, "_XIdle", lambda: _Fake(10_000))
+        fake = _Fake()
+        monkeypatch.setattr(it, "_SHARED_XIDLE", None)
+        monkeypatch.setattr(it, "_XIdle", lambda: fake)
         assert it.is_idle(threshold_s=40) is False
-        monkeypatch.setattr(it, "_XIdle", lambda: _Fake(60_000))
+        fake.ms = 60_000
         assert it.is_idle(threshold_s=40) is True
+
+    def test_the_xidle_probe_is_shared_not_reopened_per_call(self, monkeypatch) -> None:
+        """The actual regression this session found: three separate
+        module functions each used to construct their own _XIdle() (and
+        therefore open a fresh, never-closed X11 connection) on every
+        single call. Verified directly: many calls must construct the
+        probe at most once."""
+        import musaeus.idle_throttle as it
+
+        calls = {"n": 0}
+        real_init = it._XIdle.__init__
+
+        def counting_init(self):
+            calls["n"] += 1
+            real_init(self)
+
+        monkeypatch.setattr(it, "_SHARED_XIDLE", None)
+        monkeypatch.setattr(it._XIdle, "__init__", counting_init)
+        for _ in range(10):
+            it.is_idle()
+            it.idle_seconds()
+            it.available()
+        assert calls["n"] == 1, (
+            f"_XIdle() constructed {calls['n']} times across 30 calls -- "
+            f"each construction leaks an X11 connection that is never closed"
+        )
 
     def test_a_probe_that_raises_is_treated_as_busy(self, monkeypatch) -> None:
         """Failing safe means not running, not running anyway."""
