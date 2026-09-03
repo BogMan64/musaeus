@@ -510,9 +510,16 @@ class TestSourceDir:
         cfg = _cfg(tmp_path)
         assert usb_mod._source_dir("alac", cfg) == cfg.alac_library
 
-    def test_car_points_at_car_export_output(self, tmp_path):
+    def test_car_points_at_the_published_car_library(self, tmp_path):
+        """Was cfg.runs_root / "AAC-Car-Masked" / "_output" -- the
+        build/staging area -- until 2026-09-03, when the built-and-masked
+        edition started being published to cfg.car_library. Pointing this
+        at the old staging path would transfer the wrong audio: its
+        encoded/ subtree is the pre-masking intermediate (no car-cabin
+        noise mixed in), kept only so a re-run can skip already-encoded
+        files."""
         cfg = _cfg(tmp_path)
-        assert usb_mod._source_dir("car", cfg) == cfg.runs_root / "AAC-Car-Masked" / "_output"
+        assert usb_mod._source_dir("car", cfg) == cfg.car_library
 
     def test_unknown_library_raises(self, tmp_path):
         cfg = _cfg(tmp_path)

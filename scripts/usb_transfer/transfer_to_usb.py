@@ -391,12 +391,23 @@ def _source_dir(library: str, cfg) -> Path:
     if library == "alac":
         return cfg.alac_library
     if library == "car":
-        # No canonical AAC-Car tier exists yet (2026-08-18) -- Phase 2B's
-        # build_car_library.py writes to a RUNS-scoped staging/export area,
-        # not a stable named location like ALAC-Library. This points at
-        # wherever it last wrote; pass --source-dir explicitly if that's
-        # wrong for your situation.
-        return cfg.runs_root / "AAC-Car-Masked" / "_output"
+        # Was cfg.runs_root / "AAC-Car-Masked" / "_output" -- the
+        # build/staging area, not the finished edition -- because no
+        # canonical Car Edition tier existed yet when this was written
+        # (2026-08-18). That changed 2026-09-03: the built-and-masked
+        # edition now gets PUBLISHED to cfg.car_library
+        # (Libraries/CAR_Library), the same stable named location
+        # ALAC-Library already was for the lossless edition.
+        #
+        # Pointing this at the old staging path today would silently
+        # transfer the wrong audio: RUNS/AAC-Car-Masked/_output/encoded/
+        # holds the PRE-MASKING intermediate (no car-cabin noise mixed
+        # in), left in place deliberately so a re-run can skip
+        # already-encoded files rather than a finished product -- and
+        # _output/masked/ itself is mostly empty now, its BATCH_001
+        # contents already moved out to cfg.car_library, leaving only a
+        # handful of noise-bed files the publish step does not touch.
+        return cfg.car_library
     raise ValueError(f"unknown library: {library}")
 
 
