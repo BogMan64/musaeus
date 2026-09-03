@@ -39,6 +39,7 @@ from scripts.usb_transfer.transfer_to_usb import (  # noqa: E402
     execute_commands,
     is_denylisted,
     list_block_devices,
+    wait_for_partition,
 )
 
 
@@ -267,6 +268,43 @@ class TestBuildUnmountCommands:
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: called.append(a))
         build_unmount_commands(_device(mountpoints=["/media/grey/MyTunes"]))
         assert called == []
+
+
+class TestWaitForPartition:
+    """2026-09-03: a real run hit mkfs.exfat failing with "open failed :
+    /dev/sde1, No such file or directory" right after parted returned --
+    the partition table change is picked up by the kernel immediately but
+    udev creates the /dev/sdXN node asynchronously, and mkfs.exfat ran
+    before it existed."""
+
+    def test_returns_immediately_if_the_node_already_exists(self, monkeypatch):
+        monkeypatch.setattr(Path, "exists", lambda self: True)
+        slept = []
+        monkeypatch.setattr(usb_mod.time, "sleep", lambda s: slept.append(s))
+        wait_for_partition("/dev/sdz1")
+        assert slept == []
+
+    def test_polls_until_the_node_appears(self, monkeypatch):
+        calls = {"n": 0}
+
+        def _exists(self):
+            calls["n"] += 1
+            return calls["n"] >= 3
+
+        monkeypatch.setattr(Path, "exists", _exists)
+        monkeypatch.setattr(usb_mod.time, "sleep", lambda s: None)
+        wait_for_partition("/dev/sdz1")
+        assert calls["n"] == 3
+
+    def test_raises_a_clear_error_if_it_never_appears(self, monkeypatch):
+        monkeypatch.setattr(Path, "exists", lambda self: False)
+        monkeypatch.setattr(usb_mod.time, "sleep", lambda s: None)
+        # A monotonic clock that jumps straight past the deadline on the
+        # second read, so the test doesn't burn real wall-clock time.
+        ticks = iter([0.0, 999.0])
+        monkeypatch.setattr(usb_mod.time, "monotonic", lambda: next(ticks))
+        with pytest.raises(RuntimeError, match="did not appear"):
+            wait_for_partition("/dev/sdz1", timeout=10.0)
 
 
 # ── execute_commands: the actual safety-critical gate ────────────────────────
@@ -638,6 +676,7 @@ class TestMainEndToEnd:
         monkeypatch.setattr(usb_mod, "confirm_wipe", lambda device: True)
         monkeypatch.setattr(usb_mod.os, "geteuid", lambda: 0)
         monkeypatch.setattr(usb_mod.Path, "mkdir", lambda self, **kw: None)
+        monkeypatch.setattr(usb_mod.Path, "exists", lambda self: True)
 
         subprocess_calls = []
 
@@ -713,6 +752,7 @@ class TestMainEndToEnd:
         monkeypatch.setattr(usb_mod, "confirm_wipe", lambda device: True)
         monkeypatch.setattr(usb_mod.os, "geteuid", lambda: 0)
         monkeypatch.setattr(usb_mod.Path, "mkdir", lambda self, **kw: None)
+        monkeypatch.setattr(usb_mod.Path, "exists", lambda self: True)
 
         subprocess_calls = []
 
@@ -759,6 +799,7 @@ class TestMainEndToEnd:
         monkeypatch.setattr(usb_mod, "confirm_wipe", lambda device: True)
         monkeypatch.setattr(usb_mod.os, "geteuid", lambda: 0)
         monkeypatch.setattr(usb_mod.Path, "mkdir", lambda self, **kw: None)
+        monkeypatch.setattr(usb_mod.Path, "exists", lambda self: True)
 
         subprocess_calls = []
 
@@ -797,6 +838,7 @@ class TestMainEndToEnd:
         monkeypatch.setattr(usb_mod, "confirm_wipe", lambda device: True)
         monkeypatch.setattr(usb_mod.os, "geteuid", lambda: 0)
         monkeypatch.setattr(usb_mod.Path, "mkdir", lambda self, **kw: None)
+        monkeypatch.setattr(usb_mod.Path, "exists", lambda self: True)
 
         subprocess_calls = []
 
@@ -966,6 +1008,7 @@ class TestMainEndToEnd:
         monkeypatch.setattr(usb_mod, "confirm_wipe", lambda device: True)
         monkeypatch.setattr(usb_mod.os, "geteuid", lambda: 0)
         monkeypatch.setattr(usb_mod.Path, "mkdir", lambda self, **kw: None)
+        monkeypatch.setattr(usb_mod.Path, "exists", lambda self: True)
         monkeypatch.setattr(
             subprocess, "run", lambda *a, **k: type("R", (), {"returncode": 0, "stderr": ""})()
         )

@@ -297,6 +297,23 @@ def build_wipe_and_format_commands(device_path: str, label: str = "MUSAEUS") -> 
     ]
 
 
+def wait_for_partition(partition_path: str, timeout: float = 10.0, poll_interval: float = 0.5) -> None:
+    """parted's partition-table change is picked up by the kernel
+    immediately, but the /dev/sdXN device node is created asynchronously
+    by udev -- calling mkfs.exfat right after parted returns can race
+    that. Hit for real 2026-09-03: mkfs.exfat failed with "open failed :
+    /dev/sde1, No such file or directory" even though the node existed
+    moments later. Poll for it instead of assuming it's already there."""
+    deadline = time.monotonic() + timeout
+    while not Path(partition_path).exists():
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"partition {partition_path} did not appear within {timeout}s "
+                "of partitioning -- kernel/udev may not have caught up"
+            )
+        time.sleep(poll_interval)
+
+
 def execute_commands(commands: list[list[str]], dry_run: bool) -> None:
     if dry_run:
         for cmd in commands:
@@ -620,9 +637,16 @@ def main() -> int:
     # than trusting the mountpoints captured before the typed confirmation.
     refreshed = next((d for d in list_removable_devices() if d.path == device.path), device)
     execute_commands(build_unmount_commands(refreshed), dry_run=False)
-    execute_commands(build_wipe_and_format_commands(device.path), dry_run=False)
 
     partition = f"{device.path}1" if not device.path[-1].isdigit() else f"{device.path}p1"
+    wipe_and_format = build_wipe_and_format_commands(device.path)
+    # wipefs + both parted calls, then mkfs.exfat separately -- the wait in
+    # between is why this isn't one execute_commands() call. See
+    # wait_for_partition's docstring.
+    execute_commands(wipe_and_format[:-1], dry_run=False)
+    wait_for_partition(partition)
+    execute_commands(wipe_and_format[-1:], dry_run=False)
+
     mount_point = Path(f"/mnt/musaeus_usb_{int(time.time())}")
     mount_point.mkdir(parents=True, exist_ok=True)
     subprocess.run(["mount", partition, str(mount_point)], check=True)
