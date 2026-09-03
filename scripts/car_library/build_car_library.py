@@ -109,14 +109,37 @@ def _read_tags(path: Path) -> tuple[str | None, str | None]:
         return None, None
 
 
-def _find_output_by_tags(output_dir: Path, artist: str, title: str) -> Path | None:
+def _index_output_by_tags(output_dir: Path) -> dict[tuple[str, str], Path]:
+    """(artist, title) -> path, for every file under *output_dir*, read once.
+
+    Replaces a per-source full-directory rescan. The matching loop below
+    used to call a linear rglob+ffprobe scan of the WHOLE output tree for
+    EVERY source file -- O(n^2) ffprobe subprocess calls. Modeled against
+    the 2026-09-01 car build (10,103 files each way): roughly 51 million
+    calls, an estimated 213 hours at an optimistic 15ms each. Measured
+    directly: the 2026-09-02 re-run ran for over 16 hours -- well past
+    idle-throttle contention -- and never produced a single "matched"
+    line, because it was still inside the first few thousand source files'
+    inner scans when the machine rebooted.
+
+    Building the index once costs one ffprobe per output file (n calls);
+    the matching loop below becomes n dict lookups. O(n) instead of O(n^2).
+
+    First occurrence wins per key, matching rglob()'s original enumeration
+    order -- so behaviour is identical to the old function wherever the
+    old function would have returned a result, just reachable in practice.
+    """
+    index: dict[tuple[str, str], Path] = {}
     for p in output_dir.rglob("*"):
         if not p.is_file():
             continue
         a, t = _read_tags(p)
-        if a == artist and t == title:
-            return p
-    return None
+        if a is None or t is None:
+            continue
+        key = (a, t)
+        if key not in index:
+            index[key] = p
+    return index
 
 
 def stage_from_catalogue(
@@ -355,6 +378,7 @@ def main() -> int:
     # file_path=?), scoped only to files this run actually touched.
     updated = 0
     unmatched: list[tuple[Path, str]] = []
+    output_index = _index_output_by_tags(final_dir)
     for src in files:
         row = source_rows.get(src)
         if row is None:
@@ -365,7 +389,7 @@ def main() -> int:
         if not artist or not title:
             unmatched.append((src, "archive row missing artist/title tags to match against"))
             continue
-        out_path = _find_output_by_tags(final_dir, artist, title)
+        out_path = output_index.get((artist, title))
         if out_path is None:
             unmatched.append((src, f"no output file found under {final_dir} matching artist/title tags"))
             continue
