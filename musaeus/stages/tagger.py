@@ -27,9 +27,12 @@ Rules:
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
+from ..artist_form import has_article, natural_form, sort_form
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
 from .normalize import _move_article_to_suffix
@@ -37,6 +40,165 @@ from .normalize import _move_article_to_suffix
 logger = logging.getLogger(__name__)
 
 _COMMIT_EVERY = 50
+
+
+# ── albumartist: when it must follow artist, and when it must not ─────────────
+#
+# albumartist has no archive column and was never written by this stage, so it
+# kept whatever spelling the source file arrived with -- forever. Measured on
+# the live library 2026-08-29: 1,735 of 10,588 files (16.4%) had artist and
+# albumartist disagreeing. Sorting mp3tag by Album Artist makes it obvious --
+# "Abba" beside "ABBA", "Ad Libs, The" beside "THE AD LIBS".
+#
+# The old rule repaired only one shape (leading article -> suffix), which left
+# most of the 1,735 untouched. A blanket mirror is wrong too, and the
+# measurement says exactly where the line falls:
+#
+#     292  article / punctuation convention   "THE AD LIBS" -> "Ad Libs, The"   MIRROR
+#     544  collaboration credit, NO album     "50 Cent" / "50 Cent, Nate Dogg"
+#                                             a loose single; the credit is
+#                                             noise and the canon already
+#                                             collapsed artist to the solo name MIRROR
+#     359  collaboration credit, ON an album  "Art Blakey" /
+#                                             "Art Blakey & The Jazz Messengers"
+#                                             on "Moanin'" -- there it IS the
+#                                             album's credited artist            KEEP
+#     246  classical composer vs performer    "Antonio Vivaldi" /
+#                                             "Anne-Sophie Mutter". Filing
+#                                             classical under composer is
+#                                             policy; the performer is real
+#                                             information and lives nowhere else KEEP
+#     181  differ ONLY by letter case         "TLC" / "Tlc" -- and here the
+#                                             ARTIST is the damaged field         KEEP
+#     110  unrelated                          no rule fits; a human decides       KEEP
+#       3  compilation marker                 "Various Artists" / "Soundtrack"    KEEP
+#
+# Album context is the discriminator, and it is the one Grey ruled on
+# (2026-08-29): mirror the album-less singles, keep the album credits.
+
+_ARTICLE_SUFFIX = re.compile(r"^(.*?)[,(]\s*(?:the|a|an)\s*\)?$", re.I)
+_ARTICLE_PREFIX = re.compile(r"^(?:the|a|an)\s+(.*)$", re.I)
+_PUNCT = re.compile(r"[^\w\s]")
+_WS = re.compile(r"\s+")
+
+# Splitting a credit on "," is how "10,000 Maniacs" became artist "10" and how
+# "Ray, Goodman & Brown" became "Ray" -- both are in the library today. A comma
+# followed by digits is inside one name, not between two.
+_CREDIT_SPLIT = re.compile(
+    r"\s*(?:,(?!\s*\d)|&|/|;|\bfeat\.?\b|\bfeaturing\b|\bwith\b|\bvs\.?\b|\band\b)\s*",
+    re.I,
+)
+
+# An albumartist naming an ensemble is a performer credit, not a spelling of
+# the composer. Checked in addition to genre, because genre is not always set.
+_ENSEMBLE = re.compile(
+    r"orchestra|philharmon|symphon|ensemble|quartet|quintet|consort|academy"
+    r"|camerata|chamber|baroque|choir|capella|chorale|sinfoni",
+    re.I,
+)
+
+_COMPILATION_MARKERS = frozenset(
+    {"various artists", "various", "va", "soundtrack", "original soundtrack", "ost"}
+)
+
+
+def _fold_name(name: str) -> str:
+    """Reduce a name to what survives spelling: case, accents, punctuation, article.
+
+    "Abba" / "ABBA", "AC/DC" / "Ac/dc", "Ronettes, The" / "Ronettes (the)" /
+    "The Ronettes" all fold to the same string. Order matters -- the article
+    has to be handled while its comma or bracket is still there, which is the
+    bug that made an earlier draft of this miss "Black Eyed Peas, The".
+    """
+    s = unicodedata.normalize("NFKD", name)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower().strip()
+    for _ in range(2):
+        m = _ARTICLE_SUFFIX.match(s)
+        if m and m.group(1).strip():
+            s = m.group(1).strip()
+            continue
+        m = _ARTICLE_PREFIX.match(s)
+        if m and m.group(1).strip():
+            s = m.group(1).strip()
+            continue
+        break
+    s = s.replace("&", " and ").replace("+", " and ")
+    s = _PUNCT.sub("", s)
+    return _WS.sub(" ", s).strip()
+
+
+def _first_credit(name: str) -> str:
+    """The lead name in a credit list. "50 Cent, Nate Dogg" -> "50 Cent"."""
+    parts = [p for p in _CREDIT_SPLIT.split(name) if p and p.strip()]
+    return parts[0].strip() if parts else name.strip()
+
+
+def albumartist_should_follow(
+    db_artist: str, file_albumartist: str, *, album: str = "", genre: str = ""
+) -> bool:
+    """True when albumartist should be rewritten to the canonical artist.
+
+    Returns False for anything it is not sure about. This writes to real
+    files, and a wrong mirror destroys information no other field carries.
+    """
+    artist = (db_artist or "").strip()
+    aa = (file_albumartist or "").strip()
+
+    # Nothing to source a value from, or nothing to fix.
+    if not artist or not aa or aa == artist:
+        return False
+
+    # A compilation's albumartist is genuinely not the track artist.
+    if _fold_name(aa) in _COMPILATION_MARKERS:
+        return False
+
+    # Classical is filed under composer by policy; albumartist holds the
+    # performer, which is the only place that information exists.
+    if genre.strip().lower() == "classical" or _ENSEMBLE.search(aa):
+        return False
+
+    # Same name, different spelling -- but NOT when the only difference is
+    # letter case. Measured 2026-08-29: 181 such files, and in most of them
+    # the albumartist is CORRECT and the artist is the damaged one, because
+    # `_smart_title()` title-cased acronyms and stylized names into nonsense:
+    #
+    #     albumartist 'TLC'   artist 'Tlc'      albumartist 'ABBA'  artist 'Abba'
+    #     albumartist 'N.W.A' artist 'N.w.a'    albumartist 'SZA'   artist 'Sza'
+    #     albumartist 'Paul McCartney'          artist 'Paul Mccartney'
+    #     albumartist 'k.d. lang'               artist 'K.d. Lang'
+    #
+    # Mirroring would copy that damage over the last correct copy of the name.
+    # The artist field is what needs repairing, not albumartist -- so refuse,
+    # and leave the evidence on disk. Article and punctuation conventions
+    # ("THE AD LIBS" -> "Ad Libs, The") still pass: they differ by more than case.
+    if _fold_name(aa) == _fold_name(artist):
+        # Mirror only when an ARTICLE actually moved, and the moved form is
+        # the artist. That is the one difference this project treats as a
+        # convention rather than a spelling. Everything else that folds equal
+        # -- "A*Teens" vs "ATeens", "1910 Fruitgum Co." vs "1910 Fruitgum Co"
+        # -- would lose a character the albumartist still has.
+        moved = _move_article_to_suffix(aa)
+        return moved != aa and moved.lower() == artist.lower()
+
+    # A collaboration credit. On a real album it IS the album's artist and must
+    # survive; on a loose single it is a leftover the canon already resolved.
+    if album:
+        return False
+
+    # The same casing trap one level down. "24kGoldn, iann dior" leads with
+    # the correctly-spelled artist while the artist field holds "24kgoldn";
+    # mirroring would write the damaged spelling into the one field that
+    # still had it right. If the lead credit and the artist differ ONLY by
+    # case, the artist is the damaged one -- refuse, as above.
+    lead = _first_credit(aa)
+    if lead.lower() == artist.lower() and lead != artist:
+        return False
+
+    folded = _fold_name(artist)
+    return (
+        _fold_name(lead) == folded or _fold_name(_first_credit(artist)) == _fold_name(aa)
+    )
 
 
 # ── Tag read/write helpers ────────────────────────────────────────────────────
@@ -62,6 +224,8 @@ def _read_tags(path: Path) -> dict[str, str]:
             return {
                 "artist": _g("\xa9ART"),
                 "albumartist": _g("aART"),
+                "sort_artist": _g("soar"),
+                "sort_albumartist": _g("soaa"),
                 "album": _g("\xa9alb"),
                 "title": _g("\xa9nam"),
                 "genre": _g("\xa9gen"),
@@ -130,6 +294,8 @@ def _write_tags(path: Path, changes: dict[str, str]) -> bool:
             _map = {
                 "artist": "\xa9ART",
                 "albumartist": "aART",
+                "sort_artist": "soar",
+                "sort_albumartist": "soaa",
                 "album": "\xa9alb",
                 "title": "\xa9nam",
                 "genre": "\xa9gen",
@@ -207,6 +373,12 @@ class TaggerStage(BaseStage):
     The stage never modifies the audio stream.
     """
 
+    @classmethod
+    def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
+        """Rows this stage would act on. Read-only; see planner.py."""
+        n = conn.execute("SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'").fetchone()[0]
+        return int(n), "catalogued files whose tags would be checked"
+
     NAME = "tagger"
 
     def validate(self, ctx: RunContext) -> None:
@@ -245,27 +417,40 @@ class TaggerStage(BaseStage):
             if db_val and db_val != file_val:
                 changes[db_field] = db_val
 
-        # albumartist has no archive column and was never written by this
-        # stage, so it kept whatever spelling the source file arrived with --
-        # forever. Confirmed live 2026-08-21: 2,035 of 5,894 article-artist
-        # files (34.5%) had artist and albumartist disagreeing, e.g. artist
-        # "Cranberries, The" beside albumartist "The Cranberries".
+        # ── the two forms of the artist name ──────────────────────────────
         #
-        # Deliberately NOT a blanket mirror of artist. albumartist is
-        # legitimately different from track artist on compilations ("Various
-        # Artists") and split/guest credits, and clobbering those would
-        # destroy real information. Only rewritten when the file's existing
-        # albumartist is the SAME artist in a non-canonical spelling -- i.e.
-        # normalizing it lands on the DB artist.
+        # The database stores the sort form ("Stooges, The"), inherited from
+        # ORPHEUS so that a folder listing sorts under S. That string was
+        # also going into the `artist` TAG, which is the field every external
+        # service reads -- and MusicBrainz has never heard of "Stooges, The".
+        # Measured 2026-08-29: 376 of 839 cached misses were in that form,
+        # and 0 of 2,158 hits were.
+        #
+        # So the two jobs get two fields. `soar`/`soaa` are the standard sort
+        # atoms; iTunes, Plex and mp3tag all honour them, and nothing in this
+        # project had ever written one. The path keeps the sort form too --
+        # see organize.py, which derives it independently of the tag.
         db_artist = str(db_row.get("artist") or "").strip()
+        if db_artist:
+            natural = natural_form(db_artist)
+            if natural != str(file_tags.get("artist") or "").strip():
+                changes["artist"] = natural
+
+            # Only when the two forms actually differ. Writing a sort tag
+            # identical to the artist is noise on every file without an
+            # article, and would rewrite the whole library to say nothing.
+            if has_article(db_artist):
+                sort = sort_form(db_artist)
+                if sort != str(file_tags.get("sort_artist") or "").strip():
+                    changes["sort_artist"] = sort
+
         file_aa = str(file_tags.get("albumartist") or "").strip()
-        if (
-            db_artist
-            and file_aa
-            and file_aa != db_artist
-            and _move_article_to_suffix(file_aa) == db_artist
-        ):
-            changes["albumartist"] = db_artist
+        album = str(db_row.get("album") or file_tags.get("album") or "").strip()
+        genre = str(db_row.get("genre") or file_tags.get("genre") or "").strip()
+        if albumartist_should_follow(db_artist, file_aa, album=album, genre=genre):
+            changes["albumartist"] = natural_form(db_artist)
+            if has_article(db_artist):
+                changes["sort_albumartist"] = sort_form(db_artist)
 
         return changes
 

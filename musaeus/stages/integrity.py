@@ -34,6 +34,7 @@ import subprocess
 from pathlib import Path
 
 from ..context import RunContext, StageResult
+from ..db import ensure_columns
 from .base import BaseStage, StageError
 
 logger = logging.getLogger(__name__)
@@ -46,19 +47,15 @@ _COMMIT_EVERY = 50
 
 
 def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
-    for col, typedef in (
-        ("integrity_ok", "INTEGER"),
-        ("integrity_checked_at", "TEXT"),
-    ):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
-    conn.commit()
-
-
-# ── ffprobe check ─────────────────────────────────────────────────────────────
-
-
+    """Columns this stage owns. Mechanism shared via db.ensure_columns;
+    the list stays here, next to the code that reads them."""
+    ensure_columns(
+        conn,
+        (
+            ("integrity_ok", "INTEGER"),
+            ("integrity_checked_at", "TEXT"),
+        ),
+    )
 def _check_file(path: str) -> tuple[bool, str]:
     """
     Run ffmpeg decode-test on a file (decode to null output).

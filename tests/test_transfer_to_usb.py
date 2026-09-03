@@ -30,6 +30,7 @@ from musaeus.config import MusicConfig  # noqa: E402
 from scripts.usb_transfer.transfer_to_usb import (  # noqa: E402
     BlockDevice,
     CopyResult,
+    build_unmount_commands,
     build_wipe_and_format_commands,
     confirm_wipe,
     copy_playlists,
@@ -38,10 +39,13 @@ from scripts.usb_transfer.transfer_to_usb import (  # noqa: E402
     execute_commands,
     is_denylisted,
     list_block_devices,
+    wait_for_partition,
 )
 
 
-def _device(path="/dev/sdb", size=64_000_000_000, removable=True) -> BlockDevice:
+def _device(
+    path="/dev/sdb", size=64_000_000_000, removable=True, mountpoints=None
+) -> BlockDevice:
     return BlockDevice(
         path=path,
         size_bytes=size,
@@ -50,7 +54,7 @@ def _device(path="/dev/sdb", size=64_000_000_000, removable=True) -> BlockDevice
         serial="TESTSERIAL123",
         tran="usb",
         removable=removable,
-        mountpoints=[],
+        mountpoints=mountpoints if mountpoints is not None else [],
     )
 
 
@@ -236,6 +240,71 @@ class TestBuildCommands:
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: called.append(a))
         build_wipe_and_format_commands("/dev/sdb")
         assert called == []
+
+
+class TestBuildUnmountCommands:
+    """2026-09-03: a real run hit wipefs failing with "Device or resource
+    busy" because the target was still auto-mounted (e.g. at
+    /media/grey/MyTunes from being plugged in) and nothing unmounted it
+    first."""
+
+    def test_no_mountpoints_means_no_commands(self):
+        dev = _device(mountpoints=[])
+        assert build_unmount_commands(dev) == []
+
+    def test_one_mountpoint_becomes_one_umount(self):
+        dev = _device(mountpoints=["/media/grey/MyTunes"])
+        assert build_unmount_commands(dev) == [["umount", "/media/grey/MyTunes"]]
+
+    def test_multiple_mountpoints_each_get_their_own_umount(self):
+        dev = _device(mountpoints=["/media/grey/MyTunes", "/mnt/other"])
+        assert build_unmount_commands(dev) == [
+            ["umount", "/media/grey/MyTunes"],
+            ["umount", "/mnt/other"],
+        ]
+
+    def test_does_not_execute_anything(self, monkeypatch):
+        called = []
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: called.append(a))
+        build_unmount_commands(_device(mountpoints=["/media/grey/MyTunes"]))
+        assert called == []
+
+
+class TestWaitForPartition:
+    """2026-09-03: a real run hit mkfs.exfat failing with "open failed :
+    /dev/sde1, No such file or directory" right after parted returned --
+    the partition table change is picked up by the kernel immediately but
+    udev creates the /dev/sdXN node asynchronously, and mkfs.exfat ran
+    before it existed."""
+
+    def test_returns_immediately_if_the_node_already_exists(self, monkeypatch):
+        monkeypatch.setattr(Path, "exists", lambda self: True)
+        slept = []
+        monkeypatch.setattr(usb_mod.time, "sleep", lambda s: slept.append(s))
+        wait_for_partition("/dev/sdz1")
+        assert slept == []
+
+    def test_polls_until_the_node_appears(self, monkeypatch):
+        calls = {"n": 0}
+
+        def _exists(self):
+            calls["n"] += 1
+            return calls["n"] >= 3
+
+        monkeypatch.setattr(Path, "exists", _exists)
+        monkeypatch.setattr(usb_mod.time, "sleep", lambda s: None)
+        wait_for_partition("/dev/sdz1")
+        assert calls["n"] == 3
+
+    def test_raises_a_clear_error_if_it_never_appears(self, monkeypatch):
+        monkeypatch.setattr(Path, "exists", lambda self: False)
+        monkeypatch.setattr(usb_mod.time, "sleep", lambda s: None)
+        # A monotonic clock that jumps straight past the deadline on the
+        # second read, so the test doesn't burn real wall-clock time.
+        ticks = iter([0.0, 999.0])
+        monkeypatch.setattr(usb_mod.time, "monotonic", lambda: next(ticks))
+        with pytest.raises(RuntimeError, match="did not appear"):
+            wait_for_partition("/dev/sdz1", timeout=10.0)
 
 
 # ── execute_commands: the actual safety-critical gate ────────────────────────
@@ -510,9 +579,16 @@ class TestSourceDir:
         cfg = _cfg(tmp_path)
         assert usb_mod._source_dir("alac", cfg) == cfg.alac_library
 
-    def test_car_points_at_car_export_output(self, tmp_path):
+    def test_car_points_at_the_published_car_library(self, tmp_path):
+        """Was cfg.runs_root / "AAC-Car-Masked" / "_output" -- the
+        build/staging area -- until 2026-09-03, when the built-and-masked
+        edition started being published to cfg.car_library. Pointing this
+        at the old staging path would transfer the wrong audio: its
+        encoded/ subtree is the pre-masking intermediate (no car-cabin
+        noise mixed in), kept only so a re-run can skip already-encoded
+        files."""
         cfg = _cfg(tmp_path)
-        assert usb_mod._source_dir("car", cfg) == cfg.runs_root / "AAC-Car-Masked" / "_output"
+        assert usb_mod._source_dir("car", cfg) == cfg.car_library
 
     def test_unknown_library_raises(self, tmp_path):
         cfg = _cfg(tmp_path)
@@ -600,6 +676,7 @@ class TestMainEndToEnd:
         monkeypatch.setattr(usb_mod, "confirm_wipe", lambda device: True)
         monkeypatch.setattr(usb_mod.os, "geteuid", lambda: 0)
         monkeypatch.setattr(usb_mod.Path, "mkdir", lambda self, **kw: None)
+        monkeypatch.setattr(usb_mod.Path, "exists", lambda self: True)
 
         subprocess_calls = []
 
@@ -641,6 +718,112 @@ class TestMainEndToEnd:
         out = capsys.readouterr().out
         assert "1 copied+verified, 0 failed" in out
 
+    def test_dry_run_previews_the_unmount_when_device_is_mounted(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        cfg = _cfg(tmp_path)
+        cfg.alac_library.mkdir(parents=True)
+        (cfg.alac_library / "track.m4a").write_bytes(b"x")
+        dev = _device(path="/dev/sdz", mountpoints=["/media/grey/MyTunes"])
+        monkeypatch.setattr(usb_mod, "get_config", lambda: cfg)
+        monkeypatch.setattr(usb_mod, "list_removable_devices", lambda: [dev])
+        monkeypatch.setattr(usb_mod, "critical_backing_disks", lambda *a, **k: set())
+        monkeypatch.setattr(sys, "argv", ["prog", "--library", "alac", "--device", "/dev/sdz"])
+
+        calls = []
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
+        assert usb_mod.main() == 0
+        assert calls == []
+        out = capsys.readouterr().out
+        assert "would run: umount /media/grey/MyTunes" in out
+
+    def test_execute_unmounts_a_busy_device_before_wiping(self, tmp_path, monkeypatch):
+        """The real failure this guards against: wipefs refuses on a
+        mounted device with "Device or resource busy". umount must run,
+        and must run before wipefs, not after."""
+        cfg = _cfg(tmp_path)
+        cfg.alac_library.mkdir(parents=True)
+        (cfg.alac_library / "track.m4a").write_bytes(b"x")
+        dev = _device(path="/dev/sdz", mountpoints=["/media/grey/MyTunes"])
+
+        monkeypatch.setattr(usb_mod, "get_config", lambda: cfg)
+        monkeypatch.setattr(usb_mod, "list_removable_devices", lambda: [dev])
+        monkeypatch.setattr(usb_mod, "critical_backing_disks", lambda *a, **k: set())
+        monkeypatch.setattr(usb_mod, "confirm_wipe", lambda device: True)
+        monkeypatch.setattr(usb_mod.os, "geteuid", lambda: 0)
+        monkeypatch.setattr(usb_mod.Path, "mkdir", lambda self, **kw: None)
+        monkeypatch.setattr(usb_mod.Path, "exists", lambda self: True)
+
+        subprocess_calls = []
+
+        def _fake_run(cmd, **kwargs):
+            subprocess_calls.append(cmd)
+
+            class _R:
+                returncode = 0
+                stderr = ""
+
+            return _R()
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        monkeypatch.setattr(
+            usb_mod, "copy_with_verification",
+            lambda files, source_root, dest_root, **kw: CopyResult(ok=[str(f) for f in files]),
+        )
+        monkeypatch.setattr(
+            sys, "argv", ["prog", "--library", "alac", "--device", "/dev/sdz", "--execute"]
+        )
+
+        assert usb_mod.main() == 0
+
+        cmd_names = [c[0] for c in subprocess_calls]
+        assert cmd_names[0] == "umount", "must unmount before wipefs, not after"
+        assert cmd_names[1] == "wipefs"
+        assert subprocess_calls[0] == ["umount", "/media/grey/MyTunes"]
+
+    def test_execute_unmounts_using_freshly_refetched_mount_state(self, tmp_path, monkeypatch):
+        """Mount state can change between the initial listing and the
+        moment execution actually starts (same reasoning as the existing
+        denylist recheck) -- the unmount must use a fresh re-fetch, not
+        the mountpoints captured before the typed confirmation."""
+        cfg = _cfg(tmp_path)
+        cfg.alac_library.mkdir(parents=True)
+        (cfg.alac_library / "track.m4a").write_bytes(b"x")
+        stale = _device(path="/dev/sdz", mountpoints=[])
+        fresh = _device(path="/dev/sdz", mountpoints=["/media/grey/MyTunes"])
+
+        listings = iter([[stale], [fresh]])
+        monkeypatch.setattr(usb_mod, "get_config", lambda: cfg)
+        monkeypatch.setattr(usb_mod, "list_removable_devices", lambda: next(listings))
+        monkeypatch.setattr(usb_mod, "critical_backing_disks", lambda *a, **k: set())
+        monkeypatch.setattr(usb_mod, "confirm_wipe", lambda device: True)
+        monkeypatch.setattr(usb_mod.os, "geteuid", lambda: 0)
+        monkeypatch.setattr(usb_mod.Path, "mkdir", lambda self, **kw: None)
+        monkeypatch.setattr(usb_mod.Path, "exists", lambda self: True)
+
+        subprocess_calls = []
+
+        def _fake_run(cmd, **kwargs):
+            subprocess_calls.append(cmd)
+
+            class _R:
+                returncode = 0
+                stderr = ""
+
+            return _R()
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        monkeypatch.setattr(
+            usb_mod, "copy_with_verification",
+            lambda files, source_root, dest_root, **kw: CopyResult(ok=[str(f) for f in files]),
+        )
+        monkeypatch.setattr(
+            sys, "argv", ["prog", "--library", "alac", "--device", "/dev/sdz", "--execute"]
+        )
+
+        assert usb_mod.main() == 0
+        assert subprocess_calls[0] == ["umount", "/media/grey/MyTunes"]
+
     def test_execute_still_umounts_after_copy_raises(self, tmp_path, monkeypatch):
         """finally: must run even if copy_with_verification itself blows up --
         never leave the device mounted on an unhandled error."""
@@ -655,6 +838,7 @@ class TestMainEndToEnd:
         monkeypatch.setattr(usb_mod, "confirm_wipe", lambda device: True)
         monkeypatch.setattr(usb_mod.os, "geteuid", lambda: 0)
         monkeypatch.setattr(usb_mod.Path, "mkdir", lambda self, **kw: None)
+        monkeypatch.setattr(usb_mod.Path, "exists", lambda self: True)
 
         subprocess_calls = []
 
@@ -824,6 +1008,7 @@ class TestMainEndToEnd:
         monkeypatch.setattr(usb_mod, "confirm_wipe", lambda device: True)
         monkeypatch.setattr(usb_mod.os, "geteuid", lambda: 0)
         monkeypatch.setattr(usb_mod.Path, "mkdir", lambda self, **kw: None)
+        monkeypatch.setattr(usb_mod.Path, "exists", lambda self: True)
         monkeypatch.setattr(
             subprocess, "run", lambda *a, **k: type("R", (), {"returncode": 0, "stderr": ""})()
         )

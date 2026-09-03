@@ -103,7 +103,7 @@ class BitRotStage(BaseStage):
 
     def _rebaseline(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
-        files = _scan_archive_files(ctx.config.vault_root / "ALAC_Archive")
+        files = _scan_archive_files(ctx.config.alac_archive)
 
         limit = ctx.get("bitrot_limit", 0)
         if limit:
@@ -157,7 +157,7 @@ class BitRotStage(BaseStage):
 
     def _verify(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
-        alac_archive = ctx.config.vault_root / "ALAC_Archive"
+        alac_archive = ctx.config.alac_archive
         files = _scan_archive_files(alac_archive)
 
         limit = ctx.get("bitrot_limit", 0)

@@ -31,13 +31,28 @@ import shutil
 from pathlib import Path
 
 from ..context import RunContext, StageResult
+from ..exports import (
+    ExportRootError,
+    configured_export_root,
+    resolve_export_root,
+    validate_export_root,
+)
 from .base import BaseStage, StageError
 
 logger = logging.getLogger(__name__)
 
 _COMMIT_EVERY = 100
 
-# Ensemble/duo names that must never be split at " & " for folder naming.
+# Ensemble/duo names that must never be split at " & ", for folder naming
+# OR for artist-variant folding.
+#
+# Scope widened 2026-08-21: this list existed and was correct, but a
+# one-off artist-fold pass did not consult it and overrode two entries
+# (Big Brother & The Holding Company, Barney Bentall & The Legendary
+# Hearts) before the damage was spotted and reversed. Any code that
+# rewrites archive.artist must check here first -- the whole point of a
+# guard list is that it is consulted by everything, not just the stage it
+# happened to be written in.
 _PROTECTED_ARTIST_NAMES: frozenset[str] = frozenset(
     {
         "crosby, stills & nash",
@@ -51,6 +66,9 @@ _PROTECTED_ARTIST_NAMES: frozenset[str] = frozenset(
         "of monsters and men",
         "big brother & the holding company",
         "dr. hook & the medicine show",
+        # Unrelated to the 1960s solo artist "Keith" ("98.6") despite the
+        # shared first name -- a fold merged the two before this was added.
+        "keith & kristyn getty",
     }
 )
 
@@ -143,25 +161,43 @@ class CuratorStage(BaseStage):
     NAME = "curator"
 
     def validate(self, ctx: RunContext) -> None:
-        export_root = self._get_export_root(ctx)
-        if export_root is None:
-            raise StageError(
-                "No export root set. "
-                "Pass --export-root or: ctx.set('curator_export_root', Path(...))"
+        """Fail closed before the stage builds or creates anything.
+
+        Previously this accepted any non-None value and explicitly did not
+        require it to exist, and run() then called
+        `export_root.mkdir(parents=True, exist_ok=True)` -- so a typo in
+        --export-root built a new library tree somewhere nobody chose and
+        reported success copying into it. The root must now exist, be a
+        writable directory, be absolute, and not overlap the library it is
+        derived from. Nothing here creates a directory."""
+        resolved = resolve_export_root(
+            override=ctx.get("curator_export_root"),
+            configured=configured_export_root(ctx.config),
+        )
+        try:
+            validated = validate_export_root(
+                resolved,
+                protected_roots=(ctx.config.alac_library, ctx.config.vault_root),
             )
-        # Don't require it to exist yet — we'll create it.
+        except ExportRootError as exc:
+            raise StageError(f"{exc}\n  -> {exc.remediation}") from exc
+
+        # Record the resolved value as a redacted identity, not a path.
+        ctx.set("curator_export_root_identity", validated.identity)
+        ctx.set("curator_export_root_source", validated.source)
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _get_export_root(self, ctx: RunContext) -> Path | None:
-        raw = ctx.get("curator_export_root")
-        if raw is None:
-            # Fall back to config if present
-            cfg_root = getattr(ctx.config, "car_export_root", None)
-            if cfg_root:
-                return Path(cfg_root)
-            return None
-        return Path(raw)
+        """Resolve the export root: one-invocation override, then typed
+        configuration, then nothing. No hidden default -- a default export
+        root is a directory the operator did not choose, holding a copy of
+        their library."""
+        resolved = resolve_export_root(
+            override=ctx.get("curator_export_root"),
+            configured=configured_export_root(ctx.config),
+        )
+        return None if resolved is None else resolved.path
 
     def _get_noise_mode(self, ctx: RunContext) -> str:
         return str(ctx.get("curator_noise", "dual"))

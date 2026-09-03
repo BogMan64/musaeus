@@ -82,12 +82,20 @@ independent of which lossy container it happened to arrive in.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import sqlite3
 from pathlib import Path
 
 from ..context import RunContext, StageResult
 from ..db import open_hash_index, record_finalized_hash
+from ..safety.mutation import MutationBoundary, PreconditionError, UnmanagedPathError
+from ..safety.recovery import (
+    JOURNAL_FILENAME,
+    CollisionError,
+    OperationJournal,
+    create_checkpoint,
+)
 from .base import BaseStage
 from .organize import build_track_filename, sanitize_path_component, unique_path
 
@@ -166,14 +174,52 @@ class FinalizeStage(BaseStage):
 
     NAME = "finalize"
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A file this stage claims to have moved must be AT the new path.
+
+        Moves are the costliest thing to get silently wrong: a stage that
+        reports "moved 6,480 files" while the DB and disk disagree leaves
+        rows pointing at nothing, and that is precisely how a file ended up
+        treated as its own duplicate (scope doc section 4.17). Sampling a
+        few is enough to catch a wholesale failure.
+        """
+        rows = ctx.conn.execute(
+            "SELECT file_path FROM archive WHERE status = ? ORDER BY last_seen DESC LIMIT 5",
+            ("CATALOGUED",),
+        ).fetchall()
+        missing = [r["file_path"] for r in rows if not Path(r["file_path"]).exists()]
+        if not rows or not missing:
+            return []
+        return [
+            f"reported {result.files_changed} change(s) but {len(missing)} of "
+            f"{len(rows)} sampled CATALOGUED rows name a file that is not on disk"
+        ]
+
     def validate(self, ctx: RunContext) -> None:
-        count = ctx.conn.execute(
+        """Report the work set, not the table.
+
+        This used to count every canonicalized row and announce it as "ready
+        to finalize" -- on a settled library that printed 10,746 when the
+        actual work was a handful of new files, which reads as though the
+        whole library is about to be re-normalised. _get_pending() has always
+        filtered on finalized_at, so nothing was ever re-baked; the number was
+        simply describing a different set than the one that gets processed.
+        Same shape as the ingest planner reporting 0 with 20 files waiting:
+        a count is only useful if it counts what the stage will actually do.
+        """
+        canonicalized, pending = ctx.conn.execute(
             """
-            SELECT COUNT(*) FROM archive
+            SELECT COUNT(*),
+                   COUNT(*) FILTER (WHERE finalized_at IS NULL OR finalized_at = '')
+              FROM archive
              WHERE status='CATALOGUED' AND canonicalized_at IS NOT NULL
             """
-        ).fetchone()[0]
-        logger.info("[finalize] %d canonicalized file(s) ready to finalize", count)
+        ).fetchone()
+        logger.info(
+            "[finalize] %d file(s) awaiting finalize (%d already finalized, skipped)",
+            pending,
+            canonicalized - pending,
+        )
 
     def _get_pending(self, ctx: RunContext, force: bool) -> list[dict]:
         if force:
@@ -271,6 +317,58 @@ class FinalizeStage(BaseStage):
 
     # ── run ───────────────────────────────────────────────────────────────────
 
+    #: Set MUSAEUS_FINALIZE_CHECKPOINT=0 to run without a recovery
+    #: boundary. Kept as an escape hatch, not a default: a finalize with no
+    #: journal is a finalize nobody can undo.
+    CHECKPOINT_ENV = "MUSAEUS_FINALIZE_CHECKPOINT"
+
+    def _open_boundary(self, ctx: RunContext, result: StageResult):
+        """Checkpoint the sources and open a journalled mutation boundary.
+
+        Scope is deliberate. The SOURCES (STAGING) are what finalize can
+        destroy, so those are checkpointed. The DESTINATION -- ALAC-Library,
+        468 GB against a 100 GB cap -- is not, and does not need to be:
+        finalize only adds to it, so undoing a finalize means moving the
+        file back out, which the journal alone supports.
+
+        source_root spans the vault because a move crosses from STAGING to
+        ALAC-Library and both ends must validate; the checkpoint stays
+        narrow regardless.
+
+        Returns None when disabled or when no checkpoint can be made, and
+        says which in the result -- a run with no boundary must announce
+        itself rather than look identical to one that has it.
+        """
+        if os.environ.get(self.CHECKPOINT_ENV, "1").strip().lower() in ("0", "false", "no"):
+            result.notes.append("recovery boundary: DISABLED by " + self.CHECKPOINT_ENV)
+            return None
+        try:
+            recovery_root = ctx.config.runs_root / "recovery"
+            recovery_root.mkdir(parents=True, exist_ok=True)
+            checkpoint = create_checkpoint(
+                ctx.config.staging,
+                recovery_root,
+                checkpoint_id=f"finalize_{ctx.run_id}",
+                capture_tags=True,
+            )
+            journal = OperationJournal(checkpoint.root / JOURNAL_FILENAME)
+            boundary = MutationBoundary(
+                checkpoint,
+                journal,
+                run_id=ctx.run_id,
+                source_root=ctx.config.vault_root,
+            )
+            coverage = checkpoint.coverage()
+            result.notes.append(
+                f"recovery boundary: checkpoint {checkpoint.checkpoint_id} "
+                f"({coverage['items']} item(s), journal at {journal.path})"
+            )
+            return boundary
+        except Exception as exc:
+            result.notes.append(f"recovery boundary: UNAVAILABLE ({exc})")
+            logger.warning("[finalize] no recovery boundary: %s", exc)
+            return None
+
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)
         force: bool = ctx.get("finalize_force", False)
@@ -285,6 +383,8 @@ class FinalizeStage(BaseStage):
 
         hash_conn = open_hash_index(ctx.config.hash_index_path)
         indexed = 0
+        boundary = self._open_boundary(ctx, result)
+        move_ops: dict[str, str] = {}  # source path -> journal operation id
 
         try:
             for i, row in enumerate(pending, 1):
@@ -317,8 +417,36 @@ class FinalizeStage(BaseStage):
                     continue
 
                 try:
-                    _copy_then_verify_then_swap(source, target)
-                except (FinalizeError, OSError) as exc:
+                    if boundary is not None:
+                        # Same copy -> verify -> atomic rename this stage has
+                        # always done; the boundary adopted it. The gain is
+                        # the journal: without it a finalize is unrecoverable
+                        # once the source is gone. release_source is deferred
+                        # until the archive row lands, because that UPDATE can
+                        # still hit a UNIQUE collision.
+                        move_ops[str(source)] = boundary.move(source, target, release_source=False)
+                    else:
+                        _copy_then_verify_then_swap(source, target)
+                except (
+                    FinalizeError,
+                    OSError,
+                    UnmanagedPathError,
+                    PreconditionError,
+                    CollisionError,
+                ) as exc:
+                    # The boundary's refusals are per-ROW facts, not stage
+                    # facts. Learned on 2026-08-25: exactly one of 10,873 rows
+                    # sits outside the vault (a stray Projects/<Artist>/INBOX/
+                    # directory), the boundary correctly refused to move what
+                    # it could not restore, UnmanagedPathError was in neither
+                    # arm of this tuple, and the escape took the whole stage
+                    # down -- four good files left unfinalized because of one
+                    # bad one. The refusal was right; letting it escape wasn't.
+                    #
+                    # RollbackFailedError is deliberately NOT caught. It cannot
+                    # arise from move(), and if it ever did it would mean the
+                    # world is inconsistent -- that must stop the stage, not
+                    # scroll past as one row's error.
                     result.files_errored += 1
                     result.errors.append(f"{source.name}: {exc}")
                     logger.warning("[finalize] %s: %s", source, exc)
@@ -365,6 +493,7 @@ class FinalizeStage(BaseStage):
                         target,
                         exc,
                     )
+                    move_ops.pop(str(source), None)
                     try:
                         target.unlink(missing_ok=True)
                     except OSError as revert_exc:
@@ -400,7 +529,15 @@ class FinalizeStage(BaseStage):
                 # passthrough row. Either way this is what keeps STAGING
                 # trending back to empty.
                 try:
-                    source.unlink()
+                    op = move_ops.pop(str(source), None)
+                    if boundary is not None and op is not None:
+                        # Journals that the source went, so recovery can tell
+                        # "destination exists, source gone" from "destination
+                        # exists, source still there" -- different situations
+                        # that must not be inferred from one record.
+                        boundary.release_source(op, source)
+                    else:
+                        source.unlink()
                 except OSError as exc:
                     logger.warning(
                         "[finalize] %s finalized to %s but source could not be removed: %s",

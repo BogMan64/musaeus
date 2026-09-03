@@ -4,6 +4,33 @@ MUSAEUS — Organize Stage
 
 File organization and renaming stage for CATALOGUED archive rows.
 
+The hazard this used to carry, and how it is now closed
+-------------------------------------------------------
+Every target path used to be built under ``ctx.inbox``, while the query
+selects ``status='CATALOGUED'`` -- and catalogued rows have not lived in
+the INBOX since FinalizeStage moved them into ALAC-Library.
+
+Measured 2026-08-24 against the live vault: running it would have moved
+**10,660 of 10,660 catalogued files out of ALAC-Library and into the
+INBOX**, where the pipeline would then treat the entire finalized library
+as new arrivals awaiting ingest. Its absence from DEFAULT_PIPELINE was the
+only thing protecting the library.
+
+Fixed 2026-08-29. A file is now organized **within the root it already
+lives in** -- see `destination_root`. Organize tidies; it does not
+relocate between roots, and it never invents a root for a file that is
+under none, because that is how three tracks were flung outside the vault
+entirely (finding #14: `classical-composer` built its destination from the
+source's grandparent, which for a flat INBOX file is the vault itself).
+
+The lesson from #14 is the shape of the assertion. "Did it move" passes
+for a file moved somewhere nothing can reach. The question worth asking is
+**"is it still somewhere this run can find it"**, and that is what the
+tests for this module now check.
+
+Still absent from DEFAULT_PIPELINE. Wiring it is a separate decision from
+fixing it, and this change does not make it.
+
 What it does:
   - Strips track number prefixes from filenames:
       "171. Artist - Title.m4a" → "Artist - Title.m4a"
@@ -48,14 +75,18 @@ ORPHEUS equivalents:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import sqlite3
 import unicodedata
+from collections.abc import Iterable
 from pathlib import Path
 
+from ..artist_form import sort_form
 from ..context import RunContext, StageResult
 from .base import BaseStage
+from .sanitize import SMART_QUOTE_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +106,36 @@ _TRACK_NUMBER_PATTERNS = [
     # "171.Title" or "05.Title" (no space)
     re.compile(r"^\s*\d{2,3}[._]\s*"),
 ]
+
+# FinalizeStage's batch folder: a YYYY-MM-DD stamp, optionally suffixed when
+# more than one batch lands in a day ("2026-08-27A", "2026-08-27B"). Matched
+# by shape so that DUPES_MOVED_FOR_REVIEW and TRIBUTE_REMOVED_FOR_REVIEW --
+# which sit beside the batches -- are not mistaken for one.
+_BATCH_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[A-Za-z0-9_-]*$")
+
+# Folders that sit beside the batches under ALAC-Library but are NOT library
+# content: files were deliberately moved OUT of the library into them.
+#
+# These must never be organized. Because they are not batches,
+# `destination_root` used to fall through to ALAC-Library itself, and Organize
+# then "tidied" a quarantined file into ALAC-Library/<Artist>/<Album>/ --
+# re-merging a duplicate that dupe_resolver had deliberately set aside.
+# Reproduced 2026-08-31: one file in DUPES_MOVED_FOR_REVIEW, one move into the
+# live library. A console soft reset (which resets every row to PENDING) is
+# all it takes to walk the whole review folder back in.
+_NON_LIBRARY_DIRS: frozenset[str] = frozenset(
+    {"DUPES_MOVED_FOR_REVIEW", "TRIBUTE_REMOVED_FOR_REVIEW", "QUARANTINE"}
+)
+
+
+def in_non_library_area(path: Path, alac_library: Path) -> bool:
+    """True when *path* sits inside a deliberate set-aside folder."""
+    try:
+        rel = path.resolve().relative_to(alac_library.resolve())
+    except (ValueError, OSError):
+        return False
+    return bool(rel.parts) and rel.parts[0] in _NON_LIBRARY_DIRS
+
 
 # ── Windows/ExFAT Forbidden Characters ────────────────────────────────────────
 
@@ -179,15 +240,38 @@ def sanitize_path_component(text: str) -> str:
     s = unicodedata.normalize("NFC", str(text))
 
     # Normalize quotes and dashes
-    s = s.replace("'", "'").replace("'", "'").replace("`", "'")
-    s = s.replace(""", '"').replace(""", '"')
-    s = s.replace("–", "-").replace("—", "-").replace("−", "-")
+    # Smart quotes and dashes -> ASCII, via sanitize.py's map.
+    #
+    # These three lines used to be written out by hand and were silently
+    # broken. Confirmed by AST on 2026-08-29, the file having lost its
+    # non-ASCII characters at some point:
+    #
+    #     .replace("'", "'")                   ASCII -> ASCII. A no-op. Twice.
+    #     .replace(', \'"\').replace(', '"')    a stray `"""` opened a
+    #                                          triple-quoted string, so this
+    #                                          line replaced the literal text
+    #                                          `, '"').replace(` with `"`
+    #
+    # So no curly quote was ever normalised, and one line was nonsense. Only
+    # the dash line survived intact -- it still had its real U+2013/2014/2212.
+    #
+    # Reusing SMART_QUOTE_MAP instead of rewriting the literals: it is
+    # already correct, already tested, and written with \u escapes, which is
+    # what makes it survive an encoding round-trip that ate these.
+    for _smart, _plain in SMART_QUOTE_MAP.items():
+        s = s.replace(_smart, _plain)
+    s = s.replace("`", "'")
 
     # Remove control characters
     s = "".join(c for c in s if unicodedata.category(c)[0] != "C")
 
     # Replace forbidden characters with safe alternatives
-    s = _FORBIDDEN_RE.sub("_", s)
+    # "-" not "_", matching what the library already holds on disk: the
+    # AC/DC folders are "AC-DC" and the 2026-08-22 metadata split kept the
+    # hyphen at Grey's call ("whatever is easiest for Linux"). Switching to
+    # "_" here would rename ~90 folders for no gain and break every stored
+    # file_path that points at them.
+    s = _FORBIDDEN_RE.sub("-", s)
 
     # Collapse multiple spaces
     s = re.sub(r"\s+", " ", s).strip()
@@ -223,6 +307,38 @@ def build_track_filename(artist: str, title: str, ext: str) -> str:
     return f"{artist_safe} - {title_safe}{ext}"
 
 
+def destination_root(current_path: Path, roots: Iterable[Path]) -> Path | None:
+    """The root *current_path* already lives under, or None if it lives under none.
+
+    Organize renames and tidies within a root; it must never carry a file
+    across one. Returning None is the whole point of the function -- a file
+    outside every known root has no safe destination, and the caller refuses
+    it rather than picking a root for it.
+
+    The MOST SPECIFIC match wins, so a root nested inside another (a library
+    under the vault root, say) is preferred over its parent. Comparing on
+    resolved paths, because a symlinked or relative root would otherwise
+    silently match nothing.
+    """
+    try:
+        here = current_path.resolve()
+    except OSError:
+        return None
+
+    best: Path | None = None
+    best_len = -1
+    for root in roots:
+        try:
+            resolved = root.resolve()
+            here.relative_to(resolved)
+        except (ValueError, OSError):
+            continue
+        depth = len(resolved.parts)
+        if depth > best_len:
+            best, best_len = root, depth
+    return best
+
+
 def unique_path(target: Path) -> Path:
     """
     Return a unique path by appending (N) if target already exists.
@@ -254,7 +370,90 @@ class OrganizeStage(BaseStage):
     Organize — rename and reorganize files into Artist/Album/ structure.
     """
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A file this stage says it moved must be at the new path.
+
+        Moves are the costliest thing to get quietly wrong, and this stage
+        has the worst near-miss on record: it would have flattened the
+        library, and after that fix would have re-merged
+        DUPES_MOVED_FOR_REVIEW back into it (both caught 2026-08-31,
+        before either ran).
+
+        The check is against DISK, using the new_value this run recorded in
+        its own events. A row whose file_path was updated to a path that
+        does not exist is the exact shape of a move that reported success
+        and did not happen — and it leaves the DB pointing at nothing,
+        which is how a file ended up treated as its own duplicate (scope
+        doc section 4.17).
+
+        The OLD path mattering too is deliberate: a "move" that copied
+        rather than moved leaves both, which looks fine per-row and
+        silently doubles the library.
+        """
+        rows = ctx.conn.execute(
+            """
+            SELECT old_value, new_value FROM events
+             WHERE run_id = ? AND stage = ?
+               AND event_type IN ('ORGANIZE_MOVE', 'ORGANIZE_RENAME')
+               AND new_value IS NOT NULL
+             ORDER BY id DESC LIMIT 8
+            """,
+            (ctx.run_id, self.NAME),
+        ).fetchall()
+        if not rows:
+            return []
+
+        problems: list[str] = []
+        absent = [r["new_value"] for r in rows if not Path(r["new_value"]).exists()]
+        if absent:
+            problems.append(
+                f"{len(absent)} of {len(rows)} file(s) this run reports moving are "
+                f"not at the new path, e.g. {Path(absent[0]).name}"
+            )
+        left_behind = [
+            r["old_value"] for r in rows
+            if r["old_value"] and Path(r["old_value"]).exists()
+            and Path(r["new_value"]).exists()
+        ]
+        if left_behind:
+            problems.append(
+                f"{len(left_behind)} file(s) exist at BOTH the old and new path — "
+                f"copied rather than moved, e.g. {Path(left_behind[0]).name}"
+            )
+        return problems
+
     NAME = "organize"
+
+    @staticmethod
+    def _roots(ctx: RunContext) -> list[Path]:
+        """Every root a managed file may legitimately live under.
+
+        Order is for readability only -- `destination_root` picks by path
+        depth, so reordering cannot change the answer.
+
+        The batch tier matters. FinalizeStage writes
+        `ALAC-Library/<batch>/<artist>/<album>/`, so treating ALAC-Library
+        itself as the root makes Organize want to rebuild every path as
+        `ALAC-Library/<artist>/<album>/` -- flattening the batch directory
+        and moving the entire finalized library. Measured on the real layout
+        2026-08-30: one file in, one move out.
+
+        So a BATCH directory is a root in its own right -- matched on
+        FinalizeStage's own YYYY-MM-DD[suffix] naming, not on "any child".
+        Enumerating every child would break a library shaped
+        ALAC-Library/<artist>/<album>/: the artist directory would become
+        the root and Organize would nest artist inside artist.
+        `destination_root` prefers the most specific, so a finalized file
+        organizes inside its own batch and stays there.
+        """
+        roots = [ctx.alac_library, ctx.inbox, ctx.staging]
+        # No library yet, or unreadable: the bare roots still answer.
+        with contextlib.suppress(OSError):
+            roots.extend(
+                d for d in ctx.alac_library.iterdir()
+                if d.is_dir() and _BATCH_DIR_RE.match(d.name)
+            )
+        return roots
 
     def _apply_rename(
         self,
@@ -330,6 +529,14 @@ class OrganizeStage(BaseStage):
             """
         ).fetchall()
 
+        # Hoisted out of the loop: _roots() lists ALAC-Library and stats every
+        # child, and destination_root resolve()s each result. Called per row
+        # that was 10,660 directory listings plus thousands of syscalls per
+        # file, on the disk this project already measures as the bottleneck.
+        # The only roots created during a run are batch directories Finalize
+        # makes before Organize starts, so one snapshot is equivalent.
+        roots = self._roots(ctx)
+
         renamed = 0
         moved = 0
         skipped = 0
@@ -344,19 +551,58 @@ class OrganizeStage(BaseStage):
                 result.errors.append(f"{current_path}: file missing on disk")
                 continue
 
+            # Organize WITHIN the root this file already lives in. Building
+            # every target under ctx.inbox is what would have moved 10,660 of
+            # 10,660 catalogued files out of ALAC-Library; a catalogued row
+            # lives under alac_library, an un-finalized one under inbox, and
+            # the stage has no business carrying either across to the other.
+            # A file someone deliberately moved OUT of the library is not
+            # content to tidy back in.
+            if in_non_library_area(current_path, ctx.alac_library):
+                logger.debug("[organize] set-aside area, leaving alone: %s", current_path)
+                result.files_skipped += 1
+                continue
+
+            dest_root = destination_root(current_path, roots)
+            if dest_root is None:
+                # No safe destination. Refusing is the correct answer -- the
+                # alternative is picking a root and putting the file where
+                # nothing in this run can find it again (finding #14).
+                logger.error(
+                    "[organize] %s is under no known root; refusing to move it",
+                    current_path,
+                )
+                result.files_errored += 1
+                result.errors.append(f"{current_path}: outside every known root, skipped")
+                continue
+
             artist = row["artist"] or "Unknown Artist"
             album = row["album"] or "Unsorted"
             title = row["title"] or "Unknown Title"
 
+            # Paths use the SORT form, always, whichever form the tag holds.
+            #
+            # The `artist` tag is moving to the natural form ("The Stooges")
+            # because that is what MusicBrainz and every player expect. The
+            # filesystem wants the other one: "Stooges, The" sorts under S,
+            # which is the whole reason the convention exists.
+            #
+            # Deriving the path from sort_form rather than from the tag keeps
+            # the two decisions independent -- the on-disk layout is byte
+            # identical before and after the tag migration, so no file moves
+            # because of it. Both directions are idempotent, so this is also
+            # correct for a library holding a mix of the two forms.
+            path_artist = sort_form(artist)
+
             # Build new filename
             ext = current_path.suffix
-            new_filename = build_track_filename(artist, title, ext)
+            new_filename = build_track_filename(path_artist, title, ext)
 
-            # Build target path: INBOX/Artist/Album/filename
-            artist_safe = sanitize_path_component(artist)
+            # Build target path: <root>/Artist/Album/filename
+            artist_safe = sanitize_path_component(path_artist)
             album_safe = sanitize_path_component(album)
 
-            target_dir = ctx.inbox / artist_safe / album_safe
+            target_dir = dest_root / artist_safe / album_safe
             candidate_path = target_dir / new_filename
 
             # unique_path() checks disk existence to avoid collisions, but
@@ -397,10 +643,14 @@ class OrganizeStage(BaseStage):
 
             # Needs move (different directory)
             elif current_path.parent != target_path.parent:
+                # Relative to the file's OWN root. `relative_to(ctx.inbox)`
+                # raises ValueError for anything outside the INBOX -- which is
+                # every catalogued file -- and logger arguments are evaluated
+                # eagerly, so this crashed before the move rather than after.
                 logger.info(
                     "[organize] move    %s\n                    → %s",
-                    current_path.relative_to(ctx.inbox),
-                    target_path.relative_to(ctx.inbox),
+                    current_path.relative_to(dest_root),
+                    target_path.relative_to(dest_root),
                 )
 
                 if not dry_run:

@@ -46,7 +46,23 @@ Available stages:
                    (archive_tier_hashes) to catch silent bit rot, ported
                    from ORPHEUS's orpheus_integrity_check.py
   EnrichStage    — Last.fm genre enrichment for tracks with missing genre
+  DenyListStage  — refuse re-ingest of audio deliberately removed before.
+                   Sits immediately after Sentinel, the first point an
+                   audio_hash exists, and before any stage invests work in
+                   a file about to be refused. Quarantines, never deletes.
+                   Added 2026-08-24 after tracing that the finalized-hash
+                   ledger cannot prevent re-acquisition by design
+  ClassicalComposerStage — refile Classical under the composer rather than
+                   the performer, resolved from a thematic catalogue
+                   number, Composer_Canon.tsv, or a title prefix. Added to
+                   Act 1 2026-08-24, after GenreValidate
   MBEnrichStage  — MusicBrainz artist + release MBID enrichment
+  OriginalYearStage — recover a recording's FIRST release year from
+                   MusicBrainz into original_year, leaving `year` (the
+                   edition year) untouched. Deliberately NOT in
+                   DEFAULT_PIPELINE: it is one rate-limited network
+                   call per track (~3h for the library), so it is run
+                   on demand via `musaeus original-year`
   NearDupeStage  — metadata-based near-duplicate detection (fuzzy title match)
   AcousticIDStage — acoustic fingerprint dedup via fpcalc + AcousticID API
   TranscodeStage  — lossless → 256k AAC export via ffmpeg
@@ -114,7 +130,10 @@ own network calls. `musaeus various-artists-fix` run standalone still
 defaults to MB lookups on.
 On-demand only (not part of the canonical chain): Auditor, Curator,
            Playlist, Ghost, AcousticID, Transcode, Reviewer, Organize,
-           IntegrityStage, TributeQuarantineStage, BitRotStage.
+           IntegrityStage, BitRotStage.
+TributeQuarantine moved out of that list into Act 1 on 2026-09-01 --
+see the comment at its position for why it sits after VariousArtistsFix
+and before GenreValidate.
 """
 
 from .acousticid import AcousticIDStage
@@ -125,28 +144,33 @@ from .auditor import AuditorStage
 from .bitrot import BitRotStage
 from .bpm import BPMStage
 from .canonicalize import CanonicalizeStage
+from .classical_composer import ClassicalComposerStage
 from .corrupt import CorruptStage
 from .cross_dupe import CrossDupeStage
 from .curator import CuratorStage
+from .deny_list import DenyListStage
 from .dupe_resolver import DupeResolverStage
 from .enrich import EnrichStage
 from .finalize import FinalizeStage
 from .forge import ForgeStage
+from .genre_validate import GenreValidateStage  # noqa: E402
 from .ghost import GhostStage
 from .health import HealthStage
+from .identity_tag import IdentityTagStage
 from .ingest import IngestStage
 from .integrity import IntegrityStage
 from .mb_enrich import MBEnrichStage
 from .neardupe import NearDupeStage
 from .normalize import NormalizeStage
 from .organize import OrganizeStage
+from .original_year import OriginalYearStage
 from .permissions import PermissionsStage
 from .playlist import PlaylistStage
 from .preflight import PreflightStage
-from .reviewer import ReviewerStage
 from .sanitize import SanitizeStage
 from .scholar import ScholarStage
 from .sentinel import SentinelStage
+from .spellcheck import SpellCheckStage  # noqa: E402
 from .tagger import TaggerStage
 from .transcode import TranscodeStage
 from .tribute_quarantine import TributeQuarantineStage
@@ -161,8 +185,10 @@ __all__ = [
     "OrganizeStage",
     "SanitizeStage",
     "CrossDupeStage",
+    "DenyListStage",
     "DupeResolverStage",
     "CanonicalizeStage",
+    "ClassicalComposerStage",
     "FinalizeStage",
     "AuditStage",
     "ForgeStage",
@@ -178,13 +204,16 @@ __all__ = [
     "ArtistConsolidateStage",
     "EnrichStage",
     "MBEnrichStage",
+    "OriginalYearStage",
     "NearDupeStage",
     "AcousticIDStage",
+    "IdentityTagStage",
     "TranscodeStage",
-    "ReviewerStage",
     "IntegrityStage",
     "AlbumArtStage",
     "TributeQuarantineStage",
+    "GenreValidateStage",
+    "SpellCheckStage",
     "VariousArtistsFixStage",
     "BitRotStage",
 ]
@@ -255,20 +284,71 @@ ACT1_INTAKE_CORRECTION: list[type] = [
     IngestStage,
     PermissionsStage,
     SentinelStage,
+    DenyListStage,
     ScholarStage,
     HealthStage,
     CorruptStage,
     AlbumArtStage,
     NormalizeStage,
+    SpellCheckStage,
     SanitizeStage,
     ArtistConsolidateStage,
     VariousArtistsFixStage,
+    # Wired into Act 1 on 2026-09-01 (Grey's call); it had been standalone
+    # since it was ported from ORPHEUS.
+    #
+    # HERE, and not later, for one reason: it is the only stage that
+    # removes work rather than doing it. Everything after this point --
+    # GenreValidate's per-artist law, Act 2's dedup, Act 3's transcode --
+    # is cost paid per row, and a row this stage takes out is cost not
+    # paid. The 2026-09-01 INBOX brought in 175 filename-flagged karaoke
+    # files and 113 "originally performed by"; transcoding those to ALAC
+    # before deciding to remove them is the expensive order.
+    #
+    # AFTER ArtistConsolidate and VariousArtistsFix, because it matches on
+    # artist/title/album and those two stages are what make those columns
+    # canonical -- it should read the settled name, not the raw tag.
+    #
+    # BEFORE GenreValidate, so junk artists never reach the genre law.
+    #
+    # Its selection needed no change to be wired here: it queries
+    # status='CATALOGUED', which Scholar sets earlier in this same Act,
+    # and VariousArtistsFix directly above runs off the identical query.
+    #
+    # Measured against the live library before wiring, 2026-09-01: 27 of
+    # 10,446 catalogued rows (0.26%), small enough to read in full. It
+    # moves and never deletes, and writes a manifest and restore script.
+    TributeQuarantineStage,
+    # Genre is settled here, at the end of intake, once the artist is
+    # canonical -- the law is keyed on artist, so it cannot be applied
+    # before ArtistConsolidate and VariousArtistsFix have run. Added to the
+    # pipeline 2026-08-24: it had only ever run on demand, which is why a
+    # file's genre came from its own tags via Scholar and nothing corrected
+    # it against MasterLaw.
+    GenreValidateStage,
 ]
 
 ACT2_DEDUP_STAGING: list[type] = [
     CrossDupeStage,
     NearDupeStage,
     DupeResolverStage,
+    # Composer attribution runs AFTER dedup, not before. Filing classical
+    # under the composer collapses dozens of performers into a handful of
+    # artists -- Bach reached 60 tracks, Vivaldi 52 -- and NearDupeStage
+    # compares titles WITHIN an artist. Classical titles share long work
+    # prefixes, so inside those groups fuzzy matching produces false
+    # positives at scale.
+    #
+    # Measured 2026-08-25: 15 distinct recordings were quarantined as
+    # near-duplicates, among them "Water Music Suite No. 1 ... - Air"
+    # against "... - VIII. Hornpipe" at 89% -- different movements of the
+    # same suite. Under their original performer credits those tracks were
+    # never compared to each other; the attribution created the surface
+    # dedup then tripped on.
+    #
+    # So dedup sees the credits as they arrived, and only then is the
+    # recording re-filed under whoever wrote it.
+    ClassicalComposerStage,
 ]
 
 ACT3_CANONICALIZE_FINALIZE: list[type] = [
@@ -277,12 +357,62 @@ ACT3_CANONICALIZE_FINALIZE: list[type] = [
     BPMStage,
     ForgeStage,
     TaggerStage,
+    OrganizeStage,
+    # Organize BEFORE Audit. Audit reconciles archive.file_path against what
+    # is on disk and is documented above as "the gate before a future
+    # DB-snapshot-and-wipe step"; with Organize after it, every audit result
+    # described a layout Organize then rewrote, and the gate passed on
+    # pre-move state.
+    #
+    # Wired 2026-08-30 at Grey's instruction, after the hazard that kept it
+    # out was fixed and tested. It ran nowhere before: every target was built
+    # under ctx.inbox while the query selects CATALOGUED, so it would have
+    # moved 10,660 of 10,660 files OUT of ALAC-Library. A file now organizes
+    # within the root it already lives in, and a finalized file's root is its
+    # BATCH directory -- ALAC-Library itself as the root would have flattened
+    # <batch>/ and moved the entire library, measured 2026-08-30.
+    #
+    # Last in Act 3, after Finalize has placed the file and Tagger has settled
+    # the metadata the path is derived from. Organizing earlier would name
+    # folders from tags that Tagger is about to change.
     AuditStage,
 ]
 
 ENRICHMENT: list[type] = [
     EnrichStage,
     MBEnrichStage,
+    # Wired 2026-08-30 at Grey's instruction; his earlier ruling was "after
+    # the campaign, as a deliberate change", and the campaign is over.
+    #
+    # AFTER MBEnrich, not before: MusicBrainz by name is cheap and settles
+    # most rows, and AcoustID is the answer for what text cannot identify --
+    # 744 files as of 2026-08-30, down from 2,152 once the article-form
+    # lookup bug was fixed. Fingerprinting costs ~0.8s/file, so it should ask
+    # about the remainder, not the library.
+    # AcousticIDStage is DEFERRED out of the default chain, 2026-08-31.
+    #
+    # Wiring it in on 08-30 made the first run a full-library fingerprint
+    # pass -- every row had acousticid_checked_at NULL -- which ran for 21
+    # hours, reached 7,545 of 10,656, and held the database write lock the
+    # whole time, blocking everything else. That is a one-time migration
+    # cost, not a per-run cost, and it does not belong inside the nightly
+    # chain while it is being paid.
+    #
+    # The work is NOT lost and NOT repeated: acousticid_checked_at is
+    # stamped per row, so resuming picks up at 7,545 rather than at zero.
+    # Run it deliberately -- `musaeus acousticid`, or the console's Act
+    # menu -- until the remaining ~3,100 are done, then wire it back here
+    # so new arrivals are fingerprinted as they land.
+    #
+    # It found 319 acoustic duplicates in that first pass: files with
+    # DIFFERENT audio hashes that are the same recording, which PCM
+    # hashing structurally cannot detect. That is why it is worth
+    # finishing rather than abandoning.
+    # LAST. It writes identity to the FILES, so it must run after everything
+    # that resolves identity -- otherwise it writes what the run is about to
+    # learn. This is the stage whose absence let ~8,074 MBIDs live only in a
+    # database that was later reset to 87 rows.
+    IdentityTagStage,
 ]
 
 # The full canonical pipeline: Act 1 + Act 2 + Act 3 + Enrichment, in
@@ -328,31 +458,8 @@ ARCHIVE_PIPELINE: list[type] = [
     AcousticIDStage,
     AlbumArtStage,
     TaggerStage,
-    ReviewerStage,
 ]
 
-# Big Kahuna (run with `musaeus run --big-kahuna`) — everything including LUFS
-BIG_KAHUNA_PIPELINE: list[type] = [
-    PreflightStage,
-    IngestStage,
-    SentinelStage,
-    ScholarStage,
-    NormalizeStage,
-    SanitizeStage,
-    GhostStage,
-    HealthStage,
-    IntegrityStage,
-    EnrichStage,
-    MBEnrichStage,
-    NearDupeStage,
-    AcousticIDStage,
-    AlbumArtStage,
-    ForgeStage,
-    TaggerStage,
-    CuratorStage,
-    PlaylistStage,
-    ReviewerStage,
-]
 
 # Maintenance pipeline (run with `musaeus run --maintain`)
 MAINTAIN_PIPELINE: list[type] = [
@@ -372,5 +479,4 @@ ENRICH_PIPELINE: list[type] = [
     EnrichStage,
     MBEnrichStage,
     AcousticIDStage,
-    ReviewerStage,
 ]

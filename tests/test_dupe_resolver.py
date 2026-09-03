@@ -17,7 +17,7 @@ import pytest
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db
-from musaeus.stages.dupe_resolver import DupeResolverStage
+from musaeus.stages.dupe_resolver import DupeResolverStage, _keeper_sort_key
 
 _TEST_BATCH_DATE = "2026-01-15"
 
@@ -691,15 +691,234 @@ class TestDupeResolverOverlappingGroups:
         result = DupeResolverStage().execute(ctx)
 
         assert result.files_changed == 1  # moved exactly once
-        assert result.files_skipped == 1  # second group's reference, not an error
         assert result.files_errored == 0  # NOT reported as "file missing on disk"
-        assert any("already resolved under group" in n for n in result.notes)
         assert not low.exists()  # actually moved
+        assert high.exists()  # the keeper stays
 
-        # The group_b row is still 'pending' -- it was never a real decision,
-        # just a stale reference to an already-resolved file. Left alone,
-        # same as any other group whose file no longer needs action.
-        b_status = ctx.conn.execute(
-            "SELECT status FROM duplicates WHERE group_id = 'dup_group_b'"
+    def test_a_file_kept_by_one_group_is_not_moved_as_anothers_loser(self, ctx):
+        """The gap `already_moved` never closed.
+
+        Overlapping groups reached contradictory verdicts on the same file
+        and nothing reconciled them: measured on the live vault 2026-08-31,
+        2,918 NEAR files sit in more than one group, and "Al Green - Let's
+        Stay Together" is `keep` in near_f122326e and `archive` in
+        near_2231ee82 simultaneously. Which verdict won was decided by
+        whichever group happened to be processed last.
+
+        `already_moved` only suppressed the misleading "file missing on
+        disk" error when a later group met an earlier group's move. It did
+        not stop that group deciding to move a file an earlier group had
+        chosen to keep -- it made the wrong outcome quiet rather than
+        preventing it.
+
+        Groups are now merged into connected components before resolution,
+        so one keeper serves the whole component and the contradiction is
+        unrepresentable rather than merely unlikely.
+        """
+        best = _make_archive_row(
+            ctx, "best.flac", "Artist", "Album", "Title", bitrate=900_000, size_bytes=500
+        )
+        middle = _make_archive_row(
+            ctx, "middle.m4a", "Artist", "Album", "Title", bitrate=500_000, size_bytes=300
+        )
+        worst = _make_archive_row(
+            ctx, "worst.m4a", "Artist", "Album", "Title", bitrate=128_000, size_bytes=200
+        )
+        # middle LOSES to best in one group and WINS over worst in another.
+        # Resolved per-group, group two keeps a file group one just moved.
+        _stage_duplicate_pair(ctx, "grp_one", best, middle)
+        _stage_duplicate_pair(ctx, "grp_two", middle, worst)
+
+        result = DupeResolverStage().execute(ctx)
+
+        assert best.exists(), "the component's single best copy must survive"
+        assert not middle.exists(), "middle loses to best and must move"
+        assert not worst.exists(), "worst loses to best and must move"
+        assert result.files_errored == 0
+        assert result.files_changed == 2, "exactly the two non-keepers move"
+
+
+class TestOriginalTrumpsRemaster:
+    """Grey's rule, 2026-08-21: a remaster and its original are the SAME
+    song for grouping, but when one must be kept the original wins."""
+
+    def _m(self, **kw):
+        base = {"codec": "alac", "bitrate": 1000, "size_bytes": 1000, "title": "", "album": ""}
+        base.update(kw)
+        return base
+
+    def test_original_beats_remaster(self):
+        original = self._m(title="A Monday Date")
+        remaster = self._m(title="A Monday Date (Remastered)")
+        assert sorted([remaster, original], key=_keeper_sort_key)[0] is original
+
+    def test_reissue_marker_read_from_album_too(self):
+        # The marker lands in whichever field the source used.
+        original = self._m(title="Song", album="Greatest Hits")
+        remaster = self._m(title="Song", album="Chicago High Life (2013 Remaster)")
+        assert sorted([remaster, original], key=_keeper_sort_key)[0] is original
+
+    def test_lossless_remaster_still_beats_lossy_original(self):
+        """Codec outranks the reissue rule deliberately.
+
+        The preference is about which *release* to keep, not a licence to
+        keep a worse file -- a lossless remaster is a better artifact than
+        a lossy original.
+        """
+        lossy_original = self._m(codec="aac", title="Song")
+        lossless_remaster = self._m(codec="alac", title="Song (Remastered)")
+        assert (
+            sorted([lossy_original, lossless_remaster], key=_keeper_sort_key)[0]
+            is lossless_remaster
+        )
+
+    def test_reissue_outranks_bitrate(self):
+        """A remaster is often louder and larger without being wanted."""
+        original = self._m(title="Song", bitrate=900)
+        remaster = self._m(title="Song (Remaster)", bitrate=1500)
+        assert sorted([remaster, original], key=_keeper_sort_key)[0] is original
+
+    def test_plain_titles_unaffected(self):
+        a = self._m(title="Song", bitrate=1200)
+        b = self._m(title="Song", bitrate=800)
+        assert sorted([b, a], key=_keeper_sort_key)[0] is a
+
+
+class TestStudioOverLive:
+    """Grey's third keeper rule, confirmed 2026-08-22.
+
+    Full order: (1) lossless over lossy, (2) original over remaster when
+    both are the same codec, (3) studio over live when both are the same
+    codec AND type. Each rank only decides groups the ranks above it tie
+    on -- which is why a live original still beats a studio remaster.
+    """
+
+    def _m(self, **kw):
+        base = {"codec": "alac", "bitrate": 1000, "size_bytes": 1000, "title": "", "album": ""}
+        base.update(kw)
+        return base
+
+    def test_studio_beats_live_all_else_equal(self):
+        studio = self._m(title="Stormy Monday")
+        live = self._m(title="Stormy Monday (live at Fillmore East)")
+        assert sorted([live, studio], key=_keeper_sort_key)[0] is studio
+
+    def test_live_marker_read_from_album_too(self):
+        studio = self._m(title="Layla", album="Layla and Other Assorted Love Songs")
+        live = self._m(title="Layla", album="Unplugged")
+        assert sorted([live, studio], key=_keeper_sort_key)[0] is studio
+
+    def test_lossless_live_still_beats_lossy_studio(self):
+        """Codec is the binding constraint; the room comes far behind it."""
+        lossy_studio = self._m(codec="aac", title="Song")
+        lossless_live = self._m(codec="alac", title="Song (Live)")
+        assert sorted([lossy_studio, lossless_live], key=_keeper_sort_key)[0] is lossless_live
+
+    def test_live_original_beats_studio_remaster(self):
+        """Rank 2 (reissue) outranks rank 3 (live), so this is correct.
+
+        Studio-over-live only decides groups that tie on codec AND reissue
+        status -- "same codec and type" in Grey's wording.
+        """
+        live_original = self._m(title="Song (Live)")
+        studio_remaster = self._m(title="Song (Remastered)")
+        assert sorted([live_original, studio_remaster], key=_keeper_sort_key)[0] is live_original
+
+    def test_studio_wins_before_bitrate_is_considered(self):
+        """A louder, larger live take must not outrank the studio cut."""
+        studio = self._m(title="Song", bitrate=900)
+        live = self._m(title="Song (Live)", bitrate=1500)
+        assert sorted([live, studio], key=_keeper_sort_key)[0] is studio
+
+    def test_plain_titles_unaffected(self):
+        hi = self._m(title="Song", bitrate=1200)
+        lo = self._m(title="Song", bitrate=800)
+        assert sorted([lo, hi], key=_keeper_sort_key)[0] is hi
+
+
+class TestOrderingAndRelocation:
+    """Two defects found by a five-file test batch on 2026-08-25.
+
+    The stage moved the loser and then wrote its row, so a failed write
+    left the file relocated and the row pointing nowhere (scope §4.25).
+
+    And it treated any missing source as lost, recognising a prior move
+    only when *this stage* had recorded it. A file relocated by another
+    stage -- ClassicalComposer refiling under a composer, a manual
+    restore -- reads identically from here, and five such rows failed the
+    whole stage with rc=1 while every one of the files sat safely on disk.
+    """
+
+    def test_a_failed_move_leaves_the_row_untouched(self, ctx, monkeypatch):
+        keeper = _make_archive_row(ctx, "keep.m4a", "A", "Al", "Song", 900, 900)
+        loser = _make_archive_row(ctx, "lose.m4a", "A", "Al", "Song", 100, 100)
+        _stage_duplicate_pair(ctx, "grp1", keeper, loser)
+
+        def boom(*a, **k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("musaeus.stages.dupe_resolver.shutil.move", boom)
+
+        DupeResolverStage().run(ctx)
+
+        status = ctx.conn.execute(
+            "SELECT status FROM archive WHERE file_path = ?", (str(loser),)
         ).fetchone()["status"]
-        assert b_status == "pending"
+        assert status == "CATALOGUED", "the row must not claim a move that failed"
+        assert loser.exists()
+
+    def test_a_file_relocated_by_another_stage_is_skipped_not_failed(self, ctx):
+        keeper = _make_archive_row(ctx, "keep2.m4a", "B", "Al", "Song", 900, 900)
+        loser = _make_archive_row(ctx, "lose2.m4a", "B", "Al", "Song", 100, 100)
+        _stage_duplicate_pair(ctx, "grp2", keeper, loser)
+
+        # another stage moved it, recorded under its own event type
+        moved_to = ctx.inbox / "elsewhere.m4a"
+        loser.rename(moved_to)
+        ctx.conn.execute(
+            "INSERT INTO events (run_id,event_type,file_path,old_value,new_value,stage,note) "
+            "VALUES (?,?,?,?,?,?,?)",
+            ("x", "ARTIST_SET_TO_COMPOSER", str(moved_to), str(loser), str(moved_to), "other", ""),
+        )
+        ctx.conn.commit()
+
+        result = DupeResolverStage().run(ctx)
+
+        assert result.files_errored == 0, "a relocated file is not a lost file"
+        assert any("relocated by another stage" in n for n in result.notes)
+
+    def test_a_stale_row_with_no_archive_record_is_skipped_not_failed(self, ctx):
+        """A duplicates-table entry naming a path the library no longer
+        tracks is stale history — an old INBOX path from before ingest
+        moved the file, or one already handled. Not a lost file.
+
+        Safe to key on the missing archive row: a genuinely lost file KEEPS
+        its row pointing at the gone path, and doctor's "rows with a missing
+        file" check is what catches that.
+        """
+        keeper = _make_archive_row(ctx, "keep3.m4a", "C", "Al", "Song", 900, 900)
+        loser = _make_archive_row(ctx, "lose3.m4a", "C", "Al", "Song", 100, 100)
+        _stage_duplicate_pair(ctx, "grp3", keeper, loser)
+
+        # the library stopped tracking that path entirely, and the file is gone
+        ctx.conn.execute("DELETE FROM archive WHERE file_path = ?", (str(loser),))
+        ctx.conn.commit()
+        loser.unlink()
+
+        result = DupeResolverStage().run(ctx)
+
+        assert result.files_errored == 0
+        assert any("no archive row for this path" in n for n in result.notes)
+
+    def test_a_genuinely_lost_file_still_errors(self, ctx):
+        """The row survives, so this must NOT be swallowed as stale."""
+        keeper = _make_archive_row(ctx, "keep4.m4a", "D", "Al", "Song", 900, 900)
+        loser = _make_archive_row(ctx, "lose4.m4a", "D", "Al", "Song", 100, 100)
+        _stage_duplicate_pair(ctx, "grp4", keeper, loser)
+
+        loser.unlink()  # file gone, archive row intact
+
+        result = DupeResolverStage().run(ctx)
+
+        assert result.files_errored == 1
+        assert any("file missing on disk" in e for e in result.errors)

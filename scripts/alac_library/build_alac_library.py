@@ -68,9 +68,12 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import math
 import os
+import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -79,6 +82,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from musaeus.config import get_config  # noqa: E402
 from musaeus.db import open_db  # noqa: E402
+from musaeus.idle_throttle import IdleThrottle  # noqa: E402
 
 FFMPEG = "ffmpeg"
 FFPROBE = "ffprobe"
@@ -86,7 +90,7 @@ FFPROBE = "ffprobe"
 TARGET_I = "-18.0"
 TARGET_TP = "-1.0"
 TARGET_LRA = "11.0"
-_DURATION_TOLERANCE_SEC = 1.5
+_DURATION_TOLERANCE_SEC = 2.0
 
 
 # ── Path resolution ──────────────────────────────────────────────────────────
@@ -98,7 +102,7 @@ def _archive_dir(cli_value: str | None, vault_root: Path) -> Path:
     env_value = os.environ.get("MUSAEUS_ALAC_ARCHIVE")
     if env_value:
         return Path(env_value).resolve()
-    return vault_root / "ALAC_Archive"
+    return vault_root / "Libraries" / "ALAC_Archive"
 
 
 def _library_path_for(source: Path, archive_dir: Path, library_dir: Path) -> Path:
@@ -106,6 +110,87 @@ def _library_path_for(source: Path, archive_dir: Path, library_dir: Path) -> Pat
     archive_dir -- the exact reverse of migrate_to_archive.py's _target_path."""
     rel = source.relative_to(archive_dir)
     return library_dir.joinpath(*rel.parts)
+
+
+#: The throttle currently wrapping the run, if any. Set by main().
+_ACTIVE_THROTTLE = None
+
+_DEADLINE_POLL_S = 2.0
+
+
+def _run_with_deadline(cmd: list, deadline: int, check: bool = False):
+    """subprocess.run with a deadline that measures WORKING time.
+
+    The idle throttle SIGSTOPs exactly these children whenever someone is
+    at the keyboard, so wall clock overstates the work by however long the
+    machine was in use. A flat wall-clock timeout therefore kills the work
+    the throttle exists to protect.
+
+    Measured 2026-09-01: a bake that takes 0.626 s unthrottled sat past
+    90 s with the throttle running, because ffprobe was stopped for the
+    whole window. The old flat 30 s ffprobe timeout was firing on that,
+    not on a slow disk -- which is what made this look like contention.
+
+    So the deadline counts elapsed time MINUS the seconds the throttle
+    admits to having held the child stopped. Reaching it means the process
+    was runnable and made no progress: a real hang.
+    """
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    start = time.monotonic()
+    paused_at_start = _ACTIVE_THROTTLE.paused_seconds if _ACTIVE_THROTTLE else 0.0
+    while True:
+        try:
+            out, err = proc.communicate(timeout=_DEADLINE_POLL_S)
+        except subprocess.TimeoutExpired:
+            paused_now = _ACTIVE_THROTTLE.paused_seconds if _ACTIVE_THROTTLE else 0.0
+            working = (time.monotonic() - start) - (paused_now - paused_at_start)
+            if working <= deadline:
+                continue
+            proc.kill()
+            out, err = proc.communicate()
+            raise subprocess.TimeoutExpired(cmd, deadline, output=out, stderr=err) from None
+        if check and proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, cmd, output=out, stderr=err)
+        return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
+# ── Deadlines ────────────────────────────────────────────────────────────────
+#
+# The timeout policy here used to be exactly inverted. The two calls that
+# legitimately take minutes -- the loudnorm measurement pass and the bake,
+# both full decodes of the whole track -- had NO timeout, so a hung ffmpeg
+# stalled the run for ever. The one call that should take milliseconds,
+# ffprobe reading stream metadata, was the only one with a deadline, and at
+# a flat 30 s. Under a saturated disk that is the one that fires: measured
+# 2026-09-01 against a concurrent car encode, the LUFS bake tests failed on
+# a 30 s ffprobe while spending 2.7 s of CPU across 62 s of wall clock.
+#
+# So the fast calls get a generous fixed deadline and the slow ones get a
+# deadline scaled to the work, the same shape hasher.py already uses
+# (_audio_hash_timeout) and for the same reason: a fixed guess about how
+# long audio takes to decode is wrong in both directions -- too tight for a
+# long or hi-res track, too loose to catch a hang on a short one.
+#
+# These are hang detectors, not performance budgets. A 60-minute track at
+# 48 kHz gets 65 minutes, roughly 1x realtime, against the ~100x realtime
+# these passes actually run at. Only a genuine stall reaches it.
+
+_PROBE_TIMEOUT = 120  # ffprobe reads metadata; this is pure contention slack
+
+
+def _ffmpeg_timeout(probe: dict, floor: int = 300) -> int:
+    """Seconds to allow a full-decode ffmpeg pass over the probed file."""
+    duration = 0.0
+    with contextlib.suppress(TypeError, ValueError):
+        duration = float(probe.get("format", {}).get("duration") or 0.0)
+    rate = 48_000
+    for stream in probe.get("streams", []):
+        if stream.get("codec_type") == "audio" and stream.get("sample_rate"):
+            with contextlib.suppress(TypeError, ValueError):
+                rate = int(stream["sample_rate"])
+            break
+    rate_factor = max(1.0, rate / 48_000)
+    return max(floor, math.ceil(duration * rate_factor) + floor)
 
 
 # ── Two-pass loudnorm (measure + bake) ───────────────────────────────────────
@@ -119,7 +204,9 @@ def _library_path_for(source: Path, archive_dir: Path, library_dir: Path) -> Pat
 # third caller shows up.
 
 
-def ffmpeg_measure_loudnorm(path: Path, target_i: str, target_tp: str, target_lra: str) -> dict:
+def ffmpeg_measure_loudnorm(
+    path: Path, target_i: str, target_tp: str, target_lra: str, timeout: int | None = None
+) -> dict:
     filter_str = f"loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}:print_format=json"
     cmd = [
         FFMPEG,
@@ -133,7 +220,9 @@ def ffmpeg_measure_loudnorm(path: Path, target_i: str, target_tp: str, target_lr
         "null",
         "-",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = _run_with_deadline(cmd, timeout) if timeout else subprocess.run(
+        cmd, capture_output=True, text=True
+    )
     stderr = result.stderr or ""
     start, end = stderr.rfind("{"), stderr.rfind("}")
     if start == -1 or end == -1 or end <= start:
@@ -165,7 +254,7 @@ def _probe_streams(path: Path) -> dict:
         "-show_streams",
         str(path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    proc = _run_with_deadline(cmd, _PROBE_TIMEOUT)
     if proc.returncode != 0:
         raise RuntimeError(f"ffprobe failed on {path} ({proc.returncode}): {proc.stderr[:200]}")
     return json.loads(proc.stdout)
@@ -178,7 +267,26 @@ def _has_attached_picture(probe: dict) -> bool:
     return False
 
 
-def verify_bake(source: Path, output: Path) -> None:
+# How far the baked result may sit from the target before it is a failure.
+# loudnorm's linear mode is accurate to well inside this; a miss of more than
+# 1 dB means the filter did not do what was asked.
+_LUFS_TOLERANCE = 1.0
+
+_OUTPUT_I_RE = re.compile(r"Output Integrated:\s*(-?\d+(?:\.\d+)?)\s*LUFS", re.I)
+
+
+def parse_output_loudness(stderr: str) -> float | None:
+    """The integrated loudness ffmpeg says it ACHIEVED, from loudnorm's summary.
+
+    None when it cannot be read -- which is reported, never treated as a pass.
+    """
+    m = _OUTPUT_I_RE.search(stderr or "")
+    return float(m.group(1)) if m else None
+
+
+def verify_bake(
+    source: Path, output: Path, achieved: float | None = None, target_i: str = TARGET_I
+) -> None:
     """Same discipline as canonicalize.py's _verify_conversion: output must
     have an audio stream, duration must match source within tolerance."""
     src_probe = _probe_streams(source)
@@ -194,6 +302,32 @@ def verify_bake(source: Path, output: Path) -> None:
             return float(d) if d else None
         except (TypeError, ValueError):
             return None
+
+    # Did the LOUDNESS actually land?
+    #
+    # This function checked only that an audio stream existed and the
+    # duration matched -- i.e. that a file came out the other end. Neither
+    # says anything about the one thing the bake exists to do. A loudnorm
+    # that silently no-ops, or a second pass fed wrong measured values,
+    # produces a perfectly valid file at the wrong loudness, and
+    # lufs_baked_at is stamped anyway so it is never retried. That is the
+    # same shape as Forge reporting 12,279 successful tag writes while
+    # writing nothing.
+    #
+    # Free to check: the second pass already runs with print_format=summary,
+    # so ffmpeg reports the achieved integrated loudness on stderr.
+    if achieved is not None:
+        want = float(target_i)
+        if abs(achieved - want) > _LUFS_TOLERANCE:
+            raise RuntimeError(
+                f"verification failed: baked to {achieved:.2f} LUFS, "
+                f"wanted {want:.2f} (tolerance {_LUFS_TOLERANCE})"
+            )
+    else:
+        print(
+            f"  WARNING: could not read achieved loudness for {output.name} -- "
+            f"the bake is UNVERIFIED on the thing it exists to do"
+        )
 
     src_dur, out_dur = _duration(src_probe), _duration(out_probe)
     if (
@@ -214,14 +348,48 @@ def quarantine_failed_tmp(tmp_output: Path | None) -> None:
         tmp_output.rename(failed_path)
 
 
+def source_sample_fmt(path: Path) -> str | None:
+    """The sample format to encode the bake in: the SOURCE's own.
+
+    loudnorm outputs float, and ffmpeg's ALAC encoder then picks the widest
+    depth it supports rather than the one the master actually used. Measured
+    2026-08-31: a 16-bit master baked out as 24-bit -- 16.7 MB became
+    26.9 MB, a 61% increase carrying no additional information, because the
+    extra 8 bits are padding.
+
+    75% of the live library is 16-bit, so unpinned this would have added
+    roughly 222 GB of zeros to a 486 GB edition. A "lossless" edition that
+    is half padding is not more faithful to the master, just larger.
+
+    ALAC stores 16-bit as s16p and higher depths as s32p. Anything we cannot
+    read returns None and is left to ffmpeg, rather than guessing a depth
+    and risking truncating a 24-bit master down to 16.
+    """
+    out = _run_with_deadline(
+        [FFPROBE, "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=bits_per_raw_sample,sample_fmt",
+         "-of", "default=nw=1:nk=1", str(path)],
+        _PROBE_TIMEOUT,
+    )
+    if out.returncode != 0:
+        return None
+    lines = [x.strip() for x in out.stdout.splitlines() if x.strip()]
+    depth = next((x for x in lines if x.isdigit()), None)
+    if depth is None:
+        return None
+    return "s16p" if int(depth) <= 16 else "s32p"
+
+
 def build_bake_command(
-    source: Path, tmp_output: Path, loudnorm_filter: str, has_art: bool
+    source: Path, tmp_output: Path, loudnorm_filter: str, has_art: bool,
+    sample_fmt: str | None = None,
 ) -> list[str]:
     """ALAC -> ALAC, codec unchanged -- this bakes loudness, not format. Same
     -map/-c:v copy/attached_pic/-map_metadata shape as canonicalize.py's
     _convert_to_alac, plus the -af loudnorm filter. -f mp4 forced explicitly
     since tmp_output's on-disk extension (.m4a.bake_tmp) isn't a real hint."""
     cmd = [FFMPEG, "-y", "-i", str(source), "-threads", "2"]
+    fmt_args = ["-sample_fmt", sample_fmt] if sample_fmt else []
     if has_art:
         cmd += [
             "-map",
@@ -230,6 +398,7 @@ def build_bake_command(
             "0:v:0",
             "-c:a",
             "alac",
+            *fmt_args,
             "-af",
             loudnorm_filter,
             "-c:v",
@@ -248,6 +417,7 @@ def build_bake_command(
             "0:a:0",
             "-c:a",
             "alac",
+            *fmt_args,
             "-af",
             loudnorm_filter,
             "-map_metadata",
@@ -330,15 +500,40 @@ def _process_one(conn, row: dict, archive_dir: Path, library_dir: Path, execute:
     try:
         probe = _probe_streams(source)
         has_art = _has_attached_picture(probe)
+        # One deadline for both full-decode passes, scaled to this track.
+        deadline = _ffmpeg_timeout(probe)
 
-        measured = ffmpeg_measure_loudnorm(source, TARGET_I, TARGET_TP, TARGET_LRA)
+        measured = ffmpeg_measure_loudnorm(
+            source, TARGET_I, TARGET_TP, TARGET_LRA, timeout=deadline
+        )
         loudnorm_filter = build_second_pass_filter(measured, TARGET_I, TARGET_TP, TARGET_LRA)
 
-        cmd = build_bake_command(source, tmp_output, loudnorm_filter, has_art)
-        subprocess.run(cmd, capture_output=True, text=True, check=True)
-        verify_bake(source, tmp_output)
+        cmd = build_bake_command(
+            source, tmp_output, loudnorm_filter, has_art,
+            sample_fmt=source_sample_fmt(source),
+        )
+        bake = _run_with_deadline(cmd, deadline, check=True)
+        achieved = parse_output_loudness(bake.stderr)
+        verify_bake(source, tmp_output, achieved=achieved)
 
         tmp_output.rename(target)
+    except subprocess.TimeoutExpired as e:
+        # A stalled file must be ONE error line, not the end of the run.
+        #
+        # TimeoutExpired inherits from SubprocessError, not from
+        # CalledProcessError -- and not from RuntimeError or OSError either
+        # -- so before this it slipped past all three handlers below and
+        # propagated out of bake_one. On a 10,000-file first bake that
+        # turns one hung ffmpeg into a dead run with no per-file
+        # diagnostic, which is the opposite of how every other failure
+        # here behaves.
+        quarantine_failed_tmp(tmp_output)
+        secs = int(e.timeout) if e.timeout else "?"
+        return (
+            f"ERROR {source.name}: ffmpeg exceeded {secs}s and was killed "
+            f"(deadline scales with track length and sample rate; reaching "
+            f"it means a stall, not a slow file)"
+        )
     except subprocess.CalledProcessError as e:
         quarantine_failed_tmp(tmp_output)
         stderr = (e.stderr or "").strip().splitlines()
@@ -401,6 +596,12 @@ def main() -> int:
     library_dir = cfg.alac_library
 
     conn = open_db(cfg.db_path)
+    # A full bake is 10,446 rows and many hours, and it writes to the DB on
+    # every row. open_db's 10 s timeout is not enough against a concurrent
+    # stage: the Car build died outright on "database is locked" 2026-08-31
+    # because an acousticid drain held it. Wait rather than abort a run that
+    # has already spent hours of CPU.
+    conn.execute("PRAGMA busy_timeout = 300000")  # 5 minutes
 
     unmigrated = _unmigrated_count(conn, library_dir)
     if unmigrated:
@@ -421,15 +622,23 @@ def main() -> int:
     print(f"  library: {library_dir}\n")
 
     baked = skipped = errored = 0
-    for row in rows:
-        result = _process_one(conn, row, archive_dir, library_dir, args.execute)
-        print(f"  {result}")
-        if result.startswith("BAKED") or result.startswith("WOULD BAKE"):
-            baked += 1
-        elif result.startswith("SKIP"):
-            skipped += 1
-        else:
-            errored += 1
+    # Same reasoning as the Car build: hours of ffmpeg at load 9+ on 8 cores
+    # is fine overnight and miserable at the keyboard. Pauses on input,
+    # resumes after 40s quiet. MUSAEUS_NO_IDLE_THROTTLE=1 opts out.
+    with IdleThrottle() as _throttle:
+        # So the deadlines below can discount time this throttle spends
+        # holding ffmpeg stopped -- see _run_with_deadline.
+        global _ACTIVE_THROTTLE
+        _ACTIVE_THROTTLE = _throttle
+        for row in rows:
+            result = _process_one(conn, row, archive_dir, library_dir, args.execute)
+            print(f"  {result}")
+            if result.startswith("BAKED") or result.startswith("WOULD BAKE"):
+                baked += 1
+            elif result.startswith("SKIP"):
+                skipped += 1
+            else:
+                errored += 1
 
     conn.close()
     verb = "baked" if args.execute else "would bake"

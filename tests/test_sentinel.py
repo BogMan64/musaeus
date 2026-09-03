@@ -245,3 +245,250 @@ class TestSentinelHelpers:
         assert len(group) == 2
         assert "/a.flac" in group
         assert "/b.flac" in group
+
+
+# ── a missing file is ghosted, not erased ────────────────────────────────────
+#
+# Sentinel used to DELETE the archive row for any file it could not find,
+# which contradicted two things at once: GhostStage exists precisely to mark
+# missing files as status='GHOST' and log GHOST_FOUND, and the event log is
+# meant to be the source of truth -- a deleted row leaves nothing to
+# reconcile when the file returns. A temporarily unmounted drive erased its
+# own history.
+#
+# And the dupe-match candidate set preloaded EVERY row carrying an
+# audio_hash, so a phantom -- a row whose file is already gone -- was a valid
+# match target and an incoming file could be quarantined as a duplicate of
+# something that no longer exists. Same family as the cascade cross_dupe.py
+# was hardened against; it learned to verify liveness, Sentinel had not.
+
+
+class TestMissingFileIsGhostedNotDeleted:
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_the_row_survives_as_ghost(self, mock_fh, mock_ah, ctx, tmp_path):
+        gone = str(tmp_path / "gone.flac")
+        _insert_pending(ctx, gone)
+
+        SentinelStage().execute(ctx)
+
+        row = ctx.conn.execute(
+            "SELECT status FROM archive WHERE file_path = ?", (gone,)
+        ).fetchone()
+        assert row is not None, "the row was DELETED; it must be marked instead"
+        assert row["status"] == "GHOST"
+
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_ghost_found_event_is_logged(self, mock_fh, mock_ah, ctx, tmp_path):
+        gone = str(tmp_path / "gone.flac")
+        _insert_pending(ctx, gone)
+
+        SentinelStage().execute(ctx)
+
+        events = ctx.conn.execute(
+            "SELECT event_type, new_value FROM events WHERE file_path = ?", (gone,)
+        ).fetchall()
+        assert any(e["event_type"] == "GHOST_FOUND" for e in events), (
+            "the transition must be in the event log, which is the source of truth"
+        )
+
+
+class TestPhantomsAreNotDuplicateTargets:
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_ghost_row_is_not_matched_as_a_duplicate(
+        self, mock_fh, mock_ah, ctx, tmp_path
+    ):
+        """A new file must not be quarantined against a row whose file is gone."""
+        shared = "a" * 64
+        ctx.conn.execute(
+            "INSERT INTO archive (file_path, audio_hash, status) VALUES (?, ?, 'GHOST')",
+            (str(tmp_path / "vanished.flac"), shared),
+        )
+        arrival = tmp_path / "new.flac"
+        arrival.write_bytes(b"AUDIO")
+        _insert_pending(ctx, str(arrival))
+        ctx.conn.commit()
+
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = (shared, None)
+
+        SentinelStage().execute(ctx)
+
+        dupes = ctx.conn.execute(
+            "SELECT COUNT(*) c FROM events WHERE event_type = 'DUPLICATE_FOUND'"
+        ).fetchone()["c"]
+        assert dupes == 0, "matched against a phantom"
+
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_quarantined_row_is_not_matched_though_its_file_exists(
+        self, mock_fh, mock_ah, ctx, tmp_path
+    ):
+        """The case the STATUS filter exists for, distinct from liveness.
+
+        A quarantined file is still on disk -- it sits in QUARANTINE/ -- so a
+        liveness check alone happily matches against it. It is not a library
+        member, and an incoming file is not its duplicate.
+        """
+        shared = "d" * 64
+        quarantined = tmp_path / "QUARANTINE" / "denied.flac"
+        quarantined.parent.mkdir(parents=True, exist_ok=True)
+        quarantined.write_bytes(b"AUDIO")
+        ctx.conn.execute(
+            "INSERT INTO archive (file_path, audio_hash, status) "
+            "VALUES (?, ?, 'QUARANTINED')",
+            (str(quarantined), shared),
+        )
+        arrival = tmp_path / "new3.flac"
+        arrival.write_bytes(b"AUDIO")
+        _insert_pending(ctx, str(arrival))
+        ctx.conn.commit()
+
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = (shared, None)
+
+        SentinelStage().execute(ctx)
+
+        dupes = ctx.conn.execute(
+            "SELECT COUNT(*) c FROM events WHERE event_type = 'DUPLICATE_FOUND'"
+        ).fetchone()["c"]
+        assert dupes == 0, "matched against a quarantined row that is still on disk"
+
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_row_whose_file_vanished_is_not_matched_either(
+        self, mock_fh, mock_ah, ctx, tmp_path
+    ):
+        """Status says live, disk says gone. The disk is the true answer."""
+        shared = "b" * 64
+        ctx.conn.execute(
+            "INSERT INTO archive (file_path, audio_hash, status) VALUES (?, ?, 'CATALOGUED')",
+            (str(tmp_path / "not-really-there.flac"), shared),
+        )
+        arrival = tmp_path / "new2.flac"
+        arrival.write_bytes(b"AUDIO")
+        _insert_pending(ctx, str(arrival))
+        ctx.conn.commit()
+
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = (shared, None)
+
+        SentinelStage().execute(ctx)
+
+        dupes = ctx.conn.execute(
+            "SELECT COUNT(*) c FROM events WHERE event_type = 'DUPLICATE_FOUND'"
+        ).fetchone()["c"]
+        assert dupes == 0, "status was trusted over the filesystem"
+
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_genuine_live_duplicate_is_still_caught(
+        self, mock_fh, mock_ah, ctx, tmp_path
+    ):
+        """The guard must not suppress real duplicates."""
+        shared = "c" * 64
+        original = tmp_path / "original.flac"
+        original.write_bytes(b"AUDIO")
+        ctx.conn.execute(
+            "INSERT INTO archive (file_path, audio_hash, status) VALUES (?, ?, 'CATALOGUED')",
+            (str(original), shared),
+        )
+        arrival = tmp_path / "copy.flac"
+        arrival.write_bytes(b"AUDIO")
+        _insert_pending(ctx, str(arrival))
+        ctx.conn.commit()
+
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = (shared, None)
+
+        SentinelStage().execute(ctx)
+
+        dupes = ctx.conn.execute(
+            "SELECT COUNT(*) c FROM events WHERE event_type = 'DUPLICATE_FOUND'"
+        ).fetchone()["c"]
+        assert dupes >= 1, "a real duplicate against a live file must still be found"
+
+
+# ── re-hashing must not demote a row ─────────────────────────────────────────
+#
+# Sentinel wrote status='HASHED' unconditionally. Hashing a file that was
+# already CATALOGUED and finalized therefore knocked it BACKWARDS out of the
+# status every later stage selects on -- Tagger, Organize and Audit all read
+# status='CATALOGUED' -- while making it eligible for the whole downstream
+# chain again.
+#
+# Measured 2026-08-30: a re-hash pass over the library demoted 1,100
+# finalized rows before it was stopped. It would have taken all 9,556.
+
+
+class TestReHashingDoesNotDemote:
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_finalized_catalogued_row_keeps_its_status(
+        self, mock_fh, mock_ah, ctx, tmp_path
+    ):
+        track = tmp_path / "finalized.flac"
+        track.write_bytes(b"AUDIO")
+        ctx.conn.execute(
+            "INSERT INTO archive (file_path, status, finalized_at) "
+            "VALUES (?, 'CATALOGUED', '2026-08-27 00:00:00')",
+            (str(track),),
+        )
+        ctx.conn.commit()
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = ("a" * 64, None)
+
+        SentinelStage().execute(ctx)
+
+        row = ctx.conn.execute(
+            "SELECT status, audio_hash FROM archive WHERE file_path = ?", (str(track),)
+        ).fetchone()
+        assert row["status"] == "CATALOGUED", "re-hashing demoted a finalized row"
+        assert row["audio_hash"] == "a" * 64, "the hash must still be updated"
+
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_pending_row_still_advances_to_hashed(self, mock_fh, mock_ah, ctx, tmp_path):
+        """The guard must not stop a new file progressing."""
+        track = tmp_path / "new.flac"
+        track.write_bytes(b"AUDIO")
+        _insert_pending(ctx, str(track))
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = ("b" * 64, None)
+
+        SentinelStage().execute(ctx)
+
+        row = ctx.conn.execute(
+            "SELECT status FROM archive WHERE file_path = ?", (str(track),)
+        ).fetchone()
+        assert row["status"] == "HASHED"
+
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_ghost_whose_file_returns_recovers(self, mock_fh, mock_ah, ctx, tmp_path):
+        """The anti-demotion guard must not make GHOST a one-way door.
+
+        GhostStage only ever SETS ghost; nothing else clears it, and the only
+        other reset is the console's manual soft reset. So an unmounted drive
+        that comes back left every row permanently invisible to Scholar,
+        Canonicalize, Tagger, Organize and Audit -- which is precisely the
+        case the GHOST design exists to survive.
+        """
+        back = tmp_path / "returned.flac"
+        back.write_bytes(b"AUDIO")
+        ctx.conn.execute(
+            "INSERT INTO archive (file_path, status, audio_hash) VALUES (?, 'GHOST', NULL)",
+            (str(back),),
+        )
+        ctx.conn.commit()
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = ("a" * 64, None)
+
+        SentinelStage().execute(ctx)
+
+        row = ctx.conn.execute(
+            "SELECT status FROM archive WHERE file_path = ?", (str(back),)
+        ).fetchone()
+        assert row["status"] == "HASHED", "a returning GHOST never recovers"

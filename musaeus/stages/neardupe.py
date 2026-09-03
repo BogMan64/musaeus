@@ -50,6 +50,7 @@ try:
 except ImportError:
     _HAVE_RAPIDFUZZ = False
 
+from ..brackets import CLOSE, OPEN
 from ..canon import ArtistCanon
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
@@ -82,13 +83,17 @@ STRIP_WORDS: tuple[str, ...] = (
 # arbitrary parentheticals can be part of the real title (e.g. "Here I Am
 # (Come and Take Me)" must not collapse to "Here I Am").
 _VERSION_BRACKET_WORDS = re.compile(
-    r"[\(\[]\s*(?:(?:19|20)\d{2}\s+)?(?:"
+    rf"[{OPEN}]\s*(?:(?:19|20)\d{{2}}\s+)?(?:"
     + r"|".join(re.escape(w) for w in sorted(STRIP_WORDS, key=len, reverse=True))
-    + r")[\s\d,./+-]*[\)\]]",
+    + rf")[\s\d,./+-]*[{CLOSE}]",
     re.IGNORECASE,
 )
-_YEAR_BRACKET_RE = re.compile(r"[\(\[]\s*(?:19|20)\d{2}\s*[\)\]]")  # "(2015)"
-_NUM_BRACKET_RE = re.compile(r"[\(\[]\s*\d{1,2}\s*[\)\]]")  # "[2]"
+# Bracket characters come from brackets.py so this file cannot drift
+# from the others again -- all three earlier copies knew ( ) and [ ]
+# and none knew { }. Only the ALPHABET is shared: WHICH annotations are
+# safe to strip stays here, deliberately, per the comment above.
+_YEAR_BRACKET_RE = re.compile(rf"[{OPEN}]\s*(?:19|20)\d{{2}}\s*[{CLOSE}]")  # "(2015)"
+_NUM_BRACKET_RE = re.compile(rf"[{OPEN}]\s*\d{{1,2}}\s*[{CLOSE}]")  # "[2]"
 
 # Same words also stripped as bare whole-words (catches "Song Title Remix"
 # with no surrounding parens at all).
@@ -105,6 +110,49 @@ _LIVE_MARKER_RE = re.compile(r"\b(live|in concert|at the)\b", re.IGNORECASE)
 def _has_live_marker(raw_title: str) -> bool:
     """True if the raw (unstripped) title looks like a live recording."""
     return bool(_LIVE_MARKER_RE.search(raw_title))
+
+
+# Classical works carry TWO independent identifiers, and conflating them
+# was my first mistake here: a work number ("No. 1", "Op. 12", "RV 317",
+# "BWV 974") says WHICH PIECE, and a movement marker ("I.", "II.",
+# "Movement 3", "Act 2") says WHICH PART OF IT. Two tracks differ if
+# either differs.
+#
+# The first version searched for whichever came first and returned "1" for
+# "Violin Concerto No. 1 ... - I. Allegro" -- the work number -- so
+# comparing it to "... - II. Adagio" also yielded "1" and the pair stayed
+# grouped. Exactly the case the guard existed for.
+_WORK_RE = re.compile(r"\b(?:No\.|Op\.|BWV|HWV|RV|K\.|D\.|Hob\.)\s*(\d+[a-z]?)", re.IGNORECASE)
+_MOVEMENT_RE = re.compile(
+    r"(?:^|[\s\-–—:,(\[])(?:([IVXLC]{1,5})\.(?=\s)|"
+    r"(?:Movement|Mvt\.?|Part|Act|Scene)\s*(\d+|[IVXLC]{1,5})\b)",
+    re.IGNORECASE,
+)
+
+
+def _classical_id(raw_title: str) -> tuple[str | None, str | None]:
+    """(work, movement) identifiers found in a title, either may be None."""
+    t = raw_title or ""
+    w = _WORK_RE.search(t)
+    m = _MOVEMENT_RE.search(t)
+    work = w.group(1).lower() if w else None
+    mov = next((g for g in (m.groups() if m else ()) if g), None)
+    return work, (mov.lower() if mov else None)
+
+
+def _is_different_piece(title_a: str, title_b: str) -> bool:
+    """True when two titles name different works, or different movements.
+
+    Conservative on purpose: a difference is only asserted when BOTH sides
+    carry the identifier being compared. One side having a movement marker
+    and the other not is the ordinary "Yesterday" vs "Yesterday (Live)"
+    case, which the existing stripping already handles.
+    """
+    wa, ma = _classical_id(title_a)
+    wb, mb = _classical_id(title_b)
+    if wa and wb and wa != wb:
+        return True
+    return bool(ma and mb and ma != mb)
 
 
 def _strip_title_qualifiers(s: str) -> str:
@@ -230,6 +278,12 @@ class NearDupeStage(BaseStage):
                     # into one group. Studio-vs-live still matches fine
                     # (only one side carries the marker).
                     if _has_live_marker(a["title"]) and _has_live_marker(b["title"]):
+                        continue
+
+                    # Different movements of one work are different pieces.
+                    # The shared work title makes them score in the 90s, so
+                    # the threshold cannot catch this -- only the marker can.
+                    if _is_different_piece(a["title"], b["title"]):
                         continue
 
                     title_a = _normalise(a["title"], strip_qualifiers=True)

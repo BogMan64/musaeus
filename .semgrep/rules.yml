@@ -1,0 +1,103 @@
+# MUSAEUS — rules for the duplication shapes an audit already paid for.
+#
+# These are NOT general-purpose lint rules. Each one exists because this
+# exact concept was independently reimplemented 2-9 times before being
+# consolidated (see CLAUDE.md), and ruff/pylint structurally cannot catch
+# it -- these are Type-4 (semantic) clones, textually different code doing
+# the same thing, which token-based duplicate detectors are built to miss.
+#
+# A rule here does not replace the pytest guard for the same concept where
+# one already exists (test_ensure_columns_is_shared.py's AST walk, for
+# instance, is more precise than the rule below it) -- it exists to catch
+# the mistake at write-time/review-time, before a PR, rather than only at
+# CI. Run:
+#
+#   semgrep --config .semgrep/rules.yml musaeus/ scripts/ tests/
+#
+# Verified 2026-09-03 against hand-written fixtures (each rule checked to
+# actually fire on the shape it targets and stay silent on a deliberate
+# negative control) AND against the real, already-fixed tree -- which is
+# how this ruleset earned its keep on day one: it found a fourth bracket
+# regex (original_year.py's _EDITION_MARKER_RE, missed by the 2026-09-02
+# audit) and two more unmigrated duration readers (loudness.py, and
+# corrupt.py's own ffprobe_duration still carrying its pre-audit
+# implementation under a corrected docstring), all fixed the same session.
+#
+# pattern-regex operates on raw source text, so it cannot tell a comment
+# from code -- this bit immediately: a comment here EXPLAINING the old bad
+# pattern tripped its own rule. Write comments about these shapes without
+# spelling out the literal regex; describe it in words instead.
+
+rules:
+  - id: bracket-regex-outside-brackets-module
+    languages: [python]
+    severity: WARNING
+    message: >
+      A regex covering more than one bracket style -- ( [ { in the same
+      character class -- outside musaeus/brackets.py. Three independent
+      copies of this existed 2026-09-02, each missing one of the three
+      bracket styles; a fourth (original_year.py's _EDITION_MARKER_RE) was
+      found by this rule on 2026-09-03. Use musaeus.brackets.strip_bracketed
+      or musaeus.brackets.OPEN/CLOSE instead of writing a new one.
+    paths:
+      exclude:
+        - "**/musaeus/brackets.py"
+        - "**/tests/test_brackets.py"
+    pattern-regex: '\\\(.{0,6}\\\['
+
+  - id: article-strip-regex-outside-artist-form
+    languages: [python]
+    severity: WARNING
+    message: >
+      A hand-written "strip the leading/trailing article" regex outside
+      musaeus/artist_form.py. One of these shipped 2026-09-01, stripped
+      only one side of a comparison, and got a real band ("Healing, The")
+      classified as junk. Use musaeus.artist_form.comparison_key,
+      natural_form, or sort_form instead.
+    paths:
+      exclude:
+        - "**/musaeus/artist_form.py"
+        - "**/musaeus/stages/enrich.py"
+        - "**/musaeus/stages/normalize.py"
+    pattern-regex: 're\.sub\(r?["\'']?\^.{0,6}the\\s'
+
+  - id: duration-ffprobe-outside-duration-module
+    languages: [python]
+    severity: WARNING
+    message: >
+      An ffprobe call reading stream=duration or format=duration outside
+      musaeus/duration.py. Seven independent copies of this existed
+      2026-09-02, split between container and stream duration with the
+      distinction never named -- and in MP4 (every file in this library)
+      both come from the same moov atom, so neither can see truncation on
+      its own. Use musaeus.duration.container_seconds / stream_seconds /
+      decodes_cleanly instead.
+    paths:
+      exclude:
+        - "**/musaeus/duration.py"
+        - "**/tests/test_duration.py"
+        # hasher.py reads sample_rate AND duration in ONE ffprobe call to
+        # scale a hash timeout, not to verify anything -- migrating it
+        # would cost a second subprocess launch per file on a hot path
+        # (every hash, potentially tens of thousands of calls) for no
+        # behavioural gain, since either duration source is equally fine
+        # for a conservative timeout estimate. A genuine exception,
+        # verified 2026-09-03, not a missed migration.
+        - "**/musaeus/hasher.py"
+    pattern-regex: '(stream|format)=duration'
+
+  - id: alter-table-add-column-outside-db
+    languages: [python]
+    severity: ERROR
+    message: >
+      ALTER TABLE ... ADD COLUMN outside musaeus/db.py. Nine copies of
+      "add this column if missing" existed 2026-09-02. Use
+      musaeus.db.ensure_columns instead. (A more precise AST-based guard
+      for this same rule already runs in the test suite:
+      tests/test_ensure_columns_is_shared.py::test_only_db_may_alter_a_table
+      -- this rule exists to catch it before that, at write time.)
+    paths:
+      exclude:
+        - "**/musaeus/db.py"
+        - "**/tests/test_ensure_columns_is_shared.py"
+    pattern-regex: 'ALTER TABLE .* ADD COLUMN'

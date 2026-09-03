@@ -121,6 +121,78 @@ PROTECTED_ARTIST_NAMES: frozenset[str] = frozenset(
     }
 )
 
+# Artist names whose CASING is canonical and must survive normalisation.
+#
+# `_normalise_artist` title-cases anything `_is_all_caps` matches, which
+# turns 'TLC' into 'Tlc', 'SZA' into 'Sza' and 'N.W.A' into 'N.w.a'. Those
+# are the names the library files under, and the damage was invisible until
+# a 2026-08-29 repair found albumartist holding the correct spelling on 181
+# files while artist held the corruption.
+#
+# Seeded from MusicBrainz rather than from judgement: every entry below is a
+# canonical `mb_name` that MusicBrainz returned for an artist in this
+# library, filtered to those `_normalise_artist` would otherwise re-damage.
+# 'SOUL ARCHIVE ROOM' and 'WALK THE MOON' show why no heuristic can replace
+# the list -- they are stylized all-caps band names, structurally identical
+# to a shouted tag value.
+#
+# This is a seed, not a solution. It cannot know about an artist nobody has
+# ingested yet. The durable fix is to consult `mb_cache.db` at normalise
+# time; that needs the cache plumbed into this stage and is not built.
+# "ACE" was removed 2026-08-30: the library's "Ace" is the 1974 British band
+# ("How Long"), and MusicBrainz's "ACE" (16563fb9) is a different act. The
+# identity fold that makes "same name, different spelling" work also makes
+# "different artist, same letters" indistinguishable, so a SHORT name is not
+# safe evidence for a case-only rename. 31 more entries are in that class and
+# await a ruling; see MUSAEUS_TODO.md.
+PROTECTED_ARTIST_CASING: frozenset[str] = frozenset(
+    {
+        "ABC",
+        "ALA.NI",
+        "B2K",
+        "BLACKPINK",
+        "BTS",
+        "CMAT",
+        "DEV",
+        "DEVO",
+        "DNCE",
+        "EMF",
+        "EXILE",
+        "GBX",
+        "JAŸ-Z",
+        "KATO",
+        "KISS",
+        "LEN",
+        "LFO",
+        "LMFAO",
+        "MARUV",
+        "MC5",
+        "MGMT",
+        "MUTO",
+        "N.W.A",
+        "NF",
+        "OMC",
+        "OMI",
+        "PARTYNEXTDOOR",
+        "PSY",
+        "R A Y",
+        "SCANDAL",
+        "SOUL ARCHIVE ROOM",
+        "SZA",
+        "UGK",
+        "WALK THE MOON",
+        "XXXTENTACION",
+        "YUNGBLUD",
+        "ZAYN",
+    }
+)
+
+# Lowercased for lookup, since a tag arrives in whatever case it likes.
+_PROTECTED_CASING_LOOKUP: dict[str, str] = {
+    name.lower(): name for name in PROTECTED_ARTIST_CASING
+}
+
+
 # Short words that stay lowercase in title-case (MusicBrainz standard)
 _LOWERCASE_WORDS: frozenset[str] = frozenset(
     {
@@ -166,6 +238,17 @@ _KEEP_CAPS: frozenset[str] = frozenset(
         "AC",
         "DC",
         "AC/DC",
+        # Hyphenated forms added 2026-08-21. The slash forms alone were not
+        # enough, because Sanitize rewrites "/" to "-" for filesystem safety
+        # BEFORE Normalize runs -- so by the time the name reached this
+        # lookup it was "AC-DC", which was not in the set, and it got
+        # title-cased to "Ac-dc" on 92 files. The two stages were each
+        # behaving correctly in isolation; the bug lived in the handoff.
+        # Grey's call on the separator: hyphen, whatever is easiest on Linux.
+        "AC-DC",
+        "JAY-Z",
+        "RUN-DMC",
+        "D-A-D",
         "XL",  # XL Recordings -- also a Roman-numeral false friend (see below)
         "ACDC",
         "USA",
@@ -393,6 +476,14 @@ def _normalise_artist(artist: str) -> str | None:
     """
     fixed = artist
 
+    # A name whose casing MusicBrainz confirms is canonical is returned in
+    # THAT casing and never title-cased. Checked before the all-caps fix,
+    # which is the step that produced 'Tlc', 'Sza' and 'N.w.a' -- and those
+    # are what the library is filed under. See PROTECTED_ARTIST_CASING.
+    protected = _PROTECTED_CASING_LOOKUP.get(fixed.lower())
+    if protected is not None:
+        return protected if protected != artist else None
+
     # Fix ALL-CAPS first
     if _is_all_caps(fixed):
         fixed = _smart_title_case(fixed)
@@ -422,7 +513,47 @@ class NormalizeStage(BaseStage):
     Normalize — article-suffix fix + ALL-CAPS repair for archive metadata.
     """
 
+    @classmethod
+    def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
+        """Rows this stage would act on. Read-only; see planner.py."""
+        n = conn.execute("SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'").fetchone()[0]
+        return int(n), "rows whose artist/title would be normalised"
+
     NAME = "normalize"
+
+    # ── Effect verification ───────────────────────────────────────────────────
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """Assert idempotence: re-normalising a stored name must not change it.
+
+        This is the strongest post-condition available here and the cheapest
+        to check -- no file I/O, just the pure functions over DISTINCT
+        artists. If normalising a stored value would still change it, the
+        stage left work undone, whatever its change count claims.
+
+        It also pins the guards. "AC/DC" and the other PROTECTED_ARTIST_NAMES
+        must survive untouched; when sanitize was applying path rules to
+        metadata, "AC/DC" became "Ac-dc" on 92 files precisely because a
+        normalisation ran over a name it no longer recognised. A check that
+        the output is a fixed point catches that on the next pass instead of
+        letting it compound.
+        """
+        rows = ctx.conn.execute(
+            "SELECT DISTINCT artist FROM archive "
+            "WHERE status='CATALOGUED' AND artist IS NOT NULL AND trim(artist)!=''"
+        ).fetchall()
+        unstable = []
+        for r in rows:
+            again = _normalise_artist(r["artist"])
+            if again is not None and again != r["artist"]:
+                unstable.append((r["artist"], again))
+        if unstable:
+            shown = ", ".join(f"{a!r}→{b!r}" for a, b in unstable[:3])
+            return [
+                f"{len(unstable)} stored artist name(s) would still change if normalized "
+                f"again, after normalize claimed {result.files_changed} change(s): {shown}"
+            ]
+        return []
 
     # ── Validate ──────────────────────────────────────────────────────────────
 

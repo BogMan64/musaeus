@@ -4,10 +4,13 @@ Tests for TaggerStage — writes normalised metadata from DB back to file tags.
 All mutagen interactions are mocked.
 """
 
+import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from mutagen.mp4 import MP4
 
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
@@ -316,26 +319,46 @@ class TestTaggerRun:
 # ── albumartist repair ───────────────────────────────────────────────────────
 #
 # albumartist has no archive column and was never written by this stage, so it
-# kept whatever spelling the source file arrived with. Confirmed live
-# 2026-08-21: 2,035 of 5,894 article-artist files (34.5%) had artist and
-# albumartist disagreeing. It is repaired, not mirrored -- a genuinely
-# different albumartist (compilation / split credit) must survive untouched.
+# kept whatever spelling the source file arrived with. Measured on the live
+# library 2026-08-29: 1,735 of 10,588 files (16.4%) disagreed with artist.
+#
+# It is repaired, not mirrored. Album context is the discriminator, per Grey's
+# ruling 2026-08-29: a collaboration credit on a real album IS the album's
+# artist and survives; on a loose single it is a leftover the canon already
+# resolved. Compilations, classical performers, and pure casing differences
+# are all left alone -- see albumartist_should_follow for why each.
 
 
 class TestAlbumArtistRepair:
-    def _changes(self, db_artist, file_albumartist):
-        return TaggerStage()._compute_changes(
-            {"artist": db_artist},
-            {"artist": db_artist, "albumartist": file_albumartist},
+    def _changes(self, db_artist, file_albumartist, album="", genre=""):
+        """Only the albumartist decision.
+
+        _compute_changes also performs the artist/sort-artist split (the tag
+        moved to the natural form 2026-08-29, with `soar` carrying the sort
+        form). That is a different rule with its own tests below; folding it
+        in here would make every case in this class assert two policies at
+        once and fail whenever either moved.
+        """
+        db_row = {"artist": db_artist, "album": album, "genre": genre}
+        out = TaggerStage()._compute_changes(
+            db_row,
+            {"artist": db_artist, "albumartist": file_albumartist,
+             "album": album, "genre": genre},
         )
+        return {k: v for k, v in out.items() if k == "albumartist"}
 
     def test_leading_the_variant_is_corrected(self):
+        # The value written is the NATURAL form -- albumartist follows artist,
+        # and artist moved to the natural form on 2026-08-29. `soaa` carries
+        # the sort form alongside it.
         assert self._changes("Cranberries, The", "The Cranberries") == {
-            "albumartist": "Cranberries, The"
+            "albumartist": "The Cranberries"
         }
 
     def test_parenthetical_variant_is_corrected(self):
-        assert self._changes("Ronettes, The", "Ronettes (the)") == {"albumartist": "Ronettes, The"}
+        assert self._changes("Ronettes, The", "Ronettes (the)") == {
+            "albumartist": "The Ronettes"
+        }
 
     def test_already_canonical_is_left_alone(self):
         assert self._changes("Beatles, The", "Beatles, The") == {}
@@ -344,8 +367,86 @@ class TestAlbumArtistRepair:
         # A compilation's albumartist is genuinely not the track artist.
         assert self._changes("Beatles, The", "Various Artists") == {}
 
-    def test_split_credit_is_preserved(self):
-        assert self._changes("Johnny Cash", "Johnny Cash, The Tennessee Two") == {}
+    def test_split_credit_on_a_real_album_is_preserved(self):
+        # On an album the credit IS the album's artist. Live example:
+        # "Art Blakey & The Jazz Messengers" on "Moanin'".
+        assert self._changes(
+            "Johnny Cash", "Johnny Cash, The Tennessee Two", album="At Folsom Prison"
+        ) == {}
+
+    def test_split_credit_on_a_loose_single_follows_the_artist(self):
+        # No album: the credit is a leftover, and the canon already collapsed
+        # artist to the solo name. 549 files in the library on 2026-08-29.
+        assert self._changes("Johnny Cash", "Johnny Cash, The Tennessee Two") == {
+            "albumartist": "Johnny Cash"
+        }
+
+    def test_classical_performer_is_never_overwritten(self):
+        # Classical is filed under composer by policy; albumartist holds the
+        # performer, and that is the only place the information exists.
+        assert self._changes("Antonio Vivaldi", "Anne-Sophie Mutter", genre="Classical") == {}
+
+    def test_an_ensemble_is_protected_even_with_no_genre_set(self):
+        assert self._changes("Antonio Vivaldi", "Salzburg Chamber Orchestra") == {}
+
+    def test_classical_guard_holds_where_the_credit_rule_would_otherwise_fire(self):
+        """The case the guard actually exists for.
+
+        "Antonio Vivaldi; Itzhak Perlman, Israel Philharmonic Orchestra" leads
+        with the composer, so the collaboration-credit rule matches it and --
+        with no album, as these have -- would mirror, erasing the performer.
+        A guard whose every test also passes without it is not a guard, so
+        this asserts the one input that separates them. Real row, 2026-08-29.
+        """
+        credit = "Antonio Vivaldi; Itzhak Perlman, Israel Philharmonic Orchestra"
+        assert self._changes("Antonio Vivaldi", credit, genre="Classical") == {}
+        # and again with genre unset, so the ensemble word carries it alone
+        assert self._changes("Antonio Vivaldi", credit) == {}
+
+    def test_compilation_guard_holds_where_the_spelling_rule_would_fire(self):
+        """Same shape: "Various Artists, The" folds onto "Various Artists".
+
+        Without the compilation guard the spelling rule sees one name in two
+        spellings and mirrors. A compilation marker is never a track artist.
+        """
+        assert self._changes("Various Artists", "Various Artists, The") == {}
+
+    def test_a_pure_casing_difference_is_refused(self):
+        # The artist field is the damaged one here -- `_smart_title()` made
+        # "Tlc" out of "TLC". Mirroring would destroy the last correct copy.
+        assert self._changes("Tlc", "TLC") == {}
+        assert self._changes("Abba", "ABBA") == {}
+        assert self._changes("Paul Mccartney", "Paul McCartney") == {}
+
+    def test_a_fold_equal_pair_with_no_article_is_refused(self):
+        """Folding equal is not enough -- only the article convention mirrors.
+
+        "A*Teens" and "1910 Fruitgum Co." fold onto the artist field's
+        "ATeens" and "1910 Fruitgum Co", but mirroring drops a character the
+        albumartist still carries. Nothing reconstructs it afterwards.
+        """
+        assert self._changes("ATeens", "A*Teens") == {}
+        assert self._changes("1910 Fruitgum Co", "1910 Fruitgum Co.") == {}
+        assert self._changes("Adam & The Ants", "Adam and the Ants") == {}
+
+    def test_a_credit_whose_lead_outspells_the_artist_is_refused(self):
+        """The casing trap one level down, inside a collaboration credit.
+
+        "24kGoldn, iann dior" leads with the correct spelling while the
+        artist field holds "24kgoldn". Mirroring writes the damage into the
+        last field that had it right. Real row, 2026-08-29.
+        """
+        assert self._changes("24kgoldn", "24kGoldn, iann dior") == {}
+        # ... but an exactly-matching lead still mirrors
+        assert self._changes("50 Cent", "50 Cent, Nate Dogg") == {
+            "albumartist": "50 Cent"
+        }
+
+    def test_article_convention_still_applies_despite_the_casing_guard(self):
+        # Differs by more than case, so it is convention, not damage.
+        assert self._changes("Ad Libs, The", "THE AD LIBS") == {
+            "albumartist": "The Ad Libs"
+        }
 
     def test_unrelated_albumartist_is_preserved(self):
         assert self._changes("Beatles, The", "Rolling Stones, The") == {}
@@ -356,3 +457,143 @@ class TestAlbumArtistRepair:
 
     def test_protected_stylized_name_not_touched(self):
         assert self._changes("De La Soul", "De La Soul") == {}
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not available")
+class TestTaggerActuallyWritesToDisk:
+    """Round-trip tests: run Tagger unmocked and read the tag back.
+
+    Everything above this asserts that _write_tags was CALLED. That is the
+    exact shape of assertion that let Forge report success for 12,279 files
+    while writing nothing: it assigned to a dotted key mutagen accepts as a
+    dict key but cannot serialise, so save() succeeded and the writer
+    returned True. A mock returning True is indistinguishable from that bug.
+
+    These tests mock nothing below the stage and ask the only question that
+    matters: is the tag on the file afterwards?
+    """
+
+    def _make_m4a(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-c:a",
+                "alac",
+                str(path),
+            ],
+            capture_output=True,
+            check=True,
+        )
+
+    def test_artist_and_title_are_readable_back_off_disk(self, ctx, tmp_path):
+        track = tmp_path / "song.m4a"
+        self._make_m4a(track)
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(track),
+                "status": "CATALOGUED",
+                "artist": "Beatles, The",
+                "album": "Revolver",
+                "title": "Taxman",
+                "genre": "Rock",
+                "year": "1966",
+                "track": 1,
+            },
+        )
+        ctx.conn.commit()
+
+        result = TaggerStage().run(ctx)
+        assert result.files_changed >= 1
+
+        tags = MP4(str(track)).tags or {}
+        # The DB stores the sort form; the TAG carries the natural form and
+        # `soar` carries the sort form. Changed 2026-08-29 -- "Beatles, The"
+        # is a MUSAEUS-only string, and MusicBrainz has never heard of it.
+        assert (tags.get("\xa9ART") or [None])[0] == "The Beatles"
+        assert (tags.get("soar") or [None])[0] == "Beatles, The"
+        assert (tags.get("\xa9nam") or [None])[0] == "Taxman"
+        assert (tags.get("\xa9alb") or [None])[0] == "Revolver"
+        assert (tags.get("\xa9gen") or [None])[0] == "Rock"
+
+    def test_a_name_with_no_article_gets_no_redundant_sort_tag(self, ctx, tmp_path):
+        """A sort tag identical to the artist is noise on most of the library."""
+        track = tmp_path / "song2.m4a"
+        self._make_m4a(track)
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(track),
+                "status": "CATALOGUED",
+                "artist": "Dusty Springfield",
+                "title": "Son of a Preacher Man",
+            },
+        )
+        ctx.conn.commit()
+        TaggerStage().run(ctx)
+
+        tags = MP4(str(track)).tags or {}
+        assert (tags.get("\xa9ART") or [None])[0] == "Dusty Springfield"
+        assert not tags.get("soar"), "no article, so no sort tag"
+
+    def test_a_stylized_name_is_not_rearranged_on_disk(self, ctx, tmp_path):
+        """"De La Soul" -> "La Soul, De" was live corruption, 2026-08-16."""
+        track = tmp_path / "song3.m4a"
+        self._make_m4a(track)
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(track),
+                "status": "CATALOGUED",
+                "artist": "De La Soul",
+                "title": "Me Myself and I",
+            },
+        )
+        ctx.conn.commit()
+        TaggerStage().run(ctx)
+
+        tags = MP4(str(track)).tags or {}
+        assert (tags.get("\xa9ART") or [None])[0] == "De La Soul"
+        assert not tags.get("soar")
+
+    def test_a_slash_in_a_genre_survives_the_round_trip(self):
+        """R&B/Funk/Soul must come back exactly as written.
+
+        Sanitize used to strip "/" out of stored genres, inventing names
+        that matched no canon. Now that metadata keeps the real string, the
+        tag writer has to carry it intact.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            track = Path(d) / "s.m4a"
+            self._make_m4a(track)
+            audio = MP4(str(track))
+            audio["\xa9gen"] = ["R&B/Funk/Soul"]
+            audio.save()
+            assert (MP4(str(track)).tags["\xa9gen"] or [None])[0] == "R&B/Funk/Soul"
+
+    def test_stage_reports_verified_when_the_tag_is_really_there(self, ctx, tmp_path):
+        """The effect-verification seal must reflect reality, not optimism."""
+        track = tmp_path / "verified.m4a"
+        self._make_m4a(track)
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(track),
+                "status": "CATALOGUED",
+                "artist": "Queen",
+                "title": "Bicycle Race",
+                "album": "Jazz",
+            },
+        )
+        ctx.conn.commit()
+        result = TaggerStage().execute(ctx)
+        assert result.files_changed >= 1
+        assert result.verified is not False, result.verify_notes

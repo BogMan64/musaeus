@@ -14,7 +14,7 @@ import pytest
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db, upsert_archive
-from musaeus.loudness import R128_APPLE_REFERENCE
+from musaeus.loudness import R128_APPLE_REFERENCE, R128_REFERENCE
 from musaeus.stages.forge import ForgeStage, read_existing_rg_tags, write_rg_tags
 
 
@@ -413,7 +413,10 @@ class TestWriteRgTags:
         path.write_bytes(b"")
         mock_flac.return_value = True
         assert write_rg_tags(path, 4.5, 0.95) is True
-        mock_flac.assert_called_once_with(path, 4.5, 0.95)
+        # The reference is part of the contract: the gain and the reference
+        # it was computed against must travel together, or the read-back
+        # recovers a wrong LUFS. Default is R128_REFERENCE.
+        mock_flac.assert_called_once_with(path, 4.5, 0.95, R128_REFERENCE)
 
     @patch("musaeus.stages.forge._write_tags_mp3")
     def test_mp3_dispatch(self, mock_mp3, tmp_path):
@@ -421,7 +424,7 @@ class TestWriteRgTags:
         path.write_bytes(b"")
         mock_mp3.return_value = True
         assert write_rg_tags(path, 3.0, 0.9) is True
-        mock_mp3.assert_called_once_with(path, 3.0, 0.9)
+        mock_mp3.assert_called_once_with(path, 3.0, 0.9, R128_REFERENCE)
 
     @patch("musaeus.stages.forge._write_tags_m4a")
     def test_m4a_dispatch(self, mock_m4a, tmp_path):
@@ -543,7 +546,10 @@ def test_embed_from_db_writes_without_measuring(tmp_path, monkeypatch):
     monkeypatch.setattr(
         forge_mod,
         "write_rg_tags",
-        lambda p, g, pk, r128_gain=None: (written.append((p, g, pk, r128_gain)), True)[1],
+        lambda p, g, pk, r128_gain=None, reference=None: (
+            written.append((p, g, pk, r128_gain)),
+            True,
+        )[1],
     )
 
     real = tmp_path / "song.m4a"
@@ -605,3 +611,71 @@ def test_embed_from_db_writes_without_measuring(tmp_path, monkeypatch):
     ).fetchone()
     assert kept[0] == "2026-08-20"
     assert kept[1] == pytest.approx(-1.2)
+
+
+# ── the reference tag must match the target the gain was computed against ────
+#
+# REPLAYGAIN_REFERENCE_LOUDNESS was hardcoded to "18.00 LUFS" while the gain
+# came from the configurable forge_target_lufs. _rg_dict_from_vorbis_style
+# reads that very tag back to recover LUFS, so at any target other than -18
+# Forge mis-read the loudness of files it had written itself, by exactly
+# (target - (-18)) dB.
+#
+# Asserting the round trip, not the call: a mock arg-list check passed
+# happily while the tag on disk said something else.
+
+
+class TestReplayGainReferenceRoundTrip:
+    def _flac(self, path):
+        """A real, minimal FLAC. mutagen must be able to open and tag it."""
+        import shutil
+        import subprocess
+
+        if not shutil.which("ffmpeg"):
+            pytest.skip("ffmpeg not available")
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+             "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "0.3",
+             str(path)],
+            check=True,
+        )
+        return path
+
+    @pytest.mark.parametrize("target", [-18.0, -16.0, -14.0, -23.0])
+    def test_lufs_survives_the_round_trip_at_any_target(self, tmp_path, target):
+        from mutagen.flac import FLAC
+
+        from musaeus.loudness import lufs_to_rg
+        from musaeus.stages.forge import _rg_dict_from_vorbis_style, write_rg_tags
+
+        path = self._flac(tmp_path / "song.flac")
+        measured_lufs = -9.5
+        rg_gain = lufs_to_rg(measured_lufs, reference=target)
+
+        assert write_rg_tags(path, rg_gain, 0.95, reference=target)
+
+        recovered = _rg_dict_from_vorbis_style(FLAC(str(path)))
+        assert recovered is not None
+        assert recovered["lufs"] == pytest.approx(measured_lufs, abs=0.01), (
+            "the reference tag must describe the target the gain was computed "
+            "against, or Forge mis-reads its own output"
+        )
+
+    def test_the_reference_tag_holds_the_target_not_a_constant(self, tmp_path):
+        from mutagen.flac import FLAC
+
+        from musaeus.stages.forge import write_rg_tags
+
+        path = self._flac(tmp_path / "song.flac")
+        assert write_rg_tags(path, 3.0, 0.9, reference=-14.0)
+        ref = FLAC(str(path))["REPLAYGAIN_REFERENCE_LOUDNESS"][0]
+        assert ref == "14.00 LUFS", f"hardcoded reference leaked through: {ref}"
+
+    def test_the_default_reference_is_still_r128(self, tmp_path):
+        from mutagen.flac import FLAC
+
+        from musaeus.stages.forge import write_rg_tags
+
+        path = self._flac(tmp_path / "song.flac")
+        assert write_rg_tags(path, 3.0, 0.9)
+        assert FLAC(str(path))["REPLAYGAIN_REFERENCE_LOUDNESS"][0] == "18.00 LUFS"

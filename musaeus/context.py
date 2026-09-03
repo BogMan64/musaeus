@@ -38,11 +38,30 @@ class StageResult:
     notes: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
+    # Effect verification (2026-08-22). None = the stage does not claim a
+    # verifiable effect, or nothing changed. True/False = its claim was
+    # checked against the filesystem or DB after the fact and held / did not.
+    #
+    # This exists because five separate components were found reporting
+    # success while doing nothing at all: rebuild-db dispatching on event
+    # names that did not exist, Forge writing to an unserialisable tag key,
+    # GenreCanon parsing a separator the file never used, PermissionsStage
+    # sweeping an empty directory, and an overnight helper silently dropping
+    # its arguments. Every one passed its tests, because the tests asserted
+    # the shape of the call rather than its effect on disk.
+    verified: bool | None = None
+    verify_notes: list[str] = field(default_factory=list)
+
     def summarise(self) -> str:
         mode = " [DRY RUN]" if self.dry_run else ""
         status = "OK" if self.success else "FAILED"
+        seal = ""
+        if self.verified is True:
+            seal = " ✓verified"
+        elif self.verified is False:
+            seal = " ✗UNVERIFIED"
         return (
-            f"{self.stage_name}{mode}: {status} | "
+            f"{self.stage_name}{mode}: {status}{seal} | "
             f"processed={self.files_processed} "
             f"changed={self.files_changed} "
             f"skipped={self.files_skipped} "
@@ -187,12 +206,25 @@ class RunContext:
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    def finish(self) -> None:
-        """Log RUN_END, commit, and close the DB connection."""
-        success = all(r.success for r in self.stage_results)
+    def finish(self, interrupted: bool = False) -> None:
+        """Log RUN_END, commit, and close the DB connection.
+
+        `interrupted` records that the run was cut short rather than
+        reaching the end of the pipeline. Without it a Ctrl-C left no
+        RUN_END at all, and an aborted run was indistinguishable from one
+        still in progress -- the resume markers make relaunching safe, but
+        nothing said which stages never ran. Measured 2026-08-26: a batch
+        stopped after 22 of 27 stages, and only reading the stage list
+        revealed that forge, tagger, audit, enrich and mb_enrich had been
+        skipped.
+        """
+        success = all(r.success for r in self.stage_results) and not interrupted
         self.log_event(
             "RUN_END",
-            note=f"success={success} stages={len(self.stage_results)}",
+            note=(
+                f"success={success} stages={len(self.stage_results)}"
+                + (" interrupted=True" if interrupted else "")
+            ),
         )
         self.conn.commit()
         self.conn.close()

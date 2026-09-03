@@ -21,6 +21,8 @@ import subprocess
 import threading
 from pathlib import Path
 
+from .duration import container_seconds
+
 logger = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -39,25 +41,17 @@ _DURATION_FRAC = 0.3  # 30 % of file duration
 
 
 def _get_duration(path: Path) -> float | None:
-    """Quick ffprobe duration check (used to scale the timeout)."""
+    """Quick container duration (used to scale the timeout).
+
+    Delegates to musaeus.duration.container_seconds -- this used to carry
+    its own copy of the same ffprobe call, one of seven independent
+    "read the duration" implementations found in the 2026-09-02 audit.
+    Container is the right choice here specifically: this is a timeout
+    scale, not a truncation check, so the container/stream distinction
+    that matters elsewhere in this codebase does not matter for this call.
+    """
     try:
-        r = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "quiet",
-                "-print_format",
-                "json",
-                "-show_entries",
-                "format=duration",
-                str(path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        return float(json.loads(r.stdout)["format"]["duration"])
+        return container_seconds(path)
     except Exception as exc:
         logger.debug("_get_duration failed for %s: %s", path, exc)
         return None

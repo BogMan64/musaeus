@@ -25,14 +25,23 @@ import contextlib
 import logging
 import sys
 import traceback
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 from .config import MusicConfig, get_config
 from .context import RunContext
 from .db import open_db, snapshot_db_before_wipe
 from .hasher import ffmpeg_available, ffprobe_available
+from .network_policy import NetworkPolicy, policy
+from .safety.source_watch import SourceWatch, auto_restart_enabled
 from .stages import (
+    ACT1_INTAKE_CORRECTION,
+    ACT2_DEDUP_STAGING,
+    ACT3_CANONICALIZE_FINALIZE,
     DEFAULT_PIPELINE,
+    ENRICHMENT,
     CuratorStage,
     ForgeStage,
     IngestStage,
@@ -43,6 +52,7 @@ from .stages import (
     TributeQuarantineStage,
 )
 from .stages.base import BaseStage
+from .workspace import doc_root, list_docs, list_worktrees, unmerged_commits
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +143,29 @@ def _choose(prompt: str, options: list[str], default: str = "0") -> str:
 # ── Console class ─────────────────────────────────────────────────────────────
 
 
+@contextmanager
+def _network_authority(dry_run: bool) -> Iterator[None]:
+    """Grant network authority for a LIVE console run, and take it back after.
+
+    The console never touched network_policy at all, so the gateway stayed
+    at its LOCAL_ONLY default for everything launched from this menu. Every
+    network stage -- Enrich, MBEnrich, OriginalYear -- was therefore refused,
+    logged a warning and carried on, and the run reported success having done
+    no enrichment whatever. Found 2026-08-24; the CLI has granted this at its
+    execute path since the gateway was introduced, and the console was simply
+    never given the same treatment.
+
+    Scoped rather than set_policy, so an interactive session does not sit
+    permissive for the rest of its life after one live run. Preview gets
+    nothing, exactly as on the CLI side.
+    """
+    if dry_run:
+        yield
+        return
+    with policy(NetworkPolicy.ALLOWED):
+        yield
+
+
 class Console:
     """
     Interactive Musaeus pipeline console.
@@ -147,6 +180,9 @@ class Console:
     def __init__(self) -> None:
         self._config: MusicConfig | None = None
         self._running = True
+        # Taken at construction, so it reflects the source as this process
+        # actually imported it -- not as it looks when a run is launched.
+        self._source = SourceWatch()
 
     # ── Boot ──────────────────────────────────────────────────────────────────
 
@@ -270,46 +306,189 @@ class Console:
         finally:
             conn.close()
 
+    # ── Source drift ──────────────────────────────────────────────────────────
+
+    def _check_source_drift(self) -> bool:
+        """True to proceed with the run, False to abort.
+
+        A process cannot pick up edits to its own source. On drift the
+        default is to replace this process with a fresh interpreter --
+        which does not return. If that is disabled or fails, refuse the
+        run and say why: proceeding would silently execute the old code,
+        which is the failure this exists to prevent.
+        """
+        if not self._source.drifted():
+            return True
+
+        changed = self._source.drifted_files()
+        _warn(f"Source has changed since this console started ({len(changed)} file(s)).")
+        for f in changed[:8]:
+            try:
+                _info(f"  {f.relative_to(Path(__file__).resolve().parent.parent)}")
+            except ValueError:
+                _info(f"  {f}")
+        if len(changed) > 8:
+            _info(f"  ... and {len(changed) - 8} more")
+        _info("A running process keeps the modules it imported at startup,")
+        _info("so a live run now would use the OLD code.")
+
+        if not auto_restart_enabled():
+            _err("Refusing the live run. Restart the console, or unset "
+                 "MUSAEUS_AUTO_RESTART to restart automatically.")
+            return False
+
+        _info("Restarting into a fresh interpreter...")
+        try:
+            # Nothing of this run has been opened yet, but the console may
+            # hold a connection from an earlier menu action; exec drops the
+            # fds either way, so flush first.
+            self._source.restart()  # does not return
+        except OSError as exc:
+            _err(f"Could not restart automatically ({exc}). Quit and relaunch "
+                 f"before running live.")
+            return False
+        return False  # unreachable; execv either replaces us or raised
+
+    def _warn_incomplete_previous_run(self, conn) -> None:  # type: ignore[no-untyped-def]
+        """Say so when the last run never reached the end of the pipeline.
+
+        Resume is per-ROW, not per-stage: relaunching re-selects unfinished
+        rows, which is safe, but nothing recorded that a stage never ran at
+        all. An aborted batch therefore looked exactly like a completed one
+        on the next launch. Reported, not blocked -- relaunching IS the
+        recovery, and the point is that it stops being invisible.
+        """
+        try:
+            row = conn.execute(
+                """
+                SELECT run_id,
+                       MIN(ts) AS started,
+                       MAX(ts) AS last_seen,
+                       CAST((julianday('now') - julianday(MAX(ts))) * 1440 AS INTEGER)
+                           AS idle_minutes
+                  FROM events
+                 WHERE run_id LIKE 'run_%'
+                 GROUP BY run_id ORDER BY MIN(ts) DESC LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                return
+            prev = row["run_id"]
+            # A run still writing events is not an abandoned one. Without
+            # this, a run merely WAITING -- preflight blocks on an
+            # interactive [y/N] before it does anything -- gets announced
+            # as failed, and a warning that cries wolf is one nobody reads.
+            idle = row["idle_minutes"]
+            still_warm = idle is not None and idle < 5
+            ended = conn.execute(
+                "SELECT 1 FROM events WHERE run_id=? AND event_type='RUN_END'",
+                (prev,),
+            ).fetchone()
+            if ended:
+                return
+            done = [
+                r["stage"]
+                for r in conn.execute(
+                    "SELECT DISTINCT stage FROM events "
+                    "WHERE run_id=? AND event_type='STAGE_COMPLETE'",
+                    (prev,),
+                ).fetchall()
+            ]
+            missing = [c.NAME for c in DEFAULT_PIPELINE if c.NAME not in set(done)]
+        except Exception:
+            return  # a warning must never be the thing that breaks a run
+
+        if still_warm:
+            _warn(f"A previous run is unfinished and was active {idle} minute(s) ago: {prev}")
+            _warn("  It may still be running elsewhere — check before starting a second.")
+            print()
+            return
+
+        _warn(f"Previous run did not complete: {prev}")
+        _warn(f"  {len(done)} of {len(DEFAULT_PIPELINE)} stage(s) finished.")
+        if missing:
+            _warn("  Never ran: " + ", ".join(missing))
+        _info("  This run resumes them: each stage re-selects only unfinished rows.")
+        print()
+
     # ── Run pipeline ──────────────────────────────────────────────────────────
 
-    def _run_pipeline(self, dry_run: bool) -> None:
+    def _run_pipeline(
+        self,
+        dry_run: bool,
+        stage_classes: list[type[BaseStage]] | None = None,
+        label: str = "Pipeline",
+    ) -> None:
+        """Run *stage_classes* (default: the whole pipeline) through one context.
+
+        Taking a list lets the Act menu reuse this exact path -- the same
+        drift check, the same network authority, the same incomplete-run
+        warning -- instead of growing a second, subtly different runner.
+        """
+        selected = list(stage_classes) if stage_classes is not None else list(DEFAULT_PIPELINE)
         mode = "DRY RUN" if dry_run else "LIVE RUN"
-        _section(f"Pipeline  [{mode}]")
+        _section(f"{label}  [{mode}]  —  {len(selected)} stage(s)")
+
+        # Checked here rather than at the menu: this is the moment stale
+        # code costs a batch, and it keeps ordinary browsing quiet. A dry
+        # run mutates nothing, so it is not worth interrupting.
+        if not dry_run and not self._check_source_drift():
+            return
 
         assert self._config is not None
         conn = self._open_db()
         if conn is None:
             return
 
+        if not dry_run:
+            self._warn_incomplete_previous_run(conn)
+
         try:
             try:
                 ctx = RunContext.new(self._config, conn, dry_run=dry_run)
-                stages: list[BaseStage] = [cls() for cls in DEFAULT_PIPELINE]
+                stages: list[BaseStage] = [cls() for cls in selected]
 
-                for stage in stages:
-                    print()
-                    print(_c(f"  ── {stage.NAME.upper()} ──", _BOLD, _BLUE))
-                    result = stage.execute(ctx)
+                with _network_authority(dry_run):
+                    for stage in stages:
+                        print()
+                        print(_c(f"  ── {stage.NAME.upper()} ──", _BOLD, _BLUE))
+                        result = stage.execute(ctx)
 
-                    if result.success:
-                        _ok(result.summarise())
-                    else:
-                        _err(result.summarise())
+                        if result.success:
+                            _ok(result.summarise())
+                        else:
+                            _err(result.summarise())
 
-                    for note in result.notes:
-                        _info(note)
-                    for err in result.errors:
-                        _err(f"  ERROR: {err}")
+                        for note in result.notes:
+                            _info(note)
+                        for err in result.errors:
+                            _err(f"  ERROR: {err}")
 
                 print()
                 all_ok = all(r.success for r in ctx.stage_results)
                 if all_ok:
-                    _ok(f"Pipeline complete  run_id={ctx.run_id}")
+                    _ok(f"{label} complete  run_id={ctx.run_id}")
                 else:
-                    _warn(f"Pipeline finished with errors  run_id={ctx.run_id}")
+                    _warn(f"{label} finished with errors  run_id={ctx.run_id}")
 
                 ctx.finish()
 
+            except KeyboardInterrupt:
+                # Ctrl-C is a BaseException, so it skipped ctx.finish()
+                # entirely and the run left no RUN_END -- indistinguishable
+                # from one still running. Record the abort and name the
+                # stages that never ran, then re-raise so the console's own
+                # handling is unchanged.
+                ran = {r.stage_name for r in ctx.stage_results}
+                remaining = [s_.NAME for s_ in stages if s_.NAME not in ran]
+                print()
+                _warn(f"Interrupted after {len(ctx.stage_results)} of {len(stages)} stage(s).")
+                if remaining:
+                    _warn("These stages did NOT run: " + ", ".join(remaining))
+                _info("Relaunching resumes: each stage re-selects only unfinished rows.")
+                with contextlib.suppress(Exception):
+                    ctx.finish(interrupted=True)
+                raise
             except Exception:
                 _err("Pipeline crashed — see traceback below")
                 traceback.print_exc()
@@ -339,7 +518,8 @@ class Console:
                 ctx = RunContext.new(self._config, conn, dry_run=dry_run)
                 stage = stage_cls()
                 _section(f"{stage.NAME.upper()}  [{mode}]")
-                result = stage.execute(ctx)
+                with _network_authority(dry_run):
+                    result = stage.execute(ctx)
                 if result.success:
                     _ok(result.summarise())
                 else:
@@ -503,7 +683,8 @@ class Console:
         print()
 
         opts = [
-            "Soft reset  — re-queue all CATALOGUED files (keeps event log, re-runs pipeline)",
+            "Soft reset  — re-queue processed files, KEEPS quarantine/dupe/ghost decisions",
+            "Soft reset (including decisions) — also re-queues QUARANTINED, DUPE_REVIEW, GHOST",
             "Hard reset  — delete the entire database (true blank slate, irreversible)",
             "Back",
         ]
@@ -513,48 +694,100 @@ class Console:
         except ValueError:
             return
 
-        if idx == 2:
+        if idx == 3:
             return
 
         assert self._config is not None
 
         # ── Soft reset ────────────────────────────────────────────────────────
-        if idx == 0:
+        if idx in (0, 1):
+            include_decisions = idx == 1
             conn = self._open_db()
             if conn is None:
                 return
             try:
+                # QUARANTINED and DUPE_REVIEW are judgements Grey made.
+                # GHOST is stronger still -- not an opinion but a claim that
+                # the file is gone from disk. PENDING means "not yet
+                # processed", so resetting a GHOST row does not merely forget
+                # a decision, it asserts something false and leaves the
+                # pipeline to rediscover the truth by failing to find the
+                # file. The reset also nulls audio_hash, which on a GHOST row
+                # is the last record of what the file was.
+                #
+                # Sentinel was fixed 2026-08-31 to make GHOST a one-way door;
+                # an unfiltered reset walked straight back through it.
+                protected = ("QUARANTINED", "DUPE_REVIEW", "GHOST")
+                where = "status != 'PENDING'"
+                if not include_decisions:
+                    where += " AND status NOT IN ('QUARANTINED','DUPE_REVIEW','GHOST')"
+
                 count = conn.execute(
-                    "SELECT COUNT(*) FROM archive WHERE status != 'PENDING'"
+                    f"SELECT COUNT(*) FROM archive WHERE {where}"
                 ).fetchone()[0]
+                kept = conn.execute(
+                    "SELECT status, COUNT(*) FROM archive "
+                    "WHERE status IN ('QUARANTINED','DUPE_REVIEW','GHOST') "
+                    "GROUP BY status ORDER BY status"
+                ).fetchall()
+                kept_total = sum(r[1] for r in kept)
+                kept_desc = ", ".join(f"{r[1]:,} {r[0]}" for r in kept) or "none"
+
                 _warn(f"This will mark {count:,} file(s) back to PENDING.")
-                confirm = _prompt("Type YES to confirm")
-                if confirm != "YES":
+                if include_decisions:
+                    if kept_total:
+                        _warn(
+                            f"This INCLUDES {kept_total:,} file(s) carrying decisions "
+                            f"({kept_desc}). Those judgements will be lost."
+                        )
+                    confirm_word = "RESET-ALL"
+                else:
+                    _info(
+                        f"{kept_total:,} file(s) carrying decisions will be LEFT ALONE "
+                        f"({kept_desc})."
+                    )
+                    confirm_word = "YES"
+
+                confirm = _prompt(f"Type {confirm_word} to confirm")
+                if confirm != confirm_word:
                     _info("Cancelled.")
                     return
+
                 conn.execute(
-                    """
+                    f"""
                     UPDATE archive
                        SET status       = 'PENDING',
                            audio_hash   = NULL,
                            full_hash    = NULL,
                            rg_tagged_at = NULL
+                     WHERE {where}
                     """
                 )
+                note = (
+                    "console soft-reset (including decisions): "
+                    f"{count} files → PENDING, {kept_total} decisions discarded"
+                    if include_decisions
+                    else (
+                        f"console soft-reset: {count} files → PENDING, "
+                        f"{kept_total} decision-carrying rows preserved "
+                        f"({'/'.join(protected)})"
+                    )
+                )
                 conn.execute(
-                    """
-                    INSERT INTO events (run_id, event_type, note)
-                    VALUES ('manual', 'SOFT_RESET', 'console soft-reset: all files → PENDING')
-                    """
+                    "INSERT INTO events (run_id, event_type, note) "
+                    "VALUES ('manual', 'SOFT_RESET', ?)",
+                    (note,),
                 )
                 conn.commit()
                 _ok(f"Soft reset complete — {count:,} file(s) queued for re-processing.")
+                if not include_decisions and kept_total:
+                    _ok(f"Preserved {kept_total:,} decision-carrying row(s).")
                 _info("Run the full pipeline to re-hash and re-catalogue.")
             finally:
                 conn.close()
 
         # ── Hard reset ────────────────────────────────────────────────────────
-        elif idx == 1:
+        elif idx == 2:
             db_path = self._config.db_path
             _warn(f"This will PERMANENTLY DELETE: {db_path}")
             _warn("All run history, hashes, metadata, and duplicate decisions will be lost.")
@@ -631,7 +864,8 @@ class Console:
                         ctx.set(k, v)
                 stage = stage_cls()
                 _section(f"{stage.NAME.upper()}  [{mode}]")
-                result = stage.execute(ctx)
+                with _network_authority(dry_run):
+                    result = stage.execute(ctx)
                 if result.success:
                     _ok(result.summarise())
                 else:
@@ -712,14 +946,266 @@ class Console:
         elif mode_idx == 1:
             self._run_stage_with_stash(cls, dry_run=False, stash=stash)
 
+    # ── Workspace: worktrees & docs ───────────────────────────────────────────
+
+    def _show_workspace(self) -> None:
+        """Which checkout is running, what else is parked, and where the docs are.
+
+        Read-only on purpose. Switching branches under a console that has
+        already imported its modules is exactly finding #17, so this shows
+        and does not touch.
+        """
+        _section("Workspace")
+
+        trees = list_worktrees()
+        if not trees:
+            _warn("Not a git checkout (or git unavailable) — no worktrees to show.")
+        else:
+            _info("Checkouts  (* = the one THIS console is running from)")
+            print()
+            for t in trees:
+                for line in t.describe().splitlines():
+                    _info(line)
+            print()
+            _info("Unmerged vs main:")
+            for t in trees:
+                commits = unmerged_commits(t)
+                if not commits:
+                    continue
+                _info(f"  {t.label}: {len(commits)} commit(s)")
+                for c in commits[:3]:
+                    _info(f"      {c}")
+                if len(commits) > 3:
+                    _info(f"      ... and {len(commits) - 3} more")
+            print()
+            _warn("A console only ever runs the checkout it was launched from.")
+            _info("To run another branch's code, quit and relaunch from that path.")
+
+        print()
+        docs = list_docs()
+        root = doc_root()
+        if not docs:
+            _warn(f"No MUSAEUS docs found under {root}")
+        else:
+            _info(f"Documentation archive: {root}")
+            _info("Most recent MUSAEUS documents:")
+            for d in docs[:12]:
+                stamp = datetime.fromtimestamp(d.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+                _info(f"  {stamp}  {d.name}")
+            print()
+            self._read_doc(docs)
+
+    def _read_doc(self, docs: list[Path]) -> None:
+        """Optionally print one document. Head only — these run to 90 KB."""
+        labels = [d.name for d in docs[:12]] + ["(back)"]
+        choice = _choose("Read one", labels, default=str(len(labels) - 1))
+        try:
+            idx = int(choice)
+        except ValueError:
+            return
+        if not (0 <= idx < len(labels) - 1):
+            return
+        doc = docs[idx]
+        try:
+            text = doc.read_text(errors="replace")
+        except OSError as exc:
+            _err(f"Could not read {doc.name}: {exc}")
+            return
+        lines = text.splitlines()
+        _section(doc.name)
+        for line in lines[:120]:
+            print(f"    {line}")
+        if len(lines) > 120:
+            print()
+            _info(f"... {len(lines) - 120} more line(s). Full file: {doc}")
+
+    # ── Acts ──────────────────────────────────────────────────────────────────
+
+    def _act_menu(self) -> None:
+        """Run one Act as a unit.
+
+        The Act lists have existed in stages/__init__.py since the pipeline
+        was split, but nothing outside that module imported them -- so the
+        console could offer the whole 30-stage chain or one hand-picked
+        stage, and nothing in between. Re-running a single Act over the
+        library is exactly what you want when Act 1 is settled and only the
+        later work needs redoing.
+        """
+        _section("Run an Act")
+        acts: list[tuple[str, list[type[BaseStage]]]] = [
+            ("Act 1 — Intake & Correction", list(ACT1_INTAKE_CORRECTION)),
+            ("Act 2 — Dedup & Staging", list(ACT2_DEDUP_STAGING)),
+            ("Act 3 — Canonicalize & Finalize", list(ACT3_CANONICALIZE_FINALIZE)),
+            ("Enrichment — Last.fm / MusicBrainz / AcoustID / identity", list(ENRICHMENT)),
+            ("Acts 2 + 3 together", list(ACT2_DEDUP_STAGING) + list(ACT3_CANONICALIZE_FINALIZE)),
+        ]
+        labels = [f"{name}  ({len(stages)} stages)" for name, stages in acts] + ["Back"]
+        choice = _choose("Select act", labels)
+        try:
+            idx = int(choice)
+        except ValueError:
+            return
+        if not (0 <= idx < len(acts)):
+            return
+
+        name, stages = acts[idx]
+        print()
+        _info(f"{name}:")
+        for cls in stages:
+            _info(f"    {cls.NAME}")
+
+        # Act 2 moves duplicates and Act 3 rewrites audio and moves files.
+        # Preview is the default, and it is listed first for that reason.
+        mode = _choose("Mode", ["Preview  [DRY RUN]", "Run  [LIVE]", "Back"])
+        try:
+            m = int(mode)
+        except ValueError:
+            return
+        if m == 0:
+            self._run_pipeline(dry_run=True, stage_classes=stages, label=name)
+        elif m == 1:
+            self._run_pipeline(dry_run=False, stage_classes=stages, label=name)
+
     # ── Main menu ─────────────────────────────────────────────────────────────
+
+    def _edition_menu(self) -> None:
+        """Preview an edition's selection. Shows what WOULD be built and
+        what it would cost; never encodes.
+
+        The expensive half of building an edition is the encode -- the full
+        Car edition is ~44 hours -- so the useful question is what you would
+        get, answered before committing to it rather than after.
+        """
+        from .editions import EDITIONS, select_edition
+
+        _section("Build an Edition")
+        names = ["lossless", "car", "iphone"]
+        labels = [
+            "Lossless  — ALAC, -18 LUFS  → /home/grey/Music",
+            "Car       — AAC 256k, -14 LUFS, ≤48 kHz  → USB",
+            "iPhone    — AAC 256k, -14 LUFS, size-budgeted",
+            "Back",
+        ]
+        choice = _choose("Which edition", labels)
+        try:
+            idx = int(choice)
+        except ValueError:
+            return
+        if idx == 3:
+            return
+
+        spec = EDITIONS[names[idx]]
+
+        budget = None
+        if spec.name == "iphone":
+            # The only edition where a budget is not optional: 81.7 GB of
+            # library will not go into a 30 GB phone, so something must be
+            # dropped and the owner chooses how much.
+            raw = _prompt("Device budget in GB (blank = no limit)").strip()
+            if raw:
+                try:
+                    budget = int(float(raw) * 1_000_000_000)
+                except ValueError:
+                    _warn(f"Not a number: {raw!r}")
+                    return
+
+        conn = self._open_db()
+        if conn is None:
+            return
+        try:
+            sel = select_edition(conn, spec, budget_bytes=budget)
+        finally:
+            conn.close()
+
+        _ok(sel.summary())
+        _info(f"Format: {spec.codec.upper()}"
+              + (f" {spec.bitrate_kbps}k" if spec.bitrate_kbps else " (lossless)")
+              + f", {spec.lufs_target} LUFS"
+              + (f", capped at {spec.max_sample_rate} Hz" if spec.max_sample_rate else ""))
+
+        by_genre: dict[str, int] = {}
+        for t in sel.included:
+            by_genre[t.genre or "(none)"] = by_genre.get(t.genre or "(none)", 0) + 1
+        for g, n in sorted(by_genre.items(), key=lambda kv: (-kv[1], kv[0]))[:10]:
+            print(f"      {n:>6,}  {g}")
+
+        if sel.skipped_for_budget:
+            _warn(f"{len(sel.skipped_for_budget):,} track(s) do not fit. "
+                  "Lowest-priority genres are dropped first.")
+
+        _info("Selection only — nothing was encoded or written.")
+        _info("To build it, run the builder for that edition; "
+              "both pause while you use the machine.")
+
+    def _usb_menu(self) -> None:
+        """Front door to scripts/usb_transfer/transfer_to_usb.py.
+
+        This menu never wipes or copies anything itself. It shells out to
+        that script unmodified so none of its five safety gates (denylist,
+        typed confirmation, TTY check, root check, --execute gate -- see
+        that script's own module docstring) are re-implemented or weakened
+        here. A dry run always runs first and always prints what would
+        happen; the real transfer only starts after you additionally type
+        "yes" here AND pass that script's own typed device confirmation.
+        """
+        import os
+        import subprocess
+
+        _section("USB Transfer")
+        script = (
+            Path(__file__).resolve().parent.parent
+            / "scripts" / "usb_transfer" / "transfer_to_usb.py"
+        )
+        if not script.exists():
+            _err(f"Script not found: {script}")
+            return
+
+        labels = ["ALAC (Lossless)", "Car", "Back"]
+        choice = _choose("Which library to transfer", labels)
+        try:
+            idx = int(choice)
+        except ValueError:
+            return
+        if idx == 2:
+            return
+        library = ["alac", "car"][idx]
+
+        device = _prompt("Device path, e.g. /dev/sdb (blank = choose from a list)").strip()
+
+        cmd = [sys.executable, str(script), "--library", library]
+        if device:
+            cmd += ["--device", device]
+
+        _info("Dry run first — nothing is touched yet.")
+        subprocess.run(cmd)
+
+        _warn("The next step WIPES the device above and copies the library onto it.")
+        proceed = _prompt('Type "yes" to continue to the real transfer, anything else to stop')
+        if proceed.strip().lower() != "yes":
+            _info("Stopped. Nothing was touched.")
+            return
+
+        execute_cmd = cmd + ["--execute"]
+        if os.geteuid() != 0:
+            # Plain `sudo` resets HOME to /root, and config.py resolves
+            # ~/.config/musaeus/settings.env from HOME -- without -E the
+            # script can't find MUSAEUS_VAULT_ROOT even though it works
+            # fine un-prefixed (2026-09-03, caught before any wipe ran).
+            _info("This needs root for the wipe/format step — running it under sudo now.")
+            execute_cmd = ["sudo", "-E"] + execute_cmd
+
+        _info("Handing off to the transfer script's own device confirmation now.")
+        subprocess.run(execute_cmd)
 
     def _main_menu(self) -> None:
         options = [
             ("Status", self._show_status),
             ("Run full pipeline  [DRY RUN]", lambda: self._run_pipeline(dry_run=True)),
             ("Run full pipeline  [LIVE]", lambda: self._run_pipeline(dry_run=False)),
+            ("Run an Act…  (1 / 2 / 3 / Enrichment)", self._act_menu),
             ("Run single stage…", self._stage_menu),
+            ("Build an Edition…  (Lossless / Car / iPhone)", self._edition_menu),
+            ("Transfer to USB…", self._usb_menu),
             ("Dedupe review", self._run_dedupe),
             ("View recent runs", self._show_runs),
             ("Inspect a run", self._show_run_detail),
@@ -727,6 +1213,7 @@ class Console:
             ("Configuration", self._show_config),
             ("Enter/Update API Keys", self._manage_api_keys),
             ("Reset / fresh start", self._reset_menu),
+            ("Workspace — worktrees & docs", self._show_workspace),
             ("Quit", self._quit),
         ]
 
@@ -777,7 +1264,7 @@ class Console:
                 self._main_menu()
             except KeyboardInterrupt:
                 print()
-                _warn("Use option 11 (Quit) to exit cleanly.")
+                _warn("Choose the Quit option to exit cleanly.")
             except Exception:
                 _err("Unexpected error in console loop:")
                 traceback.print_exc()

@@ -275,6 +275,15 @@ def confirm_wipe(device: BlockDevice) -> bool:
 # ── Wipe + format (command construction is pure; execution is separate) ─────
 
 
+def build_unmount_commands(device: BlockDevice) -> list[list[str]]:
+    """Pure: unmount commands for every currently-mounted partition of
+    *device*. wipefs refuses to touch a busy/mounted device -- hit for
+    real 2026-09-03: /dev/sde was still auto-mounted at /media/grey/MyTunes
+    from being plugged in, and wipefs failed with "Device or resource
+    busy" instead of unmounting it first."""
+    return [["umount", mp] for mp in device.mountpoints]
+
+
 def build_wipe_and_format_commands(device_path: str, label: str = "MUSAEUS") -> list[list[str]]:
     """Pure: returns the argv lists that would wipe+partition+format
     *device_path* to a single ExFAT partition. Does not execute anything --
@@ -286,6 +295,23 @@ def build_wipe_and_format_commands(device_path: str, label: str = "MUSAEUS") -> 
         ["parted", "--script", device_path, "mkpart", "primary", "0%", "100%"],
         ["mkfs.exfat", "-n", label, partition],
     ]
+
+
+def wait_for_partition(partition_path: str, timeout: float = 10.0, poll_interval: float = 0.5) -> None:
+    """parted's partition-table change is picked up by the kernel
+    immediately, but the /dev/sdXN device node is created asynchronously
+    by udev -- calling mkfs.exfat right after parted returns can race
+    that. Hit for real 2026-09-03: mkfs.exfat failed with "open failed :
+    /dev/sde1, No such file or directory" even though the node existed
+    moments later. Poll for it instead of assuming it's already there."""
+    deadline = time.monotonic() + timeout
+    while not Path(partition_path).exists():
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"partition {partition_path} did not appear within {timeout}s "
+                "of partitioning -- kernel/udev may not have caught up"
+            )
+        time.sleep(poll_interval)
 
 
 def execute_commands(commands: list[list[str]], dry_run: bool) -> None:
@@ -391,12 +417,23 @@ def _source_dir(library: str, cfg) -> Path:
     if library == "alac":
         return cfg.alac_library
     if library == "car":
-        # No canonical AAC-Car tier exists yet (2026-08-18) -- Phase 2B's
-        # build_car_library.py writes to a RUNS-scoped staging/export area,
-        # not a stable named location like ALAC-Library. This points at
-        # wherever it last wrote; pass --source-dir explicitly if that's
-        # wrong for your situation.
-        return cfg.runs_root / "AAC-Car-Masked" / "_output"
+        # Was cfg.runs_root / "AAC-Car-Masked" / "_output" -- the
+        # build/staging area, not the finished edition -- because no
+        # canonical Car Edition tier existed yet when this was written
+        # (2026-08-18). That changed 2026-09-03: the built-and-masked
+        # edition now gets PUBLISHED to cfg.car_library
+        # (Libraries/CAR_Library), the same stable named location
+        # ALAC-Library already was for the lossless edition.
+        #
+        # Pointing this at the old staging path today would silently
+        # transfer the wrong audio: RUNS/AAC-Car-Masked/_output/encoded/
+        # holds the PRE-MASKING intermediate (no car-cabin noise mixed
+        # in), left in place deliberately so a re-run can skip
+        # already-encoded files rather than a finished product -- and
+        # _output/masked/ itself is mostly empty now, its BATCH_001
+        # contents already moved out to cfg.car_library, leaving only a
+        # handful of noise-bed files the publish step does not touch.
+        return cfg.car_library
     raise ValueError(f"unknown library: {library}")
 
 
@@ -577,7 +614,7 @@ def main() -> int:
 
     if not args.execute:
         print("\nDRY RUN (pass --execute to actually wipe + transfer)")
-        for cmd in build_wipe_and_format_commands(device.path):
+        for cmd in build_unmount_commands(device) + build_wipe_and_format_commands(device.path):
             print(f"  would run: {' '.join(cmd)}")
         print(f"  would copy {len(files)} file(s) to a fresh ExFAT filesystem on {device.path}")
         return 0
@@ -595,9 +632,21 @@ def main() -> int:
         print(f"ERROR: {device.path} became denylisted — refusing.", file=sys.stderr)
         return 1
 
-    execute_commands(build_wipe_and_format_commands(device.path), dry_run=False)
+    # Mount state can also change between the initial listing and now, same
+    # reasoning as the denylist recheck above -- re-fetch it fresh rather
+    # than trusting the mountpoints captured before the typed confirmation.
+    refreshed = next((d for d in list_removable_devices() if d.path == device.path), device)
+    execute_commands(build_unmount_commands(refreshed), dry_run=False)
 
     partition = f"{device.path}1" if not device.path[-1].isdigit() else f"{device.path}p1"
+    wipe_and_format = build_wipe_and_format_commands(device.path)
+    # wipefs + both parted calls, then mkfs.exfat separately -- the wait in
+    # between is why this isn't one execute_commands() call. See
+    # wait_for_partition's docstring.
+    execute_commands(wipe_and_format[:-1], dry_run=False)
+    wait_for_partition(partition)
+    execute_commands(wipe_and_format[-1:], dry_run=False)
+
     mount_point = Path(f"/mnt/musaeus_usb_{int(time.time())}")
     mount_point.mkdir(parents=True, exist_ok=True)
     subprocess.run(["mount", partition, str(mount_point)], check=True)

@@ -8,9 +8,14 @@ Rebuilding the DB from scratch is always possible.
 
 from __future__ import annotations
 
+import logging
+import os
 import sqlite3
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -83,6 +88,16 @@ CREATE INDEX IF NOT EXISTS idx_dupes_group  ON duplicates(group_id);
 CREATE INDEX IF NOT EXISTS idx_dupes_path   ON duplicates(file_path);
 
 -- Validation issues logged by the Bouncer stage.
+--
+-- The uniqueness key deliberately EXCLUDES run_id. With run_id in the key,
+-- "the same problem on the same file" was a new row on every single run --
+-- the table reached 343,938 rows and was pruned to 15,604 on 2026-08-24,
+-- then regrew by 30-50k per run because the key had not changed. The prune
+-- was treating the symptom.
+--
+-- One row per (file_path, issue), with run_id and checked_at holding the
+-- MOST RECENT sighting. That is also the more useful question: "what is
+-- wrong with this file now", not "how many times have we noticed".
 CREATE TABLE IF NOT EXISTS validation_issues (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     file_path   TEXT NOT NULL,
@@ -90,7 +105,7 @@ CREATE TABLE IF NOT EXISTS validation_issues (
     severity    TEXT DEFAULT 'warning',
     run_id      TEXT,
     checked_at  TEXT DEFAULT (datetime('now')),
-    UNIQUE(file_path, issue, run_id)            -- no duplicate rows on re-run
+    UNIQUE(file_path, issue)
 );
 
 -- Metadata cache: raw ffprobe results, always rebuildable.
@@ -191,7 +206,127 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # see archive_tier_hashes below for the real mechanism.
     ("archive", "bitrot_checked_at", "TEXT"),
     ("archive", "bitrot_ok", "INTEGER"),
+    # AcoustID fingerprinting (musaeus/stages/acousticid.py). These five
+    # were MISSING ENTIRELY -- absent from _SCHEMA and from this list --
+    # while the stage has always UPDATEd all five of them. Verified
+    # against a real open_db() database: the UPDATE raises "no such
+    # column: chromaprint" on the first file, so the stage cannot reach
+    # even its second statement. That is why `musaeus acousticid` has
+    # never produced a row (MUSAEUS_TODO §8 records it as "never run";
+    # as written it could not have run). Same nullable pattern as every
+    # other addition here: NULL means not analysed yet.
+    ("archive", "chromaprint", "TEXT"),
+    ("archive", "chromaprint_duration", "REAL"),
+    ("archive", "acousticid_recording", "TEXT"),
+    ("archive", "acousticid_score", "REAL"),
+    ("archive", "acousticid_checked_at", "TEXT"),
+    # MusicBrainz enrichment (musaeus/stages/mb_enrich.py). Same nullable
+    # timestamp pattern as every other long-running stage above.
+    #
+    # It was the one stage without one, selecting on `mb_artist_id IS NULL`
+    # instead. That skips a track MusicBrainz FOUND, but a track it did not
+    # find keeps mb_artist_id NULL for ever and is re-queried on every
+    # single run -- at a rate-limited second each, plus 503 backoffs. "Not
+    # yet looked up" and "looked up, not found" were indistinguishable in
+    # the row, so the second was retried indefinitely.
+    #
+    # Set whether or not a match was found: it records that the lookup
+    # HAPPENED, which is the thing that must not be repeated.
+    ("archive", "mb_enriched_at", "TEXT"),
 ]
+
+
+def _validation_issues_key_includes_run_id(conn: sqlite3.Connection) -> bool:
+    """True while the old UNIQUE(file_path, issue, run_id) key is in place."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='validation_issues'"
+    ).fetchone()
+    if row is None or not row[0]:
+        return False
+    sql = " ".join(row[0].split()).lower()
+    return "unique(file_path, issue, run_id)" in sql
+
+
+def _rebuild_validation_issues(conn: sqlite3.Connection) -> int:
+    """Drop run_id from the uniqueness key, collapsing the duplicates it bred.
+
+    SQLite cannot alter a UNIQUE constraint in place, so the table is rebuilt.
+    Duplicates collapse to the MOST RECENT sighting of each (file_path, issue)
+    -- `MAX(id)` rather than MIN, because the useful row is the current state
+    of the file, not the first time anyone noticed.
+
+    Returns the number of rows removed, so a caller can report it rather than
+    discovering the table silently changed size.
+    """
+    before = conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
+    conn.executescript(
+        """
+        CREATE TABLE validation_issues__new (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_path   TEXT NOT NULL,
+            issue       TEXT NOT NULL,
+            severity    TEXT DEFAULT 'warning',
+            run_id      TEXT,
+            checked_at  TEXT DEFAULT (datetime('now')),
+            UNIQUE(file_path, issue)
+        );
+        INSERT INTO validation_issues__new (file_path, issue, severity, run_id, checked_at)
+        SELECT v.file_path, v.issue, v.severity, v.run_id, v.checked_at
+          FROM validation_issues v
+          JOIN (
+                SELECT MAX(id) AS keep_id
+                  FROM validation_issues
+                 GROUP BY file_path, issue
+               ) latest ON latest.keep_id = v.id;
+        DROP TABLE validation_issues;
+        ALTER TABLE validation_issues__new RENAME TO validation_issues;
+        """
+    )
+    after = conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
+    conn.commit()
+    return before - after
+
+
+def ensure_columns(
+    conn: sqlite3.Connection,
+    specs: Iterable[tuple[str, str]],
+    table: str = "archive",
+) -> int:
+    """Add columns the caller owns, if they are not there yet.
+
+    Returns the number added, so a caller can log a migration rather than
+    performing one silently.
+
+    WHY THIS EXISTS. Nine modules had written this same eight-line function
+    -- integrity, mb_enrich, transcode, original_year, identity_tag,
+    acousticid, auditor, albumart and deep_scan -- each reading
+    PRAGMA table_info, diffing a set, and ALTERing in a loop. Not one of
+    them was wrong. That is the point: it is a shape small enough that
+    writing it again is easier than finding it, which is exactly how three
+    bracket regexes, five duration-tolerance constants and seven duration
+    readers accumulated in this codebase in the same way.
+
+    WHAT IT DELIBERATELY DOES NOT DO. It does not decide WHICH columns a
+    stage needs. Each stage still declares its own, next to the code that
+    reads them, because that ownership is real -- acousticid's columns mean
+    nothing to albumart. Only the mechanism is shared. Same split as
+    brackets.py (share the alphabet, not the judgement) and duration.py
+    (share the reading, not the choice).
+
+    Distinct from _MIGRATIONS, which carries the columns the core schema
+    owns and applies them at open_db. A stage's own columns are added when
+    the stage first runs, so a vault that never runs AcousticID never grows
+    its five columns.
+    """
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    added = 0
+    for col, decl in specs:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+            added += 1
+    if added:
+        conn.commit()
+    return added
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
@@ -200,6 +335,17 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if col not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
+
+    # A constraint change, not a column addition -- the loop above cannot
+    # express it. Idempotent: once the key is rebuilt this is a no-op.
+    if _validation_issues_key_includes_run_id(conn):
+        removed = _rebuild_validation_issues(conn)
+        logger.info(
+            "[db] validation_issues re-keyed on (file_path, issue); "
+            "%d duplicate row(s) collapsed",
+            removed,
+        )
+
     conn.commit()
 
 
@@ -225,7 +371,15 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA busy_timeout=10000")
+    # 10s was not enough once two heavy writers existed. A Car build died
+    # outright on "database is locked" 2026-08-31 because an acousticid
+    # drain held it, losing the bookkeeping for hours of finished encoding.
+    # An encode or a pipeline stage holds the write lock for as long as its
+    # current row takes; waiting is nearly always right, and failing after
+    # ten seconds nearly always wrong. Overridable for tests and for tools
+    # that genuinely want to fail fast.
+    _busy_ms = int(os.environ.get("MUSAEUS_BUSY_TIMEOUT_MS", "300000"))
+    conn.execute(f"PRAGMA busy_timeout={_busy_ms}")
     conn.executescript(_SCHEMA)
     conn.commit()
     _apply_migrations(conn)
@@ -376,6 +530,56 @@ def record_finalized_hash(conn: sqlite3.Connection, audio_hash: str, file_path: 
     )
 
 
+DENIED_HASHES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS denied_hashes (
+    audio_hash   TEXT PRIMARY KEY,
+    reason       TEXT NOT NULL,
+    source_path  TEXT,              -- what it was called when removed
+    denied_at    TEXT DEFAULT (datetime('now'))
+);
+"""
+
+
+def ensure_deny_list(conn: sqlite3.Connection) -> None:
+    """Create the deny-list table if it isn't there yet.
+
+    Lives in hash_index.db rather than the vault DB deliberately: like the
+    finalized-hash ledger, it has to survive a DB reset. A deny-list that
+    is wiped whenever musaeus.db is rebuilt would let every purged track
+    back in on the next ingest, which is the exact failure it exists to
+    prevent.
+    """
+    conn.executescript(DENIED_HASHES_SCHEMA)
+    conn.commit()
+
+
+def deny_hash(
+    conn: sqlite3.Connection, audio_hash: str, reason: str, source_path: str | None = None
+) -> None:
+    """Record that this audio must not be re-ingested."""
+    conn.execute(
+        "INSERT OR IGNORE INTO denied_hashes (audio_hash, reason, source_path) VALUES (?,?,?)",
+        (audio_hash, reason, source_path),
+    )
+
+
+def lookup_denied_hash(conn: sqlite3.Connection, audio_hash: str) -> sqlite3.Row | None:
+    """Return the deny-list entry for *audio_hash*, or None.
+
+    Keyed on the PCM audio hash, so it survives re-tagging and container
+    rewriting -- the same property that makes audio_hash the stable
+    identity everywhere else. It does NOT catch a different rip or a
+    different master of the same song: those are different audio and will
+    hash differently. This is a "do not re-add THIS recording" list, not a
+    "never acquire this song" list, and the difference matters when
+    explaining why something got through.
+    """
+    conn.row_factory = sqlite3.Row
+    return conn.execute(
+        "SELECT * FROM denied_hashes WHERE audio_hash = ?", (audio_hash,)
+    ).fetchone()
+
+
 def lookup_finalized_hash(conn: sqlite3.Connection, audio_hash: str) -> list[sqlite3.Row]:
     """Return every ALAC-Library file_path already recorded for *audio_hash*."""
     return conn.execute(
@@ -422,3 +626,85 @@ def snapshot_db_before_wipe(db_path: Path, history_dir: Path) -> Path | None:
         source.close()
 
     return snapshot_path
+
+
+# ── Persistent MusicBrainz lookup cache ──────────────────────────────────────
+#
+# Separate file, same reasoning as the hash index: musaeus.db is wiped
+# between batches, so a cache living there re-asks MusicBrainz about the
+# same artists every run. Negative answers are cached too -- "MB does not
+# know this artist" is as expensive to learn as a hit, and re-learning it
+# each batch costs the same rate-limited second.
+
+_MB_CACHE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS mb_artist (
+    artist_key TEXT PRIMARY KEY,
+    mbid       TEXT,
+    mb_name    TEXT,
+    found      INTEGER NOT NULL,
+    looked_up  TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS mb_release (
+    artist_mbid TEXT NOT NULL,
+    album_key   TEXT NOT NULL,
+    release_mbid TEXT,
+    found       INTEGER NOT NULL,
+    looked_up   TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (artist_mbid, album_key)
+);
+"""
+
+
+def open_mb_cache(path: Path) -> sqlite3.Connection:
+    """Open (or create) the persistent MusicBrainz lookup cache."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.executescript(_MB_CACHE_SCHEMA)
+    conn.commit()
+    return conn
+
+
+def mb_cache_get_artist(conn: sqlite3.Connection, artist_key: str):
+    """Return (mbid, name) for a hit, None for a cached miss, and raises
+    KeyError when the artist has never been looked up.
+
+    Three outcomes, not two. Collapsing "cached miss" into "unknown" would
+    make every negative answer cost a rate-limited request on every batch,
+    which is most of what this cache exists to avoid.
+    """
+    row = conn.execute(
+        "SELECT mbid, mb_name, found FROM mb_artist WHERE artist_key = ?", (artist_key,)
+    ).fetchone()
+    if row is None:
+        raise KeyError(artist_key)
+    return (row["mbid"], row["mb_name"]) if row["found"] else None
+
+
+def mb_cache_put_artist(conn: sqlite3.Connection, artist_key: str, match) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO mb_artist (artist_key, mbid, mb_name, found) VALUES (?,?,?,?)",
+        (artist_key, match[0] if match else None, match[1] if match else None, 1 if match else 0),
+    )
+    conn.commit()
+
+
+def mb_cache_get_release(conn: sqlite3.Connection, artist_mbid: str, album_key: str):
+    row = conn.execute(
+        "SELECT release_mbid, found FROM mb_release WHERE artist_mbid = ? AND album_key = ?",
+        (artist_mbid, album_key),
+    ).fetchone()
+    if row is None:
+        raise KeyError((artist_mbid, album_key))
+    return row["release_mbid"] if row["found"] else None
+
+
+def mb_cache_put_release(conn: sqlite3.Connection, artist_mbid: str, album_key: str, mbid) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO mb_release (artist_mbid, album_key, release_mbid, found) "
+        "VALUES (?,?,?,?)",
+        (artist_mbid, album_key, mbid, 1 if mbid else 0),
+    )
+    conn.commit()

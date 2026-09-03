@@ -52,6 +52,7 @@ from pathlib import Path
 
 from ..config import LOSSLESS_CODECS as _LOSSLESS_CODECS
 from ..context import RunContext, StageResult
+from ..db import ensure_columns
 from .base import BaseStage, StageError
 from .canonicalize import _has_attached_picture, _probe_streams
 
@@ -76,16 +77,15 @@ def _safe_name(s: str, max_len: int = 60) -> str:
 
 
 def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
-    for col, typedef in (
-        ("transcode_path", "TEXT"),
-        ("transcode_at", "TEXT"),
-    ):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
-    conn.commit()
-
-
+    """Columns this stage owns. Mechanism shared via db.ensure_columns;
+    the list stays here, next to the code that reads them."""
+    ensure_columns(
+        conn,
+        (
+            ("transcode_path", "TEXT"),
+            ("transcode_at", "TEXT"),
+        ),
+    )
 def _best_aac_encoder() -> str:
     """Return libfdk_aac if ffmpeg has it, else built-in aac."""
     ffmpeg = shutil.which("ffmpeg")

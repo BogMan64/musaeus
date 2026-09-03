@@ -21,6 +21,7 @@ dev = [
     "pytest-cov",
     "ruff",
     "mypy>=1.5",
+    "semgrep",
 ]
 fuzzy = [
     "rapidfuzz>=3",
@@ -44,6 +45,12 @@ include = ["musaeus*"]
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+
+# Vendored ORPHEUS code is kept byte-identical to upstream so it can be
+# re-synced without conflicts. `ruff --fix scripts/` modernised three of
+# these files on 2026-08-23 (typing.Optional -> |, import reordering) and
+# the changes were reverted; excluded here so it cannot happen again.
+exclude = ["scripts/car_library/vendor"]
 
 [tool.ruff.lint]
 select = [

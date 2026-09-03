@@ -228,9 +228,11 @@ class TestTranscode:
         csv_path = ctx.config.tunemymusic_csv_path
         assert csv_path.exists()
         content = csv_path.read_text()
-        assert "reason,codec,bitrate_kbps" in content  # header
-        assert "source.mp3" in content
-        assert "MP3" in content
+        assert "Title,Artist,Album" in content  # importable header, matches batch_*.csv
+        assert "source" in content  # the track identity, not its filename
+        # Codec is diagnostic and stays in the archive row; this file is
+        # Title,Artist,Album so it can be imported.
+        assert "MP3" not in content
 
 
 # ── Idempotency / re-run behaviour ─────────────────────────────────────────────
@@ -432,3 +434,73 @@ class TestDryRun:
 
         row = ctx_dry.conn.execute("SELECT canonicalized_at FROM archive").fetchone()
         assert row["canonicalized_at"] is None
+
+
+# ── the preview must be the run's own answer ─────────────────────────────────
+#
+# dry_run() called _decide_action(row) with no source path, so it neither got
+# the ext/codec resolution nor knew about UNKNOWN. It disagreed with run() in
+# BOTH directions about an irreversible operation: an AAC-in-.m4a row with an
+# empty `ext` column previewed as a 256k lossy TRANSCODE that run() actually
+# passes through, and an UNKNOWN codec -- which run() REFUSES -- previewed as
+# TRANSCODED, because the ternary had no branch for it.
+
+
+class TestDryRunAgreesWithRun:
+    def test_decide_action_needs_the_source_to_be_right(self):
+        from pathlib import Path
+
+        from musaeus.stages.canonicalize import CanonicalizeStage
+
+        s = CanonicalizeStage()
+        row = {"codec": "aac", "ext": ""}
+        assert s._decide_action(row, Path("/x/a.m4a")) == "PASSTHROUGH"
+        assert s._decide_action(row) == "TRANSCODE", (
+            "if this ever agrees, the test below stops proving anything"
+        )
+
+    def test_unknown_is_a_category_not_a_transcode(self):
+        from pathlib import Path
+
+        from musaeus.stages.canonicalize import CanonicalizeStage
+
+        s = CanonicalizeStage()
+        assert s._decide_action({"codec": "dts"}, Path("/x/a.mkv")) == "UNKNOWN"
+
+    def test_the_preview_counts_a_refusal_as_a_refusal(self, tmp_path):
+        """An UNKNOWN row must not be previewed as 'would be TRANSCODED'."""
+
+        from musaeus.config import MusicConfig
+        from musaeus.context import RunContext
+        from musaeus.db import open_db, upsert_archive
+        from musaeus.stages.canonicalize import CanonicalizeStage
+
+        cfg = MusicConfig(
+            vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+            quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
+            meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+            db_path=tmp_path / "musaeus.db",
+        )
+        cfg.ensure_dirs()
+        conn = open_db(cfg.db_path)
+        ctx = RunContext.new(cfg, conn, dry_run=True)
+
+        # A row whose answer DEPENDS on the source path: aac + empty ext is
+        # PASSTHROUGH with the path and TRANSCODE without it. A dts row would
+        # be UNKNOWN either way and would not discriminate.
+        f = cfg.inbox / "already fine.m4a"
+        f.write_bytes(b"not really audio")
+        upsert_archive(conn, {"file_path": str(f), "status": "CATALOGUED",
+                              "codec": "aac", "ext": "", "artist": "A", "title": "B"})
+        # ...and one the run would REFUSE outright.
+        g = cfg.inbox / "mystery.mkv"
+        g.write_bytes(b"not really audio")
+        upsert_archive(conn, {"file_path": str(g), "status": "CATALOGUED",
+                              "codec": "dts", "artist": "C", "title": "D"})
+        conn.commit()
+
+        result = CanonicalizeStage().dry_run(ctx)
+        notes = " ".join(result.notes)
+        assert "PASSTHROUGH: 1" in notes, f"preview disagrees with run: {notes}"
+        assert "REFUSED" in notes, notes
+        assert "TRANSCODED: 1" not in notes, notes

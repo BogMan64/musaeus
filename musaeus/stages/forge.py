@@ -52,6 +52,20 @@ logger = logging.getLogger(__name__)
 
 _COMMIT_EVERY = 25  # commit DB every N files (crash resilience)
 
+#: Hard ceiling on what will be handed to ffmpeg for loudness measurement.
+#: Deliberately the same 45 minutes as BPMStage's decode ceiling, but for a
+#: different failure: loudness.py already scales its ffmpeg timeout to 30% of
+#: duration (capped at 600 s), so Forge degrades by *timing out* rather than
+#: OOM-ing. Survivable, but a 12-hour file burns ~20 min across two retries
+#: and produces nothing. BPM was bounded on 2026-08-23 and Forge was left
+#: unguarded that day; this closes it.
+#:
+#: Nothing above the ceiling is a track. The longest real music in the
+#: library is Miles Davis at 28.5 min, then the Allman Brothers' "Whipping
+#: Post" at 22.9 min. Measured 2026-08-23: 0 catalogued files exceed it, so
+#: this guards future ingests rather than anything currently held.
+_MAX_LOUDNESS_SECONDS = 45 * 60
+
 
 # ── Tag writers ───────────────────────────────────────────────────────────────
 
@@ -100,15 +114,26 @@ def _write_tags_m4a(path: Path, rg_gain: float, rg_peak: float) -> bool:
         return False
 
 
-def _write_tags_flac(path: Path, rg_gain: float, rg_peak: float) -> bool:
-    """Write ReplayGain tags to FLAC."""
+def _write_tags_flac(
+    path: Path, rg_gain: float, rg_peak: float, reference: float = R128_REFERENCE
+) -> bool:
+    """Write ReplayGain tags to FLAC.
+
+    `reference` MUST be the same value the gain was computed against.
+    It was hardcoded to "18.00 LUFS" while the gain came from the
+    configurable `forge_target_lufs`, so at any target other than -18 the
+    two disagreed -- and _rg_dict_from_vorbis_style reads this very tag back
+    to recover LUFS, so Forge mis-read the loudness of files it had written
+    itself, by exactly (target - (-18)) dB.
+    """
     try:
         from mutagen.flac import FLAC  # type: ignore[import-untyped]
 
         audio = FLAC(str(path))
         audio["REPLAYGAIN_TRACK_GAIN"] = [f"{rg_gain:+.2f} dB"]
         audio["REPLAYGAIN_TRACK_PEAK"] = [f"{rg_peak:.8f}"]
-        audio["REPLAYGAIN_REFERENCE_LOUDNESS"] = ["18.00 LUFS"]
+        # Stored as a positive magnitude, which is what the reader negates.
+        audio["REPLAYGAIN_REFERENCE_LOUDNESS"] = [f"{-reference:.2f} LUFS"]
         audio.save()
         return True
     except Exception as exc:
@@ -116,8 +141,15 @@ def _write_tags_flac(path: Path, rg_gain: float, rg_peak: float) -> bool:
         return False
 
 
-def _write_tags_mp3(path: Path, rg_gain: float, rg_peak: float) -> bool:
-    """Write ReplayGain tags to MP3."""
+def _write_tags_mp3(
+    path: Path, rg_gain: float, rg_peak: float, reference: float = R128_REFERENCE
+) -> bool:
+    """Write ReplayGain tags to MP3.
+
+    Writes the reference too. Without it the reader falls back to
+    R128_REFERENCE, which is right only when the target happens to be -18 --
+    the same defect as FLAC's, just silent instead of wrong-on-disk.
+    """
     try:
         from mutagen.easyid3 import EasyID3  # type: ignore[import-untyped]
 
@@ -130,6 +162,13 @@ def _write_tags_mp3(path: Path, rg_gain: float, rg_peak: float) -> bool:
             audio = ID3(str(path))
         audio["replaygain_track_gain"] = [f"{rg_gain:+.2f} dB"]
         audio["replaygain_track_peak"] = [f"{rg_peak:.8f}"]
+        try:
+            audio["replaygain_reference_loudness"] = [f"{-reference:.2f} LUFS"]
+        except (KeyError, ValueError):
+            # EasyID3 only accepts keys it knows; a raw ID3 handle does not
+            # take this one. Losing the reference is a degradation, not a
+            # failure -- the gain and peak still landed.
+            logger.debug("mp3 reference tag unsupported for %s", path)
         audio.save()
         return True
     except Exception as exc:
@@ -157,7 +196,11 @@ def _write_tags_aiff(path: Path, rg_gain: float, rg_peak: float) -> bool:
 
 
 def write_rg_tags(
-    path: Path, rg_gain: float, rg_peak: float, r128_gain: float | None = None
+    path: Path,
+    rg_gain: float,
+    rg_peak: float,
+    r128_gain: float | None = None,
+    reference: float = R128_REFERENCE,
 ) -> bool:
     """Dispatch to the right tag writer based on file extension.
 
@@ -169,9 +212,9 @@ def write_rg_tags(
         # Apple com.apple.iTunes.R128_TRACK_GAIN must reference -23 LUFS.
         return _write_tags_m4a(path, r128_gain if r128_gain is not None else rg_gain, rg_peak)
     if ext == ".flac":
-        return _write_tags_flac(path, rg_gain, rg_peak)
+        return _write_tags_flac(path, rg_gain, rg_peak, reference)
     if ext == ".mp3":
-        return _write_tags_mp3(path, rg_gain, rg_peak)
+        return _write_tags_mp3(path, rg_gain, rg_peak, reference)
     if ext in (".aiff", ".aif"):
         return _write_tags_aiff(path, rg_gain, rg_peak)
     # WAV: no standard RG tag container — store in DB only
@@ -299,6 +342,14 @@ class ForgeStage(BaseStage):
     always re-measure via ffmpeg, even for files with a usable embedded tag.
     """
 
+    @classmethod
+    def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
+        """Rows this stage would act on. Read-only; see planner.py."""
+        n = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' AND rg_tagged_at IS NULL"
+        ).fetchone()[0]
+        return int(n), "files needing loudness measurement"
+
     NAME = "forge"
 
     def validate(self, ctx: RunContext) -> None:
@@ -365,6 +416,35 @@ class ForgeStage(BaseStage):
                     )
                 return "tag_shortcut"
 
+        # Decided from what Scholar already recorded, before ffmpeg is spawned
+        # -- the same shape as BPMStage's pre-decode check, and for the same
+        # reason: reacting to the failure afterwards has already paid for it.
+        # Placed after the existing-tag shortcut above on purpose, so a long
+        # file that already carries ReplayGain tags still yields its values
+        # for free.
+        row = ctx.conn.execute(
+            "SELECT duration FROM archive WHERE file_path = ?", (file_path,)
+        ).fetchone()
+        duration = row["duration"] if row else None
+        if duration and duration > _MAX_LOUDNESS_SECONDS:
+            logger.warning(
+                "[forge] skipping %s: %.0f min exceeds the %.0f min measurement ceiling "
+                "(ffmpeg would time out after ~%.0f min across two retries)",
+                path.name,
+                duration / 60,
+                _MAX_LOUDNESS_SECONDS / 60,
+                (min(duration * 0.3, 600) * 2) / 60,
+            )
+            if not dry_run:
+                ctx.log_event(
+                    "FORGE_SKIPPED_TOO_LONG",
+                    file_path=file_path,
+                    new_value=f"{duration / 60:.0f} min",
+                    stage=self.NAME,
+                    note="exceeds the loudness measurement ceiling; not a track",
+                )
+            return "skip_too_long"
+
         lufs, tp, reason = measure_loudness(path)
 
         if reason != "ok":
@@ -376,7 +456,10 @@ class ForgeStage(BaseStage):
 
         tagged = False
         if not dry_run:
-            tagged = write_rg_tags(path, rg_gain, rg_peak, r128_gain=r128_gain)
+            # Same reference the gain was computed against, two lines up.
+            tagged = write_rg_tags(
+                path, rg_gain, rg_peak, r128_gain=r128_gain, reference=target_lufs
+            )
             _save_loudness(ctx, file_path, lufs, tp, rg_gain, rg_peak, tagged)  # type: ignore[arg-type]
 
         return "ok" if tagged or dry_run else "tag_fail"
@@ -384,6 +467,16 @@ class ForgeStage(BaseStage):
     # ── run ───────────────────────────────────────────────────────────────────
 
     def _embed_from_db(self, ctx: RunContext) -> StageResult:
+        """Embed tags from gains already in the DB.
+
+        NOTE on the reference: `archive.rg_gain` records a gain but not the
+        target it was computed against, so a row written under a different
+        `forge_target_lufs` cannot be re-referenced from the row alone. The
+        current target is used, which is correct whenever the target has not
+        changed since the gain was measured, and is the only defensible
+        assumption available without a column to say otherwise.
+        """
+        target_lufs: float = ctx.get("forge_target_lufs", R128_REFERENCE)
         """Write loudness tags onto files from values already in the DB.
 
         Repair path for the silent-write bug fixed 2026-08-21: Forge measured
@@ -433,7 +526,9 @@ class ForgeStage(BaseStage):
             r128 = lufs_to_rg(lufs, reference=R128_APPLE_REFERENCE) if lufs is not None else None
             peak = row["rg_peak"] if row["rg_peak"] is not None else 0.0
 
-            if write_rg_tags(path, row["rg_gain"], peak, r128_gain=r128):
+            if write_rg_tags(
+                path, row["rg_gain"], peak, r128_gain=r128, reference=target_lufs
+            ):
                 written += 1
                 # The file now genuinely carries the tag, so rg_tagged_at must
                 # say so or the next ordinary Forge run re-measures it. Stamped
@@ -473,6 +568,31 @@ class ForgeStage(BaseStage):
         ctx.record_stage(result)
         return result
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A tag this stage claims to have written must read back.
+
+        This is the exact fault that made Forge a no-op for 12,279 files:
+        _write_tags_m4a assigned to a dotted key mutagen accepts as a dict
+        key but cannot serialise, so save() succeeded, the writer returned
+        True, and nothing reached disk. Reading one back would have caught
+        it the first time it ran.
+        """
+        rows = ctx.conn.execute(
+            "SELECT file_path FROM archive WHERE status='CATALOGUED' "
+            "AND rg_gain IS NOT NULL AND rg_tagged_at IS NOT NULL "
+            "ORDER BY rg_tagged_at DESC LIMIT 3"
+        ).fetchall()
+        checked = [Path(r["file_path"]) for r in rows if Path(r["file_path"]).exists()]
+        if not checked:
+            return []
+        for path in checked:
+            if read_existing_rg_tags(path):
+                return []
+        return [
+            f"wrote loudness tags to {result.files_changed} file(s) but none of "
+            f"{len(checked)} sampled files has a readable loudness tag"
+        ]
+
     def run(self, ctx: RunContext) -> StageResult:
         if ctx.get("forge_embed_from_db", False):
             return self._embed_from_db(ctx)
@@ -509,7 +629,7 @@ class ForgeStage(BaseStage):
 
             if status in ("ok", "tag_shortcut"):
                 result.files_changed += 1
-            elif status in ("silence", "missing"):
+            elif status in ("silence", "missing", "skip_too_long"):
                 result.files_skipped += 1
             else:
                 result.files_errored += 1

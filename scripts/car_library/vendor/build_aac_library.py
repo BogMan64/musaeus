@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import os as _os
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -90,9 +91,7 @@ def resolve_input_dir(profile_name: str) -> Path:
     if forge_src and forge_src.exists():
         audio_count = sum(1 for _ in forge_src.rglob("*.m4a"))
         if audio_count > 0:
-            print(
-                f"[Forge] Using LUFS-normalized source ({audio_count} files): {forge_src}"
-            )
+            print(f"[Forge] Using LUFS-normalized source ({audio_count} files): {forge_src}")
             return forge_src
 
     # Priority 2: ALAC Vault (primary, already populated)
@@ -106,18 +105,14 @@ def resolve_input_dir(profile_name: str) -> Path:
     if INPUT_DIR.exists():
         audio_count = sum(1 for _ in INPUT_DIR.rglob("*.m4a"))
         if audio_count > 0:
-            print(
-                f"[Source] Using ALAC batch folder ({audio_count} files): {INPUT_DIR}"
-            )
+            print(f"[Source] Using ALAC batch folder ({audio_count} files): {INPUT_DIR}")
             return INPUT_DIR
 
     # Priority 4: Conversion inbox fallback (rebuild from scratch)
     if FALLBACK_SOURCE.exists():
         audio_count = sum(1 for _ in FALLBACK_SOURCE.rglob("*"))
         if audio_count > 0:
-            print(
-                f"[Fallback] Using conversion inbox ({audio_count} files): {FALLBACK_SOURCE}"
-            )
+            print(f"[Fallback] Using conversion inbox ({audio_count} files): {FALLBACK_SOURCE}")
             return FALLBACK_SOURCE
 
     print(f"[Cache] Using original ALAC source: {INPUT_DIR}")
@@ -129,6 +124,7 @@ FFPROBE = "ffprobe"
 
 MAX_WORKERS = 4
 OVERWRITE = True
+FORCE_REENCODE = bool(os.environ.get("MUSAEUS_FORCE_REENCODE"))
 
 DEFAULT_LUFS = -16.0
 
@@ -143,7 +139,7 @@ TARGET_LRA = "11.0"
 # same value as canonicalize.py's _DURATION_TOLERANCE_SEC: container/codec
 # differences (and AAC encoder priming samples) can shift reported duration
 # slightly even when the audio content is correct.
-_DURATION_TOLERANCE_SEC = 1.5
+_DURATION_TOLERANCE_SEC = 2.0
 
 PROFILES = {
     "car": {
@@ -280,7 +276,18 @@ def derive_output_path(
 def ffmpeg_measure_loudnorm(path: Path, target_i: str, target_tp: str, target_lra: str) -> dict:
     """Pass 1: analysis-only loudnorm run, returns ffmpeg's measured_* JSON block."""
     filter_str = f"loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}:print_format=json"
-    cmd = [FFMPEG, "-hide_banner", "-nostats", "-i", str(path), "-af", filter_str, "-f", "null", "-"]
+    cmd = [
+        FFMPEG,
+        "-hide_banner",
+        "-nostats",
+        "-i",
+        str(path),
+        "-af",
+        filter_str,
+        "-f",
+        "null",
+        "-",
+    ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     stderr = result.stderr or ""
 
@@ -315,7 +322,16 @@ def _verify_bake(source: Path, output: Path) -> None:
     """
 
     def _probe(p: Path) -> dict:
-        cmd = [FFPROBE, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(p)]
+        cmd = [
+            FFPROBE,
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(p),
+        ]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if proc.returncode != 0:
             raise RuntimeError(f"ffprobe failed on {p} ({proc.returncode}): {proc.stderr[:200]}")
@@ -337,7 +353,11 @@ def _verify_bake(source: Path, output: Path) -> None:
 
     src_dur = _duration(src_probe)
     out_dur = _duration(out_probe)
-    if src_dur is not None and out_dur is not None and abs(src_dur - out_dur) > _DURATION_TOLERANCE_SEC:
+    if (
+        src_dur is not None
+        and out_dur is not None
+        and abs(src_dur - out_dur) > _DURATION_TOLERANCE_SEC
+    ):
         raise RuntimeError(
             f"verification failed: duration mismatch (source={src_dur:.2f}s, output={out_dur:.2f}s)"
         )
@@ -358,6 +378,74 @@ def _quarantine_failed_tmp(tmp_output: Path | None) -> None:
         tmp_output.rename(failed_path)
 
 
+def car_sample_rate(source_rate: int | None) -> int | None:
+    """Target sample rate for a car head unit, or None to leave it alone.
+
+    Nothing pinned the rate, so ffmpeg's AAC encoder simply capped at its own
+    maximum: a 192 kHz master came out as 96 kHz AAC. 44.1 and 48 kHz AAC-LC
+    are supported essentially everywhere; above 48 kHz support is patchy and
+    a head unit that cannot decode it fails on the whole file, not gracefully.
+    Measured on the live library 2026-08-31: 4,862 of 10,545 catalogued files
+    (46%) are above 48 kHz -- 4,223 of them at 192 kHz.
+
+    Capped, not forced. Forcing 48 would resample the 5,439 files already at
+    44.1 kHz (52% of the library) at a non-integer ratio, which adds no
+    information, grows the file, and risks artefacts for nothing.
+
+    Each rate stays inside its own clock family so the ratio is an exact
+    power of two -- 192->48 and 96->48 are /4 and /2, 88.2->44.1 is /2 --
+    rather than crossing families and resampling at 160/147.
+    """
+    if not source_rate:
+        return None                      # unreadable: do not guess
+    if source_rate <= 48_000:
+        # Pin it to itself rather than returning None. The rate must ALWAYS
+        # be stated: ffmpeg's loudnorm filter resamples internally and emits
+        # at its own rate, so an unpinned encode takes the FILTER's rate,
+        # not the source's. Measured 2026-08-31: a 44,100 Hz master came out
+        # as 96,000 Hz AAC through the loudnorm chain, with no downsample
+        # anywhere in sight to blame. Capping only on the way down left every
+        # other file exposed to that.
+        return source_rate
+    return 44_100 if source_rate % 44_100 == 0 else 48_000
+
+
+def probe_sample_rate(file_path: Path) -> int | None:
+    """Source sample rate, or None when it cannot be read (leave it alone)."""
+    proc = subprocess.run(
+        [FFPROBE, "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=sample_rate", "-of", "csv=p=0", str(file_path)],
+        capture_output=True, text=True,
+    )
+    raw = (proc.stdout or "").strip().splitlines()
+    if proc.returncode != 0 or not raw:
+        return None
+    try:
+        return int(raw[0].strip().rstrip(","))
+    except ValueError:
+        return None
+
+
+def probe_channels(file_path: Path) -> int | None:
+    """Source channel count, or None when unreadable (leave it alone).
+
+    Mirrors probe_sample_rate deliberately: the two format properties that
+    must be STATED rather than inherited are read the same way.
+    """
+    proc = subprocess.run(
+        [FFPROBE, "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=channels", "-of", "csv=p=0", str(file_path)],
+        capture_output=True, text=True,
+    )
+    raw = (proc.stdout or "").strip().splitlines()
+    if proc.returncode != 0 or not raw:
+        return None
+    try:
+        return int(raw[0].strip().rstrip(","))
+    except ValueError:
+        return None
+
+
 def build_ffmpeg_command(
     input_file: Path,
     output_file: Path,
@@ -365,6 +453,8 @@ def build_ffmpeg_command(
     has_attached_picture: bool,
     clean_tags: dict[str, str],
     loudnorm_filter: str,
+    target_rate: int | None = None,
+    source_channels: int | None = None,
 ) -> list[str]:
     cmd = [FFMPEG]
 
@@ -387,6 +477,19 @@ def build_ffmpeg_command(
             "aac",
             "-b:a",
             bitrate,
+            *(["-ar", str(target_rate)] if target_rate else []),
+            # Channels, stated. Left unsaid, ffmpeg inherits the source's
+            # layout: three 5.1 masters (Beck, Billy Squier, Hoobastank)
+            # shipped to the car as 5.1 AAC on 2026-09-01, which many head
+            # units will not decode. Same shape as the sample rate above,
+            # in the same command -- an unstated format property is decided
+            # by the input, not by the target.
+            #
+            # MONO STAYS MONO (Grey, 2026-09-02): -ac 2 would upmix the one
+            # genuinely mono master, a 1940s Ink Spots recording, inventing
+            # a channel that was never recorded. So this downmixes only
+            # what has MORE than two channels.
+            *(["-ac", "2"] if (source_channels or 0) > 2 else []),
             "-af",
             loudnorm_filter,
             "-c:v",
@@ -408,6 +511,9 @@ def build_ffmpeg_command(
             "aac",
             "-b:a",
             bitrate,
+            *(["-ar", str(target_rate)] if target_rate else []),
+            # See the note in the branch above: stated, not inherited.
+            *(["-ac", "2"] if (source_channels or 0) > 2 else []),
             "-af",
             loudnorm_filter,
             "-map_metadata",
@@ -419,6 +525,38 @@ def build_ffmpeg_command(
         ]
 
     return cmd
+
+
+def _output_matches_source(source: Path, output: Path) -> bool:
+    """True when *output* is a usable encode of *source*.
+
+    Existence alone is not enough: a truncated file from an interrupted run
+    would then be preserved permanently. Duration is the cheap check that
+    catches it -- a partial encode is short, and a file ffprobe cannot read
+    returns nothing.
+    """
+    try:
+        src = _probe_duration(source)
+        out = _probe_duration(output)
+    except Exception:
+        return False
+    if src is None or out is None or src <= 0:
+        return False
+    return abs(src - out) <= max(1.0, src * 0.02)
+
+
+def _probe_duration(path: Path) -> float | None:
+    res = subprocess.run(
+        [FFPROBE, "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    )
+    if res.returncode != 0:
+        return None
+    try:
+        return float(res.stdout.strip().rstrip(","))
+    except ValueError:
+        return None
 
 
 def convert_one(file_path: Path, profile_name: str) -> str:
@@ -452,6 +590,22 @@ def convert_one(file_path: Path, profile_name: str) -> str:
         output_file.parent.mkdir(parents=True, exist_ok=True)
         tmp_output = output_file.with_name(output_file.name + ".bake_tmp")
 
+        # Resume rather than redo. There was no completed-work check at all,
+        # so a re-run re-encoded everything: after the 2026-09-01 staging
+        # collision stopped a Car build at 4,858 of 10,545, restarting it
+        # began the whole library again -- roughly nine hours to reproduce
+        # files already sitting correct on disk.
+        #
+        # The check is deliberately not just "the path exists". A partial or
+        # corrupt output would then be kept for ever, which is worse than
+        # re-encoding it. It has to be a readable audio file whose duration
+        # matches the source, which is the same thing _verify_bake asks of a
+        # fresh encode. --force re-encodes regardless.
+        if output_file.exists() and not FORCE_REENCODE:
+            if _output_matches_source(file_path, output_file):
+                return f"SKIP DONE | {file_path.name} | already encoded"
+            output_file.unlink()  # unusable: fall through and redo it
+
         measured = ffmpeg_measure_loudnorm(file_path, target_i, TARGET_TP, TARGET_LRA)
         loudnorm_filter = build_second_pass_filter(measured, target_i, TARGET_TP, TARGET_LRA)
 
@@ -462,6 +616,8 @@ def convert_one(file_path: Path, profile_name: str) -> str:
             has_attached_picture=has_attached_picture,
             clean_tags=clean_tags,
             loudnorm_filter=loudnorm_filter,
+            target_rate=car_sample_rate(probe_sample_rate(file_path)),
+            source_channels=probe_channels(file_path),
         )
 
         subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -495,30 +651,54 @@ def gather_input_files(input_dir: Path) -> list[Path]:
 
 def copy_noise_tracks(output_root: Path) -> None:
     """Copy generated noise tracks into the car library Artist/Album structure."""
-    noise_src = RUNS_ROOT / "Noise"
+    # RUNS_ROOT is ORPHEUS's own constant and points at
+    # /mnt/FORGE2TB/Projects/ORPHEUS/RUNS, which has no Noise/ -- MUSAEUS's
+    # noise tracks live under MUSAEUS_VAULT/RUNS/Noise. The wrapper already
+    # passes ORPHEUS_NOISE_DIR for the masking step; honour it here too,
+    # rather than reporting "no noise tracks found" while four of them sit
+    # on disk. Found 2026-08-31.
+    env_noise = _os.environ.get("ORPHEUS_NOISE_DIR")
+    noise_src = Path(env_noise) if env_noise else RUNS_ROOT / "Noise"
     noise_dest = output_root / "ORPHEUS" / "Acoustic Treatment"
 
     noise_files = sorted(noise_src.glob("*.m4a")) if noise_src.exists() else []
     if not noise_files:
-        print(
-            "[Noise] No noise tracks found in RUNS/Noise/ — run [NO] Noise Generator first."
-        )
+        print("[Noise] No noise tracks found in RUNS/Noise/ — run [NO] Noise Generator first.")
         return
 
     noise_dest.mkdir(parents=True, exist_ok=True)
     copied = 0
     for src in noise_files:
         dst = noise_dest / src.name
-        _shutil.copy2(src, dst)
+
+        # These were raw-copied, which bypassed the encoder entirely and so
+        # bypassed the sample-rate cap with it: three of the four noise
+        # tracks are 96 kHz at source and shipped at 96 kHz, exactly the
+        # rate a head unit is least likely to decode. The music was capped
+        # and the filler beside it was not. Measured 2026-08-31.
+        target = car_sample_rate(probe_sample_rate(src))
+        if target is not None and target < (probe_sample_rate(src) or 0):
+            cmd = [FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
+                   "-i", str(src), "-c:a", "aac", "-b:a", "256k",
+                   "-ar", str(target), "-map_metadata", "0", "-f", "mp4", str(dst)]
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode != 0:
+                print(f"[Noise] re-encode failed for {src.name}, copying as-is")
+                _shutil.copy2(src, dst)
+            else:
+                print(f"[Noise] {src.name}  →  {dst.relative_to(output_root)}  "
+                      f"(resampled to {target} Hz)")
+                copied += 1
+                continue
+        else:
+            _shutil.copy2(src, dst)
         print(f"[Noise] {src.name}  →  {dst.relative_to(output_root)}")
         copied += 1
-    print(f"[Noise] {copied} file(s) copied to {noise_dest}")
+    print(f"[Noise] {copied} file(s) placed in {noise_dest}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Build ORPHEUS AAC library from ALAC/FLAC source."
-    )
+    parser = argparse.ArgumentParser(description="Build ORPHEUS AAC library from ALAC/FLAC source.")
     parser.add_argument(
         "--profile",
         choices=sorted(PROFILES.keys()),
@@ -560,9 +740,7 @@ def main() -> None:
     files = gather_input_files(effective_input)
     if not files:
         print(f"No supported audio files found in: {effective_input}")
-        print(
-            "Tip: run [17] Build ALAC first to populate EXPORTS/ALAC_LIBRARY/BATCH_001"
-        )
+        print("Tip: run [17] Build ALAC first to populate EXPORTS/ALAC_LIBRARY/BATCH_001")
         return
 
     print(f"Profile: {args.profile}")
@@ -582,9 +760,7 @@ def main() -> None:
     results: list[str] = []
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = [
-            executor.submit(convert_one, file_path, args.profile) for file_path in files
-        ]
+        futures = [executor.submit(convert_one, file_path, args.profile) for file_path in files]
         for future in as_completed(futures):
             result = future.result()
             results.append(result)

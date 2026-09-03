@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """
 MUSAEUS — Stage: Permissions
-Fix file/folder permissions under the inbox (files copied from Windows/ExFAT
+Fix file/folder permissions across the vault (files copied from Windows/ExFAT
 sources often land with wrong permissions).
 
+Scope widened 2026-08-21 at Grey's request ("please have it fire on all
+runs"). It previously swept ctx.inbox only, which is why its chmod path had
+never once executed against real dirty data in a month of running: INBOX is
+empty or already-correct most of the time, so the stage reported success
+without ever doing anything. The permissions that actually drift are on
+files the pipeline has already moved into the library -- a live check found
+8 wrong-mode files in ALAC-Library and 0 in INBOX.
+
 What it does:
-  - Scans every file/dir under ctx.inbox
+  - Scans every file/dir under each root in _sweep_roots()
   - Flags anything not matching FILE_MODE (files) / DIR_MODE (dirs)
   - dry_run() reports what would be fixed, touches nothing
   - run() re-scans live (no reliance on a stale snapshot) and chmods
@@ -14,7 +22,7 @@ What it does:
 Standalone from HealthStage/CorruptStage deliberately: those already cover
 metadata-quality checks and corruption detection/quarantine respectively.
 This is the one piece of the old (now-archived)
-_ARCHIVES/dead_code_20260809/MUSAEUS_stale_working_copy health.py that
+_ARCHIVE/dead_code_20260809/MUSAEUS_stale_working_copy health.py that
 wasn't duplicated elsewhere — ported as its own small stage rather than
 reviving that file.
 """
@@ -36,6 +44,22 @@ FILE_MODE = 0o644  # rw-r--r--
 DIR_MODE = 0o755  # rwxr-xr-x
 
 
+def _sweep_roots(ctx: RunContext) -> list[Path]:
+    """Every tree this stage is responsible for, in pipeline order.
+
+    Deliberately excludes _history/ (DB snapshots and the hash ledger are
+    not audio and have their own access story) but is otherwise everything
+    MUSAEUS itself writes -- intake, the working buffer, and both library
+    tiers. Missing roots are skipped rather than treated as an error, since
+    ALAC_Archive only exists once Phase 2A has run.
+    """
+    roots = [ctx.inbox, ctx.config.staging, ctx.alac_library]
+    archive = ctx.config.alac_archive
+    if archive.exists():
+        roots.append(archive)
+    return [r for r in roots if r is not None and r.exists()]
+
+
 def _scan_permissions(root: Path) -> tuple[list[Path], list[Path]]:
     """Scan a directory tree for files/dirs with incorrect permissions."""
     bad_files: list[Path] = []
@@ -45,6 +69,8 @@ def _scan_permissions(root: Path) -> tuple[list[Path], list[Path]]:
         return bad_files, bad_dirs
 
     for path in root.rglob("*"):
+        if "_history" in path.parts:
+            continue
         try:
             st = path.stat()
         except OSError as e:
@@ -59,6 +85,18 @@ def _scan_permissions(root: Path) -> tuple[list[Path], list[Path]]:
             bad_files.append(path)
 
     return bad_files, bad_dirs
+
+
+def _scan_all(ctx: RunContext) -> tuple[list[Path], list[Path]]:
+    """Scan every swept root, merging the results."""
+    all_files: list[Path] = []
+    all_dirs: list[Path] = []
+    for root in _sweep_roots(ctx):
+        f, d = _scan_permissions(root)
+        logger.info("[permissions] %s: %d file(s), %d dir(s) to fix", root.name, len(f), len(d))
+        all_files.extend(f)
+        all_dirs.extend(d)
+    return all_files, all_dirs
 
 
 class PermissionsStage(BaseStage):
@@ -79,7 +117,7 @@ class PermissionsStage(BaseStage):
     def dry_run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=True)
 
-        bad_files, bad_dirs = _scan_permissions(ctx.inbox)
+        bad_files, bad_dirs = _scan_all(ctx)
         result.files_processed = len(bad_files) + len(bad_dirs)
         result.files_changed = result.files_processed
 
@@ -104,11 +142,27 @@ class PermissionsStage(BaseStage):
 
     # ── Run ───────────────────────────────────────────────────────────────────
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """After a repair pass, a re-scan must find fewer problems.
+
+        The fault this guards: the stage swept INBOX only, which is empty
+        or already-correct almost always, so it reported success for a
+        month without its chmod path ever executing.
+        """
+        bad_files, bad_dirs = _scan_all(ctx)
+        remaining = len(bad_files) + len(bad_dirs)
+        if remaining == 0:
+            return []
+        return [
+            f"fixed {result.files_changed} item(s) but a re-scan still finds "
+            f"{remaining} with wrong permissions"
+        ]
+
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)
 
         # Live re-scan -- never trust a snapshot taken earlier.
-        bad_files, bad_dirs = _scan_permissions(ctx.inbox)
+        bad_files, bad_dirs = _scan_all(ctx)
         result.files_processed = len(bad_files) + len(bad_dirs)
 
         fixed_files = 0
