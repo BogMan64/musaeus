@@ -1137,6 +1137,62 @@ class Console:
         _info("To build it, run the builder for that edition; "
               "both pause while you use the machine.")
 
+    def _usb_menu(self) -> None:
+        """Front door to scripts/usb_transfer/transfer_to_usb.py.
+
+        This menu never wipes or copies anything itself. It shells out to
+        that script unmodified so none of its five safety gates (denylist,
+        typed confirmation, TTY check, root check, --execute gate -- see
+        that script's own module docstring) are re-implemented or weakened
+        here. A dry run always runs first and always prints what would
+        happen; the real transfer only starts after you additionally type
+        "yes" here AND pass that script's own typed device confirmation.
+        """
+        import os
+        import subprocess
+
+        _section("USB Transfer")
+        script = (
+            Path(__file__).resolve().parent.parent
+            / "scripts" / "usb_transfer" / "transfer_to_usb.py"
+        )
+        if not script.exists():
+            _err(f"Script not found: {script}")
+            return
+
+        labels = ["ALAC (Lossless)", "Car", "Back"]
+        choice = _choose("Which library to transfer", labels)
+        try:
+            idx = int(choice)
+        except ValueError:
+            return
+        if idx == 2:
+            return
+        library = ["alac", "car"][idx]
+
+        device = _prompt("Device path, e.g. /dev/sdb (blank = choose from a list)").strip()
+
+        cmd = [sys.executable, str(script), "--library", library]
+        if device:
+            cmd += ["--device", device]
+
+        _info("Dry run first — nothing is touched yet.")
+        subprocess.run(cmd)
+
+        _warn("The next step WIPES the device above and copies the library onto it.")
+        proceed = _prompt('Type "yes" to continue to the real transfer, anything else to stop')
+        if proceed.strip().lower() != "yes":
+            _info("Stopped. Nothing was touched.")
+            return
+
+        execute_cmd = cmd + ["--execute"]
+        if os.geteuid() != 0:
+            _info("This needs root for the wipe/format step — running it under sudo now.")
+            execute_cmd = ["sudo"] + execute_cmd
+
+        _info("Handing off to the transfer script's own device confirmation now.")
+        subprocess.run(execute_cmd)
+
     def _main_menu(self) -> None:
         options = [
             ("Status", self._show_status),
@@ -1145,6 +1201,7 @@ class Console:
             ("Run an Act…  (1 / 2 / 3 / Enrichment)", self._act_menu),
             ("Run single stage…", self._stage_menu),
             ("Build an Edition…  (Lossless / Car / iPhone)", self._edition_menu),
+            ("Transfer to USB…", self._usb_menu),
             ("Dedupe review", self._run_dedupe),
             ("View recent runs", self._show_runs),
             ("Inspect a run", self._show_run_detail),
