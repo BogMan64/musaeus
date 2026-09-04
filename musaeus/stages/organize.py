@@ -304,6 +304,18 @@ def sanitize_path_component(text: str) -> str:
 # invalid UTF-8.
 _MAX_COMPONENT_BYTES = 255
 
+#: Headroom left free by build_track_filename so unique_path can append its
+#: collision counter without breaching NAME_MAX. Capping at exactly 255 put
+#: the crash straight back: unique_path adds " (2)" and the resulting
+#: os.stat() raises ENAMETOOLONG, which pathlib does NOT swallow --
+#: _IGNORED_ERRNOS is (ENOENT, ENOTDIR, EBADF, ELOOP).
+#:
+#: And truncation MANUFACTURES the collisions that take that branch: every
+#: over-long credit truncates to the same prefix, so for exactly the inputs
+#: that need the cap, colliding is the normal case rather than the rare one.
+#: " (999)" is 6 bytes; 10 is cheap insurance.
+_UNIQUE_SUFFIX_RESERVE = 10
+
 
 def truncate_to_bytes(text: str, limit: int = _MAX_COMPONENT_BYTES) -> str:
     """*text* shortened so it encodes to at most *limit* UTF-8 bytes."""
@@ -331,7 +343,8 @@ def build_track_filename(artist: str, title: str, ext: str) -> str:
     # component the filesystem sees, so the join needs its own budget --
     # two 255-byte halves make a 513-byte filename. The extension is kept
     # whole; only the stem gives ground.
-    stem = truncate_to_bytes(f"{artist_safe} - {title_safe}", _MAX_COMPONENT_BYTES - len(ext.encode("utf-8")))
+    budget = _MAX_COMPONENT_BYTES - len(ext.encode("utf-8")) - _UNIQUE_SUFFIX_RESERVE
+    stem = truncate_to_bytes(f"{artist_safe} - {title_safe}", budget)
     return f"{stem}{ext}"
 
 
@@ -384,7 +397,13 @@ def unique_path(target: Path) -> Path:
 
     counter = 2
     while True:
-        new_path = parent / f"{stem} ({counter}){suffix}"
+        # Re-truncate per attempt rather than trusting the caller. The counter
+        # grows ("(9)" -> "(10)"), so the budget shrinks as it does, and this
+        # function is reached from seven stages -- it must be unable to emit an
+        # over-long name regardless of what it was handed.
+        tag = f" ({counter})"
+        budget = _MAX_COMPONENT_BYTES - len((tag + suffix).encode("utf-8"))
+        new_path = parent / f"{truncate_to_bytes(stem, budget)}{tag}{suffix}"
         if not new_path.exists():
             return new_path
         counter += 1

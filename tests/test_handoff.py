@@ -210,18 +210,50 @@ def test_the_console_printer_is_bounded_too(tmp_path: Path) -> None:
     head_with_remainder, which is why it lives beside StageResult rather
     than being inlined an eighth time. Asserts the split itself, the piece
     both callers depend on."""
-    from musaeus.context import MAX_LISTED, head_with_remainder
+    from musaeus.context import MAX_LISTED, TAIL_LISTED, head_with_remainder
 
-    shown, hidden = head_with_remainder([f"Missing: /vault/{n}.m4a" for n in range(3094)])
-    assert len(shown) == MAX_LISTED == 20
+    head, tail, hidden = head_with_remainder([f"Missing: /vault/{n}.m4a" for n in range(3094)])
+    assert len(head) + len(tail) == MAX_LISTED == 20
+    assert len(tail) == TAIL_LISTED == 5
     assert hidden == 3074
+    # the tail really is the END of the list, not more of the head
+    assert tail[-1] == "Missing: /vault/3093.m4a"
 
     # a short list is returned whole, with nothing to announce
-    shown, hidden = head_with_remainder(["one", "two"])
-    assert shown == ["one", "two"]
-    assert hidden == 0
+    head, tail, hidden = head_with_remainder(["one", "two"])
+    assert head == ["one", "two"]
+    assert tail == [] and hidden == 0
 
     # and cli.py actually routes through it rather than looping the raw list
     source = Path("musaeus/cli.py").read_text(encoding="utf-8")
     assert "head_with_remainder(result.errors)" in source
     assert "for err in result.errors:" not in source
+
+
+def test_the_undo_record_survives_truncation(tmp_path: Path) -> None:
+    """Truncating from the head threw away the wrong end. Stages append their
+    SUMMARY last -- dupe_resolver adds the manifest and restore-script paths
+    after every per-file note -- so a run with 21+ notes dropped the only
+    record of how to undo a batch of irreversible moves, from the console AND
+    from this doc, while still looking like it reported successfully.
+
+    Found in review 2026-09-04, hours after the cap shipped and with a dedupe
+    re-run already queued that would have produced exactly this shape."""
+    notes = [f"[EXACT] skipped stale row {n}" for n in range(22)] + [
+        "moved 5884 file(s) to review",
+        "manifest: /vault/DUPES_MOVED_FOR_REVIEW/2026-09-04/manifest.json",
+        "restore script: /vault/DUPES_MOVED_FOR_REVIEW/2026-09-04/restore.sh",
+    ]
+    failed = StageResult(stage_name="dupe-resolver", success=False,
+                         files_errored=1, errors=["one bad path"], notes=notes)
+    text = write_handoff_doc(_ctx(tmp_path, [failed])).read_text()
+
+    assert "restore script: /vault/DUPES_MOVED_FOR_REVIEW/2026-09-04/restore.sh" in text
+    assert "manifest: /vault/DUPES_MOVED_FOR_REVIEW/2026-09-04/manifest.json" in text
+    assert "moved 5884 file(s) to review" in text
+    assert "... and 5 more" in text
+
+    # the elision must sit BETWEEN head and tail, never after both -- otherwise
+    # the tail reads as the entries that immediately followed the head
+    assert text.index("... and 5 more") < text.index("restore script:")
+    assert text.index("skipped stale row 0") < text.index("... and 5 more")

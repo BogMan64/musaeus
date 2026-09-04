@@ -120,10 +120,13 @@ def _capped(items: list[str], prefix: str = "") -> list[str]:
     in ingest.py, scholar.py, sentinel.py, tribute_quarantine.py and
     console.py -- matched here rather than invented again.
     """
-    shown, hidden = head_with_remainder(items)
-    lines = [f"- {prefix}{item}" for item in shown]
+    head, tail, hidden = head_with_remainder(items)
+    lines = [f"- {prefix}{item}" for item in head]
     if hidden:
+        # Between, never after: a trailing elision would read as though the
+        # tail entries were the ones that followed the head.
         lines.append(f"- ... and {hidden} more")
+    lines.extend(f"- {prefix}{item}" for item in tail)
     return lines
 
 

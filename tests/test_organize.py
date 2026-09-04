@@ -680,3 +680,53 @@ def test_a_path_component_never_exceeds_the_filesystem_byte_limit() -> None:
     # short names are returned untouched
     assert sanitize_path_component("Neil Young") == "Neil Young"
     assert truncate_to_bytes("Neil Young") == "Neil Young"
+
+
+def test_the_cap_survives_the_collision_it_creates(tmp_path: Path) -> None:
+    """Capping at exactly 255 put the ENAMETOOLONG crash straight back.
+
+    build_track_filename returned 255 bytes, unique_path appended " (2)",
+    and the os.stat() inside .exists() raised errno 36 -- pathlib does not
+    swallow it, _IGNORED_ERRNOS is (ENOENT, ENOTDIR, EBADF, ELOOP). Worse,
+    truncation MANUFACTURES that collision: every over-long credit truncates
+    to the same prefix, so for exactly the inputs needing the cap, colliding
+    is the normal case. Found in review 2026-09-04, hours after the cap
+    shipped."""
+    from musaeus.stages.organize import build_track_filename, unique_path
+
+    name = build_track_filename("A" * 400, "Why Me (Live)", ".flac")
+    assert len(name.encode("utf-8")) <= 255 - 6, "no headroom left for ' (999)'"
+
+    first = tmp_path / name
+    first.write_bytes(b"x")
+
+    # deep enough that the counter goes two digits and the budget shrinks
+    for _ in range(12):
+        out = unique_path(first)          # must not raise OSError 36
+        assert len(out.name.encode("utf-8")) <= 255
+        out.write_bytes(b"x")
+
+
+def test_unique_path_shortens_whatever_it_is_handed(tmp_path: Path) -> None:
+    """Seven stages call unique_path. It cannot rely on its caller having
+    left room -- finalize, organize, tribute_quarantine, various_artists_fix,
+    classical_composer and deny_list all call it with no try/except."""
+    from musaeus.stages.organize import unique_path
+
+    over = tmp_path / ("B" * 250 + ".m4a")     # already at the limit
+    over.write_bytes(b"x")
+    out = unique_path(over)
+    assert len(out.name.encode("utf-8")) <= 255
+    assert out.name.endswith(".m4a")
+
+
+def test_a_multibyte_name_is_never_cut_mid_codepoint(tmp_path: Path) -> None:
+    from musaeus.stages.organize import build_track_filename, unique_path
+
+    name = build_track_filename("é" * 400, "é" * 40, ".m4a")
+    assert name.encode("utf-8").decode("utf-8") == name
+    f = tmp_path / name
+    f.write_bytes(b"x")
+    out = unique_path(f)
+    assert len(out.name.encode("utf-8")) <= 255
+    assert out.name.encode("utf-8").decode("utf-8") == out.name

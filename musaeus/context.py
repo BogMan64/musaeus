@@ -25,28 +25,51 @@ def _utc_now() -> str:
 
 
 MAX_LISTED = 20
+#: Of MAX_LISTED, how many come from the END of the list.
+#:
+#: Truncating purely from the head threw away the wrong end. Stages append
+#: their SUMMARY last -- dupe_resolver adds "moved N file(s) to review",
+#: "manifest: <path>" and "restore script: <path>" after every per-file note
+#: -- so a run with 21+ notes dropped the only record of how to undo a batch
+#: of irreversible moves, from both the console and the ForClaudeHandoff doc,
+#: while still looking like it had reported successfully.
+#:
+#: Errors do not have this shape (they are one per file, no trailing
+#: summary), but the split costs nothing there and one rule is easier to
+#: trust than two.
+TAIL_LISTED = 5
 
 
-def head_with_remainder(items: list[str], limit: int = MAX_LISTED) -> tuple[list[str], int]:
-    """The first `limit` items, and how many were left out.
+def head_with_remainder(
+    items: list[str], limit: int = MAX_LISTED, tail: int = TAIL_LISTED
+) -> tuple[list[str], list[str], int]:
+    """The first entries, the LAST few, and how many were dropped between.
 
-    Beside StageResult because notes/errors/verify_notes are its fields
-    and every consumer needs the same answer. A stage's error list is one
-    entry per file -- scholar.py appends "Missing: <path>" for every row
-    whose file has gone -- so its length is bounded by the batch, not by
-    anything a reader can use. Clearing one 3,142-file directory out of
-    INBOX on 2026-09-03 put 3,133 near-identical lines on the console and
-    would have put the same into the ForClaudeHandoff doc, whose whole
-    purpose is to be pasted into a session with no file access.
+    Returns (head, tail, hidden). Callers must render the elision BETWEEN the
+    two lists -- printing it after them would imply the tail entries are the
+    ones immediately following the head, which is exactly the misreading that
+    makes a truncated log worse than a short one.
 
-    Returns the split rather than rendered lines because the callers
-    format differently -- handoff.py wants markdown bullets, cli.py wants
-    indented console lines across two streams. The `... and N more`
-    wording is this repo's existing idiom (ingest.py, scholar.py,
-    sentinel.py, tribute_quarantine.py, console.py); this is the one
-    place the arithmetic behind it lives.
+    Beside StageResult because notes/errors/verify_notes are its fields and
+    every consumer needs the same answer. A stage's error list is one entry
+    per file -- scholar.py appends "Missing: <path>" for every row whose file
+    has gone -- so its length is bounded by the batch, not by anything a
+    reader can use. Clearing one 3,142-file directory out of INBOX on
+    2026-09-03 put 3,133 near-identical lines on the console and would have
+    put the same into the ForClaudeHandoff doc, whose whole purpose is to be
+    pasted into a session with no file access.
+
+    Returns the split rather than rendered lines because the callers format
+    differently -- handoff.py wants markdown bullets, cli.py wants indented
+    console lines across two streams. The `... and N more` wording is this
+    repo's existing idiom (ingest.py, scholar.py, sentinel.py,
+    tribute_quarantine.py, console.py); this is the one place the arithmetic
+    behind it lives.
     """
-    return items[:limit], max(0, len(items) - limit)
+    if len(items) <= limit:
+        return list(items), [], 0
+    head = limit - tail
+    return list(items[:head]), list(items[-tail:]), len(items) - limit
 
 
 @dataclass

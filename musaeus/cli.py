@@ -392,19 +392,25 @@ def _run_pipeline(
 
         status = "✓" if result.success else "✗"
         print(f"  {status}  {result.summarise()}")
-        shown_notes, more_notes = head_with_remainder(result.notes)
-        for note in shown_notes:
+        head_notes, tail_notes, more_notes = head_with_remainder(result.notes)
+        for note in head_notes:
             print(f"       {note}")
         if more_notes:
             print(f"       ... and {more_notes} more")
+        # The tail carries the stage's summary -- dupe_resolver's manifest and
+        # restore-script paths land here, and they are the only undo record.
+        for note in tail_notes:
+            print(f"       {note}")
         # Bounded for the same reason handoff.py bounds its own render:
         # one entry per file makes this as long as the batch. Every entry
         # is still in the run log -- the stages log each one themselves.
-        shown_errors, more_errors = head_with_remainder(result.errors)
-        for err in shown_errors:
+        head_errs, tail_errs, more_errors = head_with_remainder(result.errors)
+        for err in head_errs:
             print(f"       ERROR: {err}", file=sys.stderr)
         if more_errors:
             print(f"       ... and {more_errors} more (full list in the run log)", file=sys.stderr)
+        for err in tail_errs:
+            print(f"       ERROR: {err}", file=sys.stderr)
 
         # Only a genuinely successful stage counts as "done" for resume
         # purposes (2026-08-18 fix). Previously this ran unconditionally,
