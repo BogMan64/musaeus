@@ -53,7 +53,11 @@ def vault(tmp_path: Path):
     conn = sqlite3.connect(db)
     conn.execute(
         "CREATE TABLE archive (file_path TEXT, artist TEXT, title TEXT, status TEXT, "
-        "audio_hash TEXT, genre TEXT, finalized_at TEXT)"
+        "audio_hash TEXT, genre TEXT, finalized_at TEXT, duration REAL)"
+    )
+    conn.execute(
+        "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, ts TEXT, "
+        "event_type TEXT, file_path TEXT, old_value TEXT, new_value TEXT, stage TEXT, note TEXT)"
     )
     conn.commit()
     conn.close()
@@ -73,7 +77,8 @@ def vault(tmp_path: Path):
 
 
 def _add(
-    vault, name, *, artist, title, status="CATALOGUED", on_disk=True, genre="Rock", indexed=True
+    vault, name, *, artist, title, status="CATALOGUED", on_disk=True, genre="Rock", indexed=True,
+    duration=200.0,
 ):
     """Add a row, and by default index it.
 
@@ -87,8 +92,8 @@ def _add(
     h = f"h_{name}"
     conn = sqlite3.connect(vault.db_path)
     conn.execute(
-        "INSERT INTO archive VALUES (?,?,?,?,?,?,?)",
-        (str(p), artist, title, status, h, genre, "2026-01-01"),
+        "INSERT INTO archive VALUES (?,?,?,?,?,?,?,?)",
+        (str(p), artist, title, status, h, genre, "2026-01-01", duration),
     )
     conn.commit()
     conn.close()
@@ -269,3 +274,71 @@ class TestSoleCopyFallsBackToAudioHash:
 
         assert rep.failed
         assert any("sole copy" in f.check and f.count == 1 for f in rep.findings)
+
+
+class TestRejectedAudioPresentAnyway:
+    """The real escape, 2026-09-04. Santana's "Bella" was in INBOX twice: a
+    FLAC that Canonicalize converted, duration-checked and correctly
+    REFUSED, and an already-ALAC copy of the same truncated audio that was
+    classified PASSTHROUGH -- no output, so the check never ran. The
+    rejection held; its twin walked past.
+
+    Comparing durations across copies was tried first and abandoned: against
+    the real library it produced 802 findings, mostly live versions
+    legitimately longer than their studio originals. The exact signal is the
+    audio_hash of the file that was rejected."""
+
+    def _reject(self, vault, path):
+        conn = sqlite3.connect(vault.db_path)
+        conn.execute(
+            "INSERT INTO events (event_type, file_path, old_value) VALUES (?,?,?)",
+            ("CANONICALIZE_VERIFY_FAILED", str(path) + ".FAILED_VERIFY", str(path)),
+        )
+        conn.commit()
+        conn.close()
+
+    def _same_hash(self, vault, a, b):
+        conn = sqlite3.connect(vault.db_path)
+        h = conn.execute("SELECT audio_hash FROM archive WHERE file_path=?", (str(a),)).fetchone()[0]
+        conn.execute("UPDATE archive SET audio_hash=? WHERE file_path=?", (h, str(b)))
+        conn.commit()
+        conn.close()
+
+    def test_the_santana_escape_is_caught(self, vault):
+        # CATALOGUED, as the real rejected sources are -- the check must not
+        # count the refused file itself as an escape. It did, on the first
+        # run against the live library: 4 findings, all of them the sources.
+        src = _add(vault, "bella.flac", artist="Santana", title="Bella")
+        twin = _add(vault, "bella.m4a", artist="Santana", title="Bella")
+        self._same_hash(vault, src, twin)     # the same truncated audio
+        self._reject(vault, src)              # the FLAC was refused
+        f = _finding(diagnose(vault), "rejected audio present anyway")
+        assert f.level == "fail"
+        assert f.count == 1
+        assert "bella.m4a" in f.detail
+
+    def test_a_rejection_with_no_surviving_twin_is_ok(self, vault):
+        src = _add(vault, "solo.flac", artist="Rage", title="Testify")
+        self._reject(vault, src)
+        f = _finding(diagnose(vault), "rejected audio present anyway")
+        assert f.level == "ok"
+        assert "1 rejection(s) on record" in f.detail
+
+    def test_no_rejections_says_so(self, vault):
+        _add(vault, "a.m4a", artist="Queen", title="Bicycle Race")
+        f = _finding(diagnose(vault), "rejected audio present anyway")
+        assert f.level == "ok"
+        assert "no rejections" in f.detail
+
+    def test_a_live_version_longer_than_the_studio_cut_is_never_flagged(self, vault):
+        """The abandoned duration check called this a truncation. It is a
+        different recording and shares no audio_hash, so it cannot trip
+        this one."""
+        _add(vault, "studio.m4a", artist="Alice Cooper", title="Is It My Body", duration=160.0)
+        _add(vault, "live.m4a", artist="Alice Cooper",
+             title="Is It My Body (Live in Miami)", duration=486.0)
+        assert _finding(diagnose(vault), "rejected audio present anyway").level == "ok"
+
+
+def _finding(rep, check):
+    return next(f for f in rep.findings if f.check == check)

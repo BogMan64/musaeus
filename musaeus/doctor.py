@@ -103,7 +103,8 @@ def diagnose(cfg: MusicConfig) -> Report:
     conn.row_factory = sqlite3.Row
 
     rows = conn.execute(
-        "SELECT file_path, artist, title, status, audio_hash, finalized_at FROM archive"
+        "SELECT file_path, artist, title, status, audio_hash, finalized_at, duration "
+        "FROM archive"
     ).fetchall()
     lib = [r for r in rows if r["status"] == "CATALOGUED"]
     on_disk = {r["file_path"] for r in rows if Path(r["file_path"]).exists()}
@@ -248,6 +249,70 @@ def diagnose(cfg: MusicConfig) -> Report:
         )
     else:
         rep.add("ok", "quarantine", "empty")
+
+    # N. Audio that was REJECTED for truncation, present in the library
+    #    anyway under another row.
+    #
+    #    Added 2026-09-04, from a real escape. Carlos Santana's "Bella"
+    #    existed in INBOX twice: as a FLAC, which Canonicalize converted,
+    #    duration-checked, and correctly REFUSED; and as an already-ALAC copy
+    #    of the same truncated audio, which Canonicalize classified
+    #    PASSTHROUGH -- "nothing to convert, no file write at all". A
+    #    passthrough produces no output, and that duration check compares a
+    #    conversion's OUTPUT against its source, so it never ran. The
+    #    rejection worked perfectly; its already-converted twin walked past.
+    #
+    #    Nothing about the file betrays it. Header, stream and decode all
+    #    agree at 143.78s and ffmpeg reports no error: it is a valid short
+    #    file. Comparing durations across copies of the same recording was
+    #    tried first and abandoned -- measured against this library it
+    #    produced 802 findings, mostly live versions legitimately longer than
+    #    their studio originals, which is the crying-wolf failure of SOP 4.27
+    #    rather than a check.
+    #
+    #    The signal that IS exact: the rejected file has an audio_hash, and
+    #    any other row carrying that same hash holds the same rejected audio.
+    #    On the library this fired once, on the one file that escaped, and
+    #    nowhere else.
+    rejected_hashes = {
+        r["audio_hash"]: r["src"]
+        for r in conn.execute(
+            """
+            SELECT a.audio_hash AS audio_hash, e.old_value AS src
+              FROM events e
+              JOIN archive a ON a.file_path = e.old_value
+             WHERE e.event_type = 'CANONICALIZE_VERIFY_FAILED'
+               AND a.audio_hash IS NOT NULL AND a.audio_hash <> ''
+            """
+        )
+    }
+    #    The rejected source itself still carries its own hash and is still
+    #    on disk -- that is the refusal working, not a leak. Only OTHER rows
+    #    holding that audio are the escape.
+    rejected_paths = set(rejected_hashes.values())
+    escaped = [
+        r
+        for r in lib
+        if r["audio_hash"] in rejected_hashes
+        and r["file_path"] not in rejected_paths
+        and r["file_path"] in on_disk
+    ]
+    if escaped:
+        rep.add(
+            "fail",
+            "rejected audio present anyway",
+            f"{len(escaped)} row(s) carry audio a conversion refused, "
+            f"e.g. {Path(escaped[0]['file_path']).name}",
+            len(escaped),
+        )
+    elif rejected_hashes:
+        rep.add(
+            "ok",
+            "rejected audio present anyway",
+            f"none ({len(rejected_hashes)} rejection(s) on record, all held)",
+        )
+    else:
+        rep.add("ok", "rejected audio present anyway", "no rejections on record")
 
     conn.close()
     return rep
