@@ -4,6 +4,7 @@ Tests for SentinelStage — Stage 2: Hash files and detect exact duplicates.
 Mocks audio_hash_safe and file_hash to avoid needing ffmpeg installed.
 """
 
+import csv
 from pathlib import Path
 from unittest.mock import patch
 
@@ -492,3 +493,71 @@ class TestReHashingDoesNotDemote:
             "SELECT status FROM archive WHERE file_path = ?", (str(back),)
         ).fetchone()
         assert row["status"] == "HASHED", "a returning GHOST never recovers"
+
+
+class TestSentinelWantedList:
+    """A decode failure is the only unambiguous "unplayable" signal the
+    pipeline produces. It used to stop at a log line."""
+
+    def _probe_stub(self, artist, title, album=""):
+        return {
+            "format": {"tags": {"artist": artist, "title": title, "album": album}},
+            "streams": [{"codec_type": "audio", "codec_name": "alac"}],
+        }
+
+    def test_an_undecodable_file_lands_on_the_wanted_list(self, ctx, tmp_path):
+        bad = tmp_path / "INBOX" / "Aerosmith - What It Takes.m4a"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_bytes(b"not really audio")
+        _insert_pending(ctx, str(bad))
+
+        with patch("musaeus.stages.sentinel.audio_hash_safe",
+                   return_value=(None, "ffmpeg exited 69: invalid element channel count")), \
+             patch("musaeus.stages.sentinel.file_hash", return_value="f" * 64), \
+             patch("musaeus.stages.scholar._probe",
+                   return_value=self._probe_stub("Aerosmith", "What It Takes", "Big Ones")):
+            SentinelStage().execute(ctx)
+
+        rows = list(csv.reader(ctx.config.tunemymusic_csv_path.open(encoding="utf-8")))
+        assert rows[0] == ["Title", "Artist", "Album"]
+        assert ["What It Takes", "Aerosmith", "Big Ones"] in rows[1:]
+
+    def test_a_copy_already_catalogued_is_not_put_on_the_buy_list(self, ctx, tmp_path):
+        """Bowie's "Cat People" failed to decode in one copy while a clean
+        53MB master sat in the library. Asking Grey to re-buy what he owns
+        is how a useful list becomes one he stops reading."""
+        upsert_archive(ctx.conn, {
+            "file_path": str(tmp_path / "good.m4a"), "status": "CATALOGUED",
+            "artist": "David Bowie", "title": "Cat People",
+        })
+        ctx.conn.commit()
+
+        bad = tmp_path / "INBOX" / "David Bowie - Cat People.m4a"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_bytes(b"truncated")
+        _insert_pending(ctx, str(bad))
+
+        with patch("musaeus.stages.sentinel.audio_hash_safe", return_value=(None, "partial file")), \
+             patch("musaeus.stages.sentinel.file_hash", return_value="e" * 64), \
+             patch("musaeus.stages.scholar._probe",
+                   return_value=self._probe_stub("David Bowie", "Cat People")):
+            SentinelStage().execute(ctx)
+
+        assert not ctx.config.tunemymusic_csv_path.exists(), (
+            "a record already in the library must not be added to the buy list"
+        )
+
+    def test_a_wanted_list_failure_never_fails_the_hash_pass(self, ctx, tmp_path):
+        """Bookkeeping must not cost a run its hashing."""
+        bad = tmp_path / "INBOX" / "x.m4a"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_bytes(b"bad")
+        _insert_pending(ctx, str(bad))
+
+        with patch("musaeus.stages.sentinel.audio_hash_safe", return_value=(None, "boom")), \
+             patch("musaeus.stages.sentinel.file_hash", return_value="d" * 64), \
+             patch("musaeus.stages.sentinel._want_replacement",
+                   side_effect=RuntimeError("disk on fire")):
+            result = SentinelStage().execute(ctx)
+
+        assert result.files_errored == 1  # the hash failure is still counted

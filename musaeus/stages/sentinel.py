@@ -58,6 +58,76 @@ def _get_pending(conn) -> list[dict]:  # type: ignore[type-arg]
     return [dict(r) for r in rows]
 
 
+def _want_replacement(ctx, path: Path, err: str) -> str | None:
+    """Put an undecodable file on the TuneMyMusic wanted list. Returns the
+    title recorded, or None when nothing was written.
+
+    Why here. The hasher is the ONLY thing in the pipeline that decodes
+    every file end to end -- it has to, to derive audio_hash from PCM --
+    so a HasherError is the strongest evidence MUSAEUS ever gets that a
+    file is unplayable. Until now that evidence stopped at a log line: the
+    row stayed PENDING, never reached Scholar, and nothing recorded that a
+    replacement was wanted. Four such files accumulated in the 2026-09-03
+    run (Aerosmith "What It Takes", Diana Ross "The Boss", Journey "Keep on
+    Runnin'", Michael Damian "Rock On") and none of them were on the list.
+
+    CorruptStage cannot cover this: it decides on a filesize-vs-duration
+    ratio, and in that same run it quarantined 10 files and caught none of
+    these four. Size prioritises; only a decode decides.
+
+    Metadata comes from the FILE, not the archive row. A hash-failed row
+    never advances to HASHED, so Scholar never populates its artist/title
+    -- but ffprobe still reads the tags off a damaged container, which is
+    how all four were identified by hand.
+
+    The already_owned() check is the part that stops this being noise.
+    David Bowie's "Cat People" failed to decode in one copy (2MB, header
+    claiming 5:10, decoding 13 seconds) while a clean 53MB master sat in
+    the library the whole time. Asking Grey to re-buy a record he owns is
+    how a useful list becomes one he stops reading.
+    """
+    from .bpm import _tunemymusic_csv_has_track
+    from .canonicalize import _append_tunemymusic_row
+    from .scholar import ProbeError, _extract_meta, _probe
+    from ..wanted_list import already_owned
+
+    try:
+        meta = _extract_meta(_probe(path))
+    except (ProbeError, OSError) as exc:
+        logger.warning("[sentinel] cannot read tags off %s: %s", path.name, exc)
+        return None
+
+    title = (meta.get("title") or "").strip()
+    artist = (meta.get("artist") or "").strip()
+    if not title or not artist:
+        # Without both, the row cannot be searched for in a streaming
+        # service, which is the only thing this list is for.
+        return None
+
+    if already_owned(ctx.conn, artist, title):
+        logger.info(
+            "[sentinel] %s will not decode, but a catalogued copy exists — not listing",
+            path.name,
+        )
+        return None
+
+    csv_path = ctx.config.tunemymusic_csv_path
+    if _tunemymusic_csv_has_track(csv_path, title, artist):
+        return None
+
+    _append_tunemymusic_row(
+        ctx, {"title": title, "artist": artist, "album": meta.get("album") or ""}
+    )
+    ctx.log_event(
+        "REPLACEMENT_WANTED",
+        file_path=str(path),
+        stage="sentinel",
+        note=f"undecodable: {err[:120]}",
+    )
+    logger.warning("[sentinel] wanted-list: %s - %s (undecodable)", artist, title)
+    return title
+
+
 def _hash_group_for(conn, audio_hash_val: str) -> list[str]:
     """Return all file_paths that share the given audio_hash."""
     rows = conn.execute(
@@ -312,6 +382,13 @@ class SentinelStage(BaseStage):
                     stage=self.NAME,
                     note=err,
                 )
+                # A failed decode is the only unambiguous "this file is
+                # unplayable" signal the pipeline produces -- record that a
+                # replacement is wanted while we still have the file's tags.
+                try:
+                    _want_replacement(ctx, path, err)
+                except Exception as exc:  # never let bookkeeping fail a hash pass
+                    logger.warning("[sentinel] wanted-list write failed for %s: %s", path.name, exc)
                 # Still update full_hash so change-detection works
                 upsert_archive(ctx.conn, {"file_path": path_str, "full_hash": fh})
                 result.files_errored += 1
