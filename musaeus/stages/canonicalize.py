@@ -371,6 +371,13 @@ def _append_tunemymusic_row(ctx: RunContext, row: dict) -> None:
 # ── Stage ──────────────────────────────────────────────────────────────────────
 
 
+#: What a PASSTHROUGH row is allowed to be: the two codecs the stage
+#: treats as already canonical in a .m4a container (see _decide_action).
+#: CONVERTED must be alac and TRANSCODED must be aac; PASSTHROUGH may be
+#: either, because it means the file was already one of them.
+_CANONICAL_CODECS = ("alac", "aac")
+
+
 class CanonicalizeStage(BaseStage):
     """
     Canonicalize — bring every CATALOGUED file to ALAC-in-.m4a (lossless
@@ -400,7 +407,7 @@ class CanonicalizeStage(BaseStage):
         """
         rows = ctx.conn.execute(
             """
-            SELECT a.file_path, a.audio_hash, a.duration
+            SELECT a.file_path, a.audio_hash, a.duration, e.new_value AS claimed
               FROM archive a
               JOIN events e ON e.file_path = a.file_path
              WHERE e.stage = ? AND e.event_type = 'CANONICALIZE'
@@ -441,8 +448,30 @@ class CanonicalizeStage(BaseStage):
                 ),
                 "",
             )
-            if codec and codec != "alac":
-                problems.append(f"{p.name} is still {codec}, not alac, after canonicalize")
+            # Check what the ROW CLAIMED, not a blanket "must be alac".
+            #
+            # This asserted alac for every sampled row, but the CANONICALIZE
+            # event is logged for PASSTHROUGH too -- and PASSTHROUGH's whole
+            # definition is "already ALAC-in-.m4a, or already AAC-in-.m4a.
+            # Nothing to convert. No file write at all." So five correctly
+            # untouched AAC files were reported as EFFECT NOT VERIFIED on
+            # 2026-09-03, and the stage sealed ✗UNVERIFIED for doing exactly
+            # the right thing.
+            #
+            # That is the 2026-09-01 honesty fix inverted. A seal that cries
+            # wolf is discarded as fast as one that lies, and after
+            # 2026-09-08 the seal is the only signal anyone reads. So each
+            # outcome is now checked against its own contract:
+            claimed = (r["claimed"] or "").upper()
+            expected = {"CONVERTED": ("alac",), "TRANSCODED": ("aac",)}.get(
+                claimed, _CANONICAL_CODECS
+            )
+            if codec and codec not in expected:
+                wanted = " or ".join(expected)
+                problems.append(
+                    f"{p.name} claimed {claimed or 'CANONICALIZE'} but is {codec}, "
+                    f"expected {wanted}"
+                )
 
             # Duration, added 2026-09-01. Codec + hash + existence all pass
             # for a TRUNCATED conversion: right format, right identity, half

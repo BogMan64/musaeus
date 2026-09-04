@@ -504,3 +504,67 @@ class TestDryRunAgreesWithRun:
         assert "PASSTHROUGH: 1" in notes, f"preview disagrees with run: {notes}"
         assert "REFUSED" in notes, notes
         assert "TRANSCODED: 1" not in notes, notes
+
+
+class TestVerifyEffectChecksTheClaim:
+    """verify_effect asserted "must be alac" for every sampled row, but the
+    CANONICALIZE event is logged for PASSTHROUGH too -- whose definition is
+    "already ALAC-in-.m4a, or already AAC-in-.m4a. Nothing to convert."
+
+    On 2026-09-03 that sealed canonicalize ✗UNVERIFIED because five
+    correctly-untouched AAC files were reported as "still aac, not alac".
+    That is the 2026-09-01 honesty fix inverted: a seal that cries wolf is
+    discarded as fast as one that lies. Each outcome now answers for its
+    own contract."""
+
+    def _row(self, ctx, path: Path, claimed: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+        upsert_archive(ctx.conn, {
+            "file_path": str(path), "status": "CATALOGUED",
+            "audio_hash": "a" * 64, "duration": 100.0,
+        })
+        ctx.log_event("CANONICALIZE", file_path=str(path),
+                      new_value=claimed, stage="canonicalize")
+        ctx.conn.commit()
+
+    def _probe(self, codec: str):
+        return {"streams": [{"codec_type": "audio", "codec_name": codec,
+                             "duration": "100.0"}]}
+
+    @pytest.mark.parametrize("claimed,codec", [
+        ("PASSTHROUGH", "aac"),    # the false positive that started this
+        ("PASSTHROUGH", "alac"),
+        ("CONVERTED", "alac"),
+        ("TRANSCODED", "aac"),
+    ])
+    def test_an_outcome_that_honoured_its_contract_is_not_flagged(
+        self, ctx, tmp_path, monkeypatch, claimed, codec
+    ):
+        f = tmp_path / "INBOX" / f"{claimed}_{codec}.m4a"
+        self._row(ctx, f, claimed)
+        monkeypatch.setattr("musaeus.stages.canonicalize._probe_streams",
+                            lambda _p: self._probe(codec))
+        problems = CanonicalizeStage().verify_effect(ctx, _StageResultStub())
+        assert problems == [], problems
+
+    @pytest.mark.parametrize("claimed,codec", [
+        ("CONVERTED", "aac"),     # claimed a lossless conversion, still lossy
+        ("TRANSCODED", "alac"),   # claimed a 256k AAC export, is not
+        ("PASSTHROUGH", "mp3"),   # "already canonical" and demonstrably not
+    ])
+    def test_an_outcome_that_broke_its_contract_is_still_caught(
+        self, ctx, tmp_path, monkeypatch, claimed, codec
+    ):
+        f = tmp_path / "INBOX" / f"bad_{claimed}_{codec}.m4a"
+        self._row(ctx, f, claimed)
+        monkeypatch.setattr("musaeus.stages.canonicalize._probe_streams",
+                            lambda _p: self._probe(codec))
+        problems = CanonicalizeStage().verify_effect(ctx, _StageResultStub())
+        assert len(problems) == 1
+        assert claimed in problems[0] and codec in problems[0]
+
+
+class _StageResultStub:
+    """verify_effect only needs the argument to exist."""
+    files_changed = 0
