@@ -314,5 +314,68 @@ def diagnose(cfg: MusicConfig) -> Report:
     else:
         rep.add("ok", "rejected audio present anyway", "no rejections on record")
 
+    # N+1. A knock-off that was removed, still present under another row.
+    #
+    #      Added 2026-09-04, from the Chuck Billy case. "Seek & Destroy" from
+    #      *Metallic Assault: A Tribute to Metallica* was ruled out on
+    #      2026-09-01 and deleted. Three more copies of the same performance
+    #      were still on disk on 2026-09-04, one of them CATALOGUED in the
+    #      newly built library, and they were found only because someone went
+    #      looking.
+    #
+    #      tribute_quarantine could not have caught that copy: it matches
+    #      \btribute\b and \bkaraoke\b against artist, title and album, and
+    #      the album tag -- the only field naming the compilation -- had been
+    #      overwritten with the playlist name "My playlist C" by whatever
+    #      exported it. The four credited musicians are all real people. No
+    #      field carried any evidence at all.
+    #
+    #      What survives that is the audio. A copy quarantined as a knock-off
+    #      or deleted as one shares its audio_hash with every other copy of
+    #      the same performance, whatever the tags say.
+    #
+    #      DELETED is included because a manual removal (Grey's ruling) does
+    #      not set TRIBUTE_REVIEW -- keying on the automatic status alone
+    #      would have missed the very case this was built for. Hashes from a
+    #      refused conversion are excluded: the Santana row was DELETED for
+    #      truncation, not for being a knock-off, and its twin is the refused
+    #      source sitting exactly where it should.
+    removed_knockoff_hashes = {
+        r["audio_hash"]
+        for r in rows
+        if r["status"] in ("TRIBUTE_REVIEW", "DELETED")
+        and r["audio_hash"]
+        and r["audio_hash"] not in rejected_hashes
+    }
+    knockoff_paths = {
+        r["file_path"]
+        for r in rows
+        if r["status"] in ("TRIBUTE_REVIEW", "DELETED")
+    }
+    survivors = [
+        r
+        for r in lib
+        if r["audio_hash"] in removed_knockoff_hashes
+        and r["file_path"] not in knockoff_paths
+        and r["file_path"] in on_disk
+    ]
+    if survivors:
+        rep.add(
+            "fail",
+            "removed knock-off still held",
+            f"{len(survivors)} catalogued row(s) share audio with a copy that was "
+            f"quarantined or deleted as a knock-off, e.g. "
+            f"{Path(survivors[0]['file_path']).name}",
+            len(survivors),
+        )
+    elif removed_knockoff_hashes:
+        rep.add(
+            "ok",
+            "removed knock-off still held",
+            f"none ({len(removed_knockoff_hashes)} removal(s) on record)",
+        )
+    else:
+        rep.add("ok", "removed knock-off still held", "no removals on record")
+
     conn.close()
     return rep

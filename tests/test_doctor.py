@@ -340,5 +340,71 @@ class TestRejectedAudioPresentAnyway:
         assert _finding(diagnose(vault), "rejected audio present anyway").level == "ok"
 
 
+class TestRemovedKnockOffStillHeld:
+    """The Chuck Billy case, 2026-09-04. "Seek & Destroy" from *Metallic
+    Assault: A Tribute to Metallica* was ruled out and deleted on
+    2026-09-01. Three more copies of the same performance were still on
+    disk three days later, one CATALOGUED in the newly built library, found
+    only because someone went looking.
+
+    tribute_quarantine had no chance: it matches \\btribute\\b and
+    \\bkaraoke\\b against artist, title and album, and the album tag naming
+    the compilation had been overwritten with "My playlist C" by a playlist
+    export. All four credited musicians are real people. The audio_hash is
+    the only thing that survives that."""
+
+    def _hash_of(self, vault, p):
+        conn = sqlite3.connect(vault.db_path)
+        h = conn.execute("SELECT audio_hash FROM archive WHERE file_path=?", (str(p),)).fetchone()[0]
+        conn.close()
+        return h
+
+    def _set_hash(self, vault, p, h):
+        conn = sqlite3.connect(vault.db_path)
+        conn.execute("UPDATE archive SET audio_hash=? WHERE file_path=?", (h, str(p)))
+        conn.commit()
+        conn.close()
+
+    def test_a_quarantined_knockoff_with_a_catalogued_twin_is_caught(self, vault):
+        gone = _add(vault, "junk.m4a", artist="Karaoke Channel", title="Hallelujah",
+                    status="TRIBUTE_REVIEW")
+        kept = _add(vault, "twin.m4a", artist="Karaoke Channel", title="Hallelujah")
+        self._set_hash(vault, kept, self._hash_of(vault, gone))
+        f = _finding(diagnose(vault), "removed knock-off still held")
+        assert f.level == "fail" and f.count == 1
+        assert "twin.m4a" in f.detail
+
+    def test_a_MANUALLY_deleted_knockoff_counts_too(self, vault):
+        """Grey's own ruling sets DELETED, not TRIBUTE_REVIEW. Keying on the
+        automatic status alone would miss the case this was built for."""
+        gone = _add(vault, "chuck.m4a", artist="Chuck Billy", title="Seek & Destroy",
+                    status="DELETED")
+        kept = _add(vault, "chuck_twin.m4a", artist="Chuck Billy", title="Seek & Destroy")
+        self._set_hash(vault, kept, self._hash_of(vault, gone))
+        assert _finding(diagnose(vault), "removed knock-off still held").level == "fail"
+
+    def test_a_truncation_deletion_is_not_treated_as_a_knockoff(self, vault):
+        """Santana's row was DELETED for truncation and its twin is the
+        REFUSED source, sitting exactly where it belongs. Counting that as an
+        escaped knock-off would be noise."""
+        src = _add(vault, "bella.flac", artist="Santana", title="Bella")
+        gone = _add(vault, "bella_lib.m4a", artist="Santana", title="Bella", status="DELETED")
+        self._set_hash(vault, gone, self._hash_of(vault, src))
+        conn = sqlite3.connect(vault.db_path)
+        conn.execute("INSERT INTO events (event_type, file_path, old_value) VALUES (?,?,?)",
+                     ("CANONICALIZE_VERIFY_FAILED", str(src) + ".FAILED_VERIFY", str(src)))
+        conn.commit()
+        conn.close()
+        assert _finding(diagnose(vault), "removed knock-off still held").level == "ok"
+
+    def test_a_genuine_recording_sharing_a_title_is_untouched(self, vault):
+        """Metallica's own "Seek & Destroy" must never be swept up with the
+        tribute version. Different audio, different hash."""
+        _add(vault, "junk2.m4a", artist="Tribute Band", title="Seek & Destroy",
+             status="TRIBUTE_REVIEW")
+        _add(vault, "real.m4a", artist="Metallica", title="Seek & Destroy")
+        assert _finding(diagnose(vault), "removed knock-off still held").level == "ok"
+
+
 def _finding(rep, check):
     return next(f for f in rep.findings if f.check == check)
