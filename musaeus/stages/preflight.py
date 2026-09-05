@@ -58,7 +58,9 @@ condition, rather than reimplementing key entry here.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -85,6 +87,16 @@ _REQUIRED_COMMANDS: tuple[tuple[str, str, str], ...] = (
     ("ffprobe", "forge, transcode, integrity, auditor, albumart", "ffmpeg"),
     ("fpcalc", "acousticid", "libchromaprint-tools"),
 )
+
+# Claude Code's edit-guard hook. A long-running Python process executes the
+# modules it imported at STARTUP, so editing a module it has not yet imported
+# makes it load new code against old dependencies -- a mixture, not a
+# rollback. That silently cost the ForClaudeHandoff doc of a 42-hour run on
+# 2026-09-05. The hook warns when a MUSAEUS .py is modified mid-run; this
+# file checks the hook is actually there, because a hook that never loaded
+# looks exactly like one that had nothing to say.
+_CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
+_EDIT_GUARD_SCRIPT = Path.home() / ".claude" / "hooks" / "musaeus_pipeline_guard.sh"
 
 
 class PreflightStage(BaseStage):
@@ -308,6 +320,65 @@ class PreflightStage(BaseStage):
 
     # ── Shared logic ──────────────────────────────────────────────────────────
 
+    def _check_edit_guard_hook(self, ok: list, warn: list, fail: list) -> None:
+        """
+        Confirm Claude Code's edit-guard hook is installed and runnable.
+
+        Report-only, and skipped entirely when Claude Code is not installed:
+        this checks the operator's tooling, not MUSAEUS itself. Never a FAIL
+        -- a missing hook makes a mistake harder to notice, it does not make
+        the run wrong.
+
+        Deliberately reads only the hook COMMAND strings. settings.json also
+        holds env blocks and API headers, which must never reach a log.
+        """
+        if not _CLAUDE_SETTINGS.exists():
+            return  # No Claude Code on this machine; nothing to guard.
+
+        try:
+            settings = json.loads(_CLAUDE_SETTINGS.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            # A settings file that does not parse is ignored wholesale, which
+            # takes every hook in it down silently -- exactly the failure this
+            # check exists to surface.
+            warn.append(
+                f"claude settings.json does not parse ({type(exc).__name__}); "
+                "every hook in it is silently disabled"
+            )
+            return
+
+        if not isinstance(settings, dict):
+            warn.append("claude settings.json is not a JSON object; hooks cannot load")
+            return
+
+        hooks = settings.get("hooks")
+        entries = hooks.get("PreToolUse", []) if isinstance(hooks, dict) else []
+        commands = [
+            hook.get("command", "")
+            for entry in entries
+            if isinstance(entry, dict)
+            for hook in entry.get("hooks", [])
+            if isinstance(hook, dict) and hook.get("type") == "command"
+        ]
+
+        if not any(str(_EDIT_GUARD_SCRIPT) in c for c in commands):
+            warn.append(
+                "edit-guard hook is not registered in claude settings.json; "
+                "editing a MUSAEUS .py during a run will not warn"
+            )
+        elif not _EDIT_GUARD_SCRIPT.exists():
+            warn.append(f"edit-guard hook registered but missing: {_EDIT_GUARD_SCRIPT}")
+        elif not os.access(_EDIT_GUARD_SCRIPT, os.X_OK):
+            warn.append(
+                f"edit-guard hook is not executable: {_EDIT_GUARD_SCRIPT}; "
+                "it fails silently on every edit"
+            )
+        else:
+            ok.append(
+                "edit-guard hook: registered in settings.json and executable "
+                "(whether the running editor has LOADED it is not visible from here)"
+            )
+
     def _run_checks(self, ctx: RunContext) -> tuple[list, list, list]:
         ok: list[str] = []
         warn: list[str] = []
@@ -319,6 +390,7 @@ class PreflightStage(BaseStage):
         self._check_disk_space(ctx, ok, warn, fail)
         self._check_db_integrity(ctx, ok, warn, fail)
         self._check_stale_wal(ctx, ok, warn, fail)
+        self._check_edit_guard_hook(ok, warn, fail)
 
         return ok, warn, fail
 
