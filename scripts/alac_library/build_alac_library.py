@@ -464,13 +464,22 @@ def _unmigrated_count(conn, library_dir: Path) -> int:
     silently never get baked unless someone remembers to run the
     migration script first. Same selection shape as
     migrate_to_archive.py's own _candidate_rows(), so the two scripts
-    agree on what "not yet migrated" means."""
+    agree on what "not yet migrated" means -- INCLUDING the exclusion
+    of already-baked rows, which both gained on 2026-09-05."""
     return conn.execute(
         """
         SELECT COUNT(*) FROM archive
          WHERE status = 'CATALOGUED'
            AND finalized_at IS NOT NULL
            AND file_path LIKE ? || '%'
+             -- Already-baked rows are NOT unmigrated: their file_path
+             -- points at this script's own output. Counting them here
+             -- tells the operator to migrate the baked copies into the
+             -- pristine tier, which is exactly what happened on
+             -- 2026-09-05 -- 1,765 moved, 1,277 colliding with their
+             -- own masters. The advice caused the fault, so the fix
+             -- belongs in the advice.
+             AND (lufs_baked_at IS NULL OR lufs_baked_at = '')
         """,
         (str(library_dir),),
     ).fetchone()[0]

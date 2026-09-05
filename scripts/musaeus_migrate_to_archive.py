@@ -113,6 +113,16 @@ def _candidate_rows(conn: sqlite3.Connection) -> list[dict]:
          WHERE status = 'CATALOGUED'
            AND finalized_at IS NOT NULL
            AND file_path LIKE ? || '%'
+           -- Never move a row whose file_path is a BAKED copy. After the
+           -- LUFS bake a row points at its output in ALAC-Library, not at
+           -- its master; migrating that puts normalised audio into the
+           -- pristine tier and collides it with the master it came from.
+           -- Done for real on 2026-09-05: 1,765 baked copies landed in
+           -- ALAC_Archive, 1,277 renamed " (2).m4a" against their own
+           -- masters. Reversed from a pre-migration DB snapshot, but the
+           -- tier split is the whole point, so the guard belongs in the
+           -- query rather than in whoever runs it.
+           AND (lufs_baked_at IS NULL OR lufs_baked_at = '')
          ORDER BY file_path
         """,
         (str(ALAC_LIBRARY),),
