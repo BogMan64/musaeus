@@ -30,17 +30,29 @@ from musaeus.config import MusicConfig  # noqa: E402
 from scripts.usb_transfer.transfer_to_usb import (  # noqa: E402
     BlockDevice,
     CopyResult,
+    FormatToolingError,
+    UsbTargetError,
     build_unmount_commands,
     build_wipe_and_format_commands,
+    check_free_space,
+    check_mkfs_available,
     confirm_wipe,
     copy_playlists,
     copy_with_verification,
     critical_backing_disks,
     execute_commands,
+    files_too_big_for_fat32,
     is_denylisted,
     list_block_devices,
+    mounted_dir_for_device,
+    partition_path_for,
+    validate_label,
     wait_for_partition,
 )
+
+# Any of these appearing in a --no-format run's subprocess calls is the bug
+# that path exists to make impossible.
+_DESTRUCTIVE = {"umount", "wipefs", "parted", "mkfs.exfat", "mkfs.vfat", "mount"}
 
 
 def _device(
@@ -597,6 +609,14 @@ class TestSourceDir:
 
 
 class TestMainEndToEnd:
+    @pytest.fixture(autouse=True)
+    def _mkfs_present(self, monkeypatch):
+        """check_mkfs_available() really does look for mkfs.exfat/mkfs.vfat on
+        the machine running the tests. Stub it here so these tests keep
+        proving wiring rather than which packages this host has installed --
+        TestFormatTooling covers the check itself."""
+        monkeypatch.setattr(usb_mod, "check_mkfs_available", lambda filesystem: None)
+
     def test_list_devices_prints_and_returns_0(self, monkeypatch, capsys):
         monkeypatch.setattr(sys, "argv", ["prog", "--list-devices"])
         monkeypatch.setattr(usb_mod, "list_removable_devices", lambda: [_device(path="/dev/sdz")])
@@ -1027,3 +1047,519 @@ class TestMainEndToEnd:
         out = capsys.readouterr().out
         assert "0 copied+verified, 1 failed" in out
         assert "FAILED /some/file.m4a: post-copy hash mismatch" in out
+
+
+# ── Filesystem choice (2026-09-05) ───────────────────────────────────────────
+#
+# 2026-09-04: Grey's Android head unit rejected a GPT+ExFAT stick as "not set
+# up for Android" and reformatted it itself, erasing the transfer. These tests
+# pin the pairing the head unit chose for itself.
+
+
+class TestPartitionPathFor:
+    def test_plain_disk_gets_a_bare_digit(self):
+        assert partition_path_for("/dev/sdb") == "/dev/sdb1"
+
+    def test_nvme_style_gets_a_p_separator(self):
+        assert partition_path_for("/dev/nvme0n1") == "/dev/nvme0n1p1"
+
+
+class TestFilesystemFormatCommands:
+    def test_fat32_uses_msdos_table_and_mkfs_vfat(self):
+        cmds = build_wipe_and_format_commands("/dev/sdb", filesystem="fat32")
+        assert cmds == [
+            ["wipefs", "--all", "/dev/sdb"],
+            ["parted", "--script", "/dev/sdb", "mklabel", "msdos"],
+            ["parted", "--script", "/dev/sdb", "mkpart", "primary", "fat32", "0%", "100%"],
+            ["mkfs.vfat", "-F", "32", "-n", "MUSAEUS", "/dev/sdb1"],
+        ]
+
+    def test_exfat_remains_gpt_and_mkfs_exfat(self):
+        cmds = build_wipe_and_format_commands("/dev/sdb", filesystem="exfat")
+        assert cmds == [
+            ["wipefs", "--all", "/dev/sdb"],
+            ["parted", "--script", "/dev/sdb", "mklabel", "gpt"],
+            ["parted", "--script", "/dev/sdb", "mkpart", "primary", "0%", "100%"],
+            ["mkfs.exfat", "-n", "MUSAEUS", "/dev/sdb1"],
+        ]
+
+    def test_default_is_still_exfat_for_positional_callers(self):
+        """The signature grew a third parameter; the two existing positional
+        call sites must keep meaning what they meant."""
+        assert build_wipe_and_format_commands("/dev/sdb") == build_wipe_and_format_commands(
+            "/dev/sdb", "MUSAEUS", "exfat"
+        )
+
+    def test_fat32_mkpart_carries_the_fs_type_argument(self):
+        """Not cosmetic: on an msdos table, parted's fs-type argument is what
+        sets the partition type byte to 0x0c (W95 FAT32 LBA). Verified
+        2026-09-05 against a 256 MB file image -- with "fat32" fdisk reports
+        "c W95 FAT32 (LBA)". Without it parted leaves 0x83 (Linux), and a head
+        unit that reads the partition table before the filesystem can reject
+        the stick on that alone."""
+        mkpart = build_wipe_and_format_commands("/dev/sdb", filesystem="fat32")[2]
+        assert mkpart == [
+            "parted", "--script", "/dev/sdb", "mkpart", "primary", "fat32", "0%", "100%"
+        ]
+
+    def test_does_not_execute_anything_for_either_filesystem(self, monkeypatch):
+        called = []
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: called.append(a))
+        build_wipe_and_format_commands("/dev/sdb", filesystem="fat32")
+        build_wipe_and_format_commands("/dev/sdb", filesystem="exfat")
+        assert called == []
+
+
+class TestLabelValidation:
+    def test_twelve_char_fat32_label_rejected(self):
+        """Measured 2026-09-05: mkfs.vfat -F 32 -n MUSAEUSTOOLONG exits 1 with
+        "Label can be no longer than 11 characters" and writes nothing. It is
+        the last of the four commands, so without this guard the stick is
+        already wiped and repartitioned when that happens."""
+        with pytest.raises(ValueError, match="11"):
+            validate_label("MUSAEUSTOOLONG", "fat32")
+
+    def test_eleven_char_fat32_label_accepted(self):
+        assert validate_label("MUSAEUSCAR2", "fat32") is None
+
+    def test_lowercase_fat32_label_rejected(self):
+        """Stricter than mkfs.vfat on purpose -- measured 2026-09-05, it exits
+        0 with only a "might not work properly on some systems" warning and
+        writes the lowercase label. The target is a head unit that has already
+        rejected one stick."""
+        with pytest.raises(ValueError, match="uppercase"):
+            validate_label("musaeus", "fat32")
+
+    def test_exfat_labels_are_not_length_limited(self):
+        assert validate_label("A_MUCH_LONGER_LABEL", "exfat") is None
+
+    def test_long_label_is_refused_by_the_builder_not_just_the_validator(self, monkeypatch):
+        """The guard has to sit on the path that emits commands, not beside
+        it -- and it must refuse before emitting the wipefs that precedes it."""
+        called = []
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: called.append(a))
+        with pytest.raises(ValueError):
+            build_wipe_and_format_commands("/dev/sdb", "MUSAEUSTOOLONG", "fat32")
+        assert called == []
+
+
+class TestFat32FileSizeGuard:
+    def test_files_under_the_cap_are_not_flagged(self, tmp_path):
+        f = tmp_path / "track.m4a"
+        f.write_bytes(b"x" * 1024)
+        assert files_too_big_for_fat32([f]) == []
+
+    def test_a_file_at_or_over_4_gib_is_flagged(self, tmp_path, monkeypatch):
+        f = tmp_path / "huge.m4a"
+        f.write_bytes(b"x")
+        # Sparse-file the size rather than writing 4 GiB during a test run.
+        real_stat = Path.stat
+        monkeypatch.setattr(
+            Path,
+            "stat",
+            lambda self, **kw: type("S", (), {"st_size": 4 * 1024**3})()
+            if self == f
+            else real_stat(self, **kw),
+        )
+        flagged = files_too_big_for_fat32([f])
+        assert [path for path, _ in flagged] == [f]
+
+    def test_unreadable_file_is_skipped_not_crashed_on(self, tmp_path):
+        assert files_too_big_for_fat32([tmp_path / "does_not_exist.m4a"]) == []
+
+
+class TestFormatTooling:
+    def test_missing_mkfs_raises_with_an_apt_install_hint(self, monkeypatch):
+        monkeypatch.setattr(usb_mod, "_which_including_sbin", lambda cmd: None)
+        with pytest.raises(FormatToolingError, match="apt install dosfstools"):
+            check_mkfs_available("fat32")
+        with pytest.raises(FormatToolingError, match="apt install exfatprogs"):
+            check_mkfs_available("exfat")
+
+    def test_present_mkfs_passes(self, monkeypatch):
+        monkeypatch.setattr(usb_mod, "_which_including_sbin", lambda cmd: "/usr/sbin/" + cmd)
+        assert check_mkfs_available("fat32") is None
+
+    def test_lookup_searches_sbin_which_is_off_a_normal_users_path(self, monkeypatch):
+        """Measured 2026-09-05: mkfs.vfat and mkfs.exfat are both installed on
+        this machine and both live in /usr/sbin, which Debian keeps off a
+        non-root user's PATH. The dry run is run unprivileged (console.py only
+        adds sudo for --execute), so a plain shutil.which() would have told
+        Grey to install a package he already had -- on exactly the car
+        transfer this change exists to enable."""
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        seen = []
+
+        def _fake_which(cmd, path=None):
+            seen.append(path)
+            return "/usr/sbin/mkfs.vfat" if path and "/usr/sbin" in path else None
+
+        monkeypatch.setattr(usb_mod.shutil, "which", _fake_which)
+        assert usb_mod._which_including_sbin("mkfs.vfat") == "/usr/sbin/mkfs.vfat"
+        assert any(pth and "/usr/sbin" in pth for pth in seen)
+
+
+class TestFilesystemDefaultsEndToEnd:
+    """The defaults are only real if main() applies them. These drive main()
+    in dry run and read back the command lines it actually prints."""
+
+    def _run(self, tmp_path, monkeypatch, capsys, argv, library_dir="car_library"):
+        cfg = _cfg(tmp_path)
+        for lib in (cfg.alac_library, cfg.car_library):
+            lib.mkdir(parents=True, exist_ok=True)
+            (lib / "track.m4a").write_bytes(b"x")
+        monkeypatch.setattr(usb_mod, "get_config", lambda: cfg)
+        monkeypatch.setattr(usb_mod, "list_removable_devices", lambda: [_device(path="/dev/sdz")])
+        monkeypatch.setattr(usb_mod, "critical_backing_disks", lambda *a, **k: set())
+        monkeypatch.setattr(usb_mod, "check_mkfs_available", lambda filesystem: None)
+        monkeypatch.setattr(sys, "argv", ["prog"] + argv)
+        calls = []
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
+        rc = usb_mod.main()
+        return rc, capsys.readouterr().out, calls
+
+    def test_car_defaults_to_fat32_on_msdos(self, tmp_path, monkeypatch, capsys):
+        rc, out, calls = self._run(
+            tmp_path, monkeypatch, capsys, ["--library", "car", "--device", "/dev/sdz"]
+        )
+        assert rc == 0
+        assert "would run: parted --script /dev/sdz mklabel msdos" in out
+        assert "would run: mkfs.vfat -F 32 -n MUSAEUS /dev/sdz1" in out
+        assert "mklabel gpt" not in out
+        assert "mkfs.exfat" not in out
+        assert calls == []
+
+    def test_alac_defaults_to_exfat_on_gpt(self, tmp_path, monkeypatch, capsys):
+        rc, out, calls = self._run(
+            tmp_path, monkeypatch, capsys, ["--library", "alac", "--device", "/dev/sdz"]
+        )
+        assert rc == 0
+        assert "would run: parted --script /dev/sdz mklabel gpt" in out
+        assert "would run: mkfs.exfat -n MUSAEUS /dev/sdz1" in out
+        assert "mklabel msdos" not in out
+        assert "mkfs.vfat" not in out
+        assert calls == []
+
+    def test_car_with_explicit_exfat_honours_the_override(self, tmp_path, monkeypatch, capsys):
+        rc, out, calls = self._run(
+            tmp_path,
+            monkeypatch,
+            capsys,
+            ["--library", "car", "--filesystem", "exfat", "--device", "/dev/sdz"],
+        )
+        assert rc == 0
+        assert "would run: parted --script /dev/sdz mklabel gpt" in out
+        assert "would run: mkfs.exfat -n MUSAEUS /dev/sdz1" in out
+        assert "mkfs.vfat" not in out
+
+    def test_alac_with_explicit_fat32_honours_the_override(self, tmp_path, monkeypatch, capsys):
+        rc, out, calls = self._run(
+            tmp_path,
+            monkeypatch,
+            capsys,
+            ["--library", "alac", "--filesystem", "fat32", "--device", "/dev/sdz"],
+        )
+        assert rc == 0
+        assert "would run: parted --script /dev/sdz mklabel msdos" in out
+        assert "would run: mkfs.vfat -F 32 -n MUSAEUS /dev/sdz1" in out
+
+    def test_oversized_file_refuses_fat32_before_any_destructive_command(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The check has to happen before the wipe, not during the copy --
+        discovering it mid-copy means discovering it on an erased stick."""
+        monkeypatch.setattr(
+            usb_mod, "files_too_big_for_fat32", lambda files: [(Path("/src/huge.m4a"), 5 * 1024**3)]
+        )
+        rc, out, calls = self._run(
+            tmp_path, monkeypatch, capsys, ["--library", "car", "--device", "/dev/sdz"]
+        )
+        assert rc == 1
+        assert "would run" not in out  # not one command line was emitted
+        assert calls == []
+
+    def test_missing_mkfs_refuses_before_any_destructive_command(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        cfg = _cfg(tmp_path)
+        cfg.car_library.mkdir(parents=True, exist_ok=True)
+        (cfg.car_library / "track.m4a").write_bytes(b"x")
+        monkeypatch.setattr(usb_mod, "get_config", lambda: cfg)
+        monkeypatch.setattr(usb_mod, "list_removable_devices", lambda: [_device(path="/dev/sdz")])
+        monkeypatch.setattr(usb_mod, "critical_backing_disks", lambda *a, **k: set())
+        monkeypatch.setattr(usb_mod, "_which_including_sbin", lambda cmd: None)
+        monkeypatch.setattr(sys, "argv", ["prog", "--library", "car", "--device", "/dev/sdz"])
+        calls = []
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
+        assert usb_mod.main() == 1
+        assert calls == []
+        assert "would run" not in capsys.readouterr().out
+
+
+# ── --no-format (2026-09-05) ─────────────────────────────────────────────────
+
+
+def _no_format_env(tmp_path, monkeypatch, dev=None):
+    """Config + a source library + a fake stick directory, with every gate
+    that --no-format is allowed to skip wired to EXPLODE if it is reached."""
+    cfg = _cfg(tmp_path)
+    cfg.car_library.mkdir(parents=True, exist_ok=True)
+    (cfg.car_library / "track.m4a").write_bytes(b"hello")
+    stick = tmp_path / "stick"
+    stick.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(usb_mod, "get_config", lambda: cfg)
+    monkeypatch.setattr(usb_mod, "list_removable_devices", lambda: [dev or _device(path="/dev/sdz")])
+    monkeypatch.setattr(usb_mod, "critical_backing_disks", lambda *a, **k: set())
+
+    def _boom(*a, **k):
+        raise AssertionError("--no-format reached a gate it must never reach")
+
+    monkeypatch.setattr(usb_mod, "confirm_wipe", _boom)
+    monkeypatch.setattr(usb_mod, "execute_commands", _boom)
+    monkeypatch.setattr(usb_mod, "wait_for_partition", _boom)
+    monkeypatch.setattr("builtins.input", _boom)
+    # Unprivileged, and not a terminal -- the two conditions the wipe path
+    # refuses under. --no-format must be unbothered by both.
+    monkeypatch.setattr(usb_mod.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    return cfg, stick
+
+
+class TestNoFormatEmitsNothingDestructive:
+    def test_dry_run_emits_no_destructive_command(self, tmp_path, monkeypatch, capsys):
+        cfg, stick = _no_format_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            sys, "argv", ["prog", "--library", "car", "--no-format", "--dest", str(stick)]
+        )
+        calls = []
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
+        assert usb_mod.main() == 0
+        assert calls == []
+        out = capsys.readouterr().out
+        # The banner names those commands to say it is NOT running them, so
+        # assert on emitted command lines, not on the words appearing at all.
+        assert "would run" not in out
+        emitted = [ln for ln in out.splitlines() if "would run" in ln or "running:" in ln]
+        assert emitted == []
+
+    def test_execute_emits_no_destructive_command(self, tmp_path, monkeypatch, capsys):
+        """The real one: --execute --no-format actually copies, and must still
+        never unmount, wipe, partition, format or even mount anything."""
+        cfg, stick = _no_format_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["prog", "--library", "car", "--no-format", "--dest", str(stick), "--execute"],
+        )
+        calls = []
+
+        def _record(cmd, *a, **k):
+            calls.append(cmd)
+            return _FakeCompleted()
+
+        monkeypatch.setattr(subprocess, "run", _record)
+        assert usb_mod.main() == 0
+
+        emitted = {c[0] for c in calls if isinstance(c, list) and c}
+        assert not (emitted & _DESTRUCTIVE), f"destructive command emitted: {emitted}"
+        # And the copy really happened -- proving the assertion above is not
+        # vacuously true because nothing ran at all.
+        assert (stick / "track.m4a").read_bytes() == b"hello"
+        assert "1 copied+verified, 0 failed" in capsys.readouterr().out
+
+    def test_needs_execute_just_like_the_wipe_path(self, tmp_path, monkeypatch):
+        """--no-format skips the typed confirmation and the root check, and
+        ONLY those. Gate 5 still stands: no --execute, no bytes written."""
+        cfg, stick = _no_format_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            sys, "argv", ["prog", "--library", "car", "--no-format", "--dest", str(stick)]
+        )
+        assert usb_mod.main() == 0
+        assert not (stick / "track.m4a").exists()
+
+    def test_runs_unprivileged_and_without_prompting(self, tmp_path, monkeypatch):
+        """_no_format_env sets geteuid to 1000, isatty to False, and makes
+        input()/confirm_wipe raise. Reaching any of them fails this test."""
+        cfg, stick = _no_format_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["prog", "--library", "car", "--no-format", "--dest", str(stick), "--execute"],
+        )
+        assert usb_mod.main() == 0
+        assert (stick / "track.m4a").exists()
+
+    def test_playlists_still_copied(self, tmp_path, monkeypatch):
+        """--no-format runs copy_playlists exactly as the wipe path does.
+
+        Uses --library alac deliberately: copy_playlists' rewriter resolves
+        each entry against source_root.parent/"Playlists", which equals
+        vault_root/Playlists only when the library is a direct child of the
+        vault. ALAC-Library is; Libraries/CAR_Library (published there
+        2026-09-03) is not, so car playlists are silently dropped. That is a
+        pre-existing gap in copy_playlists, not something --no-format
+        introduces, and is reported separately rather than fixed here."""
+        cfg, stick = _no_format_env(tmp_path, monkeypatch)
+        cfg.alac_library.mkdir(parents=True, exist_ok=True)
+        (cfg.alac_library / "track.m4a").write_bytes(b"hello")
+        playlists = cfg.vault_root / "Playlists"
+        playlists.mkdir(parents=True, exist_ok=True)
+        (playlists / "Drive.m3u8").write_text(
+            "#EXTM3U\n#EXTINF:1,A - B\n../ALAC-Library/track.m4a\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["prog", "--library", "alac", "--no-format", "--dest", str(stick), "--execute"],
+        )
+        assert usb_mod.main() == 0
+        assert (stick / "Playlists" / "Drive.m3u8").exists()
+
+
+class TestNoFormatTargetResolution:
+    def test_missing_target_is_refused(self, tmp_path, monkeypatch):
+        cfg, stick = _no_format_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", ["prog", "--library", "car", "--no-format"])
+        assert usb_mod.main() == 1
+
+    def test_dest_that_is_not_a_directory_is_refused(self, tmp_path, monkeypatch):
+        cfg, stick = _no_format_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            sys, "argv", ["prog", "--library", "car", "--no-format", "--dest", str(tmp_path / "nope")]
+        )
+        assert usb_mod.main() == 1
+
+    def test_device_resolves_through_findmnt(self, tmp_path, monkeypatch, capsys):
+        dev = _device(path="/dev/sdz")
+        dev.partitions = ["/dev/sdz1"]
+        cfg, stick = _no_format_env(tmp_path, monkeypatch, dev=dev)
+
+        def _fake_run(cmd, **kwargs):
+            if cmd[0] == "findmnt":
+                return _FakeCompleted(stdout=f"{stick}\n")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        monkeypatch.setattr(
+            sys, "argv", ["prog", "--library", "car", "--no-format", "--device", "/dev/sdz"]
+        )
+        assert usb_mod.main() == 0
+        assert str(stick) in capsys.readouterr().out
+
+    def test_device_with_no_mounted_partition_is_refused(self, tmp_path, monkeypatch):
+        dev = _device(path="/dev/sdz")
+        dev.partitions = ["/dev/sdz1"]
+        cfg, stick = _no_format_env(tmp_path, monkeypatch, dev=dev)
+        monkeypatch.setattr(
+            subprocess, "run", lambda *a, **k: _FakeCompleted(returncode=1)
+        )
+        monkeypatch.setattr(
+            sys, "argv", ["prog", "--library", "car", "--no-format", "--device", "/dev/sdz"]
+        )
+        assert usb_mod.main() == 1
+
+    def test_device_with_two_mounted_partitions_refuses_to_guess(self):
+        dev = _device(path="/dev/sdz")
+        dev.partitions = ["/dev/sdz1", "/dev/sdz2"]
+        import scripts.usb_transfer.transfer_to_usb as mod
+
+        original = mod._findmnt_target
+        try:
+            mod._findmnt_target = lambda source: "/media/one" if source.endswith("1") else "/media/two"
+            with pytest.raises(UsbTargetError, match="2 mounted partitions"):
+                mounted_dir_for_device(dev)
+        finally:
+            mod._findmnt_target = original
+
+    def test_denylisted_device_still_blocked_under_no_format(self, tmp_path, monkeypatch):
+        """--no-format is exempt from the typed confirmation and the root
+        check. It is NOT exempt from the denylist -- that gate is independent
+        of both, and a --device that backs a critical mount is refused
+        whatever else is on the command line."""
+        dev = _device(path="/dev/sda")
+        cfg, stick = _no_format_env(tmp_path, monkeypatch, dev=dev)
+        monkeypatch.setattr(usb_mod, "critical_backing_disks", lambda *a, **k: {"/dev/sda"})
+        calls = []
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["prog", "--library", "car", "--no-format", "--device", "/dev/sda", "--execute"],
+        )
+        assert usb_mod.main() == 1
+        assert calls == []
+
+
+class TestNoFormatFreeSpace:
+    def test_enough_space_passes(self, tmp_path):
+        f = tmp_path / "track.m4a"
+        f.write_bytes(b"x" * 16)
+        assert check_free_space(tmp_path, [f]) is None
+
+    def test_too_little_space_names_both_numbers(self, tmp_path, monkeypatch):
+        f = tmp_path / "track.m4a"
+        f.write_bytes(b"x" * 4096)
+        monkeypatch.setattr(
+            usb_mod.shutil, "disk_usage", lambda p: type("U", (), {"free": 100})()
+        )
+        with pytest.raises(UsbTargetError) as exc:
+            check_free_space(tmp_path, [f])
+        message = str(exc.value)
+        assert "4,096 bytes" in message  # needed
+        assert "100 bytes" in message  # available
+
+    def test_main_refuses_before_copying_when_space_is_short(self, tmp_path, monkeypatch):
+        cfg, stick = _no_format_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            usb_mod.shutil, "disk_usage", lambda p: type("U", (), {"free": 0})()
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["prog", "--library", "car", "--no-format", "--dest", str(stick), "--execute"],
+        )
+        assert usb_mod.main() == 1
+        assert not (stick / "track.m4a").exists()
+
+
+class TestDenylistAcrossEveryFlagCombination:
+    """Gate 1 is independent of every other gate. Whatever combination of the
+    new flags is passed, a device backing /, /home or the vault is refused and
+    not one subprocess call is made."""
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            [],
+            ["--execute"],
+            ["--filesystem", "fat32"],
+            ["--filesystem", "exfat"],
+            ["--filesystem", "fat32", "--execute"],
+            ["--no-format"],
+            ["--no-format", "--execute"],
+        ],
+    )
+    @pytest.mark.parametrize("library", ["car", "alac"])
+    def test_denylisted_device_refused(self, tmp_path, monkeypatch, library, extra):
+        cfg = _cfg(tmp_path)
+        for lib in (cfg.alac_library, cfg.car_library):
+            lib.mkdir(parents=True, exist_ok=True)
+            (lib / "track.m4a").write_bytes(b"x")
+        monkeypatch.setattr(usb_mod, "get_config", lambda: cfg)
+        monkeypatch.setattr(usb_mod, "list_removable_devices", lambda: [_device(path="/dev/sda")])
+        monkeypatch.setattr(usb_mod, "critical_backing_disks", lambda *a, **k: {"/dev/sda"})
+        monkeypatch.setattr(usb_mod, "check_mkfs_available", lambda filesystem: None)
+
+        def _boom(*a, **k):
+            raise AssertionError("a denylisted device reached a destructive gate")
+
+        monkeypatch.setattr(usb_mod, "confirm_wipe", _boom)
+        monkeypatch.setattr(usb_mod, "execute_commands", _boom)
+        monkeypatch.setattr(
+            sys, "argv", ["prog", "--library", library, "--device", "/dev/sda"] + extra
+        )
+        calls = []
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
+        assert usb_mod.main() == 1
+        assert calls == []
