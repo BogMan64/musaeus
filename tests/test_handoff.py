@@ -9,10 +9,12 @@ handoff.py's own module docstring for why that distinction matters.
 
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from musaeus import cli as cli_mod
 from musaeus.context import StageResult
 from musaeus.handoff import write_handoff_doc
 
@@ -225,7 +227,7 @@ def test_the_console_printer_is_bounded_too(tmp_path: Path) -> None:
     assert tail == [] and hidden == 0
 
     # and cli.py actually routes through it rather than looping the raw list
-    source = Path("musaeus/cli.py").read_text(encoding="utf-8")
+    source = inspect.getsource(cli_mod)
     assert "head_with_remainder(result.errors)" in source
     assert "for err in result.errors:" not in source
 
@@ -269,7 +271,7 @@ def test_a_handoff_failure_is_loud_not_silent() -> None:
     Two halves. The import is now eager, so a run holds one coherent
     snapshot; and the call is guarded, so if it fails anyway the run says so
     and exits non-zero instead of reporting success."""
-    source = Path("musaeus/cli.py").read_text(encoding="utf-8")
+    source = inspect.getsource(cli_mod)
 
     # eager: imported at module level, never inside the function
     assert "\nfrom .handoff import write_handoff_doc" in source

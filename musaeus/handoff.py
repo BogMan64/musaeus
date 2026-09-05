@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .context import head_with_remainder
+from .context import elision, head_with_remainder
 
 if TYPE_CHECKING:
     from .context import RunContext, StageResult
@@ -125,7 +125,7 @@ def _capped(items: list[str], prefix: str = "") -> list[str]:
     if hidden:
         # Between, never after: a trailing elision would read as though the
         # tail entries were the ones that followed the head.
-        lines.append(f"- ... and {hidden} more")
+        lines.append(f"- {elision(hidden)}")
     lines.extend(f"- {prefix}{item}" for item in tail)
     return lines
 

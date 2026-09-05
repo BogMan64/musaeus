@@ -10,11 +10,13 @@ every night. Both are right; both must be adopted deliberately.
 
 from __future__ import annotations
 
+import inspect
 import io
 from pathlib import Path
 
 import pytest
 
+from musaeus import cli as cli_mod
 from musaeus.cli_gate import (
     EXIT_REVIEW_ONLY,
     EXIT_SAFETY_BLOCKED,
@@ -74,7 +76,7 @@ class TestGateIsOptIn:
 
     def test_the_splice_in_cli_is_two_statements_and_guarded(self):
         """Keeps the merge surface small and the default provably inert."""
-        source = Path("musaeus/cli.py").read_text()
+        source = inspect.getsource(cli_mod)
         assert "from .cli_gate import enforce_execution_gate" in source
         assert "gate_exit = enforce_execution_gate(cfg, dry_run=dry_run)" in source
         assert "if gate_exit is not None:\n        return gate_exit" in source

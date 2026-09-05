@@ -37,7 +37,7 @@ from __future__ import annotations
 import logging
 
 from ..canon.genre_law import GenreLaw
-from ..context import RunContext, StageResult
+from ..context import RunContext, StageResult, elision
 from .base import BaseStage
 
 logger = logging.getLogger(__name__)
@@ -310,7 +310,7 @@ class GenreValidateStage(BaseStage):
                     f"    {artist}: {have!r} vs law {law_says!r}  ({n} file{'s' if n != 1 else ''})"
                 )
             if len(ranked) > 40:
-                result.notes.append(f"    ... and {len(ranked) - 40} more artist(s)")
+                result.notes.append(f"    {elision(len(ranked) - 40, unit='artist(s)')}")
 
         ctx.record_stage(result)
         return result

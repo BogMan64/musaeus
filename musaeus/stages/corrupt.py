@@ -21,7 +21,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..context import StageResult
+from ..context import StageResult, elision
 from ..deep_scan import ensure_columns as deep_scan_ensure_columns
 from ..duration import duration_with_source
 from .base import BaseStage
@@ -412,7 +412,7 @@ class CorruptStage(BaseStage):
             for s in suspects[:10]:  # Show first 10
                 result.notes.append(f"  ⚠ {Path(s['file_path']).name}: {s['reason']}")
             if len(suspects) > 10:
-                result.notes.append(f"  ... and {len(suspects) - 10} more")
+                result.notes.append(f"  {elision(len(suspects) - 10)}")
         else:
             result.notes.append("✓ No corrupt files detected")
 

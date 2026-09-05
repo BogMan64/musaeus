@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..artist_form import comparison_key
-from ..context import RunContext, StageResult
+from ..context import RunContext, StageResult, elision
 from ..wanted_list import wanted_lines
 from .base import BaseStage
 from .organize import build_track_filename, sanitize_path_component, unique_path
@@ -465,7 +465,7 @@ class TributeQuarantineStage(BaseStage):
         for row, reason in matches[:20]:
             result.notes.append(f"  {row.get('artist')} — {row.get('title')}  ({reason})")
         if len(matches) > 20:
-            result.notes.append(f"  ... and {len(matches) - 20} more")
+            result.notes.append(f"  {elision(len(matches) - 20)}")
 
         ctx.record_stage(result)
         return result

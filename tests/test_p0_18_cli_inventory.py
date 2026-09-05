@@ -17,6 +17,7 @@ cannot widen unnoticed; which of them to publish is Grey's call.
 
 from __future__ import annotations
 
+import inspect
 import argparse
 import re
 from pathlib import Path
@@ -24,6 +25,7 @@ from pathlib import Path
 import pytest
 
 import musaeus.cli as cli
+from musaeus import cli as cli_mod
 from musaeus.cli_gate import GATE_ENV, GATE_FLAG
 from musaeus.exports import CONFIG_KEY, ENV_VAR
 
@@ -74,7 +76,7 @@ def _registered() -> set[str]:
 
 
 def _usage_text() -> str:
-    source = Path("musaeus/cli.py").read_text()
+    source = inspect.getsource(cli_mod)
     return source[: source.index("\ndef ")]
 
 
@@ -136,7 +138,7 @@ class TestSafetyGateIsDocumentedTruthfully:
     whose behaviour is fixture-proven and may therefore be documented."""
 
     def test_the_gate_is_documented_as_opt_in(self):
-        source = Path("musaeus/cli.py").read_text()
+        source = inspect.getsource(cli_mod)
         assert "MUSAEUS_P0_SAFETY_GATE" in source or GATE_ENV in source
 
     def test_the_gate_is_not_advertised_as_live_safe_operation(self):

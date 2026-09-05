@@ -23,12 +23,24 @@ what made those four invisible to everything that read metadata.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
+
+from musaeus.duration import tolerance_for
+from musaeus.stages import canonicalize as canonicalize_mod
 
 
 def _problem_for(recorded: float, actual: float) -> bool:
-    """The tolerance rule as implemented: 2s floor, else 2%."""
-    return abs(actual - recorded) > max(2.0, recorded * 0.02)
+    """The tolerance rule as implemented: 2s floor, else 2%.
+
+    Calls duration.tolerance_for() rather than restating the arithmetic.
+    This test previously carried its own `max(2.0, recorded * 0.02)`, which
+    made it a copy of exactly the constant P2-3 consolidated -- and one that
+    would keep passing while production drifted away from it, since both
+    sides of the comparison were the same literal.
+    """
+    return abs(actual - recorded) > tolerance_for(recorded)
 
 
 class TestTolerance:
@@ -69,7 +81,7 @@ class TestImplementationShape:
         """The container's duration is frequently intact on a truncated
         file — that is precisely why those four masters were invisible."""
         from pathlib import Path
-        src = Path("musaeus/stages/canonicalize.py").read_text()
+        src = inspect.getsource(canonicalize_mod)
         block = src[src.index("conversion truncated the audio") - 1600:
                     src.index("conversion truncated the audio")]
         assert 'codec_type") == "audio"' in block
@@ -77,11 +89,11 @@ class TestImplementationShape:
 
     def test_the_recorded_duration_is_selected_by_the_sample_query(self) -> None:
         from pathlib import Path
-        src = Path("musaeus/stages/canonicalize.py").read_text()
+        src = inspect.getsource(canonicalize_mod)
         assert "SELECT a.file_path, a.audio_hash, a.duration" in src
 
     def test_a_missing_recorded_duration_does_not_raise_a_false_alarm(self) -> None:
         """Nothing to compare against is not evidence of truncation."""
         from pathlib import Path
-        src = Path("musaeus/stages/canonicalize.py").read_text()
+        src = inspect.getsource(canonicalize_mod)
         assert "if recorded and recorded > 0:" in src

@@ -33,7 +33,7 @@ import logging
 import stat
 from pathlib import Path
 
-from ..context import RunContext, StageResult
+from ..context import RunContext, StageResult, elision
 from .base import BaseStage
 
 logger = logging.getLogger(__name__)
@@ -135,7 +135,7 @@ class PermissionsStage(BaseStage):
                 result.notes.append(f"  [{kind}] {p} ({mode} -> {want})")
             remaining = len(bad_files) + len(bad_dirs) - 20
             if remaining > 0:
-                result.notes.append(f"  ... and {remaining} more")
+                result.notes.append(f"  {elision(remaining)}")
 
         ctx.record_stage(result)
         return result

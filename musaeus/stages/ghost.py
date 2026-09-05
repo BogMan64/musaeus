@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from ..context import RunContext, StageResult
+from ..context import RunContext, StageResult, elision
 from .base import BaseStage
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ class GhostStage(BaseStage):
             for p in ghosts[:20]:
                 result.notes.append(f"  ✗ {p}")
             if len(ghosts) > 20:
-                result.notes.append(f"  ... and {len(ghosts) - 20} more")
+                result.notes.append(f"  {elision(len(ghosts) - 20)}")
         else:
             result.notes.append("No ghosts found — all archive files present on disk.")
 

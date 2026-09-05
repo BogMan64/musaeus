@@ -31,7 +31,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import MusicConfig, get_config
-from .context import RunContext
+from .context import RunContext, elision
 from .db import open_db, snapshot_db_before_wipe
 from .hasher import ffmpeg_available, ffprobe_available
 from .network_policy import NetworkPolicy, policy
@@ -328,7 +328,7 @@ class Console:
             except ValueError:
                 _info(f"  {f}")
         if len(changed) > 8:
-            _info(f"  ... and {len(changed) - 8} more")
+            _info(f"  {elision(len(changed) - 8)}")
         _info("A running process keeps the modules it imported at startup,")
         _info("so a live run now would use the OLD code.")
 
@@ -976,7 +976,7 @@ class Console:
                 for c in commits[:3]:
                     _info(f"      {c}")
                 if len(commits) > 3:
-                    _info(f"      ... and {len(commits) - 3} more")
+                    _info(f"      {elision(len(commits) - 3)}")
             print()
             _warn("A console only ever runs the checkout it was launched from.")
             _info("To run another branch's code, quit and relaunch from that path.")

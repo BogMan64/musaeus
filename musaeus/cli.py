@@ -108,7 +108,7 @@ from pathlib import Path
 
 from . import __version__
 from .config import get_config
-from .context import RunContext, head_with_remainder
+from .context import RunContext, elision, head_with_remainder
 from .handoff import write_handoff_doc
 from .db import open_db, snapshot_db_before_wipe
 from .stages import (
@@ -397,7 +397,7 @@ def _run_pipeline(
         for note in head_notes:
             print(f"       {note}")
         if more_notes:
-            print(f"       ... and {more_notes} more")
+            print(f"       {elision(more_notes)}")
         # The tail carries the stage's summary -- dupe_resolver's manifest and
         # restore-script paths land here, and they are the only undo record.
         for note in tail_notes:
@@ -409,7 +409,7 @@ def _run_pipeline(
         for err in head_errs:
             print(f"       ERROR: {err}", file=sys.stderr)
         if more_errors:
-            print(f"       ... and {more_errors} more (full list in the run log)", file=sys.stderr)
+            print(f"       {elision(more_errors, suffix='(full list in the run log)')}", file=sys.stderr)
         for err in tail_errs:
             print(f"       ERROR: {err}", file=sys.stderr)
 
@@ -893,7 +893,7 @@ def _cmd_edition(args) -> int:
         for g, n in sorted(by_genre.items(), key=lambda kv: (-kv[1], kv[0]))[:12]:
             print(f"    {n:>6,}  {g}")
         if len(by_genre) > 12:
-            print(f"    {'':>6}  ... and {len(by_genre) - 12} more genre(s)")
+            print(f"    {'':>6}  {elision(len(by_genre) - 12, unit='genre(s)')}")
 
     print("\n  Selection only — nothing was encoded or written.\n")
     return 0

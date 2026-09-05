@@ -18,6 +18,7 @@ said so.
 
 from __future__ import annotations
 
+import inspect
 import contextlib
 import sqlite3
 import tempfile
@@ -25,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+from musaeus.state import duplicates as duplicates_mod
+from musaeus.stages import acousticid as acousticid_mod
 from musaeus.db import open_db
 from musaeus.network_policy import NetworkPolicy, get_gateway
 from musaeus.state.duplicates import (
@@ -143,7 +146,7 @@ class TestAcoustIDStageCanActuallyRun:
 
     def test_the_stage_source_no_longer_names_columns_that_do_not_exist(self):
         """Guards the specific regression rather than the general shape."""
-        source = Path("musaeus/stages/acousticid.py").read_text()
+        source = inspect.getsource(acousticid_mod)
         assert "INSERT OR IGNORE INTO duplicates" in source
         insert = source[source.index("INSERT OR IGNORE INTO duplicates") :][:400]
         assert "duplicate_type" in insert
@@ -206,7 +209,7 @@ class TestDuplicateContract:
         version of this test asked whether "id," appeared in the text,
         which it does, inside "run_id,". Substring arithmetic on SQL is
         how you write an assertion that is right for the wrong reason."""
-        source = Path("musaeus/state/duplicates.py").read_text()
+        source = inspect.getsource(duplicates_mod)
         statement = source[source.index("INSERT OR IGNORE INTO duplicates") :]
         column_list = statement[statement.index("(") + 1 : statement.index(")")]
         named = [c.strip() for c in column_list.replace("\n", " ").split(",") if c.strip()]

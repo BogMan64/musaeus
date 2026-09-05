@@ -28,7 +28,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from ..canon import ArtistCanon
-from ..context import StageResult
+from ..context import StageResult, elision
 from .base import BaseStage
 
 if TYPE_CHECKING:
@@ -411,7 +411,7 @@ class ArtistConsolidateStage(BaseStage):
         for old, new in sample:
             result.notes.append(f"  '{old}' → '{new}'")
         if len(changes) > 10:
-            result.notes.append(f"  ... and {len(changes) - 10} more")
+            result.notes.append(f"  {elision(len(changes) - 10)}")
 
         ctx.record_stage(result)
         return result

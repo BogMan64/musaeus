@@ -65,7 +65,7 @@ import logging
 from pathlib import Path
 
 from ..config import AUDIO_EXTENSIONS
-from ..context import RunContext, StageResult
+from ..context import RunContext, StageResult, elision
 from ..hasher import file_hash
 from .base import BaseStage
 
@@ -235,7 +235,7 @@ class BitRotStage(BaseStage):
                     f"  MISMATCH {fp}  (baseline {stored[:12]}… now {current[:12]}…)"
                 )
             if len(corrupt) > 20:
-                result.notes.append(f"  ... and {len(corrupt) - 20} more")
+                result.notes.append(f"  {elision(len(corrupt) - 20)}")
 
         ctx.record_stage(result)
         return result

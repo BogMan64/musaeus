@@ -24,7 +24,7 @@ import logging
 import re
 from pathlib import Path
 
-from ..context import RunContext, StageResult
+from ..context import RunContext, StageResult, elision
 from ..db import upsert_archive
 from ..hasher import audio_hash_safe, file_hash
 from .base import BaseStage
@@ -348,7 +348,7 @@ class SentinelStage(BaseStage):
             p = Path(row["file_path"])
             result.notes.append(f"  ~ {p.name}")
         if len(pending) > 10:
-            result.notes.append(f"  ... and {len(pending) - 10} more")
+            result.notes.append(f"  {elision(len(pending) - 10)}")
 
         result.files_processed = len(pending)
         result.files_changed = len(pending)

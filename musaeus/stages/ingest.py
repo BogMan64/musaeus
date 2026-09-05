@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..config import AUDIO_EXTENSIONS
-from ..context import RunContext, StageResult
+from ..context import RunContext, StageResult, elision
 from ..db import upsert_archive
 from .base import BaseStage, StageError
 
@@ -132,7 +132,7 @@ class IngestStage(BaseStage):
             for p in new_files[:20]:
                 result.notes.append(f"  + {p.relative_to(ctx.inbox)}")
             if len(new_files) > 20:
-                result.notes.append(f"  ... and {len(new_files) - 20} more")
+                result.notes.append(f"  {elision(len(new_files) - 20)}")
         else:
             result.notes.append("No new audio files found in inbox.")
 

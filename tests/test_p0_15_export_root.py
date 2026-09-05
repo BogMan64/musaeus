@@ -25,6 +25,7 @@ test coverage at all. A NameError introduced into it passed the entire
 
 from __future__ import annotations
 
+import inspect
 import dataclasses
 import os
 import stat
@@ -32,6 +33,7 @@ from pathlib import Path
 
 import pytest
 
+from musaeus import cli as cli_mod
 from musaeus.config import MusicConfig
 from musaeus.exports import (
     CONFIG_KEY,
@@ -306,6 +308,6 @@ class TestBigKahunaIsGone:
         import musaeus.stages as stages
 
         assert not [n for n in dir(stages) if "KAHUNA" in n.upper()]
-        cli_source = Path("musaeus/cli.py").read_text()
+        cli_source = inspect.getsource(cli_mod)
         assert "big-kahuna" not in cli_source
         assert "big_kahuna" not in cli_source

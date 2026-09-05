@@ -87,7 +87,7 @@ import shutil
 import sqlite3
 from pathlib import Path
 
-from ..context import RunContext, StageResult
+from ..context import RunContext, StageResult, elision
 from ..db import open_hash_index, record_finalized_hash
 from ..safety.mutation import MutationBoundary, PreconditionError, UnmanagedPathError
 from ..safety.recovery import (
@@ -595,7 +595,7 @@ class FinalizeStage(BaseStage):
                 result.notes.append(f"  {source.name} -> {target}")
                 shown += 1
         if total > shown:
-            result.notes.append(f"  ... and {total - shown} more")
+            result.notes.append(f"  {elision(total - shown)}")
 
         result.notes.append("  no files will be written, no DB changes")
 

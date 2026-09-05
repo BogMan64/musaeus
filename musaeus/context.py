@@ -40,6 +40,31 @@ MAX_LISTED = 20
 TAIL_LISTED = 5
 
 
+def elision(hidden: int, unit: str = "", suffix: str = "") -> str:
+    """The one place the `... and N more` wording lives.
+
+    Returns the bare phrase with no indent: callers own their own leading
+    whitespace, which differs between console output, markdown bullets and
+    stage notes.
+
+    head_with_remainder() centralised the ARITHMETIC in 2026-09-04 and the
+    rendering stayed copied -- seventeen f-strings across stages, cli and
+    console, each re-typing the same sentence. The review that caught this
+    (P3-1) counted seven; by the time it was acted on there were seventeen,
+    which is the argument for the guard test in
+    tests/test_elision_is_shared.py rather than for another round of tidying.
+
+    `unit` names what was elided ("genre(s)", "artist(s)"); `suffix` carries
+    a trailing clause such as "(full list in the run log)".
+    """
+    out = f"... and {hidden} more"
+    if unit:
+        out += f" {unit}"
+    if suffix:
+        out += f" {suffix}"
+    return out
+
+
 def head_with_remainder(
     items: list[str], limit: int = MAX_LISTED, tail: int = TAIL_LISTED
 ) -> tuple[list[str], list[str], int]:

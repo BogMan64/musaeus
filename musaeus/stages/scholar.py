@@ -28,7 +28,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from ..context import RunContext, StageResult
+from ..context import RunContext, StageResult, elision
 from ..db import upsert_archive
 from .base import BaseStage
 
@@ -189,7 +189,7 @@ class ScholarStage(BaseStage):
         for row in pending[:10]:
             result.notes.append(f"  ~ {Path(row['file_path']).name}")
         if len(pending) > 10:
-            result.notes.append(f"  ... and {len(pending) - 10} more")
+            result.notes.append(f"  {elision(len(pending) - 10)}")
         ctx.record_stage(result)
         return result
 
