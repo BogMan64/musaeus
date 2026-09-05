@@ -1051,7 +1051,10 @@ def main() -> int:
     execute_commands(build_unmount_commands(refreshed), dry_run=False)
 
     partition = partition_path_for(device.path)
-    wipe_and_format = build_wipe_and_format_commands(device.path, filesystem=filesystem)
+    # The SAME list the dry run printed above, not a second call with the
+    # same arguments -- two call sites is how a dry run starts lying about
+    # what --execute will actually do.
+    wipe_and_format = format_commands
     # wipefs + both parted calls, then mkfs.exfat separately -- the wait in
     # between is why this isn't one execute_commands() call. See
     # wait_for_partition's docstring.

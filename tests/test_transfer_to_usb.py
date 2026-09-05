@@ -1296,6 +1296,126 @@ class TestFilesystemDefaultsEndToEnd:
         assert "would run" not in capsys.readouterr().out
 
 
+class TestFat32ExecutePath:
+    """The FAT32 wiring on the path that actually wipes. Everything else
+    about fat32 is proven in dry run; this is the one that has no rollback."""
+
+    def test_execute_runs_mkfs_vfat_after_the_udev_wait(self, tmp_path, monkeypatch, capsys):
+        """mkfs must run AFTER wait_for_partition, not with the parted calls.
+
+        The split is positional -- execute_commands(cmds[:-1]), wait,
+        execute_commands(cmds[-1:]) -- so appending a fifth command to
+        build_wipe_and_format_commands would silently move mkfs into the
+        pre-wait batch and reintroduce the udev race wait_for_partition
+        exists to prevent (hit for real 2026-09-03: "open failed :
+        /dev/sde1, No such file or directory"). Asserting the wait's
+        position in the same sequence is what catches that.
+
+        The argv asserted here is the one verified against a 256 MB file
+        image on 2026-09-05: it produces a real FAT32 filesystem labelled
+        MUSAEUS, on a partition of type 0x0c."""
+        cfg = _cfg(tmp_path)
+        cfg.car_library.mkdir(parents=True, exist_ok=True)
+        (cfg.car_library / "track.m4a").write_bytes(b"x")
+        dev = _device(path="/dev/sdz")
+
+        monkeypatch.setattr(usb_mod, "get_config", lambda: cfg)
+        monkeypatch.setattr(usb_mod, "list_removable_devices", lambda: [dev])
+        monkeypatch.setattr(usb_mod, "critical_backing_disks", lambda *a, **k: set())
+        monkeypatch.setattr(usb_mod, "check_mkfs_available", lambda filesystem: None)
+        monkeypatch.setattr(usb_mod, "confirm_wipe", lambda device: True)
+        monkeypatch.setattr(usb_mod.os, "geteuid", lambda: 0)
+        monkeypatch.setattr(usb_mod.Path, "mkdir", lambda self, **kw: None)
+        monkeypatch.setattr(usb_mod.Path, "exists", lambda self: True)
+
+        calls = []
+
+        def _fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return _FakeCompleted()
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        # Recorded into the same sequence so its ORDER is asserted, not just
+        # the fact that it was called.
+        monkeypatch.setattr(
+            usb_mod, "wait_for_partition", lambda p, **kw: calls.append(["<wait>", p])
+        )
+        monkeypatch.setattr(
+            usb_mod,
+            "copy_with_verification",
+            lambda files, *a, **k: CopyResult(ok=[str(f) for f in files]),
+        )
+        monkeypatch.setattr(
+            sys, "argv", ["prog", "--library", "car", "--device", "/dev/sdz", "--execute"]
+        )
+
+        assert usb_mod.main() == 0
+
+        assert [c[0] for c in calls] == [
+            "wipefs", "parted", "parted", "<wait>", "mkfs.vfat", "mount", "umount"
+        ]
+        assert calls[1] == ["parted", "--script", "/dev/sdz", "mklabel", "msdos"]
+        assert calls[2] == [
+            "parted", "--script", "/dev/sdz", "mkpart", "primary", "fat32", "0%", "100%"
+        ]
+        assert calls[3] == ["<wait>", "/dev/sdz1"]
+        assert calls[4] == ["mkfs.vfat", "-F", "32", "-n", "MUSAEUS", "/dev/sdz1"]
+        assert calls[5][0:2] == ["mount", "/dev/sdz1"]
+
+    def test_execute_emits_exactly_what_the_dry_run_promised(self, tmp_path, monkeypatch, capsys):
+        """A dry run is only worth running if it is the same command list.
+        main() builds it once and reuses it; this proves the two agree
+        rather than trusting that they were built the same way twice."""
+        promised = []
+        executed = []
+
+        # Both fixtures are built BEFORE anything is monkeypatched -- the
+        # first run stubs out Path.mkdir, and that stub would otherwise still
+        # be in place when the second run tried to create its library.
+        cfgs = {}
+        for name in ("dry", "exec"):
+            cfg = _cfg(tmp_path / name)
+            cfg.car_library.mkdir(parents=True, exist_ok=True)
+            (cfg.car_library / "track.m4a").write_bytes(b"x")
+            cfgs[name] = cfg
+
+        def _run_once(argv, sink, execute):
+            cfg = cfgs["exec" if execute else "dry"]
+            dev = _device(path="/dev/sdz")
+            monkeypatch.setattr(usb_mod, "get_config", lambda: cfg)
+            monkeypatch.setattr(usb_mod, "list_removable_devices", lambda: [dev])
+            monkeypatch.setattr(usb_mod, "critical_backing_disks", lambda *a, **k: set())
+            monkeypatch.setattr(usb_mod, "check_mkfs_available", lambda filesystem: None)
+            monkeypatch.setattr(usb_mod, "confirm_wipe", lambda device: True)
+            monkeypatch.setattr(usb_mod.os, "geteuid", lambda: 0)
+            monkeypatch.setattr(usb_mod.Path, "mkdir", lambda self, **kw: None)
+            monkeypatch.setattr(usb_mod.Path, "exists", lambda self: True)
+            monkeypatch.setattr(usb_mod, "wait_for_partition", lambda p, **kw: None)
+            monkeypatch.setattr(
+                usb_mod, "copy_with_verification", lambda files, *a, **k: CopyResult(ok=[])
+            )
+
+            def _fake_run(cmd, **kwargs):
+                sink.append(cmd)
+                return _FakeCompleted()
+
+            monkeypatch.setattr(subprocess, "run", _fake_run)
+            monkeypatch.setattr(sys, "argv", ["prog"] + argv)
+            usb_mod.main()
+
+        base = ["--library", "car", "--device", "/dev/sdz"]
+        _run_once(base, promised, execute=False)
+        dry_lines = [
+            ln.split("would run: ", 1)[1]
+            for ln in capsys.readouterr().out.splitlines()
+            if "would run: " in ln
+        ]
+        _run_once(base + ["--execute"], executed, execute=True)
+
+        # Everything the dry run promised, in order, up to the mount step.
+        assert dry_lines == [" ".join(c) for c in executed[: len(dry_lines)]]
+
+
 # ── --no-format (2026-09-05) ─────────────────────────────────────────────────
 
 
