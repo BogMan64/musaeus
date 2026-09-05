@@ -377,6 +377,16 @@ def _append_tunemymusic_row(ctx: RunContext, row: dict) -> None:
 #: either, because it means the file was already one of them.
 _CANONICAL_CODECS = ("alac", "aac")
 
+# What each canonicalize outcome is allowed to leave on disk. PASSTHROUGH
+# means "already ALAC-in-.m4a or AAC-in-.m4a, no file write at all", so both
+# are legitimate there. An outcome absent from this map is not verifiable and
+# must not be sealed -- see verify_effect().
+_EXPECTED_CODECS: dict[str, tuple[str, ...]] = {
+    "CONVERTED": ("alac",),
+    "TRANSCODED": ("aac",),
+    "PASSTHROUGH": _CANONICAL_CODECS,
+}
+
 
 class CanonicalizeStage(BaseStage):
     """
@@ -407,7 +417,8 @@ class CanonicalizeStage(BaseStage):
         """
         rows = ctx.conn.execute(
             """
-            SELECT a.file_path, a.audio_hash, a.duration, e.new_value AS claimed
+            SELECT a.file_path, a.audio_hash, a.duration,
+                   a.canon_action AS claimed
               FROM archive a
               JOIN events e ON e.file_path = a.file_path
              WHERE e.stage = ? AND e.event_type = 'CANONICALIZE'
@@ -462,10 +473,28 @@ class CanonicalizeStage(BaseStage):
             # wolf is discarded as fast as one that lies, and after
             # 2026-09-08 the seal is the only signal anyone reads. So each
             # outcome is now checked against its own contract:
+            # The claim is read from archive.canon_action, the column
+            # run() writes on this very row (line ~819) and the module
+            # docstring names as where the outcome lives -- not from the
+            # event's new_value via the JOIN. The JOIN stays, because it is
+            # what scopes the sample to THIS run, but it no longer supplies
+            # the claim: an event join can match a second row for the same
+            # path and new_value can be NULL, and either one silently
+            # decides what this seal asserts.
             claimed = (r["claimed"] or "").upper()
-            expected = {"CONVERTED": ("alac",), "TRANSCODED": ("aac",)}.get(
-                claimed, _CANONICAL_CODECS
-            )
+            expected = _EXPECTED_CODECS.get(claimed)
+            if expected is None:
+                # Fail CLOSED. The previous default handed an unrecognised
+                # claim -- a NULL canon_action, or a fifth outcome added
+                # later -- to the permissive ("alac", "aac") set, where
+                # every plausible codec passes and the check stops
+                # discriminating while still printing a seal. A default in
+                # a verification seal must fail closed, not open.
+                problems.append(
+                    f"{p.name}: canon_action is {r['claimed']!r}, which this check "
+                    f"does not know how to verify -- refusing to seal it"
+                )
+                continue
             if codec and codec not in expected:
                 wanted = " or ".join(expected)
                 problems.append(

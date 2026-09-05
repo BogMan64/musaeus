@@ -524,6 +524,13 @@ class TestVerifyEffectChecksTheClaim:
             "file_path": str(path), "status": "CATALOGUED",
             "audio_hash": "a" * 64, "duration": 100.0,
         })
+        # run() writes canon_action on the row AND logs the event with the
+        # same string. The fixture has to do both, or it tests a shape
+        # production never produces -- which is how the seal came to read its
+        # claim from the event join in the first place. upsert_archive has no
+        # canon_action field, so this mirrors run()'s own direct UPDATE.
+        ctx.conn.execute("UPDATE archive SET canon_action = ? WHERE file_path = ?",
+                         (claimed, str(path)))
         ctx.log_event("CANONICALIZE", file_path=str(path),
                       new_value=claimed, stage="canonicalize")
         ctx.conn.commit()
@@ -568,3 +575,68 @@ class TestVerifyEffectChecksTheClaim:
 class _StageResultStub:
     """verify_effect only needs the argument to exist."""
     files_changed = 0
+
+
+class TestVerifyEffectFailsClosed:
+    """P1-5, fixed 2026-09-05. The claim was read from the CANONICALIZE
+    event's new_value through a JOIN, and any value outside
+    {CONVERTED, TRANSCODED} fell back to the permissive ("alac", "aac") set
+    -- where every plausible codec passes and the check stops discriminating
+    while still printing a seal.
+
+    A default in a verification seal must fail closed."""
+
+    def _probe(self, codec: str):
+        return {"streams": [{"codec_type": "audio", "codec_name": codec,
+                             "duration": "100.0"}]}
+
+    def _row(self, ctx, path: Path, canon_action) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+        upsert_archive(ctx.conn, {
+            "file_path": str(path), "status": "CATALOGUED",
+            "audio_hash": "a" * 64, "duration": 100.0,
+        })
+        ctx.conn.execute("UPDATE archive SET canon_action = ? WHERE file_path = ?",
+                         (canon_action, str(path)))
+        ctx.log_event("CANONICALIZE", file_path=str(path),
+                      new_value=canon_action, stage="canonicalize")
+        ctx.conn.commit()
+
+    @pytest.mark.parametrize("canon_action", ["REMASTERED", "", None])
+    def test_an_unrecognised_outcome_is_refused_not_waved_through(
+        self, ctx, tmp_path, monkeypatch, canon_action
+    ):
+        f = tmp_path / "INBOX" / "unknown_outcome.m4a"
+        self._row(ctx, f, canon_action)
+        # alac would satisfy the old permissive fallback and pass silently.
+        monkeypatch.setattr("musaeus.stages.canonicalize._probe_streams",
+                            lambda _p: self._probe("alac"))
+        problems = CanonicalizeStage().verify_effect(ctx, _StageResultStub())
+        assert problems, (
+            "an outcome this check cannot verify must not be sealed as verified"
+        )
+        assert "does not know how to verify" in problems[0]
+
+    def test_the_claim_comes_from_the_row_not_the_event(
+        self, ctx, tmp_path, monkeypatch
+    ):
+        """canon_action is authoritative. If the event disagrees -- a stale
+        or second event for the same path -- the row wins."""
+        f = tmp_path / "INBOX" / "disagreement.m4a"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"x")
+        upsert_archive(ctx.conn, {
+            "file_path": str(f), "status": "CATALOGUED",
+            "audio_hash": "a" * 64, "duration": 100.0,
+        })
+        ctx.conn.execute("UPDATE archive SET canon_action='CONVERTED' WHERE file_path = ?",
+                         (str(f),))   # the row says lossless
+        ctx.log_event("CANONICALIZE", file_path=str(f),
+                      new_value="TRANSCODED", stage="canonicalize")
+        ctx.conn.commit()
+        # aac satisfies the EVENT's claim but breaks the ROW's.
+        monkeypatch.setattr("musaeus.stages.canonicalize._probe_streams",
+                            lambda _p: self._probe("aac"))
+        problems = CanonicalizeStage().verify_effect(ctx, _StageResultStub())
+        assert problems, "the row claimed CONVERTED; aac does not honour that"
