@@ -274,9 +274,13 @@ def diagnose(cfg: MusicConfig) -> Report:
     #    any other row carrying that same hash holds the same rejected audio.
     #    On the library this fired once, on the one file that escaped, and
     #    nowhere else.
-    rejected_hashes = {
-        r["audio_hash"]: r["src"]
-        for r in conn.execute(
+    #    Collected as two sets, not a dict keyed on audio_hash. Two identical
+    #    truncated files in INBOX -- the "existed twice" shape this check was
+    #    written for -- are both refused and share one audio_hash. A dict keeps
+    #    only the last path, and the other source is then reported as escaped
+    #    audio: the same false positive already fixed once here (P1-2).
+    _refusals = list(
+        conn.execute(
             """
             SELECT a.audio_hash AS audio_hash, e.old_value AS src
               FROM events e
@@ -285,11 +289,13 @@ def diagnose(cfg: MusicConfig) -> Report:
                AND a.audio_hash IS NOT NULL AND a.audio_hash <> ''
             """
         )
-    }
+    )
+    rejected_hashes = {r["audio_hash"] for r in _refusals}
     #    The rejected source itself still carries its own hash and is still
     #    on disk -- that is the refusal working, not a leak. Only OTHER rows
-    #    holding that audio are the escape.
-    rejected_paths = set(rejected_hashes.values())
+    #    holding that audio are the escape. EVERY refused source must be here,
+    #    not one per hash.
+    rejected_paths = {r["src"] for r in _refusals}
     escaped = [
         r
         for r in lib
@@ -340,18 +346,41 @@ def diagnose(cfg: MusicConfig) -> Report:
     #      refused conversion are excluded: the Santana row was DELETED for
     #      truncation, not for being a knock-off, and its twin is the refused
     #      source sitting exactly where it should.
+    #      DELETED still counts -- Grey's manual rulings set it and nothing
+    #      else -- but it is an untyped marker, and on 2026-09-05 dedup
+    #      started using it too: 10,403 redundant copies were retired that
+    #      way, each with a legitimate CATALOGUED twin by construction.
+    #      Read as knock-offs they reported 8,224 survivors and turned
+    #      integrity to FAIL: the crying-wolf failure this module warns of.
+    #
+    #      So a dedup purge now records DUPE_PURGED against the row, and
+    #      that is what excludes it -- a reason-bearing signal, which is what
+    #      P1-4 asked for. Deliberately NOT keyed on the knock-off events
+    #      themselves: only 296 of 543 evented paths still resolve to a live
+    #      row, because file_path drifts as files move (Chuck Billy's own
+    #      TRIBUTE_QUARANTINED names a TRIBUTE_REMOVED_FOR_REVIEW path he
+    #      left weeks ago). Absence of an event is not absence of intent.
+    _dupe_purged = {
+        r["file_path"]
+        for r in conn.execute(
+            "SELECT DISTINCT file_path FROM events WHERE event_type = 'DUPE_PURGED' "
+            "AND file_path IS NOT NULL AND file_path <> ''"
+        )
+    }
+
+    def _removed_as_knockoff(r) -> bool:
+        if r["status"] == "TRIBUTE_REVIEW":
+            return True
+        return r["status"] == "DELETED" and r["file_path"] not in _dupe_purged
+
     removed_knockoff_hashes = {
         r["audio_hash"]
         for r in rows
-        if r["status"] in ("TRIBUTE_REVIEW", "DELETED")
+        if _removed_as_knockoff(r)
         and r["audio_hash"]
         and r["audio_hash"] not in rejected_hashes
     }
-    knockoff_paths = {
-        r["file_path"]
-        for r in rows
-        if r["status"] in ("TRIBUTE_REVIEW", "DELETED")
-    }
+    knockoff_paths = {r["file_path"] for r in rows if _removed_as_knockoff(r)}
     survivors = [
         r
         for r in lib

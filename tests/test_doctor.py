@@ -408,3 +408,86 @@ class TestRemovedKnockOffStillHeld:
 
 def _finding(rep, check):
     return next(f for f in rep.findings if f.check == check)
+
+
+class TestDuplicateRefusalsDoNotCollapse:
+    """P1-2, fixed 2026-09-05. `rejected_hashes` was a dict keyed on
+    audio_hash, so when several refused sources shared one hash only the last
+    path survived into `rejected_paths` and the others were reported as
+    escaped audio -- naming a refused source that never escaped.
+
+    Two identical truncated files in INBOX is not a corner case: it is the
+    exact "existed in INBOX twice" shape this check was written for."""
+
+    def _reject(self, vault, path):
+        conn = sqlite3.connect(vault.db_path)
+        conn.execute(
+            "INSERT INTO events (event_type, file_path, old_value) VALUES (?,?,?)",
+            ("CANONICALIZE_VERIFY_FAILED", str(path) + ".FAILED_VERIFY", str(path)),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_two_refused_sources_sharing_a_hash_are_not_an_escape(self, vault):
+        a = _add(vault, "bella_1.flac", artist="Carlos Santana", title="Bella")
+        b = _add(vault, "bella_2.flac", artist="Carlos Santana", title="Bella")
+        conn = sqlite3.connect(vault.db_path)
+        conn.execute("UPDATE archive SET audio_hash='shared_h' WHERE file_path IN (?,?)",
+                     (str(a), str(b)))
+        conn.commit()
+        conn.close()
+        self._reject(vault, a)
+        self._reject(vault, b)
+
+        finding = _finding(diagnose(vault), "rejected audio present anyway")
+        assert finding.level != "fail", (
+            f"both refused sources are still sitting where the refusal put them; "
+            f"neither escaped. Got: {finding.detail}"
+        )
+        assert finding.count in (0, None)
+
+
+class TestDedupPurgeIsNotAKnockOff:
+    """P1-4, fixed 2026-09-05. DELETED is an untyped manual marker, and on
+    2026-09-05 deduplication started using it too -- 10,403 redundant copies
+    retired that way, each with a legitimate CATALOGUED twin BY DESIGN.
+    Read as knock-offs they reported 8,224 survivors and turned library
+    integrity to FAIL: the crying-wolf failure doctor's own docstring warns
+    about.
+
+    A dedup purge now records DUPE_PURGED. Grey's manual rulings still set a
+    bare DELETED and must keep counting -- that is the Chuck Billy case the
+    check was built for, and it has no knock-off event on its current path
+    because file_path drifts as files move."""
+
+    def _purge_event(self, vault, path):
+        conn = sqlite3.connect(vault.db_path)
+        conn.execute("INSERT INTO events (event_type, file_path) VALUES (?,?)",
+                     ("DUPE_PURGED", str(path)))
+        conn.commit()
+        conn.close()
+
+    def _twin(self, vault):
+        gone = _add(vault, "dupe.m4a", artist="Bad Company", title="Feel Like Makin' Love",
+                    status="DELETED")
+        kept = _add(vault, "keeper.m4a", artist="Bad Company", title="Feel Like Makin' Love")
+        conn = sqlite3.connect(vault.db_path)
+        conn.execute("UPDATE archive SET audio_hash='twin_h' WHERE file_path IN (?,?)",
+                     (str(gone), str(kept)))
+        conn.commit()
+        conn.close()
+        return gone, kept
+
+    def test_a_purged_duplicate_is_not_reported_as_a_held_knockoff(self, vault):
+        gone, _ = self._twin(vault)
+        self._purge_event(vault, gone)
+        finding = _finding(diagnose(vault), "removed knock-off still held")
+        assert finding.level != "fail", (
+            f"the keeper is why the duplicate was deleted. Got: {finding.detail}"
+        )
+
+    def test_without_the_purge_event_a_deleted_twin_still_counts(self, vault):
+        """The guard must not swallow Grey's manual rulings: a bare DELETED
+        with no DUPE_PURGED is still a knock-off removal."""
+        self._twin(vault)
+        assert _finding(diagnose(vault), "removed knock-off still held").level == "fail"
