@@ -257,3 +257,27 @@ def test_the_undo_record_survives_truncation(tmp_path: Path) -> None:
     # the tail reads as the entries that immediately followed the head
     assert text.index("... and 5 more") < text.index("restore script:")
     assert text.index("skipped stale row 0") < text.index("... and 5 more")
+
+
+def test_a_handoff_failure_is_loud_not_silent() -> None:
+    """On 2026-09-05 a 42-hour run lost its doc and said nothing: no file, no
+    traceback, no log line. cli.py deferred `from .handoff import ...`, so it
+    read a handoff.py that did not exist at startup against a musaeus.context
+    that had been in sys.modules since startup -- a mixture neither version
+    would produce alone.
+
+    Two halves. The import is now eager, so a run holds one coherent
+    snapshot; and the call is guarded, so if it fails anyway the run says so
+    and exits non-zero instead of reporting success."""
+    source = Path("musaeus/cli.py").read_text(encoding="utf-8")
+
+    # eager: imported at module level, never inside the function
+    assert "\nfrom .handoff import write_handoff_doc" in source
+    assert "    from .handoff import write_handoff_doc" not in source
+
+    # guarded: a raising write_handoff_doc must not escape, must warn, must
+    # mark the run failed
+    body = source[source.index("handoff_path = write_handoff_doc(ctx)") - 400:]
+    assert "try:" in body
+    assert "could not write the ForClaudeHandoff doc" in body
+    assert "exit_code = 1" in body

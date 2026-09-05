@@ -109,6 +109,7 @@ from pathlib import Path
 from . import __version__
 from .config import get_config
 from .context import RunContext, head_with_remainder
+from .handoff import write_handoff_doc
 from .db import open_db, snapshot_db_before_wipe
 from .stages import (
     ARCHIVE_PIPELINE,
@@ -440,9 +441,36 @@ def _run_pipeline(
     # nothing and returns None); the point is that NOTHING extra has to
     # be remembered to get this, it falls out of stage results and
     # FAILURES/ reports that already exist.
-    from .handoff import write_handoff_doc
-
-    handoff_path = write_handoff_doc(ctx)
+    #
+    # Imported at MODULE level, not here. It used to be deferred, and on
+    # 2026-09-05 that lost the doc for a 42-hour run: handoff.py did not
+    # exist when the process started, so the deferred import read it fresh
+    # off disk -- against a musaeus.context that had been in sys.modules
+    # since startup and predated head_with_remainder. New module, stale
+    # dependency, a mixture neither version would have produced alone.
+    #
+    # An eager import cannot do that. Whatever the run gets is what it had
+    # at startup: possibly old, but always COHERENT. The standing hazard is
+    # usually stated as "a long-running process runs the code it imported at
+    # startup"; the sharper form is that it can run a MIXTURE, and no test
+    # catches that because no test runs one file's HEAD against another
+    # file's two-day-old copy.
+    #
+    # The guard is the other half. That failure was silent -- no doc, no
+    # traceback, nothing in the log -- and a run that loses its handoff
+    # while reporting success is exactly what this document exists to
+    # prevent. Never let bookkeeping fail quietly.
+    try:
+        handoff_path = write_handoff_doc(ctx)
+    except Exception as exc:  # noqa: BLE001 - deliberately broad; see above
+        handoff_path = None
+        exit_code = 1
+        print(
+            f"  WARNING: could not write the ForClaudeHandoff doc: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        traceback.print_exc()
     if handoff_path is not None:
         print(f"  ForClaudeHandoff doc (needs attention): {handoff_path}", file=sys.stderr)
 

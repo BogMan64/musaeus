@@ -86,6 +86,15 @@ def _scan_alac_library_files(alac_library: Path) -> set[Path]:
     return found
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    """True when *path* is *root* or lives under it. Both must be resolved."""
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 class AuditStage(BaseStage):
     """
     Audit — physical-presence verification. Report-only, gates the
@@ -117,8 +126,26 @@ class AuditStage(BaseStage):
             "SELECT id, file_path, audio_hash FROM archive WHERE finalized_at IS NOT NULL"
         ).fetchall()
 
-        # ── Check 1: DB says finalized -> file must exist, under ALAC-Library
-        alac_library_resolved = ctx.alac_library.resolve() if ctx.alac_library.exists() else None
+        # ── Check 1: DB says finalized -> file must exist, under a FINAL root
+        #
+        # There are two final homes, not one. The 2026-08-31 vocabulary made
+        # ALAC_Archive the MASTERS tier -- "Masters are never physically
+        # altered after finalize" -- while ALAC-Library holds the current
+        # batch. Checking only ALAC-Library reported every master as a
+        # problem: 10,423 of this run's 10,428 audit failures were finalized
+        # masters sitting exactly where the design says they belong, and the
+        # 5 real ones were buried under them.
+        #
+        # OrganizeStage is right to refuse those files (organize.py's roots
+        # deliberately exclude the archive, so masters are never reshuffled).
+        # It was this expectation that was stale, not that refusal. A gate
+        # that fails 10,423 times for correct state is the crying-wolf half
+        # of SOP 4.27, and it blocks the DB-wipe workflow it exists to guard.
+        final_roots = [
+            r.resolve()
+            for r in (ctx.alac_library, ctx.config.alac_archive)
+            if r.exists()
+        ]
         db_side_paths: set[Path] = set()
 
         for row in finalized_rows:
@@ -129,15 +156,17 @@ class AuditStage(BaseStage):
                 problems.append(f"DB says finalized but file missing on disk: {row['file_path']}")
                 continue
 
-            if alac_library_resolved is not None:
-                try:
-                    db_path.resolve().relative_to(alac_library_resolved)
-                except ValueError:
+            if final_roots:
+                resolved = db_path.resolve()
+                if not any(_is_within(resolved, root) for root in final_roots):
                     problems.append(
-                        f"DB says finalized but file is NOT under ALAC-Library: {row['file_path']}"
+                        f"DB says finalized but file is under no final root "
+                        f"(not ALAC-Library, not ALAC_Archive): {row['file_path']}"
                     )
 
-        if finalized_rows and not any("missing on disk" in p or "NOT under" in p for p in problems):
+        if finalized_rows and not any(
+            "missing on disk" in p or "no final root" in p for p in problems
+        ):
             ok.append(f"all {len(finalized_rows)} finalized row(s) verified present on disk")
 
         # ── Check 2: disk has a file in ALAC-Library -> DB must know about it
