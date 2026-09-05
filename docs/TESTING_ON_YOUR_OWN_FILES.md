@@ -111,8 +111,40 @@ ACOUSTICID_API_KEY=...
   through) it may report failures that mean nothing. `--skip permissions`
   if it gets noisy.
 - **The interactive console** (`docker compose run --rm musaeus console`)
-  works, but the setup wizard inside it will try to reconfigure paths the
-  container already sets. Prefer the direct subcommands above.
+  works — verified, menu and all, with the container's paths reported
+  correctly and no setup wizard. Two of its entries reach for locations
+  that only exist on the maintainer's machine, though: the documentation
+  browser defaults to `/mnt/FORGE2TB/DOCUMENTATION` unless you set
+  `MUSAEUS_DOC_ROOT`, and "Transfer to USB" expects a real removable
+  device. Nothing on the `run` path touches either.
+
+## What has and has not been verified
+
+Being explicit, because "should work" is how the interesting bugs get shipped:
+
+**Verified by running it** — the image builds; the full test suite (2,123
+tests) passes inside the container, matching the maintainer's host exactly;
+a real run over six files transcoded and organised five, set the exact
+duplicate aside with a restore script, quarantined the originals rather than
+deleting them, reached MusicBrainz over the network, and wrote its handoff
+document; `--dry-run` changed nothing; the interactive console runs.
+
+**Not verified here** — the `docker compose` path itself. The maintainer's
+machine has only Compose v1, which is broken against its installed
+libraries, so everything above was proven with plain `docker build` and
+`docker run`. The compose file's variable substitution was checked
+(`docker-compose config` resolves `MUSAEUS_UID` correctly, and defaults to
+1000 when unset), but no image has been built *through* compose. If
+`docker compose build` misbehaves, that is the untested seam — fall back to:
+
+```bash
+docker build --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t musaeus:local .
+docker run --rm -it -v "$PWD/vault:/vault" -v musaeus-state:/state musaeus:local run --dry-run
+```
+
+**Windows and macOS specifically** — untested. The design accounts for
+their bind-mount limitations (that is why the database is on a named
+volume), but no one has run it there yet. You would be the first.
 
 ## Reporting something
 
