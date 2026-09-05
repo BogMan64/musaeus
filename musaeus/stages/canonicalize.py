@@ -367,6 +367,15 @@ def _append_tunemymusic_row(ctx: RunContext, row: dict) -> None:
             writer.writerow(["Title", "Artist", "Album"])
         writer.writerow([title, artist, album])
 
+    # Keep bpm's membership cache warm. Without this the append changes the
+    # file's mtime/size, the cache's stat guard misses, and the very next
+    # _tunemymusic_csv_has_track re-reads the whole file -- which is the
+    # O(K^2) behaviour the cache exists to remove (P3-3). Imported here
+    # rather than at module scope only because bpm imports canonicalize.
+    from .bpm import remember_tunemymusic_track
+
+    remember_tunemymusic_track(csv_path, title, artist)
+
 
 # ── Stage ──────────────────────────────────────────────────────────────────────
 

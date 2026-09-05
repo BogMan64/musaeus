@@ -292,6 +292,66 @@ def write_bpm_tags(path: Path, features: dict[str, float | str]) -> bool:
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 
+def _tunemymusic_key(title: str, artist: str) -> tuple[str, str]:
+    return ((title or "").strip().lower(), (artist or "").strip().lower())
+
+
+#: csv_path -> (st_mtime_ns, st_size, keys). Guarded by the stat pair so an
+#: edit from outside this process is still picked up.
+_TUNEMYMUSIC_CACHE: dict[str, tuple[int, int, set[tuple[str, str]]]] = {}
+
+
+def _tunemymusic_keys(csv_path: Path) -> set[tuple[str, str]]:
+    """Every Title+Artist already in the CSV, read at most once per change.
+
+    This used to re-open and fully re-parse the file for every undecodable
+    file, inside sentinel's per-file hashing loop -- K full reads over a list
+    growing to K rows, so O(K^2) I/O on the disk ffmpeg is already
+    saturating, in a stage that runs an idle throttle precisely to stay out
+    of the way (P3-3).
+    """
+    try:
+        st = csv_path.stat()
+    except OSError:
+        _TUNEMYMUSIC_CACHE.pop(str(csv_path), None)
+        return set()
+
+    cached = _TUNEMYMUSIC_CACHE.get(str(csv_path))
+    if cached and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+        return cached[2]
+
+    keys: set[tuple[str, str]] = set()
+    try:
+        with open(csv_path, newline="", encoding="utf-8") as fh:
+            reader = csv.reader(fh)
+            next(reader, None)  # header
+            for row in reader:
+                if row:
+                    keys.add(_tunemymusic_key(row[0], row[1] if len(row) > 1 else ""))
+    except OSError:
+        return set()
+    _TUNEMYMUSIC_CACHE[str(csv_path)] = (st.st_mtime_ns, st.st_size, keys)
+    return keys
+
+
+def remember_tunemymusic_track(csv_path: Path, title: str, artist: str) -> None:
+    """Record a row just appended, so the cache stays warm.
+
+    Without this the append changes mtime/size, the stat guard misses, and
+    the next membership question re-reads the whole file -- which is the
+    O(K^2) behaviour this cache exists to remove. Within-run duplicates are
+    still caught because the key goes in immediately.
+    """
+    try:
+        st = csv_path.stat()
+    except OSError:
+        return
+    entry = _TUNEMYMUSIC_CACHE.get(str(csv_path))
+    keys = entry[2] if entry else _tunemymusic_keys(csv_path)
+    keys.add(_tunemymusic_key(title, artist))
+    _TUNEMYMUSIC_CACHE[str(csv_path)] = (st.st_mtime_ns, st.st_size, keys)
+
+
 def _tunemymusic_csv_has_track(csv_path: Path, title: str, artist: str) -> bool:
     """True if this track is already logged in TuneMyMusic.csv -- guards
     against duplicate rows piling up every time a permanently-unanalyzable
@@ -304,19 +364,7 @@ def _tunemymusic_csv_has_track(csv_path: Path, title: str, artist: str) -> bool:
     """
     if not csv_path.exists():
         return False
-    try:
-        with open(csv_path, newline="", encoding="utf-8") as fh:
-            reader = csv.reader(fh)
-            next(reader, None)  # header
-            key = ((title or "").strip().lower(), (artist or "").strip().lower())
-            return any(
-                row
-                and (row[0].strip().lower(), (row[1] if len(row) > 1 else "").strip().lower())
-                == key
-                for row in reader
-            )
-    except OSError:
-        return False
+    return _tunemymusic_key(title, artist) in _tunemymusic_keys(csv_path)
 
 
 def _mark_multichannel_skipped(ctx: RunContext, file_path: str) -> None:

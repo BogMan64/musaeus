@@ -130,6 +130,15 @@ def _want_replacement(ctx, path: Path, err: str) -> str | None:
     the library the whole time. Asking Grey to re-buy a record he owns is
     how a useful list becomes one he stops reading.
     """
+    # Deliberately function-local, NOT hoisted to module scope (P3-3
+    # suggested hoisting; measured 2026-09-05, it is the wrong trade).
+    #
+    # A module-level `from .scholar import _probe` binds sentinel's OWN
+    # reference at import time, so `patch("musaeus.stages.scholar._probe")`
+    # stops reaching it -- five existing tests went red for exactly that,
+    # with ffprobe actually running against a fixture file. The gain being
+    # traded away is a sys.modules dict lookup per call, which is nothing
+    # beside the CSV re-read this change actually removes.
     from .bpm import _tunemymusic_csv_has_track
     from .canonicalize import _append_tunemymusic_row
     from .scholar import ProbeError, _extract_meta, _probe
