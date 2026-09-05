@@ -225,3 +225,48 @@ class TestArtistCanonApplied:
     def test_empty_input_is_safe(self, tmp_path):
         c = self._canon(tmp_path, [("a", "B")])
         assert c.resolve_exact("") is None
+
+
+class TestVerifyEffectChecksTheCanonWasApplied:
+    """The canon is the deliberate half of this stage: every entry is a
+    mapping somebody wrote down. A row still carrying a mapped raw name
+    means the promise silently did not apply -- what a normalisation-key
+    change, a status filter or a missing commit all look like from outside.
+
+    2026-09-05: this stage rewrote SwitchOTR to Switchotr and would have
+    flattened 202 artists across 477 tracks, and nothing checked its work.
+    """
+
+    def _canon(self, ctx, pairs):
+        f = ctx.config.meta_dir / "artist_canon.tsv"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("".join(f"{a}\t{b}\n" for a, b in pairs), encoding="utf-8")
+
+    def _row(self, ctx, artist):
+        from musaeus.db import upsert_archive
+        p = ctx.config.alac_library / f"{artist}.m4a"
+        upsert_archive(ctx.conn, {"file_path": str(p), "status": "CATALOGUED",
+                                  "artist": artist, "title": "t"})
+        ctx.conn.commit()
+
+    def test_an_applied_mapping_passes(self, ctx):
+        self._canon(ctx, [("Dire Strats", "Dire Straits")])
+        self._row(ctx, "Dire Straits")
+        from unittest.mock import MagicMock
+        assert ArtistConsolidateStage().verify_effect(ctx, MagicMock(files_changed=1)) == []
+
+    def test_a_mapping_that_never_applied_is_caught(self, ctx):
+        self._canon(ctx, [("Dire Strats", "Dire Straits")])
+        self._row(ctx, "Dire Strats")          # still the raw name
+        from unittest.mock import MagicMock
+        problems = ArtistConsolidateStage().verify_effect(ctx, MagicMock(files_changed=1))
+        assert problems, "a row still carrying a mapped name must not pass"
+        assert "Dire Straits" in problems[0]
+
+    def test_an_identity_mapping_is_not_a_complaint(self, ctx):
+        """Registering a name as-is ('accept this spelling') maps it to
+        itself and must never be reported as unapplied."""
+        self._canon(ctx, [("Tone-Loc", "Tone-Loc")])
+        self._row(ctx, "Tone-Loc")
+        from unittest.mock import MagicMock
+        assert ArtistConsolidateStage().verify_effect(ctx, MagicMock(files_changed=1)) == []

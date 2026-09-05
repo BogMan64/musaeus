@@ -110,6 +110,8 @@ class HealthStage(BaseStage):
     """
 
     NAME = "health"
+    # Report-only: surfaces quality issues, changes nothing.
+    CLAIMS_EFFECT = False
 
     # ── Validate ──────────────────────────────────────────────────────────────
 

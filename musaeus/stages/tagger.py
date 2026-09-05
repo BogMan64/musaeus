@@ -34,7 +34,7 @@ from typing import Any
 
 from ..artist_form import has_article, natural_form, sort_form
 from ..context import RunContext, StageResult
-from .base import BaseStage, StageError
+from .base import NO_VERIFICATION, BaseStage, StageError
 from .normalize import _move_article_to_suffix
 
 logger = logging.getLogger(__name__)
@@ -455,6 +455,66 @@ class TaggerStage(BaseStage):
         return changes
 
     # ── run ───────────────────────────────────────────────────────────────────
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A file this stage says it tagged must actually carry those tags.
+
+        Tagger is the same shape as AlbumArt, which on 2026-08-31 reported
+        "changed=10549 ✓verified" while every single embed failed: it wrote
+        through a library, counted its own intentions, and nothing read the
+        file back. mutagen's save() can fail silently on a read-only file,
+        a format it will not serialise, or a container it half-understands,
+        and the row would still be counted as changed.
+
+        So the read-back goes through ffprobe, NOT mutagen -- deliberately
+        a different reader from the writer. Confirming a write with the
+        same library that made it proves the library is self-consistent,
+        not that anything landed on disk.
+
+        Samples the rows this run actually wrote, rather than re-probing
+        the library: the fault being caught is wholesale failure, not one
+        awkward file.
+        """
+        from .scholar import ProbeError, _extract_meta, _probe
+
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path, a.artist, a.title
+              FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.event_type = 'TAGGER_WRITE' AND e.run_id = ?
+             ORDER BY e.id DESC LIMIT 8
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+
+        problems: list[str] = []
+        checked = 0
+        for r in rows:
+            path = Path(r["file_path"])
+            if not path.is_file():
+                problems.append(f"tagged file is gone: {path.name}")
+                continue
+            try:
+                meta = _extract_meta(_probe(path))
+            except (ProbeError, OSError) as exc:
+                # An unreadable file is not a tagging failure; say so rather
+                # than converting a probe problem into a false alarm.
+                logger.warning("[tagger] cannot re-probe %s: %s", path.name, exc)
+                continue
+            checked += 1
+            for field in ("artist", "title"):
+                want = (r[field] or "").strip()
+                got = (meta.get(field) or "").strip()
+                if want and got and want.casefold() != got.casefold():
+                    problems.append(
+                        f"{path.name}: {field} on disk is {got!r}, row says {want!r}"
+                    )
+        if not checked and not problems:
+            return NO_VERIFICATION
+        return problems
 
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)

@@ -73,6 +73,41 @@ class GhostStage(BaseStage):
 
     # ── Run ───────────────────────────────────────────────────────────────────
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A row marked GHOST must really have no file behind it.
+
+        Ghost rewrites status wholesale -- 3,143 rows in one pass on
+        2026-09-05 -- from a single existence test per row. If that test is
+        ever wrong (a mount not ready, a permissions failure reading a
+        directory, a path built before a rename landed), the stage buries a
+        live library under a status that every later stage skips, and says
+        OK while doing it.
+
+        So the check re-tests existence on a sample, independently of the
+        loop that made the decision. It deliberately does NOT re-read the
+        status column: confirming a stage's own bookkeeping proves only
+        that it can write to SQLite.
+        """
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE a.status = 'GHOST' AND e.event_type = 'GHOST_FOUND'
+               AND e.run_id = ?
+             ORDER BY e.id DESC LIMIT 10
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        alive = [Path(r["file_path"]).name for r in rows if Path(r["file_path"]).exists()]
+        if not alive:
+            return []
+        return [
+            f"{len(alive)} of {len(rows)} sampled row(s) were marked GHOST but the "
+            f"file is on disk: {', '.join(alive[:3])}"
+        ]
+
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)
         rows = ctx.conn.execute(

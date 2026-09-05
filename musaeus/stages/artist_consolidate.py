@@ -440,5 +440,38 @@ class ArtistConsolidateStage(BaseStage):
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._consolidate(ctx, dry_run=True)
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """No row may still carry a name the canon explicitly maps away.
+
+        The canon is the deliberate half of this stage: every entry is a
+        mapping somebody wrote down. If run() reports changes but a mapped
+        raw name is still sitting in archive.artist, the mapping silently
+        did not apply -- which is what a normalisation-key change, a
+        status filter, or a commit that never happened all look like from
+        outside.
+
+        Checks the explicit mappings only, not the fuzzy variant grouping:
+        grouping is a judgement call with no single right answer, while an
+        exact canon entry is a promise. resolve_exact() is the same lookup
+        run() uses, so this asks whether the promise was kept.
+        """
+        canon = ArtistCanon(ctx.config.meta_dir / "artist_canon.tsv")
+        rows = ctx.conn.execute(
+            "SELECT DISTINCT artist FROM archive "
+            " WHERE status = 'CATALOGUED' AND artist IS NOT NULL AND artist <> ''"
+        ).fetchall()
+        stale = []
+        for r in rows:
+            raw = r["artist"]
+            mapped = canon.resolve_exact(raw)
+            if mapped and mapped != raw:
+                stale.append(f"{raw!r} should be {mapped!r}")
+        if not stale:
+            return []
+        return [
+            f"{len(stale)} artist name(s) still carry a value the canon maps "
+            f"away: {'; '.join(stale[:3])}"
+        ]
+
     def run(self, ctx: RunContext) -> StageResult:
         return self._consolidate(ctx, dry_run=False)

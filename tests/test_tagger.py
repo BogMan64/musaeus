@@ -597,3 +597,80 @@ class TestTaggerActuallyWritesToDisk:
         result = TaggerStage().execute(ctx)
         assert result.files_changed >= 1
         assert result.verified is not False, result.verify_notes
+
+
+class TestVerifyEffectReadsTheFileBack:
+    """Tagger is the same shape as AlbumArt, which on 2026-08-31 reported
+    "changed=10549 ✓verified" while every embed failed. It wrote through a
+    library, counted its own intentions, and nothing read the file back.
+
+    So the check reads through ffprobe, a DIFFERENT reader from mutagen --
+    confirming a write with the library that made it proves only that the
+    library is self-consistent.
+    """
+
+    def _tagged_row(self, ctx, path: Path, artist: str, title: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+        upsert_archive(ctx.conn, {
+            "file_path": str(path), "status": "CATALOGUED",
+            "artist": artist, "title": title,
+        })
+        ctx.log_event("TAGGER_WRITE", file_path=str(path), stage="tagger")
+        ctx.conn.commit()
+
+    def _probe_stub(self, artist, title):
+        return {"format": {"tags": {"artist": artist, "title": title}},
+                "streams": [{"codec_type": "audio", "codec_name": "alac"}]}
+
+    def test_tags_that_landed_are_not_flagged(self, ctx, tmp_path, monkeypatch):
+        f = tmp_path / "ok.m4a"
+        self._tagged_row(ctx, f, "Bill Withers", "Ain't No Sunshine")
+        monkeypatch.setattr("musaeus.stages.scholar._probe",
+                            lambda _p: self._probe_stub("Bill Withers", "Ain't No Sunshine"))
+        assert TaggerStage().verify_effect(ctx, MagicMock(files_changed=1)) == []
+
+    def test_a_silent_save_failure_is_caught(self, ctx, tmp_path, monkeypatch):
+        """The row says it was tagged; the file still carries the old value.
+        This is exactly what a failed mutagen save() looks like from outside."""
+        f = tmp_path / "stale.m4a"
+        self._tagged_row(ctx, f, "Bill Withers", "Ain't No Sunshine")
+        monkeypatch.setattr("musaeus.stages.scholar._probe",
+                            lambda _p: self._probe_stub("Unknown Artist", "Track 01"))
+        problems = TaggerStage().verify_effect(ctx, MagicMock(files_changed=1))
+        assert problems, "a file whose tags never changed must not pass"
+        assert any("artist" in p for p in problems)
+
+    def test_case_differences_alone_are_not_a_failure(self, ctx, tmp_path, monkeypatch):
+        """Tag readers differ on case; that is not a failed write."""
+        f = tmp_path / "case.m4a"
+        self._tagged_row(ctx, f, "Bill Withers", "Ain't No Sunshine")
+        monkeypatch.setattr("musaeus.stages.scholar._probe",
+                            lambda _p: self._probe_stub("BILL WITHERS", "ain't no sunshine"))
+        assert TaggerStage().verify_effect(ctx, MagicMock(files_changed=1)) == []
+
+    def test_a_vanished_file_is_reported(self, ctx, tmp_path):
+        f = tmp_path / "gone.m4a"
+        self._tagged_row(ctx, f, "A", "B")
+        f.unlink()
+        problems = TaggerStage().verify_effect(ctx, MagicMock(files_changed=1))
+        assert any("gone" in p for p in problems)
+
+    def test_no_rows_this_run_means_nothing_to_verify(self, ctx):
+        assert TaggerStage().verify_effect(ctx, MagicMock(files_changed=0)) == []
+
+    def test_an_unreadable_file_is_not_a_false_alarm(self, ctx, tmp_path, monkeypatch):
+        """A probe that fails says nothing about whether tagging worked.
+        Turning a read problem into a verification failure is the
+        crying-wolf half of the same mistake."""
+        from musaeus.stages.scholar import ProbeError
+        f = tmp_path / "unreadable.m4a"
+        self._tagged_row(ctx, f, "A", "B")
+
+        def _boom(_p):
+            raise ProbeError("ffprobe exited 1")
+
+        monkeypatch.setattr("musaeus.stages.scholar._probe", _boom)
+        from musaeus.stages.base import NO_VERIFICATION
+        out = TaggerStage().verify_effect(ctx, MagicMock(files_changed=1))
+        assert out is NO_VERIFICATION or out == []

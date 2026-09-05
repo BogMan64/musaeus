@@ -110,6 +110,10 @@ class AuditStage(BaseStage):
         return int(n), "finalized rows to verify on disk"
 
     NAME = "audit"
+    # Report-only: audit READS the library and reports; it never writes a
+    # row or a file. A verification hook on a verifier would only ask
+    # whether the report was written.
+    CLAIMS_EFFECT = False
 
     def validate(self, ctx: RunContext) -> None:
         count = ctx.conn.execute(

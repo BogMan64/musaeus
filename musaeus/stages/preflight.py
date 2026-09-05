@@ -106,6 +106,10 @@ class PreflightStage(BaseStage):
     """
 
     NAME = "preflight"
+    # Report-only: it checks the environment and writes nothing but its own
+    # delete-after write-probe. Declared rather than left to the default so
+    # "makes no claim" is a decision on the record, not an omission.
+    CLAIMS_EFFECT = False
 
     def __init__(self) -> None:
         super().__init__()
