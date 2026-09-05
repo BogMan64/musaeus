@@ -122,8 +122,25 @@ class AuditStage(BaseStage):
         ok: list[str] = []
         problems: list[str] = []
 
+        # finalized_at is a HISTORICAL fact: it records that a row was once
+        # finalized, and it is never cleared when the row moves on. So it
+        # cannot on its own mean "this row claims to be a live library
+        # member". A quarantined file and a deleted one both keep it.
+        #
+        # Checked 2026-09-05 against the live library: every one of the 7
+        # rows flagged as "finalized but outside a final root" was
+        # QUARANTINED, sitting correctly in QUARANTINE/corrupted after
+        # CorruptStage moved it -- the row described reality accurately and
+        # the audit called it a problem. Two more, DELETED by hand, were
+        # flagged as "finalized but missing on disk" for the same reason.
+        #
+        # Terminal statuses are excluded here rather than by clearing
+        # finalized_at on deletion: the history is worth keeping, and a
+        # status is the right place to ask "is this row live?".
         finalized_rows = ctx.conn.execute(
-            "SELECT id, file_path, audio_hash FROM archive WHERE finalized_at IS NOT NULL"
+            "SELECT id, file_path, audio_hash FROM archive "
+            " WHERE finalized_at IS NOT NULL"
+            "   AND status NOT IN ('DELETED', 'QUARANTINED', 'TRIBUTE_REVIEW', 'GHOST')"
         ).fetchall()
 
         # ── Check 1: DB says finalized -> file must exist, under a FINAL root
