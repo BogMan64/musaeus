@@ -501,6 +501,19 @@ def _cfg(tmp_path: Path) -> MusicConfig:
     )
 
 
+def _entries_resolve(playlist_file: Path) -> bool:
+    """Every non-comment entry in *playlist_file*, resolved the way a player
+    resolves it -- from the playlist's OWN directory -- points at a file that
+    exists. This is the check that would have caught both 2026-09-05 path
+    faults; asserting on the emitted text did not."""
+    for line in playlist_file.read_text(encoding="utf-8").splitlines():
+        if line.startswith("#") or not line.strip():
+            continue
+        if not (playlist_file.parent / line).resolve().exists():
+            return False
+    return True
+
+
 class TestPlaylistCopy:
     """2026-08-19 fix: transfer_to_usb.py never copied vault_root/Playlists/
     at all. Playlists mix ALAC-Library and AAC-Car entries in one file and
@@ -526,14 +539,27 @@ class TestPlaylistCopy:
 
         dest = tmp_path / "device"
         dest.mkdir()
+        # Stage the audio where copy_with_verification would have put it.
+        # Without this the resolution assertion below could only ever fail,
+        # and would be measuring the fixture rather than the rewrite.
+        device_track = dest / "2026-08-17" / "Artist" / "Album" / "Song.m4a"
+        device_track.parent.mkdir(parents=True)
+        device_track.write_bytes(b"x")
+
         written = copy_playlists(cfg.vault_root, cfg.alac_library, dest)
 
         assert written == ["Rock.m3u8"]
-        out = (dest / "Playlists" / "Rock.m3u8").read_text()
+        out_file = dest / "Playlists" / "Rock.m3u8"
+        out = out_file.read_text()
         assert "Artist - Song" in out
         assert "Other Artist - Other Song" not in out
         assert "2026-08-17/Artist/Album/Song.m4a" in out
-        assert "../" not in out.split("\n", 1)[1]  # rewritten flat, no vault-relative prefix
+        # The vault-relative "../ALAC-Library/" prefix is gone...
+        assert "ALAC-Library" not in out
+        # ...but the entry still has to climb out of Playlists/ to reach the
+        # audio. This asserted `"../" not in out` until 2026-09-05, which is
+        # how an unresolvable playlist passed its own test for two weeks.
+        assert _entries_resolve(out_file)
 
     def test_playlist_with_no_matching_tracks_is_skipped(self, tmp_path):
         cfg = _cfg(tmp_path)
@@ -1683,3 +1709,94 @@ class TestDenylistAcrossEveryFlagCombination:
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
         assert usb_mod.main() == 1
         assert calls == []
+
+
+# ── Playlists that actually resolve (2026-09-05) ─────────────────────────────
+
+
+class TestPlaylistEntriesResolve:
+    """Both faults fixed here were invisible to string assertions and obvious
+    the moment the emitted entries were resolved against the device tree.
+
+    Measured on Grey's actual stick the same day: all 31,567 entries across
+    its 60 playlists were dangling, pointing at ../ALAC_Archive/ which is not
+    on the device at all."""
+
+    def _stage(self, tmp_path, library):
+        """A vault with one track in *library*, one playlist referencing it by
+        the vault-relative path playlist.py writes, and the flat device tree
+        copy_with_verification would have produced."""
+        cfg = _cfg(tmp_path)
+        cfg.ensure_dirs()
+        source_root = usb_mod._source_dir(library, cfg)
+        rel = Path("2026-08-17") / "Artist" / "Album" / "Song.m4a"
+        track = source_root / rel
+        track.parent.mkdir(parents=True, exist_ok=True)
+        track.write_bytes(b"x")
+
+        (cfg.vault_root / "Playlists").mkdir(parents=True, exist_ok=True)
+        vault_relative = Path("..") / source_root.relative_to(cfg.vault_root) / rel
+        (cfg.vault_root / "Playlists" / "Rock.m3u8").write_text(
+            f"#EXTM3U\n#EXTINF:-1,Artist - Song\n{vault_relative.as_posix()}\n",
+            encoding="utf-8",
+        )
+
+        dest = tmp_path / "device"
+        (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+        (dest / rel).write_bytes(b"x")
+        return cfg, source_root, dest
+
+    @pytest.mark.parametrize("library", ["alac", "car"])
+    def test_entries_resolve_on_the_device(self, tmp_path, library):
+        cfg, source_root, dest = self._stage(tmp_path, library)
+        written = copy_playlists(cfg.vault_root, source_root, dest)
+        assert written == ["Rock.m3u8"], f"{library}: playlist was dropped entirely"
+        assert _entries_resolve(dest / "Playlists" / "Rock.m3u8")
+
+    def test_car_playlists_are_no_longer_dropped(self, tmp_path):
+        """The car library lives at Libraries/CAR_Library, so source_root.parent
+        is Libraries/, not the vault. Resolving entries against
+        source_root.parent/"Playlists" therefore matched nothing and every car
+        playlist was silently dropped -- the car edition shipped with none."""
+        cfg, source_root, dest = self._stage(tmp_path, "car")
+        assert source_root.parent != cfg.vault_root  # the condition that broke it
+        assert copy_playlists(cfg.vault_root, source_root, dest) == ["Rock.m3u8"]
+
+    def test_entry_climbs_out_of_the_playlists_directory(self, tmp_path):
+        """The playlist is written to dest/Playlists/ but the audio lands at
+        dest/<rel>, so each entry needs exactly one level of climb."""
+        cfg, source_root, dest = self._stage(tmp_path, "alac")
+        copy_playlists(cfg.vault_root, source_root, dest)
+        entries = [
+            ln
+            for ln in (dest / "Playlists" / "Rock.m3u8").read_text().splitlines()
+            if ln and not ln.startswith("#")
+        ]
+        assert entries == ["../2026-08-17/Artist/Album/Song.m4a"]
+
+    def test_absolute_entry_outside_the_vault_still_filtered_out(self, tmp_path):
+        """playlist.py falls back to an absolute path for a source outside
+        vault_root. Joining an absolute path leaves it unchanged, so it must
+        still be judged against source_root and dropped when it is elsewhere."""
+        cfg, source_root, dest = self._stage(tmp_path, "alac")
+        (cfg.vault_root / "Playlists" / "Odd.m3u8").write_text(
+            "#EXTM3U\n#EXTINF:-1,Elsewhere - Track\n/somewhere/else/Track.m4a\n",
+            encoding="utf-8",
+        )
+        written = copy_playlists(cfg.vault_root, source_root, dest)
+        assert "Odd.m3u8" not in written
+
+    def test_no_playlists_directory_writes_nothing_and_overwrites_nothing(self, tmp_path):
+        """Grey's stick has a hand-made Playlists/ at its root. vault_root has
+        no Playlists/ at all today, so copy_playlists must return early and
+        leave what is already on the device alone."""
+        cfg = _cfg(tmp_path)
+        cfg.ensure_dirs()
+        dest = tmp_path / "device"
+        existing = dest / "Playlists" / "Mine.m3u8"
+        existing.parent.mkdir(parents=True)
+        existing.write_text("#EXTM3U\n", encoding="utf-8")
+
+        assert not (cfg.vault_root / "Playlists").exists()
+        assert copy_playlists(cfg.vault_root, cfg.alac_library, dest) == []
+        assert existing.read_text() == "#EXTM3U\n"

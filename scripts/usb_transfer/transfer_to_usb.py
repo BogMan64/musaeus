@@ -706,19 +706,42 @@ def _source_dir(library: str, cfg) -> Path:
 # but this script's own copy is flat -- files land directly under the
 # device root, not under a same-named ALAC-Library/AAC-Car subfolder. So
 # each playlist is filtered down to only the entries that actually exist
-# under *this* transfer's source_root, and rewritten to the flat relative
-# form matching where those files actually land on the device.
+# under *this* transfer's source_root, and rewritten to the relative form
+# matching where those files actually land on the device.
+#
+# 2026-09-05: that rewrite emitted playlists whose entries did not
+# resolve. Two independent path faults, both found by resolving the
+# emitted entries instead of reading the emitted strings -- the tests
+# asserted the text and so agreed with the bug:
+#
+#   1. Entries were resolved against source_root.parent/"Playlists",
+#      which equals vault_root/"Playlists" only when the library is a
+#      direct child of the vault. ALAC-Library is; Libraries/CAR_Library
+#      (published there 2026-09-03) is not, so EVERY car playlist was
+#      dropped as "not part of this transfer" and the car edition
+#      silently shipped no playlists at all.
+#   2. Entries were written relative to source_root, but the playlist
+#      file itself is written to dest_root/"Playlists"/. A player
+#      resolves them from the playlist's own directory, so they pointed
+#      at dest_root/Playlists/Artist/... -- one level too deep, for every
+#      entry, on both libraries.
 
 
-def _rewrite_playlist_for_device(content: str, source_root: Path) -> str | None:
+def _rewrite_playlist_for_device(
+    content: str, source_root: Path, vault_root: Path
+) -> str | None:
     """
     Given one playlist's raw .m3u8 text (as written by playlist.py --
     #EXTM3U header, then alternating #EXTINF / path-relative-to-vault_root
     lines), keep only the track pairs whose path resolves under
-    source_root, rewritten relative to source_root (matching the flat
-    layout copy_with_verification produces on the device). Returns None
-    if no tracks in this playlist belong to source_root at all (nothing
-    worth writing).
+    source_root, rewritten to where those files actually land on the
+    device. Returns None if no tracks in this playlist belong to
+    source_root at all (nothing worth writing).
+
+    *vault_root* is passed in rather than derived from source_root: the
+    entries are relative to vault_root/"Playlists" because that is where
+    playlist.py wrote them, and source_root.parent only happens to equal
+    vault_root for libraries sitting directly under it.
     """
     lines = content.splitlines()
     out_lines = ["#EXTM3U"]
@@ -736,17 +759,23 @@ def _rewrite_playlist_for_device(content: str, source_root: Path) -> str | None:
         # path_line is relative to vault_root/Playlists (e.g.
         # "../ALAC-Library/2026-08-17/Artist/Album/Track.m4a") or, for a
         # source outside vault_root, an absolute path (playlist.py's own
-        # fallback) -- either way, resolve it relative to where playlist.py
-        # actually wrote the .m3u8 file (vault_root/Playlists) to get the
-        # real absolute path before checking whether it's under source_root.
-        candidate = (source_root.parent / "Playlists" / path_line).resolve()
+        # fallback -- joining an absolute path here yields it unchanged).
+        # Either way, resolve it against where playlist.py actually wrote
+        # the .m3u8 (vault_root/Playlists) to get the real absolute path
+        # before checking whether it's under source_root.
+        candidate = (vault_root / "Playlists" / path_line).resolve()
         try:
             rel = candidate.relative_to(source_root.resolve())
         except ValueError:
             continue  # not part of this transfer's library -- drop silently
 
+        # The audio lands at dest_root/<rel>, but this playlist lands at
+        # dest_root/Playlists/<name>.m3u8, and a player resolves entries
+        # from the playlist's own directory -- so the entry has to climb
+        # out of Playlists/ first. Forward slashes: the target is a FAT32
+        # stick read by a car head unit, not a local OS path.
         out_lines.append(extinf)
-        out_lines.append(str(rel))
+        out_lines.append(f"../{rel.as_posix()}")
         kept += 1
 
     if not kept:
@@ -771,7 +800,7 @@ def copy_playlists(vault_root: Path, source_root: Path, dest_root: Path) -> list
     for m3u in sorted(playlist_dir.glob("*.m3u8")):
         try:
             content = m3u.read_text(encoding="utf-8")
-            rewritten = _rewrite_playlist_for_device(content, source_root)
+            rewritten = _rewrite_playlist_for_device(content, source_root, vault_root)
             if rewritten is None:
                 continue
             dest_playlists.mkdir(parents=True, exist_ok=True)
