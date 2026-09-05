@@ -35,7 +35,7 @@ from pathlib import Path
 
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
-from .base import BaseStage, StageError
+from .base import BaseStage, NO_VERIFICATION, StageError
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +242,43 @@ class IntegrityStage(BaseStage):
 
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._check(ctx, dry_run=True)
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """Every row this stage decided about must carry the decision.
+
+        Integrity's claim is that it ran a decode test and recorded the
+        outcome. The failure this catches is the one PermissionsStage
+        showed in real life: a stage that reports work while its UPDATE
+        touches nothing -- a wrong WHERE, an uncommitted transaction, a
+        path that no longer matches. The row count then says "checked"
+        and the column says nothing.
+
+        Columns are created on first run, so their absence is
+        NO_VERIFICATION rather than a failure.
+        """
+        cols = {r[1] for r in ctx.conn.execute("PRAGMA table_info(archive)")}
+        if "integrity_checked_at" not in cols:
+            return NO_VERIFICATION
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path, a.integrity_checked_at FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.run_id = ? AND e.event_type IN ('INTEGRITY_FAIL', 'INTEGER')
+             ORDER BY e.id DESC LIMIT 10
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        unrecorded = [
+            Path(r["file_path"]).name for r in rows if not r["integrity_checked_at"]
+        ]
+        if not unrecorded:
+            return []
+        return [
+            f"{len(unrecorded)} of {len(rows)} row(s) were decode-tested but the "
+            f"result was never written: {', '.join(unrecorded[:3])}"
+        ]
 
     def run(self, ctx: RunContext) -> StageResult:
         return self._check(ctx, dry_run=False)

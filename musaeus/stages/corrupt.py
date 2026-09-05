@@ -432,5 +432,42 @@ class CorruptStage(BaseStage):
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._scan(ctx, dry_run=True)
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A file this stage says it quarantined must actually be in quarantine.
+
+        Corrupt moves files out of the library and rewrites status and
+        file_path in one step. If the move fails but the row is written
+        anyway, the DB points at a path holding nothing and the corrupt
+        file stays in the library -- the row says handled, the disk says
+        otherwise, and every later stage skips it as QUARANTINED.
+
+        Checks the DISK, not the status column: that a QUARANTINED row's
+        file is where the row now claims, and that the claim is inside the
+        quarantine tree rather than still in the library.
+        """
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE a.status = 'QUARANTINED' AND e.run_id = ?
+               AND e.event_type IN ('QUARANTINE', 'CORRUPT_DETECTED')
+             ORDER BY e.id DESC LIMIT 8
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        problems: list[str] = []
+        qroot = str(ctx.quarantine)
+        for r in rows:
+            p = Path(r["file_path"])
+            if not p.exists():
+                problems.append(f"quarantined row points at nothing: {p.name}")
+            elif not str(p).startswith(qroot):
+                problems.append(
+                    f"{p.name}: marked QUARANTINED but still outside {qroot}"
+                )
+        return problems
+
     def run(self, ctx: RunContext) -> StageResult:
         return self._scan(ctx, dry_run=False)

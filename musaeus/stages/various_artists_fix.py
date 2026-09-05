@@ -327,6 +327,38 @@ class VariousArtistsFixStage(BaseStage):
         target_dir = ctx.alac_library / self._batch_date_for(ctx, source) / artist_safe / album_safe
         return unique_path(target_dir / new_filename)
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A row this stage fixed must no longer say "Various Artists",
+        and its file must be where the row now points.
+
+        This stage rewrites artist AND moves the file, in that order. A
+        DB write that lands while the move fails leaves the row naming a
+        path that holds nothing -- and because the artist drives folder
+        routing, the file it was supposed to move is still filed under
+        Various Artists where nobody will look for it.
+        """
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path, a.artist FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.event_type = 'VARIOUS_ARTISTS_FIXED' AND e.run_id = ?
+             ORDER BY e.id DESC LIMIT 8
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        problems: list[str] = []
+        for r in rows:
+            p = Path(r["file_path"])
+            if not p.exists():
+                problems.append(f"fixed row points at nothing: {p.name}")
+            if (r["artist"] or "").strip().lower() in {"various artists", "various"}:
+                problems.append(
+                    f"{p.name}: still recorded as {r['artist']!r} after a fix"
+                )
+        return problems
+
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)
         use_mb = not ctx.get("various_artists_no_mb", False)

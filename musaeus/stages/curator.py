@@ -286,6 +286,39 @@ class CuratorStage(BaseStage):
 
     # ── run ───────────────────────────────────────────────────────────────────
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """An exported file must exist at the path the row now advertises.
+
+        Curator copies into the export tree and records car_export_path.
+        A copy that failed part-way, or onto a full or unmounted device,
+        still leaves the row saying where the file "is". The export is
+        then a list of promises rather than a library, and nothing notices
+        until it is plugged into a car.
+
+        Checks existence AND non-zero size: a truncated copy is the
+        failure mode a bare exists() misses, and an empty file passes it.
+        """
+        rows = ctx.conn.execute(
+            """
+            SELECT a.car_export_path FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.event_type = 'CURATOR_COPY' AND e.run_id = ?
+               AND a.car_export_path IS NOT NULL AND a.car_export_path <> ''
+             ORDER BY e.id DESC LIMIT 8
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        problems: list[str] = []
+        for r in rows:
+            p = Path(r["car_export_path"])
+            if not p.exists():
+                problems.append(f"exported file is not there: {p.name}")
+            elif p.stat().st_size == 0:
+                problems.append(f"exported file is empty: {p.name}")
+        return problems
+
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)
         export_root = self._get_export_root(ctx)
