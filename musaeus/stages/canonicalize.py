@@ -87,7 +87,7 @@ from pathlib import Path
 
 from ..config import LOSSLESS_CODECS as _LOSSLESS_CODECS
 from ..context import RunContext, StageResult
-from ..duration import TOLERANCE_SEC
+from ..duration import TOLERANCE_SEC, tolerance_for
 from ..safety.mutation import MutationBoundary, PreconditionError, UnmanagedPathError
 from ..safety.recovery import (
     JOURNAL_FILENAME,
@@ -522,7 +522,7 @@ class CanonicalizeStage(BaseStage):
                     ),
                     None,
                 )
-                if actual is not None and abs(actual - recorded) > max(2.0, recorded * 0.02):
+                if actual is not None and abs(actual - recorded) > tolerance_for(recorded):
                     problems.append(
                         f"{p.name}: {actual:.1f}s after canonicalize but "
                         f"{recorded:.1f}s recorded — conversion truncated the audio"

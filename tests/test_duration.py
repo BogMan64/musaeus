@@ -159,3 +159,4 @@ def test_the_standalone_scripts_agree_on_the_value() -> None:
         found = re.findall(r"_DURATION_TOLERANCE_SEC\s*=\s*([0-9.]+)", src)
         assert found, f"{rel} lost its tolerance constant"
         assert float(found[0]) == 2.0, f"{rel} has {found[0]}, expected 2.0"
+

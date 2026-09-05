@@ -103,7 +103,7 @@ def diagnose(cfg: MusicConfig) -> Report:
     conn.row_factory = sqlite3.Row
 
     rows = conn.execute(
-        "SELECT file_path, artist, title, status, audio_hash, finalized_at, duration "
+        "SELECT file_path, artist, title, status, audio_hash, finalized_at "
         "FROM archive"
     ).fetchall()
     lib = [r for r in rows if r["status"] == "CATALOGUED"]
@@ -381,6 +381,13 @@ def diagnose(cfg: MusicConfig) -> Report:
         and r["audio_hash"] not in rejected_hashes
     }
     knockoff_paths = {r["file_path"] for r in rows if _removed_as_knockoff(r)}
+    #      The knockoff_paths test is belt-and-braces, NOT the load-bearing
+    #      guard its twin above is. `lib` is CATALOGUED only and a knock-off
+    #      path is TRIBUTE_REVIEW or DELETED, and file_path is unique, so it
+    #      is disjoint by construction and always True here. It reads like
+    #      the rejected_paths check, where the guard IS required because a
+    #      refused source stays CATALOGUED -- that asymmetry is real, and
+    #      this note exists so the next reader does not assume otherwise.
     survivors = [
         r
         for r in lib

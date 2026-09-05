@@ -59,6 +59,25 @@ logger = logging.getLogger(__name__)
 #: nobody deciding. Grey's ruling 2026-09-02: 2.0 everywhere.
 TOLERANCE_SEC = 2.0
 
+
+def tolerance_for(recorded_sec: float | None) -> float:
+    """How far a duration of this length may drift before it means something.
+
+    TOLERANCE_SEC is a floor, not the whole answer: a flat 2s is right for a
+    short track and far too strict for a long one, where container rounding
+    and encoder padding scale with length. 2% of a 5-minute track is 6s.
+
+    This existed as a bare `max(2.0, recorded * 0.02)` inside
+    canonicalize.verify_effect -- a sixth copy of a constant the repo's
+    CLAUDE.md already lists as recurring ("5 copies, 1.5 four times, 2.0
+    once, same stated rationale"), in a file that already imports
+    TOLERANCE_SEC twelve lines above. Named here so changing the rule
+    changes it everywhere, which is the whole point of the entry.
+    """
+    if not recorded_sec or recorded_sec <= 0:
+        return TOLERANCE_SEC
+    return max(TOLERANCE_SEC, recorded_sec * 0.02)
+
 _TIMEOUT_S = 15
 #: A full decode of a long track is minutes, not seconds.
 _DECODE_TIMEOUT_S = 900
