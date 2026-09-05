@@ -27,6 +27,28 @@ musaeus
 
 ---
 
+## Running in Docker
+
+For trying MUSAEUS on a machine that is not the one it was built on — or on
+someone else's music — there is a container image. It pins the versions
+MUSAEUS was developed against (Debian 12, Python 3.11, ffmpeg 5.1, fpcalc
+1.5.1), so a bug report describes the same encoder the maintainer has.
+
+```bash
+MUSAEUS_UID=$(id -u) MUSAEUS_GID=$(id -g) docker compose build
+mkdir -p vault/INBOX && cp /some/music/*.flac vault/INBOX/   # COPIES
+docker compose run --rm musaeus run --dry-run
+```
+
+**`musaeus run` mutates immediately; previewing is `--dry-run`.** Read
+[docs/TESTING_ON_YOUR_OWN_FILES.md](docs/TESTING_ON_YOUR_OWN_FILES.md)
+before a first real run — especially if the files are not yours.
+
+The database lives on a Docker named volume rather than in `vault/`, because
+SQLite's WAL mode needs locking that Docker Desktop's Windows and macOS bind
+mounts do not reliably provide. The full test suite (2,123 tests) passes
+inside the image.
+
 ## Installation
 
 ```bash
