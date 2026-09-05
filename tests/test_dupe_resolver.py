@@ -175,6 +175,55 @@ class TestDupeResolverSameBatchGroup:
         assert not good_lo.exists(), "a later group must still be processed"
         assert good_hi.exists()
 
+    def test_one_failed_move_does_not_revert_the_moves_that_worked(self, ctx, monkeypatch):
+        """There is one commit, after every group. The per-item error handler
+        called conn.rollback(), which is not scoped to the item -- it discards
+        the whole uncommitted transaction.
+
+        So a failure on file 41 reverted all 40 earlier archive updates while
+        their files stayed physically moved: rows CATALOGUED, file_path
+        pointing at sources that no longer exist, and a manifest on disk
+        claiming all 40 moved. That is exactly the divergence the "row first,
+        then the move" ordering (scope 4.25) exists to prevent."""
+        import shutil as _shutil
+
+        pairs = []
+        for tag in ("a", "b", "c"):
+            hi = _make_archive_row(ctx, f"{tag}_hi.flac", f"Art{tag}", "Alb", "Ttl",
+                                   bitrate=900_000, size_bytes=500)
+            lo = _make_archive_row(ctx, f"{tag}_lo.m4a", f"Art{tag}", "Alb", "Ttl",
+                                   bitrate=128_000, size_bytes=200)
+            _stage_duplicate_pair(ctx, f"dup_{tag}", hi, lo)
+            pairs.append((hi, lo))
+
+        real_move = _shutil.move
+        calls = {"n": 0}
+
+        def flaky(src, dst):
+            calls["n"] += 1
+            if calls["n"] == 3:
+                raise OSError(28, "No space left on device")
+            return real_move(src, dst)
+
+        monkeypatch.setattr("musaeus.stages.dupe_resolver.shutil.move", flaky)
+        result = DupeResolverStage().execute(ctx)
+
+        assert result.files_errored == 1
+        moved_rows = ctx.conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE status='DUPE_REVIEW'"
+        ).fetchone()[0]
+        assert moved_rows == 2, (
+            f"{moved_rows} rows kept DUPE_REVIEW; the two successful moves must "
+            "not be reverted by the third one failing"
+        )
+
+        # and the failed one is untouched on both sides
+        still = ctx.conn.execute(
+            "SELECT status FROM archive WHERE file_path = ?", (str(pairs[2][1]),)
+        ).fetchone()
+        assert still is not None and still["status"] == "CATALOGUED"
+        assert pairs[2][1].exists(), "the file that could not move must stay put"
+
     def test_manifest_and_restore_script_written(self, ctx):
         high = _make_archive_row(
             ctx, "high.flac", "Artist", "Album", "Title", bitrate=900_000, size_bytes=500

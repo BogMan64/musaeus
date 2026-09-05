@@ -508,7 +508,7 @@ class DupeResolverStage(BaseStage):
         errors.
         """
         keeper_desc = keeper["file_path"] if keeper else "(no keeper on record)"
-        for loser in losers:
+        for item_index, loser in enumerate(losers):
             result.files_processed += 1
             source = Path(loser["file_path"])
             source_key = str(source)
@@ -651,6 +651,21 @@ class DupeResolverStage(BaseStage):
             # Row first, then the move (scope section 4.25). A move cannot
             # be rolled back and a database write can, so this ordering
             # leaves neither half applied when something fails.
+            #
+            # Scoped to THIS item with a SAVEPOINT. There is one commit, after
+            # every group, so the previous conn.rollback() here was not scoped
+            # to the item at all -- it discarded the whole uncommitted
+            # transaction. A failure on file 41 reverted all 40 earlier archive
+            # updates while their files stayed physically moved: rows left
+            # CATALOGUED pointing at sources that no longer existed, and a
+            # manifest claiming all 40 had moved. That is precisely the
+            # divergence this ordering exists to prevent.
+            #
+            # The savepoint name is built from a loop counter and never from a
+            # filename: savepoint names are identifiers, so they cannot be
+            # bound parameters and have to be interpolated.
+            savepoint = f"dupe_item_{item_index}"
+            ctx.conn.execute(f"SAVEPOINT {savepoint}")
             ctx.conn.execute(
                 "UPDATE archive SET status = 'DUPE_REVIEW', file_path = ? WHERE file_path = ?",
                 (str(target), str(source)),
@@ -659,7 +674,13 @@ class DupeResolverStage(BaseStage):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(source), str(target))
             except OSError as exc:
-                ctx.conn.rollback()
+                # ROLLBACK TO does not release; without the RELEASE these
+                # accumulate on the transaction stack for the whole run.
+                # OSError covers shutil.Error, which subclasses it. A
+                # sqlite3.Error here means something worse and is deliberately
+                # not swallowed per-item.
+                ctx.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                ctx.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
                 result.files_errored += 1
                 result.errors.append(f"{source}: {exc}")
                 logger.warning("[dupe-resolver] move failed %s: %s", source, exc)
@@ -701,6 +722,10 @@ class DupeResolverStage(BaseStage):
                     "kept_bitrate": (keeper.get("bitrate") or "") if keeper else "",
                 }
             )
+            # The item is complete -- row, file, duplicates table and event.
+            # Releasing here rather than straight after the move keeps the
+            # bookkeeping inside the same unwind unit as the move itself.
+            ctx.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             result.files_changed += 1
             already_moved[source_key] = group_id
             logger.info("[dupe-resolver] moved %s -> %s", source, target)
