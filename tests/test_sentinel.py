@@ -561,3 +561,133 @@ class TestSentinelWantedList:
             result = SentinelStage().execute(ctx)
 
         assert result.files_errored == 1  # the hash failure is still counted
+
+
+class TestARottedLibraryMasterIsReported:
+    """P1-1, fixed 2026-09-05. already_owned() matched the undecodable file's
+    OWN archive row.
+
+    _get_pending selects `status='PENDING' OR audio_hash IS NULL`, so a
+    CATALOGUED row whose audio_hash went NULL (scope 4.17) is re-hashed. If
+    it now fails to decode, _want_replacement reads artist/title off that
+    same file, already_owned() LIKE-matches the very row it came from,
+    returns True, and nothing is written -- only an INFO line.
+
+    The worst case, a library master that has gone bad, was the one case
+    this silently dropped."""
+
+    def _probe_stub(self, artist, title, album=""):
+        return {
+            "format": {"tags": {"artist": artist, "title": title, "album": album}},
+            "streams": [{"codec_type": "audio", "codec_name": "alac"}],
+        }
+
+    def test_a_catalogued_row_that_stopped_decoding_reaches_the_wanted_list(
+        self, ctx, tmp_path
+    ):
+        rotted = tmp_path / "INBOX" / "Aerosmith - What It Takes.m4a"
+        rotted.parent.mkdir(parents=True, exist_ok=True)
+        rotted.write_bytes(b"header only")
+        # CATALOGUED, tagged, but audio_hash has gone NULL -- so sentinel
+        # re-selects it, and it is now its own "already owned" match.
+        upsert_archive(ctx.conn, {
+            "file_path": str(rotted), "status": "CATALOGUED",
+            "artist": "Aerosmith", "title": "What It Takes",
+        })
+        ctx.conn.commit()
+
+        with patch("musaeus.stages.sentinel.audio_hash_safe",
+                   return_value=(None, "ffmpeg exited 69: invalid data found")), \
+             patch("musaeus.stages.sentinel.file_hash", return_value="c" * 64), \
+             patch("musaeus.stages.scholar._probe",
+                   return_value=self._probe_stub("Aerosmith", "What It Takes")):
+            SentinelStage().execute(ctx)
+
+        csv_path = ctx.config.tunemymusic_csv_path
+        assert csv_path.exists(), (
+            "a master that has gone bad is exactly what the wanted list is for; "
+            "it must not be suppressed by matching its own row"
+        )
+        body = csv_path.read_text(encoding="utf-8")
+        assert "What It Takes" in body
+
+    def test_a_DIFFERENT_catalogued_copy_still_suppresses_the_listing(
+        self, ctx, tmp_path
+    ):
+        """The Bowie case must keep working: a clean copy elsewhere in the
+        library still means do not ask Grey to re-buy it."""
+        bad = tmp_path / "INBOX" / "bowie_bad.m4a"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_bytes(b"broken")
+        _insert_pending(ctx, str(bad))
+        upsert_archive(ctx.conn, {
+            "file_path": str(tmp_path / "LIB" / "bowie_good.m4a"),
+            "status": "CATALOGUED", "artist": "David Bowie", "title": "Cat People",
+        })
+        ctx.conn.commit()
+
+        with patch("musaeus.stages.sentinel.audio_hash_safe",
+                   return_value=(None, "ffmpeg exited 69: invalid data found")), \
+             patch("musaeus.stages.sentinel.file_hash", return_value="b" * 64), \
+             patch("musaeus.stages.scholar._probe",
+                   return_value=self._probe_stub("David Bowie", "Cat People")):
+            SentinelStage().execute(ctx)
+
+        assert not ctx.config.tunemymusic_csv_path.exists()
+
+
+class TestAFlakyMountDoesNotBookAPurchase:
+    """P1-3, fixed 2026-09-05. _want_replacement treated EVERY HasherError as
+    proof the file is unplayable -- including a mid-read failure on a flaky
+    mount, an OOM kill, or fd exhaustion. ffprobe is a separate binary and
+    still reads the tags, so a perfectly good record was appended to
+    TuneMyMusic.csv and nothing ever removes it.
+
+    The repo's own "a network failure is not an answer" principle, applied
+    to the branch that books a purchase."""
+
+    def _probe_stub(self, artist, title):
+        return {
+            "format": {"tags": {"artist": artist, "title": title, "album": ""}},
+            "streams": [{"codec_type": "audio", "codec_name": "alac"}],
+        }
+
+    def _run(self, ctx, tmp_path, err):
+        f = tmp_path / "INBOX" / "Journey - Keep on Runnin.m4a"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"x")
+        _insert_pending(ctx, str(f))
+        with patch("musaeus.stages.sentinel.audio_hash_safe", return_value=(None, err)), \
+             patch("musaeus.stages.sentinel.file_hash", return_value="a" * 64), \
+             patch("musaeus.stages.scholar._probe",
+                   return_value=self._probe_stub("Journey", "Keep on Runnin")):
+            SentinelStage().execute(ctx)
+        return ctx.config.tunemymusic_csv_path
+
+    @pytest.mark.parametrize("err", [
+        "ffmpeg exited 1 for /x.m4a: Input/output error",
+        "ffmpeg exited 1 for /x.m4a: No such file or directory",
+        "ffmpeg exited -9 for /x.m4a: ",                    # OOM-killed
+        "ffmpeg exited 1 for /x.m4a: Too many open files",
+        "ffmpeg not found — cannot compute audio hash for /x.m4a",
+        "ffmpeg timed out (>300s) for /x.m4a and the full-file fallback also failed: EIO",
+    ])
+    def test_an_environmental_failure_writes_nothing(self, ctx, tmp_path, err):
+        csv_path = self._run(ctx, tmp_path, err)
+        assert not csv_path.exists(), (
+            f"the machine is having a bad day; that is not evidence the file "
+            f"is rotten. err={err!r}"
+        )
+
+    @pytest.mark.parametrize("err", [
+        "ffmpeg exited 69 for /x.m4a: Invalid data found when processing input",
+        "ffmpeg exited 1 for /x.m4a: moov atom not found",
+        "ffmpeg exited 183 for /x.m4a: something unfamiliar",   # unknown -> still listed
+    ])
+    def test_a_genuine_decode_refusal_still_lists(self, ctx, tmp_path, err):
+        csv_path = self._run(ctx, tmp_path, err)
+        assert csv_path.exists(), (
+            f"a file ffmpeg refused to decode is the whole point of the list. "
+            f"err={err!r}"
+        )
+        assert "Keep on Runnin" in csv_path.read_text(encoding="utf-8")

@@ -94,27 +94,43 @@ def clean_title(title: str) -> str:
     return t.strip(" -")
 
 
-def already_owned(conn: sqlite3.Connection, artist: str, title: str) -> bool:
-    """True when a CATALOGUED row already carries this artist and title.
+def already_owned(
+    conn: sqlite3.Connection,
+    artist: str,
+    title: str,
+    exclude_path: str | None = None,
+) -> bool:
+    """True when a CATALOGUED row OTHER THAN exclude_path carries this
+    artist and title.
 
     A prefix LIKE match, not exact -- real-world variance in remaster
     tags and punctuation means an exact match under-counts what is
     genuinely already owned. The prefix length (14 chars) is the same
     figure measured against the live library 2026-09-02 that correctly
     matched all 6 already-owned cases with no false matches in that run.
+
+    `exclude_path` exists because the caller is usually asking about a file
+    that is ITSELF in the archive (P1-1). A CATALOGUED row whose audio_hash
+    went NULL is re-hashed by sentinel; if it now fails to decode, the tags
+    read off that same file match its own row, "already owned" returns True,
+    and nothing is written. The worst case there is a library master that
+    has gone bad -- exactly the case the wanted list exists for, and the one
+    it silently dropped. Excluded by file_path rather than rowid because
+    that is what the caller holds at that point.
     """
     if not artist or not title:
         return False
-    row = conn.execute(
-        """
+    sql = """
         SELECT 1 FROM archive
          WHERE status = 'CATALOGUED'
            AND lower(artist) LIKE ?
            AND lower(title) LIKE ?
-         LIMIT 1
-        """,
-        (f"%{artist.lower()[:14]}%", f"%{title.lower()[:14]}%"),
-    ).fetchone()
+    """
+    params: list[str] = [f"%{artist.lower()[:14]}%", f"%{title.lower()[:14]}%"]
+    if exclude_path:
+        sql += "   AND file_path <> ?\n"
+        params.append(str(exclude_path))
+    row = conn.execute(sql + " LIMIT 1", params).fetchone()
     return row is not None
 
 

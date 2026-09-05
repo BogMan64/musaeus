@@ -21,6 +21,7 @@ Design:
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from ..context import RunContext, StageResult
@@ -56,6 +57,49 @@ def _get_pending(conn) -> list[dict]:  # type: ignore[type-arg]
         """
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# Error text that means "the machine is having a bad day", not "this file is
+# rotten". A HasherError is the strongest evidence MUSAEUS gets that a file is
+# unplayable -- but only when ffmpeg actually refused to decode it. A mid-read
+# failure on a flaky mount, an OOM kill, or fd exhaustion produces the same
+# exception, and ffprobe (a separate binary) still reads the tags, so a
+# perfectly good record gets appended to the wanted list and nothing ever
+# removes it. This is the repo's own "a network failure is not an answer"
+# principle applied to the branch that books a purchase.
+_ENVIRONMENTAL_ERRORS: tuple[str, ...] = (
+    "ffmpeg not found",
+    "full-file fallback also failed",
+    "no such file or directory",
+    "input/output error",
+    "permission denied",
+    "cannot allocate memory",
+    "too many open files",
+    "resource temporarily unavailable",
+    "stale file handle",
+    "transport endpoint is not connected",
+    "device or resource busy",
+    "structure needs cleaning",
+)
+
+
+def _is_environmental(err: str | None) -> bool:
+    """True when the decode failure says more about the machine than the file.
+
+    Positively recognised only. An unfamiliar ffmpeg error is treated as a
+    genuine decode refusal and still reaches the wanted list: a missing entry
+    costs a recording, while a spurious one costs a moment's review. The
+    named cases above are the ones that actually recur.
+    """
+    if not err:
+        return False
+    low = err.lower()
+    if any(marker in low for marker in _ENVIRONMENTAL_ERRORS):
+        return True
+    # A negative exit status is a signal, not a verdict: ffmpeg was killed
+    # (OOM, fd limit), it did not decide anything about the audio.
+    match = re.search(r"ffmpeg exited (-?\d+)", low)
+    return bool(match and int(match.group(1)) < 0)
 
 
 def _want_replacement(ctx, path: Path, err: str) -> str | None:
@@ -104,7 +148,16 @@ def _want_replacement(ctx, path: Path, err: str) -> str | None:
         # service, which is the only thing this list is for.
         return None
 
-    if already_owned(ctx.conn, artist, title):
+    if _is_environmental(err):
+        # Leave the row alone: it stays unhashed and the next run retries it.
+        logger.warning(
+            "[sentinel] %s failed to decode, but the error looks environmental "
+            "(%s) — not listing a replacement",
+            path.name, (err or "").strip()[:120],
+        )
+        return None
+
+    if already_owned(ctx.conn, artist, title, exclude_path=str(path)):
         logger.info(
             "[sentinel] %s will not decode, but a catalogued copy exists — not listing",
             path.name,
