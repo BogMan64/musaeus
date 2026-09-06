@@ -370,7 +370,7 @@ class TestRemovedKnockOffStillHeld:
                     status="TRIBUTE_REVIEW")
         kept = _add(vault, "twin.m4a", artist="Karaoke Channel", title="Hallelujah")
         self._set_hash(vault, kept, self._hash_of(vault, gone))
-        f = _finding(diagnose(vault), "removed knock-off still held")
+        f = _finding(diagnose(vault), "removed audio still held")
         assert f.level == "fail" and f.count == 1
         assert "twin.m4a" in f.detail
 
@@ -381,7 +381,7 @@ class TestRemovedKnockOffStillHeld:
                     status="DELETED")
         kept = _add(vault, "chuck_twin.m4a", artist="Chuck Billy", title="Seek & Destroy")
         self._set_hash(vault, kept, self._hash_of(vault, gone))
-        assert _finding(diagnose(vault), "removed knock-off still held").level == "fail"
+        assert _finding(diagnose(vault), "removed audio still held").level == "fail"
 
     def test_a_truncation_deletion_is_not_treated_as_a_knockoff(self, vault):
         """Santana's row was DELETED for truncation and its twin is the
@@ -395,7 +395,7 @@ class TestRemovedKnockOffStillHeld:
                      ("CANONICALIZE_VERIFY_FAILED", str(src) + ".FAILED_VERIFY", str(src)))
         conn.commit()
         conn.close()
-        assert _finding(diagnose(vault), "removed knock-off still held").level == "ok"
+        assert _finding(diagnose(vault), "removed audio still held").level == "ok"
 
     def test_a_genuine_recording_sharing_a_title_is_untouched(self, vault):
         """Metallica's own "Seek & Destroy" must never be swept up with the
@@ -403,7 +403,7 @@ class TestRemovedKnockOffStillHeld:
         _add(vault, "junk2.m4a", artist="Tribute Band", title="Seek & Destroy",
              status="TRIBUTE_REVIEW")
         _add(vault, "real.m4a", artist="Metallica", title="Seek & Destroy")
-        assert _finding(diagnose(vault), "removed knock-off still held").level == "ok"
+        assert _finding(diagnose(vault), "removed audio still held").level == "ok"
 
 
 def _finding(rep, check):
@@ -481,7 +481,7 @@ class TestDedupPurgeIsNotAKnockOff:
     def test_a_purged_duplicate_is_not_reported_as_a_held_knockoff(self, vault):
         gone, _ = self._twin(vault)
         self._purge_event(vault, gone)
-        finding = _finding(diagnose(vault), "removed knock-off still held")
+        finding = _finding(diagnose(vault), "removed audio still held")
         assert finding.level != "fail", (
             f"the keeper is why the duplicate was deleted. Got: {finding.detail}"
         )
@@ -490,7 +490,7 @@ class TestDedupPurgeIsNotAKnockOff:
         """The guard must not swallow Grey's manual rulings: a bare DELETED
         with no DUPE_PURGED is still a knock-off removal."""
         self._twin(vault)
-        assert _finding(diagnose(vault), "removed knock-off still held").level == "fail"
+        assert _finding(diagnose(vault), "removed audio still held").level == "fail"
 
 
 class TestAuthoritiesAgree:
@@ -556,3 +556,59 @@ class TestAuthoritiesAgree:
     def test_no_canon_files_is_not_a_failure(self, vault):
         """A vault that has never had canon files makes no claim to break."""
         assert _finding(diagnose(vault), "authorities agree").level == "ok"
+
+
+class TestReviewFoldersWithNoRow:
+    """The 19 GB that "library files with no row: 0" could not see.
+
+    On 2026-09-06 that check reported 0 while 484 untracked files sat in
+    DUPES_MOVED_FOR_REVIEW. It scans alac_library and skips the review
+    folders; both review folders live under alac_archive, which it never
+    visits. The ✓ was true and useless at once -- worse than a failure,
+    because a ✓ is read as "nothing on disk is unaccounted for".
+    """
+
+    def _review_dirs(self, vault, tmp_path):
+        d = tmp_path / "ALAC_Archive" / "DUPES_MOVED_FOR_REVIEW"
+        t = tmp_path / "ALAC_Archive" / "TRIBUTE_REMOVED_FOR_REVIEW"
+        d.mkdir(parents=True)
+        t.mkdir(parents=True)
+        vault.dupes_review_dir = d
+        vault.tribute_review_dir = t
+        return d, t
+
+    def test_a_stranded_file_is_reported(self, vault, tmp_path):
+        d, _ = self._review_dirs(vault, tmp_path)
+        (d / "Unknown Artist - Unknown Title (312).m4a").write_bytes(b"x")
+        f = _finding(diagnose(vault), "review folders with no row")
+        assert f.level == "warn" and f.count == 1
+
+    def test_a_file_that_still_has_a_row_is_not_stranded(self, vault, tmp_path):
+        d, _ = self._review_dirs(vault, tmp_path)
+        p = d / "held.m4a"
+        p.write_bytes(b"x")
+        conn = sqlite3.connect(vault.db_path)
+        conn.execute(
+            "INSERT INTO archive VALUES (?,?,?,?,?,?,?,?)",
+            (str(p), "A", "T", "DUPE_REVIEW", "h_held", "Rock", None, 200.0),
+        )
+        conn.commit()
+        conn.close()
+        assert _finding(diagnose(vault), "review folders with no row").level == "ok"
+
+    def test_the_check_covers_the_tribute_folder_too(self, vault, tmp_path):
+        _, t = self._review_dirs(vault, tmp_path)
+        (t / "24. Estudio K L - Karaoke.flac").write_bytes(b"x")
+        assert _finding(diagnose(vault), "review folders with no row").level == "warn"
+
+    def test_a_non_audio_file_is_not_a_stranded_recording(self, vault, tmp_path):
+        d, _ = self._review_dirs(vault, tmp_path)
+        (d / "notes.csv").write_bytes(b"x")
+        (d / "rerun.sh").write_bytes(b"x")
+        assert _finding(diagnose(vault), "review folders with no row").level == "ok"
+
+    def test_absent_review_folders_are_not_reported_at_all(self, vault):
+        """A vault that has never quarantined anything has no folder, and an
+        absent folder is not a finding -- it is silence, correctly."""
+        checks = [f.check for f in diagnose(vault).findings]
+        assert "review folders with no row" not in checks

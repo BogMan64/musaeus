@@ -17,7 +17,11 @@ import pytest
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db
-from musaeus.stages.dupe_resolver import DupeResolverStage, _keeper_sort_key
+from musaeus.stages.dupe_resolver import (
+    DupeResolverStage,
+    _connected_groups,
+    _keeper_sort_key,
+)
 
 _TEST_BATCH_DATE = "2026-01-15"
 
@@ -1015,3 +1019,69 @@ class TestOrderingAndRelocation:
 
         assert result.files_errored == 1
         assert any("file missing on disk" in e for e in result.errors)
+
+
+class TestNoFileAppearsInTwoComponents:
+    """The invariant `_connected_groups` exists to establish, stated directly.
+
+    A review CSV built from raw `duplicates` group_ids -- rather than from
+    components -- can list one path in two groups, and then a reviewer's two
+    rulings for that path can disagree. That happened on 2026-09-06: a
+    170-group CSV listed 57 paths twice, 23 of them ended up carrying both
+    DELETE and KEEP, the apply honoured both in sequence, and it reported
+    zero errors while leaving 6 catalogued rows pointing at files it had
+    just deleted.
+
+    The pipeline was never wrong here -- `_connected_groups` had merged
+    those groups since 2026-08-31. The CSV bypassed it. This test names the
+    property so that anyone building a review artifact can grep for it and
+    find the one function they must route through.
+    """
+
+    def _stage(self, ctx, group_id, *paths):
+        for p in paths:
+            ctx.conn.execute(
+                "INSERT INTO duplicates (group_id, file_path, duplicate_type, status) "
+                "VALUES (?,?,?,'pending')",
+                (group_id, str(p), "NEAR"),
+            )
+        ctx.conn.commit()
+
+    def test_a_path_shared_by_two_groups_yields_one_component(self, ctx, tmp_path):
+        a, b, c = (tmp_path / n for n in ("a.m4a", "b.m4a", "c.m4a"))
+        self._stage(ctx, "g1", a, b)
+        self._stage(ctx, "g2", b, c)          # b is in both
+        comps = _connected_groups(ctx.conn, ["g1", "g2"])
+        assert len(comps) == 1, f"g1 and g2 share b and must merge; got {comps}"
+
+    def test_no_path_can_reach_two_components(self, ctx, tmp_path):
+        """The property itself: across every component, each path once."""
+        paths = {n: tmp_path / f"{n}.m4a" for n in "abcdef"}
+        self._stage(ctx, "g1", paths["a"], paths["b"])
+        self._stage(ctx, "g2", paths["b"], paths["c"])   # chains onto g1
+        self._stage(ctx, "g3", paths["d"], paths["e"])   # separate
+        self._stage(ctx, "g4", paths["e"], paths["f"])   # chains onto g3
+        comps = _connected_groups(ctx.conn, ["g1", "g2", "g3", "g4"])
+
+        seen: dict[str, int] = {}
+        for i, comp in enumerate(comps):
+            rows = ctx.conn.execute(
+                "SELECT DISTINCT file_path FROM duplicates WHERE group_id IN "
+                f"({','.join('?' for _ in comp)}) AND status = 'pending'",
+                comp,
+            ).fetchall()
+            for (fp,) in rows:
+                assert fp not in seen, (
+                    f"{fp} reachable from component {seen[fp]} and {i} -- two "
+                    "rulings for one file become possible"
+                )
+                seen[fp] = i
+        assert len(comps) == 2, f"expected g1+g2 and g3+g4; got {comps}"
+
+    def test_disjoint_groups_are_not_merged(self, ctx, tmp_path):
+        """The merge must not be greedy: unrelated groups stay separate, or
+        one reviewer decision would silently govern unrelated songs."""
+        a, b, c, d = (tmp_path / n for n in ("a.m4a", "b.m4a", "c.m4a", "d.m4a"))
+        self._stage(ctx, "g1", a, b)
+        self._stage(ctx, "g2", c, d)
+        assert len(_connected_groups(ctx.conn, ["g1", "g2"])) == 2

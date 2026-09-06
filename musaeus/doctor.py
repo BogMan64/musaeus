@@ -53,6 +53,9 @@ _EDITION_RE = re.compile(
 _NOISE_RE = re.compile(r"[^a-z0-9]")
 
 
+_AUDIO_SUFFIXES = frozenset({".m4a", ".flac", ".mp3", ".wav", ".aac", ".ogg"})
+
+
 def song_key(artist: str | None, title: str | None) -> tuple[str, str]:
     """Identity of a RECORDING, ignoring edition and punctuation.
 
@@ -149,6 +152,54 @@ def diagnose(cfg: MusicConfig) -> Report:
         f"{len(orphans)}" + (f"  e.g. {orphans[0].name}" if orphans else ""),
         len(orphans),
     )
+
+    # 2b. The reciprocal of check 2, for the subtrees check 2 deliberately
+    #     skips.
+    #
+    #     Check 2 scans alac_library and excludes the review folders, so it
+    #     answers "is anything in the EDITION unaccounted for". Both review
+    #     folders live under alac_archive, which that scan never visits at
+    #     all -- so on 2026-09-06 it reported 0 while 484 untracked files,
+    #     19 GB of them, sat in DUPES_MOVED_FOR_REVIEW under filenames like
+    #     "Unknown Artist - Unknown Title (312).m4a". A row is what makes a
+    #     file findable; without one nothing here, in the console, or in any
+    #     stage would ever have named them again. The check above was true
+    #     and useless at the same time, which is worse than a check that
+    #     fails, because a ✓ is read as "nothing is unaccounted for".
+    #
+    #     These folders are meant to hold files that still HAVE a row and are
+    #     awaiting Grey's ruling. A file here with no row is not awaiting
+    #     anything -- it is lost -- so it is reported separately rather than
+    #     folded into check 2, whose exclusions stay exactly as they were.
+    #     getattr, not attribute access: diagnose() is called in tests with a
+    #     stand-in config that carries only the keys a given test needs, the
+    #     same reason _authority_disagreements reaches for meta_dir that way.
+    review_dirs = [
+        d
+        for d in (
+            getattr(cfg, "dupes_review_dir", None),
+            getattr(cfg, "tribute_review_dir", None),
+        )
+        if d is not None and d.exists()
+    ]
+    stranded = [
+        p
+        for d in review_dirs
+        for p in d.rglob("*")
+        if p.is_file()
+        and p.suffix.lower() in _AUDIO_SUFFIXES
+        and str(p) not in known
+    ]
+    if stranded:
+        size_gb = sum(p.stat().st_size for p in stranded) / 1024**3
+        rep.add(
+            "warn",
+            "review folders with no row",
+            f"{len(stranded)} file(s), {size_gb:.1f} GB, e.g. {stranded[0].name}",
+            len(stranded),
+        )
+    elif review_dirs:
+        rep.add("ok", "review folders with no row", "none")
 
     # 3. Hash ledger agreement, both directions.
     if cfg.hash_index_path.exists():
@@ -395,23 +446,55 @@ def diagnose(cfg: MusicConfig) -> Report:
         and r["file_path"] not in knockoff_paths
         and r["file_path"] in on_disk
     ]
+    #      NAMING. This was called "removed knock-off still held" until
+    #      2026-09-06. It is broader than that name: a DELETED row with no
+    #      DUPE_PURGED counts, and rows are deleted for reasons that are not
+    #      knock-offs -- truncation, a title_pattern match, an owner ruling
+    #      about something else. All three of the rows it reported on
+    #      2026-09-06 were like that, and two of them were fine.
+    #
+    #      The breadth is NOT the bug and must not be narrowed: it is what
+    #      caught the one real defect in that same batch -- a track whose
+    #      permanent deletion Grey authorised on 2026-09-03, re-ingested a
+    #      day later because the deletion never reached denied_hashes.
+    #      Keying on a reason would have suppressed exactly that. So the
+    #      name is widened to match the check, and each row now carries the
+    #      reason its twin was removed, which turns a false alarm into a row
+    #      that explains itself instead of one that has to be re-diagnosed.
+    def _removal_reason(r) -> str:
+        if r["status"] == "TRIBUTE_REVIEW":
+            return "tribute quarantine"
+        ev = conn.execute(
+            "SELECT event_type, note FROM events WHERE file_path = ? "
+            "AND event_type IN ('TRIBUTE_QUARANTINED','FILE_DELETED','DELETED') "
+            "ORDER BY id DESC LIMIT 1",
+            (r["file_path"],),
+        ).fetchone()
+        if ev is None:
+            return "no removal event on record"
+        note = (ev["note"] or "").strip()
+        return f"{ev['event_type']}: {note[:60]}" if note else ev["event_type"]
+
     if survivors:
+        by_hash = {r["audio_hash"]: r for r in rows if _removed_as_knockoff(r)}
+        detail = "; ".join(
+            f"{Path(r['file_path']).name[:38]} [{_removal_reason(by_hash[r['audio_hash']])}]"
+            for r in survivors[:3]
+        )
         rep.add(
             "fail",
-            "removed knock-off still held",
-            f"{len(survivors)} catalogued row(s) share audio with a copy that was "
-            f"quarantined or deleted as a knock-off, e.g. "
-            f"{Path(survivors[0]['file_path']).name}",
+            "removed audio still held",
+            f"{len(survivors)} catalogued row(s) share audio with a removed copy: {detail}",
             len(survivors),
         )
     elif removed_knockoff_hashes:
         rep.add(
             "ok",
-            "removed knock-off still held",
+            "removed audio still held",
             f"none ({len(removed_knockoff_hashes)} removal(s) on record)",
         )
     else:
-        rep.add("ok", "removed knock-off still held", "no removals on record")
+        rep.add("ok", "removed audio still held", "no removals on record")
 
     # N+2. The authorities must agree with each other.
     #
