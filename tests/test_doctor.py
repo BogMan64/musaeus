@@ -491,3 +491,68 @@ class TestDedupPurgeIsNotAKnockOff:
         with no DUPE_PURGED is still a knock-off removal."""
         self._twin(vault)
         assert _finding(diagnose(vault), "removed knock-off still held").level == "fail"
+
+
+class TestAuthoritiesAgree:
+    """MUSAEUS keeps several authorities and nothing checked them against
+    ONE ANOTHER. On 2026-09-05 that cost three faults in a single evening,
+    each a decision Grey had genuinely made, recorded in one place and never
+    reaching another:
+
+      - the deny list was downgraded to advisory in the stage, but
+        verify_effect still read every row and reported 12 false leaks
+      - "Question Mark and the Mysterians" was settled in MasterLaw and
+        absent from artist_canon, so the library carried both spellings
+      - two canon entries pointed at names that are themselves canon keys,
+        and resolve_exact does not follow a chain
+
+    A single authority can be correct and the system still wrong.
+    """
+
+    def _meta(self, vault, canon: str = "", law: str = "", allowed: str = ""):
+        # The vault fixture is a minimal namespace; give it a meta_dir only
+        # where a test actually needs canon files.
+        m = getattr(vault, "meta_dir", None)
+        if m is None:
+            m = Path(vault.db_path).parent / "MetaData"
+            vault.meta_dir = m
+        m.mkdir(parents=True, exist_ok=True)
+        if canon:
+            (m / "artist_canon.tsv").write_text(canon, encoding="utf-8")
+        if law:
+            (m / "MasterLaw.csv").write_text(law, encoding="utf-8")
+        if allowed:
+            (m / "Genre_Allowed.txt").write_text(allowed, encoding="utf-8")
+
+    def test_a_canon_chain_is_reported(self, vault):
+        """A -> B where B -> C. resolve_exact stops at B, so the row never
+        reaches C and lands under a name nobody chose."""
+        self._meta(vault, canon="Dawn\tTony Orlando\nTony Orlando\tTony Orlando & Dawn\n")
+        f = _finding(diagnose(vault), "authorities agree")
+        assert f.level == "fail"
+        assert "half-way" in f.detail
+
+    def test_a_direct_mapping_is_not_a_chain(self, vault):
+        self._meta(vault, canon="Dawn\tTony Orlando & Dawn\nDire Strats\tDire Straits\n")
+        assert _finding(diagnose(vault), "authorities agree").level == "ok"
+
+    def test_a_law_genre_outside_the_vocabulary_is_reported(self, vault):
+        """Both files claim authority; the law would write a value the
+        allow-list rejects."""
+        self._meta(vault,
+                   law="artist,genre\nSomebody,Folk/Roots\n",
+                   allowed="Jazz\nRock\n")
+        f = _finding(diagnose(vault), "authorities agree")
+        assert f.level == "fail"
+        assert "Folk/Roots" in f.detail
+
+    def test_agreement_is_reported_as_ok(self, vault):
+        self._meta(vault,
+                   canon="Dire Strats\tDire Straits\n",
+                   law="artist,genre\nDire Straits,Rock\n",
+                   allowed="Rock\nJazz\n")
+        assert _finding(diagnose(vault), "authorities agree").level == "ok"
+
+    def test_no_canon_files_is_not_a_failure(self, vault):
+        """A vault that has never had canon files makes no claim to break."""
+        assert _finding(diagnose(vault), "authorities agree").level == "ok"

@@ -413,5 +413,100 @@ def diagnose(cfg: MusicConfig) -> Report:
     else:
         rep.add("ok", "removed knock-off still held", "no removals on record")
 
+    # N+2. The authorities must agree with each other.
+    #
+    #      MUSAEUS keeps several: MasterLaw.csv (artist -> genre),
+    #      artist_canon.tsv (artist -> artist), Genre_Allowed.txt (the
+    #      vocabulary) and denied_hashes. Nothing checked them against ONE
+    #      ANOTHER, and on 2026-09-05 that cost three separate faults in a
+    #      single evening -- each one a decision Grey had genuinely made,
+    #      recorded in one authority, and never reaching another:
+    #
+    #        - the deny list was downgraded to advisory in the stage, but
+    #          verify_effect still read every row and reported 12 false leaks
+    #        - "Question Mark and the Mysterians" was settled in MasterLaw
+    #          and absent from artist_canon, so the library carried both
+    #          spellings, two tracks each
+    #        - two canon entries pointed at names that are THEMSELVES canon
+    #          keys, and resolve_exact does not follow a chain, so a row
+    #          stopped half-way to its canonical name
+    #
+    #      A single authority can be correct and the system still wrong.
+    _authority_disagreements(cfg, rep)
+
     conn.close()
     return rep
+
+
+def _authority_disagreements(cfg: MusicConfig, rep: Report) -> None:
+    """Cross-check the canon files against each other. Read-only."""
+    # getattr, not attribute access: doctor runs against whatever config it is
+    # handed, and a minimal one need not carry meta_dir. The first version of
+    # this check assumed it and took 28 existing doctor tests down with it --
+    # a cross-authority check that breaks the caller is worse than none.
+    meta = getattr(cfg, "meta_dir", None)
+    if meta is None:
+        rep.add("ok", "authorities agree", "no meta_dir on this config")
+        return
+    meta = Path(meta)
+    canon_path = meta / "artist_canon.tsv"
+    law_path = meta / "MasterLaw.csv"
+    allowed_path = meta / "Genre_Allowed.txt"
+
+    if not canon_path.exists() and not law_path.exists():
+        rep.add("ok", "authorities agree", "no canon files to cross-check")
+        return
+
+    problems: list[str] = []
+
+    # A canon entry pointing at a name that is itself a canon key. resolve_exact
+    # does not follow a chain, so such a row lands half-way and stops.
+    if canon_path.exists():
+        try:
+            from .canon.artist import ArtistCanon
+
+            canon = ArtistCanon(canon_path)
+            chains = [
+                f"{raw!r} -> {target!r} -> {canon.resolve_exact(target)!r}"
+                for raw, target in canon._map.items()
+                if canon.resolve_exact(target)
+                and canon.resolve_exact(target) != target
+            ]
+            if chains:
+                problems.append(
+                    f"{len(chains)} artist_canon entry(ies) point at a name that is "
+                    f"itself a canon key, so a row stops half-way: {chains[0]}"
+                )
+        except Exception as exc:  # a broken canon is its own report, not this one
+            problems.append(f"artist_canon.tsv could not be read: {type(exc).__name__}")
+
+    # A genre MasterLaw assigns that the vocabulary forbids: the law would write
+    # a value the allow-list rejects, and both files claim to be authoritative.
+    if law_path.exists() and allowed_path.exists():
+        try:
+            import csv as _csv
+
+            allowed = {
+                ln.strip()
+                for ln in allowed_path.read_text(encoding="utf-8").splitlines()
+                if ln.strip() and not ln.startswith("#")
+            }
+            assigned = {
+                r[-1].strip()
+                for r in _csv.reader(law_path.open(encoding="utf-8"))
+                if len(r) >= 2 and r[0].strip().lower() != "artist" and r[-1].strip()
+            }
+            off = sorted(assigned - allowed)
+            if off:
+                problems.append(
+                    f"{len(off)} genre(s) MasterLaw assigns are not in "
+                    f"Genre_Allowed.txt: " + ", ".join(repr(g) for g in off[:4])
+                )
+        except Exception as exc:
+            problems.append(f"MasterLaw.csv could not be read: {type(exc).__name__}")
+
+    if problems:
+        for detail in problems:
+            rep.add("fail", "authorities agree", detail, len(problems))
+    else:
+        rep.add("ok", "authorities agree", "canon files are consistent with each other")
