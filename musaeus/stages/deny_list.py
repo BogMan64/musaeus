@@ -244,7 +244,25 @@ class DenyListStage(BaseStage):
         conn = open_hash_index(ctx.config.hash_index_path)
         try:
             ensure_deny_list(conn)
-            denied = {r[0] for r in conn.execute("SELECT audio_hash FROM denied_hashes")}
+            # BINDING entries only. run() has honoured _is_advisory since
+            # 2026-08-31 -- the 67 entries a bulk backfill wrote in a single
+            # second from "ledger rows with no live file", which asserted an
+            # owner decision the data could not support and silently refused
+            # genuine records like the Communards' 1986 "Don't Leave Me This
+            # Way". They stay listed because the observation is still true,
+            # and are reported, never acted on.
+            #
+            # This check did not learn that, so it was stricter than the
+            # policy it verifies: on 2026-09-05 it reported 12 catalogued
+            # tracks as leaked denied audio, and every one of them carried
+            # an advisory reason and had been legitimately re-ingested. A
+            # verification that contradicts its own stage teaches you to
+            # ignore the verification.
+            denied = {
+                r["audio_hash"]
+                for r in conn.execute("SELECT audio_hash, reason FROM denied_hashes")
+                if not _is_advisory(r["reason"])
+            }
         finally:
             conn.close()
         if not denied:

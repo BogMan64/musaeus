@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from unittest.mock import MagicMock
+from musaeus.stages.deny_list import _ADVISORY_REASONS
 import pytest
 
 from musaeus.config import MusicConfig
@@ -265,3 +267,60 @@ class TestQuarantineClearsTheFinalizedMarker:
         row = ctx.conn.execute("SELECT status, finalized_at FROM archive").fetchone()
         assert row["status"] == "QUARANTINED"
         assert row["finalized_at"] is None
+
+
+class TestVerifyEffectHonoursAdvisory:
+    """The check must not be stricter than the stage it verifies.
+
+    2026-08-31 downgraded 67 deny entries to advisory: written in a single
+    second by a bulk backfill from "ledger rows with no live file", they
+    asserted an owner decision the data could not support and silently
+    refused genuine records -- the Communards' 1986 "Don't Leave Me This
+    Way" among them. run() has honoured that ever since; they are reported,
+    never acted on.
+
+    verify_effect did not learn it. On 2026-09-05 it reported 12 catalogued
+    tracks as leaked denied audio, and every one carried an advisory reason
+    and had been legitimately re-ingested. A verification that contradicts
+    its own stage teaches you to ignore the verification.
+    """
+
+    def _deny(self, ctx, audio_hash: str, reason: str) -> None:
+        conn = open_hash_index(ctx.config.hash_index_path)
+        try:
+            ensure_deny_list(conn)
+            conn.execute(
+                "INSERT OR REPLACE INTO denied_hashes "
+                "(audio_hash, reason, source_path, denied_at) VALUES (?,?,?,datetime('now'))",
+                (audio_hash, reason, "/gone.m4a"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _catalogued(self, ctx, audio_hash: str):
+        p = ctx.config.alac_library / f"{audio_hash[:8]}.m4a"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"x")
+        upsert_archive(ctx.conn, {"file_path": str(p), "status": "CATALOGUED",
+                                  "audio_hash": audio_hash})
+        ctx.conn.commit()
+
+    def test_an_advisory_entry_is_not_reported_as_a_leak(self, ctx):
+        self._deny(ctx, "a" * 64, _ADVISORY_REASONS[0])
+        self._catalogued(ctx, "a" * 64)
+        assert DenyListStage().verify_effect(ctx, MagicMock(files_changed=1)) == []
+
+    def test_a_binding_entry_is_still_reported(self, ctx):
+        """The 15 verified removals and the 25 knock-offs must keep binding."""
+        self._deny(ctx, "b" * 64, "knock-off: karaoke/tribute/cover, not a true recording artist")
+        self._catalogued(ctx, "b" * 64)
+        problems = DenyListStage().verify_effect(ctx, MagicMock(files_changed=1))
+        assert problems, "a genuinely denied hash back in the library must still be caught"
+
+    def test_an_unrecognised_reason_binds(self, ctx):
+        """Advisory is an explicit allow-list matched exactly, so anything
+        new or unrecognised binds rather than silently going advisory."""
+        self._deny(ctx, "c" * 64, "some reason nobody has seen before")
+        self._catalogued(ctx, "c" * 64)
+        assert DenyListStage().verify_effect(ctx, MagicMock(files_changed=1))
