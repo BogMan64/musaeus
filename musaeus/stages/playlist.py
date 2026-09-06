@@ -247,6 +247,29 @@ class PlaylistStage(BaseStage):
         ctx.record_stage(result)
         return result
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A playlist this stage says it wrote must exist and have content.
+
+        The event records the path and the track count. A write that
+        failed, or produced an empty file because the track query returned
+        nothing, leaves the count in the log and nothing on disk.
+        """
+        rows = ctx.conn.execute(
+            "SELECT file_path FROM events WHERE run_id = ? "
+            " AND event_type = 'PLAYLIST_WRITTEN' ORDER BY id DESC LIMIT 10",
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        problems: list[str] = []
+        for r in rows:
+            p = Path(r["file_path"])
+            if not p.exists():
+                problems.append(f"playlist was not written: {p.name}")
+            elif p.stat().st_size == 0:
+                problems.append(f"playlist is empty: {p.name}")
+        return problems
+
     def run(self, ctx: RunContext) -> StageResult:
         return self._build(ctx, dry_run=False)
 

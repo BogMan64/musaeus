@@ -55,7 +55,7 @@ from datetime import datetime, timezone
 from ..brackets import CLOSE, OPEN, strip_bracketed
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
-from .base import BaseStage
+from .base import BaseStage, NO_VERIFICATION
 from .enrich import _clean_artist_for_lookup
 from .mb_enrich import _mb_get, _same_artist
 
@@ -407,6 +407,18 @@ class OriginalYearStage(BaseStage):
         NOT write. A count of rows it did write would be satisfied by the
         stage re-reading itself; the edition year staying intact would not.
         """
+        # The columns are created on first run (ensure_columns), so their
+        # absence means this stage has not run here -- "I did not look",
+        # not "I looked and it is broken". Without this the check raised
+        # OperationalError against a library where original_year had never
+        # been created, and _check_effect swallowed it into a warning: an
+        # erroring check degrades silently to no check at all, which is the
+        # failure this whole mechanism exists to prevent.
+        cols = {r[1] for r in ctx.conn.execute("PRAGMA table_info(archive)")}
+        if not {"original_year", "original_year_source",
+                "original_year_checked_at"} <= cols:
+            return NO_VERIFICATION
+
         problems: list[str] = []
 
         after = ctx.conn.execute(

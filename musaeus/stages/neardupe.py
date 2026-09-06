@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from pathlib import Path
 import re
 import unicodedata
 
@@ -358,6 +359,35 @@ class NearDupeStage(BaseStage):
         return self._detect(ctx, dry_run=True)
 
     # ── Run ───────────────────────────────────────────────────────────────────
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A near-duplicate this stage found must actually be staged.
+
+        Same contract as cross-dupe: the event is the report, the
+        `duplicates` row is what the resolver acts on. One without the
+        other is a finding that reaches a log and nothing else.
+        """
+        rows = ctx.conn.execute(
+            "SELECT file_path FROM events WHERE run_id = ? "
+            " AND event_type = 'NEAR_DUPLICATE_FOUND' ORDER BY id DESC LIMIT 10",
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        unstaged = [
+            Path(r["file_path"]).name
+            for r in rows
+            if not ctx.conn.execute(
+                "SELECT 1 FROM duplicates WHERE file_path = ? "
+                " AND duplicate_type = 'NEAR' LIMIT 1",
+                (r["file_path"],)).fetchone()
+        ]
+        if not unstaged:
+            return []
+        return [
+            f"{len(unstaged)} of {len(rows)} near-duplicate(s) were reported but "
+            f"never staged: {', '.join(unstaged[:3])}"
+        ]
 
     def run(self, ctx: RunContext) -> StageResult:
         return self._detect(ctx, dry_run=False)

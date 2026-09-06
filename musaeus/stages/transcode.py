@@ -53,7 +53,7 @@ from pathlib import Path
 from ..config import LOSSLESS_CODECS as _LOSSLESS_CODECS
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
-from .base import BaseStage, StageError
+from .base import BaseStage, NO_VERIFICATION, StageError
 from .canonicalize import _has_attached_picture, _probe_streams
 
 logger = logging.getLogger(__name__)
@@ -334,6 +334,39 @@ class TranscodeStage(BaseStage):
 
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._transcode(ctx, dry_run=True)
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A transcode this stage recorded must exist and hold audio.
+
+        The row advertises where the output "is". ffmpeg exiting non-zero,
+        or filling a disk, still leaves that advertisement in place. A
+        zero-byte output passes any exists() test, which is why size is
+        checked too -- the same shape as the car export that died at byte
+        zero.
+        """
+        cols = {r[1] for r in ctx.conn.execute("PRAGMA table_info(archive)")}
+        if "transcode_path" not in cols:
+            return NO_VERIFICATION
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path, a.transcode_path FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.run_id = ? AND e.event_type IN ('TRANSCODE_DONE')
+               AND a.transcode_path IS NOT NULL AND a.transcode_path <> ''
+             ORDER BY e.id DESC LIMIT 10
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        problems: list[str] = []
+        for r in rows:
+            p = Path(r["transcode_path"])
+            if not p.exists():
+                problems.append(f"transcode is not on disk: {p.name}")
+            elif p.stat().st_size == 0:
+                problems.append(f"transcode is empty: {p.name}")
+        return problems
 
     def run(self, ctx: RunContext) -> StageResult:
         return self._transcode(ctx, dry_run=False)

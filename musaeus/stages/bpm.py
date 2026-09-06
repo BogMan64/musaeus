@@ -565,6 +565,38 @@ class BPMStage(BaseStage):
             write_bpm_tags(path, features)
         return "tag_shortcut" if from_tags else "ok"
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A track this stage analysed must carry a usable tempo.
+
+        BPM writes a number and a timestamp. "The column is set" is the
+        weak form of this check: an analyser that fails to parse writes
+        0.0, or None, for every track and a presence test calls that a
+        success. Recorded music runs roughly 20-300 BPM; outside that is
+        a parse failure wearing a number.
+        """
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path, a.bpm FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.run_id = ? AND e.event_type IN ('BPM_ANALYZED')
+             ORDER BY e.id DESC LIMIT 10
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        bad = [
+            Path(r["file_path"]).name
+            for r in rows
+            if r["bpm"] is None or not (20.0 <= float(r["bpm"]) <= 300.0)
+        ]
+        if not bad:
+            return []
+        return [
+            f"{len(bad)} of {len(rows)} analysed track(s) carry no usable BPM: "
+            f"{', '.join(bad[:3])}"
+        ]
+
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)
         force: bool = ctx.get("bpm_force", False)

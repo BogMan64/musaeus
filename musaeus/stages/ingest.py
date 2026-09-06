@@ -141,6 +141,37 @@ class IngestStage(BaseStage):
 
     # ── Run ───────────────────────────────────────────────────────────────────
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A file ingest says it took in must have a row AND still be there.
+
+        Ingest is the front door: it creates the row every later stage
+        works from. A row whose file is already gone means the rest of the
+        run is operating on a path that will fail at the first read, and
+        the failure surfaces stages later wearing someone else's name.
+        """
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.run_id = ? AND e.event_type IN ('INGEST')
+             ORDER BY e.id DESC LIMIT 10
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        missing = [
+            Path(r["file_path"]).name
+            for r in rows
+            if not Path(r["file_path"]).exists()
+        ]
+        if not missing:
+            return []
+        return [
+            f"{len(missing)} of {len(rows)} ingested file(s) are already gone: "
+            f"{', '.join(missing[:3])}"
+        ]
+
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)
         known = _known_paths(ctx.conn)

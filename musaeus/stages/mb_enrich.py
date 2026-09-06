@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 import re
 import time
 import urllib.error
@@ -48,7 +49,7 @@ from ..db import (
     open_mb_cache,
 )
 from ..network_policy import check as _network_check
-from .base import BaseStage
+from .base import BaseStage, NO_VERIFICATION
 from .enrich import _clean_artist_for_lookup
 
 logger = logging.getLogger(__name__)
@@ -681,6 +682,40 @@ class MBEnrichStage(BaseStage):
             result.notes.append(
                 f"  {unavailable} artist(s) got no answer from Discogs — retried next run."
             )
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A row recorded as MB-matched must carry the identifier.
+
+        MB_ARTIST_FOUND is logged when a lookup succeeds; the MBID is
+        written separately. An event without an id means the identity was
+        found and then lost, which is worse than not looking: the row
+        reads enriched and nothing will re-try it.
+        """
+        cols = {r[1] for r in ctx.conn.execute("PRAGMA table_info(archive)")}
+        if "mb_artist_id" not in cols:
+            return NO_VERIFICATION
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path, a.mb_artist_id FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.run_id = ? AND e.event_type IN ('MB_ARTIST_FOUND')
+             ORDER BY e.id DESC LIMIT 10
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        blank = [
+            Path(r["file_path"]).name
+            for r in rows
+            if not (r["mb_artist_id"] or "").strip()
+        ]
+        if not blank:
+            return []
+        return [
+            f"{len(blank)} of {len(rows)} row(s) recorded an MB match but carry "
+            f"no mb_artist_id: {', '.join(blank[:3])}"
+        ]
 
     def run(self, ctx: RunContext) -> StageResult:
         return self._enrich(ctx, dry_run=False)

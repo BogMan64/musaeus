@@ -209,5 +209,35 @@ class CrossDupeStage(BaseStage):
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._check(ctx, dry_run=True)
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A duplicate this stage found must actually be staged.
+
+        The event says "found"; the row in `duplicates` is what the
+        resolver later acts on. An event with no staged row means the
+        finding is reported to a human and invisible to the pipeline --
+        the dupe is never resolved and nothing ever says so again.
+        """
+        rows = ctx.conn.execute(
+            "SELECT file_path FROM events WHERE run_id = ? "
+            " AND event_type = 'CROSS_BATCH_DUPLICATE_FOUND' ORDER BY id DESC LIMIT 10",
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        unstaged = [
+            Path(r["file_path"]).name
+            for r in rows
+            if not ctx.conn.execute(
+                "SELECT 1 FROM duplicates WHERE file_path = ? "
+                " AND duplicate_type = 'CROSS_BATCH' LIMIT 1",
+                (r["file_path"],)).fetchone()
+        ]
+        if not unstaged:
+            return []
+        return [
+            f"{len(unstaged)} of {len(rows)} cross-batch duplicate(s) were "
+            f"reported but never staged: {', '.join(unstaged[:3])}"
+        ]
+
     def run(self, ctx: RunContext) -> StageResult:
         return self._check(ctx, dry_run=False)

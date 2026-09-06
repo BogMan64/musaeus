@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 import time
 from urllib.parse import urlencode
 from urllib.request import urlopen
@@ -305,6 +306,35 @@ class EnrichStage(BaseStage):
         return self._enrich(ctx, dry_run=True)
 
     # ── Run ───────────────────────────────────────────────────────────────────
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A row enrich says it gave a genre to must have one.
+
+        The stage counts an enrichment per row it decided about, but the
+        write is a separate step. A GENRE_ENRICHED event beside an empty
+        genre column is the exact silent-no-op shape: work reported, the
+        UPDATE reaching nothing.
+        """
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path, a.genre FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.run_id = ? AND e.event_type IN ('GENRE_ENRICHED')
+             ORDER BY e.id DESC LIMIT 10
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        blank = [
+            Path(r["file_path"]).name for r in rows if not (r["genre"] or "").strip()
+        ]
+        if not blank:
+            return []
+        return [
+            f"{len(blank)} of {len(rows)} enriched row(s) still have no genre: "
+            f"{', '.join(blank[:3])}"
+        ]
 
     def run(self, ctx: RunContext) -> StageResult:
         return self._enrich(ctx, dry_run=False)
