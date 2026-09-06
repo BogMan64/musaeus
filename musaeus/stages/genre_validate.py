@@ -80,6 +80,11 @@ class GenreValidateStage(BaseStage):
                 f"genre-validate claimed {result.files_changed} change(s): {names}"
             )
 
+        # Items are repr'd, not joined raw: a genre VALUE can itself contain
+        # ", " -- the live library holds one called 'Pop, Rock' across 72
+        # tracks -- so a bare join renders two findings as three and sends
+        # the reader looking for a genre that was never missing. Line 137
+        # already had this right; these two did not.
         # A genre outside the closed vocabulary means the law was not applied,
         # or something wrote around it.
         law = self._law(ctx)
@@ -93,7 +98,8 @@ class GenreValidateStage(BaseStage):
             off = [r["genre"] for r in stray if not law.permits(r["genre"])]
             if off:
                 problems.append(
-                    f"{len(off)} genre(s) outside the closed vocabulary: {', '.join(off[:5])}"
+                    f"{len(off)} genre(s) outside the closed vocabulary: "
+                    + ", ".join(repr(g) for g in off[:5])
                 )
 
             # ...and permits() cannot catch a value the law itself contains.
@@ -115,7 +121,8 @@ class GenreValidateStage(BaseStage):
                 if unlisted:
                     problems.append(
                         f"{len(unlisted)} genre(s) in use but absent from "
-                        f"Genre_Allowed.txt: {', '.join(unlisted[:5])}"
+                        "Genre_Allowed.txt: "
+                        + ", ".join(repr(g) for g in unlisted[:5])
                     )
 
             # permits() is deliberately forgiving, which leaves a gap: a stored

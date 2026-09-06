@@ -17,6 +17,8 @@ import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
+import inspect
+from unittest.mock import MagicMock
 import pytest
 
 from musaeus.canon.genre_law import GenreLaw
@@ -151,3 +153,70 @@ class TestGenreValidateStage:
         result = GenreValidateStage().run(ctx)  # type: ignore[arg-type]
         assert result.files_changed == 0
         assert any("nothing to validate against" in n for n in result.notes)
+
+
+
+@pytest.fixture
+def vault_with_genres(tmp_path: Path):
+    """A vault whose allowed-genre list deliberately omits the genres given,
+    so the vocabulary findings fire."""
+    from musaeus.config import MusicConfig
+    from musaeus.context import RunContext
+    from musaeus.db import open_db, upsert_archive
+
+    def _make(*genres: str) -> RunContext:
+        cfg = MusicConfig(
+            vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+            quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
+            meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+            db_path=tmp_path / "musaeus.db",
+        )
+        cfg.meta_dir.mkdir(parents=True, exist_ok=True)
+        # An allow-list that admits something else entirely, so every genre
+        # below is "in use but not listed".
+        (cfg.meta_dir / "Genre_Allowed.txt").write_text("Jazz\n", encoding="utf-8")
+        # The vocabulary block is gated on a non-empty law -- without
+        # MasterLaw.csv the whole check short-circuits and reports nothing.
+        (cfg.meta_dir / "MasterLaw.csv").write_text(
+            "artist,genre\nSomebody Else,Jazz\n", encoding="utf-8")
+        ctx = RunContext.new(cfg, open_db(cfg.db_path), dry_run=False)
+        for i, g in enumerate(genres):
+            f = cfg.alac_library / f"t{i}.m4a"
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b"x")
+            upsert_archive(ctx.conn, {"file_path": str(f), "status": "CATALOGUED",
+                                      "artist": f"Artist {i}", "title": f"T{i}", "genre": g})
+        ctx.conn.commit()
+        return ctx
+
+    return _make
+
+class TestAGenreContainingACommaIsNotAmbiguous:
+    """A genre VALUE can itself contain ", ".
+
+    The live library holds one called 'Pop, Rock' across 72 tracks. Joining
+    findings with a bare ", " rendered two of them as three and sent a
+    reader hunting a missing 'Pop' and 'Rock' that were never missing --
+    both are in Genre_Allowed.txt. Found 2026-09-05 running the checks
+    against the real library; the message cost a detour before the data did.
+
+    Asserted on the OUTPUT rather than on the source: an earlier version of
+    this test grepped for joins without repr() and flagged the artist list,
+    which legitimately needs none. It failed for the wrong reason.
+    """
+
+    def test_a_comma_bearing_genre_is_reported_as_one_item(self, vault_with_genres):
+        ctx = vault_with_genres("Pop, Rock", "Doo Wop")
+        out = GenreValidateStage().verify_effect(ctx, MagicMock(files_changed=1))
+        vocab = [line for line in out if "outside the closed vocabulary" in line
+                 or "absent from Genre_Allowed" in line]
+        assert vocab, "expected the vocabulary findings"
+        for line in vocab:
+            # the count the message states must match what a reader can see
+            stated = int(line.split()[0])
+            assert line.count("'") == stated * 2, (
+                f"{stated} item(s) claimed but {line.count(chr(39)) // 2} delimited: {line}"
+            )
+            assert "'Pop, Rock'" in line, (
+                "a genre containing a comma must render as ONE quoted item"
+            )
