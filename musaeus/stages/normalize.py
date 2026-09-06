@@ -97,7 +97,12 @@ _ROMAN_FALSE_FRIENDS: frozenset[str] = frozenset({"MIX", "CD", "MD", "XL", "DIV"
 # letter-then-period pairs. _smart_title_case strips surrounding punctuation
 # before its _KEEP_CAPS lookup, so "U.S.A." became "U.S.A" (not in the set),
 # fell through to .capitalize(), and came out "U.s.a.".
-_DOTTED_ABBREV_RE = re.compile(r"^(?:[A-Za-z]\.){2,}$")
+# The trailing period is OPTIONAL. Requiring it meant "R.E.M." was
+# protected while "R.E.M" -- 26 tracks in the live library, and the
+# far commoner way the tag is actually written -- fell through to
+# .capitalize() and came out "R.e.m". Same for "O.S.T" and "M.I.A".
+# Found 2026-09-05 by normalize's own verify_effect.
+_DOTTED_ABBREV_RE = re.compile(r"^(?:[A-Za-z]\.){2,}[A-Za-z]?$")
 
 # Real stylized band names whose leading word matches an entry in
 # _move_article_to_suffix()'s article list but is actually part of the
@@ -235,6 +240,18 @@ _LOWERCASE_WORDS: frozenset[str] = frozenset(
 # Words that should stay ALL CAPS (acronyms, special terms)
 _KEEP_CAPS: frozenset[str] = frozenset(
     {
+        # Acronym band names that flattening exposed on 2026-09-05.
+        # normalize's own verify_effect reported nine stored artist names
+        # that "would still change if normalized again"; ABBA was one, and
+        # it had been sitting in the library correct-but-unprotected. A
+        # wholly-uppercase token cannot be told from a shouted word by any
+        # rule -- LIVE, CREW and BAND are just as short and just as
+        # uppercase -- so single-word acronyms belong on this list, decided
+        # one at a time, and not in a heuristic.
+        "ABBA",
+        "ZZ",
+        "KLF",
+        "MF",
         "AC",
         "DC",
         "AC/DC",
@@ -438,6 +455,32 @@ def _smart_title_case(s: str) -> str:
         # Check if it's an acronym/special term that should stay caps
         if upper_clean in _KEEP_CAPS:
             processed.append(word.replace(clean, upper_clean))
+            continue
+
+        # Capitalisation the source already carries is a spelling decision,
+        # not sloppiness -- keep it rather than requiring an allowlist entry.
+        #
+        # _KEEP_CAPS is 40 hand-written entries, so every acronym nobody
+        # thought of was silently flattened: ABBA -> Abba, ZZ -> Zz,
+        # KLF -> Klf. Found 2026-09-05 by normalize's own verify_effect,
+        # which reported nine stored artist names that "would still change
+        # if normalized again" -- ABBA among them. The same flaw in
+        # artist_consolidate._smart_title would have rewritten 202 artists
+        # across 477 tracks the same day.
+        #
+        # MIXED-CASE only. An interior capital in a word that is not wholly
+        # uppercase is unambiguous: McKennitt, DeBarge, T-Bone, iZombie.
+        #
+        # A wholly-uppercase word is NOT decidable by rule, and the first
+        # version of this fix got that wrong: "short and all-caps means
+        # acronym" preserved ABBA and ZZ correctly but also left "2 LIVE
+        # CREW" and "SHOUTING BAND NAME" untouched, because LIVE, CREW,
+        # BAND and NAME are equally short and equally uppercase. Nothing in
+        # the token separates an acronym from a shouted word, so those stay
+        # with _KEEP_CAPS, where a human decides one at a time -- and the
+        # acronyms that flattening exposed are added to it below.
+        if clean and not clean.isupper() and any(ch.isupper() for ch in clean[1:]):
+            processed.append(word)
             continue
 
         # Roman numeral of any magnitude, excluding the real-word collisions

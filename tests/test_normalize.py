@@ -25,6 +25,7 @@ import pytest
 from musaeus.stages.normalize import (
     PROTECTED_ARTIST_NAMES,
     _move_article_to_suffix,
+    _normalise_artist,
     _smart_title_case,
 )
 
@@ -199,3 +200,45 @@ class TestDottedAbbreviations:
         # "Mr." is one letter + a period, not a dotted abbreviation -- it must
         # title-case normally rather than becoming "MR.".
         assert _smart_title_case("MR. BIG STUFF") == "Mr. Big Stuff"
+
+
+class TestCapitalisationIsNotOverwritten:
+    """Found 2026-09-05 by normalize's OWN verify_effect, which reported nine
+    stored artist names that "would still change if normalized again" -- a
+    check reporting on its own stage's residue, which is what it is for.
+
+    Two distinct faults sat behind those nine.
+    """
+
+    @pytest.mark.parametrize("name", [
+        "R.E.M", "O.S.T", "M.I.A",           # no trailing period -- 29 live tracks
+        "R.E.M.", "U.S.A.",                  # with one -- already worked
+    ])
+    def test_a_dotted_abbreviation_survives_without_a_trailing_period(self, name):
+        """_DOTTED_ABBREV_RE required a trailing period, so "R.E.M." was
+        protected while "R.E.M" -- the commoner spelling, and 26 tracks in
+        the live library -- came out "R.e.m"."""
+        assert _normalise_artist(name) in (None, name)
+
+    @pytest.mark.parametrize("name", [
+        "Loreena McKennitt", "Bobby McFerrin", "DeBarge", "T-Bone Walker",
+    ])
+    def test_a_mixed_case_interior_capital_survives(self, name):
+        assert _normalise_artist(name) in (None, name)
+
+    @pytest.mark.parametrize("name", ["ABBA", "ZZ Top", "MF"])
+    def test_known_acronyms_survive(self, name):
+        """Wholly-uppercase tokens cannot be told from shouted words by any
+        rule, so these live on _KEEP_CAPS, decided one at a time."""
+        assert _normalise_artist(name) in (None, name)
+
+    @pytest.mark.parametrize("raw,want", [
+        ("2 LIVE CREW", "2 Live Crew"),
+        ("DAVID ROSE", "David Rose"),
+    ])
+    def test_shouted_words_are_still_title_cased(self, raw, want):
+        """The counterpart the first draft of this fix broke: "short and
+        all-caps means acronym" preserved ABBA correctly but also left "2
+        LIVE CREW" untouched, because LIVE and CREW are equally short and
+        equally uppercase. Title-casing those is the point of the stage."""
+        assert _normalise_artist(raw) == want
