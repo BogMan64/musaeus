@@ -75,7 +75,7 @@ EDITIONS = {e.name: e for e in (LOSSLESS, CAR, IPHONE)}
 #: are simply skipped, and any genre not named here follows in alphabetical
 #: order, so adding a genre to the catalogue never silently drops it.
 DEFAULT_GENRE_PRIORITY: tuple[str, ...] = (
-    "Rock", "Classic Pop", "Rock & Roll", "R&B/Funk/Soul", "Blues",
+    "Rock", "Classic Pop", "Rock N'Roll", "R&B/Funk/Soul", "Blues",
     "Soft Rock", "Hard Rock", "Southern Rock", "Alternative", "Country",
     "Folk", "Singer-Songwriter", "Celtic", "Jazz", "Disco/Electronic",
     "Hip Hop", "Soundtrack", "Classical",
