@@ -403,8 +403,27 @@ class TaggerStage(BaseStage):
     def _compute_changes(self, db_row: dict, file_tags: dict[str, str]) -> dict[str, str]:
         """Return only the fields that need updating."""
         changes: dict[str, str] = {}
+        # `artist` is deliberately NOT in this map. It is the one field whose
+        # tag value is not the column value: the row holds the sort form
+        # ("Stooges, The") and the tag must hold the natural form ("The
+        # Stooges") -- see the block below and artist_form.py for why.
+        #
+        # It was in this map until 2026-09-06, and the two rules fought. The
+        # generic rule queued the SORT form whenever the tag differed from
+        # the column, which is permanently true of a CORRECTLY tagged file;
+        # the block below only overrode that when the natural form differed
+        # from the tag, which is exactly when it does not. So a correct file
+        # had its artist tag overwritten with the sort form, the next run put
+        # the natural form back, and the run after that undid it again --
+        # 3,161 of 16,286 files alternating between the two spellings on
+        # every pass, forever. Four consecutive runs reported 3,997, 3,161,
+        # 3,161, 3,161 changes and the library never converged.
+        #
+        # The damage was not just churn: on any run that ended with the sort
+        # form written, those files carried the exact spelling that
+        # artist_form.py exists to keep OUT of the artist tag -- the one
+        # MusicBrainz has never matched (0 of 2,158 hits).
         field_map = {
-            "artist": "artist",
             "album": "album",
             "title": "title",
             "genre": "genre",
@@ -448,9 +467,25 @@ class TaggerStage(BaseStage):
         album = str(db_row.get("album") or file_tags.get("album") or "").strip()
         genre = str(db_row.get("genre") or file_tags.get("genre") or "").strip()
         if albumartist_should_follow(db_artist, file_aa, album=album, genre=genre):
-            changes["albumartist"] = natural_form(db_artist)
+            # Mirror only the fields that would actually change. The decision
+            # above is "should albumartist follow the artist"; it answers yes
+            # whenever the file holds an article variant, including the case
+            # where the variant it holds is already the natural form we would
+            # write. Emitting the value regardless meant 3,161 files were
+            # rewritten with their own contents on every run (measured
+            # 2026-09-06) and counted as changes, so the stage could never
+            # reach a steady state and its own change count meant nothing.
+            #
+            # The test must stay on _compute_changes rather than on the
+            # predicate: the predicate is still right to say "yes, follow",
+            # and it is this layer's job not to write what is already there.
+            natural = natural_form(db_artist)
+            if natural != file_aa:
+                changes["albumartist"] = natural
             if has_article(db_artist):
-                changes["sort_albumartist"] = sort_form(db_artist)
+                sort_aa = sort_form(db_artist)
+                if sort_aa != str(file_tags.get("sort_albumartist") or "").strip():
+                    changes["sort_albumartist"] = sort_aa
 
         return changes
 
@@ -507,6 +542,17 @@ class TaggerStage(BaseStage):
             checked += 1
             for field in ("artist", "title"):
                 want = (r[field] or "").strip()
+                # The artist TAG is deliberately the natural form -- run()
+                # writes natural_form() and puts the sort form in `soar`, for
+                # the MusicBrainz reason documented there. Comparing the tag
+                # against the row's sort form therefore reported every single
+                # article artist as unverified: measured 2026-09-06, 3,161 of
+                # 16,286 files, every run, for a library that was correct on
+                # disk the whole time. A check that is permanently red is a
+                # check nobody reads, and this one exists to catch the
+                # AlbumArt failure where 10,549 writes silently did nothing.
+                if field == "artist":
+                    want = natural_form(want)
                 got = (meta.get(field) or "").strip()
                 if want and got and want.casefold() != got.casefold():
                     problems.append(

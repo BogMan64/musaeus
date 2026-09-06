@@ -347,11 +347,24 @@ class TestAlbumArtistRepair:
         )
         return {k: v for k, v in out.items() if k == "albumartist"}
 
-    def test_leading_the_variant_is_corrected(self):
-        # The value written is the NATURAL form -- albumartist follows artist,
-        # and artist moved to the natural form on 2026-08-29. `soaa` carries
-        # the sort form alongside it.
-        assert self._changes("Cranberries, The", "The Cranberries") == {
+    def test_the_natural_form_is_already_there_so_nothing_is_written(self):
+        """This used to assert {"albumartist": "The Cranberries"} -- writing
+        "The Cranberries" over an albumartist that already read exactly that.
+
+        The predicate is right to say the albumartist should follow the
+        artist; emitting the value anyway is what was wrong. Measured
+        2026-09-06 on the live vault: 3,161 of 16,286 files were rewritten
+        with their own contents on every tagger run and counted as changes,
+        so two consecutive runs reported 3,997 then 3,161 and the stage never
+        reached a steady state.
+        """
+        assert self._changes("Cranberries, The", "The Cranberries") == {}
+
+    def test_a_case_variant_is_still_corrected(self):
+        """The mirroring itself must survive the fix above: when the file
+        holds a genuinely different spelling, the NATURAL form is written --
+        artist moved to the natural form 2026-08-29, `soaa` carries sort."""
+        assert self._changes("Cranberries, The", "THE CRANBERRIES") == {
             "albumartist": "The Cranberries"
         }
 
@@ -674,3 +687,72 @@ class TestVerifyEffectReadsTheFileBack:
         from musaeus.stages.base import NO_VERIFICATION
         out = TaggerStage().verify_effect(ctx, MagicMock(files_changed=1))
         assert out is NO_VERIFICATION or out == []
+
+
+class TestArtistTagDoesNotOscillate:
+    """A correctly tagged article artist must produce NO change at all.
+
+    Until 2026-09-06 `artist` sat in _compute_changes' generic field_map AND
+    had its own rule below it, and the two disagreed by construction:
+
+      generic : tag != row.artist            -> write row.artist (SORT form)
+      specific: natural_form(row) != tag     -> write natural    (NATURAL)
+
+    For a file already holding the natural form the generic test is true and
+    the specific one is false, so the sort form won and a correct file was
+    corrupted. The next run saw the sort form, the specific rule fired, and
+    the natural form went back. 3,161 of 16,286 files alternated between the
+    two spellings on every pass; four consecutive runs reported 3,997, 3,161,
+    3,161, 3,161 changes.
+
+    The cost was not only churn. On any run ending with the sort form
+    written, those files carried the spelling artist_form.py exists to keep
+    out of the artist tag -- 0 of 2,158 MusicBrainz hits were ever in it.
+    """
+
+    def _tags(self, **over):
+        base = {
+            "artist": "The Zombies", "albumartist": "The Zombies",
+            "sort_artist": "Zombies, The", "sort_albumartist": "Zombies, The",
+            "album": "Odessey", "title": "Time of the Season",
+            "genre": "Psychedelic Rock", "year": "", "track": "",
+        }
+        base.update(over)
+        return base
+
+    def _row(self, **over):
+        base = {"artist": "Zombies, The", "album": "Odessey",
+                "title": "Time of the Season", "genre": "Psychedelic Rock"}
+        base.update(over)
+        return base
+
+    def test_a_correct_file_needs_no_write(self):
+        assert TaggerStage()._compute_changes(self._row(), self._tags()) == {}
+
+    def test_the_sort_form_is_never_written_into_the_artist_tag(self):
+        """The specific failure: whatever else changes, the artist tag must
+        never be handed the row's sort form."""
+        for tags in (self._tags(), self._tags(artist="Zombies, The"),
+                     self._tags(artist="THE ZOMBIES"), self._tags(genre="Rock")):
+            got = TaggerStage()._compute_changes(self._row(), tags).get("artist")
+            assert got != "Zombies, The", f"sort form written into the artist tag from {tags['artist']!r}"
+
+    def test_a_wrong_artist_tag_is_still_repaired_to_the_natural_form(self):
+        """The fix must not make the rule inert."""
+        got = TaggerStage()._compute_changes(self._row(), self._tags(artist="Zombies, The"))
+        assert got.get("artist") == "The Zombies"
+
+    def test_applying_the_changes_twice_reaches_a_fixed_point(self):
+        """Convergence, stated directly: feed the output back in and the
+        second pass must ask for nothing."""
+        row, tags = self._row(), self._tags(artist="Zombies, The", genre="Wrong")
+        first = TaggerStage()._compute_changes(row, tags)
+        assert first, "sanity: this file really does need work"
+        tags.update(first)
+        assert TaggerStage()._compute_changes(row, tags) == {}
+
+    def test_a_non_article_artist_still_round_trips(self):
+        row = self._row(artist="Pink Floyd")
+        tags = self._tags(artist="Pink Floyd", albumartist="Pink Floyd",
+                          sort_artist="", sort_albumartist="")
+        assert TaggerStage()._compute_changes(row, tags) == {}
