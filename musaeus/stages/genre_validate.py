@@ -378,9 +378,49 @@ class GenreValidateStage(BaseStage):
             )
             changed += cur.rowcount
 
+        # A blank genre is not a disagreement, so the loop above never sees
+        # it: `counts` is built only from rows that already HAVE a genre, and
+        # the artists it does see are filtered to len(genres) >= 2. So an
+        # artist with nothing at all was skipped twice over, while MasterLaw
+        # held the answer the whole time -- 33 catalogued tracks on
+        # 2026-09-05, among them Gladys Knight (13, R&B/Funk/Soul), Billie
+        # Holiday (3, Jazz), Bing Crosby and Dire Straits.
+        #
+        # Only the LAW fills a blank. Majority is deliberately not used here:
+        # consolidating a disagreement toward what the library mostly says is
+        # a reading of existing evidence, but inventing a genre for a row
+        # that has none would be a guess, and a guess written into the
+        # library is indistinguishable from a fact later.
+        by_law_blank = 0
+        for row in ctx.conn.execute(
+            "SELECT DISTINCT artist FROM archive "
+            " WHERE status='CATALOGUED' AND artist IS NOT NULL AND trim(artist) != '' "
+            "   AND (genre IS NULL OR trim(genre) = '')"
+        ).fetchall():
+            artist = row["artist"]
+            verdict = law.genre_for(artist)
+            if not verdict:
+                continue
+            cur = ctx.conn.execute(
+                "UPDATE archive SET genre = ? WHERE status='CATALOGUED' "
+                " AND artist = ? AND (genre IS NULL OR trim(genre) = '')",
+                (verdict, artist),
+            )
+            if cur.rowcount:
+                by_law_blank += 1
+                changed += cur.rowcount
+                ctx.log_event(
+                    "GENRE_FILLED_FROM_LAW",
+                    file_path=artist,
+                    new_value=verdict,
+                    stage=self.NAME,
+                    note="row had no genre; MasterLaw had an opinion",
+                )
+
         ctx.conn.commit()
         result.files_changed = changed
-        result.notes.insert(0, f"artists consolidated by MasterLaw:  {by_law}")
+        result.notes.insert(0, f"artists given a genre from MasterLaw: {by_law_blank}")
+        result.notes.insert(1, f"artists consolidated by MasterLaw:  {by_law}")
         result.notes.insert(1, f"artists consolidated by majority:   {by_majority}")
         result.notes.insert(2, f"ties left for a human:              {ties}")
         result.notes.insert(3, f"files retagged:                     {changed}")

@@ -220,3 +220,82 @@ class TestAGenreContainingACommaIsNotAmbiguous:
             assert "'Pop, Rock'" in line, (
                 "a genre containing a comma must render as ONE quoted item"
             )
+
+
+class TestABlankGenreIsFilledFromTheLaw:
+    """A blank genre is not a disagreement, so consolidation never saw one.
+
+    `counts` is built only from rows that already HAVE a genre, and the
+    artists it does see are then filtered to len(genres) >= 2. An artist
+    with nothing at all was skipped twice over -- while MasterLaw held the
+    answer. 33 catalogued tracks on 2026-09-05: Gladys Knight (13,
+    R&B/Funk/Soul), Billie Holiday (3, Jazz), Bing Crosby, Dire Straits.
+    """
+
+    def _vault(self, tmp_path, law_rows: str, rows: list[tuple[str, str | None]]):
+        from musaeus.config import MusicConfig
+        from musaeus.context import RunContext
+        from musaeus.db import open_db, upsert_archive
+
+        cfg = MusicConfig(
+            vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+            quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
+            meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+            db_path=tmp_path / "musaeus.db",
+        )
+        cfg.meta_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.meta_dir / "MasterLaw.csv").write_text("artist,genre\n" + law_rows,
+                                                    encoding="utf-8")
+        ctx = RunContext.new(cfg, open_db(cfg.db_path), dry_run=False)
+        for i, (artist, genre) in enumerate(rows):
+            f = cfg.alac_library / f"t{i}.m4a"
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b"x")
+            upsert_archive(ctx.conn, {"file_path": str(f), "status": "CATALOGUED",
+                                      "artist": artist, "title": f"T{i}", "genre": genre})
+        ctx.conn.commit()
+        ctx.set("genre_consolidate", True)
+        return ctx
+
+    def _genres(self, ctx, artist):
+        return [r[0] for r in ctx.conn.execute(
+            "SELECT genre FROM archive WHERE artist = ?", (artist,))]
+
+    def test_the_law_fills_a_blank(self, tmp_path):
+        ctx = self._vault(tmp_path, "Gladys Knight,R&B/Funk/Soul\n",
+                          [("Gladys Knight", None), ("Gladys Knight", "")])
+        GenreValidateStage().run(ctx)
+        assert self._genres(ctx, "Gladys Knight") == ["R&B/Funk/Soul"] * 2
+
+    def test_an_existing_genre_is_never_overwritten(self, tmp_path):
+        """Filling a blank must not become re-deciding a settled one."""
+        ctx = self._vault(tmp_path, "Gladys Knight,R&B/Funk/Soul\n",
+                          [("Gladys Knight", "Soul"), ("Gladys Knight", None)])
+        GenreValidateStage().run(ctx)
+        assert sorted(self._genres(ctx, "Gladys Knight")) == ["R&B/Funk/Soul", "Soul"]
+
+    def test_no_law_opinion_means_no_guess(self, tmp_path):
+        """Majority is deliberately NOT used for blanks. Consolidating a
+        disagreement reads existing evidence; inventing a genre for a row
+        that has none is a guess, and a guess written into the library is
+        indistinguishable from a fact later."""
+        ctx = self._vault(tmp_path, "Somebody Else,Jazz\n",
+                          [("Obscure Band", None), ("Obscure Band", None)])
+        GenreValidateStage().run(ctx)
+        assert self._genres(ctx, "Obscure Band") == [None, None]
+
+    def test_a_majority_elsewhere_does_not_leak_into_a_blank(self, tmp_path):
+        ctx = self._vault(tmp_path, "Somebody Else,Jazz\n",
+                          [("Band X", "Rock"), ("Band X", "Rock"), ("Band X", None)])
+        GenreValidateStage().run(ctx)
+        assert self._genres(ctx, "Band X").count(None) == 1
+
+    def test_it_is_reported_separately_from_consolidation(self, tmp_path):
+        """The count must be visible: a silent fill is indistinguishable
+        from no fill."""
+        ctx = self._vault(tmp_path, "Gladys Knight,R&B/Funk/Soul\n",
+                          [("Gladys Knight", None)])
+        result = GenreValidateStage().run(ctx)
+        assert any("given a genre from MasterLaw: 1" in n.replace("  ", " ")
+                   or "given a genre from MasterLaw:" in n and n.strip().endswith("1")
+                   for n in result.notes), result.notes
