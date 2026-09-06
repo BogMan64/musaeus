@@ -34,6 +34,8 @@ from .base import BaseStage
 if TYPE_CHECKING:
     from ..context import RunContext
 
+from ..canon.protected_artists import PROTECTED_ARTIST_NAMES
+
 logger = logging.getLogger(__name__)
 
 # Known canonical artist display names (from ORPHEUS)
@@ -60,17 +62,10 @@ CANON_ARTIST_DISPLAY = {
 }
 
 # Protected artist names (don't modify these)
-PROTECTED_FULL_ARTIST_NAMES = {
-    "crosby, stills & nash",
-    "crosby, stills, nash & young",
-    "earth, wind & fire",
-    "simon & garfunkel",
-    "hall & oates",
-    "adam & the ants",
-    "barney bentall & the legendary hearts",
-    "of monsters and men",
-    "andrews sisters (the)",
-}
+# Re-exported from the single home (canon/protected_artists.py). This was
+# a fourth copy holding 9 of the 13 -- a strict subset, so nothing is
+# lost by pointing it at the shared set and four names are gained.
+PROTECTED_FULL_ARTIST_NAMES: frozenset[str] = PROTECTED_ARTIST_NAMES
 
 
 def _collapse_spaces(value: str) -> str:

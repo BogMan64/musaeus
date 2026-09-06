@@ -39,6 +39,8 @@ from ..exports import (
 )
 from .base import BaseStage, StageError
 
+from ..canon.protected_artists import PROTECTED_ARTIST_NAMES
+
 logger = logging.getLogger(__name__)
 
 _COMMIT_EVERY = 100
@@ -53,24 +55,10 @@ _COMMIT_EVERY = 100
 # rewrites archive.artist must check here first -- the whole point of a
 # guard list is that it is consulted by everything, not just the stage it
 # happened to be written in.
-_PROTECTED_ARTIST_NAMES: frozenset[str] = frozenset(
-    {
-        "crosby, stills & nash",
-        "crosby, stills, nash & young",
-        "earth, wind & fire",
-        "simon & garfunkel",
-        "hall & oates",
-        "sly & the family stone",
-        "adam & the ants",
-        "barney bentall & the legendary hearts",
-        "of monsters and men",
-        "big brother & the holding company",
-        "dr. hook & the medicine show",
-        # Unrelated to the 1960s solo artist "Keith" ("98.6") despite the
-        # shared first name -- a fold merged the two before this was added.
-        "keith & kristyn getty",
-    }
-)
+# Re-exported from the single home. Three copies of this list had
+# diverged by 2026-09-05 -- organize.py, which names folders, held
+# only 6 of the 13 -- so it lives in one place now.
+_PROTECTED_ARTIST_NAMES: frozenset[str] = PROTECTED_ARTIST_NAMES
 
 _FEAT_RE = re.compile(
     r"\s+(?:feat\.?|featuring|ft\.?|with|duet with|vs\.?|versus)\s+",

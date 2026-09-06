@@ -88,6 +88,8 @@ from ..context import RunContext, StageResult
 from .base import BaseStage
 from .sanitize import SMART_QUOTE_MAP
 
+from ..canon.protected_artists import PROTECTED_ARTIST_NAMES
+
 logger = logging.getLogger(__name__)
 
 _COMMIT_EVERY = 50
@@ -190,16 +192,10 @@ _PROTECTED_TOKENS = frozenset(
     }
 )
 
-_PROTECTED_ARTIST_NAMES = frozenset(
-    {
-        "crosby, stills & nash",
-        "crosby, stills, nash & young",
-        "earth, wind & fire",
-        "simon & garfunkel",
-        "hall & oates",
-        "sly & the family stone",
-    }
-)
+# Re-exported from the single home. Three copies of this list had
+# diverged by 2026-09-05 -- organize.py, which names folders, held
+# only 6 of the 13 -- so it lives in one place now.
+_PROTECTED_ARTIST_NAMES: frozenset[str] = PROTECTED_ARTIST_NAMES
 
 # ── Helper Functions ───────────────────────────────────────────────────────────
 
