@@ -612,3 +612,79 @@ class TestReviewFoldersWithNoRow:
         absent folder is not a finding -- it is silence, correctly."""
         checks = [f.check for f in diagnose(vault).findings]
         assert "review folders with no row" not in checks
+
+
+class TestTruncatedFragments:
+    """A preview clip masquerading as the track.
+
+    ORPHEUS flagged corruption as `duration < 1 second`, which caught a 0s
+    file and missed two 1s ones. The tempting fix is to raise the floor.
+    Measured on the live library 2026-09-06, a 2-minute floor flags 397
+    tracks -- 2.4% of everything -- and they are overwhelmingly COMPLETE:
+    "Hit the Road Jack" (2:00), "All Shook Up" (1:58), "It's Not Unusual"
+    (2:00). Early rock and 60s pop are supposed to be short.
+
+    So the check compares a file against ANOTHER COPY OF THE SAME SONG,
+    not against a constant.
+    """
+
+    def test_a_near_zero_file_is_flagged(self, vault):
+        _add(vault, "palmer.m4a", artist="Robert Palmer",
+             title="Addicted To Love", duration=0.4)
+        f = _finding(diagnose(vault), "truncated fragments")
+        assert f.level == "warn" and f.count == 1
+
+    def test_a_clip_beside_the_full_track_is_flagged(self, vault):
+        _add(vault, "cruel_full.m4a", artist="Taylor Swift",
+             title="Cruel Summer", duration=179.0)
+        _add(vault, "cruel_clip.m4a", artist="Taylor Swift",
+             title="Cruel Summer", duration=21.0)
+        f = _finding(diagnose(vault), "truncated fragments")
+        assert f.level == "warn" and f.count == 1
+        assert "cruel_clip" in f.detail
+
+    def test_a_complete_two_minute_song_is_NOT_flagged(self, vault):
+        """The whole reason the floor is not raised. This is the case a
+        120-second rule would destroy 397 times over."""
+        _add(vault, "jack.m4a", artist="Ray Charles",
+             title="Hit the Road Jack", duration=120.0)
+        _add(vault, "shook.m4a", artist="Elvis Presley",
+             title="All Shook Up", duration=118.0)
+        assert _finding(diagnose(vault), "truncated fragments").level == "ok"
+
+    def test_a_short_song_with_only_short_siblings_is_spared(self, vault):
+        """Simon & Garfunkel's 'Bookends Theme' is 33s and 83s. Both are
+        real; neither sibling is long enough to accuse the other."""
+        _add(vault, "bookends_a.m4a", artist="Simon & Garfunkel",
+             title="Bookends Theme", duration=33.0)
+        _add(vault, "bookends_b.m4a", artist="Simon & Garfunkel",
+             title="Bookends Theme", duration=83.0)
+        assert _finding(diagnose(vault), "truncated fragments").level == "ok"
+
+    def test_an_edit_is_not_a_fragment(self, vault):
+        """A 100s copy beside a 179s one is an edit and must not be
+        reported. This is the 60-second ceiling doing the work -- the
+        original version of this test claimed to be checking a half-length
+        ratio, but mutation testing showed the ceiling caught the case
+        first and the ratio could never fail. The ratio is gone; this test
+        now says what actually holds."""
+        _add(vault, "edit_full.m4a", artist="Band", title="Song", duration=179.0)
+        _add(vault, "edit_short.m4a", artist="Band", title="Song", duration=100.0)
+        assert _finding(diagnose(vault), "truncated fragments").level == "ok"
+
+    def test_the_boundary_holds_on_both_sides(self, vault):
+        """61s beside a 200s copy is spared; 59s is flagged. Pins the
+        ceiling itself, so moving it cannot pass unnoticed."""
+        _add(vault, "b_full.m4a", artist="Edge", title="Case", duration=200.0)
+        _add(vault, "b_over.m4a", artist="Edge", title="Case", duration=61.0)
+        assert _finding(diagnose(vault), "truncated fragments").level == "ok"
+        _add(vault, "b_under.m4a", artist="Edge", title="Case", duration=59.0)
+        f = _finding(diagnose(vault), "truncated fragments")
+        assert f.level == "warn" and f.count == 1
+
+    def test_a_missing_file_is_not_reported_as_a_fragment(self, vault):
+        """A row whose file is gone is check 1's business, not this one."""
+        _add(vault, "gone_full.m4a", artist="Band", title="Tune", duration=200.0)
+        _add(vault, "gone_clip.m4a", artist="Band", title="Tune", duration=20.0,
+             on_disk=False)
+        assert _finding(diagnose(vault), "truncated fragments").level == "ok"

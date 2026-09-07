@@ -106,8 +106,8 @@ def diagnose(cfg: MusicConfig) -> Report:
     conn.row_factory = sqlite3.Row
 
     rows = conn.execute(
-        "SELECT file_path, artist, title, status, audio_hash, finalized_at "
-        "FROM archive"
+        "SELECT file_path, artist, title, status, audio_hash, finalized_at, "
+        "duration FROM archive"
     ).fetchall()
     lib = [r for r in rows if r["status"] == "CATALOGUED"]
     on_disk = {r["file_path"] for r in rows if Path(r["file_path"]).exists()}
@@ -200,6 +200,84 @@ def diagnose(cfg: MusicConfig) -> Report:
         )
     elif review_dirs:
         rep.add("ok", "review folders with no row", "none")
+
+    # 2c. Truncated fragments: a preview clip masquerading as the track.
+    #
+    #     ORPHEUS flagged "potentially corrupt" as bitrate < 64kbps or
+    #     duration < 1 second (SCRIPTS/generate_tunemymusic_csv.py). That
+    #     floor is nearly right for a zero-length file and useless for
+    #     everything else: it caught Robert Palmer at 0s and missed Ariana
+    #     Grande and The Commodores at exactly 1s, because the test is
+    #     `< 1.0`.
+    #
+    #     Raising the floor is NOT the answer, and this is the measurement
+    #     that settles it (2026-09-06, live library): a 2-minute floor would
+    #     flag 397 tracks, 2.4% of everything, and they are overwhelmingly
+    #     COMPLETE recordings -- "Hit the Road Jack" (2:00), "All Shook Up"
+    #     (1:58), "It's Not Unusual" (2:00), "I Wanna Be Your Man" (1:59).
+    #     Early rock and 60s pop are supposed to be short. ~390 false alarms
+    #     to find a handful of real fragments is the crying-wolf failure
+    #     this module exists to avoid.
+    #
+    #     What separates a fragment from a short song is not absolute length
+    #     but length RELATIVE TO THE SAME RECORDING. A 21-second "Cruel
+    #     Summer" is obviously wrong because a 179-second one is sitting
+    #     next to it; a 33-second "Bookends Theme" is obviously fine because
+    #     the longest copy is 83 seconds. So: short in absolute terms AND
+    #     dwarfed by a sibling.
+    #
+    #     Grouping is song_key, which strips edition words -- so a genuine
+    #     short reprise filed under the same title as the full track (the
+    #     Eagles' "Doolin-Dalton (Reprise II)") can land here. That is why
+    #     this warns rather than fails: it is a list to read, not a verdict.
+    _NEAR_ZERO_S = 3.0        # a file this short is not a recording at all
+    _FRAGMENT_MAX_S = 60.0    # only ever suspect a short file
+    _SIBLING_MIN_S = 120.0    # ...against a sibling long enough to mean it
+    #     There was a fourth constant here, a 0.5 ratio requiring the file to
+    #     be under half its sibling. Mutation testing killed it: with a 60s
+    #     ceiling and a 120s floor, anything reaching that test is under half
+    #     BY CONSTRUCTION, so the condition could never fail and no test
+    #     could detect its removal. A condition that cannot fail reads as a
+    #     safeguard and is not one. The invariant it was trying to express
+    #     now lives in the assert below, where changing either number breaks
+    #     loudly instead of quietly re-enabling a rule nobody re-checked.
+    assert _FRAGMENT_MAX_S * 2 <= _SIBLING_MIN_S, (
+        "a flagged file must be at most half its sibling; adjust both bounds "
+        "together or restore an explicit ratio test"
+    )
+
+    by_song: dict[tuple[str, str], list] = {}
+    for r in lib:
+        if r["duration"]:
+            by_song.setdefault(song_key(r["artist"], r["title"]), []).append(r)
+
+    fragments = []
+    for r in lib:
+        d = r["duration"] or 0
+        if not d or r["file_path"] not in on_disk:
+            continue
+        if d < _NEAR_ZERO_S:
+            fragments.append((r, d, None))
+            continue
+        if d >= _FRAGMENT_MAX_S:
+            continue
+        siblings = by_song.get(song_key(r["artist"], r["title"]), [])
+        longest = max((x["duration"] or 0) for x in siblings) if siblings else 0
+        if longest >= _SIBLING_MIN_S:
+            fragments.append((r, d, longest))
+    if fragments:
+        r0, d0, l0 = fragments[0]
+        eg = f"{Path(r0['file_path']).name[:36]} ({d0:.0f}s"
+        eg += f" vs {l0:.0f}s)" if l0 else ", near-zero)"
+        rep.add(
+            "warn",
+            "truncated fragments",
+            f"{len(fragments)} file(s) far shorter than another copy of the "
+            f"same recording, e.g. {eg}",
+            len(fragments),
+        )
+    else:
+        rep.add("ok", "truncated fragments", "none")
 
     # 3. Hash ledger agreement, both directions.
     if cfg.hash_index_path.exists():
