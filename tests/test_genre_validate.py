@@ -299,3 +299,91 @@ class TestABlankGenreIsFilledFromTheLaw:
         assert any("given a genre from MasterLaw: 1" in n.replace("  ", " ")
                    or "given a genre from MasterLaw:" in n and n.strip().endswith("1")
                    for n in result.notes), result.notes
+
+
+class TestABlankGenreIsNotAnIllegalGenre:
+    """The bug only appears when Genre_Allowed.txt EXISTS.
+
+    Every test above builds a vault without a vocabulary file, so `allowed`
+    is empty, the outside-the-vocabulary branch never fires, and the blank
+    branch is reachable. In a real vault the vocabulary is always present --
+    and then '' is "not in the vocabulary" too, so every blank fell into
+    that branch, was filled from the law there, and was counted as
+    `illegal_fixed`.
+
+    Live consequence on 2026-09-06: the stage printed
+    "filled empty genre: 0" in the same breath as filling 13, set
+    files_changed = 0 while changing 13 rows, and logged
+    GENRE_OUTSIDE_VOCABULARY with old_value='' — so a reader grepping
+    GENRE_FILLED found nothing at all. Three wrong signals, one cause.
+    """
+
+    def _vault(self, tmp_path, law_rows, allowed, rows):
+        from musaeus.config import MusicConfig
+        from musaeus.context import RunContext
+        from musaeus.db import open_db, upsert_archive
+
+        cfg = MusicConfig(
+            vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+            quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
+            meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+            db_path=tmp_path / "musaeus.db",
+        )
+        cfg.meta_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.meta_dir / "MasterLaw.csv").write_text("artist,genre\n" + law_rows,
+                                                    encoding="utf-8")
+        # THE POINT OF THIS CLASS: a real vault always has this file.
+        (cfg.meta_dir / "Genre_Allowed.txt").write_text("\n".join(allowed) + "\n",
+                                                        encoding="utf-8")
+        ctx = RunContext.new(cfg, open_db(cfg.db_path), dry_run=False)
+        for i, (artist, genre) in enumerate(rows):
+            f = cfg.alac_library / f"t{i}.m4a"
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b"x")
+            upsert_archive(ctx.conn, {"file_path": str(f), "status": "CATALOGUED",
+                                      "artist": artist, "title": f"T{i}", "genre": genre})
+        ctx.conn.commit()
+        return ctx
+
+    def test_the_fill_is_counted_as_a_fill(self, tmp_path):
+        ctx = self._vault(tmp_path, "Gladys Knight,Soul\n", ["Soul", "Rock"],
+                          [("Gladys Knight", None)])
+        result = GenreValidateStage().run(ctx)
+        notes = " ".join(result.notes)
+        assert "filled empty genre:       1" in notes, notes
+
+    def test_files_changed_reflects_the_rows_actually_written(self, tmp_path):
+        """It said 0 while changing 13. verify_effect quotes this number
+        back, so a wrong value here makes the verification misleading too."""
+        ctx = self._vault(tmp_path, "Gladys Knight,Soul\n", ["Soul"],
+                          [("Gladys Knight", None), ("Gladys Knight", "")])
+        result = GenreValidateStage().run(ctx)
+        assert result.files_changed == 2
+
+    def test_the_event_says_what_actually_happened(self, tmp_path):
+        """GENRE_FILLED, not GENRE_OUTSIDE_VOCABULARY. The audit trail is
+        how this system reconstructs itself; it must not misdescribe."""
+        ctx = self._vault(tmp_path, "Gladys Knight,Soul\n", ["Soul"],
+                          [("Gladys Knight", None)])
+        GenreValidateStage().run(ctx)
+        kinds = [r[0] for r in ctx.conn.execute(
+            "SELECT DISTINCT event_type FROM events WHERE event_type LIKE 'GENRE%'")]
+        assert "GENRE_FILLED" in kinds, kinds
+        assert "GENRE_OUTSIDE_VOCABULARY" not in kinds, kinds
+
+    def test_a_blank_with_no_law_entry_is_reported_separately(self, tmp_path):
+        """Not silently lumped in with retired genres: it needs a ruling."""
+        ctx = self._vault(tmp_path, "Somebody Else,Soul\n", ["Soul"],
+                          [("Unknown Act", None)])
+        result = GenreValidateStage().run(ctx)
+        notes = " ".join(result.notes)
+        assert "no genre, artist not in the law: 1" in notes, notes
+        assert result.files_changed == 0
+
+    def test_a_genuinely_illegal_genre_still_goes_to_the_other_branch(self, tmp_path):
+        """The fix must not disarm the vocabulary check it sits in front of."""
+        ctx = self._vault(tmp_path, "Gladys Knight,Soul\n", ["Soul"],
+                          [("Gladys Knight", "Retired Genre")])
+        result = GenreValidateStage().run(ctx)
+        notes = " ".join(result.notes)
+        assert "outside the vocabulary: 1" in notes, notes

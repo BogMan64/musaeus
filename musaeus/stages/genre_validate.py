@@ -204,6 +204,7 @@ class GenreValidateStage(BaseStage):
         result.files_processed = len(rows)
 
         filled = conflicts = unknown = agreed = illegal_fixed = 0
+        blank_unknown = 0
         illegal_stuck: dict[str, int] = {}
         allowed = self._allowed_vocabulary(ctx)
         canon = self._canon(ctx)
@@ -219,6 +220,47 @@ class GenreValidateStage(BaseStage):
             artist = (row["artist"] or "").strip()
             genre = (row["genre"] or "").strip()
             law_genre = law.genre_for(artist)
+
+            # An ABSENT genre is settled here, BEFORE the vocabulary test.
+            #
+            # '' is not in the vocabulary either, so the test below cannot
+            # tell "no genre" from "a genre we retired". Until 2026-09-07 it
+            # did not try: every blank fell into the outside-the-vocabulary
+            # branch, was filled from the law there, and was counted as
+            # `illegal_fixed`. That made the `if not genre:` block below
+            # unreachable in any vault that has a Genre_Allowed.txt, which is
+            # all of them.
+            #
+            # The stage then reported "filled empty genre: 0" in the same
+            # breath as filling 13, set files_changed = 0 while changing 13
+            # rows, and logged GENRE_OUTSIDE_VOCABULARY with old_value='' and
+            # the note "'' is not in Genre_Allowed.txt". So the count was
+            # wrong, the change count was wrong, and the audit trail said the
+            # wrong thing had happened -- a reader grepping GENRE_FILLED
+            # would have found nothing at all.
+            #
+            # A missing genre is missing. It is not an illegal value.
+            if not genre:
+                if law_genre is None:
+                    # No genre AND no law entry. This needs a ruling from the
+                    # owner and is not the same finding as a retired genre
+                    # walking back in, so it is counted separately.
+                    blank_unknown += 1
+                    continue
+                filled += 1
+                if not dry_run:
+                    ctx.conn.execute(
+                        "UPDATE archive SET genre = ? WHERE rowid = ?",
+                        (law_genre, row["rid"]),
+                    )
+                    ctx.log_event(
+                        "GENRE_FILLED",
+                        file_path=row["file_path"],
+                        stage=self.NAME,
+                        new_value=law_genre,
+                        note=f"empty genre filled from MasterLaw ({artist})",
+                    )
+                continue
 
             # A genre outside the closed vocabulary is not a disagreement --
             # it is not a genre. Library-vs-law conflicts stay report-only
@@ -261,22 +303,6 @@ class GenreValidateStage(BaseStage):
                 unknown += 1
                 continue
 
-            if not genre:
-                filled += 1
-                if not dry_run:
-                    ctx.conn.execute(
-                        "UPDATE archive SET genre = ? WHERE rowid = ?",
-                        (law_genre, row["rid"]),
-                    )
-                    ctx.log_event(
-                        "GENRE_FILLED",
-                        file_path=row["file_path"],
-                        stage=self.NAME,
-                        new_value=law_genre,
-                        note=f"empty genre filled from MasterLaw ({artist})",
-                    )
-                continue
-
             if law.agrees(artist, genre):
                 agreed += 1
             else:
@@ -291,12 +317,19 @@ class GenreValidateStage(BaseStage):
         if not dry_run:
             ctx.conn.commit()
 
-        result.files_changed = filled
+        # Both branches write rows. Reporting only `filled` said 0 on a run
+        # that changed 13 files, and verify_effect quotes this number back.
+        result.files_changed = filled + illegal_fixed
         verb = "would fill" if dry_run else "filled"
         result.notes.append(f"MasterLaw artists: {len(law)}")
         result.notes.append(f"  genre agrees:            {agreed}")
         result.notes.append(f"  {verb} empty genre:       {filled}")
         result.notes.append(f"  artist unknown to law:   {unknown}")
+        if blank_unknown:
+            result.notes.append(
+                f"  no genre, artist not in the law: {blank_unknown}"
+                "  (needs a ruling)"
+            )
         verb2 = "would correct" if dry_run else "corrected"
         result.notes.append(f"  {verb2} genre outside the vocabulary: {illegal_fixed}")
         if illegal_stuck:
