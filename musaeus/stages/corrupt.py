@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from ..context import StageResult, elision
 from ..deep_scan import ensure_columns as deep_scan_ensure_columns
+from ..doctor import song_key
 from ..duration import duration_with_source
 from .base import BaseStage
 
@@ -64,12 +65,51 @@ MIN_BYTES_PER_SEC: dict[str, int] = {
 # Tracks shorter than this are flagged as suspiciously short
 MIN_DURATION_SEC = 45  # 45 seconds
 
+# A file this short is not a recording at all, whatever it calls itself. No
+# keyword exempts it: an "intro" of one second is still not an intro.
+NEAR_ZERO_SEC = 3.0
+
+# The RELATIVE rule, ported from doctor 2026-09-07 on Grey's instruction.
+#
+# MIN_DURATION_SEC is absolute, and absolute floors cannot tell a fragment
+# from a short song. Measured against the 22 fragments doctor found: this
+# stage caught 13 and missed 9 -- five for being over 45s (Def Leppard 48s
+# beside a 4:27 copy, Player 56s, Olivia Newton-John 57s, Mr. Mister 59s)
+# and four to keyword exemptions (Elvis "Can't Help Falling in Love (Epic
+# intro)" at 21s beside a 2:57 copy).
+#
+# Raising the floor is not the fix. Measured on the live library, a 120s
+# floor flags 397 complete recordings -- "Hit the Road Jack" (2:00), "All
+# Shook Up" (1:58), "It's Not Unusual" (2:00). Early rock and 60s pop are
+# supposed to be short.
+#
+# What separates a fragment from a short song is length relative to ANOTHER
+# COPY OF THE SAME RECORDING. A 21-second "Cruel Summer" is wrong because a
+# 179-second one sits beside it; a 33-second "Bookends Theme" is fine
+# because the longest copy is 83 seconds.
+FRAGMENT_MAX_SEC = 60.0
+FRAGMENT_SIBLING_MIN_SEC = 120.0
+assert FRAGMENT_MAX_SEC * 2 <= FRAGMENT_SIBLING_MIN_SEC, (
+    "a flagged file must be at most half its sibling; adjust both bounds "
+    "together or restore an explicit ratio test"
+)
+
 # Short-track keywords — these are allowed to be short
 SHORT_OK_KEYWORDS = re.compile(
     r"\b(intro|outro|skit|reprise|interlude|snippet|clip|"
     r"bonus|fragment|excerpt|medley|bridge)\b",
     re.IGNORECASE,
 )
+
+
+def _longest_sibling(row, longest_by_song: dict) -> float:
+    """The longest OTHER copy of this recording, 0 if this row IS the longest.
+
+    Returning this row's own duration would make every file its own sibling
+    and flag nothing, which is the quiet way this check could stop working.
+    """
+    longest = longest_by_song.get(song_key(row["artist"], row["title"]), 0.0)
+    return 0.0 if longest <= (row["duration"] or 0.0) else longest
 
 
 def ffprobe_duration(path: Path) -> float | None:
@@ -94,10 +134,20 @@ def ffprobe_duration(path: Path) -> float | None:
     return duration_with_source(path)[0]
 
 
-def check_file(path: Path, codec: str | None, duration_db: float | None) -> tuple[bool, str]:
+def check_file(
+    path: Path,
+    codec: str | None,
+    duration_db: float | None,
+    longest_sibling_sec: float = 0.0,
+) -> tuple[bool, str]:
     """
     Check if file is corrupt based on size/duration ratio.
     Returns (is_suspect, reason).
+
+    *longest_sibling_sec* is the duration of the longest OTHER copy of the
+    same recording, or 0 when the caller has no library to compare against.
+    Passed in rather than looked up so this stays a pure function of its
+    arguments -- the caller already holds every row.
     """
     try:
         size_bytes = path.stat().st_size
@@ -132,12 +182,33 @@ def check_file(path: Path, codec: str | None, duration_db: float | None) -> tupl
         )
         return True, reason
 
-    # Check 2: suspiciously short duration
+    # Check 2: not a recording at all. Deliberately BEFORE the keyword
+    # exemption -- nothing legitimate is under three seconds, and ORPHEUS's
+    # equivalent floor of `< 1.0` let a 1-second file through on the boundary.
+    if declared_sec < NEAR_ZERO_SEC:
+        return True, f"duration {declared_sec:.1f}s -- not a recording"
+
+    # Check 3: suspiciously short duration (absolute)
     if declared_sec < MIN_DURATION_SEC:
         title = path.stem
         if not SHORT_OK_KEYWORDS.search(title):
             reason = f"duration {declared_sec:.0f}s suspiciously short"
             return True, reason
+
+    # Check 4: short RELATIVE to another copy of the same recording.
+    #
+    # No keyword exemption here, and that is the point. The exemptions above
+    # fire on the title alone, so "(Epic intro)" excused a 21-second Elvis
+    # clip that has a 2:57 copy beside it. A much longer copy of the same
+    # recording is evidence the title cannot override.
+    if (
+        declared_sec < FRAGMENT_MAX_SEC
+        and longest_sibling_sec >= FRAGMENT_SIBLING_MIN_SEC
+    ):
+        return True, (
+            f"duration {declared_sec:.0f}s, but another copy of this "
+            f"recording runs {longest_sibling_sec:.0f}s -- likely a preview clip"
+        )
 
     return False, ""
 
@@ -221,13 +292,25 @@ class CorruptStage(BaseStage):
         # Get all CATALOGUED tracks with file specs
         rows = conn.execute(
             f"""
-            SELECT file_path, codec, duration, title, {decode_cols_sql}
+            SELECT file_path, codec, duration, artist, title, {decode_cols_sql}
             FROM archive
             WHERE status = 'CATALOGUED'
               AND file_path IS NOT NULL
             ORDER BY artist, album
             """
         ).fetchall()
+
+        # Longest duration per recording, for check 4. Built once from the
+        # rows already fetched -- song_key is doctor's, imported rather than
+        # reimplemented so the two cannot disagree about what "the same
+        # recording" means.
+        longest_by_song: dict[tuple[str, str], float] = {}
+        for _r in rows:
+            if not _r["duration"]:
+                continue
+            _k = song_key(_r["artist"], _r["title"])
+            if _r["duration"] > longest_by_song.get(_k, 0.0):
+                longest_by_song[_k] = _r["duration"]
 
         if not rows:
             logger.info("[corrupt] No CATALOGUED tracks to scan")
@@ -274,7 +357,10 @@ class CorruptStage(BaseStage):
                 reason = "previously found undecodable on decode (see decode_errors)"
                 is_suspect = False
             else:
-                is_suspect, reason = check_file(file_path, row["codec"], row["duration"])
+                is_suspect, reason = check_file(
+                    file_path, row["codec"], row["duration"],
+                    _longest_sibling(row, longest_by_song),
+                )
 
                 # The size ratio is a PRIORITISER, not a verdict -- deep_scan.py
                 # says so and has the numbers: it flagged 418 files, of which 2
