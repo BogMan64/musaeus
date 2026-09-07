@@ -318,3 +318,59 @@ class TestWantedListExport:
         ))
         lines = wanted_files[0].read_text().strip().splitlines()
         assert set(lines) == {"Artist One - Song A", "Artist Two - Song B"}
+
+
+class TestTributeInTheTitle:
+    """A knock-off that names itself only in the TITLE.
+
+    `tribute` was in JUNK_ARTIST_PATTERNS and JUNK_ALBUM_PATTERNS but not
+    in JUNK_TITLE_PATTERNS, so a product whose artist name looks innocent
+    walked straight into the library. All three of these were CATALOGUED on
+    2026-09-06 and Grey found them by eye, not by any check:
+
+        artist "Classic Blues Tones"  title "... George Thorogood and The
+                                             Destroyers Tribute"
+        artist "Scott D. Davis"       title "In the End (Piano Tribute to
+                                             Linkin Park)"
+        artist "Led Zepagain"         title "Whole Lotta Love - a Tribute
+                                             to Led Zeppelin"
+    """
+
+    def test_a_tribute_named_only_in_the_title_is_junk(self):
+        for artist, title in (
+            ("Classic Blues Tones", "Bad To The Bone - George Thorogood and The Destroyers Tribute"),
+            ("Scott D. Davis", "In the End (Piano Tribute to Linkin Park)"),
+            ("Led Zepagain", "Whole Lotta Love - a Tribute to Led Zeppelin"),
+        ):
+            caught, reason = is_junk(artist, title, "")
+            assert caught, "%s / %s was not caught" % (artist, title)
+
+    def test_a_piano_cover_product_is_junk(self):
+        assert is_junk("Piano Covers", "Nirvana - Heart Shaped Box - Piano Cover", "")[0]
+        assert is_junk("Piano Covers", "Queen - I Want To Break Free", "")[0]
+
+    def test_a_real_artist_performing_at_a_tribute_is_protected(self):
+        """The cost of the rule above, and the reason PROTECTED_ARTISTS
+        exists. Springsteen's recording is a genuine performance by six
+        named artists; the Three Tenors' is a real concert album."""
+        assert not is_junk(
+            "Bruce Springsteen",
+            "(Your Love Keeps Lifting Me) Higher and Higher [With Darlene Love, "
+            "John Fogerty, Sam Moore, Billy Joel And Tom Morello] "
+            "[A Tribute To Jackie Wilson]", "")[0]
+        assert not is_junk(
+            "Three Tenors, Los Angeles Music Center Opera Chorus, The",
+            "A Tribute to Hollywood - Singin' in the Rain (Arr. Schifrin) [Live]", "")[0]
+
+    def test_spirits_own_song_title_is_protected(self):
+        """'Tribute To The Rain Woods' is Spirit's own composition."""
+        assert not is_junk("Spirit", "Tribute To The Rain Woods", "")[0]
+
+    def test_a_real_artist_covering_a_song_is_not_junk(self):
+        """Deliberately NOT matching a bare 'cover'. Measured 2026-09-06:
+        'cover version' alone would have quarantined these two, and the
+        library is full of covers by real artists."""
+        assert not is_junk(
+            "Morse/portnoy/george",
+            "Feelin' Stronger Everyday (2020 Remastered cover version)", "")[0]
+        assert not is_junk("Johnny Cash", "Hurt (cover version)", "")[0]

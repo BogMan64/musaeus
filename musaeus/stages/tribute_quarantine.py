@@ -63,6 +63,7 @@ JUNK_ARTIST_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\bpink noise\b", re.IGNORECASE),
     re.compile(r"\basmr\b", re.IGNORECASE),
     re.compile(r"\bre-?record", re.IGNORECASE),
+    re.compile(r"\bpiano covers?\b", re.IGNORECASE),
 ]
 
 JUNK_TITLE_PATTERNS: list[re.Pattern[str]] = [
@@ -72,6 +73,22 @@ JUNK_TITLE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"made famous by", re.IGNORECASE),
     re.compile(r"instrumental version", re.IGNORECASE),
     re.compile(r"backing track", re.IGNORECASE),
+    # "tribute" was in the ARTIST and ALBUM lists but not this one, so a
+    # knock-off that named itself only in the title walked straight in.
+    # Measured 2026-09-06: "Bad To The Bone - George Thorogood and The
+    # Destroyers Tribute" (artist "Classic Blues Tones"), "In the End
+    # (Piano Tribute to Linkin Park)" (artist "Scott D. Davis") and
+    # "Whole Lotta Love - a Tribute to Led Zeppelin" (artist "Led
+    # Zepagain") were all CATALOGUED. None of their artist names contains
+    # a trigger word, and Grey had to find them by eye.
+    re.compile(r"\btribute\b", re.IGNORECASE),
+    # "Piano Covers" style products. Deliberately NOT a bare "cover":
+    # measured on the same pass, "cover version" alone would have
+    # quarantined Bruce Springsteen and Morse/Portnoy/George performing
+    # covers of their own choosing. A cover BY A REAL ARTIST is music;
+    # a cover-product is not, and "piano cover" is the form the products
+    # in this library actually use.
+    re.compile(r"\bpiano cover\b", re.IGNORECASE),
 ]
 
 JUNK_ALBUM_PATTERNS: list[re.Pattern[str]] = [
@@ -120,6 +137,16 @@ PROTECTED_ARTISTS: frozenset[str] = frozenset(
         "monks",
         "thomas d'arcy",
         "big blues corp city",
+        # Real artists who performed AT a tribute, which the title records.
+        # Both were CATALOGUED and correct on 2026-09-06 when `tribute` was
+        # added to the title patterns above; this list is what keeps a
+        # broader rule from costing real music. Springsteen's is
+        # "(Your Love Keeps Lifting Me) Higher and Higher [With Darlene
+        # Love, John Fogerty, Sam Moore, Billy Joel And Tom Morello]
+        # [A Tribute To Jackie Wilson]" -- a genuine performance by six
+        # named artists, not a knock-off of one.
+        "bruce springsteen",
+        "three tenors, los angeles music center opera chorus, the",
         # Real artists whose SONG TITLES contain trigger words
         "sleep",  # Sleep is a legitimate doom metal band
         "sleep token",  # Sleep Token is a legitimate rock band
