@@ -83,6 +83,7 @@ from __future__ import annotations
 import csv
 import logging
 import os
+import re
 import shutil
 import stat
 from datetime import datetime, timezone
@@ -105,6 +106,69 @@ def _batch_date(ctx: RunContext) -> str:
     return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
 
 
+def _connected_groups(conn, group_ids: list[str]) -> list[list[str]]:
+    """Merge groups that share a file into single components.
+
+    Groups overlap. NEAR matching is fuzzy, so one recording lands in
+    several groups, and resolving each independently lets them contradict
+    each other: measured on the live vault 2026-08-31, 2,918 NEAR files sit
+    in more than one group, and one -- "Al Green - Let's Stay Together" --
+    is marked `keep` in near_f122326e and `archive` in near_2231ee82 at the
+    same time. Nothing reconciles those. Which one wins is decided by
+    whichever group happens to be processed last.
+
+    `already_moved` in _resolve() was the previous mitigation, but it only
+    stops a later group MISREPORTING an earlier group's move as "file
+    missing". It does not stop that group deciding to move a file an
+    earlier group had chosen to keep -- it just makes the outcome quiet.
+
+    Merging first makes the contradiction unrepresentable: one keeper per
+    component, and every other member of it is a loser. This is the same
+    correction applied by hand to the 102 ACOUSTIC groups on 2026-08-31,
+    where 102 groups collapsed to 95 components.
+
+    EXACT clusters keyed by audio_hash cannot overlap -- a file has exactly
+    one hash -- so this only concerns the duplicates-table path.
+    """
+    if not group_ids:
+        return []
+
+    parent: dict[str, str] = {g: g for g in group_ids}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    placeholders = ",".join("?" for _ in group_ids)
+    rows = conn.execute(
+        f"""
+        SELECT file_path, group_id FROM duplicates
+         WHERE group_id IN ({placeholders}) AND status = 'pending'
+        """,
+        group_ids,
+    ).fetchall()
+
+    by_path: dict[str, list[str]] = {}
+    for r in rows:
+        by_path.setdefault(r["file_path"], []).append(r["group_id"])
+    for shared in by_path.values():
+        for g in shared[1:]:
+            if g in parent and shared[0] in parent:
+                union(shared[0], g)
+
+    components: dict[str, list[str]] = {}
+    for g in group_ids:
+        components.setdefault(find(g), []).append(g)
+    return [sorted(v) for v in components.values()]
+
+
 def _get_pending_groups(conn) -> list[str]:
     rows = conn.execute(
         "SELECT DISTINCT group_id FROM duplicates WHERE status = 'pending' ORDER BY group_id"
@@ -112,18 +176,101 @@ def _get_pending_groups(conn) -> list[str]:
     return [r[0] for r in rows]
 
 
-def _keeper_sort_key(m: dict) -> tuple[int, int, int]:
+# Markers of a reissued/reprocessed version rather than the original
+# release. Grey's rule (2026-08-21): a remaster and its original are the
+# SAME song for grouping purposes, but when one must be kept, "the
+# original trumps the remaster".
+_REISSUE_MARKERS: tuple[str, ...] = (
+    "remaster",
+    "remastered",
+    "remix",
+    "re-recorded",
+    "rerecorded",
+    "anniversary edition",
+    "deluxe edition",
+    "expanded edition",
+    "digital remaster",
+)
+_REISSUE_RE = re.compile(
+    r"\b(?:"
+    + "|".join(re.escape(w) for w in sorted(_REISSUE_MARKERS, key=len, reverse=True))
+    + r")\b",
+    re.IGNORECASE,
+)
+
+
+# A live recording is a different performance, not a worse copy -- but when
+# a duplicate group holds both and only one can be kept, Grey's rule
+# (confirmed 2026-08-22) is studio first. Ranked BELOW the reissue test so
+# a studio remaster does not beat a live original on this alone; the codec
+# constraint still outranks both.
+_LIVE_MARKERS: tuple[str, ...] = (
+    "live",
+    "in concert",
+    "unplugged",
+    "concert",
+    "at the bbc",
+    "bbc session",
+    "radio session",
+    "live session",
+)
+_LIVE_RE = re.compile(
+    r"\b(?:"
+    + "|".join(re.escape(w) for w in sorted(_LIVE_MARKERS, key=len, reverse=True))
+    + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_live(m: dict) -> bool:
+    """True if this copy advertises itself as a live recording.
+
+    Read from title AND album: sources put it in either -- "Stormy Monday
+    (live at Fillmore East)" as a title, "Unplugged" as an album.
+    """
+    haystack = f"{m.get('title') or ''} {m.get('album') or ''}"
+    return bool(_LIVE_RE.search(haystack))
+
+
+def _is_reissue(m: dict) -> bool:
+    """True if this copy advertises itself as a remaster/reissue.
+
+    Read from title AND album, because the marker lands in either
+    depending on the source -- "A Monday Date (Remastered)" as a title,
+    "Chicago High Life (2013 Remaster)" as an album.
+    """
+    haystack = f"{m.get('title') or ''} {m.get('album') or ''}"
+    return bool(_REISSUE_RE.search(haystack))
+
+
+def _keeper_sort_key(m: dict) -> tuple[int, int, int, int, int]:
     """Shared ordering rule: real lossless codec beats lossy
     UNCONDITIONALLY (a bitrate/size comparison across different codecs
     isn't a fair quality comparison -- a quiet, highly-compressible FLAC
     can report a lower bitrate than a dense, less-compressible lossy
-    file despite being the objectively better copy), then bitrate/size
-    as a tiebreak among files that are equally lossless or equally
-    lossy. Used both for duplicates-table-driven groups and for
+    file despite being the objectively better copy), THEN the original
+    release beats a remaster/reissue, then bitrate/size as a tiebreak
+    among files that are equally lossless or equally lossy.
+
+    The original-over-remaster rank sits BELOW codec deliberately: a
+    lossless remaster is still a better artifact than a lossy original,
+    and Grey's preference is about which *release* to keep, not a licence
+    to keep a worse file. Above bitrate, though -- a remaster is often
+    louder and larger without being the version wanted.
+
+    Third rank, studio over live, added 2026-08-22. It sits below the
+    reissue test so it only decides groups the earlier tests tie on, and
+    well below codec: a lossless live take still beats a lossy studio one,
+    because the constraint that matters most is what was thrown away in
+    encoding, not which room it was recorded in.
+
+    Used both for duplicates-table-driven groups and for
     audio_hash-derived live EXACT clusters (see
     _get_live_exact_clusters) -- one rule, not two copies of it."""
     return (
         0 if (m.get("codec") or "").lower() in LOSSLESS_CODECS else 1,
+        1 if _is_reissue(m) else 0,
+        1 if _is_live(m) else 0,
         -(m.get("bitrate") or 0),
         -(m.get("size_bytes") or 0),
     )
@@ -232,6 +379,35 @@ class DupeResolverStage(BaseStage):
     Artist/Album/Track shape. Never deletes; always reversible.
     """
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A file this stage claims to have moved must be AT the new path.
+
+        Moves are the costliest thing to get silently wrong: a stage that
+        reports "moved 6,480 files" while the DB and disk disagree leaves
+        rows pointing at nothing, and that is precisely how a file ended up
+        treated as its own duplicate (scope doc section 4.17). Sampling a
+        few is enough to catch a wholesale failure.
+        """
+        rows = ctx.conn.execute(
+            "SELECT file_path FROM archive WHERE status = ? ORDER BY last_seen DESC LIMIT 5",
+            ("DUPE_REVIEW",),
+        ).fetchall()
+        missing = [r["file_path"] for r in rows if not Path(r["file_path"]).exists()]
+        if not rows or not missing:
+            return []
+        return [
+            f"reported {result.files_changed} change(s) but {len(missing)} of "
+            f"{len(rows)} sampled DUPE_REVIEW rows name a file that is not on disk"
+        ]
+
+    @classmethod
+    def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
+        """Rows this stage would act on. Read-only; see planner.py."""
+        n = conn.execute(
+            "SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE status='pending'"
+        ).fetchone()[0]
+        return int(n), "duplicate groups awaiting resolution"
+
     NAME = "dupe-resolver"
 
     def validate(self, ctx: RunContext) -> None:
@@ -332,7 +508,7 @@ class DupeResolverStage(BaseStage):
         errors.
         """
         keeper_desc = keeper["file_path"] if keeper else "(no keeper on record)"
-        for loser in losers:
+        for item_index, loser in enumerate(losers):
             result.files_processed += 1
             source = Path(loser["file_path"])
             source_key = str(source)
@@ -381,11 +557,88 @@ class DupeResolverStage(BaseStage):
                         )
                     continue
 
+                # Before calling it lost, ask the archive row where the file
+                # lives now. The events check above only recognises a move
+                # this stage itself made; a file relocated by any other
+                # stage -- ClassicalComposer refiling under a composer, a
+                # manual DUPE_REVIEW_REVERSED restore -- is equally moved,
+                # and equally not missing. Measured 2026-08-25: five such
+                # rows failed the whole stage (rc=1) when every one of the
+                # files was safely on disk under a new path.
+                relocated = ctx.conn.execute(
+                    "SELECT file_path FROM archive WHERE file_path != ? AND rowid IN "
+                    "(SELECT rowid FROM archive WHERE file_path = ?) LIMIT 1",
+                    (source_key, source_key),
+                ).fetchone()
+                moved_elsewhere = None
+                if relocated is None:
+                    ev = ctx.conn.execute(
+                        "SELECT file_path FROM events WHERE old_value = ? "
+                        "AND file_path IS NOT NULL ORDER BY id DESC LIMIT 1",
+                        (source_key,),
+                    ).fetchone()
+                    if ev and Path(ev["file_path"]).exists():
+                        moved_elsewhere = ev["file_path"]
+                if moved_elsewhere:
+                    result.files_skipped += 1
+                    result.notes.append(
+                        f"[{dtype}] skipped {source.name}: relocated by another stage"
+                    )
+                    if update_duplicates_table and not dry_run:
+                        ctx.conn.execute(
+                            "UPDATE duplicates SET status = 'archive' "
+                            "WHERE group_id = ? AND file_path = ?",
+                            (group_id, source_key),
+                        )
+                    continue
+
+                # No file, and no archive row either: this duplicates-table
+                # entry names a path the library stopped tracking long ago
+                # -- an old INBOX path from before ingest moved the file, or
+                # one already handled by a DUPE_RESTORED/STALE_ROW_DROPPED.
+                # It is stale history, not a lost file.
+                #
+                # Safe to key on the missing row: a genuinely lost file
+                # KEEPS its archive row pointing at the gone path, and
+                # doctor's "rows with a missing file" check is what catches
+                # that. This branch only fires where the library itself has
+                # no record of the path at all.
+                still_tracked = ctx.conn.execute(
+                    "SELECT 1 FROM archive WHERE file_path = ? LIMIT 1", (source_key,)
+                ).fetchone()
+                if not still_tracked:
+                    result.files_skipped += 1
+                    result.notes.append(
+                        f"[{dtype}] skipped {source.name}: stale duplicates-table row, "
+                        f"no archive row for this path"
+                    )
+                    if update_duplicates_table and not dry_run:
+                        ctx.conn.execute(
+                            "UPDATE duplicates SET status = 'archive' "
+                            "WHERE group_id = ? AND file_path = ?",
+                            (group_id, source_key),
+                        )
+                    continue
+
                 result.files_errored += 1
                 result.errors.append(f"{source}: file missing on disk")
                 continue
 
-            target = self._target_path(ctx, loser, source, batch_date)
+            # Inside the guard, not above it. The move below has isolated
+            # per-item OSErrors since it was written, but _target_path was
+            # one line outside that guard -- and it does filesystem work
+            # (unique_path's exists() check), so it raises the same class of
+            # error. On 2026-09-03 one 388-byte artist name raised OSError 36
+            # here and aborted every remaining move in the run, leaving the
+            # dedupe half-done. One bad path should cost one file, not the
+            # stage. No rollback needed: nothing has been written yet.
+            try:
+                target = self._target_path(ctx, loser, source, batch_date)
+            except OSError as exc:
+                result.files_errored += 1
+                result.errors.append(f"{source}: cannot build a target path: {exc}")
+                logger.warning("[dupe-resolver] target path failed %s: %s", source, exc)
+                continue
 
             if dry_run:
                 result.notes.append(
@@ -395,10 +648,39 @@ class DupeResolverStage(BaseStage):
                 already_moved[source_key] = group_id
                 continue
 
+            # Row first, then the move (scope section 4.25). A move cannot
+            # be rolled back and a database write can, so this ordering
+            # leaves neither half applied when something fails.
+            #
+            # Scoped to THIS item with a SAVEPOINT. There is one commit, after
+            # every group, so the previous conn.rollback() here was not scoped
+            # to the item at all -- it discarded the whole uncommitted
+            # transaction. A failure on file 41 reverted all 40 earlier archive
+            # updates while their files stayed physically moved: rows left
+            # CATALOGUED pointing at sources that no longer existed, and a
+            # manifest claiming all 40 had moved. That is precisely the
+            # divergence this ordering exists to prevent.
+            #
+            # The savepoint name is built from a loop counter and never from a
+            # filename: savepoint names are identifiers, so they cannot be
+            # bound parameters and have to be interpolated.
+            savepoint = f"dupe_item_{item_index}"
+            ctx.conn.execute(f"SAVEPOINT {savepoint}")
+            ctx.conn.execute(
+                "UPDATE archive SET status = 'DUPE_REVIEW', file_path = ? WHERE file_path = ?",
+                (str(target), str(source)),
+            )
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(source), str(target))
             except OSError as exc:
+                # ROLLBACK TO does not release; without the RELEASE these
+                # accumulate on the transaction stack for the whole run.
+                # OSError covers shutil.Error, which subclasses it. A
+                # sqlite3.Error here means something worse and is deliberately
+                # not swallowed per-item.
+                ctx.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                ctx.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
                 result.files_errored += 1
                 result.errors.append(f"{source}: {exc}")
                 logger.warning("[dupe-resolver] move failed %s: %s", source, exc)
@@ -419,10 +701,6 @@ class DupeResolverStage(BaseStage):
             # source). status='DUPE_REVIEW' is a new, distinct status
             # (not CATALOGUED, not GHOST -- this is an intentional,
             # tracked relocation, not a disappearance).
-            ctx.conn.execute(
-                "UPDATE archive SET status = 'DUPE_REVIEW', file_path = ? WHERE file_path = ?",
-                (str(target), str(source)),
-            )
             ctx.log_event(
                 "DUPE_MOVED_FOR_REVIEW",
                 file_path=str(target),
@@ -444,6 +722,10 @@ class DupeResolverStage(BaseStage):
                     "kept_bitrate": (keeper.get("bitrate") or "") if keeper else "",
                 }
             )
+            # The item is complete -- row, file, duplicates table and event.
+            # Releasing here rather than straight after the move keeps the
+            # bookkeeping inside the same unwind unit as the move itself.
+            ctx.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             result.files_changed += 1
             already_moved[source_key] = group_id
             logger.info("[dupe-resolver] moved %s -> %s", source, target)
@@ -478,10 +760,23 @@ class DupeResolverStage(BaseStage):
 
         # ── Source 1: duplicates-table-driven groups (NEAR, CROSS_BATCH,
         # and any freshly-detected EXACT group still genuinely 'pending') ──
-        for group_id in groups:
-            members = _get_group_members(ctx.conn, group_id)
+        # Resolve COMPONENTS, not groups. Overlapping groups otherwise reach
+        # contradictory verdicts on the same file -- see _connected_groups.
+        for component in _connected_groups(ctx.conn, groups):
+            group_id = component[0]
+            members = []
+            seen_paths: set[str] = set()
+            for gid in component:
+                for m in _get_group_members(ctx.conn, gid):
+                    if m["file_path"] in seen_paths:
+                        continue
+                    seen_paths.add(m["file_path"])
+                    members.append(m)
             if not members:
                 continue
+            # One keeper for the whole component, so a file kept by one of
+            # its groups can no longer be moved as another's loser.
+            members.sort(key=_keeper_sort_key)
             keeper, losers = _pick_keeper_and_losers(members)
             self._move_losers(
                 ctx,

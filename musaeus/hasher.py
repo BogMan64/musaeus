@@ -29,6 +29,7 @@ import json
 import logging
 import math
 import subprocess
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -126,15 +127,30 @@ def audio_hash(path: Path) -> str:
 
     sample_rate, duration = _probe_audio_meta(path)
 
-    # Hi-res audio (≥96 kHz) decodes 2-4× more PCM data per second than 48 kHz.
-    # On spinning disk this reliably exceeds any sane timeout, so fall back to
-    # a full-file SHA-256 which is O(read) and finishes in seconds.
-    if sample_rate >= 96000:
-        logger.info("hi-res audio (%d Hz) — full-file hash fallback: %s", sample_rate, path.name)
-        try:
-            return file_hash(path)
-        except OSError as exc:
-            raise HasherError(f"full-file hash fallback failed for {path}: {exc}") from exc
+    # Hi-res audio used to be diverted to a full-file SHA-256 here, on the
+    # assumption that decoding ≥96 kHz PCM "reliably exceeds any sane timeout
+    # on spinning disk".
+    #
+    # Measured on this vault 2026-08-30, while a full re-hash was saturating
+    # the same disk: five 192 kHz tracks of 3.5-5.5 minutes decoded in
+    # 1.4-2.8 s each, against computed timeouts of 874-1334 s. Roughly 400x
+    # headroom. The assumption does not hold here.
+    #
+    # It was not a cheap assumption. A full-file hash covers the CONTAINER,
+    # so it changes when tags change -- which breaks this module's own
+    # contract, stated in sentinel.py: "re-tagging a file: full_hash changes,
+    # audio_hash unchanged → NO duplicate". It also cannot match the same
+    # audio in a different container, which is the entire point of hashing
+    # the stream. 3,975 of the first 8,500 rows in that re-hash -- 47% -- were
+    # taking this path.
+    #
+    # So: attempt the real decode, and fall back only on an ACTUAL timeout,
+    # not on a prediction of one. The timeout already scales with sample rate
+    # (see _audio_hash_timeout), so a genuinely slow disk still degrades
+    # gracefully rather than failing.
+    # (No hi-res special case: see above. The branch that used to live here
+    # is gone rather than hollowed out, so nobody has to prove to themselves
+    # that hi-res is still handled differently.)
 
     _TIMEOUT_SECS = _audio_hash_timeout(sample_rate, duration)
 
@@ -147,8 +163,6 @@ def audio_hash(path: Path) -> str:
     except FileNotFoundError as exc:
         raise HasherError(f"ffmpeg not found — cannot compute audio hash for {path}") from exc
 
-    import threading
-
     def _kill_on_timeout(p: subprocess.Popen, timeout: int) -> None:  # type: ignore[type-arg]
         try:
             p.wait(timeout=timeout)
@@ -159,19 +173,85 @@ def audio_hash(path: Path) -> str:
     timer = threading.Thread(target=_kill_on_timeout, args=(proc, _TIMEOUT_SECS), daemon=True)
     timer.start()
 
+    # stderr MUST be drained while stdout is being read.
+    #
+    # Both are pipes. Reading stdout to exhaustion and only then reading
+    # stderr deadlocks the moment ffmpeg writes more than the pipe buffer
+    # (~64 KB on Linux) to stderr: the child blocks writing, so it stops
+    # producing stdout, so this loop never ends and proc.wait() never
+    # returns. ffmpeg is verbose on stderr and gets more so on a damaged
+    # file -- precisely when hashing matters.
+    #
+    # Reproduced 2026-08-30 against a child emitting 2 MB of stderr: the
+    # old order was still blocked after 20s, with only the kill-timer
+    # eventually freeing it, and that timer scales with track duration.
+    stderr_chunks: list[bytes] = []
+
+    def _drain_stderr() -> None:
+        if proc.stderr is None:
+            return
+        try:
+            for line in iter(lambda: proc.stderr.read(_READ_BYTES), b""):  # type: ignore[union-attr]
+                # Bounded: a runaway child must not be able to exhaust
+                # memory through the error path either.
+                # Only the first chunk can ever reach the 200-char excerpt,
+                # so keep one and read-and-discard the rest. Retaining 64
+                # chunks meant holding 4 MB, then decoding all of it, to
+                # print 200 bytes.
+                if not stderr_chunks:
+                    stderr_chunks.append(line)
+        except (OSError, ValueError):
+            pass  # closed underneath us; the exit code still tells the story
+
+    drainer = threading.Thread(target=_drain_stderr, daemon=True)
+    drainer.start()
+
     h = hashlib.sha256()
     assert proc.stdout is not None
-    while chunk := proc.stdout.read(_READ_BYTES):
-        h.update(chunk)
-
-    proc.stdout.close()
-    rc = proc.wait()
-    timer.join(timeout=1)
+    try:
+        while chunk := proc.stdout.read(_READ_BYTES):
+            h.update(chunk)
+        rc = proc.wait()
+    finally:
+        # All of this has to happen even when the read loop raises -- an
+        # OSError from a failing disk used to propagate past the wait() and
+        # the close(), leaving a zombie child and a leaked stderr fd on every
+        # bad file. Across tens of thousands of files that reaches the
+        # process fd limit and then healthy files start failing too, which
+        # is the opposite of the cost this cleanup was added to avoid.
+        proc.stdout.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        drainer.join(timeout=5)
+        timer.join(timeout=1)
 
     if rc != 0:
-        stderr = proc.stderr.read().decode("utf-8", errors="replace").strip() if proc.stderr else ""
-        if rc == -9:  # SIGKILL from timeout
-            raise HasherError(f"ffmpeg timed out (>{_TIMEOUT_SECS}s) for {path}")
+        stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace").strip()
+        if rc == -9:  # SIGKILL from the timeout thread
+            # An ACTUAL timeout, which is the only thing that now justifies
+            # the container-hash fallback. Predicting one from the sample
+            # rate sent 47% of the library down this path unnecessarily; a
+            # timeout that really happened is different evidence.
+            #
+            # Without this, a timed-out file gets no audio_hash at all, and
+            # sentinel re-selects it on `audio_hash IS NULL` every run --
+            # timing out again, for ever.
+            logger.warning(
+                "audio decode timed out (>%ss) for %s — falling back to a "
+                "full-file hash. NOTE: this hash covers the container, so it "
+                "changes on re-tag and cannot match across containers.",
+                _TIMEOUT_SECS, path.name,
+            )
+            try:
+                return file_hash(path)
+            except OSError as exc:
+                raise HasherError(
+                    f"ffmpeg timed out (>{_TIMEOUT_SECS}s) for {path} and the "
+                    f"full-file fallback also failed: {exc}"
+                ) from exc
         raise HasherError(f"ffmpeg exited {rc} for {path}: {stderr[:200]}")
 
     return h.hexdigest()

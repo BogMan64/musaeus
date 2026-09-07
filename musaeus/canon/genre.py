@@ -61,10 +61,27 @@ class GenreCanon:
                     line = line.strip()
                     if not line or line.startswith("#"):
                         continue
-                    parts = line.split("\t", 1)
-                    if len(parts) == 2:
+                    # Accept "raw => canonical" as well as a tab.
+                    #
+                    # The tab-only split was silent dead code: the real
+                    # Genre_Canonical_Map.txt in the vault has used " => "
+                    # since it was written, so not one of its 51 rules ever
+                    # loaded. Combined with a Genre_Allowed.txt that did not
+                    # exist, resolve() returned None for every genre ever
+                    # passed to it -- meaning GenreCanon has been wired into
+                    # EnrichStage and doing nothing at all. Found 2026-08-21
+                    # while checking whether the canon could reduce a
+                    # MusicBrainz genre list to one answer.
+                    if "=>" in line:
+                        raw, _, canon = line.partition("=>")
+                    else:
+                        parts = line.split("\t", 1)
+                        if len(parts) != 2:
+                            continue
                         raw, canon = parts
-                        self._map[raw.strip().lower()] = canon.strip()
+                    raw, canon = raw.strip(), canon.strip()
+                    if raw and canon:
+                        self._map[raw.lower()] = canon
 
     # ── public API ────────────────────────────────────────────────────────────
 

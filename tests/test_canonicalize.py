@@ -228,9 +228,11 @@ class TestTranscode:
         csv_path = ctx.config.tunemymusic_csv_path
         assert csv_path.exists()
         content = csv_path.read_text()
-        assert "reason,codec,bitrate_kbps" in content  # header
-        assert "source.mp3" in content
-        assert "MP3" in content
+        assert "Title,Artist,Album" in content  # importable header, matches batch_*.csv
+        assert "source" in content  # the track identity, not its filename
+        # Codec is diagnostic and stays in the archive row; this file is
+        # Title,Artist,Album so it can be imported.
+        assert "MP3" not in content
 
 
 # ── Idempotency / re-run behaviour ─────────────────────────────────────────────
@@ -432,3 +434,209 @@ class TestDryRun:
 
         row = ctx_dry.conn.execute("SELECT canonicalized_at FROM archive").fetchone()
         assert row["canonicalized_at"] is None
+
+
+# ── the preview must be the run's own answer ─────────────────────────────────
+#
+# dry_run() called _decide_action(row) with no source path, so it neither got
+# the ext/codec resolution nor knew about UNKNOWN. It disagreed with run() in
+# BOTH directions about an irreversible operation: an AAC-in-.m4a row with an
+# empty `ext` column previewed as a 256k lossy TRANSCODE that run() actually
+# passes through, and an UNKNOWN codec -- which run() REFUSES -- previewed as
+# TRANSCODED, because the ternary had no branch for it.
+
+
+class TestDryRunAgreesWithRun:
+    def test_decide_action_needs_the_source_to_be_right(self):
+        from pathlib import Path
+
+        from musaeus.stages.canonicalize import CanonicalizeStage
+
+        s = CanonicalizeStage()
+        row = {"codec": "aac", "ext": ""}
+        assert s._decide_action(row, Path("/x/a.m4a")) == "PASSTHROUGH"
+        assert s._decide_action(row) == "TRANSCODE", (
+            "if this ever agrees, the test below stops proving anything"
+        )
+
+    def test_unknown_is_a_category_not_a_transcode(self):
+        from pathlib import Path
+
+        from musaeus.stages.canonicalize import CanonicalizeStage
+
+        s = CanonicalizeStage()
+        assert s._decide_action({"codec": "dts"}, Path("/x/a.mkv")) == "UNKNOWN"
+
+    def test_the_preview_counts_a_refusal_as_a_refusal(self, tmp_path):
+        """An UNKNOWN row must not be previewed as 'would be TRANSCODED'."""
+
+        from musaeus.config import MusicConfig
+        from musaeus.context import RunContext
+        from musaeus.db import open_db, upsert_archive
+        from musaeus.stages.canonicalize import CanonicalizeStage
+
+        cfg = MusicConfig(
+            vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+            quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
+            meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+            db_path=tmp_path / "musaeus.db",
+        )
+        cfg.ensure_dirs()
+        conn = open_db(cfg.db_path)
+        ctx = RunContext.new(cfg, conn, dry_run=True)
+
+        # A row whose answer DEPENDS on the source path: aac + empty ext is
+        # PASSTHROUGH with the path and TRANSCODE without it. A dts row would
+        # be UNKNOWN either way and would not discriminate.
+        f = cfg.inbox / "already fine.m4a"
+        f.write_bytes(b"not really audio")
+        upsert_archive(conn, {"file_path": str(f), "status": "CATALOGUED",
+                              "codec": "aac", "ext": "", "artist": "A", "title": "B"})
+        # ...and one the run would REFUSE outright.
+        g = cfg.inbox / "mystery.mkv"
+        g.write_bytes(b"not really audio")
+        upsert_archive(conn, {"file_path": str(g), "status": "CATALOGUED",
+                              "codec": "dts", "artist": "C", "title": "D"})
+        conn.commit()
+
+        result = CanonicalizeStage().dry_run(ctx)
+        notes = " ".join(result.notes)
+        assert "PASSTHROUGH: 1" in notes, f"preview disagrees with run: {notes}"
+        assert "REFUSED" in notes, notes
+        assert "TRANSCODED: 1" not in notes, notes
+
+
+class TestVerifyEffectChecksTheClaim:
+    """verify_effect asserted "must be alac" for every sampled row, but the
+    CANONICALIZE event is logged for PASSTHROUGH too -- whose definition is
+    "already ALAC-in-.m4a, or already AAC-in-.m4a. Nothing to convert."
+
+    On 2026-09-03 that sealed canonicalize ✗UNVERIFIED because five
+    correctly-untouched AAC files were reported as "still aac, not alac".
+    That is the 2026-09-01 honesty fix inverted: a seal that cries wolf is
+    discarded as fast as one that lies. Each outcome now answers for its
+    own contract."""
+
+    def _row(self, ctx, path: Path, claimed: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+        upsert_archive(ctx.conn, {
+            "file_path": str(path), "status": "CATALOGUED",
+            "audio_hash": "a" * 64, "duration": 100.0,
+        })
+        # run() writes canon_action on the row AND logs the event with the
+        # same string. The fixture has to do both, or it tests a shape
+        # production never produces -- which is how the seal came to read its
+        # claim from the event join in the first place. upsert_archive has no
+        # canon_action field, so this mirrors run()'s own direct UPDATE.
+        ctx.conn.execute("UPDATE archive SET canon_action = ? WHERE file_path = ?",
+                         (claimed, str(path)))
+        ctx.log_event("CANONICALIZE", file_path=str(path),
+                      new_value=claimed, stage="canonicalize")
+        ctx.conn.commit()
+
+    def _probe(self, codec: str):
+        return {"streams": [{"codec_type": "audio", "codec_name": codec,
+                             "duration": "100.0"}]}
+
+    @pytest.mark.parametrize("claimed,codec", [
+        ("PASSTHROUGH", "aac"),    # the false positive that started this
+        ("PASSTHROUGH", "alac"),
+        ("CONVERTED", "alac"),
+        ("TRANSCODED", "aac"),
+    ])
+    def test_an_outcome_that_honoured_its_contract_is_not_flagged(
+        self, ctx, tmp_path, monkeypatch, claimed, codec
+    ):
+        f = tmp_path / "INBOX" / f"{claimed}_{codec}.m4a"
+        self._row(ctx, f, claimed)
+        monkeypatch.setattr("musaeus.stages.canonicalize._probe_streams",
+                            lambda _p: self._probe(codec))
+        problems = CanonicalizeStage().verify_effect(ctx, _StageResultStub())
+        assert problems == [], problems
+
+    @pytest.mark.parametrize("claimed,codec", [
+        ("CONVERTED", "aac"),     # claimed a lossless conversion, still lossy
+        ("TRANSCODED", "alac"),   # claimed a 256k AAC export, is not
+        ("PASSTHROUGH", "mp3"),   # "already canonical" and demonstrably not
+    ])
+    def test_an_outcome_that_broke_its_contract_is_still_caught(
+        self, ctx, tmp_path, monkeypatch, claimed, codec
+    ):
+        f = tmp_path / "INBOX" / f"bad_{claimed}_{codec}.m4a"
+        self._row(ctx, f, claimed)
+        monkeypatch.setattr("musaeus.stages.canonicalize._probe_streams",
+                            lambda _p: self._probe(codec))
+        problems = CanonicalizeStage().verify_effect(ctx, _StageResultStub())
+        assert len(problems) == 1
+        assert claimed in problems[0] and codec in problems[0]
+
+
+class _StageResultStub:
+    """verify_effect only needs the argument to exist."""
+    files_changed = 0
+
+
+class TestVerifyEffectFailsClosed:
+    """P1-5, fixed 2026-09-05. The claim was read from the CANONICALIZE
+    event's new_value through a JOIN, and any value outside
+    {CONVERTED, TRANSCODED} fell back to the permissive ("alac", "aac") set
+    -- where every plausible codec passes and the check stops discriminating
+    while still printing a seal.
+
+    A default in a verification seal must fail closed."""
+
+    def _probe(self, codec: str):
+        return {"streams": [{"codec_type": "audio", "codec_name": codec,
+                             "duration": "100.0"}]}
+
+    def _row(self, ctx, path: Path, canon_action) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+        upsert_archive(ctx.conn, {
+            "file_path": str(path), "status": "CATALOGUED",
+            "audio_hash": "a" * 64, "duration": 100.0,
+        })
+        ctx.conn.execute("UPDATE archive SET canon_action = ? WHERE file_path = ?",
+                         (canon_action, str(path)))
+        ctx.log_event("CANONICALIZE", file_path=str(path),
+                      new_value=canon_action, stage="canonicalize")
+        ctx.conn.commit()
+
+    @pytest.mark.parametrize("canon_action", ["REMASTERED", "", None])
+    def test_an_unrecognised_outcome_is_refused_not_waved_through(
+        self, ctx, tmp_path, monkeypatch, canon_action
+    ):
+        f = tmp_path / "INBOX" / "unknown_outcome.m4a"
+        self._row(ctx, f, canon_action)
+        # alac would satisfy the old permissive fallback and pass silently.
+        monkeypatch.setattr("musaeus.stages.canonicalize._probe_streams",
+                            lambda _p: self._probe("alac"))
+        problems = CanonicalizeStage().verify_effect(ctx, _StageResultStub())
+        assert problems, (
+            "an outcome this check cannot verify must not be sealed as verified"
+        )
+        assert "does not know how to verify" in problems[0]
+
+    def test_the_claim_comes_from_the_row_not_the_event(
+        self, ctx, tmp_path, monkeypatch
+    ):
+        """canon_action is authoritative. If the event disagrees -- a stale
+        or second event for the same path -- the row wins."""
+        f = tmp_path / "INBOX" / "disagreement.m4a"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"x")
+        upsert_archive(ctx.conn, {
+            "file_path": str(f), "status": "CATALOGUED",
+            "audio_hash": "a" * 64, "duration": 100.0,
+        })
+        ctx.conn.execute("UPDATE archive SET canon_action='CONVERTED' WHERE file_path = ?",
+                         (str(f),))   # the row says lossless
+        ctx.log_event("CANONICALIZE", file_path=str(f),
+                      new_value="TRANSCODED", stage="canonicalize")
+        ctx.conn.commit()
+        # aac satisfies the EVENT's claim but breaks the ROW's.
+        monkeypatch.setattr("musaeus.stages.canonicalize._probe_streams",
+                            lambda _p: self._probe("aac"))
+        problems = CanonicalizeStage().verify_effect(ctx, _StageResultStub())
+        assert problems, "the row claimed CONVERTED; aac does not honour that"

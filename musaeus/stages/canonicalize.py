@@ -80,12 +80,21 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 import sqlite3
 import subprocess
 from pathlib import Path
 
 from ..config import LOSSLESS_CODECS as _LOSSLESS_CODECS
 from ..context import RunContext, StageResult
+from ..duration import TOLERANCE_SEC, tolerance_for
+from ..safety.mutation import MutationBoundary, PreconditionError, UnmanagedPathError
+from ..safety.recovery import (
+    JOURNAL_FILENAME,
+    CollisionError,
+    OperationJournal,
+    create_checkpoint,
+)
 from .base import BaseStage, StageError
 
 logger = logging.getLogger(__name__)
@@ -97,12 +106,37 @@ _COMMIT_EVERY = 25
 _ALAC_CODECS = frozenset({"alac"})
 _AAC_CODECS = frozenset({"aac"})
 
+# Sub-lossless codecs this stage knows how to normalise into 256k AAC.
+#
+# An explicit list, because the alternative -- "anything not recognised gets
+# transcoded" -- meant an unidentified file was lossily re-encoded by
+# default. A destructive operation must be opted into by name.
+_TRANSCODABLE_CODECS: frozenset[str] = frozenset(
+    {
+        "aac",
+        "mp3",
+        "vorbis",
+        "opus",
+        "wmav1",
+        "wmav2",
+        "ac3",
+        "eac3",
+        "musepack",
+        "mp2",
+        "amrnb",
+        "amrwb",
+    }
+)
+
 AAC_TRANSCODE_BITRATE = "256k"
 
 # Tolerance for post-conversion duration comparison (seconds). ffprobe
 # duration reporting can differ slightly between containers even when the
 # actual audio is identical.
-_DURATION_TOLERANCE_SEC = 1.5
+# Single definition in musaeus/duration.py (Grey's ruling 2026-09-02:
+# 2.0 everywhere; it was 1.5 in four places and 2.0 in a fifth whose
+# comment cited the same rationale as one of the 1.5s).
+_DURATION_TOLERANCE_SEC = TOLERANCE_SEC
 
 
 class CanonicalizeError(Exception):
@@ -231,6 +265,25 @@ def _transcode_to_aac(source: Path, output: Path) -> None:
     probe = _probe_streams(source)
     has_art = _has_attached_picture(probe)
 
+    # If the source is ALREADY AAC, copy the stream instead of re-encoding.
+    #
+    # The docstring above has always promised "a cheap remux ... when it
+    # already is", but the command was `-c:a aac -b:a 256k` unconditionally,
+    # so AAC in a .mp4/.m4b/.aac container -- which needs nothing but a new
+    # container -- got a generation-two lossy re-encode. The same harm this
+    # stage was just changed to stop defaulting to, left standing one branch
+    # over. A stream copy is bit-exact.
+    _src_audio = [st for st in probe.get("streams", []) if st.get("codec_type") == "audio"]
+    _already_aac = (
+        bool(_src_audio)
+        and str(_src_audio[0].get("codec_name", "")).lower() == "aac"
+    )
+    audio_args = (
+        ["-c:a", "copy"]
+        if _already_aac
+        else ["-c:a", "aac", "-b:a", AAC_TRANSCODE_BITRATE]
+    )
+
     cmd = ["ffmpeg", "-y" if output.exists() else "-n", "-i", str(source), "-threads", "2"]
     if has_art:
         cmd += [
@@ -238,10 +291,7 @@ def _transcode_to_aac(source: Path, output: Path) -> None:
             "0:a:0",
             "-map",
             "0:v:0",
-            "-c:a",
-            "aac",
-            "-b:a",
-            AAC_TRANSCODE_BITRATE,
+            *audio_args,
             "-c:v",
             "copy",
             "-disposition:v:0",
@@ -256,10 +306,7 @@ def _transcode_to_aac(source: Path, output: Path) -> None:
         cmd += [
             "-map",
             "0:a:0",
-            "-c:a",
-            "aac",
-            "-b:a",
-            AAC_TRANSCODE_BITRATE,
+            *audio_args,
             "-map_metadata",
             "0",
             "-f",
@@ -277,44 +324,77 @@ def _transcode_to_aac(source: Path, output: Path) -> None:
 
 def _append_tunemymusic_row(ctx: RunContext, row: dict) -> None:
     """
-    Append one row to config.tunemymusic_csv_path. Header matches
-    ORPHEUS's generate_tunemymusic_csv.py convention exactly:
-      reason,codec,bitrate_kbps,sample_rate,channels,duration_sec,path
-    Written incrementally here (unlike ORPHEUS's full-report regeneration)
-    since Canonicalize processes one file at a time and the CSV must
-    survive a DB wipe — appending directly is simpler and equally safe.
+    Append one row to config.tunemymusic_csv_path, as Title,Artist,Album.
+
+    The header was previously ORPHEUS's diagnostic one --
+    reason,codec,bitrate_kbps,sample_rate,channels,duration_sec,path --
+    which carries no artist and no title. That made the file unusable for
+    the one job its name claims: importing these tracks into a streaming
+    service to re-source them. Uploading it searched for a file path.
+
+    It now matches the consolidated playlist batches
+    (~/Desktop/Playlists_Consolidated/batch_*.csv), so the two are
+    interchangeable at the import step. The diagnostic fields remain
+    recoverable from the archive row and the event log; the identity of
+    the track is not, which is why that is what gets written here.
     """
     csv_path = ctx.config.tunemymusic_csv_path
     is_new = not csv_path.exists()
     csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    title = (row.get("title") or "").strip()
+    artist = (row.get("artist") or "").strip()
+    album = (row.get("album") or "").strip()
+    if not title:
+        # Last resort: the archive row should carry these, but a row with
+        # no title at all is worse than one parsed from its filename.
+        stem = Path(str(row.get("file_path") or "")).stem
+        parsed_artist, sep, parsed_title = stem.partition(" - ")
+        if sep:
+            title = parsed_title.strip() or stem
+            artist = artist or parsed_artist.strip()
+        else:
+            # No separator: the whole stem is the title. Treating it as the
+            # artist too -- which the first version did -- writes rows like
+            # "surround,surround", an identity that is wrong twice.
+            title = stem
+    if not title:
+        return
+
     with open(csv_path, "a", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         if is_new:
-            writer.writerow(
-                [
-                    "reason",
-                    "codec",
-                    "bitrate_kbps",
-                    "sample_rate",
-                    "channels",
-                    "duration_sec",
-                    "path",
-                ]
-            )
-        writer.writerow(
-            [
-                row.get("reason", "sub-lossless"),
-                (row.get("codec") or "unknown").upper(),
-                f"{(row.get('bitrate') or 0) // 1000}" if row.get("bitrate") else "",
-                row.get("sample_rate") or "",
-                row.get("channels") or "",
-                f"{row.get('duration') or 0.0:.1f}",
-                row.get("file_path", ""),
-            ]
-        )
+            writer.writerow(["Title", "Artist", "Album"])
+        writer.writerow([title, artist, album])
+
+    # Keep bpm's membership cache warm. Without this the append changes the
+    # file's mtime/size, the cache's stat guard misses, and the very next
+    # _tunemymusic_csv_has_track re-reads the whole file -- which is the
+    # O(K^2) behaviour the cache exists to remove (P3-3). Imported here
+    # rather than at module scope only because bpm imports canonicalize.
+    from .bpm import remember_tunemymusic_track
+
+    remember_tunemymusic_track(csv_path, title, artist)
 
 
 # ── Stage ──────────────────────────────────────────────────────────────────────
+
+
+#: What a PASSTHROUGH row is allowed to be: the two codecs the stage
+#: treats as already canonical in a .m4a container (see _decide_action).
+#: CONVERTED must be alac and TRANSCODED must be aac; PASSTHROUGH may be
+#: either, because it means the file was already one of them.
+_CANONICAL_CODECS = ("alac", "aac")
+
+# What each canonicalize outcome is allowed to leave on disk. PASSTHROUGH
+# means "already ALAC-in-.m4a or AAC-in-.m4a, no file write at all", so both
+# are legitimate there. An outcome absent from this map is not verifiable and
+# must not be sealed -- see verify_effect().
+_EXPECTED_CODECS: dict[str, tuple[str, ...]] = {
+    "CONVERTED": ("alac",),
+    "TRANSCODED": ("aac",),
+    "PASSTHROUGH": _CANONICAL_CODECS,
+}
 
 
 class CanonicalizeStage(BaseStage):
@@ -325,6 +405,138 @@ class CanonicalizeStage(BaseStage):
     """
 
     NAME = "canonicalize"
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """Sample this run's conversions and confirm they really landed.
+
+        Two specific regressions this catches, both seen in this project:
+
+        audio_hash going NULL through conversion. The hash is the PCM
+        identity that the dupe ledger and every cross-run "have I seen this"
+        check depend on. When it silently dropped, files became their own
+        duplicates on the next pass -- scope doc section 4.17.
+
+        A row that claims CANONICALIZE but whose file is not ALAC. The
+        conversion can report success and leave the original codec in place
+        if ffmpeg's exit status is trusted without re-probing the output.
+
+        Samples the rows this run touched rather than the whole library --
+        the point is to catch a stage that changed nothing, not to re-probe
+        10,000 files.
+        """
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path, a.audio_hash, a.duration,
+                   a.canon_action AS claimed
+              FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.stage = ? AND e.event_type = 'CANONICALIZE'
+               AND e.run_id = ?
+             ORDER BY e.id DESC LIMIT 12
+            """,
+            (self.NAME, ctx.run_id),
+        ).fetchall()
+        if not rows:
+            return []
+
+        problems: list[str] = []
+        missing_hash = [r["file_path"] for r in rows if not r["audio_hash"]]
+        if missing_hash:
+            problems.append(
+                f"{len(missing_hash)} of {len(rows)} sampled conversion(s) lost audio_hash, "
+                f"e.g. {Path(missing_hash[0]).name}"
+            )
+        for r in rows[:5]:
+            p = Path(r["file_path"])
+            if not p.exists():
+                problems.append(f"canonicalized file is not on disk: {p.name}")
+                continue
+            try:
+                probe = _probe_streams(p)
+            except CanonicalizeError as exc:
+                problems.append(f"{p.name}: cannot probe after canonicalize: {exc}")
+                continue
+            # _probe_streams returns the whole ffprobe document, so the codec
+            # has to be read off the AUDIO stream -- a top-level
+            # probe.get("codec_name") is always None and would make this
+            # check quietly unfalsifiable.
+            codec = next(
+                (
+                    (s.get("codec_name") or "").lower()
+                    for s in probe.get("streams", [])
+                    if s.get("codec_type") == "audio"
+                ),
+                "",
+            )
+            # Check what the ROW CLAIMED, not a blanket "must be alac".
+            #
+            # This asserted alac for every sampled row, but the CANONICALIZE
+            # event is logged for PASSTHROUGH too -- and PASSTHROUGH's whole
+            # definition is "already ALAC-in-.m4a, or already AAC-in-.m4a.
+            # Nothing to convert. No file write at all." So five correctly
+            # untouched AAC files were reported as EFFECT NOT VERIFIED on
+            # 2026-09-03, and the stage sealed ✗UNVERIFIED for doing exactly
+            # the right thing.
+            #
+            # That is the 2026-09-01 honesty fix inverted. A seal that cries
+            # wolf is discarded as fast as one that lies, and after
+            # 2026-09-08 the seal is the only signal anyone reads. So each
+            # outcome is now checked against its own contract:
+            # The claim is read from archive.canon_action, the column
+            # run() writes on this very row (line ~819) and the module
+            # docstring names as where the outcome lives -- not from the
+            # event's new_value via the JOIN. The JOIN stays, because it is
+            # what scopes the sample to THIS run, but it no longer supplies
+            # the claim: an event join can match a second row for the same
+            # path and new_value can be NULL, and either one silently
+            # decides what this seal asserts.
+            claimed = (r["claimed"] or "").upper()
+            expected = _EXPECTED_CODECS.get(claimed)
+            if expected is None:
+                # Fail CLOSED. The previous default handed an unrecognised
+                # claim -- a NULL canon_action, or a fifth outcome added
+                # later -- to the permissive ("alac", "aac") set, where
+                # every plausible codec passes and the check stops
+                # discriminating while still printing a seal. A default in
+                # a verification seal must fail closed, not open.
+                problems.append(
+                    f"{p.name}: canon_action is {r['claimed']!r}, which this check "
+                    f"does not know how to verify -- refusing to seal it"
+                )
+                continue
+            if codec and codec not in expected:
+                wanted = " or ".join(expected)
+                problems.append(
+                    f"{p.name} claimed {claimed or 'CANONICALIZE'} but is {codec}, "
+                    f"expected {wanted}"
+                )
+
+            # Duration, added 2026-09-01. Codec + hash + existence all pass
+            # for a TRUNCATED conversion: right format, right identity, half
+            # the audio. Four masters were found that same day with intact
+            # container headers over missing audio -- a 5-minute song
+            # decoding to 55 seconds -- and none of them would have been
+            # caught by the three checks above.
+            #
+            # Read off the audio stream, not the container: a truncated file
+            # frequently keeps a correct-looking format-level duration,
+            # which is exactly what made those four invisible.
+            recorded = r["duration"]
+            if recorded and recorded > 0:
+                actual = next(
+                    (
+                        float(s2["duration"])
+                        for s2 in probe.get("streams", [])
+                        if s2.get("codec_type") == "audio" and s2.get("duration")
+                    ),
+                    None,
+                )
+                if actual is not None and abs(actual - recorded) > tolerance_for(recorded):
+                    problems.append(
+                        f"{p.name}: {actual:.1f}s after canonicalize but "
+                        f"{recorded:.1f}s recorded — conversion truncated the audio"
+                    )
+        return problems
 
     def validate(self, ctx: RunContext) -> None:
         import shutil
@@ -355,10 +567,57 @@ class CanonicalizeStage(BaseStage):
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def _decide_action(self, row: dict) -> str:
-        """Return 'PASSTHROUGH' | 'CONVERT' | 'TRANSCODE' for this row."""
+    @staticmethod
+    def _resolve_codec(row: dict, source: Path | None) -> str:
+        """The codec of this file: the row's if it has one, else ffprobe's.
+
+        Shared by the decision and by the refusal message, so the operator is
+        told the codec that was actually determined rather than an empty DB
+        column.
+        """
         codec = (row.get("codec") or "").lower()
+        if codec or source is None or not source.exists():
+            return codec
+        try:
+            probe = _probe_streams(source)
+            audio = [
+                st for st in probe.get("streams", []) if st.get("codec_type") == "audio"
+            ]
+            if audio:
+                return str(audio[0].get("codec_name") or "").lower()
+        except Exception as exc:  # a probe failure is not a licence to re-encode
+            logger.warning("[canonicalize] codec probe failed for %s: %s", source, exc)
+        return ""
+
+    def _decide_action(self, row: dict, source: Path | None = None) -> str:
+        """Return 'PASSTHROUGH' | 'CONVERT' | 'TRANSCODE' | 'UNKNOWN'.
+
+        The decision is which of two irreversible things to do to real audio,
+        so it is taken from the FILE where possible, not from the row.
+
+        Two defects this closes, both reproduced 2026-08-29 against a real
+        pipeline run in a disposable vault:
+
+        `ext` was read from the DB column. It is a property of the path and
+        the path is right here -- when the column was empty (as it is for
+        every row whose ingest never populated it) an AAC-in-.m4a file, which
+        the documented policy PASSES THROUGH, was classified TRANSCODE and
+        given a needless 256k lossy re-encode. `alac` with an empty `ext`
+        went to CONVERT and was re-converted to what it already was.
+
+        Worse, the fall-through for an UNRECOGNISED codec was TRANSCODE --
+        a lossy re-encode. "We do not know what this file is" therefore meant
+        "re-encode it destructively". The live database holds 63 rows with no
+        codec recorded at all. An unknown codec now returns UNKNOWN and the
+        caller skips the row, leaving the audio untouched for a human. A
+        default has to fail towards the reversible answer.
+        """
+        codec = self._resolve_codec(row, source)
         ext = (row.get("ext") or "").lower()
+
+        # The path is the authority on the container.
+        if source is not None:
+            ext = source.suffix.lower()
 
         if codec in _ALAC_CODECS and ext == ".m4a":
             return "PASSTHROUGH"
@@ -366,7 +625,9 @@ class CanonicalizeStage(BaseStage):
             return "PASSTHROUGH"
         if codec in _LOSSLESS_CODECS:
             return "CONVERT"
-        return "TRANSCODE"
+        if codec in _TRANSCODABLE_CODECS:
+            return "TRANSCODE"
+        return "UNKNOWN"
 
     def _quarantine_failed_staging(
         self, ctx: RunContext, tmp_output: Path, staging_name: str, source: Path, exc: Exception
@@ -411,10 +672,23 @@ class CanonicalizeStage(BaseStage):
         if not source.exists():
             return "ERROR", "file missing on disk"
 
-        action = self._decide_action(row)
+        action = self._decide_action(row, source)
 
         if action == "PASSTHROUGH":
             return "PASSTHROUGH", "already canonical codec/container"
+
+        if action == "UNKNOWN":
+            # Refusing is the answer. The alternative is a lossy re-encode of
+            # a file nobody has identified.
+            # Report the codec actually DETERMINED, not the DB column. For a
+            # row whose codec was empty and got probed from the file, naming
+            # the column says "(none recorded)" and hides the one fact needed
+            # to act: which codec to add to a set.
+            probed = self._resolve_codec(row, source)
+            return "ERROR", (
+                f"unrecognised codec {probed or '(none recorded)'!r} "
+                f"for {source.name} -- refusing to re-encode blindly"
+            )
 
         if dry_run:
             return ("CONVERTED" if action == "CONVERT" else "TRANSCODED"), "[dry run]"
@@ -459,6 +733,80 @@ class CanonicalizeStage(BaseStage):
             self._quarantine_failed_staging(ctx, tmp_output, staging_name, source, exc)
             return "ERROR", f"filesystem error: {exc}"
 
+    #: Set MUSAEUS_CANONICALIZE_CHECKPOINT=0 to run without a recovery
+    #: boundary. An escape hatch, not a default: this stage destroys the
+    #: only copy of a pre-conversion original.
+    CHECKPOINT_ENV = "MUSAEUS_CANONICALIZE_CHECKPOINT"
+
+    def _open_boundary(self, ctx: RunContext, result: StageResult):
+        """Open a journalled mutation boundary for the disposal of originals.
+
+        Scope is deliberate, and differs from finalize's. What this stage
+        destroys is the pre-conversion INBOX original, and INBOX holds the
+        whole incoming batch -- checkpointing it would mean copying every
+        file the run is about to read, which is the same capacity argument
+        that keeps finalize from checkpointing ALAC-Library.
+
+        It does not need to. The protection here is not the checkpoint's
+        payload, it is quarantine_item's contract: a move, never a delete,
+        so the original's bytes still exist at a recorded location when
+        disposal returns. The checkpoint is checkpointed over STAGING --
+        this stage's own output area, empty or near-empty at entry, so the
+        copy is cheap -- and serves as the quarantine container and journal
+        anchor. Rolling back therefore means restoring each original from
+        quarantine and clearing what was staged, which the journal alone
+        supports.
+
+        source_root spans the vault because the paths being disposed of
+        live under INBOX while the quarantine area lives under RUNS, and
+        both ends must validate.
+
+        WEAKER THAN FINALIZE'S, DELIBERATELY. Do not read this as parity.
+        MutationBoundary._expected_digest falls back to the checkpoint
+        manifest and returns None for an item the manifest does not hold,
+        so _check_precondition passes such an item straight through. The
+        originals disposed of here live under INBOX and are therefore NOT
+        in a STAGING checkpoint, which means they get no digest
+        verification -- nothing here detects that an original changed
+        underneath the run. What the boundary supplies for this stage is
+        journaling and recoverability: the operation is durably recorded
+        and the bytes are retrievable. finalize, whose sources ARE its
+        checkpointed root, additionally gets the precondition check.
+
+        Returns None when disabled or unavailable, and says which in the
+        result -- a run with no boundary must announce itself rather than
+        look identical to one that has it.
+        """
+        if os.environ.get(self.CHECKPOINT_ENV, "1").strip().lower() in ("0", "false", "no"):
+            result.notes.append("recovery boundary: DISABLED by " + self.CHECKPOINT_ENV)
+            return None
+        try:
+            recovery_root = ctx.config.runs_root / "recovery"
+            recovery_root.mkdir(parents=True, exist_ok=True)
+            ctx.staging.mkdir(parents=True, exist_ok=True)
+            checkpoint = create_checkpoint(
+                ctx.staging,
+                recovery_root,
+                checkpoint_id=f"canonicalize_{ctx.run_id}",
+                capture_tags=False,
+            )
+            journal = OperationJournal(checkpoint.root / JOURNAL_FILENAME)
+            boundary = MutationBoundary(
+                checkpoint,
+                journal,
+                run_id=ctx.run_id,
+                source_root=ctx.config.vault_root,
+            )
+            result.notes.append(
+                f"recovery boundary: checkpoint {checkpoint.checkpoint_id} "
+                f"(journal at {journal.path})"
+            )
+            return boundary
+        except Exception as exc:
+            result.notes.append(f"recovery boundary: UNAVAILABLE ({exc})")
+            logger.warning("[canonicalize] no recovery boundary: %s", exc)
+            return None
+
     # ── run ───────────────────────────────────────────────────────────────────
 
     def run(self, ctx: RunContext) -> StageResult:
@@ -474,6 +822,7 @@ class CanonicalizeStage(BaseStage):
             return result
 
         counters: dict[str, int] = {"PASSTHROUGH": 0, "CONVERTED": 0, "TRANSCODED": 0, "ERROR": 0}
+        boundary = self._open_boundary(ctx, result)
 
         for i, row in enumerate(pending, 1):
             outcome, detail = self._process_one(ctx, row, dry_run=False)
@@ -543,11 +892,56 @@ class CanonicalizeStage(BaseStage):
                 note=detail,
             )
 
-            # Only now, with the DB row safely pointing at the verified
-            # STAGING copy, is it safe to remove the pre-conversion
-            # original -- never before the DB write is confirmed.
             if new_path != old_path:
-                Path(old_path).unlink(missing_ok=True)
+                # The comment that stood here said the original is removed
+                # only once "the DB write is confirmed". It was confirmed in
+                # memory, not on disk. open_db() connects with sqlite3's
+                # default deferred isolation -- not autocommit, unlike
+                # state/migrator.py which sets isolation_level=None where it
+                # wants that -- and the commit below fired only every
+                # _COMMIT_EVERY rows. So up to 24 originals could be gone
+                # while the row naming their replacement sat in an open
+                # transaction. A kill in that window discarded the
+                # transaction: original deleted, converted file an
+                # unattributed orphan in STAGING, archive row still naming
+                # the deleted path with canonicalized_at NULL, and the next
+                # run erroring it as missing forever.
+                #
+                # So commit before disposing, per row. This stage is
+                # ffmpeg-bound at seconds per file; a commit costs nothing
+                # measurable against that.
+                ctx.conn.commit()
+                try:
+                    if boundary is not None:
+                        # A move into the checkpoint's quarantine area, never
+                        # a delete -- the bytes still exist at a recorded
+                        # location when this returns, and the journal says
+                        # where. Same filesystem, so it is a rename: peak
+                        # disk is unchanged from the pre-canonicalize state,
+                        # it just isn't reclaimed until the run is released.
+                        boundary.quarantine(
+                            Path(old_path), reason=f"canonicalized to {new_path}"
+                        )
+                    else:
+                        Path(old_path).unlink(missing_ok=True)
+                except (
+                    OSError,
+                    UnmanagedPathError,
+                    PreconditionError,
+                    CollisionError,
+                ) as exc:
+                    # One row's problem, not the stage's -- finalize's
+                    # 2026-08-25 lesson. The archive row already points at
+                    # the verified staged copy and that write is durable, so
+                    # the only consequence is an original left in place.
+                    result.files_errored += 1
+                    result.errors.append(
+                        f"{Path(old_path).name}: original not disposed: {exc}"
+                    )
+                    logger.warning(
+                        "[canonicalize] %s: original not disposed: %s", old_path, exc
+                    )
+                    continue
                 logger.info("[canonicalize] %s: %s -> %s", outcome, old_path, new_path)
             else:
                 logger.info("[canonicalize] %s: %s", outcome, new_path)
@@ -579,14 +973,29 @@ class CanonicalizeStage(BaseStage):
         result.files_processed = total
         result.notes.append(f"[DRY RUN] would inspect {total} file(s)")
 
-        counters: dict[str, int] = {"PASSTHROUGH": 0, "CONVERTED": 0, "TRANSCODED": 0}
+        counters: dict[str, int] = {
+            "PASSTHROUGH": 0,
+            "CONVERTED": 0,
+            "TRANSCODED": 0,
+            # A refusal is its own outcome, not a transcode.
+            "REFUSED (unrecognised codec)": 0,
+        }
         for row in pending:
-            action = self._decide_action(row)
-            key = (
-                "PASSTHROUGH"
-                if action == "PASSTHROUGH"
-                else ("CONVERTED" if action == "CONVERT" else "TRANSCODED")
-            )
+            # The SAME inputs run() uses. Passing only the row made the
+            # preview disagree with the run in both directions: an
+            # AAC-in-.m4a row with an empty `ext` column previewed as a 256k
+            # lossy TRANSCODE that run() actually passes through, and an
+            # UNKNOWN codec -- which run() REFUSES -- previewed as
+            # TRANSCODED because the ternary had no branch for it. A preview
+            # of an irreversible operation has to be the operation's own
+            # answer, not an approximation of it.
+            action = self._decide_action(row, Path(row["file_path"]))
+            key = {
+                "PASSTHROUGH": "PASSTHROUGH",
+                "CONVERT": "CONVERTED",
+                "TRANSCODE": "TRANSCODED",
+                "UNKNOWN": "REFUSED (unrecognised codec)",
+            }[action]
             counters[key] += 1
 
         for k, v in counters.items():

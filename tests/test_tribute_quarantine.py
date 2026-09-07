@@ -1,6 +1,7 @@
 """
 Tests for TributeQuarantineStage — detect + quarantine tribute-band/
-karaoke/meditation content. Standalone stage, not part of DEFAULT_PIPELINE.
+karaoke/meditation content. Wired into Act 1 on 2026-09-01; see
+test_tribute_quarantine_wiring.py for its position and verification.
 
 Uses real files on disk (not mocked): this stage's whole purpose is a
 real filesystem move, a real manifest, and a real restore script -- same
@@ -224,3 +225,152 @@ class TestTributeQuarantineRun:
             "SELECT status FROM archive WHERE artist = 'Karaoke Channel, The'"
         ).fetchone()
         assert row["status"] == "CATALOGUED"
+
+
+# ── TuneMyMusic export ──────────────────────────────────────────────────────
+#
+# Built by hand once as a one-off (2026-09-02); automated the next day
+# after Grey asked for it not to require asking again. Reuses
+# musaeus.wanted_list rather than a fresh extraction attempt -- see that
+# module's own docstring for why (a fresh attempt is exactly the shape
+# this project keeps finding duplicated).
+
+
+class TestWantedListExport:
+    def test_a_credited_knockoff_produces_a_wanted_list(self, ctx, cfg) -> None:
+        _make_row(
+            ctx, "Steely Dan Tribute/song.m4a",
+            artist="Karaoke Channel, The",
+            title="Midnight Cruiser [In the Style of Steely Dan]",
+        )
+        result = TributeQuarantineStage().run(ctx)
+
+        wanted_files = list((cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+            "tunemymusic_*.csv"
+        ))
+        assert len(wanted_files) == 1
+        assert wanted_files[0].read_text().strip() == "Steely Dan - Midnight Cruiser"
+        assert any("wanted list" in n for n in result.notes)
+
+    def test_an_already_owned_knockoff_writes_no_wanted_list(self, ctx, cfg) -> None:
+        """The whole point of checking ownership before exporting: Grey
+        should never be asked to re-acquire something he already has."""
+        _make_row(ctx, "Real/song.m4a", artist="Steely Dan", title="Midnight Cruiser")
+        _make_row(
+            ctx, "Fake/song.m4a",
+            artist="Karaoke Channel, The",
+            title="Midnight Cruiser [In the Style of Steely Dan]",
+        )
+        TributeQuarantineStage().run(ctx)
+
+        wanted_files = list((cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+            "tunemymusic_*.csv"
+        ))
+        assert wanted_files == []
+
+    def test_an_uncredited_knockoff_writes_no_wanted_list(self, ctx, cfg) -> None:
+        _make_row(ctx, "Fake/song.m4a", artist="Karaoke Channel, The", title="What's Up")
+        result = TributeQuarantineStage().run(ctx)
+
+        wanted_files = list((cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+            "tunemymusic_*.csv"
+        ))
+        assert wanted_files == []
+        assert not any("wanted list" in n for n in result.notes)
+
+    def test_the_manifest_still_writes_normally_alongside_it(self, ctx, cfg) -> None:
+        """Guards against the exact regression hit while building this:
+        moved dicts gained artist/title keys for the export, and
+        csv.DictWriter raises on any row key outside its declared
+        fieldnames unless told to ignore extras."""
+        _make_row(
+            ctx, "Steely Dan Tribute/song.m4a",
+            artist="Karaoke Channel, The",
+            title="Midnight Cruiser [In the Style of Steely Dan]",
+        )
+        result = TributeQuarantineStage().run(ctx)
+
+        assert not result.errors
+        manifest_files = list(
+            (cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+                "tribute_manifest_*.csv"
+            )
+        )
+        assert len(manifest_files) == 1
+        header = manifest_files[0].read_text().splitlines()[0]
+        assert header == "source,destination,reason"
+
+    def test_multiple_credited_tracks_all_appear(self, ctx, cfg) -> None:
+        _make_row(
+            ctx, "A/song.m4a",
+            artist="Karaoke Channel, The",
+            title="Song A [In the Style of Artist One]",
+        )
+        _make_row(
+            ctx, "B/song.m4a",
+            artist="Karaoke Channel, The",
+            title="Song B [In the Style of Artist Two]",
+        )
+        TributeQuarantineStage().run(ctx)
+
+        wanted_files = list((cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+            "tunemymusic_*.csv"
+        ))
+        lines = wanted_files[0].read_text().strip().splitlines()
+        assert set(lines) == {"Artist One - Song A", "Artist Two - Song B"}
+
+
+class TestTributeInTheTitle:
+    """A knock-off that names itself only in the TITLE.
+
+    `tribute` was in JUNK_ARTIST_PATTERNS and JUNK_ALBUM_PATTERNS but not
+    in JUNK_TITLE_PATTERNS, so a product whose artist name looks innocent
+    walked straight into the library. All three of these were CATALOGUED on
+    2026-09-06 and Grey found them by eye, not by any check:
+
+        artist "Classic Blues Tones"  title "... George Thorogood and The
+                                             Destroyers Tribute"
+        artist "Scott D. Davis"       title "In the End (Piano Tribute to
+                                             Linkin Park)"
+        artist "Led Zepagain"         title "Whole Lotta Love - a Tribute
+                                             to Led Zeppelin"
+    """
+
+    def test_a_tribute_named_only_in_the_title_is_junk(self):
+        for artist, title in (
+            ("Classic Blues Tones", "Bad To The Bone - George Thorogood and The Destroyers Tribute"),
+            ("Scott D. Davis", "In the End (Piano Tribute to Linkin Park)"),
+            ("Led Zepagain", "Whole Lotta Love - a Tribute to Led Zeppelin"),
+        ):
+            caught, reason = is_junk(artist, title, "")
+            assert caught, "%s / %s was not caught" % (artist, title)
+
+    def test_a_piano_cover_product_is_junk(self):
+        assert is_junk("Piano Covers", "Nirvana - Heart Shaped Box - Piano Cover", "")[0]
+        assert is_junk("Piano Covers", "Queen - I Want To Break Free", "")[0]
+
+    def test_a_real_artist_performing_at_a_tribute_is_protected(self):
+        """The cost of the rule above, and the reason PROTECTED_ARTISTS
+        exists. Springsteen's recording is a genuine performance by six
+        named artists; the Three Tenors' is a real concert album."""
+        assert not is_junk(
+            "Bruce Springsteen",
+            "(Your Love Keeps Lifting Me) Higher and Higher [With Darlene Love, "
+            "John Fogerty, Sam Moore, Billy Joel And Tom Morello] "
+            "[A Tribute To Jackie Wilson]", "")[0]
+        assert not is_junk(
+            "Three Tenors, Los Angeles Music Center Opera Chorus, The",
+            "A Tribute to Hollywood - Singin' in the Rain (Arr. Schifrin) [Live]", "")[0]
+
+    def test_spirits_own_song_title_is_protected(self):
+        """'Tribute To The Rain Woods' is Spirit's own composition."""
+        assert not is_junk("Spirit", "Tribute To The Rain Woods", "")[0]
+
+    def test_a_real_artist_covering_a_song_is_not_junk(self):
+        """Deliberately NOT matching a bare 'cover'. Measured 2026-09-06:
+        'cover version' alone would have quarantined these two, and the
+        library is full of covers by real artists."""
+        assert not is_junk(
+            "Morse/portnoy/george",
+            "Feelin' Stronger Everyday (2020 Remastered cover version)", "")[0]
+        assert not is_junk("Johnny Cash", "Hurt (cover version)", "")[0]

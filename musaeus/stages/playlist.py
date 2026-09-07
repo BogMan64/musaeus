@@ -2,7 +2,8 @@
 """
 MUSAEUS — Playlist Stage
 
-Builds per-genre M3U8 playlists + All.m3u8 from the archive.
+Builds per-genre M3U8 playlists, per-decade Era_*.m3u8 lists, and
+All.m3u8 from the archive.
 
 Source priority:
   1. car_export_path  — if curator has already run (recommended)
@@ -49,6 +50,20 @@ def _primary_genre(genre: str) -> str:
     return genre.split(",")[0].strip()
 
 
+def _decade(year: str | None) -> str | None:
+    """Map a 4-digit year to its decade label ('1967' -> '1960s').
+
+    Returns None for missing or non-numeric years rather than guessing —
+    an era list built on a fabricated year is worse than a shorter list.
+    """
+    if not year:
+        return None
+    y = year.strip()[:4]
+    if len(y) != 4 or not y.isdigit():
+        return None
+    return f"{y[:3]}0s"
+
+
 def _extinf_line(artist: str | None, title: str | None, source: str) -> str:
     """Build a #EXTINF:-1,Artist - Title line from DB metadata or filename."""
     if artist and title:
@@ -85,11 +100,11 @@ class PlaylistStage(BaseStage):
         result = self._make_result(dry_run=dry_run)
         assert ctx.config is not None
 
-        playlist_dir = ctx.config.vault_root / "Playlists"
+        playlist_dir = ctx.config.playlists
 
         rows = ctx.conn.execute(
             """
-            SELECT file_path, car_export_path, genre, artist, title
+            SELECT file_path, car_export_path, genre, artist, title, year
             FROM archive
             WHERE status = 'CATALOGUED'
               AND genre IS NOT NULL AND trim(genre) != ''
@@ -105,6 +120,8 @@ class PlaylistStage(BaseStage):
         # Group by primary genre; collect (source, artist, title) tuples
         genre_tracks: dict[str, list[tuple[str, str | None, str | None]]] = defaultdict(list)
         all_sources: dict[str, tuple[str | None, str | None]] = {}  # source→(artist,title)
+        decade_tracks: dict[str, list[tuple[str, str | None, str | None]]] = defaultdict(list)
+        no_year = 0
         no_source = 0
 
         for row in rows:
@@ -118,12 +135,21 @@ class PlaylistStage(BaseStage):
             genre_tracks[genre].append((source, artist, title))
             all_sources[source] = (artist, title)
 
+            decade = _decade(row["year"])
+            if decade:
+                decade_tracks[decade].append((source, artist, title))
+            else:
+                no_year += 1
+
         result.notes.append(f"genres found: {len(genre_tracks)}")
         result.notes.append(
             f"track-genre assignments: {sum(len(v) for v in genre_tracks.values())}"
         )
+        result.notes.append(f"decades found: {len(decade_tracks)}")
         if no_source:
             result.notes.append(f"skipped (no source path): {no_source}")
+        if no_year:
+            result.notes.append(f"no era list (missing/invalid year): {no_year}")
 
         if not dry_run:
             playlist_dir.mkdir(parents=True, exist_ok=True)
@@ -167,6 +193,30 @@ class PlaylistStage(BaseStage):
             result.files_processed += len(tracks)
             result.files_changed += len(tracks)
 
+        # Per-decade era playlists. These re-list tracks already counted by the
+        # genre pass, so files_processed/files_changed are deliberately not
+        # incremented again — the counts stay a count of files, not of lines.
+        for decade, tracks in sorted(decade_tracks.items()):
+            out = playlist_dir / f"Era_{decade}.m3u8"
+            lines = ["#EXTM3U"]
+            for source, artist, title in sorted(tracks, key=lambda t: t[0]):
+                lines.append(_extinf_line(artist, title, source))
+                lines.append(_make_rel(source))
+            content = "\n".join(lines) + "\n"
+
+            if dry_run:
+                result.notes.append(f"  [DRY] {out.name}  ({len(tracks)} tracks)")
+            else:
+                out.write_text(content, encoding="utf-8")
+                ctx.log_event(
+                    "PLAYLIST_WRITTEN",
+                    file_path=str(out),
+                    new_value=f"{len(tracks)} tracks",
+                    stage=self.NAME,
+                )
+                result.notes.append(f"  {out.name}  ({len(tracks)} tracks)")
+                written += 1
+
         # All.m3u8 — every matched source once
         if all_sources:
             out_all = playlist_dir / "All.m3u8"
@@ -196,6 +246,29 @@ class PlaylistStage(BaseStage):
 
         ctx.record_stage(result)
         return result
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A playlist this stage says it wrote must exist and have content.
+
+        The event records the path and the track count. A write that
+        failed, or produced an empty file because the track query returned
+        nothing, leaves the count in the log and nothing on disk.
+        """
+        rows = ctx.conn.execute(
+            "SELECT file_path FROM events WHERE run_id = ? "
+            " AND event_type = 'PLAYLIST_WRITTEN' ORDER BY id DESC LIMIT 10",
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        problems: list[str] = []
+        for r in rows:
+            p = Path(r["file_path"])
+            if not p.exists():
+                problems.append(f"playlist was not written: {p.name}")
+            elif p.stat().st_size == 0:
+                problems.append(f"playlist is empty: {p.name}")
+        return problems
 
     def run(self, ctx: RunContext) -> StageResult:
         return self._build(ctx, dry_run=False)

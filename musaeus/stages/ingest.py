@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..config import AUDIO_EXTENSIONS
-from ..context import RunContext, StageResult
+from ..context import RunContext, StageResult, elision
 from ..db import upsert_archive
 from .base import BaseStage, StageError
 
@@ -61,6 +61,45 @@ class IngestStage(BaseStage):
     Stage 1 — Ingest inbox audio files into the archive.
     """
 
+    @classmethod
+    def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
+        """INBOX files with no archive row — the ones ingest would add.
+
+        Counted from the filesystem, not from archive rows: a file that has
+        never been scanned has no row yet, so a row count reports 0 while
+        the inbox is full. That is exactly what the first version did.
+
+        The SECOND version over-corrected into `waiting + pending`, which
+        breaks the planner's contract -- "items this stage would act on" --
+        in both directions at once. run() skips every path already in the
+        archive, so the PENDING rows are not work; and on 2026-09-01 all
+        10,489 of them were files still sitting in INBOX, so they were
+        already inside `waiting` and were added to themselves. The preview
+        offered 30,257 for a run that ingested 9,279.
+
+        Nothing it said was false -- there really were 19,768 files in
+        INBOX and 10,489 PENDING rows. Only the sum meant nothing, and the
+        sum is the number a person reads.
+
+        So: ask the same question run() asks, with the same definition of
+        "known", and report the overlap rather than folding it in.
+        """
+        inbox = getattr(cfg, "inbox", None)
+        if inbox is None or not Path(inbox).exists():
+            return 0, "INBOX does not exist — nothing to ingest"
+
+        found = _scan_inbox(Path(inbox))
+        known = _known_paths(conn)
+        new_files = sum(1 for p in found if str(p) not in known)
+        already = len(found) - new_files
+
+        if already:
+            return new_files, (
+                f"new files in INBOX ({new_files}); "
+                f"{already} already have rows and would be skipped"
+            )
+        return new_files, "new files in INBOX"
+
     NAME = "ingest"
 
     # ── Validate ──────────────────────────────────────────────────────────────
@@ -93,7 +132,7 @@ class IngestStage(BaseStage):
             for p in new_files[:20]:
                 result.notes.append(f"  + {p.relative_to(ctx.inbox)}")
             if len(new_files) > 20:
-                result.notes.append(f"  ... and {len(new_files) - 20} more")
+                result.notes.append(f"  {elision(len(new_files) - 20)}")
         else:
             result.notes.append("No new audio files found in inbox.")
 
@@ -101,6 +140,37 @@ class IngestStage(BaseStage):
         return result
 
     # ── Run ───────────────────────────────────────────────────────────────────
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A file ingest says it took in must have a row AND still be there.
+
+        Ingest is the front door: it creates the row every later stage
+        works from. A row whose file is already gone means the rest of the
+        run is operating on a path that will fail at the first read, and
+        the failure surfaces stages later wearing someone else's name.
+        """
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.run_id = ? AND e.event_type IN ('INGEST')
+             ORDER BY e.id DESC LIMIT 10
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        missing = [
+            Path(r["file_path"]).name
+            for r in rows
+            if not Path(r["file_path"]).exists()
+        ]
+        if not missing:
+            return []
+        return [
+            f"{len(missing)} of {len(rows)} ingested file(s) are already gone: "
+            f"{', '.join(missing[:3])}"
+        ]
 
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)

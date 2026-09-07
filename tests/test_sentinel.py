@@ -4,6 +4,7 @@ Tests for SentinelStage — Stage 2: Hash files and detect exact duplicates.
 Mocks audio_hash_safe and file_hash to avoid needing ffmpeg installed.
 """
 
+import csv
 from pathlib import Path
 from unittest.mock import patch
 
@@ -245,3 +246,448 @@ class TestSentinelHelpers:
         assert len(group) == 2
         assert "/a.flac" in group
         assert "/b.flac" in group
+
+
+# ── a missing file is ghosted, not erased ────────────────────────────────────
+#
+# Sentinel used to DELETE the archive row for any file it could not find,
+# which contradicted two things at once: GhostStage exists precisely to mark
+# missing files as status='GHOST' and log GHOST_FOUND, and the event log is
+# meant to be the source of truth -- a deleted row leaves nothing to
+# reconcile when the file returns. A temporarily unmounted drive erased its
+# own history.
+#
+# And the dupe-match candidate set preloaded EVERY row carrying an
+# audio_hash, so a phantom -- a row whose file is already gone -- was a valid
+# match target and an incoming file could be quarantined as a duplicate of
+# something that no longer exists. Same family as the cascade cross_dupe.py
+# was hardened against; it learned to verify liveness, Sentinel had not.
+
+
+class TestMissingFileIsGhostedNotDeleted:
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_the_row_survives_as_ghost(self, mock_fh, mock_ah, ctx, tmp_path):
+        gone = str(tmp_path / "gone.flac")
+        _insert_pending(ctx, gone)
+
+        SentinelStage().execute(ctx)
+
+        row = ctx.conn.execute(
+            "SELECT status FROM archive WHERE file_path = ?", (gone,)
+        ).fetchone()
+        assert row is not None, "the row was DELETED; it must be marked instead"
+        assert row["status"] == "GHOST"
+
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_ghost_found_event_is_logged(self, mock_fh, mock_ah, ctx, tmp_path):
+        gone = str(tmp_path / "gone.flac")
+        _insert_pending(ctx, gone)
+
+        SentinelStage().execute(ctx)
+
+        events = ctx.conn.execute(
+            "SELECT event_type, new_value FROM events WHERE file_path = ?", (gone,)
+        ).fetchall()
+        assert any(e["event_type"] == "GHOST_FOUND" for e in events), (
+            "the transition must be in the event log, which is the source of truth"
+        )
+
+
+class TestPhantomsAreNotDuplicateTargets:
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_ghost_row_is_not_matched_as_a_duplicate(
+        self, mock_fh, mock_ah, ctx, tmp_path
+    ):
+        """A new file must not be quarantined against a row whose file is gone."""
+        shared = "a" * 64
+        ctx.conn.execute(
+            "INSERT INTO archive (file_path, audio_hash, status) VALUES (?, ?, 'GHOST')",
+            (str(tmp_path / "vanished.flac"), shared),
+        )
+        arrival = tmp_path / "new.flac"
+        arrival.write_bytes(b"AUDIO")
+        _insert_pending(ctx, str(arrival))
+        ctx.conn.commit()
+
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = (shared, None)
+
+        SentinelStage().execute(ctx)
+
+        dupes = ctx.conn.execute(
+            "SELECT COUNT(*) c FROM events WHERE event_type = 'DUPLICATE_FOUND'"
+        ).fetchone()["c"]
+        assert dupes == 0, "matched against a phantom"
+
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_quarantined_row_is_not_matched_though_its_file_exists(
+        self, mock_fh, mock_ah, ctx, tmp_path
+    ):
+        """The case the STATUS filter exists for, distinct from liveness.
+
+        A quarantined file is still on disk -- it sits in QUARANTINE/ -- so a
+        liveness check alone happily matches against it. It is not a library
+        member, and an incoming file is not its duplicate.
+        """
+        shared = "d" * 64
+        quarantined = tmp_path / "QUARANTINE" / "denied.flac"
+        quarantined.parent.mkdir(parents=True, exist_ok=True)
+        quarantined.write_bytes(b"AUDIO")
+        ctx.conn.execute(
+            "INSERT INTO archive (file_path, audio_hash, status) "
+            "VALUES (?, ?, 'QUARANTINED')",
+            (str(quarantined), shared),
+        )
+        arrival = tmp_path / "new3.flac"
+        arrival.write_bytes(b"AUDIO")
+        _insert_pending(ctx, str(arrival))
+        ctx.conn.commit()
+
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = (shared, None)
+
+        SentinelStage().execute(ctx)
+
+        dupes = ctx.conn.execute(
+            "SELECT COUNT(*) c FROM events WHERE event_type = 'DUPLICATE_FOUND'"
+        ).fetchone()["c"]
+        assert dupes == 0, "matched against a quarantined row that is still on disk"
+
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_row_whose_file_vanished_is_not_matched_either(
+        self, mock_fh, mock_ah, ctx, tmp_path
+    ):
+        """Status says live, disk says gone. The disk is the true answer."""
+        shared = "b" * 64
+        ctx.conn.execute(
+            "INSERT INTO archive (file_path, audio_hash, status) VALUES (?, ?, 'CATALOGUED')",
+            (str(tmp_path / "not-really-there.flac"), shared),
+        )
+        arrival = tmp_path / "new2.flac"
+        arrival.write_bytes(b"AUDIO")
+        _insert_pending(ctx, str(arrival))
+        ctx.conn.commit()
+
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = (shared, None)
+
+        SentinelStage().execute(ctx)
+
+        dupes = ctx.conn.execute(
+            "SELECT COUNT(*) c FROM events WHERE event_type = 'DUPLICATE_FOUND'"
+        ).fetchone()["c"]
+        assert dupes == 0, "status was trusted over the filesystem"
+
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_genuine_live_duplicate_is_still_caught(
+        self, mock_fh, mock_ah, ctx, tmp_path
+    ):
+        """The guard must not suppress real duplicates."""
+        shared = "c" * 64
+        original = tmp_path / "original.flac"
+        original.write_bytes(b"AUDIO")
+        ctx.conn.execute(
+            "INSERT INTO archive (file_path, audio_hash, status) VALUES (?, ?, 'CATALOGUED')",
+            (str(original), shared),
+        )
+        arrival = tmp_path / "copy.flac"
+        arrival.write_bytes(b"AUDIO")
+        _insert_pending(ctx, str(arrival))
+        ctx.conn.commit()
+
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = (shared, None)
+
+        SentinelStage().execute(ctx)
+
+        dupes = ctx.conn.execute(
+            "SELECT COUNT(*) c FROM events WHERE event_type = 'DUPLICATE_FOUND'"
+        ).fetchone()["c"]
+        assert dupes >= 1, "a real duplicate against a live file must still be found"
+
+
+# ── re-hashing must not demote a row ─────────────────────────────────────────
+#
+# Sentinel wrote status='HASHED' unconditionally. Hashing a file that was
+# already CATALOGUED and finalized therefore knocked it BACKWARDS out of the
+# status every later stage selects on -- Tagger, Organize and Audit all read
+# status='CATALOGUED' -- while making it eligible for the whole downstream
+# chain again.
+#
+# Measured 2026-08-30: a re-hash pass over the library demoted 1,100
+# finalized rows before it was stopped. It would have taken all 9,556.
+
+
+class TestReHashingDoesNotDemote:
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_finalized_catalogued_row_keeps_its_status(
+        self, mock_fh, mock_ah, ctx, tmp_path
+    ):
+        track = tmp_path / "finalized.flac"
+        track.write_bytes(b"AUDIO")
+        ctx.conn.execute(
+            "INSERT INTO archive (file_path, status, finalized_at) "
+            "VALUES (?, 'CATALOGUED', '2026-08-27 00:00:00')",
+            (str(track),),
+        )
+        ctx.conn.commit()
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = ("a" * 64, None)
+
+        SentinelStage().execute(ctx)
+
+        row = ctx.conn.execute(
+            "SELECT status, audio_hash FROM archive WHERE file_path = ?", (str(track),)
+        ).fetchone()
+        assert row["status"] == "CATALOGUED", "re-hashing demoted a finalized row"
+        assert row["audio_hash"] == "a" * 64, "the hash must still be updated"
+
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_pending_row_still_advances_to_hashed(self, mock_fh, mock_ah, ctx, tmp_path):
+        """The guard must not stop a new file progressing."""
+        track = tmp_path / "new.flac"
+        track.write_bytes(b"AUDIO")
+        _insert_pending(ctx, str(track))
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = ("b" * 64, None)
+
+        SentinelStage().execute(ctx)
+
+        row = ctx.conn.execute(
+            "SELECT status FROM archive WHERE file_path = ?", (str(track),)
+        ).fetchone()
+        assert row["status"] == "HASHED"
+
+    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.file_hash")
+    def test_a_ghost_whose_file_returns_recovers(self, mock_fh, mock_ah, ctx, tmp_path):
+        """The anti-demotion guard must not make GHOST a one-way door.
+
+        GhostStage only ever SETS ghost; nothing else clears it, and the only
+        other reset is the console's manual soft reset. So an unmounted drive
+        that comes back left every row permanently invisible to Scholar,
+        Canonicalize, Tagger, Organize and Audit -- which is precisely the
+        case the GHOST design exists to survive.
+        """
+        back = tmp_path / "returned.flac"
+        back.write_bytes(b"AUDIO")
+        ctx.conn.execute(
+            "INSERT INTO archive (file_path, status, audio_hash) VALUES (?, 'GHOST', NULL)",
+            (str(back),),
+        )
+        ctx.conn.commit()
+        mock_fh.return_value = "f" * 64
+        mock_ah.return_value = ("a" * 64, None)
+
+        SentinelStage().execute(ctx)
+
+        row = ctx.conn.execute(
+            "SELECT status FROM archive WHERE file_path = ?", (str(back),)
+        ).fetchone()
+        assert row["status"] == "HASHED", "a returning GHOST never recovers"
+
+
+class TestSentinelWantedList:
+    """A decode failure is the only unambiguous "unplayable" signal the
+    pipeline produces. It used to stop at a log line."""
+
+    def _probe_stub(self, artist, title, album=""):
+        return {
+            "format": {"tags": {"artist": artist, "title": title, "album": album}},
+            "streams": [{"codec_type": "audio", "codec_name": "alac"}],
+        }
+
+    def test_an_undecodable_file_lands_on_the_wanted_list(self, ctx, tmp_path):
+        bad = tmp_path / "INBOX" / "Aerosmith - What It Takes.m4a"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_bytes(b"not really audio")
+        _insert_pending(ctx, str(bad))
+
+        with patch("musaeus.stages.sentinel.audio_hash_safe",
+                   return_value=(None, "ffmpeg exited 69: invalid element channel count")), \
+             patch("musaeus.stages.sentinel.file_hash", return_value="f" * 64), \
+             patch("musaeus.stages.scholar._probe",
+                   return_value=self._probe_stub("Aerosmith", "What It Takes", "Big Ones")):
+            SentinelStage().execute(ctx)
+
+        rows = list(csv.reader(ctx.config.tunemymusic_csv_path.open(encoding="utf-8")))
+        assert rows[0] == ["Title", "Artist", "Album"]
+        assert ["What It Takes", "Aerosmith", "Big Ones"] in rows[1:]
+
+    def test_a_copy_already_catalogued_is_not_put_on_the_buy_list(self, ctx, tmp_path):
+        """Bowie's "Cat People" failed to decode in one copy while a clean
+        53MB master sat in the library. Asking Grey to re-buy what he owns
+        is how a useful list becomes one he stops reading."""
+        upsert_archive(ctx.conn, {
+            "file_path": str(tmp_path / "good.m4a"), "status": "CATALOGUED",
+            "artist": "David Bowie", "title": "Cat People",
+        })
+        ctx.conn.commit()
+
+        bad = tmp_path / "INBOX" / "David Bowie - Cat People.m4a"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_bytes(b"truncated")
+        _insert_pending(ctx, str(bad))
+
+        with patch("musaeus.stages.sentinel.audio_hash_safe", return_value=(None, "partial file")), \
+             patch("musaeus.stages.sentinel.file_hash", return_value="e" * 64), \
+             patch("musaeus.stages.scholar._probe",
+                   return_value=self._probe_stub("David Bowie", "Cat People")):
+            SentinelStage().execute(ctx)
+
+        assert not ctx.config.tunemymusic_csv_path.exists(), (
+            "a record already in the library must not be added to the buy list"
+        )
+
+    def test_a_wanted_list_failure_never_fails_the_hash_pass(self, ctx, tmp_path):
+        """Bookkeeping must not cost a run its hashing."""
+        bad = tmp_path / "INBOX" / "x.m4a"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_bytes(b"bad")
+        _insert_pending(ctx, str(bad))
+
+        with patch("musaeus.stages.sentinel.audio_hash_safe", return_value=(None, "boom")), \
+             patch("musaeus.stages.sentinel.file_hash", return_value="d" * 64), \
+             patch("musaeus.stages.sentinel._want_replacement",
+                   side_effect=RuntimeError("disk on fire")):
+            result = SentinelStage().execute(ctx)
+
+        assert result.files_errored == 1  # the hash failure is still counted
+
+
+class TestARottedLibraryMasterIsReported:
+    """P1-1, fixed 2026-09-05. already_owned() matched the undecodable file's
+    OWN archive row.
+
+    _get_pending selects `status='PENDING' OR audio_hash IS NULL`, so a
+    CATALOGUED row whose audio_hash went NULL (scope 4.17) is re-hashed. If
+    it now fails to decode, _want_replacement reads artist/title off that
+    same file, already_owned() LIKE-matches the very row it came from,
+    returns True, and nothing is written -- only an INFO line.
+
+    The worst case, a library master that has gone bad, was the one case
+    this silently dropped."""
+
+    def _probe_stub(self, artist, title, album=""):
+        return {
+            "format": {"tags": {"artist": artist, "title": title, "album": album}},
+            "streams": [{"codec_type": "audio", "codec_name": "alac"}],
+        }
+
+    def test_a_catalogued_row_that_stopped_decoding_reaches_the_wanted_list(
+        self, ctx, tmp_path
+    ):
+        rotted = tmp_path / "INBOX" / "Aerosmith - What It Takes.m4a"
+        rotted.parent.mkdir(parents=True, exist_ok=True)
+        rotted.write_bytes(b"header only")
+        # CATALOGUED, tagged, but audio_hash has gone NULL -- so sentinel
+        # re-selects it, and it is now its own "already owned" match.
+        upsert_archive(ctx.conn, {
+            "file_path": str(rotted), "status": "CATALOGUED",
+            "artist": "Aerosmith", "title": "What It Takes",
+        })
+        ctx.conn.commit()
+
+        with patch("musaeus.stages.sentinel.audio_hash_safe",
+                   return_value=(None, "ffmpeg exited 69: invalid data found")), \
+             patch("musaeus.stages.sentinel.file_hash", return_value="c" * 64), \
+             patch("musaeus.stages.scholar._probe",
+                   return_value=self._probe_stub("Aerosmith", "What It Takes")):
+            SentinelStage().execute(ctx)
+
+        csv_path = ctx.config.tunemymusic_csv_path
+        assert csv_path.exists(), (
+            "a master that has gone bad is exactly what the wanted list is for; "
+            "it must not be suppressed by matching its own row"
+        )
+        body = csv_path.read_text(encoding="utf-8")
+        assert "What It Takes" in body
+
+    def test_a_DIFFERENT_catalogued_copy_still_suppresses_the_listing(
+        self, ctx, tmp_path
+    ):
+        """The Bowie case must keep working: a clean copy elsewhere in the
+        library still means do not ask Grey to re-buy it."""
+        bad = tmp_path / "INBOX" / "bowie_bad.m4a"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_bytes(b"broken")
+        _insert_pending(ctx, str(bad))
+        upsert_archive(ctx.conn, {
+            "file_path": str(tmp_path / "LIB" / "bowie_good.m4a"),
+            "status": "CATALOGUED", "artist": "David Bowie", "title": "Cat People",
+        })
+        ctx.conn.commit()
+
+        with patch("musaeus.stages.sentinel.audio_hash_safe",
+                   return_value=(None, "ffmpeg exited 69: invalid data found")), \
+             patch("musaeus.stages.sentinel.file_hash", return_value="b" * 64), \
+             patch("musaeus.stages.scholar._probe",
+                   return_value=self._probe_stub("David Bowie", "Cat People")):
+            SentinelStage().execute(ctx)
+
+        assert not ctx.config.tunemymusic_csv_path.exists()
+
+
+class TestAFlakyMountDoesNotBookAPurchase:
+    """P1-3, fixed 2026-09-05. _want_replacement treated EVERY HasherError as
+    proof the file is unplayable -- including a mid-read failure on a flaky
+    mount, an OOM kill, or fd exhaustion. ffprobe is a separate binary and
+    still reads the tags, so a perfectly good record was appended to
+    TuneMyMusic.csv and nothing ever removes it.
+
+    The repo's own "a network failure is not an answer" principle, applied
+    to the branch that books a purchase."""
+
+    def _probe_stub(self, artist, title):
+        return {
+            "format": {"tags": {"artist": artist, "title": title, "album": ""}},
+            "streams": [{"codec_type": "audio", "codec_name": "alac"}],
+        }
+
+    def _run(self, ctx, tmp_path, err):
+        f = tmp_path / "INBOX" / "Journey - Keep on Runnin.m4a"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"x")
+        _insert_pending(ctx, str(f))
+        with patch("musaeus.stages.sentinel.audio_hash_safe", return_value=(None, err)), \
+             patch("musaeus.stages.sentinel.file_hash", return_value="a" * 64), \
+             patch("musaeus.stages.scholar._probe",
+                   return_value=self._probe_stub("Journey", "Keep on Runnin")):
+            SentinelStage().execute(ctx)
+        return ctx.config.tunemymusic_csv_path
+
+    @pytest.mark.parametrize("err", [
+        "ffmpeg exited 1 for /x.m4a: Input/output error",
+        "ffmpeg exited 1 for /x.m4a: No such file or directory",
+        "ffmpeg exited -9 for /x.m4a: ",                    # OOM-killed
+        "ffmpeg exited 1 for /x.m4a: Too many open files",
+        "ffmpeg not found — cannot compute audio hash for /x.m4a",
+        "ffmpeg timed out (>300s) for /x.m4a and the full-file fallback also failed: EIO",
+    ])
+    def test_an_environmental_failure_writes_nothing(self, ctx, tmp_path, err):
+        csv_path = self._run(ctx, tmp_path, err)
+        assert not csv_path.exists(), (
+            f"the machine is having a bad day; that is not evidence the file "
+            f"is rotten. err={err!r}"
+        )
+
+    @pytest.mark.parametrize("err", [
+        "ffmpeg exited 69 for /x.m4a: Invalid data found when processing input",
+        "ffmpeg exited 1 for /x.m4a: moov atom not found",
+        "ffmpeg exited 183 for /x.m4a: something unfamiliar",   # unknown -> still listed
+    ])
+    def test_a_genuine_decode_refusal_still_lists(self, ctx, tmp_path, err):
+        csv_path = self._run(ctx, tmp_path, err)
+        assert csv_path.exists(), (
+            f"a file ffmpeg refused to decode is the whole point of the list. "
+            f"err={err!r}"
+        )
+        assert "Keep on Runnin" in csv_path.read_text(encoding="utf-8")

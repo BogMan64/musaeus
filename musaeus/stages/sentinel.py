@@ -21,21 +21,36 @@ Design:
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
-from ..context import RunContext, StageResult
+from ..context import RunContext, StageResult, elision
 from ..db import upsert_archive
 from ..hasher import audio_hash_safe, file_hash
 from .base import BaseStage
 
 logger = logging.getLogger(__name__)
 
+#: SHA-256 of a zero-byte stream.
+#:
+#: audio_hash() returns h.hexdigest() whenever ffmpeg exits 0 -- including
+#: when it decoded nothing at all. A file whose audio stream yields no PCM
+#: therefore gets a perfectly well-formed 64-char hash that describes no
+#: audio, and every such file gets the SAME one.
+#:
+#: That is the worst available outcome for this stage: identical hashes are
+#: how Sentinel defines an EXACT duplicate, so a batch of these files is
+#: filed as one giant duplicate group and dupe-resolver keeps one and
+#: archives the rest. Nothing in the run reports an error -- the hash was
+#: computed, the row was updated, the count went up.
+_EMPTY_STREAM_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
 
 def _get_pending(conn) -> list[dict]:  # type: ignore[type-arg]
     """Return archive rows that need hashing."""
     rows = conn.execute(
         """
-        SELECT file_path, audio_hash FROM archive
+        SELECT file_path, audio_hash, status FROM archive
         WHERE status = 'PENDING'
            OR audio_hash IS NULL
         ORDER BY file_path
@@ -44,10 +59,143 @@ def _get_pending(conn) -> list[dict]:  # type: ignore[type-arg]
     return [dict(r) for r in rows]
 
 
+# Error text that means "the machine is having a bad day", not "this file is
+# rotten". A HasherError is the strongest evidence MUSAEUS gets that a file is
+# unplayable -- but only when ffmpeg actually refused to decode it. A mid-read
+# failure on a flaky mount, an OOM kill, or fd exhaustion produces the same
+# exception, and ffprobe (a separate binary) still reads the tags, so a
+# perfectly good record gets appended to the wanted list and nothing ever
+# removes it. This is the repo's own "a network failure is not an answer"
+# principle applied to the branch that books a purchase.
+_ENVIRONMENTAL_ERRORS: tuple[str, ...] = (
+    "ffmpeg not found",
+    "full-file fallback also failed",
+    "no such file or directory",
+    "input/output error",
+    "permission denied",
+    "cannot allocate memory",
+    "too many open files",
+    "resource temporarily unavailable",
+    "stale file handle",
+    "transport endpoint is not connected",
+    "device or resource busy",
+    "structure needs cleaning",
+)
+
+
+def _is_environmental(err: str | None) -> bool:
+    """True when the decode failure says more about the machine than the file.
+
+    Positively recognised only. An unfamiliar ffmpeg error is treated as a
+    genuine decode refusal and still reaches the wanted list: a missing entry
+    costs a recording, while a spurious one costs a moment's review. The
+    named cases above are the ones that actually recur.
+    """
+    if not err:
+        return False
+    low = err.lower()
+    if any(marker in low for marker in _ENVIRONMENTAL_ERRORS):
+        return True
+    # A negative exit status is a signal, not a verdict: ffmpeg was killed
+    # (OOM, fd limit), it did not decide anything about the audio.
+    match = re.search(r"ffmpeg exited (-?\d+)", low)
+    return bool(match and int(match.group(1)) < 0)
+
+
+def _want_replacement(ctx, path: Path, err: str) -> str | None:
+    """Put an undecodable file on the TuneMyMusic wanted list. Returns the
+    title recorded, or None when nothing was written.
+
+    Why here. The hasher is the ONLY thing in the pipeline that decodes
+    every file end to end -- it has to, to derive audio_hash from PCM --
+    so a HasherError is the strongest evidence MUSAEUS ever gets that a
+    file is unplayable. Until now that evidence stopped at a log line: the
+    row stayed PENDING, never reached Scholar, and nothing recorded that a
+    replacement was wanted. Four such files accumulated in the 2026-09-03
+    run (Aerosmith "What It Takes", Diana Ross "The Boss", Journey "Keep on
+    Runnin'", Michael Damian "Rock On") and none of them were on the list.
+
+    CorruptStage cannot cover this: it decides on a filesize-vs-duration
+    ratio, and in that same run it quarantined 10 files and caught none of
+    these four. Size prioritises; only a decode decides.
+
+    Metadata comes from the FILE, not the archive row. A hash-failed row
+    never advances to HASHED, so Scholar never populates its artist/title
+    -- but ffprobe still reads the tags off a damaged container, which is
+    how all four were identified by hand.
+
+    The already_owned() check is the part that stops this being noise.
+    David Bowie's "Cat People" failed to decode in one copy (2MB, header
+    claiming 5:10, decoding 13 seconds) while a clean 53MB master sat in
+    the library the whole time. Asking Grey to re-buy a record he owns is
+    how a useful list becomes one he stops reading.
+    """
+    # Deliberately function-local, NOT hoisted to module scope (P3-3
+    # suggested hoisting; measured 2026-09-05, it is the wrong trade).
+    #
+    # A module-level `from .scholar import _probe` binds sentinel's OWN
+    # reference at import time, so `patch("musaeus.stages.scholar._probe")`
+    # stops reaching it -- five existing tests went red for exactly that,
+    # with ffprobe actually running against a fixture file. The gain being
+    # traded away is a sys.modules dict lookup per call, which is nothing
+    # beside the CSV re-read this change actually removes.
+    from .bpm import _tunemymusic_csv_has_track
+    from .canonicalize import _append_tunemymusic_row
+    from .scholar import ProbeError, _extract_meta, _probe
+    from ..wanted_list import already_owned
+
+    try:
+        meta = _extract_meta(_probe(path))
+    except (ProbeError, OSError) as exc:
+        logger.warning("[sentinel] cannot read tags off %s: %s", path.name, exc)
+        return None
+
+    title = (meta.get("title") or "").strip()
+    artist = (meta.get("artist") or "").strip()
+    if not title or not artist:
+        # Without both, the row cannot be searched for in a streaming
+        # service, which is the only thing this list is for.
+        return None
+
+    if _is_environmental(err):
+        # Leave the row alone: it stays unhashed and the next run retries it.
+        logger.warning(
+            "[sentinel] %s failed to decode, but the error looks environmental "
+            "(%s) — not listing a replacement",
+            path.name, (err or "").strip()[:120],
+        )
+        return None
+
+    if already_owned(ctx.conn, artist, title, exclude_path=str(path)):
+        logger.info(
+            "[sentinel] %s will not decode, but a catalogued copy exists — not listing",
+            path.name,
+        )
+        return None
+
+    csv_path = ctx.config.tunemymusic_csv_path
+    if _tunemymusic_csv_has_track(csv_path, title, artist):
+        return None
+
+    _append_tunemymusic_row(
+        ctx, {"title": title, "artist": artist, "album": meta.get("album") or ""}
+    )
+    ctx.log_event(
+        "REPLACEMENT_WANTED",
+        file_path=str(path),
+        stage="sentinel",
+        note=f"undecodable: {err[:120]}",
+    )
+    logger.warning("[sentinel] wanted-list: %s - %s (undecodable)", artist, title)
+    return title
+
+
 def _hash_group_for(conn, audio_hash_val: str) -> list[str]:
     """Return all file_paths that share the given audio_hash."""
     rows = conn.execute(
-        "SELECT file_path FROM archive WHERE audio_hash = ?",
+        "SELECT file_path FROM archive "
+        " WHERE audio_hash = ? "
+        "   AND status NOT IN ('GHOST', 'QUARANTINED', 'DELETED')",
         (audio_hash_val,),
     ).fetchall()
     return [r["file_path"] for r in rows]
@@ -59,6 +207,125 @@ class SentinelStage(BaseStage):
     """
 
     NAME = "sentinel"
+
+    # ── Verify ────────────────────────────────────────────────────────────────
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """Confirm the hashes this run computed describe the files they name.
+
+        Sentinel is the stage whose silent failure costs the most. Every
+        dedup decision downstream -- EXACT here, NEAR in neardupe, the
+        connected components dupe_resolver archives files on -- is a
+        statement about audio_hash. A hash that is merely PRESENT is enough
+        to satisfy all of them, so a wrong hash is not caught anywhere else
+        in the pipeline; it is acted upon.
+
+        Three checks, cheapest first:
+
+        1. The empty-stream digest. ffmpeg exiting 0 having decoded nothing
+           produces a well-formed hash of no audio, identical for every such
+           file -- which this stage reads as an EXACT duplicate group. This
+           runs over the whole batch, not a sample: one such row is a
+           reportable fault, and finding it in a sample is luck.
+
+        2. The row actually carries the hash and left PENDING. A row logged
+           as HASH_COMPUTED whose audio_hash is still NULL means the upsert
+           did not land; one still at PENDING is re-hashed every run for
+           ever, which is how a stage can burn hours and appear to work.
+
+        3. Re-derive the hash from the file for a few rows, and compare.
+           This is the only check that asks the artifact rather than the
+           bookkeeping. It costs a full audio decode per sampled file, so
+           the sample is deliberately tiny -- the point is catching a stage
+           that hashed the wrong thing, not re-hashing the library.
+        """
+        # Aggregated over the archive rows themselves, selected by a
+        # subquery rather than a JOIN: joining events multiplies a row by
+        # its event count, so every SUM here would over-count a file that
+        # was hashed twice while COUNT(DISTINCT) did not. The ratios are
+        # the whole message of these three problems.
+        hashed = ctx.conn.execute(
+            """
+            SELECT COUNT(*) AS n,
+                   SUM(audio_hash IS NULL OR audio_hash = '') AS no_hash,
+                   SUM(status = 'PENDING') AS still_pending,
+                   SUM(audio_hash = ?) AS empty_stream
+              FROM archive
+             WHERE file_path IN (
+                 SELECT file_path FROM events
+                  WHERE stage = ? AND event_type = 'HASH_COMPUTED' AND run_id = ?
+             )
+            """,
+            (_EMPTY_STREAM_SHA256, self.NAME, ctx.run_id),
+        ).fetchone()
+
+        n = hashed["n"] or 0
+        if n == 0:
+            # The stage counted changes but logged no HASH_COMPUTED events.
+            # Reporting [] here would be the hollow "verified" this hook
+            # exists to prevent: there is nothing to have looked at.
+            return [
+                f"stage reported {result.files_changed} hashed file(s) but the "
+                f"event log has no HASH_COMPUTED for this run"
+            ]
+
+        problems: list[str] = []
+
+        if hashed["empty_stream"]:
+            example = ctx.conn.execute(
+                "SELECT file_path FROM archive WHERE audio_hash = ? LIMIT 1",
+                (_EMPTY_STREAM_SHA256,),
+            ).fetchone()
+            problems.append(
+                f"{hashed['empty_stream']} of {n} file(s) carry the empty-stream "
+                f"digest — decoded to no audio, and they will read as one EXACT "
+                f"duplicate group, e.g. {Path(example['file_path']).name}"
+            )
+        if hashed["no_hash"]:
+            problems.append(
+                f"{hashed['no_hash']} of {n} file(s) logged HASH_COMPUTED but have "
+                f"no audio_hash stored — the update did not land"
+            )
+        if hashed["still_pending"]:
+            problems.append(
+                f"{hashed['still_pending']} of {n} hashed file(s) are still PENDING — "
+                f"they will be re-hashed on every run"
+            )
+
+        sample = ctx.conn.execute(
+            """
+            SELECT DISTINCT a.file_path, a.audio_hash, a.full_hash
+              FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.stage = ? AND e.event_type = 'HASH_COMPUTED'
+               AND e.run_id = ? AND a.audio_hash IS NOT NULL
+             ORDER BY e.id DESC LIMIT 3
+            """,
+            (self.NAME, ctx.run_id),
+        ).fetchall()
+
+        for row in sample:
+            path = Path(row["file_path"])
+            if not path.exists():
+                problems.append(f"hashed file is not on disk: {path.name}")
+                continue
+            # A hash that equals the file hash was the documented timeout
+            # fallback inside audio_hash(), not a PCM hash, and re-deriving
+            # it may legitimately take the other branch this time. Reporting
+            # that as a mismatch would be crying wolf about working code.
+            if row["full_hash"] and row["audio_hash"] == row["full_hash"]:
+                continue
+            again, err = audio_hash_safe(path)
+            if err:
+                problems.append(f"{path.name}: stored a hash but cannot be re-hashed: {err}")
+            elif again != row["audio_hash"]:
+                problems.append(
+                    f"{path.name}: re-hashing gives {again[:12]}… but "
+                    f"{row['audio_hash'][:12]}… was stored — the hash does not "
+                    f"describe this file"
+                )
+
+        return problems
 
     # ── Validate ──────────────────────────────────────────────────────────────
 
@@ -81,7 +348,7 @@ class SentinelStage(BaseStage):
             p = Path(row["file_path"])
             result.notes.append(f"  ~ {p.name}")
         if len(pending) > 10:
-            result.notes.append(f"  ... and {len(pending) - 10} more")
+            result.notes.append(f"  {elision(len(pending) - 10)}")
 
         result.files_processed = len(pending)
         result.files_changed = len(pending)
@@ -98,13 +365,30 @@ class SentinelStage(BaseStage):
         seen_hashes: dict[str, str] = {}  # audio_hash → first file_path
 
         # Pre-load existing hashes from DB into seen_hashes
+        # A row whose file is gone is not something a new file can duplicate.
+        #
+        # This preloaded EVERY row with an audio_hash, so a GHOST or
+        # QUARANTINED phantom -- a row for a file already moved away or
+        # deleted -- was a valid match target, and an incoming file was
+        # quarantined as a duplicate of something that no longer exists.
+        # Same family as the dupe cascade cross_dupe.py was hardened against;
+        # it learned to verify liveness, Sentinel had not.
+        #
+        # Filtered on status AND checked on disk: the status is the cheap
+        # answer and the filesystem is the true one, and they disagree
+        # exactly when a row is stale, which is the case that matters.
         existing = ctx.conn.execute(
-            "SELECT file_path, audio_hash FROM archive WHERE audio_hash IS NOT NULL"
+            "SELECT file_path, audio_hash FROM archive "
+            " WHERE audio_hash IS NOT NULL "
+            "   AND status NOT IN ('GHOST', 'QUARANTINED', 'DELETED')"
         ).fetchall()
         for row in existing:
             h = row["audio_hash"]
-            if h not in seen_hashes:
-                seen_hashes[h] = row["file_path"]
+            if h in seen_hashes:
+                continue
+            if not Path(row["file_path"]).exists():
+                continue
+            seen_hashes[h] = row["file_path"]
 
         _COMMIT_EVERY = 50  # commit progress incrementally
 
@@ -114,10 +398,32 @@ class SentinelStage(BaseStage):
             result.files_processed += 1
 
             if not path.exists():
-                logger.warning("Missing file (stale DB record — removing): %s", path_str)
-                ctx.conn.execute("DELETE FROM archive WHERE file_path = ?", (path_str,))
+                # Mark, do not DELETE.
+                #
+                # This used to DELETE the archive row, which contradicted two
+                # things at once: GhostStage exists precisely to mark missing
+                # files as status='GHOST' and log GHOST_FOUND, and the event
+                # log is meant to be the source of truth -- a deleted row
+                # leaves nothing to reconcile when the file comes back. A
+                # temporarily-unmounted drive silently erased its own history.
+                #
+                # Same transition GhostStage performs, so the two agree.
+                logger.warning("Missing file — marking GHOST: %s", path_str)
+                ctx.conn.execute(
+                    "UPDATE archive SET status='GHOST', last_seen=datetime('now') "
+                    "WHERE file_path=?",
+                    (path_str,),
+                )
+                ctx.log_event(
+                    "GHOST_FOUND",
+                    file_path=path_str,
+                    old_value=row.get("status"),
+                    new_value="GHOST",
+                    stage=self.NAME,
+                    note="missing on disk during sentinel scan",
+                )
                 result.files_errored += 1
-                result.errors.append(f"Missing file, removed from archive: {path_str}")
+                result.errors.append(f"Missing file, marked GHOST: {path_str}")
                 continue
 
             # Full-file hash (always, cheap)
@@ -138,6 +444,13 @@ class SentinelStage(BaseStage):
                     stage=self.NAME,
                     note=err,
                 )
+                # A failed decode is the only unambiguous "this file is
+                # unplayable" signal the pipeline produces -- record that a
+                # replacement is wanted while we still have the file's tags.
+                try:
+                    _want_replacement(ctx, path, err)
+                except Exception as exc:  # never let bookkeeping fail a hash pass
+                    logger.warning("[sentinel] wanted-list write failed for %s: %s", path.name, exc)
                 # Still update full_hash so change-detection works
                 upsert_archive(ctx.conn, {"file_path": path_str, "full_hash": fh})
                 result.files_errored += 1
@@ -152,15 +465,28 @@ class SentinelStage(BaseStage):
                 continue
 
             assert ah is not None
-            upsert_archive(
-                ctx.conn,
-                {
-                    "file_path": path_str,
-                    "audio_hash": ah,
-                    "full_hash": fh,
-                    "status": "HASHED",
-                },
-            )
+            # Hashing advances a NEW file to HASHED. It must not DEMOTE a row
+            # that is already further along.
+            #
+            # This wrote status='HASHED' unconditionally, so re-hashing a
+            # finalized library file knocked it out of CATALOGUED and made it
+            # invisible to Tagger, Organize and Audit -- all of which select
+            # status='CATALOGUED' -- while making it eligible for the whole
+            # downstream chain again. Measured 2026-08-30: a re-hash pass over
+            # the library demoted 1,100 finalized rows before it was stopped,
+            # and would have taken all 9,556.
+            #
+            # A row is re-hashed for its hashes, not for its position.
+            fields = {"file_path": path_str, "audio_hash": ah, "full_hash": fh}
+            # PENDING advances. A GHOST whose file is back RECOVERS -- it is
+            # here because the file exists again, and GhostStage only ever
+            # SETS ghost, so this is the one automatic un-ghost path; without
+            # it a remounted drive left every row invisible to Scholar,
+            # Canonicalize, Tagger, Organize and Audit for ever.
+            # Anything further along keeps its position (see above).
+            if (row.get("status") or "PENDING") in ("PENDING", "GHOST"):
+                fields["status"] = "HASHED"
+            upsert_archive(ctx.conn, fields)
             ctx.log_event(
                 "HASH_COMPUTED",
                 file_path=path_str,

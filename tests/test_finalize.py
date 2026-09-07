@@ -464,3 +464,182 @@ class TestFinalizeDryRun:
 
         row = ctx_dry.conn.execute("SELECT finalized_at FROM archive").fetchone()
         assert row["finalized_at"] is None
+
+
+# ── Recovery boundary (P0-13 wiring) ──────────────────────────────────────────
+
+
+class TestFinalizeRecoveryBoundary:
+    """A finalize is unrecoverable once the source is gone unless something
+    recorded where the file came from. These prove the journal exists, that
+    the source outlives the DB write, and that a completed finalize can
+    actually be undone.
+    """
+
+    def _journal(self, ctx):
+        from musaeus.safety.recovery import JOURNAL_FILENAME, OperationJournal
+
+        root = ctx.config.runs_root / "recovery" / f"finalize_{ctx.run_id}"
+        return OperationJournal(root / JOURNAL_FILENAME)
+
+    def test_every_move_is_journalled_with_both_ends(self, ctx):
+        _make_staged_track(
+            ctx,
+            "Bob Seger - Night Moves.m4a",
+            artist="Bob Seger",
+            album="Night Moves",
+            title="Night Moves",
+        )
+        FinalizeStage().run(ctx)
+
+        entries = self._journal(ctx).entries()
+        moves = [e for e in entries if e.detail.get("moved_to")]
+        assert len(moves) == 1, "the move must be on the record"
+        assert "STAGING" in moves[0].detail["relative_path"]
+        assert "ALAC-Library" in moves[0].detail["moved_to"]
+        assert moves[0].result_digest, "the destination must be digested"
+
+    def test_source_release_is_recorded_separately(self, ctx):
+        """ "destination exists, source gone" and "destination exists, source
+        still there" need different recovery, so which happened is recorded
+        rather than inferred."""
+        _make_staged_track(
+            ctx,
+            "Bob Seger - Hollywood Nights.m4a",
+            artist="Bob Seger",
+            album="Night Moves",
+            title="Hollywood Nights",
+        )
+        FinalizeStage().run(ctx)
+
+        entries = self._journal(ctx).entries()
+        released = [e for e in entries if e.detail.get("source_released") is True]
+        assert released, "the source release must be journalled"
+        assert list(ctx.staging.rglob("*.m4a")) == []
+
+    def test_a_finalised_file_can_be_moved_back(self, ctx):
+        """The point of the whole exercise: undo a completed finalize."""
+        from musaeus.safety.manifest import Manifest
+        from musaeus.safety.mutation import MutationBoundary
+        from musaeus.safety.recovery import (
+            JOURNAL_FILENAME,
+            Checkpoint,
+            OperationJournal,
+        )
+
+        src = _make_staged_track(
+            ctx,
+            "Bob Seger - Turn the Page.m4a",
+            artist="Bob Seger",
+            album="Night Moves",
+            title="Turn the Page",
+        )
+        original = src.read_bytes()
+        FinalizeStage().run(ctx)
+
+        landed = list(ctx.config.alac_library.rglob("*.m4a"))
+        assert len(landed) == 1 and not src.exists()
+
+        root = ctx.config.runs_root / "recovery" / f"finalize_{ctx.run_id}"
+        manifest = Manifest.from_json((root / "manifest.json").read_text())
+        checkpoint = Checkpoint(
+            checkpoint_id=manifest.checkpoint_id,
+            root=root,
+            manifest=manifest,
+            manifest_digest=manifest.digest,
+            created_at=manifest.created_at,
+            verified=True,
+            recovery_target=str(root.parent),
+        )
+        boundary = MutationBoundary(
+            checkpoint,
+            OperationJournal(root / JOURNAL_FILENAME),
+            run_id=ctx.run_id,
+            source_root=ctx.config.vault_root,
+        )
+        boundary.rollback()
+
+        assert src.exists(), "the staged source must come back"
+        assert src.read_bytes() == original
+        assert list(ctx.config.alac_library.rglob("*.m4a")) == []
+
+    def test_disabling_the_boundary_is_announced_not_silent(self, ctx, monkeypatch):
+        """A run with no boundary must not look identical to one that has
+        it -- that is the whole class of defect this project keeps finding."""
+        monkeypatch.setenv(FinalizeStage.CHECKPOINT_ENV, "0")
+        _make_staged_track(
+            ctx,
+            "Bob Seger - Mainstreet.m4a",
+            artist="Bob Seger",
+            album="Night Moves",
+            title="Mainstreet",
+        )
+        result = FinalizeStage().run(ctx)
+        assert any("DISABLED" in n for n in result.notes)
+        assert not (ctx.config.runs_root / "recovery").exists()
+
+    def test_one_unmanaged_row_does_not_strand_the_others(self, ctx, tmp_path):
+        """A row outside the checkpointed root must fail ALONE.
+
+        The real regression, 2026-08-25: exactly one of 10,873 library rows
+        sat in a stray /mnt/FORGE2TB/Projects/<Artist>/INBOX/ directory,
+        outside the vault. The boundary correctly refused to move a file it
+        could not restore -- but UnmanagedPathError was in neither arm of the
+        per-row ``except (FinalizeError, OSError)``, so it escaped to the
+        stage handler and took four healthy files down with it. finalize
+        reported FAILED with processed=0.
+
+        Both halves are asserted, because either alone would pass a broken
+        build: the bad row must still be REFUSED (not quietly moved), and
+        the good rows must still LAND.
+        """
+        good = [
+            _make_staged_track(
+                ctx, f"Good Artist - Track {n}.m4a",
+                artist="Good Artist", album="Album", title=f"Track {n}",
+                audio_hash=f"cafe{n:04d}",
+            )
+            for n in range(4)
+        ]
+
+        # A real file genuinely outside vault_root -- the shape the live
+        # library actually held, not a mock of it.
+        outside = tmp_path.parent / "outside_the_vault" / "Bach" / "INBOX"
+        outside.mkdir(parents=True, exist_ok=True)
+        stray = outside / "Johann Sebastian Bach - Jesu, Joy Of Man's Desiring.m4a"
+        stray.write_bytes(b"FAKE AUDIO OUTSIDE THE VAULT")
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(stray), "status": "CATALOGUED",
+                "artist": "Johann Sebastian Bach", "album": "Cantata BWV 147",
+                "title": "Jesu, Joy Of Man's Desiring", "audio_hash": "beef0001",
+            },
+        )
+        ctx.conn.execute(
+            "UPDATE archive SET canonicalized_at = datetime('now'), "
+            "canon_action = 'CONVERTED' WHERE file_path = ?",
+            (str(stray),),
+        )
+        ctx.conn.commit()
+
+        result = FinalizeStage().run(ctx)
+
+        # The four good ones landed and their sources are gone.
+        landed = list(ctx.config.alac_library.rglob("*.m4a"))
+        assert len(landed) == 4, f"expected 4 finalized, got {[p.name for p in landed]}"
+        assert not any(p.exists() for p in good)
+
+        # The stray was refused, untouched, and reported -- not moved, and
+        # not silently dropped either.
+        assert stray.exists(), "an unmanaged source must not be moved"
+        assert stray.read_bytes() == b"FAKE AUDIO OUTSIDE THE VAULT"
+        assert result.files_errored == 1
+        assert any("outside the checkpointed root" in e for e in result.errors)
+
+        # And it is still CATALOGUED, so the next run retries it rather than
+        # believing a move that never happened.
+        row = ctx.conn.execute(
+            "SELECT finalized_at FROM archive WHERE file_path = ?", (str(stray),)
+        ).fetchone()
+        assert row["finalized_at"] is None

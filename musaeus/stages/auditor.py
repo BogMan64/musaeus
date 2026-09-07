@@ -34,32 +34,35 @@ import subprocess
 from pathlib import Path
 
 from ..context import RunContext, StageResult
-from .base import BaseStage, StageError
+from ..db import ensure_columns
+from ..duration import TOLERANCE_SEC
+from .base import BaseStage, NO_VERIFICATION, StageError
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TARGET_LUFS = -18.0
 _DEFAULT_TARGET_TP = -1.0
-_DEFAULT_TOLERANCE = 1.5
+# Single definition in musaeus/duration.py (Grey's ruling 2026-09-02:
+# 2.0 everywhere; it was 1.5 in four places and 2.0 in a fifth whose
+# comment cited the same rationale as one of the 1.5s).
+_DEFAULT_TOLERANCE = TOLERANCE_SEC
 _DEFAULT_MAX_FILES = 200
 _FILE_TIMEOUT_S = 90
 _COMMIT_EVERY = 50
 
 
 def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
-    """Add auditor columns to archive if they don't exist yet (auto-migrate)."""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
-    for col, typedef in (
-        ("auditor_lufs", "REAL"),
-        ("auditor_tp", "REAL"),
-        ("auditor_flagged", "INTEGER DEFAULT 0"),
-        ("auditor_checked_at", "TEXT"),
-    ):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
-    conn.commit()
-
-
+    """Columns this stage owns. Mechanism shared via db.ensure_columns;
+    the list stays here, next to the code that reads them."""
+    ensure_columns(
+        conn,
+        (
+            ("auditor_lufs", "REAL"),
+            ("auditor_tp", "REAL"),
+            ("auditor_flagged", "INTEGER DEFAULT 0"),
+            ("auditor_checked_at", "TEXT"),
+        ),
+    )
 def _ffmpeg_lufs(path: Path, target_lufs: float, target_tp: float) -> tuple[float, float]:
     """
     Run ffmpeg loudnorm pass-1 analysis.
@@ -273,6 +276,46 @@ class AuditorStage(BaseStage):
 
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._audit(ctx, dry_run=True)
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A row this stage measured must carry a plausible measurement.
+
+        Auditor's whole output is a number written to a column, so the
+        check cannot go to the file -- but "the column is set" is far too
+        weak on its own. A loudnorm parse that silently yields nothing
+        writes NULL or 0.0 for every row, and a presence-only check calls
+        that a success. LUFS for real music sits roughly between -70 and
+        0; anything outside that is a parse failure wearing a number.
+
+        The columns are created on first run (_ensure_columns), so their
+        absence means the stage has not run rather than that it failed --
+        NO_VERIFICATION, not a problem.
+        """
+        cols = {r[1] for r in ctx.conn.execute("PRAGMA table_info(archive)")}
+        if "auditor_lufs" not in cols or "auditor_checked_at" not in cols:
+            return NO_VERIFICATION
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path, a.auditor_lufs FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.run_id = ? AND e.event_type IN ('AUDITOR_FLAG', 'AUDITOR_PASS')
+             ORDER BY e.id DESC LIMIT 10
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        bad = [
+            Path(r["file_path"]).name
+            for r in rows
+            if r["auditor_lufs"] is None or not (-70.0 <= float(r["auditor_lufs"]) <= 0.0)
+        ]
+        if not bad:
+            return []
+        return [
+            f"{len(bad)} of {len(rows)} audited row(s) carry no usable LUFS "
+            f"measurement: {', '.join(bad[:3])}"
+        ]
 
     def run(self, ctx: RunContext) -> StageResult:
         return self._audit(ctx, dry_run=False)

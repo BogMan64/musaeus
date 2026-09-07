@@ -55,6 +55,19 @@ logger = logging.getLogger(__name__)
 
 _COMMIT_EVERY = 25
 
+#: Longest span fed to the beat tracker. Six minutes clears essentially every
+#: song in the library, so normal tracks are analysed whole and their BPM is
+#: unchanged; only long-form material takes the excerpt path. See the note at
+#: the RhythmExtractor2013 call for why this is a length cap and not a timeout.
+_RHYTHM_MAX_SECONDS = 360
+_RHYTHM_MAX_SAMPLES = _RHYTHM_MAX_SECONDS * 44100
+
+#: Hard ceiling on what will be decoded at all. Above this the file is not a
+#: track and loading it is itself the hazard -- see the note in
+#: _process_one(). 45 min clears the longest real music in the library
+#: (Miles Davis, 28.5 min) with room to spare, and caps a decode at ~475 MB.
+_MAX_ANALYSIS_SECONDS = 45 * 60
+
 _SKIP_ERROR_PATTERNS = (
     "too short",
     "not enough audio",
@@ -109,7 +122,35 @@ def analyze_file(path: Path) -> dict[str, float | str]:
 
     audio = es.MonoLoader(filename=str(path), sampleRate=44100)()
 
-    bpm, _, _, _, _ = es.RhythmExtractor2013(method="multifeature")(audio)
+    # RhythmExtractor2013(multifeature) runs five beat trackers and reconciles
+    # them. Cost grows with length AND with how ambiguous the beat is, so a
+    # long track with no steady pulse is the worst case in both directions.
+    #
+    # Found the hard way on 2026-08-23: a 45-minute ambient "sound bath" held
+    # the whole run at 100% CPU for over nine minutes on that single file,
+    # with no checkpoint and no way to interrupt it. There is no timeout that
+    # can help here -- essentia runs in C++, and a Python signal handler only
+    # gets to run between bytecodes, so signal.alarm() would not fire until
+    # the call had already returned. The work itself has to be bounded.
+    #
+    # Tempo is a local property: a few minutes establishes it as well as an
+    # hour does. So anything longer than _RHYTHM_MAX_SECONDS is analysed as a
+    # centred excerpt. The threshold sits well above normal song length, so
+    # ordinary tracks take the whole-file path exactly as before and their
+    # results do not move.
+    rhythm_audio = audio
+    if len(audio) > _RHYTHM_MAX_SAMPLES:
+        mid = len(audio) // 2
+        half = _RHYTHM_MAX_SAMPLES // 2
+        rhythm_audio = audio[mid - half : mid + half]
+        logger.info(
+            "[bpm] %s is %.0f min; analysing a centred %.0f min excerpt for tempo",
+            path.name,
+            len(audio) / 44100 / 60,
+            _RHYTHM_MAX_SECONDS / 60,
+        )
+
+    bpm, _, _, _, _ = es.RhythmExtractor2013(method="multifeature")(rhythm_audio)
 
     raw_energy = float(es.Energy()(audio))
     energy = min(1.0, raw_energy / 500000.0)
@@ -251,19 +292,79 @@ def write_bpm_tags(path: Path, features: dict[str, float | str]) -> bool:
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 
-def _tunemymusic_csv_has_path(csv_path: Path, file_path: str) -> bool:
-    """True if file_path is already logged in TuneMyMusic.csv -- guards
-    against duplicate rows piling up every time a permanently-unanalyzable
-    file (multichannel audio) gets re-encountered across repeated runs."""
-    if not csv_path.exists():
-        return False
+def _tunemymusic_key(title: str, artist: str) -> tuple[str, str]:
+    return ((title or "").strip().lower(), (artist or "").strip().lower())
+
+
+#: csv_path -> (st_mtime_ns, st_size, keys). Guarded by the stat pair so an
+#: edit from outside this process is still picked up.
+_TUNEMYMUSIC_CACHE: dict[str, tuple[int, int, set[tuple[str, str]]]] = {}
+
+
+def _tunemymusic_keys(csv_path: Path) -> set[tuple[str, str]]:
+    """Every Title+Artist already in the CSV, read at most once per change.
+
+    This used to re-open and fully re-parse the file for every undecodable
+    file, inside sentinel's per-file hashing loop -- K full reads over a list
+    growing to K rows, so O(K^2) I/O on the disk ffmpeg is already
+    saturating, in a stage that runs an idle throttle precisely to stay out
+    of the way (P3-3).
+    """
+    try:
+        st = csv_path.stat()
+    except OSError:
+        _TUNEMYMUSIC_CACHE.pop(str(csv_path), None)
+        return set()
+
+    cached = _TUNEMYMUSIC_CACHE.get(str(csv_path))
+    if cached and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+        return cached[2]
+
+    keys: set[tuple[str, str]] = set()
     try:
         with open(csv_path, newline="", encoding="utf-8") as fh:
             reader = csv.reader(fh)
             next(reader, None)  # header
-            return any(row and row[-1] == file_path for row in reader)
+            for row in reader:
+                if row:
+                    keys.add(_tunemymusic_key(row[0], row[1] if len(row) > 1 else ""))
     except OSError:
+        return set()
+    _TUNEMYMUSIC_CACHE[str(csv_path)] = (st.st_mtime_ns, st.st_size, keys)
+    return keys
+
+
+def remember_tunemymusic_track(csv_path: Path, title: str, artist: str) -> None:
+    """Record a row just appended, so the cache stays warm.
+
+    Without this the append changes mtime/size, the stat guard misses, and
+    the next membership question re-reads the whole file -- which is the
+    O(K^2) behaviour this cache exists to remove. Within-run duplicates are
+    still caught because the key goes in immediately.
+    """
+    try:
+        st = csv_path.stat()
+    except OSError:
+        return
+    entry = _TUNEMYMUSIC_CACHE.get(str(csv_path))
+    keys = entry[2] if entry else _tunemymusic_keys(csv_path)
+    keys.add(_tunemymusic_key(title, artist))
+    _TUNEMYMUSIC_CACHE[str(csv_path)] = (st.st_mtime_ns, st.st_size, keys)
+
+
+def _tunemymusic_csv_has_track(csv_path: Path, title: str, artist: str) -> bool:
+    """True if this track is already logged in TuneMyMusic.csv -- guards
+    against duplicate rows piling up every time a permanently-unanalyzable
+    file (multichannel audio) is re-encountered across runs.
+
+    Keyed on Title+Artist, not on the file path. The CSV is now written as
+    Title,Artist,Album so it can actually be imported, and a dedup check
+    looking for a path in a file that no longer contains paths silently
+    matches nothing -- appending a fresh duplicate on every run.
+    """
+    if not csv_path.exists():
         return False
+    return _tunemymusic_key(title, artist) in _tunemymusic_keys(csv_path)
 
 
 def _mark_multichannel_skipped(ctx: RunContext, file_path: str) -> None:
@@ -286,12 +387,17 @@ def _mark_multichannel_skipped(ctx: RunContext, file_path: str) -> None:
     )
 
     csv_path = ctx.config.tunemymusic_csv_path
-    if _tunemymusic_csv_has_path(csv_path, file_path):
-        return
     row = ctx.conn.execute(
-        "SELECT codec, bitrate, sample_rate, channels, duration FROM archive WHERE file_path = ?",
+        "SELECT codec, bitrate, sample_rate, channels, duration, artist, title, album "
+        "FROM archive WHERE file_path = ?",
         (file_path,),
     ).fetchone()
+    if _tunemymusic_csv_has_track(
+        csv_path,
+        (row["title"] if row else "") or Path(file_path).stem,
+        (row["artist"] if row else "") or "",
+    ):
+        return
     _append_tunemymusic_row(
         ctx,
         {
@@ -302,6 +408,9 @@ def _mark_multichannel_skipped(ctx: RunContext, file_path: str) -> None:
             "channels": row["channels"] if row else None,
             "duration": row["duration"] if row else None,
             "file_path": file_path,
+            "artist": row["artist"] if row else None,
+            "title": row["title"] if row else None,
+            "album": row["album"] if row else None,
         },
     )
 
@@ -345,6 +454,14 @@ class BPMStage(BaseStage):
     force Essentia even when a file already has BPM tags.
     """
 
+    @classmethod
+    def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
+        """Rows this stage would act on. Read-only; see planner.py."""
+        n = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' AND bpm IS NULL"
+        ).fetchone()[0]
+        return int(n), "files needing BPM analysis"
+
     NAME = "bpm"
 
     def validate(self, ctx: RunContext) -> None:
@@ -383,11 +500,47 @@ class BPMStage(BaseStage):
         # avoids ever spinning up Essentia for a file we already know is
         # unanalyzable, not just reacting to its exception after the fact.
         row = ctx.conn.execute(
-            "SELECT channels FROM archive WHERE file_path = ?", (file_path,)
+            "SELECT channels, duration FROM archive WHERE file_path = ?", (file_path,)
         ).fetchone()
         if row and row["channels"] and row["channels"] > 2:
             _mark_multichannel_skipped(ctx, file_path)
             return "skip_multichannel"
+
+        # Same idea as the multichannel check above, for the same reason:
+        # decide from what Scholar already recorded rather than discovering
+        # it inside Essentia.
+        #
+        # MonoLoader materialises the WHOLE decoded file as float32 before
+        # anything can trim it -- roughly 10 MB per minute at 44.1 kHz. On
+        # 2026-08-23 a 12-hour "sound bath" (7.6 GB decoded, 681 s just to
+        # load) got far enough to have the kernel OOM-kill the entire run at
+        # the BPM stage, after 18 stages of good work, with no checkpoint
+        # written. The run reported exit 137, and because the wrapper's own
+        # exit code was 0 it briefly looked like a clean finish.
+        #
+        # Nothing above the ceiling is a track: the longest real music in the
+        # library is Miles Davis at 28.5 min, with the Allman Brothers'
+        # "Whipping Post" at 22.9 min. Everything past 45 minutes is guided
+        # meditation and sleep loops, which have no meaningful tempo anyway.
+        duration = row["duration"] if row else None
+        if duration and duration > _MAX_ANALYSIS_SECONDS:
+            logger.warning(
+                "[bpm] skipping %s: %.0f min exceeds the %.0f min analysis ceiling "
+                "(decoding it would need ~%.1f GB)",
+                path.name,
+                duration / 60,
+                _MAX_ANALYSIS_SECONDS / 60,
+                duration * 44100 * 4 / 1e9,
+            )
+            ctx.log_event(
+                "BPM_SKIPPED_TOO_LONG",
+                file_path=file_path,
+                old_value=None,
+                new_value=None,
+                stage=self.NAME,
+                note=f"{duration / 60:.0f} min exceeds {_MAX_ANALYSIS_SECONDS / 60:.0f} min ceiling",
+            )
+            return "skip"
 
         features: dict[str, float | str] | None = None
         from_tags = False
@@ -411,6 +564,38 @@ class BPMStage(BaseStage):
         if not from_tags:
             write_bpm_tags(path, features)
         return "tag_shortcut" if from_tags else "ok"
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A track this stage analysed must carry a usable tempo.
+
+        BPM writes a number and a timestamp. "The column is set" is the
+        weak form of this check: an analyser that fails to parse writes
+        0.0, or None, for every track and a presence test calls that a
+        success. Recorded music runs roughly 20-300 BPM; outside that is
+        a parse failure wearing a number.
+        """
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path, a.bpm FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.run_id = ? AND e.event_type IN ('BPM_ANALYZED')
+             ORDER BY e.id DESC LIMIT 10
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        bad = [
+            Path(r["file_path"]).name
+            for r in rows
+            if r["bpm"] is None or not (20.0 <= float(r["bpm"]) <= 300.0)
+        ]
+        if not bad:
+            return []
+        return [
+            f"{len(bad)} of {len(rows)} analysed track(s) carry no usable BPM: "
+            f"{', '.join(bad[:3])}"
+        ]
 
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)

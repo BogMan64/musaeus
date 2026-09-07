@@ -4,7 +4,9 @@ MUSAEUS — Stage: MBEnrich
 MusicBrainz metadata enrichment for CATALOGUED archive rows.
 
 What it does:
-  - Finds CATALOGUED rows where mb_artist_id IS NULL (not yet enriched)
+  - Finds CATALOGUED rows where mb_enriched_at IS NULL (not yet looked up).
+    Deliberately NOT `mb_artist_id IS NULL`: that re-queries every track
+    MusicBrainz could not identify, on every run, for ever.
   - Queries MusicBrainz search API for artist MBID and canonical name
   - Queries MusicBrainz release API for album MBID when artist is found
   - Writes back to archive: mb_artist_id, mb_artist_name, mb_release_id
@@ -31,18 +33,34 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
+import re
 import time
 import urllib.error
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from .. import discogs
 from ..context import RunContext, StageResult
-from .base import BaseStage
+from ..db import (
+    ensure_columns,
+    mb_cache_get_artist,
+    mb_cache_put_artist,
+    open_mb_cache,
+)
+from ..network_policy import check as _network_check
+from .base import BaseStage, NO_VERIFICATION
+from .enrich import _clean_artist_for_lookup
 
 logger = logging.getLogger(__name__)
 
 _MB_BASE = "https://musicbrainz.org/ws/2"
 _USER_AGENT = "Musaeus/1.0 (music-library-manager; contact@musaeus.local)"
+#: Distinguishes "never looked up" from "looked up, not found".
+#: None is a real cached answer here, so it cannot double as the
+#: absent marker -- doing so would re-query every negative result.
+_MISSING = object()
+
 _RATE_LIMIT_S = 1.1  # MB requires ≤ 1 req/s for unauthenticated access
 _TIMEOUT_S = 15
 _RETRY_WAIT_S = 5
@@ -54,22 +72,17 @@ _ARTIST_SCORE = 85  # minimum MB score to accept an artist match (0-100)
 
 
 def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
-    """Add MB columns to archive if they don't exist yet (auto-migrate)."""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
-    for col, typedef in (
-        ("mb_artist_id", "TEXT"),
-        ("mb_artist_name", "TEXT"),
-        ("mb_release_id", "TEXT"),
-        ("mb_enriched_at", "TEXT"),
-    ):
-        if col not in existing:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} {typedef}")
-    conn.commit()
-
-
-# ── MB API helpers ────────────────────────────────────────────────────────────
-
-
+    """Columns this stage owns. Mechanism shared via db.ensure_columns;
+    the list stays here, next to the code that reads them."""
+    ensure_columns(
+        conn,
+        (
+            ("mb_artist_id", "TEXT"),
+            ("mb_artist_name", "TEXT"),
+            ("mb_release_id", "TEXT"),
+            ("mb_enriched_at", "TEXT"),
+        ),
+    )
 def _mb_get(path: str, params: dict[str, str]) -> dict:
     """
     Perform a GET request to the MusicBrainz JSON API.
@@ -80,6 +93,10 @@ def _mb_get(path: str, params: dict[str, str]) -> dict:
 
     for attempt in range(2):
         try:
+            # Ask the gateway before dispatching. Under LOCAL_ONLY this raises,
+            # and the attempt is recorded BEFORE raising so the broad except
+            # below cannot erase the evidence -- see network_policy.py.
+            _network_check(_MB_BASE)
             with urlopen(req, timeout=_TIMEOUT_S) as resp:
                 data: dict = json.loads(resp.read().decode("utf-8"))
                 return data
@@ -92,25 +109,112 @@ def _mb_get(path: str, params: dict[str, str]) -> dict:
     return {}  # unreachable but satisfies type checker
 
 
+def _same_artist(ours: str, theirs: str) -> bool:
+    """True when two artist names denote the same act.
+
+    Folded through the article transform first, so the library's storage
+    form matches the natural form MusicBrainz returns ("Beatles, The" ==
+    "The Beatles"), then reduced to alphanumerics so punctuation and case
+    differences survive ("R.e.m" == "R.E.M.", "a-ha" == "a\u2010ha").
+    Anything beyond that is a different artist.
+    """
+
+    def fold(name: str) -> str:
+        natural = _clean_artist_for_lookup((name or "").strip())
+        # "&" and "and" are the same word in a band name, and the two forms
+        # are used interchangeably by tag sources and by MusicBrainz. Without
+        # this, stripping punctuation turns "Hall & Oates" into "halloates"
+        # and "Hall and Oates" into "hallandoates", and the guard rejects a
+        # correct match -- the mirror-image of the bug it was added to fix.
+        # Same for "+", which appears in credits like "Black Eyed Peas +
+        # Shakira".
+        natural = re.sub(r"\s*[&+]\s*", " and ", natural.lower())
+        return re.sub(r"[^0-9a-z]+", "", natural)
+
+    return bool(fold(ours)) and fold(ours) == fold(theirs)
+
+
+class LookupUnavailable(Exception):
+    """MusicBrainz gave no answer: timeout, 503, DNS, or a policy refusal.
+
+    Distinct from "MusicBrainz answered, and has no such artist". Both used
+    to arrive here as None, and the caller stamped mb_enriched_at on the
+    strength of it -- so a network wobble permanently recorded a row as
+    looked-up, and a poisoned entry went into the persistent cache on top.
+    Measured in the 16:16 run on 2026-08-25: 32 transport failures against
+    3 successes. Under the marker written earlier that day, all 32 would
+    have been marked done and never asked again.
+
+    Three states, and the schema has to carry all three:
+        (mbid, name)        -- found
+        None                -- asked, definitively not found  -> stamp
+        LookupUnavailable   -- never asked successfully       -> leave alone
+    """
+
+
 def _search_artist(artist_name: str) -> tuple[str, str] | None:
     """
     Search MusicBrainz for an artist by name.
-    Returns (mbid, canonical_name) or None if not found / score too low.
+
+    Returns (mbid, canonical_name), or None when MusicBrainz answered and
+    had no match good enough. Raises LookupUnavailable when no answer was
+    obtained at all -- never conflate the two.
     """
     try:
         data = _mb_get(
             "artist",
-            {"query": f'artist:"{quote(artist_name)}"', "limit": "3"},
+            # NOT quote()d -- _mb_get's urlencode() encodes the whole query
+            # once. Pre-encoding here sent "Dusty%20Springfield" as a literal
+            # Lucene term, so every artist name containing a space matched
+            # nothing at all, silently, for as long as this file existed.
+            # Verified live 2026-08-23: single-word names ("Abba", "Cher")
+            # resolved; "Dusty Springfield" returned None, and did so again
+            # the moment the encoding was removed -- as a match.
+            # Searched in MusicBrainz's natural form, not the library's
+            # storage form. MUSAEUS files "The Stooges" as "Stooges, The";
+            # MusicBrainz has never heard of that, so the query returned no
+            # match and the row was cached as "no such artist" -- FOREVER.
+            #
+            # Measured on mb_cache.db 2026-08-29: 376 of 839 cached misses
+            # (45%) are in `X, The` form, and **0 of 2,158 successes are**.
+            # Not one article-suffix lookup has ever succeeded. Confirmed
+            # live the same day: 'Stooges, The' -> no match, 'The Stooges'
+            # -> 794c6bf2. Same for The Crickets and The Pogues.
+            #
+            # `_clean_artist_for_lookup` already existed and already did
+            # this correctly -- `_same_artist` has been folding through it
+            # to ACCEPT results all along. It was simply never applied to
+            # the query it was written for.
+            {"query": f'artist:"{_clean_artist_for_lookup(artist_name)}"', "limit": "3"},
         )
     except Exception as exc:
+        # Was `return None`, which the caller could not tell apart from a
+        # genuine miss.
         logger.warning("[mb_enrich] artist search error for %r: %s", artist_name, exc)
-        return None
+        raise LookupUnavailable(str(exc)) from exc
 
     artists = data.get("artists", [])
     for artist in artists:
         score = int(artist.get("score", 0))
-        if score >= _ARTIST_SCORE:
+        if score < _ARTIST_SCORE:
+            continue
+        # Score alone is not identity. MusicBrainz will score a containing
+        # name at 100 -- measured 2026-08-23 against the live vault, where
+        # this wrote 27 wrong MBIDs before it was caught:
+        #     "Red"            -> Red Hot Chili Peppers
+        #     "Little Feat"    -> Little Richard
+        #     "Dion"           -> Celine Dion
+        #     "Jan & Dean"     -> Jan Arnald
+        # Each was then stamped mb_enriched_at, so it would never have been
+        # revisited. The name has to actually agree.
+        if _same_artist(artist_name, artist.get("name", "")):
             return artist["id"], artist["name"]
+        logger.debug(
+            "[mb_enrich] rejecting %r for %r (score %d, different artist)",
+            artist.get("name"),
+            artist_name,
+            score,
+        )
 
     return None
 
@@ -126,7 +230,8 @@ def _search_release(artist_mbid: str, album_name: str) -> str | None:
         data = _mb_get(
             "release",
             {
-                "query": f'artist:"{artist_mbid}" AND release:"{quote(album_name)}"',
+                # Not quote()d, for the same reason as _search_artist above.
+                "query": f'artist:"{artist_mbid}" AND release:"{album_name}"',
                 "limit": "1",
             },
         )
@@ -173,7 +278,7 @@ class MBEnrichStage(BaseStage):
         try:
             count = ctx.conn.execute(
                 "SELECT COUNT(*) FROM archive "
-                "WHERE status='CATALOGUED' AND mb_artist_id IS NULL "
+                "WHERE status='CATALOGUED' AND mb_enriched_at IS NULL "
                 "AND artist IS NOT NULL AND trim(artist) != ''"
             ).fetchone()[0]
         except Exception:
@@ -189,6 +294,13 @@ class MBEnrichStage(BaseStage):
 
     def _enrich(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
+        # Stamping a not-found row would otherwise be a one-way door: an
+        # artist MusicBrainz cannot identify today stays unqueried for
+        # ever, even after canon work corrects the name that failed. Same
+        # escape hatch the other resumable stages carry.
+        force: bool = bool(ctx.get("mb_enrich_force", False))
+        if force:
+            result.notes.append("force: re-querying rows already looked up")
 
         # Graceful degradation (2026-08-17, matches EnrichStage's missing-
         # API-key pattern): a single lightweight connectivity probe before
@@ -218,10 +330,11 @@ class MBEnrichStage(BaseStage):
                 SELECT file_path, artist, album
                 FROM archive
                 WHERE status = 'CATALOGUED'
-                  AND mb_artist_id IS NULL
+                  AND (mb_enriched_at IS NULL OR :force)
                   AND artist IS NOT NULL AND trim(artist) != ''
                 ORDER BY artist, album
-                """
+                """,
+                {"force": 1 if force else 0},
             ).fetchall()
         except Exception:
             # mb_artist_id column doesn't exist yet (dry-run before first real run)
@@ -235,11 +348,23 @@ class MBEnrichStage(BaseStage):
                 """
             ).fetchall()
 
+        # Persistent across runs. The dicts below stay as the in-run layer;
+        # this is what stops every batch re-asking MusicBrainz about the
+        # same artists. musaeus.db is wiped between batches, so the cache
+        # lives beside the hash index instead.
+        try:
+            mb_cache = open_mb_cache(ctx.config.mb_cache_path)
+        except Exception as exc:  # a cache failure must not stop enrichment
+            logger.warning("[mb_enrich] persistent cache unavailable: %s", exc)
+            mb_cache = None
+
         # Per-artist cache: artist_lower → (mbid, mb_name) | None
         artist_cache: dict[str, tuple[str, str] | None] = {}
         # Per-artist+album cache: (artist_mbid, album_lower) → release_mbid | None
         release_cache: dict[tuple[str, str], str | None] = {}
 
+        cache_hits = 0
+        unavailable = 0
         found_artists = 0
         found_releases = 0
         not_found = 0
@@ -268,18 +393,55 @@ class MBEnrichStage(BaseStage):
                     would_query_artists.add(artist_lower)
                     result.files_skipped += 1
                     continue
-                time.sleep(_RATE_LIMIT_S)
-                match = _search_artist(artist)
-                artist_cache[artist_lower] = match
-                if match:
-                    logger.info(
-                        "[mb_enrich] artist found: %r → %r  mbid=%s",
-                        artist,
-                        match[1],
-                        match[0],
-                    )
+                cached = _MISSING
+                if mb_cache is not None:
+                    try:
+                        cached = mb_cache_get_artist(mb_cache, artist_lower)
+                    except KeyError:
+                        cached = _MISSING
+                    except Exception as exc:
+                        logger.debug("[mb_enrich] cache read failed: %s", exc)
+                if cached is not _MISSING:
+                    artist_cache[artist_lower] = cached
+                    cache_hits += 1
                 else:
-                    logger.debug("[mb_enrich] artist not found: %r", artist)
+                    time.sleep(_RATE_LIMIT_S)
+                    try:
+                        match = _search_artist(artist)
+                    except LookupUnavailable as exc:
+                        # No answer, so nothing is known and nothing may be
+                        # recorded: not the marker, and above all not the
+                        # persistent cache, which would carry the mistake
+                        # into every future run. The row keeps
+                        # mb_enriched_at NULL and is retried next batch --
+                        # the one case where re-querying IS the right call.
+                        unavailable += 1
+                        result.files_skipped += 1
+                        logger.warning(
+                            "[mb_enrich] no answer for %r (%s) -- left for a later run",
+                            artist,
+                            exc,
+                        )
+                        continue
+                    artist_cache[artist_lower] = match
+                    if mb_cache is not None:
+                        try:
+                            mb_cache_put_artist(mb_cache, artist_lower, match)
+                        except Exception as exc:
+                            logger.debug("[mb_enrich] cache write failed: %s", exc)
+                    # Logged here rather than after the cache branch: `match`
+                    # is only bound on this path, and reading it after a
+                    # cache HIT used whatever the previous iteration left in
+                    # it -- or raised NameError on the very first row.
+                    if match:
+                        logger.info(
+                            "[mb_enrich] artist found: %r → %r  mbid=%s",
+                            artist,
+                            match[1],
+                            match[0],
+                        )
+                    else:
+                        logger.debug("[mb_enrich] artist not found: %r", artist)
 
             artist_match = artist_cache[artist_lower]
 
@@ -287,6 +449,20 @@ class MBEnrichStage(BaseStage):
                 not_found += 1
                 result.files_skipped += 1
                 if not dry_run:
+                    # Stamp the row even though nothing was found. The
+                    # marker records that the LOOKUP HAPPENED, not that it
+                    # succeeded -- those are different facts, and only the
+                    # first is a reason not to repeat the work.
+                    #
+                    # Without this, a track MusicBrainz cannot identify
+                    # keeps every mb_ column NULL and is re-queried on every
+                    # run for ever, at a rate-limited second plus 503
+                    # backoffs each. On the live vault that is 2,328 of
+                    # 10,873 rows, asked again every single batch.
+                    ctx.conn.execute(
+                        "UPDATE archive SET mb_enriched_at=? WHERE file_path=?",
+                        (now, fp),
+                    )
                     ctx.log_event(
                         "MB_ARTIST_NOT_FOUND",
                         file_path=fp,
@@ -337,12 +513,21 @@ class MBEnrichStage(BaseStage):
                 ctx.conn.commit()
                 logger.info("[mb_enrich] checkpoint %d", result.files_processed)
 
+        self._discogs_fallback(ctx, result, dry_run)
+
         prefix = "Would enrich" if dry_run else "Enriched"
         result.notes.append(f"{prefix} {found_artists} artist(s) with MusicBrainz MBID.")
         if found_releases:
             result.notes.append(f"  {found_releases} release MBID(s) found.")
         if not_found:
             result.notes.append(f"  {not_found} artist(s) not found on MusicBrainz.")
+        if unavailable:
+            # Deferred, not decided. Said plainly because the old code
+            # reported errors=0 here while marking these rows done.
+            result.notes.append(
+                f"  {unavailable} artist(s) got NO ANSWER (network/timeout/503) — "
+                f"not marked, will be retried on the next run."
+            )
         if would_query_artists:
             result.notes.append(
                 f"  {len(would_query_artists)} artist(s) would be queried via "
@@ -357,6 +542,180 @@ class MBEnrichStage(BaseStage):
 
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._enrich(ctx, dry_run=True)
+
+
+    def _discogs_fallback(self, ctx: RunContext, result: StageResult, dry_run: bool) -> None:
+        """Try Discogs for artists MusicBrainz already asked about and
+        could not identify. See musaeus/discogs.py's module docstring for
+        the full reasoning; this is deliberately a SEPARATE pass over its
+        own row selection rather than woven into the loop above --
+        selection here is "MB checked, MB failed, Discogs never checked",
+        which is a genuinely different set of rows from "MB never
+        checked", and keeping the two loops apart means neither can
+        silently break the other's caching.
+
+        No per-run budget, unlike CorruptStage's decode discovery or
+        deep_scan: measured against the live backlog 2026-09-03, 499
+        never-Discogs-checked rows at the 1.1 s rate limit is ~9 minutes,
+        not hours, and this loop only ever processes the subset the MB
+        loop above already touched -- it cannot grow unbounded on its
+        own. If Discogs's own backlog ever does grow large on its own
+        (independent of MB's), a budget would be the right next step.
+        """
+        consumer_key = getattr(ctx.config, "discogs_consumer_key", None)
+        consumer_secret = getattr(ctx.config, "discogs_consumer_secret", None)
+        if not (consumer_key and consumer_secret):
+            return  # optional; silently a no-op when not configured
+
+        if not dry_run:
+            ensure_columns(
+                ctx.conn,
+                (
+                    ("discogs_artist_id", "TEXT"),
+                    ("discogs_artist_name", "TEXT"),
+                    ("discogs_checked_at", "TEXT"),
+                ),
+            )
+
+        try:
+            rows = ctx.conn.execute(
+                """
+                SELECT DISTINCT artist FROM archive
+                WHERE status = 'CATALOGUED'
+                  AND mb_enriched_at IS NOT NULL
+                  AND (mb_artist_id IS NULL OR mb_artist_id = '')
+                  AND (discogs_checked_at IS NULL OR discogs_checked_at = '')
+                  AND artist IS NOT NULL AND trim(artist) != ''
+                ORDER BY artist
+                """
+            ).fetchall()
+        except Exception:
+            # discogs_checked_at doesn't exist yet -- the realistic case
+            # right after this feature is deployed: mb_enrich has already
+            # run for real (mb_artist_id exists), but no run has added
+            # this stage's own columns yet. Same shape as the main loop's
+            # own fallback a few lines above -- a dry run must still say
+            # something useful rather than silently reporting nothing.
+            try:
+                rows = ctx.conn.execute(
+                    """
+                    SELECT DISTINCT artist FROM archive
+                    WHERE status = 'CATALOGUED'
+                      AND mb_enriched_at IS NOT NULL
+                      AND (mb_artist_id IS NULL OR mb_artist_id = '')
+                      AND artist IS NOT NULL AND trim(artist) != ''
+                    ORDER BY artist
+                    """
+                ).fetchall()
+            except Exception:
+                # mb_artist_id/mb_enriched_at do not exist either -- a
+                # database that has never run mb_enrich at all. Nothing
+                # to fall back for; the main MB loop's own dry-run note
+                # already covers this database's state.
+                return
+
+        if not rows:
+            return
+
+        if dry_run:
+            result.notes.append(
+                f"  {len(rows)} artist(s) not on MusicBrainz would be tried on "
+                f"Discogs in a real run."
+            )
+            return
+
+        from datetime import datetime, timezone
+
+        found = 0
+        not_found = 0
+        unavailable = 0
+        for row in rows:
+            artist = (row["artist"] or "").strip()
+            time.sleep(discogs.RATE_LIMIT_S)
+            try:
+                match = discogs.search_artist(artist, consumer_key, consumer_secret)
+            except discogs.LookupUnavailable as exc:
+                unavailable += 1
+                logger.warning("[mb_enrich] discogs: no answer for %r (%s)", artist, exc)
+                continue
+
+            now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+            if match:
+                discogs_id, discogs_name = match
+                found += 1
+                ctx.conn.execute(
+                    "UPDATE archive SET discogs_artist_id=?, discogs_artist_name=?, "
+                    "discogs_checked_at=? WHERE artist=? AND status='CATALOGUED'",
+                    (discogs_id, discogs_name, now, artist),
+                )
+                ctx.log_event(
+                    "DISCOGS_ARTIST_FOUND",
+                    stage=self.NAME,
+                    note=f"artist={artist!r} discogs_id={discogs_id} name={discogs_name!r}",
+                )
+                logger.info(
+                    "[mb_enrich] discogs found: %r -> %r  id=%s", artist, discogs_name, discogs_id
+                )
+            else:
+                not_found += 1
+                # Stamped even on a miss, same reasoning as MB's own
+                # not-found stamp above: the marker records that the
+                # lookup happened, and its absence is what re-queries an
+                # artist forever.
+                ctx.conn.execute(
+                    "UPDATE archive SET discogs_checked_at=? "
+                    "WHERE artist=? AND status='CATALOGUED'",
+                    (now, artist),
+                )
+                ctx.log_event(
+                    "DISCOGS_ARTIST_NOT_FOUND",
+                    stage=self.NAME,
+                    note=f"artist={artist!r}",
+                )
+            ctx.conn.commit()
+
+        if found:
+            result.notes.append(f"  {found} artist(s) found on Discogs after MusicBrainz missed them.")
+        if not_found:
+            result.notes.append(f"  {not_found} artist(s) not found on Discogs either.")
+        if unavailable:
+            result.notes.append(
+                f"  {unavailable} artist(s) got no answer from Discogs — retried next run."
+            )
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A row recorded as MB-matched must carry the identifier.
+
+        MB_ARTIST_FOUND is logged when a lookup succeeds; the MBID is
+        written separately. An event without an id means the identity was
+        found and then lost, which is worse than not looking: the row
+        reads enriched and nothing will re-try it.
+        """
+        cols = {r[1] for r in ctx.conn.execute("PRAGMA table_info(archive)")}
+        if "mb_artist_id" not in cols:
+            return NO_VERIFICATION
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path, a.mb_artist_id FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.run_id = ? AND e.event_type IN ('MB_ARTIST_FOUND')
+             ORDER BY e.id DESC LIMIT 10
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        blank = [
+            Path(r["file_path"]).name
+            for r in rows
+            if not (r["mb_artist_id"] or "").strip()
+        ]
+        if not blank:
+            return []
+        return [
+            f"{len(blank)} of {len(rows)} row(s) recorded an MB match but carry "
+            f"no mb_artist_id: {', '.join(blank[:3])}"
+        ]
 
     def run(self, ctx: RunContext) -> StageResult:
         return self._enrich(ctx, dry_run=False)

@@ -31,28 +31,34 @@ import shutil
 from pathlib import Path
 
 from ..context import RunContext, StageResult
+from ..exports import (
+    ExportRootError,
+    configured_export_root,
+    resolve_export_root,
+    validate_export_root,
+)
 from .base import BaseStage, StageError
+
+from ..canon.protected_artists import PROTECTED_ARTIST_NAMES
 
 logger = logging.getLogger(__name__)
 
 _COMMIT_EVERY = 100
 
-# Ensemble/duo names that must never be split at " & " for folder naming.
-_PROTECTED_ARTIST_NAMES: frozenset[str] = frozenset(
-    {
-        "crosby, stills & nash",
-        "crosby, stills, nash & young",
-        "earth, wind & fire",
-        "simon & garfunkel",
-        "hall & oates",
-        "sly & the family stone",
-        "adam & the ants",
-        "barney bentall & the legendary hearts",
-        "of monsters and men",
-        "big brother & the holding company",
-        "dr. hook & the medicine show",
-    }
-)
+# Ensemble/duo names that must never be split at " & ", for folder naming
+# OR for artist-variant folding.
+#
+# Scope widened 2026-08-21: this list existed and was correct, but a
+# one-off artist-fold pass did not consult it and overrode two entries
+# (Big Brother & The Holding Company, Barney Bentall & The Legendary
+# Hearts) before the damage was spotted and reversed. Any code that
+# rewrites archive.artist must check here first -- the whole point of a
+# guard list is that it is consulted by everything, not just the stage it
+# happened to be written in.
+# Re-exported from the single home. Three copies of this list had
+# diverged by 2026-09-05 -- organize.py, which names folders, held
+# only 6 of the 13 -- so it lives in one place now.
+_PROTECTED_ARTIST_NAMES: frozenset[str] = PROTECTED_ARTIST_NAMES
 
 _FEAT_RE = re.compile(
     r"\s+(?:feat\.?|featuring|ft\.?|with|duet with|vs\.?|versus)\s+",
@@ -143,25 +149,43 @@ class CuratorStage(BaseStage):
     NAME = "curator"
 
     def validate(self, ctx: RunContext) -> None:
-        export_root = self._get_export_root(ctx)
-        if export_root is None:
-            raise StageError(
-                "No export root set. "
-                "Pass --export-root or: ctx.set('curator_export_root', Path(...))"
+        """Fail closed before the stage builds or creates anything.
+
+        Previously this accepted any non-None value and explicitly did not
+        require it to exist, and run() then called
+        `export_root.mkdir(parents=True, exist_ok=True)` -- so a typo in
+        --export-root built a new library tree somewhere nobody chose and
+        reported success copying into it. The root must now exist, be a
+        writable directory, be absolute, and not overlap the library it is
+        derived from. Nothing here creates a directory."""
+        resolved = resolve_export_root(
+            override=ctx.get("curator_export_root"),
+            configured=configured_export_root(ctx.config),
+        )
+        try:
+            validated = validate_export_root(
+                resolved,
+                protected_roots=(ctx.config.alac_library, ctx.config.vault_root),
             )
-        # Don't require it to exist yet — we'll create it.
+        except ExportRootError as exc:
+            raise StageError(f"{exc}\n  -> {exc.remediation}") from exc
+
+        # Record the resolved value as a redacted identity, not a path.
+        ctx.set("curator_export_root_identity", validated.identity)
+        ctx.set("curator_export_root_source", validated.source)
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _get_export_root(self, ctx: RunContext) -> Path | None:
-        raw = ctx.get("curator_export_root")
-        if raw is None:
-            # Fall back to config if present
-            cfg_root = getattr(ctx.config, "car_export_root", None)
-            if cfg_root:
-                return Path(cfg_root)
-            return None
-        return Path(raw)
+        """Resolve the export root: one-invocation override, then typed
+        configuration, then nothing. No hidden default -- a default export
+        root is a directory the operator did not choose, holding a copy of
+        their library."""
+        resolved = resolve_export_root(
+            override=ctx.get("curator_export_root"),
+            configured=configured_export_root(ctx.config),
+        )
+        return None if resolved is None else resolved.path
 
     def _get_noise_mode(self, ctx: RunContext) -> str:
         return str(ctx.get("curator_noise", "dual"))
@@ -249,6 +273,39 @@ class CuratorStage(BaseStage):
         )
 
     # ── run ───────────────────────────────────────────────────────────────────
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """An exported file must exist at the path the row now advertises.
+
+        Curator copies into the export tree and records car_export_path.
+        A copy that failed part-way, or onto a full or unmounted device,
+        still leaves the row saying where the file "is". The export is
+        then a list of promises rather than a library, and nothing notices
+        until it is plugged into a car.
+
+        Checks existence AND non-zero size: a truncated copy is the
+        failure mode a bare exists() misses, and an empty file passes it.
+        """
+        rows = ctx.conn.execute(
+            """
+            SELECT a.car_export_path FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.event_type = 'CURATOR_COPY' AND e.run_id = ?
+               AND a.car_export_path IS NOT NULL AND a.car_export_path <> ''
+             ORDER BY e.id DESC LIMIT 8
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        problems: list[str] = []
+        for r in rows:
+            p = Path(r["car_export_path"])
+            if not p.exists():
+                problems.append(f"exported file is not there: {p.name}")
+            elif p.stat().st_size == 0:
+                problems.append(f"exported file is empty: {p.name}")
+        return problems
 
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)

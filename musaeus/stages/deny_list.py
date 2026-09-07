@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""
+MUSAEUS — Deny List Stage
+
+Refuses re-ingest of audio that was deliberately removed.
+
+Why this exists
+---------------
+Removing a file does not stop it coming back. Established 2026-08-24 by
+tracing every consumer of the finalized-hash ledger: a ledger hit is only
+acted on when a **live file** backs it, because `CrossDupeStage` verifies
+the path exists before believing it — which is the fix for the section
+4.17 cascade and must stay. So a purged knock-off dropped back into the
+INBOX is ingested exactly as if it had never been seen.
+
+That surprised the owner, and reasonably: 96 ledger entries name removed
+content, and keeping them reads like protection. It isn't. This stage is
+the mechanism that actually was missing.
+
+What it matches
+---------------
+`audio_hash` — the PCM hash — so a match survives re-tagging and container
+rewriting, the same property that makes it the stable identity everywhere
+else in the project.
+
+**It does not catch a different rip or a different master of the same
+song.** Those are different audio and hash differently. This is a "do not
+re-add THIS recording" list, not a "never acquire this song" list. Saying
+so plainly matters: the failure mode of a deny-list is someone trusting it
+for a guarantee it never offered, then concluding it is broken when a
+different rip of the same track arrives.
+
+What it does on a match
+-----------------------
+Quarantines and reports. It never deletes: a deny-list acting on a false
+positive would destroy the only copy of something the owner had chosen to
+re-add on purpose, and there is no way to tell those two cases apart from
+inside the pipeline. Quarantine is reversible; deletion is not.
+"""
+
+from __future__ import annotations
+
+import logging
+import shutil
+from pathlib import Path
+
+from ..context import RunContext, StageResult
+from ..db import ensure_deny_list, lookup_denied_hash, open_hash_index
+from .base import BaseStage
+from .organize import unique_path
+
+logger = logging.getLogger(__name__)
+
+# Reasons that are NOT evidence of an owner decision, and so must never
+# quarantine on their own.
+#
+# The 82 entries reading "removed from the library by owner decision" were
+# all written in the SAME SECOND -- 2026-08-24 18:25:31 -- by a bulk
+# backfill seeded from "ledger entries with no live file". A file can be
+# absent for reasons that are not a decision: the corroborating case is
+# The Communards, whose sibling track in the same batch is GHOST carrying
+# the pipeline's own note "file absent from the vault after an interrupted
+# run". Cross-referenced against every removal log (DupeGuru, PerfectTunes,
+# KnockOffs, Unwanted_Artists, Knockoff_Removal_List): 15 of the 82 were
+# real removals, 67 were not.
+#
+# A deny-list entry is permanent and its message asserts the owner's
+# intent. Those 67 asserted an intent the data could not support and
+# silently refused genuine records. Re-labelled on Grey's instruction
+# 2026-08-31; kept on the list, because the observation is still true and
+# worth surfacing, but downgraded to advisory.
+_ADVISORY_REASONS = (
+    "absent from the library at the 2026-08-24 backfill; cause unrecorded",
+)
+
+
+def _is_advisory(reason: str | None) -> bool:
+    return (reason or "").strip() in _ADVISORY_REASONS
+
+_COMMIT_EVERY = 25
+
+
+class DenyListStage(BaseStage):
+    """Quarantine freshly hashed files whose audio was deliberately removed."""
+
+    NAME = "deny-list"
+
+    def validate(self, ctx: RunContext) -> None:
+        if not ctx.config.hash_index_path.exists():
+            logger.info("[deny-list] no hash index yet — nothing to check against")
+            return
+        conn = open_hash_index(ctx.config.hash_index_path)
+        try:
+            ensure_deny_list(conn)
+            n = conn.execute("SELECT COUNT(*) FROM denied_hashes").fetchone()[0]
+        finally:
+            conn.close()
+        logger.info("[deny-list] %d denied recording(s) on the list", n)
+
+    def _candidates(self, ctx: RunContext) -> list[dict]:
+        # Anything hashed but not yet catalogued. Sentinel sets HASHED; a row
+        # that already reached CATALOGUED is the owner's library and is not
+        # this stage's business -- retroactively quarantining held music
+        # because of a list entry would be a far worse failure than a
+        # re-ingest slipping through.
+        rows = ctx.conn.execute(
+            "SELECT file_path, audio_hash, artist, title FROM archive "
+            "WHERE status = 'HASHED' AND audio_hash IS NOT NULL AND trim(audio_hash) != ''"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def _process(self, ctx: RunContext, dry_run: bool) -> StageResult:
+        result = self._make_result(dry_run=dry_run)
+
+        if not ctx.config.hash_index_path.exists():
+            result.notes.append("no hash index — nothing to check against")
+            ctx.record_stage(result)
+            return result
+
+        rows = self._candidates(ctx)
+        result.notes.append(f"newly hashed files to check: {len(rows)}")
+        if not rows:
+            ctx.record_stage(result)
+            return result
+
+        conn = open_hash_index(ctx.config.hash_index_path)
+        ensure_deny_list(conn)
+        quarantine_dir = ctx.config.quarantine / "denied"
+
+        blocked = 0
+        advisory = 0
+        try:
+            for i, row in enumerate(rows, 1):
+                result.files_processed += 1
+                entry = lookup_denied_hash(conn, row["audio_hash"])
+                if entry is None:
+                    continue
+
+                src = Path(row["file_path"])
+                # This stage runs before Scholar, so artist/title are still
+                # empty on a freshly ingested row -- the filename is the only
+                # thing that identifies it to a human at this point. Verified
+                # on a live run 2026-08-24, which logged "refusing ? — ...".
+                artist, title = row.get("artist"), row.get("title")
+                label = f"{artist} — {title}" if artist and title else src.name
+
+                if _is_advisory(entry["reason"]):
+                    # Report and let it through. Quarantining on this reason
+                    # is what put a genuine 1986 record in QUARANTINE/denied
+                    # with a message claiming the owner had chosen it.
+                    logger.info(
+                        "[deny-list] noting %s (%s) — advisory, not blocked",
+                        label, entry["reason"],
+                    )
+                    advisory += 1
+                    result.notes.append(f"  [advisory] previously absent: {label}")
+                    continue
+
+                logger.info(
+                    "[deny-list] refusing %s (removed previously: %s)", label, entry["reason"]
+                )
+                blocked += 1
+                result.files_changed += 1
+
+                if dry_run:
+                    result.notes.append(f"  [DRY] would quarantine {label}")
+                    continue
+
+                target = unique_path(quarantine_dir / src.name)
+
+                # Row first, then the move, then commit. A move cannot be
+                # rolled back and a DB write can, so this ordering leaves
+                # neither half applied on failure. Written the other way
+                # round originally -- the same mistake that, in a script the
+                # same week, left 86 files relocated with the database rolled
+                # back behind them. See scope §4.25.
+                # finalized_at is cleared, not just status. It means "this
+                # row is filed in ALAC-Library"; once the file is in
+                # quarantine that is no longer true, and a marker left
+                # behind is a lie the next stage reads as fact. Audit
+                # checks exactly this pair -- finalized_at set, file not
+                # under ALAC-Library -- and reported 5 such rows on
+                # 2026-08-26: files finalized in an earlier batch, then
+                # re-ingested, denied, and quarantined here while keeping
+                # the old marker. Every batch that denies a
+                # previously-finalized file added one more, permanently,
+                # and a permanently failing audit is what hides the next
+                # real one.
+                ctx.conn.execute(
+                    "UPDATE archive SET status='QUARANTINED', file_path=?, "
+                    "finalized_at=NULL WHERE file_path=?",
+                    (str(target), str(src)),
+                )
+                try:
+                    quarantine_dir.mkdir(parents=True, exist_ok=True)
+                    if src.exists():
+                        shutil.move(str(src), str(target))
+                except OSError as exc:
+                    ctx.conn.rollback()
+                    result.files_errored += 1
+                    result.errors.append(f"{src.name}: {exc}")
+                    continue
+
+                ctx.log_event(
+                    "DENIED_REINGEST",
+                    file_path=str(target),
+                    old_value=str(src),
+                    new_value=entry["reason"],
+                    stage=self.NAME,
+                    note=f"previously removed as {entry['source_path'] or 'unknown'}",
+                )
+
+                # Per row, not per batch: rollback() above discards
+                # everything uncommitted, so a batched commit would undo
+                # earlier rows whose files had already moved.
+                ctx.conn.commit()
+        finally:
+            conn.close()
+
+        if not dry_run:
+            ctx.conn.commit()
+
+        verb = "would refuse" if dry_run else "refused"
+        result.notes.append(f"{verb}: {blocked}")
+        if advisory:
+            result.notes.append(
+                f"noted but allowed through (advisory reason): {advisory}"
+            )
+        if blocked:
+            result.notes.append("quarantined, not deleted — reversible if any was wanted")
+        ctx.record_stage(result)
+        return result
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """No catalogued track may carry a denied hash.
+
+        Asserted against the library rather than by re-reading what this
+        stage wrote, so a stage that quarantined nothing cannot satisfy it.
+        """
+        problems: list[str] = []
+        if not ctx.config.hash_index_path.exists():
+            return problems
+
+        conn = open_hash_index(ctx.config.hash_index_path)
+        try:
+            ensure_deny_list(conn)
+            # BINDING entries only. run() has honoured _is_advisory since
+            # 2026-08-31 -- the 67 entries a bulk backfill wrote in a single
+            # second from "ledger rows with no live file", which asserted an
+            # owner decision the data could not support and silently refused
+            # genuine records like the Communards' 1986 "Don't Leave Me This
+            # Way". They stay listed because the observation is still true,
+            # and are reported, never acted on.
+            #
+            # This check did not learn that, so it was stricter than the
+            # policy it verifies: on 2026-09-05 it reported 12 catalogued
+            # tracks as leaked denied audio, and every one of them carried
+            # an advisory reason and had been legitimately re-ingested. A
+            # verification that contradicts its own stage teaches you to
+            # ignore the verification.
+            denied = {
+                r["audio_hash"]
+                for r in conn.execute("SELECT audio_hash, reason FROM denied_hashes")
+                if not _is_advisory(r["reason"])
+            }
+        finally:
+            conn.close()
+        if not denied:
+            return problems
+
+        live = ctx.conn.execute(
+            "SELECT file_path, audio_hash FROM archive WHERE status='CATALOGUED' "
+            "AND audio_hash IS NOT NULL"
+        ).fetchall()
+        leaked = [r["file_path"] for r in live if r["audio_hash"] in denied]
+        if leaked:
+            problems.append(
+                f"{len(leaked)} catalogued track(s) carry a denied audio hash: "
+                + ", ".join(Path(p).name for p in leaked[:3])
+            )
+        return problems
+
+    def dry_run(self, ctx: RunContext) -> StageResult:
+        return self._process(ctx, dry_run=True)
+
+    def run(self, ctx: RunContext) -> StageResult:
+        return self._process(ctx, dry_run=False)

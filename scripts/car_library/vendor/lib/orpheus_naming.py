@@ -406,9 +406,7 @@ def ascii_friendly(value: str) -> str:
     return text
 
 
-def sanitize_path_component(
-    value: str, unknown: str = UNKNOWN, force_ascii: bool = True
-) -> str:
+def sanitize_path_component(value: str, unknown: str = UNKNOWN, force_ascii: bool = True) -> str:
     """
     Filesystem sanitizer.
 
@@ -636,9 +634,7 @@ def build_clean_audio_metadata(
         clean_artist_value = clean_album_artist
 
     clean_album_value = clean_metadata_album(album, fallback="Unknown Album")
-    clean_title_value = clean_metadata_title(
-        title, fallback=fallback_title or "Unknown Title"
-    )
+    clean_title_value = clean_metadata_title(title, fallback=fallback_title or "Unknown Title")
     clean_track_value = clean_metadata_track_number(track)
     clean_disc_value = clean_metadata_track_number(disc)
 

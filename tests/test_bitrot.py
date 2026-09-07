@@ -50,7 +50,7 @@ def ctx(cfg: MusicConfig) -> RunContext:
 
 
 def _archive_file(ctx: RunContext, relpath: str, content: bytes) -> Path:
-    path = ctx.config.vault_root / "ALAC_Archive" / relpath
+    path = ctx.config.alac_archive / relpath
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
     return path

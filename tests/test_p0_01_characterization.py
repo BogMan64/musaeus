@@ -74,10 +74,15 @@ class TestDefaultPipelineDryRunCharacterization:
         """
         assert not disposable_vault.root.exists()
         rc = self._run_cli_dry_run(disposable_vault, monkeypatch, tmp_path)
-        assert rc == 2, "P0-02 guard must reject an unsafe dry-run with exit code 2"
+        # UPDATED AGAIN BY P0-04/P0-05: the refusal is lifted, so this now
+        # SUCCEEDS -- while the claim that matters is unchanged and, if
+        # anything, stronger. P0-02 proved no skeleton was created because
+        # nothing ran; the planner proves it while actually producing a
+        # preview, because it never calls ensure_dirs() at all.
+        assert rc == 0, "--dry-run must now succeed by producing a plan"
         assert not disposable_vault.root.exists(), (
-            "P0-02 guard must fire before cfg.ensure_dirs() -- no vault "
-            "directory skeleton may be created by a rejected dry-run"
+            "the planner must never call cfg.ensure_dirs() -- no vault "
+            "directory skeleton may be created by a preview"
         )
 
     def test_characterization_dry_run_creates_and_writes_to_the_db(
@@ -93,10 +98,14 @@ class TestDefaultPipelineDryRunCharacterization:
         ever called, so the DB file itself must not exist afterwards.
         """
         rc = self._run_cli_dry_run(disposable_vault, monkeypatch, tmp_path)
-        assert rc == 2
+        # UPDATED AGAIN BY P0-04/P0-05: succeeds now, and still creates no
+        # database. The planner opens mode=ro and reports an absent DB as a
+        # fact rather than creating one -- the original defect this test was
+        # written to document.
+        assert rc == 0
         assert not disposable_vault.cfg.db_path.exists(), (
-            "P0-02 guard must fire before open_db()/RunContext.new() -- "
-            "no database file may be created by a rejected dry-run"
+            "the planner must never open a writable connection -- "
+            "no database file may be created by a preview"
         )
 
     def test_characterization_dry_run_rejection_is_stable_across_repeated_calls(
@@ -113,8 +122,10 @@ class TestDefaultPipelineDryRunCharacterization:
         """
         rc1 = self._run_cli_dry_run(disposable_vault, monkeypatch, tmp_path)
         rc2 = self._run_cli_dry_run(disposable_vault, monkeypatch, tmp_path)
-        assert rc1 == 2
-        assert rc2 == 2
+        # UPDATED AGAIN BY P0-04/P0-05: stability still matters, but of a
+        # preview rather than a refusal. Running it twice must remain inert.
+        assert rc1 == 0
+        assert rc2 == 0
         assert not disposable_vault.root.exists()
         assert not disposable_vault.cfg.db_path.exists()
 
@@ -158,16 +169,18 @@ class TestDefaultPipelineDryRunCharacterization:
         rc = self._run_cli_dry_run(disposable_vault, monkeypatch, tmp_path)
         captured = capsys.readouterr()
 
-        assert rc == 2
-        assert captured.out == "", "a rejected dry-run must print nothing to stdout"
-        stderr_lower = captured.err.lower()
-        assert "temporarily disabled" in stderr_lower
-        assert "refused and did not run" in stderr_lower
-        # Must NOT claim success or a completed no-op preview.
-        assert "no changes made" not in stderr_lower
-        assert "no managed state was changed" not in stderr_lower
-        assert "success" not in stderr_lower
-        assert "complete" not in stderr_lower
+        # UPDATED AGAIN BY P0-04/P0-05. The risk flips back once more. P0-02
+        # had to prove its refusal was NOT mistaken for a preview. Now there
+        # IS a preview, and it must state plainly that nothing changed --
+        # which the refusal was never entitled to say, because it had not
+        # looked at anything.
+        assert rc == 0
+        assert "PREVIEW ONLY" in captured.out
+        assert "nothing was changed" in captured.out
+        assert "no network lookup was performed" in captured.out
+        # The plan is the product; it belongs on stdout so it can be piped.
+        assert captured.out.strip() != ""
+        assert "temporarily disabled" not in captured.err.lower()
 
 
 # ── Resume-records-failed-as-complete baseline defect (reproduced) ───────────

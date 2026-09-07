@@ -49,11 +49,17 @@ API_KEYS = {
         "required": False,
         "used_by": "Artist/release enrichment (mb-enrich stage)",
     },
-    "DISCOGS_API_KEY": {
-        "label": "Discogs",
+    "DISCOGS_CONSUMER_KEY": {
+        "label": "Discogs Consumer Key",
         "url": "https://www.discogs.com/settings/developers",
         "required": False,
-        "used_by": "Genre classification (5-source voting)",
+        "used_by": "Artist identity fallback (mb-enrich stage, when MusicBrainz has no match)",
+    },
+    "DISCOGS_CONSUMER_SECRET": {
+        "label": "Discogs Consumer Secret",
+        "url": "https://www.discogs.com/settings/developers",
+        "required": False,
+        "used_by": "Artist identity fallback (mb-enrich stage, paired with the consumer key)",
     },
     "SPOTIFY_CLIENT_ID": {
         "label": "Spotify Client ID",

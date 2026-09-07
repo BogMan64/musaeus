@@ -65,9 +65,9 @@ import logging
 from pathlib import Path
 
 from ..config import AUDIO_EXTENSIONS
-from ..context import RunContext, StageResult
+from ..context import RunContext, StageResult, elision
 from ..hasher import file_hash
-from .base import BaseStage
+from .base import BaseStage, NO_VERIFICATION
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ class BitRotStage(BaseStage):
 
     def _rebaseline(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
-        files = _scan_archive_files(ctx.config.vault_root / "ALAC_Archive")
+        files = _scan_archive_files(ctx.config.alac_archive)
 
         limit = ctx.get("bitrot_limit", 0)
         if limit:
@@ -157,7 +157,7 @@ class BitRotStage(BaseStage):
 
     def _verify(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
-        alac_archive = ctx.config.vault_root / "ALAC_Archive"
+        alac_archive = ctx.config.alac_archive
         files = _scan_archive_files(alac_archive)
 
         limit = ctx.get("bitrot_limit", 0)
@@ -235,10 +235,44 @@ class BitRotStage(BaseStage):
                     f"  MISMATCH {fp}  (baseline {stored[:12]}… now {current[:12]}…)"
                 )
             if len(corrupt) > 20:
-                result.notes.append(f"  ... and {len(corrupt) - 20} more")
+                result.notes.append(f"  {elision(len(corrupt) - 20)}")
 
         ctx.record_stage(result)
         return result
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A file this stage baselined must have a hash recorded for it.
+
+        BitRot's value is entirely in the baseline: without a stored
+        sha256 there is nothing for a later run to compare against, so a
+        write that silently reaches nothing does not fail today -- it
+        fails silently for ever, by never detecting the rot it exists to
+        detect. That is the worst shape of unverified stage.
+        """
+        tables = {r[0] for r in ctx.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "archive_tier_hashes" not in tables:
+            return NO_VERIFICATION
+        rows = ctx.conn.execute(
+            "SELECT file_path FROM events WHERE run_id = ? "
+            " AND event_type = 'BITROT_DETECTED' ORDER BY id DESC LIMIT 10",
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        unbaselined = [
+            Path(r["file_path"]).name
+            for r in rows
+            if not ctx.conn.execute(
+                "SELECT 1 FROM archive_tier_hashes WHERE path = ? LIMIT 1",
+                (r["file_path"],)).fetchone()
+        ]
+        if not unbaselined:
+            return []
+        return [
+            f"{len(unbaselined)} of {len(rows)} file(s) were checked but have no "
+            f"stored hash to compare against later: {', '.join(unbaselined[:3])}"
+        ]
 
     def run(self, ctx: RunContext) -> StageResult:
         if ctx.get("bitrot_rebaseline", False):

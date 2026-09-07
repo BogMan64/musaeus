@@ -10,7 +10,6 @@ Pipeline commands:
     run              Run the default pipeline (Preflight → Ingest → Sentinel → Scholar)
     run --full       Run the full pipeline  (+ Normalize → Forge → Tagger)
     run --maintain   Run the maintenance pipeline (Ghost→Health→Normalize→Enrich→MBEnrich→NearDupe)
-    run --enrich     Run the enrichment pipeline (Enrich→MBEnrich→AcousticID→Reviewer)
     dry-run          Preview the default pipeline without any mutations
     ingest           Run Ingest stage only
     sentinel         Run Sentinel stage only
@@ -21,10 +20,15 @@ Pipeline commands:
     audit            Physical-presence gate before DB snapshot+wipe (Act 3)
     dupe-resolver    Physically relocate duplicate losers to review folder (Act 2)
     cross-dupe       Flag files already in ALAC-Library from a prior batch (Act 2)
+    deep-scan        Decode-verify masters for silent truncation (idle-only)
+    edition          Preview what would go into an edition (lossless/car/
+                     iphone) with an optional --budget-gb; selection only,
+                     encodes nothing
     forge            Measure EBU R128 loudness + write ReplayGain tags
     tagger           Write normalised DB metadata back to file tags
     auditor          Pre-forge LUFS audit (flags out-of-window files)
-    curator          Build car-library export (requires --export-root)
+    curator          Build car-library export (--export-root, or set
+                     MUSAEUS_CURATOR_EXPORT_ROOT / exports.curator.root)
     ghost            Sweep for archive entries missing from disk
     health           Run library consistency + quality checks
     bpm              Extract + tag BPM/key/energy/danceability (requires 'bpm' extra)
@@ -33,12 +37,11 @@ Pipeline commands:
     bitrot           Verify ALAC_Archive against a baseline (silent corruption)
     enrich           Last.fm genre enrichment for tracks with missing genre
     mb-enrich        MusicBrainz artist + release MBID enrichment
+    original-year    recover each recording's first release year from MusicBrainz
     neardupe         Metadata-based near-duplicate detection
     acousticid       Acoustic fingerprint dedup via fpcalc + AcousticID API
     transcode        Lossless → 256k AAC export via ffmpeg
-    reviewer         Groq AI metadata quality review
     report           Dashboard: library stats, genre/bitrate breakdown
-    review-report    Show AI reviewer issues summary
     upgrade-check    Find lossy tracks where a lossless version exists
 
 Review commands:
@@ -53,11 +56,17 @@ Options:
     --force          Re-process already-done files (forge, curator, transcode)
     --full           Include Forge + Tagger in `run` pipeline
     --maintain       Run Ghost + Health + Enrich + NearDupe in `run`
-    --enrich         Run Enrich + MBEnrich + AcousticID + Reviewer in `run`
     --auto           Auto-resolve duplicates (dedupe command)
-    --export-root    Target path for curator/transcode export
+    --export-root    Target path for curator/transcode export. Overrides
+                     MUSAEUS_CURATOR_EXPORT_ROOT for one invocation. Must be an
+                     existing, writable directory outside ALAC-Library; it is
+                     never created for you.
     --noise          Noise profile for curator: clean|pink|brown|white|dual
-    --max-files      Cap files processed per run (auditor, reviewer)
+    --max-files      Cap files processed per run (auditor)
+    --safety-gate    Run the P0 preflight/authority gate before executing
+                     (also MUSAEUS_P0_SAFETY_GATE=1). OFF by default. It gates
+                     AUTHORITY only -- stages still write directly, so a run is
+                     not yet covered by checkpoint or rollback.
 
 Examples:
     musaeus run
@@ -77,11 +86,8 @@ Examples:
     musaeus acousticid --dry-run
     musaeus transcode --dry-run
     musaeus transcode --export-root /mnt/USB/AAC
-    musaeus reviewer --dry-run
-    musaeus reviewer --max-files 100
     musaeus report
     musaeus report --json
-    musaeus review-report
     musaeus upgrade-check
     musaeus upgrade-check --csv
     musaeus dedupe
@@ -102,11 +108,11 @@ from pathlib import Path
 
 from . import __version__
 from .config import get_config
-from .context import RunContext
+from .context import RunContext, elision, head_with_remainder
+from .handoff import write_handoff_doc
 from .db import open_db, snapshot_db_before_wipe
 from .stages import (
     ARCHIVE_PIPELINE,
-    BIG_KAHUNA_PIPELINE,
     DEFAULT_PIPELINE,
     ENRICH_PIPELINE,
     FULL_PIPELINE,
@@ -122,6 +128,7 @@ from .stages import (
     EnrichStage,
     FinalizeStage,
     ForgeStage,
+    GenreValidateStage,
     GhostStage,
     HealthStage,
     IngestStage,
@@ -130,12 +137,13 @@ from .stages import (
     NearDupeStage,
     NormalizeStage,
     OrganizeStage,
+    OriginalYearStage,
     PlaylistStage,
     PreflightStage,
-    ReviewerStage,
     SanitizeStage,
     ScholarStage,
     SentinelStage,
+    SpellCheckStage,
     TaggerStage,
     TranscodeStage,
 )
@@ -215,7 +223,7 @@ def _clear_resume() -> None:
 # canon-review commands or musaeus/console.py's own interactive pipeline
 # runner, none of which call this function.
 _NETWORK_STAGES: frozenset[type[BaseStage]] = frozenset(
-    {EnrichStage, MBEnrichStage, AcousticIDStage}
+    {EnrichStage, MBEnrichStage, AcousticIDStage, OriginalYearStage}
 )
 
 _DRY_RUN_REASON_DIRS_DB = (
@@ -274,9 +282,34 @@ def _run_pipeline(
     Returns 0 on success, 1 on any stage failure, 2 if dry_run is rejected
     by the P0-02 fail-closed guard (see _reject_unsafe_dry_run above).
     """
-    guard_exit = _reject_unsafe_dry_run(stages, dry_run)
-    if guard_exit is not None:
-        return guard_exit
+    if dry_run:
+        # P0-02's blanket refusal is lifted here, and only here, because the
+        # condition the spec set for lifting it is now met: P0-04 (typed
+        # RunMode + pure planner) and P0-05 (zero-side-effect and
+        # transport-denial evidence) are both implemented and fixture-proven.
+        #
+        # --dry-run no longer means "execute with a flag set", which is what
+        # made it unsafe -- it routes to the planner, which never calls
+        # ensure_dirs(), never opens a writable connection, and never
+        # instantiates a stage. _reject_unsafe_dry_run is kept for any caller
+        # that still reaches it directly.
+        from .planner import RunMode, build_plan
+
+        cfg = get_config()
+        plan = build_plan(cfg, list(stages), RunMode.PREVIEW)
+        print("\n  MUSAEUS — plan (--dry-run)\n")
+        print(plan.render())
+        print()
+        return 0
+
+    # Execution has network authority; preview never does. The gateway
+    # defaults to LOCAL_ONLY so that anything which forgets to declare its
+    # mode is safe by omission rather than dangerous by omission -- which
+    # means the EXECUTE path has to grant it explicitly, here, at the one
+    # place a real run begins.
+    from .network_policy import NetworkPolicy, set_policy
+
+    set_policy(NetworkPolicy.ALLOWED)
 
     try:
         cfg = get_config()
@@ -284,6 +317,17 @@ def _run_pipeline(
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
+
+    # P0-11 execution-authority gate. OFF unless MUSAEUS_P0_SAFETY_GATE=1
+    # or --safety-gate: enabling it by default would make every run stop
+    # to ask, and would correctly make the unattended overnight script do
+    # nothing every night. Both are the right behaviours and both need to
+    # be adopted deliberately, not arrive with a merge.
+    from .cli_gate import enforce_execution_gate
+
+    gate_exit = enforce_execution_gate(cfg, dry_run=dry_run)
+    if gate_exit is not None:
+        return gate_exit
 
     conn = open_db(cfg.db_path)
     ctx = RunContext.new(cfg, conn, dry_run=dry_run)
@@ -349,9 +393,24 @@ def _run_pipeline(
 
         status = "✓" if result.success else "✗"
         print(f"  {status}  {result.summarise()}")
-        for note in result.notes:
+        head_notes, tail_notes, more_notes = head_with_remainder(result.notes)
+        for note in head_notes:
             print(f"       {note}")
-        for err in result.errors:
+        if more_notes:
+            print(f"       {elision(more_notes)}")
+        # The tail carries the stage's summary -- dupe_resolver's manifest and
+        # restore-script paths land here, and they are the only undo record.
+        for note in tail_notes:
+            print(f"       {note}")
+        # Bounded for the same reason handoff.py bounds its own render:
+        # one entry per file makes this as long as the batch. Every entry
+        # is still in the run log -- the stages log each one themselves.
+        head_errs, tail_errs, more_errors = head_with_remainder(result.errors)
+        for err in head_errs:
+            print(f"       ERROR: {err}", file=sys.stderr)
+        if more_errors:
+            print(f"       {elision(more_errors, suffix='(full list in the run log)')}", file=sys.stderr)
+        for err in tail_errs:
             print(f"       ERROR: {err}", file=sys.stderr)
 
         # Only a genuinely successful stage counts as "done" for resume
@@ -376,6 +435,44 @@ def _run_pipeline(
         print(f"  Pipeline complete.  run_id={ctx.run_id}")
     else:
         print(f"  Pipeline finished with errors.  run_id={ctx.run_id}", file=sys.stderr)
+
+    # One self-contained doc per run with anything worth a second look --
+    # see handoff.py. Written even on a clean run (it just writes
+    # nothing and returns None); the point is that NOTHING extra has to
+    # be remembered to get this, it falls out of stage results and
+    # FAILURES/ reports that already exist.
+    #
+    # Imported at MODULE level, not here. It used to be deferred, and on
+    # 2026-09-05 that lost the doc for a 42-hour run: handoff.py did not
+    # exist when the process started, so the deferred import read it fresh
+    # off disk -- against a musaeus.context that had been in sys.modules
+    # since startup and predated head_with_remainder. New module, stale
+    # dependency, a mixture neither version would have produced alone.
+    #
+    # An eager import cannot do that. Whatever the run gets is what it had
+    # at startup: possibly old, but always COHERENT. The standing hazard is
+    # usually stated as "a long-running process runs the code it imported at
+    # startup"; the sharper form is that it can run a MIXTURE, and no test
+    # catches that because no test runs one file's HEAD against another
+    # file's two-day-old copy.
+    #
+    # The guard is the other half. That failure was silent -- no doc, no
+    # traceback, nothing in the log -- and a run that loses its handoff
+    # while reporting success is exactly what this document exists to
+    # prevent. Never let bookkeeping fail quietly.
+    try:
+        handoff_path = write_handoff_doc(ctx)
+    except Exception as exc:  # noqa: BLE001 - deliberately broad; see above
+        handoff_path = None
+        exit_code = 1
+        print(
+            f"  WARNING: could not write the ForClaudeHandoff doc: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        traceback.print_exc()
+    if handoff_path is not None:
+        print(f"  ForClaudeHandoff doc (needs attention): {handoff_path}", file=sys.stderr)
 
     ctx.finish()
     return exit_code
@@ -620,73 +717,6 @@ def _cmd_health_report() -> int:
 # ── Review report command ─────────────────────────────────────────────────────
 
 
-def _cmd_review_report() -> int:
-    try:
-        cfg = get_config()
-    except ValueError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-
-    conn = open_db(cfg.db_path)
-    try:
-        try:
-            total = conn.execute("SELECT COUNT(*) FROM review_issues").fetchone()[0]
-        except Exception:
-            print("\nNo review_issues table yet — run `musaeus reviewer` first.")
-            return 0
-
-        rows = conn.execute(
-            """
-            SELECT issue_type, COUNT(*) as cnt,
-                   AVG(confidence) as avg_conf
-            FROM review_issues
-            GROUP BY issue_type
-            ORDER BY cnt DESC
-            """
-        ).fetchall()
-
-        recent = conn.execute(
-            """
-            SELECT ri.issue_type, ri.detail, ri.confidence,
-                   a.artist, a.title
-            FROM review_issues ri
-            LEFT JOIN archive a ON a.file_path = ri.file_path
-            ORDER BY ri.id DESC
-            LIMIT 20
-            """
-        ).fetchall()
-    finally:
-        conn.close()
-
-    print("\nMusaeus Review Report")
-    print(f"  Total issues : {total:,}")
-
-    if rows:
-        print("\n  By issue type:")
-        for row in rows:
-            print(
-                f"    {row['issue_type']:<28}  "
-                f"{row['cnt']:>5}  "
-                f"(avg confidence {row['avg_conf']:.0%})"
-            )
-
-    if recent:
-        print("\n  Most recent issues (up to 20):")
-        for row in recent:
-            artist = row["artist"] or "?"
-            title = row["title"] or "?"
-            print(
-                f"    [{row['issue_type']}] {artist} — {title}  "
-                f"({row['confidence']:.0%})  {row['detail'] or ''}"
-            )
-
-    print()
-    return 0
-
-
-# ── DB-tune command ───────────────────────────────────────────────────────────
-
-
 def _cmd_db_tune() -> int:
     try:
         cfg = get_config()
@@ -744,6 +774,129 @@ def _cmd_db_tune() -> int:
 
 
 # ── Upgrade check command ─────────────────────────────────────────────────────
+
+
+def _cmd_deep_scan(args) -> int:
+    """Decode every master and report the ones that no longer play.
+
+    Two masters were found truncated on 2026-09-01 -- intact container
+    header, missing audio -- by the Car encoder refusing to ship a
+    55-second version of a 5-minute song. Nothing was looking for them.
+    """
+    from .deep_scan import ensure_columns, pending_rows, scan
+
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    conn = open_db(cfg.db_path)
+    try:
+        ensure_columns(conn)
+        if args.reset:
+            conn.execute("UPDATE archive SET decode_checked_at=NULL, "
+                         "decode_ok=NULL, decode_errors=NULL")
+            conn.commit()
+            print("  previous results cleared.")
+
+        total = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'").fetchone()[0]
+        done = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' "
+            "AND decode_checked_at IS NOT NULL").fetchone()[0]
+        pending = len(pending_rows(conn))
+        print(f"\n  Deep integrity scan — {done:,} of {total:,} checked, "
+              f"{pending:,} pending")
+        if not args.now:
+            print("  Idle-only: runs while the machine is untouched, yields on input.")
+            print("  Interruptible and resumable — Ctrl-C loses nothing.\n")
+        else:
+            print("  Running at full speed (--now).\n")
+
+        def report(row, ok, n_err):
+            if not ok:
+                print(f"    CORRUPT  {(row['artist'] or '')[:24]:24} — "
+                      f"{(row['title'] or '')[:34]}  ({n_err} error(s))")
+
+        prog = scan(conn, limit=args.limit, idle_only=not args.now,
+                    decode_seconds=args.seconds, on_result=report)
+
+        print(f"\n  Checked {prog.checked:,} file(s). "
+              f"Corrupt: {len(prog.corrupt)}.")
+        if prog.yielded_to_user:
+            print(f"  Yielded to you {prog.yielded_to_user} time(s).")
+        bad = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE decode_ok = 0").fetchone()[0]
+        if bad:
+            print(f"  {bad} master(s) fail to decode overall — "
+                  "candidates for TuneMyMusic.csv re-sourcing.")
+    except KeyboardInterrupt:
+        print("\n  Interrupted. Progress is saved; re-run to continue.")
+        return 0
+    finally:
+        conn.close()
+    return 0
+
+
+def _cmd_edition(args) -> int:
+    """Preview an edition's selection. Reads only -- encodes nothing.
+
+    Exists because the expensive half of building an edition is the encode,
+    and until now there was no way to see WHAT would be encoded without
+    running it. A 32 GB device budget has to be checked before six hours of
+    ffmpeg, not after.
+    """
+    from .editions import EDITIONS, select_edition
+
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    spec = EDITIONS[args.name]
+    budget = int(args.budget_gb * 1_000_000_000) if args.budget_gb else None
+
+    conn = open_db(cfg.db_path)
+    try:
+        sel = select_edition(
+            conn, spec,
+            genres=set(args.genre) if args.genre else None,
+            artists=set(args.artist) if args.artist else None,
+            budget_bytes=budget,
+        )
+    finally:
+        conn.close()
+
+    print()
+    print(f"  Edition : {spec.name}")
+    print(f"  Format  : {spec.codec.upper()}"
+          + (f" {spec.bitrate_kbps}k" if spec.bitrate_kbps else " (lossless)")
+          + f", {spec.lufs_target} LUFS"
+          + (f", capped at {spec.max_sample_rate} Hz" if spec.max_sample_rate else ""))
+    print(f"  {sel.summary()}")
+
+    if sel.skipped_for_budget:
+        print(f"\n  {len(sel.skipped_for_budget):,} track(s) did not fit. "
+              f"Lowest-priority genres are dropped first.")
+
+    if args.list:
+        print()
+        for t in sel.included:
+            print(f"    [{t.genre or '-'}] {t.artist} — {t.title}")
+    else:
+        by_genre: dict[str, int] = {}
+        for t in sel.included:
+            by_genre[t.genre or "(none)"] = by_genre.get(t.genre or "(none)", 0) + 1
+        print()
+        for g, n in sorted(by_genre.items(), key=lambda kv: (-kv[1], kv[0]))[:12]:
+            print(f"    {n:>6,}  {g}")
+        if len(by_genre) > 12:
+            print(f"    {'':>6}  {elision(len(by_genre) - 12, unit='genre(s)')}")
+
+    print("\n  Selection only — nothing was encoded or written.\n")
+    return 0
 
 
 def _cmd_upgrade_check(write_csv: bool = False, min_gap: int = 0) -> int:
@@ -854,16 +1007,18 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── run ──────────────────────────────────────────────────────────────────
     run_p = sub.add_parser("run", help="Run pipeline (Ingest→Sentinel→Scholar)")
     run_p.add_argument("--dry-run", action="store_true", help="Preview only, no mutations")
+    run_p.add_argument(
+        "--skip",
+        metavar="STAGE[,STAGE...]",
+        default="",
+        help="Drop named stages from the run, by stage NAME (e.g. 'dupe-resolver'). "
+        "Intended for unattended runs that should stage decisions but not act on them.",
+    )
     run_p.add_argument("--full", action="store_true", help="Also run Forge + Tagger stages")
     run_p.add_argument(
         "--archive",
         action="store_true",
         help="Everything minus LUFS: Ingest→Scholar→Normalize→Health→Enrich→Dedup→Art→Tagger",
-    )
-    run_p.add_argument(
-        "--big-kahuna",
-        action="store_true",
-        help="ALL stages: full pipeline + health + enrich + dedup + art + curator + playlists",
     )
     run_p.add_argument(
         "--maintain", action="store_true", help="Run Ghost + Health + Enrich + NearDupe"
@@ -1095,7 +1250,56 @@ def _build_parser() -> argparse.ArgumentParser:
     mb_p = sub.add_parser("mb-enrich", help="MusicBrainz artist + release MBID enrichment")
     mb_p.add_argument("--dry-run", action="store_true", help="Show what would change, no DB writes")
 
+    # original-year
+    oy_p = sub.add_parser(
+        "original-year",
+        help="Recover each recording's FIRST release year from MusicBrainz "
+        "(writes original_year; never touches year)",
+    )
+    oy_p.add_argument("--dry-run", action="store_true", help="Show what would change, no DB writes")
+    oy_p.add_argument(
+        "--genre",
+        default="",
+        help="Only check tracks in this genre. A full pass is hours of "
+        "rate-limited lookups; this narrows it to what a pending decision needs.",
+    )
+    oy_p.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Only check this many tracks this pass (0 = all). One rate-limited "
+        "network call per track, so a first pass is usually worth bounding.",
+    )
+
     # neardupe
+    genre_p = sub.add_parser(
+        "genre-validate",
+        help="Check library genres against MasterLaw.csv (fills empties, reports conflicts)",
+    )
+    genre_p.add_argument("--dry-run", action="store_true", help="Report only, fill nothing")
+    genre_p.add_argument(
+        "--consolidate",
+        action="store_true",
+        help="Enforce one genre per ARTIST: MasterLaw's answer where it has "
+        "one, else the artist's dominant genre. Ties are left alone.",
+    )
+
+    spell_p = sub.add_parser(
+        "spellcheck", help="Report artist names that look like misspellings (report-only)"
+    )
+    spell_p.add_argument(
+        "--dry-run", action="store_true", help="Same as a normal run: nothing is written"
+    )
+
+    plan_p = sub.add_parser(
+        "plan", help="Preview what a run would do. Read-only, changes nothing (P0-04)."
+    )
+    plan_p.add_argument("--json", action="store_true", help="Machine-readable plan")
+    plan_p.add_argument("--full", action="store_true", help="Plan the full pipeline")
+    plan_p.add_argument("--maintain", action="store_true", help="Plan the maintenance pipeline")
+
+    sub.add_parser("doctor", help="Read-only library integrity report (DB vs disk vs hash ledger)")
+
     neardupe_p = sub.add_parser("neardupe", help="Metadata-based near-duplicate detection")
     neardupe_p.add_argument("--dry-run", action="store_true", help="Show matches without staging")
 
@@ -1130,6 +1334,11 @@ def _build_parser() -> argparse.ArgumentParser:
     acousticid_p.add_argument(
         "--dry-run", action="store_true", help="Fingerprint + report, no DB writes"
     )
+    acousticid_p.add_argument(
+        "--limit", type=int, metavar="N", default=0,
+        help="Process at most N files, so the backlog can be drained in "
+             "sittings rather than one lock-holding pass (0 = no limit)",
+    )
 
     # transcode
     transcode_p = sub.add_parser("transcode", help="Lossless → 256k AAC export via ffmpeg")
@@ -1141,17 +1350,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--export-root",
         metavar="PATH",
         help="Output directory for transcoded files (default: vault/Transcoded)",
-    )
-
-    # reviewer
-    reviewer_p = sub.add_parser("reviewer", help="Groq AI metadata quality review")
-    reviewer_p.add_argument("--dry-run", action="store_true", help="Show what would be reviewed")
-    reviewer_p.add_argument(
-        "--max-files",
-        type=int,
-        default=None,
-        metavar="N",
-        help="Cap tracks reviewed per run (default: 50)",
     )
 
     # review-report
@@ -1201,6 +1399,39 @@ def _build_parser() -> argparse.ArgumentParser:
     overnight_p.add_argument("--dry-run", action="store_true", help="Preview only")
 
     # playlist
+    # deep-scan
+    deepscan_p = sub.add_parser(
+        "deep-scan",
+        help="Decode-verify masters for silent truncation; runs only while idle",
+    )
+    deepscan_p.add_argument("--limit", type=int, metavar="N", default=None,
+                            help="Check at most N files this pass")
+    deepscan_p.add_argument("--now", action="store_true",
+                            help="Run immediately at full speed instead of waiting "
+                                 "for the machine to be idle")
+    deepscan_p.add_argument("--seconds", type=int, metavar="S", default=0,
+                            help="Decode only the first S seconds (0 = whole file). "
+                                 "A partial decode cannot see damage later in a track")
+    deepscan_p.add_argument("--reset", action="store_true",
+                            help="Clear all previous results and start a fresh pass")
+
+    # edition
+    edition_p = sub.add_parser(
+        "edition",
+        help="Preview what would go into an edition (selection only — encodes nothing)",
+    )
+    edition_p.add_argument("name", choices=("lossless", "car", "iphone"),
+                           help="Which edition to select for")
+    edition_p.add_argument("--budget-gb", type=float, metavar="GB", default=None,
+                           help="Device budget; fills in genre-priority order and "
+                                "reports what did not fit")
+    edition_p.add_argument("--genre", action="append", metavar="NAME", default=None,
+                           help="Restrict to this genre (exact match; repeatable)")
+    edition_p.add_argument("--artist", action="append", metavar="NAME", default=None,
+                           help="Restrict to this artist (exact match; repeatable)")
+    edition_p.add_argument("--list", action="store_true",
+                           help="Print every selected track, not just the summary")
+
     playlist_p = sub.add_parser(
         "playlist",
         help="Build M3U8 playlists (genre + All) with relative paths — works on Android & Apple",
@@ -1316,8 +1547,6 @@ def main() -> None:
                 print("  ✓ Resume state cleared.")
             if getattr(args, "maintain", False):
                 pipeline = MAINTAIN_PIPELINE
-            elif getattr(args, "big_kahuna", False):
-                pipeline = BIG_KAHUNA_PIPELINE
             elif getattr(args, "full", False):
                 pipeline = FULL_PIPELINE
             elif getattr(args, "archive", False):
@@ -1333,6 +1562,42 @@ def main() -> None:
             # various-artists-fix` run standalone still defaults to MB
             # lookups on.
             run_stash = {"various_artists_no_mb": True} if pipeline is DEFAULT_PIPELINE else {}
+
+            # --skip removes named stages from whichever pipeline was chosen.
+            #
+            # Added 2026-08-22 for the overnight cron. DupeResolver had
+            # physically relocated 6,480 files in a single unattended run,
+            # resolving 7,679 near-duplicate groups that were staged FOR
+            # REVIEW -- the documented rule is that near-duplicates are never
+            # auto-resolved, and it held for every interactive path while the
+            # scheduled one quietly did the opposite. Staging and resolving
+            # are different decisions and a cron should only ever do the
+            # first.
+            skip = {
+                s.strip().lower() for s in (getattr(args, "skip", "") or "").split(",") if s.strip()
+            }
+            if skip:
+                names: dict[str, str] = {
+                    str(getattr(st, "NAME", st.__name__)): str(
+                        getattr(st, "NAME", st.__name__)
+                    ).lower()
+                    for st in pipeline
+                }
+                kept = [
+                    st
+                    for st in pipeline
+                    if names[str(getattr(st, "NAME", st.__name__))] not in skip
+                ]
+                dropped = sorted(n for n, low in names.items() if low in skip)
+                unknown = skip - set(names.values())
+                if unknown:
+                    print(
+                        f"  ! --skip: no such stage in this pipeline: {', '.join(sorted(unknown))}"
+                    )
+                if dropped:
+                    print(f"  ↷ skipping stage(s): {', '.join(dropped)}")
+                pipeline = kept
+
             sys.exit(_run_pipeline(pipeline, dry_run=dry_run, stash=run_stash))
 
         elif command == "dry-run":
@@ -1496,6 +1761,22 @@ def main() -> None:
         elif command == "mb-enrich":
             sys.exit(_run_pipeline([MBEnrichStage], dry_run=dry_run))
 
+        elif command == "original-year":
+            stash = {
+                "original_year_limit": getattr(args, "limit", 0),
+                "original_year_genre": getattr(args, "genre", ""),
+            }
+            sys.exit(_run_pipeline([OriginalYearStage], dry_run=dry_run, stash=stash))
+
+        elif command == "genre-validate":
+            stash = {}
+            if getattr(args, "consolidate", False):
+                stash["genre_consolidate"] = True
+            sys.exit(_run_pipeline([GenreValidateStage], dry_run=dry_run, stash=stash))
+
+        elif command == "spellcheck":
+            sys.exit(_run_pipeline([SpellCheckStage], dry_run=dry_run))
+
         elif command == "neardupe":
             sys.exit(_run_pipeline([NearDupeStage], dry_run=dry_run))
 
@@ -1549,7 +1830,11 @@ def main() -> None:
             sys.exit(_run_pipeline([CuratorStage], dry_run=dry_run, stash=stash))
 
         elif command == "acousticid":
-            sys.exit(_run_pipeline([AcousticIDStage], dry_run=dry_run))
+            stash = {}
+            limit = getattr(args, "limit", 0)
+            if limit:
+                stash["acousticid_limit"] = int(limit)
+            sys.exit(_run_pipeline([AcousticIDStage], dry_run=dry_run, stash=stash))
 
         elif command == "transcode":
             stash = {}
@@ -1559,16 +1844,6 @@ def main() -> None:
             if getattr(args, "force", False):
                 stash["transcode_force"] = True
             sys.exit(_run_pipeline([TranscodeStage], dry_run=dry_run, stash=stash))
-
-        elif command == "reviewer":
-            stash = {}
-            mf = getattr(args, "max_files", None)
-            if mf is not None:
-                stash["reviewer_max_files"] = int(mf)
-            sys.exit(_run_pipeline([ReviewerStage], dry_run=dry_run, stash=stash))
-
-        elif command == "review-report":
-            sys.exit(_cmd_review_report())
 
         elif command == "upgrade-check":
             sys.exit(
@@ -1601,9 +1876,14 @@ def main() -> None:
                 EnrichStage,
                 MBEnrichStage,
                 NearDupeStage,
-                ReviewerStage,
             ]
             sys.exit(_run_pipeline(overnight_pipeline, dry_run=dry_run))
+
+        elif command == "deep-scan":
+            sys.exit(_cmd_deep_scan(args))
+
+        elif command == "edition":
+            sys.exit(_cmd_edition(args))
 
         elif command == "playlist":
             sys.exit(_run_pipeline([PlaylistStage], dry_run=dry_run))
@@ -1643,6 +1923,35 @@ def main() -> None:
                     report_only=getattr(args, "report", False),
                 )
             )
+
+        elif command == "plan":
+            from .planner import RunMode, build_plan, reject_persistence_flags
+
+            mode = RunMode.resolve(preview=True)
+            reject_persistence_flags(mode, args)
+            pipe = (
+                FULL_PIPELINE
+                if getattr(args, "full", False)
+                else MAINTAIN_PIPELINE
+                if getattr(args, "maintain", False)
+                else DEFAULT_PIPELINE
+            )
+            plan = build_plan(get_config(), list(pipe), mode)
+            print(
+                plan.to_json()
+                if getattr(args, "json", False)
+                else "\n  MUSAEUS — plan\n\n" + plan.render() + "\n"
+            )
+            sys.exit(0)
+
+        elif command == "doctor":
+            from .doctor import diagnose
+
+            rep = diagnose(get_config())
+            print("\n  MUSAEUS — library integrity\n")
+            print(rep.render())
+            print()
+            sys.exit(1 if rep.failed else 0)
 
         elif command == "status":
             sys.exit(_cmd_status())

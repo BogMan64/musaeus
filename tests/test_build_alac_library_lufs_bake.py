@@ -32,6 +32,16 @@ pytestmark = pytest.mark.skipif(
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT = _REPO_ROOT / "scripts" / "alac_library" / "build_alac_library.py"
 
+# Imported as a module too, so the pure functions can be tested directly
+# rather than only through a subprocess.
+import importlib.util as _ilu  # noqa: E402
+
+_spec = _ilu.spec_from_file_location("build_alac_library", _SCRIPT)
+assert _spec and _spec.loader
+_bal = _ilu.module_from_spec(_spec)
+sys.modules["build_alac_library"] = _bal
+_spec.loader.exec_module(_bal)
+
 
 def _script_argv(script_path: Path) -> list[str]:
     """Normally just [python3, script.py]. When MUSAEUS_COVERAGE_SUBPROCESS
@@ -139,7 +149,7 @@ def _run_script(
 
 class TestPhase2ABake:
     def test_dry_run_makes_no_changes(self, cfg: MusicConfig) -> None:
-        archive_dir = cfg.vault_root / "ALAC_Archive"
+        archive_dir = cfg.alac_archive
         archive_dir.mkdir(parents=True)
         src = archive_dir / "Artist" / "Album" / "track.m4a"
         src.parent.mkdir(parents=True)
@@ -173,7 +183,7 @@ class TestPhase2ABake:
         assert row["lufs_baked_at"] is None
 
     def test_execute_bakes_and_updates_db(self, cfg: MusicConfig) -> None:
-        archive_dir = cfg.vault_root / "ALAC_Archive"
+        archive_dir = cfg.alac_archive
         archive_dir.mkdir(parents=True)
         src = archive_dir / "Artist" / "Album" / "track.m4a"
         src.parent.mkdir(parents=True)
@@ -232,7 +242,7 @@ class TestPhase2ABake:
         assert not list(cfg.alac_library.rglob("*.FAILED_VERIFY"))
 
     def test_second_run_skips_already_baked_row(self, cfg: MusicConfig) -> None:
-        archive_dir = cfg.vault_root / "ALAC_Archive"
+        archive_dir = cfg.alac_archive
         archive_dir.mkdir(parents=True)
         src = archive_dir / "Artist" / "Album" / "track.m4a"
         src.parent.mkdir(parents=True)
@@ -271,7 +281,7 @@ class TestUnmigratedWarning:
     than silently bake nothing and look like there's simply no work."""
 
     def test_warns_when_finalized_rows_never_migrated(self, cfg: MusicConfig) -> None:
-        archive_dir = cfg.vault_root / "ALAC_Archive"
+        archive_dir = cfg.alac_archive
         archive_dir.mkdir(parents=True)
         # A finalized row still in ALAC-Library -- never migrated.
         stuck = cfg.alac_library / "Artist" / "Album" / "stuck.m4a"
@@ -304,7 +314,7 @@ class TestUnmigratedWarning:
         assert "migrate_to_archive.py" in result.stdout
 
     def test_no_warning_when_everything_migrated(self, cfg: MusicConfig) -> None:
-        archive_dir = cfg.vault_root / "ALAC_Archive"
+        archive_dir = cfg.alac_archive
         archive_dir.mkdir(parents=True)
         src = archive_dir / "Artist" / "Album" / "track.m4a"
         src.parent.mkdir(parents=True)
@@ -333,3 +343,62 @@ class TestUnmigratedWarning:
         result = _run_script(cfg, archive_dir, [])
         assert result.returncode == 0, result.stderr
         assert "never migrated" not in result.stdout
+
+
+# ── the bake must be verified on the thing it exists to do ───────────────────
+#
+# verify_bake checked that the output had an audio stream and that its
+# duration matched the source -- i.e. that a file came out the other end.
+# Neither says anything about loudness. A loudnorm that silently no-ops, or a
+# second pass fed the wrong measured values, produces a perfectly valid file
+# at the wrong loudness, and lufs_baked_at is stamped anyway so it is never
+# retried. Same shape as Forge reporting 12,279 successful tag writes while
+# writing nothing.
+#
+# The check is free: the second pass already runs print_format=summary, so
+# ffmpeg reports the achieved integrated loudness on stderr.
+
+_SUMMARY = """[Parsed_loudnorm_0 @ 0x55d5]
+Input Integrated:     -9.90 LUFS
+Input True Peak:      +0.50 dBTP
+Output Integrated:   {out} LUFS
+Output True Peak:     -1.20 dBTP
+"""
+
+
+class TestBakeVerifiesLoudness:
+    def test_the_achieved_loudness_is_read_from_the_summary(self):
+        assert _bal.parse_output_loudness(_SUMMARY.format(out="-18.10")) == -18.10
+
+    def test_an_unreadable_summary_is_none_not_a_pass(self):
+        assert _bal.parse_output_loudness("ffmpeg said nothing useful") is None
+        assert _bal.parse_output_loudness("") is None
+
+    def test_a_bake_that_missed_the_target_is_rejected(self, tmp_path, monkeypatch):
+        """The failure the whole check exists for."""
+        src, out = tmp_path / "a.m4a", tmp_path / "b.m4a"
+        src.write_bytes(b"x")
+        out.write_bytes(b"x")
+        probe = {"streams": [{"codec_type": "audio"}], "format": {"duration": "200.0"}}
+        monkeypatch.setattr(_bal, "_probe_streams", lambda p: probe)
+
+        with pytest.raises(RuntimeError, match="baked to"):
+            _bal.verify_bake(src, out, achieved=-12.0, target_i="-18.0")
+
+    def test_a_bake_that_hit_the_target_passes(self, tmp_path, monkeypatch):
+        src, out = tmp_path / "a.m4a", tmp_path / "b.m4a"
+        src.write_bytes(b"x")
+        out.write_bytes(b"x")
+        probe = {"streams": [{"codec_type": "audio"}], "format": {"duration": "200.0"}}
+        monkeypatch.setattr(_bal, "_probe_streams", lambda p: probe)
+        _bal.verify_bake(src, out, achieved=-18.1, target_i="-18.0")   # must not raise
+
+    def test_an_unverifiable_bake_still_checks_the_rest(self, tmp_path, monkeypatch):
+        """achieved=None must not silently pass a broken output either."""
+        src, out = tmp_path / "a.m4a", tmp_path / "b.m4a"
+        src.write_bytes(b"x")
+        out.write_bytes(b"x")
+        monkeypatch.setattr(_bal, "_probe_streams",
+                            lambda p: {"streams": [], "format": {"duration": "200.0"}})
+        with pytest.raises(RuntimeError, match="no audio stream"):
+            _bal.verify_bake(src, out, achieved=None)
