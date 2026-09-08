@@ -191,6 +191,21 @@ Do NOT run `organize` while the bake runs; both move files.
    **Do not use `--dry-run` to estimate the scope of those stages.** It is
    not a preview; it is an admission that there is no preview.
 
+   **This is NOT fixed by making the CLI call each stage's own `dry_run()`
+   method.** Those methods exist and look like the obvious answer; calling
+   them from the CLI would undo P0-02. `--dry-run` routes to the planner
+   deliberately, precisely so it no longer means "execute with a flag set":
+   the planner never instantiates a stage, never opens a writable
+   connection and never calls `ensure_dirs()`. That guard is the reason the
+   blanket refusal on `--dry-run` could be lifted at all.
+
+   **The correct fix is to give a stage a `plan_candidates(conn, cfg)`
+   method** — a pure, read-only count against a read-only connection, which
+   is what the planner already calls where one exists. Ten stages have one.
+   Worth doing for `corrupt` and `bitrot` first, since those are the two
+   whose scope somebody actually wants to estimate before committing hours
+   to a run.
+
 4. **Run `~/musaeus_jobs/recheck_decode_failures.sh` once, after the
    2026-09-08 sweep finishes.** That sweep was launched from code that
    counted any ffmpeg stderr as damage, and kept it in memory for the whole
