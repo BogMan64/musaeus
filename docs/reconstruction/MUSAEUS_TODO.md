@@ -295,6 +295,59 @@ Do NOT run `organize` while the bake runs; both move files.
    Stairs*) is already in ALAC-Library and decodes in full. It is a different
    album version, not a replacement.
 
+## P1b — the CAR build's 60 errors (reviewed 2026-09-08)
+
+Reviewed on Grey's question "anything negative here to report?". Log:
+`~/Desktop/MUSAEUS_car_build_2026-09-07.log`. The run that resumed
+2026-09-08 04:55 UTC: **3,465 converted, 8,437 already done, 60 errors** —
+0.5%. All 60 are from this run, not carried over from an earlier one.
+
+**The good news first, and it is genuinely good.** Three of the errors are
+`verification failed: duration mismatch`:
+
+| | source | output |
+|---|---|---|
+| Carlos Santana – *Bella* | 268.2 s | 143.8 s |
+| M/a/r/r/s – *Pump Up The Volume (UK 12" Remix)* | 389.1 s | 298.0 s |
+| Rage Against the Machine – *Testify* | 210.1 s | 91.3 s |
+
+**All three are on the decode audit's damaged list.** Two entirely
+independent methods — a full decode, and a source-vs-output duration
+check — found the same three files. That is the strongest evidence in this
+project that the decode audit measures something real.
+
+It also shows the CAR builder already had the guard the ALAC bake lacked
+until today: it verifies its output against its source and REFUSES rather
+than shipping a truncated encode. The pre-bake gate added in `57b9209`
+brings the ALAC tier up to the same standard.
+
+**The other 57 are not content problems.** 58 of the 60 error sources decode
+clean under a full audit. What is wrong is naming:
+
+- **at least 8: the artist is truncated at `&`.** `Echo & the Bunnymen – The
+  Killing Moon` was written to a folder called `Echo`, as
+  `Echo - The Killing Moon.m4a`. Same for `Daryl Hall & John Oates`,
+  `Earth, Wind & Fire`, `Gladys Knight & The Pips`,
+  `Benny Goodman & His Orchestra`. This is Grey's ampersand ruling appearing
+  in a third place: **`&` joins artist names and must not be split** when it
+  is part of the band's own name.
+- **14: the `(N)` dedupe suffix is stripped**, so `... (3).m4a` and `....m4a`
+  claim the same output path. **13 of those 14 are already in the car edition
+  under the un-suffixed name**, so almost nothing is actually lost here.
+- **~35 not root-caused.** The output path is correct and the source decodes,
+  but no `.bake_tmp` was produced, so ffprobe reported it missing. Said
+  plainly rather than guessed at.
+
+**What it costs, concretely: 32 of the 60 are still absent from the car
+edition.** The other 28 are present. Nothing is lost from the library
+itself — every one of those 32 remains in ALAC-Library — the car copy is
+simply not there.
+
+**Not urgent.** The car edition is the disposable tier: it is rebuilt from
+the masters whenever wanted, and being 32 tracks short of 11,900 does not
+threaten anything. Fix the ampersand split before the next full CAR rebuild
+and most of it goes away.
+
 ## P2 — needs Grey's judgement, cannot be automated
 
 3. **QUARANTINE is 3.1 GB and nobody has ruled on it.**
