@@ -1193,6 +1193,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "instead of verifying against it",
     )
     bitrot_p.add_argument(
+        "--backfill-pcm",
+        action="store_true",
+        help="Fill in the PCM identity for baseline rows recorded without one, "
+        "leaving their byte hashes untouched. The migration step for baselines "
+        "taken before 2026-09-08; without it a moved file still reads as new.",
+    )
+    bitrot_p.add_argument(
         "--limit", type=int, default=0, help="Cap how many files to process this run (0 = all)"
     )
 
@@ -1728,6 +1735,8 @@ def main() -> None:
                 stash["bitrot_limit"] = int(limit)
             if getattr(args, "rebaseline", False):
                 stash["bitrot_rebaseline"] = True
+            if getattr(args, "backfill_pcm", False):
+                stash["bitrot_backfill_pcm"] = True
             sys.exit(_run_pipeline([BitRotStage], dry_run=dry_run, stash=stash))
 
         elif command == "bpm":

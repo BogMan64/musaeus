@@ -150,6 +150,14 @@ CREATE TABLE IF NOT EXISTS archive_tier_hashes (
 # Each entry: (table, column_name, column_def)
 # Applied in order every time open_db() is called — idempotent.
 _MIGRATIONS: list[tuple[str, str, str]] = [
+    # The PCM identity of the baselined file. bitrot keys on `path`, but a
+    # path is not an identity -- organize, canonicalize, finalize and the
+    # LUFS bake all move files, and every move silently orphaned a baseline
+    # row. Verified 2026-09-08: all 1,385 baselined paths were gone and all
+    # 15,816 files on disk read as "new", so the check reported nothing
+    # while comparing nothing. audio_hash survives both a move and a
+    # re-tag, so it is what lets verify tell those apart from rot.
+    ("archive_tier_hashes", "audio_hash", "TEXT"),
     ("archive", "lufs", "REAL"),
     ("archive", "lufs_tp", "REAL"),
     ("archive", "rg_gain", "REAL"),

@@ -118,9 +118,37 @@ Do NOT run `organize` while the bake runs; both move files.
    had a usable baseline, and the rebaseline had nothing to overwrite —
    which is the only reason it was safe to run against a live library.
 
-2. **`bitrot`'s baseline goes stale every time a file moves, and MUSAEUS
-   moves files constantly.** This is the real defect the verify pass
-   exposed, and it will silently recur.
+2. ~~**`bitrot`'s baseline goes stale every time a file moves.**~~
+   **FIXED IN CODE 2026-09-08 — but the live vault still needs the
+   migration below.** Kept in full because the reasoning is what stops it
+   being undone.
+
+   **The four commands, in this order. Order matters.**
+
+   ```
+   ~/musaeus_jobs/bitrot.sh baseline    # running since 21:12, ~5 h
+   ~/musaeus_jobs/bitrot.sh backfill    # ~3 h — gives each row its PCM identity
+   ~/musaeus_jobs/prune_stale_baselines.sh
+   ~/musaeus_jobs/bitrot.sh verify      # should now say ok: ~15,816, new: 0
+   ```
+
+   The baseline currently running was launched **before** the fix, so its
+   rows carry byte hashes and no PCM identity. `backfill` adds the identity
+   without recomputing a single SHA-256 — on this vault that is 592 GB of
+   work not repeated. Run it before the prune: the prune's safety rule
+   depends on it.
+
+   **Why the prune rule is narrower than "the path is gone".** A file that
+   MOVED also has a baseline row whose path is gone — and that row is
+   precisely what lets verify recognise the move. Deleting by missing path
+   alone would throw those away and quietly restore the bug. The script
+   deletes only rows that are **both** pathless **and** without a PCM
+   identity, i.e. rows nothing can ever match again.
+
+   The original diagnosis follows.
+
+   ~~This is the real defect the verify pass exposed, and it will silently
+   recur.~~
 
    `archive_tier_hashes.path` is the key. `organize`, `canonicalize`,
    `finalize` and `migrate_to_archive` all rename or relocate files as a
@@ -133,7 +161,7 @@ Do NOT run `organize` while the bake runs; both move files.
    That is the same shape as the `library files with no row: 0` incident:
    a green result that means "I looked at nothing".
 
-   **Options, in order of how much they are worth:**
+   **Options as they stood before the fix** (the first was taken):
    - key the baseline on `audio_hash` (PCM identity, already computed,
      already survives re-tagging and moves) instead of on path
    - failing that, re-baseline as the last step of any run that moves

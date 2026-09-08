@@ -283,6 +283,45 @@ known audio errors would fail the other way: an unrecognised audio error
 would be dropped and a damaged master would be baked into an edition.
 **Fail towards the human, not towards the encoder.**
 
+### Checks that went quiet instead of red
+
+**`bitrot` reported nothing because it was comparing nothing.** The
+integrity check for `ALAC_Archive` — the tier that is supposed to stay
+byte-identical for ever — ran on 2026-09-08 and returned:
+
+```
+files to verify: 15816
+ok: 0
+corrupt (hash mismatch): 0
+new (no baseline yet): 15816
+missing from disk (was baselined, gone now): 1385
+```
+
+Zero corrupt, and a green tick. Every baselined path was gone; every file
+present was unrecognised. The check had 0% coverage and announced it only as
+a large number beside a pass.
+
+**Cause:** `archive_tier_hashes` keys on **path**, and `organize`,
+`canonicalize`, `finalize` and the LUFS bake all move or rename files as
+ordinary business. Each move orphans a baseline row. The failure mode is the
+dangerous direction — an orphaned row makes the check report *new*, which is
+benign-sounding, rather than *changed*, which is not.
+
+**Guard:** the baseline now also records `audio_hash`, the PCM identity,
+which survives both a move and a re-tag. A file not found at its baselined
+path is looked up by that and reported as **moved**; a byte change with an
+unchanged PCM identity is reported as **re-tagged**, not rot; a byte change
+with no baselined identity is **unclassifiable** and still fails. And a
+verify whose corpus is more than half unbaselined now reports **failure**,
+because it did not verify anything.
+
+**Lesson:** this is the same defect as `library files with no row: 0` beside
+19 GB, and it will keep recurring in this shape. **A check that finds
+nothing is not the same as a check that found nothing wrong.** When a result
+is green, look at what it says about its own coverage before believing it —
+and if the check does not report its coverage, that is the first thing to
+fix.
+
 ### Rules that fought each other
 
 **`tagger` rewrote 3,161 files on every run, forever.** Two rules owned the

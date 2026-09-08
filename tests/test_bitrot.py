@@ -116,7 +116,13 @@ class TestVerify:
         assert result.success is True
         assert any("ok: 1" in n for n in result.notes)
 
-    def test_changed_bytes_detected_as_corrupt(self, ctx):
+    def test_changed_bytes_with_no_pcm_identity_are_reported_not_excused(self, ctx):
+        """These bytes are not decodable audio, so no PCM identity exists.
+
+        That is the pre-2026-09-08 baseline shape, and it is the case where
+        a re-tag cannot be told from rot. It must still be reported: fail
+        towards the human, never assume benign.
+        """
         path = _archive_file(ctx, "Artist/Album/a.m4a", b"ORIGINAL CONTENT")
         _baseline(ctx, path)
         path.write_bytes(b"CORRUPTED!!CONTENT")  # same length, different bytes
@@ -124,7 +130,7 @@ class TestVerify:
         result = BitRotStage().run(ctx)
 
         assert result.success is False
-        assert any("corrupt (hash mismatch): 1" in n for n in result.notes)
+        assert any("changed, unclassifiable: 1" in n for n in result.notes)
 
         events = ctx.conn.execute(
             "SELECT event_type FROM events WHERE event_type='BITROT_DETECTED'"
@@ -148,13 +154,24 @@ class TestVerify:
 
     def test_new_file_not_flagged_corrupt(self, ctx):
         """A file that exists but was never baselined isn't corrupt --
-        it just needs a --rebaseline pass."""
+        it just needs a --rebaseline pass.
+
+        It is also not a PASS. The run is the whole archive unbaselined, so
+        it compared nothing, and before 2026-09-08 it said so only by
+        printing a large "new" count beside a green tick. On the live vault
+        that count was 15,816 and nobody read it. A run that verified
+        nothing now reports failure and says why.
+        """
         _archive_file(ctx, "Artist/Album/new.m4a", b"CONTENT")
 
         result = BitRotStage().run(ctx)
 
-        assert result.success is True
         assert any("new (no baseline yet" in n and "1" in n for n in result.notes)
+        assert not ctx.conn.execute(
+            "SELECT 1 FROM events WHERE event_type='BITROT_DETECTED'").fetchone(), \
+            "an unbaselined file is not corrupt"
+        assert result.success is False
+        assert any("verified almost nothing" in n for n in result.notes)
 
     def test_missing_baselined_file_reported_separately(self, ctx):
         path = _archive_file(ctx, "Artist/Album/a.m4a", b"CONTENT")
