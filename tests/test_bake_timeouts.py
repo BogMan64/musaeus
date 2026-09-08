@@ -138,11 +138,29 @@ def test_a_timeout_is_reported_per_file_and_does_not_propagate(tmp_path: Path) -
     row = {"id": 1, "file_path": str(source)}
 
     class _Conn:
-        def execute(self, *a, **k):
+        """Answers by query, because _process_one now asks two questions.
+
+        The pre-bake decode gate (2026-09-08) reads decode_ok/
+        decode_checked_at before any ffmpeg runs. This row is already
+        decode-checked and sound, so the gate waves it through and this test
+        stays about the timeout, which is its subject.
+        """
+
+        def execute(self, sql, *a, **k):
+            row = (
+                {"decode_ok": 1, "decode_checked_at": "2026-09-08 00:00:00"}
+                if "decode_ok" in sql
+                else {"status": "CATALOGUED", "lufs_baked_at": None}
+            )
+
             class _C:
                 def fetchone(_s):
-                    return {"status": "CATALOGUED", "lufs_baked_at": None}
+                    return row
+
             return _C()
+
+        def commit(self):
+            pass
 
     with patch.object(bal, "_probe_streams", return_value=_probe("300", 48000)), \
          patch.object(bal, "_has_attached_picture", return_value=False), \

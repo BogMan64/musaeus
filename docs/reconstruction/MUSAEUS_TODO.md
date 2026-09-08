@@ -85,6 +85,44 @@ Do NOT run `organize` while the bake runs; both move files.
    AST guard) and `3ba4341` (relative fragment rule in CorruptStage,
    6/11 -> 11/11) are committed and unpushed.
 
+## P1a — added 2026-09-08 (decode gate + bit rot)
+
+1. **`bitrot` is protecting 8.8% of the masters.** Measured 2026-09-08:
+   `archive_tier_hashes` holds **1,385 baselines** against **15,816 files**
+   in `ALAC_Archive`. The stage works — it is the only thing in MUSAEUS that
+   can catch a file which decoded cleanly in September and rots in January —
+   but a file with no baseline entry is reported as *new*, not as corrupt,
+   so 91% of the archive is currently outside its reach.
+
+   **Do this:** `~/musaeus_jobs/bitrot.sh baseline`, once, after the CAR
+   build finishes. Then `~/musaeus_jobs/bitrot.sh verify` on whatever
+   schedule you like.
+
+   **Read before re-baselining:** a rebaseline records whatever is on disk
+   *right now* as the truth. Baseline a file that is already rotted and the
+   rot becomes the baseline and is never reported again. Baseline after a
+   bake, never in response to an unexplained mismatch.
+
+2. **Run `~/musaeus_jobs/recheck_decode_failures.sh` once, after the
+   2026-09-08 sweep finishes.** That sweep was launched from code that
+   counted any ffmpeg stderr as damage, and kept it in memory for the whole
+   run. Broken cover art therefore reads as broken audio at a rate of about
+   0.15% — three false accusations in the first 1,950 files, so expect
+   roughly 18 by the end. The recheck decodes only the rows already marked
+   damaged and clears the ones that were never damaged. Real damage stays
+   flagged.
+
+3. **`Spirit of the West — Homelands [Jigs - the Kesh, the Blackthorn
+   Stick]` needs a ruling.** Found by the new pre-bake gate on its first
+   run, so it is one of the four previously-undiagnosed unbaked rows.
+   ffmpeg says `Error while decoding stream #0:0: Not yet implemented in
+   FFmpeg, patches welcome`, repeated 17 times. That names the **audio**
+   stream, so it is not the cover-art false positive. It may be genuine
+   damage or an ALAC feature this ffmpeg build cannot handle — the two look
+   the same from here, and the difference decides whether the answer is
+   re-source or upgrade ffmpeg. Either way it cannot be baked until it can
+   be decoded.
+
 ## P2 — needs Grey's judgement, cannot be automated
 
 3. **QUARANTINE is 3.1 GB and nobody has ruled on it.**

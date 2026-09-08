@@ -82,7 +82,9 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from musaeus.config import get_config  # noqa: E402
 from musaeus.db import open_db  # noqa: E402
+from musaeus.deep_scan import ensure_columns as _deep_scan_ensure_columns  # noqa: E402
 from musaeus.idle_throttle import IdleThrottle  # noqa: E402
+from musaeus.stages.corrupt import ffmpeg_decode_check  # noqa: E402
 
 FFMPEG = "ffmpeg"
 FFPROBE = "ffprobe"
@@ -485,6 +487,56 @@ def _unmigrated_count(conn, library_dir: Path) -> int:
     ).fetchone()[0]
 
 
+def _decode_gate(conn, row_id: int, source: Path, execute: bool) -> str:
+    """Refuse to bake a master whose audio does not decode. "" means proceed.
+
+    The bake reads a master and writes a second file from it. If the master
+    is damaged inside the stream, that produces a damaged EDITION -- a second
+    copy of the same fault, in a tier whose whole purpose is to be the one you
+    listen to. Four such masters surfaced on 2026-09-06 only because the bake
+    happened to touch them: Billy Joel, Nina Simone, BTO and Tower of Power,
+    all reporting `[alac] Error` or a truncated mov atom. Nothing was checking
+    first; this is that check.
+
+    A row that has never been decode-checked is decoded HERE rather than
+    skipped. Skipping would mean an unswept row silently bypasses the gate,
+    which is the same shape of hole as the pipeline's bounded new-arrival
+    budget. After scripts/decode_audit.py's whole-library sweep this costs
+    nothing on a normal run -- only new arrivals are unchecked -- and a full
+    decode is a fraction of a two-pass loudnorm anyway.
+
+    What this does NOT catch is bit rot: a row checked in September and rotted
+    in January still reads as clean. That is musaeus/stages/bitrot.py's job,
+    via SHA-256 against archive_tier_hashes. The two are complementary.
+    """
+    checked = conn.execute(
+        "SELECT decode_ok, decode_checked_at FROM archive WHERE id = ?", (row_id,)
+    ).fetchone()
+    if checked is None:
+        return ""
+    if checked["decode_checked_at"] and checked["decode_ok"] == 0:
+        return (f"SKIP  {source.name}: master fails to decode -- not baked "
+                f"(see decode_errors; re-judge with "
+                f"scripts/decode_audit.py --recheck-failures)")
+    if checked["decode_checked_at"]:
+        return ""
+
+    good, detail = ffmpeg_decode_check(source, seconds=0)
+    if execute:
+        # Bookkeeping only, and the same three columns CorruptStage and
+        # decode_audit.py write. A dry run stays read-only, as the rest of
+        # this script does.
+        conn.execute(
+            "UPDATE archive SET decode_checked_at = ?, decode_ok = ?, "
+            "decode_errors = ? WHERE id = ?",
+            (datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+             1 if good else 0, 0 if good else 1, row_id))
+        conn.commit()
+    if not good:
+        return f"SKIP  {source.name}: master fails to decode -- not baked: {detail[:120]}"
+    return ""
+
+
 def _process_one(conn, row: dict, archive_dir: Path, library_dir: Path, execute: bool) -> str:
     source = Path(row["file_path"])
 
@@ -497,6 +549,10 @@ def _process_one(conn, row: dict, archive_dir: Path, library_dir: Path, execute:
         return f"SKIP  {source.name}: already baked (re-check raced initial snapshot)"
     if not source.exists():
         return f"ERROR {source.name}: source missing on disk"
+
+    refusal = _decode_gate(conn, row["id"], source, execute)
+    if refusal:
+        return refusal
 
     target = _library_path_for(source, archive_dir, library_dir)
 
@@ -611,6 +667,9 @@ def main() -> int:
     # because an acousticid drain held it. Wait rather than abort a run that
     # has already spent hours of CPU.
     conn.execute("PRAGMA busy_timeout = 300000")  # 5 minutes
+    # decode_ok / decode_checked_at / decode_errors live here, not in the
+    # base schema. The gate below reads them.
+    _deep_scan_ensure_columns(conn)
 
     unmigrated = _unmigrated_count(conn, library_dir)
     if unmigrated:
