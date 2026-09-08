@@ -168,6 +168,24 @@ def main() -> int:
             "WHERE id = ?", (ts, 1 if good else 0, 0 if good else 1, r["id"]))
         if good:
             ok += 1
+            if args.recheck_failures:
+                # This row was on record as damaged and is not. Say so in
+                # `events`, which is what rebuild.py reconstructs state
+                # from: a DECODE_FAILED with nothing after it, beside a row
+                # reading clean, leaves a later reader to guess. The
+                # original event stays -- the trail is corrected, never
+                # shortened. Written here so nobody has to remember to do
+                # it by hand, which is how the first three were fixed.
+                conn.execute(
+                    "INSERT INTO events(run_id,ts,event_type,file_path,old_value,"
+                    "new_value,stage,note) VALUES(?,?,?,?,?,?,?,?)",
+                    (run_id, ts, "DECODE_VERDICT_VACATED", str(p), "decode_ok=0",
+                     "decode_ok=1", "decode_audit",
+                     "re-decoded clean under the current definition of damage; "
+                     "the earlier DECODE_FAILED verdict is vacated, not deleted"))
+                print("  ✓ vacated  %-24s %s"
+                      % ((r["artist"] or "")[:24], (r["title"] or "")[:40]),
+                      flush=True)
         else:
             bad += 1
             failures.append({
