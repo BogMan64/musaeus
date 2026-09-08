@@ -81,13 +81,14 @@ Do NOT run `organize` while the bake runs; both move files.
    wants to re-measure. Doing it properly needs encoder-artefact analysis
    (scale-factor banding), not a cutoff threshold.
 
-2. **Push the pending commits.** `898313e` (four dead CLI commands restored +
-   AST guard) and `3ba4341` (relative fragment rule in CorruptStage,
-   6/11 -> 11/11) are committed and unpushed.
+2. ~~**Push the pending commits.**~~ **DONE 2026-09-08.** Eight commits
+   pushed to `fix/dedupe-policy-and-permissions-sweep` (`0394814..1ab15f2`),
+   including the decode gate and the cover-art fix. Nothing unpushed.
 
 ## P1a — added 2026-09-08 (decode gate + bit rot)
 
-1. **`bitrot` is protecting 8.8% of the masters.** Measured 2026-09-08:
+1. ~~**`bitrot` is protecting 8.8% of the masters.**~~ **It was protecting
+   0%.** Measured 2026-09-08:
    `archive_tier_hashes` holds **1,385 baselines** against **15,816 files**
    in `ALAC_Archive`. The stage works — it is the only thing in MUSAEUS that
    can catch a file which decoded cleanly in September and rots in January —
@@ -103,7 +104,66 @@ Do NOT run `organize` while the bake runs; both move files.
    rot becomes the baseline and is never reported again. Baseline after a
    bake, never in response to an unexplained mismatch.
 
-2. **Run `~/musaeus_jobs/recheck_decode_failures.sh` once, after the
+   **DONE 2026-09-08** — and a verify pass first showed the 8.8% figure was
+   generous. `archive_tier_hashes` keys on **path**, and every one of the
+   1,385 baselined paths was gone from disk:
+
+       files to verify: 15816
+       ok: 0
+       corrupt (hash mismatch): 0
+       new (no baseline yet): 15816
+       missing from disk (was baselined, gone now): 1385
+
+   So the baseline was not 8.8% valid. It was **0%** valid. Nothing on disk
+   had a usable baseline, and the rebaseline had nothing to overwrite —
+   which is the only reason it was safe to run against a live library.
+
+2. **`bitrot`'s baseline goes stale every time a file moves, and MUSAEUS
+   moves files constantly.** This is the real defect the verify pass
+   exposed, and it will silently recur.
+
+   `archive_tier_hashes.path` is the key. `organize`, `canonicalize`,
+   `finalize` and `migrate_to_archive` all rename or relocate files as a
+   matter of course, and the LUFS bake rewrites `archive.file_path`
+   outright. Every one of those quietly orphans the baseline row. A verify
+   run afterwards reports the file as **new**, not as corrupt — so the check
+   goes silent rather than loud, and a silent integrity check reads exactly
+   like a passing one.
+
+   That is the same shape as the `library files with no row: 0` incident:
+   a green result that means "I looked at nothing".
+
+   **Options, in order of how much they are worth:**
+   - key the baseline on `audio_hash` (PCM identity, already computed,
+     already survives re-tagging and moves) instead of on path
+   - failing that, re-baseline as the last step of any run that moves
+     files, and make `verify` FAIL rather than pass when the "new" count
+     is a large fraction of the library
+
+   Until one of those lands, treat a clean `bitrot verify` as meaningful
+   only if its `new:` count is near zero. **Check that line first.**
+
+3. **`--dry-run` previews nothing for 21 of the 31 stages.** It prints
+   `no preview available for this stage` and the run wrapper never calls
+   the stage at all (`musaeus/planner.py:199` — a stage without a
+   `plan_candidates` method gets a `None` count and is skipped).
+
+   Affected: `preflight, permissions, sentinel, deny-list, scholar, health,
+   corrupt, albumart, artist-consolidate, various-artists-fix,
+   tribute-quarantine, cross-dupe, neardupe, classical-composer,
+   canonicalize, finalize, organize, enrich, mb_enrich, identity-tag,
+   bitrot`.
+
+   This has already cost real work: an overnight `musaeus corrupt
+   --dry-run` scan was queued and did nothing, returning in zero seconds.
+   The output is not wrong — it says plainly that it cannot preview — but
+   it is easy to read as "nothing to do", especially at the end of a long
+   day.
+
+   **Do not use `--dry-run` to estimate the scope of those stages.** It is
+   not a preview; it is an admission that there is no preview.
+
+4. **Run `~/musaeus_jobs/recheck_decode_failures.sh` once, after the
    2026-09-08 sweep finishes.** That sweep was launched from code that
    counted any ffmpeg stderr as damage, and kept it in memory for the whole
    run. Broken cover art therefore reads as broken audio at a rate of about
@@ -118,7 +178,7 @@ Do NOT run `organize` while the bake runs; both move files.
    `MUSAEUS_decode_failures_2026-09-08.csv`. Nothing was moved or deleted
    either way; a wrong entry there costs a second look, not a file.
 
-3. **`Spirit of the West — Homelands [Jigs - the Kesh, the Blackthorn
+5. **`Spirit of the West — Homelands [Jigs - the Kesh, the Blackthorn
    Stick]` is damaged. Re-source it.** Found by the new pre-bake gate on its
    first run, so it is one of the four previously-undiagnosed unbaked rows.
 
