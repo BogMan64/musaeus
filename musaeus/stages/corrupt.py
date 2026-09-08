@@ -213,6 +213,87 @@ def check_file(
     return False, ""
 
 
+# An .m4a carries its cover art as a second, VIDEO stream, and `ffmpeg -i
+# file -f null -` decodes every stream in the container, not just the audio.
+# So a file with broken artwork and perfect audio still writes decoder errors
+# to stderr. `-vn` stops ffmpeg DECODING the artwork, which removes most of
+# them, and it is in the command below. It cannot remove all of them: the
+# mjpeg header is parsed at demux time, before stream selection applies, so
+# two lines survive `-vn` and plain `ffprobe` prints them too. Hence both a
+# narrower command and a classifier -- neither alone is enough.
+#
+# Measured 2026-09-08 on `Andy Gibb - (Love Is) Thicker Than Water` and
+# `Baltimora - Tarzan Boy`: both decode their full ALAC stream with exit 0,
+# and both were reported as damaged solely on `[mjpeg @ ...] unable to decode
+# APP fields`. They are the regression fixtures for this function.
+#
+# This is a DENYLIST -- drop lines known to come from an image decoder, keep
+# everything else -- and the direction matters. An unrecognised image codec
+# leaks through as a false positive, which lands in the review CSV and gets a
+# ruling. An allowlist of known audio errors would fail the other way: an
+# unrecognised audio error would be dropped and a damaged master would be
+# baked into an edition. Fail towards the human, not towards the encoder.
+_IMAGE_DECODER_TAGS = frozenset({
+    "mjpeg", "png", "bmp", "gif", "tiff", "webp", "image2", "swscaler",
+})
+_TAGGED_STDERR_RE = re.compile(r"^\[(?P<tag>[A-Za-z0-9_]+) @ 0x[0-9a-f]+\]")
+_STREAM_DECODE_ERROR_RE = re.compile(r"^Error while decoding stream #\d+:(?P<idx>\d+)")
+# A muxer throughput complaint, not a statement about the audio. It only
+# appears without `-vn`; the rule is here so the classifier still holds if
+# someone later changes the command.
+_PACKETS_BUFFERED_RE = re.compile(
+    r"^Too many packets buffered for output stream \d+:(?P<idx>\d+)")
+
+
+def audio_stream_index(path: Path) -> int | None:
+    """The container index of the first audio stream, or None if unknown.
+
+    Needed because ffmpeg's `Error while decoding stream #0:1` lines carry no
+    bracketed decoder tag, so they cannot be attributed by name -- only by
+    which stream they name. On these files #0:1 is the artwork.
+    """
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=60)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    raw = (proc.stdout or "").strip().splitlines()
+    if not raw:
+        return None
+    try:
+        return int(raw[0].strip().rstrip(","))
+    except ValueError:
+        return None
+
+
+def audio_relevant_stderr(stderr: str, audio_index: int | None) -> str:
+    """Strip the lines that describe the artwork, keep the ones about audio.
+
+    Pure and side-effect free on purpose: the classification is what is worth
+    testing, and it can be tested without ffmpeg or a real damaged file.
+    """
+    kept = []
+    for line in (stderr or "").splitlines():
+        if not line.strip():
+            continue
+        tagged = _TAGGED_STDERR_RE.match(line)
+        if tagged and tagged.group("tag").lower() in _IMAGE_DECODER_TAGS:
+            continue
+        streamed = (_STREAM_DECODE_ERROR_RE.match(line)
+                    or _PACKETS_BUFFERED_RE.match(line))
+        if streamed and audio_index is not None:
+            # `audio_index` is an INPUT stream index and these lines name an
+            # OUTPUT one. With no -map they agree, and where they do not the
+            # mismatch keeps the line rather than dropping it -- a false
+            # positive a human rules on, not a silent acquittal.
+            if int(streamed.group("idx")) != audio_index:
+                continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def ffmpeg_decode_check(path: Path, seconds: int = 0) -> tuple[bool, str]:
     """Actually DECODE the audio and report whether ffmpeg found errors.
 
@@ -231,19 +312,33 @@ def ffmpeg_decode_check(path: Path, seconds: int = 0) -> tuple[bool, str]:
     change: ORPHEUS decodes the first 10 seconds, which cannot see damage
     later in the track. `seconds=0` decodes the whole file. The caller
     chooses, because a full decode over a large library is not free.
+
+    Cover-art errors are not audio errors -- see the note above
+    `audio_relevant_stderr`. Within DEFAULT_PIPELINE this stage runs BEFORE
+    `albumart`, so the files it sees usually carry no artwork yet and the
+    distinction never arose; it surfaced when scripts/decode_audit.py became
+    the first thing to decode the FINISHED library.
     """
     cmd = ["ffmpeg", "-v", "error", "-i", str(path)]
     if seconds:
         cmd += ["-t", str(seconds)]
-    cmd += ["-f", "null", "-"]
+    # -vn: decode the audio, not the cover art. Without it a file with broken
+    # artwork also emits "Error while decoding stream #0:1" and "Too many
+    # packets buffered for output stream 0:1", neither of which is a fact
+    # about the audio.
+    cmd += ["-vn", "-f", "null", "-"]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_DECODE_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         return False, f"decode timed out after {_DECODE_TIMEOUT_S}s"
     except OSError as exc:
         return False, f"ffmpeg unavailable: {exc}"
-    if proc.returncode != 0 or proc.stderr.strip():
-        return False, (proc.stderr or f"ffmpeg exited {proc.returncode}").strip()[:200]
+    detail = (proc.stderr or "").strip()
+    if detail:
+        # Only pay for the extra ffprobe when there is something to classify.
+        detail = audio_relevant_stderr(detail, audio_stream_index(path))
+    if proc.returncode != 0 or detail:
+        return False, (detail or f"ffmpeg exited {proc.returncode}").strip()[:200]
     return True, ""
 
 

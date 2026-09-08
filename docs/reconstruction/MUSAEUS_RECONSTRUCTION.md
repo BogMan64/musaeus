@@ -243,6 +243,41 @@ form, so every article artist reported as unverified — 3,161 files, every
 run, on a library that was correct on disk.
 **Lesson:** a permanently-red check is a check nobody reads.
 
+### Checks that accused the wrong thing
+
+**A whole-library decode audit reported three undamaged files as damaged.**
+`ffmpeg -i file -f null -` decodes *every* stream in the container, and an
+.m4a carries its cover art as a second, video stream. Three files with a
+malformed embedded JPEG — Andy Gibb, Baltimora, Chamillionaire — decoded
+their full ALAC stream with exit 0 and were still called damaged, because
+the verdict was `if proc.stderr.strip(): return False`. The artwork's
+decoder had written to stderr; nothing asked which stream it was about.
+
+Neither `-vn` nor `-map 0:a` suppresses those lines on its own: the mjpeg
+header is parsed at demux time, before stream selection applies, so plain
+`ffprobe` prints them too. The fix needs both a narrower command and a
+classifier.
+
+**Why it had never been seen.** In `DEFAULT_PIPELINE` the order is
+`corrupt → albumart`. CorruptStage decode-checks files *before* artwork is
+embedded, so the files it sees have no image stream. The same defect sat in
+`ffmpeg_decode_check` the whole time and could not fire. It surfaced the
+moment `scripts/decode_audit.py` became the first thing to decode the
+**finished** library.
+
+**Guard:** `audio_relevant_stderr()` in `musaeus/stages/corrupt.py`, with
+`-vn` on the command, and `decode_audit.py` now *delegates* to that one
+function rather than carrying its own copy — the two copies were what let
+them disagree in the first place. Vacated verdicts are corrected by a
+`DECODE_VERDICT_VACATED` event, never by deleting the original.
+**Lesson, and it is the one that generalises:** the classifier is a
+**denylist** — drop lines known to come from an image decoder, keep
+everything else. An unrecognised image codec then leaks through as a false
+positive, lands in the review CSV, and a human rules on it. An allowlist of
+known audio errors would fail the other way: an unrecognised audio error
+would be dropped and a damaged master would be baked into an edition.
+**Fail towards the human, not towards the encoder.**
+
 ### Rules that fought each other
 
 **`tagger` rewrote 3,161 files on every run, forever.** Two rules owned the

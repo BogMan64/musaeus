@@ -39,9 +39,24 @@ Safety
 - Commits every 25 files, so a kill loses at most 25 results.
 
 Usage:
-    python3 scripts/decode_audit.py                # scan, write results
-    python3 scripts/decode_audit.py --limit 50     # try a small batch first
-    python3 scripts/decode_audit.py --dry-run      # count only, decode nothing
+    python3 scripts/decode_audit.py                    # scan, write results
+    python3 scripts/decode_audit.py --limit 50         # try a small batch first
+    python3 scripts/decode_audit.py --dry-run          # count only, decode nothing
+    python3 scripts/decode_audit.py --recheck-failures # re-judge the rows already
+                                                       # marked damaged
+
+What it does NOT catch
+----------------------
+Bit rot. A row is decode-checked once and never revisited, so a file that
+decoded cleanly in September and rots in January still reads as clean here.
+That is `musaeus/stages/bitrot.py`'s job -- SHA-256 against the baseline in
+`archive_tier_hashes` -- and the two are complementary, not redundant:
+
+    decode_audit   damage present ON ARRIVAL       before a bake, new files
+    bitrot         damage that appears LATER       periodically, on the masters
+
+Neither is in DEFAULT_PIPELINE. decode_audit is called as a pre-bake gate by
+scripts/alac_library/build_alac_library.py; bitrot is run on demand.
 """
 
 from __future__ import annotations
@@ -51,7 +66,6 @@ import csv
 import datetime
 import signal
 import sqlite3
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -60,6 +74,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from musaeus.config import MusicConfig  # noqa: E402
 from musaeus.deep_scan import ensure_columns as deep_scan_ensure_columns  # noqa: E402
+from musaeus.stages.corrupt import ffmpeg_decode_check  # noqa: E402
 
 COMMIT_EVERY = 25
 _stop = False
@@ -73,21 +88,22 @@ def _on_signal(signum, frame):  # noqa: ARG001
           flush=True)
 
 
-def decode(path: Path, timeout: int = 900) -> tuple[bool, str]:
+def decode(path: Path) -> tuple[bool, str]:
     """Decode the whole file to nothing. True when ffmpeg reports no error.
 
     Deliberately a FULL decode, not `-t 30`: the damage this is looking for
     sits in the middle of the stream, which is exactly what a partial decode
-    would miss.
+    would miss. `seconds=0` is what asks for that.
+
+    This DELEGATES to CorruptStage rather than running its own ffmpeg. It
+    carried a private copy until 2026-09-08, and that copy is exactly how the
+    cover-art false positive got here: the two implementations were free to
+    disagree about what counts as damage, and they did. MUSAEUS already has
+    six authorities that can silently disagree about an artist's genre; a
+    seventh that disagrees about whether a file is broken is not wanted.
     """
-    try:
-        r = subprocess.run(
-            ["ffmpeg", "-nostdin", "-v", "error", "-i", str(path), "-f", "null", "-"],
-            capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return False, "timed out after %ds" % timeout
-    err = (r.stderr or "").strip()
-    return (not err), err.splitlines()[0][:200] if err else ""
+    good, err = ffmpeg_decode_check(path, seconds=0)
+    return good, (err.splitlines()[0][:200] if err else "")
 
 
 def main() -> int:
@@ -96,6 +112,10 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0, help="stop after N files")
     ap.add_argument("--dry-run", action="store_true",
                     help="report how many would be checked, decode nothing")
+    ap.add_argument("--recheck-failures", action="store_true",
+                    help="re-decode only the rows already marked decode_ok=0, "
+                         "instead of the never-checked ones. Use after a change "
+                         "to what counts as damage, to clear stale verdicts.")
     args = ap.parse_args()
 
     cfg = MusicConfig.from_env()
@@ -104,15 +124,19 @@ def main() -> int:
     conn.execute("PRAGMA busy_timeout=120000")
     deep_scan_ensure_columns(conn)
 
+    where = ("decode_ok = 0" if args.recheck_failures
+             else "decode_checked_at IS NULL")
     rows = conn.execute(
         "SELECT id, artist, title, file_path, duration, size_bytes, codec "
-        "FROM archive WHERE status='CATALOGUED' AND decode_checked_at IS NULL "
-        "ORDER BY id"
+        "FROM archive WHERE status='CATALOGUED' AND " + where + " ORDER BY id"
     ).fetchall()
     total_cat = conn.execute(
         "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'").fetchone()[0]
-    print("catalogued: %d    never decode-checked: %d (%.1f%%)"
-          % (total_cat, len(rows), 100 * len(rows) / max(total_cat, 1)))
+    print("catalogued: %d    %s: %d (%.1f%%)"
+          % (total_cat,
+             "already marked damaged" if args.recheck_failures
+             else "never decode-checked",
+             len(rows), 100 * len(rows) / max(total_cat, 1)))
     if args.limit:
         rows = rows[:args.limit]
     if args.dry_run or not rows:
