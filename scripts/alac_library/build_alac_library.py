@@ -526,6 +526,12 @@ def _decode_gate(conn, row_id: int, source: Path, execute: bool) -> str:
         # Bookkeeping only, and the same three columns CorruptStage and
         # decode_audit.py write. A dry run stays read-only, as the rest of
         # this script does.
+        #
+        # Committing here is safe because it happens BEFORE any disk work for
+        # this row, so it cannot split the deliberate disk-then-DB sequence
+        # at the end of _process_one (SOP §4.12). This script already commits
+        # once per row; this is the same boundary, not a new one. A refusal
+        # needs its own commit because the row never reaches that later one.
         conn.execute(
             "UPDATE archive SET decode_checked_at = ?, decode_ok = ?, "
             "decode_errors = ? WHERE id = ?",

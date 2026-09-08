@@ -268,7 +268,12 @@ moment `scripts/decode_audit.py` became the first thing to decode the
 **Guard:** `audio_relevant_stderr()` in `musaeus/stages/corrupt.py`, with
 `-vn` on the command, and `decode_audit.py` now *delegates* to that one
 function rather than carrying its own copy — the two copies were what let
-them disagree in the first place. Vacated verdicts are corrected by a
+them disagree in the first place. A **third** copy was found the same day in
+`musaeus/duration.py::decodes_cleanly()` and now delegates too. A **fourth**
+exists in `scripts/car_library/vendor/orpheus_noise_generator.py` and is
+deliberately left alone: it only ever checks the six noise beds the
+generator creates itself, which carry no artwork, so the defect cannot fire
+there. That is a reason, not an oversight — do not "fix" it without one. Vacated verdicts are corrected by a
 `DECODE_VERDICT_VACATED` event, never by deleting the original.
 **Lesson, and it is the one that generalises:** the classifier is a
 **denylist** — drop lines known to come from an image decoder, keep

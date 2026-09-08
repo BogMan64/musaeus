@@ -168,10 +168,22 @@ def decodes_cleanly(path: Path) -> tuple[bool, str | None]:
     code is how a truncated file passes a corruption check.
 
     Costs a full decode, so sample rather than sweep.
+
+    `-vn` and the stderr classification are not optional detail: an .m4a
+    carries its cover art as a video stream, ffmpeg decodes it too, and
+    "any stderr means damage" therefore calls a file with a malformed JPEG
+    and perfect audio damaged. That happened on 2026-09-08 -- see
+    `audio_relevant_stderr` in stages/corrupt.py, which owns the rule.
+    This function delegates rather than repeating it; the whole incident was
+    caused by two copies of that judgement disagreeing.
     """
+    # Imported here, not at module scope: stages.corrupt imports THIS module.
+    # deep_scan.py uses the same function-level import for the same reason.
+    from .stages.corrupt import audio_relevant_stderr, audio_stream_index
+
     try:
         r = subprocess.run(
-            ["ffmpeg", "-v", "error", "-nostats", "-i", str(path), "-f", "null", "-"],
+            ["ffmpeg", "-v", "error", "-nostats", "-i", str(path), "-vn", "-f", "null", "-"],
             capture_output=True,
             text=True,
             timeout=_DECODE_TIMEOUT_S,
@@ -179,6 +191,8 @@ def decodes_cleanly(path: Path) -> tuple[bool, str | None]:
     except (subprocess.SubprocessError, OSError) as exc:
         return False, str(exc)
     stderr = (r.stderr or "").strip()
+    if stderr:
+        stderr = audio_relevant_stderr(stderr, audio_stream_index(path))
     if r.returncode != 0 or stderr:
         first = stderr.splitlines()[0] if stderr else f"ffmpeg exited {r.returncode}"
         return False, first
