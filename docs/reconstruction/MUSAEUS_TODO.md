@@ -113,15 +113,23 @@ Do NOT run `organize` while the bake runs; both move files.
    flagged.
 
 3. **`Spirit of the West — Homelands [Jigs - the Kesh, the Blackthorn
-   Stick]` needs a ruling.** Found by the new pre-bake gate on its first
-   run, so it is one of the four previously-undiagnosed unbaked rows.
-   ffmpeg says `Error while decoding stream #0:0: Not yet implemented in
-   FFmpeg, patches welcome`, repeated 17 times. That names the **audio**
-   stream, so it is not the cover-art false positive. It may be genuine
-   damage or an ALAC feature this ffmpeg build cannot handle — the two look
-   the same from here, and the difference decides whether the answer is
-   re-source or upgrade ffmpeg. Either way it cannot be baked until it can
-   be decoded.
+   Stick]` is damaged. Re-source it.** Found by the new pre-bake gate on its
+   first run, so it is one of the four previously-undiagnosed unbaked rows.
+
+   Diagnosed 2026-09-08. The master in `ALAC_Archive/2026-09-04/Spirit of
+   the West/Spirituality (1983-2008...)` is 48 kHz / 24-bit ALAC declaring
+   **237.6 s**. It decodes cleanly to **2:47** and then fails for the rest of
+   the file: `Error while decoding stream #0:0: Not yet implemented in
+   FFmpeg, patches welcome` ×17, then `Invalid data found`. `#0:0` is the
+   **audio** stream, so this is not the cover-art false positive — and it is
+   not an unsupported ALAC feature either, or it would have failed at the
+   first frame rather than 70% of the way in. It is damage inside the stream:
+   exactly the shape the decode audit exists to find, and exactly what would
+   otherwise have been baked into a listening copy.
+
+   A different recording of the same tune (96 kHz, from *Tripping Up the
+   Stairs*) is already in ALAC-Library and decodes in full. It is a different
+   album version, not a replacement.
 
 ## P2 — needs Grey's judgement, cannot be automated
 
