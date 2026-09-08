@@ -206,7 +206,42 @@ Do NOT run `organize` while the bake runs; both move files.
    whose scope somebody actually wants to estimate before committing hours
    to a run.
 
-4. **Run `~/musaeus_jobs/recheck_decode_failures.sh` once, after the
+4. ~~**Run `~/musaeus_jobs/recheck_decode_failures.sh` once.**~~
+   **DONE 2026-09-08. The library has been decoded end to end.**
+
+   **16,107 of 16,107 CATALOGUED files decoded in full. 8 are damaged —
+   0.05%.** The sweep flagged 11; the recheck cleared 3 as cover-art false
+   positives, and every surviving error names the audio stream or the
+   container, none the artwork.
+
+   Ruling CSV: `~/Desktop/MUSAEUS_decode_damaged_2026-09-08.csv`.
+
+   | artist | title | verdict |
+   |---|---|---|
+   | Carlos Santana | Bella | no other copy — re-source |
+   | Daryl Hall & John Oates | Kiss on My List | only an 85s copy against 265s |
+   | Foreigner | Feels like the First Time (2008 Remaster) | only a 247s copy against 161s |
+   | M/a/r/r/s | Pump Up The Volume (UK 12" Remix) | only a 308s copy against 389s |
+   | Rage Against the Machine | Testify | replaceable — clean copy, same length |
+   | Spirit of the West | Homelands [Jigs…] | replaceable |
+   | Who, The | Cut My Hair | replaceable |
+   | ZZ Top | Legs | replaceable |
+
+   **Read the middle three carefully before deleting anything.** A first
+   pass said all seven had "another clean copy" and that was wrong: a
+   same-title match is not a same-recording match. An 85-second file is not
+   a replacement for a 265-second song, and a 12" remix is not its own
+   single edit. Only a length match within 5% earns the word replaceable.
+
+   **Side finding worth its own look:** that 85-second *Kiss on My List* is
+   itself almost certainly a fragment, and `doctor`'s truncated-fragment
+   check will never say so — it flags files under 60s beside a sibling over
+   120s, and 85s falls in the gap between those bounds. Widening them is
+   what the 120s-floor measurement already ruled out (397 complete
+   recordings flagged), so the gap is deliberate, not an oversight. It does
+   mean fragments between 60s and 120s are invisible to that check.
+
+6. ~~**Run `~/musaeus_jobs/recheck_decode_failures.sh` once, after the
    2026-09-08 sweep finishes.** That sweep was launched from code that
    counted any ffmpeg stderr as damage, and kept it in memory for the whole
    run. Broken cover art therefore reads as broken audio at a rate of about
@@ -219,7 +254,7 @@ Do NOT run `organize` while the bake runs; both move files.
    recheck** — it is a file, written once, and it will list those false
    accusations. Read the recheck's own output as the answer, not
    `MUSAEUS_decode_failures_2026-09-08.csv`. Nothing was moved or deleted
-   either way; a wrong entry there costs a second look, not a file.
+   either way; a wrong entry there costs a second look, not a file.~~
 
 5. **`Spirit of the West — Homelands [Jigs - the Kesh, the Blackthorn
    Stick]` is damaged. Re-source it.** Found by the new pre-bake gate on its
