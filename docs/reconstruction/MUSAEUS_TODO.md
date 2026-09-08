@@ -233,6 +233,26 @@ Do NOT run `organize` while the bake runs; both move files.
    a replacement for a 265-second song, and a 12" remix is not its own
    single edit. Only a length match within 5% earns the word replaceable.
 
+   **RESOLVED 2026-09-08 — the four replaceable copies are deleted.**
+   Manifest: `~/Desktop/MUSAEUS_deleted_damaged_2026-09-08.csv`. Every
+   keeper was re-decoded in full immediately before its damaged twin was
+   removed, and matched on duration to within 0.03 s. The four unreplaceable
+   ones are untouched and still need a ruling.
+
+   **A second selection bug, caught only because deletion is irreversible.**
+   The CSV named the wrong survivor for Spirit of the West. It picked the
+   *first* candidate inside the 5% window — a 241.2 s, 44.1 kHz/16-bit copy
+   — when the real match was a **237.59 s, 96 kHz/24-bit** copy from
+   *Tripping Up the Stairs*, 0.03 s from the damaged file. Both passed the
+   window; only one is the same recording, and it is also the better master.
+
+   The tolerance test answered "is there something close enough?" when the
+   question is **"which of these is the same recording?"** Those differ
+   whenever more than one candidate qualifies. **Any future replaceability
+   check must rank candidates by closeness and show the runner-up**, not
+   return the first hit. A 5% window on a 4-minute song is ±12 seconds —
+   easily wide enough to admit a different take, an edit, or a remix.
+
    **Side finding worth its own look:** that 85-second *Kiss on My List* is
    itself almost certainly a fragment, and `doctor`'s truncated-fragment
    check will never say so — it flags files under 60s beside a sibling over
