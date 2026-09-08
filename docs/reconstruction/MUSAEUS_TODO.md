@@ -112,6 +112,12 @@ Do NOT run `organize` while the bake runs; both move files.
    damaged and clears the ones that were never damaged. Real damage stays
    flagged.
 
+   **The CSV that sweep writes to the Desktop is not corrected by the
+   recheck** — it is a file, written once, and it will list those false
+   accusations. Read the recheck's own output as the answer, not
+   `MUSAEUS_decode_failures_2026-09-08.csv`. Nothing was moved or deleted
+   either way; a wrong entry there costs a second look, not a file.
+
 3. **`Spirit of the West — Homelands [Jigs - the Kesh, the Blackthorn
    Stick]` is damaged. Re-source it.** Found by the new pre-bake gate on its
    first run, so it is one of the four previously-undiagnosed unbaked rows.
