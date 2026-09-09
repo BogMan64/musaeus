@@ -20,7 +20,7 @@ artist was wrong.
 
 Why MusicBrainz and not a hand-kept list
 ----------------------------------------
-`normalize.PROTECTED_ARTIST_NAMES` exists for the article-splitting bug and
+`normalize.ARTICLE_LOOKALIKE_ARTISTS` exists for the article-splitting bug and
 has to be maintained by hand -- it cannot know about an artist nobody has
 hit yet. MusicBrainz already publishes the canonical spelling, `mb_cache.db`
 holds 2,158 of them, and identity is now on the files as of the same day.

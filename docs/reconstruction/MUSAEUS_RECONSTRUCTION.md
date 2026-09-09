@@ -15,7 +15,19 @@ or an owner's ruling to settle, and every one would be re-litigated — wrongly
 **Sections 1, 2, 6 and 7 added 2026-09-08**, from source only — no database
 was opened, because a bit-rot rebaseline held the live one at the time. Where
 a figure comes from the 2026-09-07 measurement pass it is marked; where it
-comes from code it carries a `file:line`.
+comes from code it carries a `file:line`. Cross-checked against
+`musaeus doctor` on 2026-09-08; where the two disagreed, `doctor` won.
+
+> **The working copy of this document is
+> `docs/reconstruction/MUSAEUS_RECONSTRUCTION.md`, in the repository. Edit that
+> one and commit.** `~/Desktop/MUSAEUS_RECONSTRUCTION.md` is a published
+> artefact refreshed from it, and is not version-controlled.
+>
+> This convention exists because it was learned the hard way on 2026-09-08:
+> two sessions edited the Desktop copy within hours of each other, and the
+> loser's work disappeared with nothing to show that it had. In the repository
+> a collision is a merge conflict git puts in front of you; on the Desktop it
+> is an edit that silently never happened. Do not edit the Desktop file.
 
 ---
 
@@ -590,6 +602,51 @@ a PCM identity. The first version of that script asked for confirmation on
 stdin while its own heredoc held stdin — so it hit `EOFError` and deleted
 nothing. That is the shape a destructive tool should fail in.
 
+### One value answering two questions
+
+**An unreadable source would have deleted the last playable copy of its own
+recording.** M-01 in the Repair Register — the entry marked *START HERE — THIS
+ONE DESTROYS DATA* — fixed 2026-09-08 in commit `88ecf5c`.
+
+The CAR builder's resume check read:
+
+```python
+if _output_matches_source(file_path, output_file):
+    return "SKIP DONE ..."
+output_file.unlink()
+```
+
+`_output_matches_source()` (`scripts/car_library/vendor/build_aac_library.py:530`)
+compares source and output durations and returns `False` for two situations
+that are not alike at all:
+
+| what actually happened | deleting the output is |
+|---|---|
+| the output is wrong | correct — re-encode it |
+| the source could not be read | catastrophic — that encode is the last file that still plays |
+
+Only the first justifies destroying anything. The second is precisely when the
+car copy matters most: the master is gone, moved or rotted, and the encode made
+from it while it was healthy is all that survives.
+
+This was **reachable from an ordinary `--from-catalogue` build**, not an edge
+case — any row whose master has been deleted since its encode was made.
+
+**Guard:** the caller now probes the source before unlinking and raises rather
+than deletes when it cannot be read (`build_aac_library.py:604-625`).
+`_output_matches_source` is deliberately left exactly as it was — it answers a
+narrow question correctly, and the defect was never in the answer. Test:
+`tests/test_aac_unreadable_source_keeps_output.py`.
+
+**It had never fired.** No `CATALOGUED` row was missing its file on the day it
+was found, so the trigger did not exist.
+
+**Lesson:** a latent defect whose cost is silent permanent loss still earns a
+test, because the condition that arms it is one deletion away and this system
+deletes on rulings routinely. More generally — **a boolean that can mean two
+things will eventually be read as the wrong one.** Where `False` conflates
+"wrong" with "unknown", the damage happens at the caller, not at the check.
+
 ### Rules that fought each other
 
 **`tagger` rewrote 3,161 files on every run, forever.** Two rules owned the
@@ -985,6 +1042,47 @@ into an edition. **Fail towards the human, not towards the encoder** (§5).
 
 **Editions are never built from other editions**, and masters are never baked.
 An edition is derived and disposable; a master is not (§4).
+
+**Two corrections to the Repair Register**, both verified 2026-09-08 and
+recorded here because the Register will outlive the session that wrote it, and
+someone will act on its framing.
+
+*`build_aac_library.py` is no longer vendored byte-identically, and must not be
+re-synced.* The Register describes MUSAEUS's copy as byte-identical to
+ORPHEUS's. Measured: ORPHEUS's `SCRIPTS/build_aac_library.py` is **461 lines**;
+MUSAEUS's `scripts/car_library/vendor/build_aac_library.py` is **816**, having
+carried its own patches since 2026-08-16. Anyone following the Register's "fix
+both copies" instruction by syncing them would silently revert every one of
+those patches — including the M-01 guard in §5.
+
+*M-01 does not exist in ORPHEUS.* It is a one-repository fix. The Register's
+default assumption — that a defect in vendored code needs fixing in both places
+— does not hold here, and looking for it in ORPHEUS is wasted effort.
+
+**Three masters left `ALAC_Archive` on 2026-09-07/08, and it was not a
+defect.** Recorded because it was investigated once and would otherwise be
+investigated again. `bitrot --rebaseline` failed with three unreadable files —
+*Spirit of the West — Homelands*, *Who, The — Cut My Hair*, *ZZ Top — Legs* —
+and each had a `.bake_tmp.FAILED_VERIFY` artefact sitting in `ALAC-Library`,
+which made it look as though a failed bake had consumed its own source.
+
+It had not:
+
+- **Three were deleted deliberately** on the owner's ruling, 2026-09-08, each
+  carrying a `FILE_DELETED` event naming the keeper that replaced it.
+- **A fourth `FAILED_VERIFY`, *Steve Miller Band — Blue Odyssey (2)*, was
+  `DUPE_PURGED`** by dedupe-purge on **2026-09-05** — a different event three
+  days earlier. That is why the group looked asymmetric: it was never part of
+  the same story.
+- **"The bake consumed its source" is ruled out by construction.** Each baker
+  contains exactly two `.rename()` calls, and all four act on the temporary
+  output — `build_alac_library.py:350` (temp → `.FAILED_VERIFY`) and `:590`
+  (temp → target), with the same pair at `build_aac_library.py:378, 643`.
+  Neither baker renames, moves or unlinks a source anywhere.
+
+**Lesson:** a `FAILED_VERIFY` artefact beside a missing source is not evidence
+that one caused the other. Check the event log for the deletion — the reason is
+recorded there, with the keeper — before suspecting the code.
 
 ### Not currently possible, whatever the docstrings say
 

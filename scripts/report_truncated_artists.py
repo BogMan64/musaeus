@@ -52,14 +52,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from musaeus.stages.normalize import PROTECTED_ARTIST_NAMES  # noqa: E402
+from musaeus.stages.normalize import ARTICLE_LOOKALIKE_ARTISTS  # noqa: E402
 
 VAULT = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT")
 ARTIST_CANON = VAULT / "MetaData" / "artist_canon.tsv"
 DB = VAULT / "musaeus.db"
 OUT = Path.home() / "Desktop" / "MUSAEUS_Truncated_Artist_Report.csv"
 
-# Names that are legitimately lowercase or punctuation-led. PROTECTED_ARTIST_NAMES
+# Names that are legitimately lowercase or punctuation-led. ARTICLE_LOOKALIKE_ARTISTS
 # covers the ones normalize.py already defends; these are the rest this library
 # actually holds, confirmed by eye 2026-08-23.
 _KNOWN_STYLISED = {
@@ -111,7 +111,7 @@ def load_artist_canon() -> dict[str, str]:
 
 def _is_stylised(artist: str) -> bool:
     low = artist.strip().lower()
-    return low in PROTECTED_ARTIST_NAMES or low in _KNOWN_STYLISED
+    return low in ARTICLE_LOOKALIKE_ARTISTS or low in _KNOWN_STYLISED
 
 
 def collect(conn: sqlite3.Connection) -> dict[str, dict]:

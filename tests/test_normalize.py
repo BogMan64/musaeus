@@ -16,14 +16,14 @@ happens to also be a real leading article in 10+ other languages) was
 mis-normalized to "La Soul, De" in the live DB (2 real files affected).
 This wasn't caused by the case-sensitivity fix -- the original
 case-sensitive code already matched "De " exactly, no casing needed.
-Fixed via PROTECTED_ARTIST_NAMES, mirroring artist_consolidate.py's
+Fixed via ARTICLE_LOOKALIKE_ARTISTS, mirroring artist_consolidate.py's
 PROTECTED_FULL_ARTIST_NAMES pattern for the identical problem shape.
 """
 
 import pytest
 
 from musaeus.stages.normalize import (
-    PROTECTED_ARTIST_NAMES,
+    ARTICLE_LOOKALIKE_ARTISTS,
     _move_article_to_suffix,
     _normalise_artist,
     _smart_title_case,
@@ -89,8 +89,8 @@ class TestMoveArticleToSuffixProtectedNames:
     def test_protected_set_contents(self):
         # Guards against someone silently trimming this list back down
         # without realizing why each entry is there.
-        assert "de la soul" in PROTECTED_ARTIST_NAMES
-        assert "los lobos" in PROTECTED_ARTIST_NAMES
+        assert "de la soul" in ARTICLE_LOOKALIKE_ARTISTS
+        assert "los lobos" in ARTICLE_LOOKALIKE_ARTISTS
 
 
 # ── Parenthetical "(the)" is a WRONG form, not an already-correct one ────────

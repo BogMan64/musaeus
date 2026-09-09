@@ -117,3 +117,62 @@ def test_is_protected_folds_case_so_callers_cannot_forget() -> None:
     assert is_protected("  of monsters AND men  ")
     assert not is_protected("Bob Seger")
     assert not is_protected(None)
+
+
+# ── the identifier, not just the contents ────────────────────────────────────
+#
+# M-10, 2026-09-08. `PROTECTED_ARTIST_NAMES` was defined in two modules with
+# **disjoint** contents: the canon's ampersand bands, and normalize.py's
+# foreign-article lookalikes ("De La Soul"). Two frozensets, one name, two
+# jobs.
+#
+# The test above could not see it, and that is not a flaw in it — it guards
+# duplicated CONTENTS, needs `_MIN_SHARED_ENTRIES` matches to fire, and these
+# two sets share nothing. It answered its own question correctly. Nobody had
+# asked the other question.
+#
+# Nothing was actually broken: normalize leaves every canon name untouched,
+# because none of them match its article or caps patterns. The hazard was a
+# reader importing the wrong one and getting a guard that is silently empty
+# for the names they meant — which is this project's recurring shape, a
+# check that looks present and measures nothing.
+#
+# normalize's is now ARTICLE_LOOKALIKE_ARTISTS, named for what it protects
+# against rather than for "protected" in general.
+
+
+def test_only_the_canon_defines_the_protected_name() -> None:
+    """One identifier, one home — regardless of what is in it."""
+    offenders: list[str] = []
+    for path in sorted((_ROOT / "musaeus").rglob("*.py")):
+        if path == _HOME:
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError:  # pragma: no cover
+            continue
+        for node in ast.walk(tree):
+            target = None
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                target = node.target
+            elif isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                    and isinstance(node.targets[0], ast.Name):
+                target = node.targets[0]
+            if target is None or target.id != "PROTECTED_ARTIST_NAMES":
+                continue
+            # Re-exporting the canon's own object is the intended pattern
+            # (curator, organize and artist_consolidate all do it); defining
+            # a fresh literal under that name is not.
+            value = node.value
+            if isinstance(value, (ast.Set, ast.List, ast.Tuple, ast.Dict)) or (
+                isinstance(value, ast.Call)
+                and any(isinstance(a, (ast.Set, ast.List, ast.Tuple, ast.Dict))
+                        for a in value.args)
+            ):
+                offenders.append(f"{path.relative_to(_ROOT)}:{target.lineno}")
+    assert not offenders, (
+        "PROTECTED_ARTIST_NAMES is defined with fresh contents outside "
+        "musaeus/canon/protected_artists.py: " + ", ".join(offenders) +
+        ". Two sets under one name is M-10 -- import the canon, or give "
+        "yours a name that says what it protects against."
+    )

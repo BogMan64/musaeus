@@ -114,7 +114,17 @@ _DOTTED_ABBREV_RE = re.compile(r"^(?:[A-Za-z]\.){2,}[A-Za-z]?$")
 # Ärzte, Das EFX) -- not present in this library today, but added
 # defensively since the failure mode is identical and would otherwise
 # silently corrupt them the moment they're ingested.
-PROTECTED_ARTIST_NAMES: frozenset[str] = frozenset(
+# Named for what it protects them FROM, not for "protected" in general.
+# Until 2026-09-08 this was also called PROTECTED_ARTIST_NAMES -- the same
+# identifier as canon/protected_artists.py, two frozensets with the same
+# name, **disjoint contents** and different jobs. The canon list stops
+# ampersand bands being split ("Hall & Oates"); this one stops a foreign
+# article being moved to the suffix ("De La Soul" -> "La Soul, De").
+# Nothing was broken by the collision, but a reader who imported the wrong
+# one would have got a silently empty guard, and the existing one-home test
+# could not see it: that test looks for duplicated CONTENTS, and these two
+# share no entries at all. (M-10.)
+ARTICLE_LOOKALIKE_ARTISTS: frozenset[str] = frozenset(
     {
         "de la soul",
         "la roux",
@@ -342,7 +352,7 @@ def _move_article_to_suffix(name: str) -> str:
     # leading word looks like an article but isn't. Must be checked
     # before the suffix-format check below, since a protected name could
     # coincidentally also match _ARTICLE_SUFFIX_RE/_ARTICLE_COMMA_RE.
-    if s.lower() in PROTECTED_ARTIST_NAMES:
+    if s.lower() in ARTICLE_LOOKALIKE_ARTISTS:
         return s
 
     # Canonical ", The" suffix -- already correct, leave alone.
@@ -574,7 +584,7 @@ class NormalizeStage(BaseStage):
         artists. If normalising a stored value would still change it, the
         stage left work undone, whatever its change count claims.
 
-        It also pins the guards. "AC/DC" and the other PROTECTED_ARTIST_NAMES
+        It also pins the guards. "AC/DC" and the other protected names
         must survive untouched; when sanitize was applying path rules to
         metadata, "AC/DC" became "Ac-dc" on 92 files precisely because a
         normalisation ran over a name it no longer recognised. A check that
