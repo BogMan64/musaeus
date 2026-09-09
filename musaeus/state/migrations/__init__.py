@@ -114,70 +114,46 @@ M0003_DUPLICATES_CONTRACT = Migration(
     from_version=2,
     to_version=3,
     statements=(
-        # A brand-new database has no legacy table to rename, and SQLite
-        # has no ALTER TABLE ... RENAME IF EXISTS. Declaring the legacy
-        # shape first gives the rename a target in both cases, so a fresh
-        # database and a legacy one converge on the same structure --
-        # `duplicates_legacy` present and empty rather than absent. A
-        # migration whose result depends on which kind of database it met
-        # is a migration with two outcomes to reason about.
-        """
-        CREATE TABLE IF NOT EXISTS duplicates (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            group_id        TEXT NOT NULL,
-            file_path       TEXT NOT NULL,
-            duplicate_type  TEXT,
-            confidence      REAL,
-            status          TEXT DEFAULT 'pending',
-            run_id          TEXT,
-            staged_at       TEXT DEFAULT (datetime('now'))
-        )
-        """,
-        # The legacy table is RENAMED, never dropped. DR-07: "it does not
-        # silently discard old rows." Its rows stay exactly as they were,
-        # readable, under a name that says what they are.
-        "ALTER TABLE duplicates RENAME TO duplicates_legacy",
+        # ADDS a table. It no longer replaces one.
+        #
+        # This migration used to declare the legacy `duplicates` shape,
+        # rename it to `duplicates_legacy`, create the typed table under the
+        # freed-up name, and backfill every legacy row into a compatibility
+        # payload. All of that was careful and none of it lost data -- but it
+        # was solving a problem that only existed because DR-07's table and
+        # the live dedupe subsystem had collided on the name `duplicates`.
+        #
+        # They are not two versions of one idea. The live table records
+        # RESOLVED DUPLICATE SETS: a `group_id` with one row per member,
+        # 118,395 rows today, written by dedupe.py, dupe_resolver.py and
+        # cross_dupe.py and read by cli.py and two scripts. DR-07's table
+        # records DETECTOR MATCH CANDIDATES: an ordered pair with a
+        # fingerprint and a score. Renaming DR-07's table to
+        # `duplicate_candidates` (2026-09-09) ends the collision, and the
+        # rename is why this migration shrank to two statements.
+        #
+        # What the rename prevents is specific and would have been quiet:
+        # after the old 0003, the name `duplicates` meant the typed table,
+        # while seven live modules still queried it for group_id/file_path/
+        # status -- columns now on `duplicates_legacy`. The data survived
+        # intact and the dupe resolver went blind. A loud failure would have
+        # been kinder.
+        #
+        # Editing a released migration is normally wrong: `Migration` carries
+        # a checksum over its SQL and `validate_registry()` enforces the
+        # chain. It is safe here, and only here, because this chain has never
+        # been applied to any database -- `migrate()` has zero callers outside
+        # musaeus/state/, verified by grep, and the live vault has no
+        # `state_metadata` table. Adding an 0004 to rename a table that was
+        # never created would have written the collision permanently into the
+        # chain's history as a fact about the schema. It was never a fact.
         *DUPLICATES_STATEMENTS,
-        # Carry legacy rows across with their original values preserved in
-        # the evidence payload. group_id/file_path/duplicate_type have no
-        # lossless mapping onto the candidate/matched pair contract -- a
-        # legacy row names one file in a group, not a pair -- so the row is
-        # brought over as its own compatibility record rather than being
-        # guessed into a pair that was never recorded.
-        """
-        INSERT OR IGNORE INTO duplicates
-            (run_id, candidate_item_id, matched_item_id, detector,
-             provider_recording_id, fingerprint_digest, score,
-             evidence_json, decision_status, created_at, evidence_identity)
-        SELECT
-            COALESCE(run_id, 'legacy'),
-            'legacy:' || group_id,
-            'legacy:' || file_path,
-            'legacy_' || COALESCE(duplicate_type, 'unknown'),
-            NULL,
-            NULL,
-            confidence,
-            json_object(
-                'algorithm', 'legacy',
-                'provider', 'musaeus_legacy_duplicates',
-                'compatibility', json_object(
-                    'group_id', group_id,
-                    'file_path', file_path,
-                    'duplicate_type', duplicate_type,
-                    'status', status,
-                    'staged_at', staged_at
-                )
-            ),
-            'pending',
-            COALESCE(staged_at, '1970-01-01T00:00:00Z'),
-            'legacy:' || CAST(id AS TEXT)
-        FROM duplicates_legacy
-        """,
     ),
     description=(
-        "Replace the ad-hoc duplicates table with DR-07's typed contract. The legacy "
-        "table is renamed rather than dropped and every row is carried across into a "
-        "documented compatibility payload."
+        "Add DR-07's typed duplicate-candidate contract as `duplicate_candidates`. "
+        "Adds a new table; replaces nothing. The live `duplicates` table, which "
+        "records resolved duplicate sets rather than detector match candidates, is "
+        "left untouched along with all of its rows."
     ),
 )
 

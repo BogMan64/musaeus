@@ -64,7 +64,7 @@ INSERTION_COLUMNS: tuple[str, ...] = (
 
 DUPLICATES_STATEMENTS: tuple[str, ...] = (
     """
-    CREATE TABLE IF NOT EXISTS duplicates (
+    CREATE TABLE IF NOT EXISTS duplicate_candidates (
         id                    INTEGER PRIMARY KEY AUTOINCREMENT,
         run_id                TEXT NOT NULL,
         candidate_item_id     TEXT NOT NULL,
@@ -83,8 +83,9 @@ DUPLICATES_STATEMENTS: tuple[str, ...] = (
         UNIQUE (candidate_item_id, matched_item_id, detector, evidence_identity)
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_duplicates_run ON duplicates(run_id)",
-    "CREATE INDEX IF NOT EXISTS idx_duplicates_status ON duplicates(decision_status)",
+    "CREATE INDEX IF NOT EXISTS idx_duplicate_candidates_run ON duplicate_candidates(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_duplicate_candidates_status "
+    "ON duplicate_candidates(decision_status)",
 )
 
 
@@ -239,7 +240,7 @@ class DuplicateRepository:
         validated = record.validated()
         cursor = self.conn.execute(
             """
-            INSERT OR IGNORE INTO duplicates
+            INSERT OR IGNORE INTO duplicate_candidates
                 (run_id, candidate_item_id, matched_item_id, detector,
                  provider_recording_id, fingerprint_digest, score,
                  evidence_json, decision_status, created_at, evidence_identity)
@@ -264,13 +265,14 @@ class DuplicateRepository:
     def pending(self, run_id: str | None = None) -> list[sqlite3.Row]:
         if run_id is None:
             return self.conn.execute(
-                "SELECT * FROM duplicates WHERE decision_status = ? ORDER BY id",
+                "SELECT * FROM duplicate_candidates WHERE decision_status = ? ORDER BY id",
                 (DECISION_PENDING,),
             ).fetchall()
         return self.conn.execute(
-            "SELECT * FROM duplicates WHERE decision_status = ? AND run_id = ? ORDER BY id",
+            "SELECT * FROM duplicate_candidates "
+            "WHERE decision_status = ? AND run_id = ? ORDER BY id",
             (DECISION_PENDING, run_id),
         ).fetchall()
 
     def count(self) -> int:
-        return int(self.conn.execute("SELECT COUNT(*) FROM duplicates").fetchone()[0])
+        return int(self.conn.execute("SELECT COUNT(*) FROM duplicate_candidates").fetchone()[0])
