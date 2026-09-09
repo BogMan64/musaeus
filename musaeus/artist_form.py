@@ -42,6 +42,9 @@ Both are article-aware and both respect PROTECTED_ARTIST_NAMES, so
 
 from __future__ import annotations
 
+import re
+import unicodedata
+
 # The two implementations live in stage modules, and stages import THIS
 # module (organize builds its paths from sort_form, tagger writes both
 # forms). Importing them at module scope closes that loop and Python raises
@@ -92,6 +95,48 @@ def has_article(name: str) -> bool:
     if not n:
         return False
     return natural_form(n) != sort_form(n)
+
+
+#: Leading articles in the languages this library actually contains. English
+#: first; the rest are here because the library holds French, Spanish, Dutch
+#: and German titles and a comparison that ignored them would call two
+#: spellings of one record different.
+_FUZZY_ARTICLE_RE = re.compile(
+    r"^(the|a|an|le|la|les|el|los|de|het|een|die|das|ein|eine)\s+",
+    re.IGNORECASE,
+)
+_FUZZY_PUNCT_RE = re.compile(r"[^\w\s]")
+
+
+def fuzzy_key(text: str) -> str:
+    """A loose key for comparing a TITLE or an artist across spellings.
+
+    Deliberately broader than comparison_key(), and the difference matters:
+
+        comparison_key   English article forms, for matching a NAME against
+                         a hand-written list where the article may be either
+                         side. Nothing else is touched.
+        fuzzy_key        accent-folded, punctuation-stripped, articles in
+                         nine languages removed. For deciding whether two
+                         free-text strings are probably the same record.
+
+    Moved here from scripts/musaeus_upgrade_check.py on 2026-09-08 (M-16),
+    where it was a private `_norm` that the semgrep article rule could not
+    see -- that rule hardcoded `re.sub(` and lowercase "the", so a compiled
+    constant was invisible to it. Fixing the rule surfaced this copy; moving
+    it here means the next copy is caught rather than joining it.
+
+    NOT a replacement for comparison_key. Substituting one for the other in
+    either direction changes what compares equal, which is why they are two
+    named functions rather than one with a flag.
+    """
+    if not text:
+        return ""
+    t = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    t = t.lower().strip()
+    t = _FUZZY_ARTICLE_RE.sub("", t)
+    t = _FUZZY_PUNCT_RE.sub("", t)
+    return " ".join(t.split())
 
 
 def comparison_key(name: str) -> str:

@@ -14,10 +14,9 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
-from .orpheus_paths import METADATA_ROOT, DB_PATH
 from .orpheus_db import open_db, write_with_retry
+from .orpheus_paths import DB_PATH, METADATA_ROOT
 
 METADATA_DIR = METADATA_ROOT
 
@@ -302,7 +301,7 @@ def _pick_field(row: dict, names: list[str]) -> str:
     return ""
 
 
-_ARTIST_CANON_CACHE: Optional[dict[str, str]] = None
+_ARTIST_CANON_CACHE: dict[str, str] | None = None
 
 
 def load_artist_canon_map() -> dict[str, str]:
@@ -825,7 +824,7 @@ def log_naming_event(
     title: str = "",
     filename: str = "",
     method: str = "",
-    details: Optional[dict] = None,
+    details: dict | None = None,
 ) -> None:
     try:
         ensure_naming_db_tables()
@@ -889,7 +888,7 @@ def log_metadata_cleaning_event(
     source_path: Path | str,
     raw_tags: dict[str, str],
     clean_tags: dict[str, str],
-    details: Optional[dict] = None,
+    details: dict | None = None,
 ) -> None:
     try:
         ensure_naming_db_tables()

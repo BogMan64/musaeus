@@ -52,7 +52,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]
 from build_aac_library import (  # noqa: E402
     _DURATION_TOLERANCE_SEC,
     _duration_tolerance,
-    _output_matches_source,
 )
 
 _SCRIPT = (Path(__file__).resolve().parents[1]
@@ -136,8 +135,8 @@ def test_a_drift_accepted_at_write_time_is_accepted_on_resume(recorded, drift) -
 
 def test_a_real_truncation_is_still_rejected_by_both(tmp_path: Path) -> None:
     """Widening the tolerance must not swallow a genuinely short encode."""
-    assert 15.0 > _duration_tolerance(300)   # a 5-minute track cut to 4:45
-    assert 28.0 > _duration_tolerance(30)    # a 30 s track cut to 2 s
+    assert _duration_tolerance(300) < 15.0   # a 5-minute track cut to 4:45
+    assert _duration_tolerance(30) < 28.0    # a 30 s track cut to 2 s
 
 
 def test_the_resume_check_uses_the_shared_rule(tmp_path: Path) -> None:

@@ -46,28 +46,19 @@ include = ["musaeus*"]
 target-version = "py310"
 line-length = 100
 
-# Vendored ORPHEUS code, excluded from ruff.
+# Vendored ORPHEUS code is NOT excluded from ruff, deliberately.
 #
-# THE ORIGINAL REASON NO LONGER HOLDS, and this comment used to assert it as
-# though it did: "kept byte-identical to upstream so it can be re-synced
-# without conflicts". Measured 2026-09-08 -- upstream's build_aac_library.py
-# is 461 lines, this copy is 980. The fork is deep and deliberate (M-01,
-# M-02, M-03, M-06, M-07, M-08, M-12 all landed here), so byte-identity is
-# not recoverable and a clean re-sync is not available either way.
+# It was, on the stated grounds that the tree is "kept byte-identical to
+# upstream so it can be re-synced without conflicts". Measured 2026-09-08:
+# upstream's build_aac_library.py is 461 lines and this copy is 980, and
+# seven repairs landed in it that day alone (M-01, M-02, M-03, M-06, M-07,
+# M-08, M-12). Byte-identity was already gone, so the exclusion bought no
+# re-sync while costing 16 unseen lint errors -- the worst of each.
 #
-# What the exclusion costs, measured the same day: 16 ruff errors nobody has
-# seen -- 6 non-pep585-annotation, 5 non-pep604-annotation-optional, 3
-# unsorted-imports, 2 deprecated-import. All cosmetic; 14 auto-fixable.
-# These are the same modernisations `ruff --fix` made on 2026-08-23 and that
-# were reverted to protect the byte-identity now gone.
-#
-# M-15 in the Repair Register puts the choice plainly: restore byte-identity
-# and keep the exclusion, or accept the fork and drop it. Holding both is the
-# worst of each -- no re-sync AND no lint. The fork is already accepted in
-# fact; formalising it by deleting this line is a one-line change awaiting
-# Grey's ruling, recorded in MUSAEUS_TODO.md rather than made unilaterally,
-# because reformatting 980 lines of vendored code is a policy decision.
-exclude = ["scripts/car_library/vendor"]
+# The fork is accepted. That is the whole content of this decision: this is
+# MUSAEUS's copy now, it is maintained here, and it is linted like the rest
+# of the tree. Re-syncing from ORPHEUS was never going to be a clean pull
+# again; pretending otherwise hid real defects for weeks. (M-15.)
 
 [tool.ruff.lint]
 select = [
