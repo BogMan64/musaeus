@@ -348,15 +348,92 @@ the masters whenever wanted, and being 32 tracks short of 11,900 does not
 threaten anything. Fix the ampersand split before the next full CAR rebuild
 and most of it goes away.
 
+## P1c — Repair Register triage (2026-09-08)
+
+Thirty findings, `~/Downloads/MUSAEUS Repair Register.pdf`. Triaged and
+ranked below so this can be picked up cold. **Ranked by what it costs if left
+alone**, not by how hard it is.
+
+Two of the Register's own framing claims are wrong and are corrected here,
+both verified: the vendored files are **not** byte-identical (ORPHEUS 461
+lines, MUSAEUS 799, patched 2026-08-16 — syncing them would clobber those
+patches), and **M-01 does not exist in ORPHEUS at all**. Check each O-finding
+against the MUSAEUS copy before assuming it applies twice.
+
+### Tier 1 — loses data, or ships silently wrong audio
+
+| id | state | what it costs |
+|---|---|---|
+| **M-01** | **FIXED `88ecf5c`** | an unreadable source deleted its own good encode |
+| **M-02** | open, CONFIRMED | **the biggest one left.** The resume check compares duration *only*, so every output encoded before the `-ar` cap and `-ac 2` downmix reports `SKIP DONE`. By the code's own docstring that is **4,862 of 10,545 files above 48 kHz, 4,223 of them at 192 kHz**. The car edition is silently wrong for thousands of files and **a normal re-run will never fix them**. Fix: compare sample rate and channel count too — ask "is this what the current settings would produce", not "is something roughly this long here". |
+| **M-05** | open, CONFIRMED | `--dry-run` is nested inside `if args.from_catalogue:`, so a dry run over hand-dropped files takes the else branch into a real ~44-hour encode, with masking and DB writes. A safety flag that does not stop anything. `--limit` and `--budget-gb` are ignored outside that branch too. |
+| **M-14** | open, PLAUSIBLE | leaked `_staged_<pid>` symlink trees are never cleaned after a successful catalogue build, and a later non-catalogue run walks into them and re-encodes the whole catalogue down the path catalogue mode exists to avoid. **Reproduce before repairing.** |
+| **O-01/O-02** | open, ORPHEUS + vendored | the noise chain gates on `.exists()`: a truncated or 96 kHz bed is accepted and mixed under all ~10,000 tracks. The generator grew `_is_good_track` for exactly this; the consumer never did. |
+
+### Tier 2 — guards that cannot fire
+
+The §5 pattern, five more times. Each of these *looks* like protection.
+
+| id | state | what it costs |
+|---|---|---|
+| **M-03** | open, CONFIRMED | line 545 inlines `max(1.0, src * 0.02)` while `_DURATION_TOLERANCE_SEC = 2.0` sits at line 142, and the comment claims they agree. A 30 s track drifting 1.4 s on AAC priming is **accepted at write time and rejected on the next run — deleted and re-encoded for ever**. The guarding test greps for the constant and is structurally blind to an inline literal. `musaeus/duration.py:63` already has `tolerance_for()`; call it. |
+| **M-04** | open, CONFIRMED BY EXECUTION | `is_protected('Andrews Sisters (the)')` is True; `'Andrews Sisters, The'`, `'The Andrews Sisters'` and `'Andrews Sisters'` are all False — and `normalize.py` actively rewrites the working spelling into the dormant one. `genre_law._key()` already folds all three article forms and its docstring records that 246 rules were dormant for this exact reason. The test pins the dormant spelling, cementing it. |
+| **M-10** | open, CONFIRMED | `PROTECTED_ARTIST_NAMES` exists in two modules with **disjoint** contents, so the "one home" guard — which keys on overlap ≥ 2 — can never fire. `normalize.py` runs `UPDATE archive SET artist=?` and imports nothing from canon. |
+| **M-09** | open, CONFIRMED | `_load()` clears `_allowed` but not `_allowed_lower`, so a reload after the file disappears raises `ValueError` instead of returning None. |
+| **M-11** | open, CORRECTED then CONFIRMED | the ERROR-severity semgrep rule has **never scanned `tests/`** — semgrep's bundled defaults exclude it and `--no-git-ignore` does not lift it. Naming a file directly returns five real hits. |
+
+### Tier 3 — operator-facing and robustness
+
+| id | state | what it costs |
+|---|---|---|
+| **M-06** | open, CONFIRMED | `MUSAEUS_FORCE_REENCODE=0` turns force-reencode **on** — `bool("0")` is True. Setting it to `0`/`false`/`no` to *disable* the override triggers a full 10,545-file re-encode. Verified 2026-09-08. Worth grepping both repos for the pattern. |
+| **M-07** | open, CONFIRMED | a comment tells the operator to use `--force`; the script defines no such flag, and never names the env var that does work. |
+| **M-08** | open, CONFIRMED | three ffprobe helpers dropped the `timeout=30` their sibling in the same file uses. ffprobe blocks for ever on a truncated container — exactly this code's input — and with `MAX_WORKERS = 4`, four such files hang the build silently. |
+| **M-12** | open, PLAUSIBLE | `-ar` and `-ac` are dropped whenever the probe returns None, producing the unpinned encode the docstring warns about (a 44.1 kHz master emerged as 96 kHz AAC, measured 2026-08-31). Refuse the file instead. |
+
+### Tier 4 — documentation
+
+- **M-13 — FIXED 2026-09-08.** The reconstruction document ordered "treat a
+  stage without a meaningful preview as a defect" while this file warned that
+  wiring `dry_run()` into the CLI undoes P0-02. The document now carries the
+  correction and names `plan_candidates` as the right fix. **The TODO was
+  right; the document was wrong.**
+- Stale test count: `README.md:47` and `TESTING_ON_YOUR_OWN_FILES.md:129` say
+  2,123; the real count is 2,411. Cosmetic — fix when next in those files.
+
+### Do not chase — the Register says so itself
+
+- **`README.md:43`'s `--dry-run` claim is correct.** The review agent ranked
+  this its top finding and then retracted it.
+- **The original M-11** ("nine ERROR matches") is not reproducible. The
+  rewritten version above is the one to work from.
+
+### If you are picking this up cold
+
+Do **M-02** first. It is the only open finding that is *already* wrong on
+disk rather than waiting to go wrong, and the files it affects cannot be
+repaired by re-running the build — the broken resume check is what hides
+them. Everything else in Tier 1 prevents future damage; M-02 is present
+damage.
+
 ## P2 — needs Grey's judgement, cannot be automated
 
-3. **QUARANTINE is 3.1 GB and nobody has ruled on it.**
+3. ~~**QUARANTINE is 3.1 GB and nobody has ruled on it.**~~ **DONE — this
+   entry was stale.** Re-measured 2026-09-08: **22 MB, 1 file.** Grey was
+   right that it had been dealt with; this document never learned it. The
+   original text follows.
+
+   ~~QUARANTINE is 3.1 GB and nobody has ruled on it.~~
    `denied/` 109 files / 2.6 GB, `corrupted/` 38 files / 492 MB. 65 archive
    rows point into it (51 denied, 14 corrupted). Includes The Communards'
    "Don't Leave Me This Way" — a genuine 1986 record MusicBrainz scores 100,
    sitting in `denied/` since 2026-09-01.
 
-4. **MUSAEUS_HOLD is 866 MB / 45 files**, outside the vault, awaiting
+4. ~~**MUSAEUS_HOLD is 866 MB / 45 files**~~ **DONE — the directory no
+   longer exists anywhere under `/home/grey` or `/mnt/FORGE2TB`.** Re-checked
+   2026-09-08. Stale entry; original text follows.
+
+   ~~MUSAEUS_HOLD is 866 MB / 45 files, outside the vault, awaiting
    `~/Desktop/MUSAEUS_HOLD_unmatched_2026-09-03.csv`. Aerosmith's
    "What It Takes" (199 MB) is the largest and is already on TuneMyMusic.csv.
    Decide keep-or-delete and the directory can go.
@@ -367,17 +444,39 @@ and most of it goes away.
 
 6. **11 truncated fragments** in `~/Desktop/MUSAEUS_fragments_2026-09-06.csv`.
 
-7. **87 artist-vs-folder pairs** in
+7. **artist-vs-folder pairs — STILL OPEN, and the count is unreliable.**
+   Re-checked 2026-09-08. A quick live pass returned 116, but its path
+   parsing lands on album folders in some layouts, so **treat neither 87 nor
+   116 as authoritative — rebuild the CSV**. One clean sub-check does hold:
+   **17 rows across 8 artists** (Benny Goodman, Cab Calloway, Coleman
+   Hawkins, Glenn Miller, Billie Holiday, Bing Crosby, Louis Armstrong,
+   Wynonie Harris) have a path containing `& His Orchestra` and an artist tag
+   that does not — the tag was truncated at the `&`.
+
+   **That is the same ampersand split as the CAR build's folder truncation**
+   (`Echo & the Bunnymen` → a folder called `Echo`, P1b above). Two
+   authorities losing the same `&`, which makes it a single root cause worth
+   finding rather than two lists to hand-correct. Original entry follows.
+
+   ~~87 artist-vs-folder pairs in
    `~/Desktop/MUSAEUS_artist_vs_folder_2026-09-07.csv`, 24 already marked.
    Only 9 are real drift; the rest are fuller credits, case, or the and/&
    rename.
 
-8. **Three artists held** from ArtistsToReview.csv — Huey Lewis & The News
+8. **Three artists held — STILL OPEN, re-checked 2026-09-08.** Live counts:
+   `Huey Lewis` 29 vs `Huey Lewis & The News` 4; `Tony Burrows` 5 vs
+   `Tony Burrows (of First Class)` 1; `Anne Murray` 9. All three are still
+   split. Original entry follows.
+
+   ~~Three artists held from ArtistsToReview.csv — Huey Lewis & The News
    (genre "Pop  Rock" is not in the vocabulary), Maurice Williams & the
    Zodiacs (rename target looks reversed), Simon (-> "Garfunkle" is spelled
    "Garfunkel" in the library).
 
-9. **`Dean` -> `Jan & Dean`** — 2 rows still under "Dean", 43 under the
+9. **`Dean` → `Jan & Dean` — STILL OPEN, re-checked 2026-09-08:** exactly
+   2 rows under `Dean`, 43 under `Jan & Dean`. Unchanged. Original follows.
+
+   ~~`Dean` -> `Jan & Dean` — 2 rows still under "Dean", 43 under the
    canonical name. MB-confirmed on artist AND title.
 
 ---

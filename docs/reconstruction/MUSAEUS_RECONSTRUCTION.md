@@ -828,6 +828,16 @@ path-keyed baseline rows (§5).
 (`musaeus/__init__.py`). Treat a stage without a meaningful preview as a
 defect, not a gap.
 
+**But do not close that gap by calling the stage's own `dry_run()` from the
+CLI.** Every stage has one and it looks like the obvious fix; using it would
+undo P0-02. `--dry-run` routes to the planner deliberately, so that it no
+longer means "execute with a flag set" — the planner never instantiates a
+stage, never opens a writable connection, and never calls `ensure_dirs()`.
+The correct fix is a pure `plan_candidates(conn, cfg)` on the stage, which
+the planner already calls where one exists. Ten stages have one; twenty-one
+do not. (M-13 in the Repair Register: this document and MUSAEUS_TODO.md
+disagreed, and the TODO was right.)
+
 ### Deliberately out of the default pipeline
 
 Six stages are on-demand only: **Auditor, Curator, Playlist, Transcode,
