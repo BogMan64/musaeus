@@ -39,6 +39,7 @@ from lib.orpheus_paths import (
     MUSIC_VAULT_ALAC,
     RUNS_ROOT,
 )
+from orpheus_noise_generator import _decodes_cleanly
 from source_quality_policy import should_make_aac
 
 INPUT_DIR = ALAC_BATCH_001
@@ -828,6 +829,44 @@ def gather_input_files(input_dir: Path) -> list[Path]:
     return files
 
 
+def _noise_bed_is_shippable(src: Path) -> tuple[bool, str]:
+    """Is this bed fit to be mixed under the whole library? (O-01/O-02)
+
+    The chain gated on `noise_src.exists()` and nothing else, so every `.m4a`
+    in the directory was shipped on the strength of its filename. A bed is not
+    one track among ten thousand -- it goes *under* all of them, so a bad one
+    is the only defect here that damages the entire edition at once.
+
+    The generator already knows what "good" means: it grew `_is_good_track`
+    after Pink_Noise_60min.m4a sat at 3,064 s of an intended 3,600, looking
+    finished and being skipped for ever (measured 2026-09-01). The consumer
+    never learned. Reusing its decode check rather than writing a fourth one.
+
+    **Why the generator's check and not `musaeus.duration.decodes_cleanly`.**
+    That one is the corrected copy -- it passes `-vn` and classifies stderr,
+    because an .m4a carries cover art as a video stream and a malformed JPEG
+    beside perfect audio otherwise reads as damage. The generator's lacks both.
+    For THIS input class that difference cannot bite, and it is measured, not
+    assumed: all six beds in RUNS/Noise probe as a single audio stream, no
+    artwork, 44.1 kHz (2026-09-08). Were a bed ever to carry art, this check
+    would start calling it damaged -- loudly and wrongly, but never silently.
+    The alternative was importing musaeus here, which `_duration_tolerance`
+    above explains is exactly what the vendoring exists to prevent.
+
+    Returns (ok, reason_if_not).
+    """
+    rate = probe_sample_rate(src)
+    if rate is None:
+        # M-12's rule, applied here: an unprobeable file is refused, not
+        # shipped unpinned. Below, a None rate reaches car_sample_rate, which
+        # returns None ("do not guess"), which took the raw-copy branch -- the
+        # probe failing silently removed the very cap it should have triggered.
+        return False, "sample rate could not be probed"
+    if not _decodes_cleanly(src):
+        return False, "does not decode cleanly — truncated or damaged"
+    return True, ""
+
+
 def copy_noise_tracks(output_root: Path) -> None:
     """Copy generated noise tracks into the car library Artist/Album structure."""
     # RUNS_ROOT is ORPHEUS's own constant and points at
@@ -840,9 +879,24 @@ def copy_noise_tracks(output_root: Path) -> None:
     noise_src = Path(env_noise) if env_noise else RUNS_ROOT / "Noise"
     noise_dest = output_root / "ORPHEUS" / "Acoustic Treatment"
 
-    noise_files = sorted(noise_src.glob("*.m4a")) if noise_src.exists() else []
-    if not noise_files:
+    found = sorted(noise_src.glob("*.m4a")) if noise_src.exists() else []
+    if not found:
         print("[Noise] No noise tracks found in RUNS/Noise/ — run [NO] Noise Generator first.")
+        return
+
+    # O-01/O-02: existence was the whole gate. Validate before shipping, and
+    # report every refusal by name -- a bed silently dropped is as bad as a bad
+    # bed silently shipped, because both end with the operator believing the
+    # edition has what it does not.
+    noise_files = []
+    for src in found:
+        ok, why = _noise_bed_is_shippable(src)
+        if ok:
+            noise_files.append(src)
+        else:
+            print(f"[Noise] REFUSED {src.name} — {why}")
+    if not noise_files:
+        print(f"[Noise] no usable beds of {len(found)} found — regenerate with [NO].")
         return
 
     noise_dest.mkdir(parents=True, exist_ok=True)
@@ -855,25 +909,33 @@ def copy_noise_tracks(output_root: Path) -> None:
         # tracks are 96 kHz at source and shipped at 96 kHz, exactly the
         # rate a head unit is least likely to decode. The music was capped
         # and the filler beside it was not. Measured 2026-08-31.
-        target = car_sample_rate(probe_sample_rate(src))
-        if target is not None and target < (probe_sample_rate(src) or 0):
+        #
+        # Probed once, not twice: the second call could disagree with the
+        # first, and a comparison whose two sides come from separate probes
+        # decides nothing reliably.
+        source_rate = probe_sample_rate(src)
+        target = car_sample_rate(source_rate)
+        if target is not None and target < (source_rate or 0):
             cmd = [FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
                    "-i", str(src), "-c:a", "aac", "-b:a", "256k",
                    "-ar", str(target), "-map_metadata", "0", "-f", "mp4", str(dst)]
             res = subprocess.run(cmd, capture_output=True, text=True)
             if res.returncode != 0:
-                print(f"[Noise] re-encode failed for {src.name}, copying as-is")
-                _shutil.copy2(src, dst)
-            else:
-                print(f"[Noise] {src.name}  →  {dst.relative_to(output_root)}  "
-                      f"(resampled to {target} Hz)")
-                copied += 1
+                # Was: copy as-is. That shipped the very 96 kHz file the
+                # re-encode existed to replace, under a line saying so -- the
+                # failure path quietly undoing the fix on the success path.
+                print(f"[Noise] REFUSED {src.name} — re-encode to {target} Hz failed: "
+                      f"{res.stderr.strip().splitlines()[-1] if res.stderr.strip() else 'no detail'}")
+                dst.unlink(missing_ok=True)
                 continue
-        else:
-            _shutil.copy2(src, dst)
+            print(f"[Noise] {src.name}  →  {dst.relative_to(output_root)}  "
+                  f"(resampled to {target} Hz)")
+            copied += 1
+            continue
+        _shutil.copy2(src, dst)
         print(f"[Noise] {src.name}  →  {dst.relative_to(output_root)}")
         copied += 1
-    print(f"[Noise] {copied} file(s) placed in {noise_dest}")
+    print(f"[Noise] {copied} file(s) placed in {noise_dest}, {len(found) - copied} refused")
 
 
 def main() -> None:
