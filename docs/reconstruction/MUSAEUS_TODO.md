@@ -456,7 +456,7 @@ The §5 pattern, five more times. Each of these *looks* like protection.
 | **M-03** | **FIXED** | line 545 inlines `max(1.0, src * 0.02)` while `_DURATION_TOLERANCE_SEC = 2.0` sits at line 142, and the comment claims they agree. A 30 s track drifting 1.4 s on AAC priming is **accepted at write time and rejected on the next run — deleted and re-encoded for ever**. The guarding test greps for the constant and is structurally blind to an inline literal. `musaeus/duration.py:63` already has `tolerance_for()`; call it. |
 | **M-04** | **FIXED** | `is_protected('Andrews Sisters (the)')` is True; `'Andrews Sisters, The'`, `'The Andrews Sisters'` and `'Andrews Sisters'` are all False — and `normalize.py` actively rewrites the working spelling into the dormant one. `genre_law._key()` already folds all three article forms and its docstring records that 246 rules were dormant for this exact reason. The test pins the dormant spelling, cementing it. |
 | **M-10** | **FIXED** | `PROTECTED_ARTIST_NAMES` exists in two modules with **disjoint** contents, so the "one home" guard — which keys on overlap ≥ 2 — can never fire. `normalize.py` runs `UPDATE archive SET artist=?` and imports nothing from canon. |
-| **M-09** | open, CONFIRMED | `_load()` clears `_allowed` but not `_allowed_lower`, so a reload after the file disappears raises `ValueError` instead of returning None. |
+| **M-09** | **FIXED** | `_load()` clears `_allowed` but not `_allowed_lower`, so a reload after the file disappears raises `ValueError` instead of returning None. |
 | **M-11** | open, CORRECTED then CONFIRMED | the ERROR-severity semgrep rule has **never scanned `tests/`** — semgrep's bundled defaults exclude it and `--no-git-ignore` does not lift it. Naming a file directly returns five real hits. |
 
 
@@ -536,6 +536,29 @@ The new guard parses the file rather than grepping it, and was proved
 red-then-green. A first draft *did* grep, and failed on the docstring of the
 very function that fixes the bug — a guard that cannot tell code from prose
 is the same class of mistake as one that cannot see an inline literal.
+
+
+**M-09 (2026-09-08).** Reproduced against the real class before touching it:
+remove `Genre_Allowed.txt`, call `reload()`, and `_allowed` holds 0 entries
+while `_allowed_lower` still holds the previous 3. The next lookup raises
+`ValueError: zip() argument 2 is longer than argument 1`, where the contract
+says return `None`.
+
+`_allowed_lower` is now derived **outside** the `exists()` branch, so the two
+cannot disagree by construction rather than by discipline.
+
+**The `strict=True` zip is not the defect and was kept.** It converted a
+silent mis-pairing into a loud one; without it the fuzzy matcher would have
+scored each genre against some *other* genre's lower-cased text and returned
+a confident wrong answer. Worth naming, because almost everything else in
+this register is a guard that could *not* fire — this is one that did.
+
+Also corrects the module docstring, which named
+`genre_allowed.txt` / `genre_map.tsv<TAB>`. Neither has ever existed. The
+loader's own comment records what that cost: the real map has used `" => "`
+since it was written, so **not one of its 51 rules ever loaded**, and with no
+allowed file either, `resolve()` returned `None` for every genre ever passed
+to it — GenreCanon was wired into EnrichStage and doing nothing at all.
 
 ### Tier 3 — operator-facing and robustness
 

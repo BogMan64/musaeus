@@ -2,9 +2,17 @@
 """
 MUSAEUS — Genre Canon
 
-Two files back the genre system:
-  <vault>/MetaData/genre_allowed.txt   — one allowed genre per line
-  <vault>/MetaData/genre_map.tsv       — raw_genre<TAB>canonical_genre
+Two files back the genre system, named as the vault actually spells them:
+  <vault>/MetaData/Genre_Allowed.txt        — one allowed genre per line
+  <vault>/MetaData/Genre_Canonical_Map.txt  — "raw => canonical" per line
+
+Both names and the map's separator were wrong here until 2026-09-08. The
+docstring said `genre_map.tsv` with a TAB, and the loader below records what
+that cost: the real file has used " => " since it was written, so not one of
+its 51 rules ever loaded, and with no Genre_Allowed.txt either, resolve()
+returned None for every genre ever passed to it. GenreCanon was wired into
+EnrichStage and doing nothing at all. A tab is still accepted, so a
+hand-written file in the old shape keeps working.
 
 Design:
   - Allowed list: genres accepted as-is (case-insensitive).
@@ -53,7 +61,25 @@ class GenreCanon:
                     line = line.strip()
                     if line and not line.startswith("#"):
                         self._allowed.add(line)
-            self._allowed_lower = [g.lower() for g in self._allowed]
+
+        # Derived unconditionally, OUTSIDE the exists() check, so the two can
+        # never disagree about how many genres there are.
+        #
+        # M-09, 2026-09-08: this assignment used to sit inside the branch
+        # above. _allowed was cleared every load; _allowed_lower was only
+        # rewritten when the file was present. Remove the file and reload,
+        # and _allowed held 0 entries while _allowed_lower still held the
+        # previous 3 -- after which resolve()'s `zip(..., strict=True)` did
+        # exactly what it was written to do and raised
+        # "zip() argument 2 is longer than argument 1", where the contract
+        # says return None.
+        #
+        # The strict zip is not the bug and stays. It turned a silent
+        # mis-pairing of genres with the wrong lower-cased names into a loud
+        # failure; without it, fuzzy matching would have scored each genre
+        # against some other genre's text and returned a plausible wrong
+        # answer. Fix the invariant, keep the alarm.
+        self._allowed_lower = [g.lower() for g in self._allowed]
 
         if self._map_path.exists():
             with open(self._map_path, encoding="utf-8") as fh:
