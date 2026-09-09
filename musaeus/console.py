@@ -1091,6 +1091,13 @@ class Console:
         from .editions import EDITIONS, select_edition
 
         _section("Build an Edition")
+        # self._config is Optional on the class, and mypy was right to
+        # object: the menu can be reached before a config is loaded, and
+        # "(not configured)" is a truthful label where an AttributeError
+        # traceback is not.
+        _lossless_dest = (
+            self._config.alac_library if self._config is not None else "(not configured)"
+        )
         names = ["lossless", "car", "iphone"]
         labels = [
             # Was a hardcoded "/home/grey/Music". The EditionSpec carries no
@@ -1099,7 +1106,7 @@ class Console:
             # that path however MUSAEUS_ALAC_LIBRARY was set. Read the real
             # configured root instead, so the label cannot drift from where
             # files actually land.
-            f"Lossless  — ALAC, -18 LUFS  → {self._config.alac_library}",
+            f"Lossless  — ALAC, -18 LUFS  → {_lossless_dest}",
             "Car       — AAC 256k, -14 LUFS, ≤48 kHz  → USB",
             "iPhone    — AAC 256k, -14 LUFS, size-budgeted",
             "Back",
