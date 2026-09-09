@@ -31,15 +31,51 @@ needs_ffmpeg = pytest.mark.skipif(
 def _alac_with_art(path: Path, px: int) -> None:
     art = path.parent / f"art_{px}.jpg"
     subprocess.run(
-        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-         "-f", "lavfi", "-i", f"color=c=blue:s={px}x{px}:d=1",
-         "-frames:v", "1", str(art)], check=True, capture_output=True)
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=blue:s={px}x{px}:d=1",
+            "-frames:v",
+            "1",
+            str(art),
+        ],
+        check=True,
+        capture_output=True,
+    )
     subprocess.run(
-        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-         "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-         "-i", str(art), "-map", "0:a", "-map", "1:v", "-c:a", "alac",
-         "-c:v", "mjpeg", "-disposition:v:0", "attached_pic", str(path)],
-        check=True, capture_output=True)
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-i",
+            str(art),
+            "-map",
+            "0:a",
+            "-map",
+            "1:v",
+            "-c:a",
+            "alac",
+            "-c:v",
+            "mjpeg",
+            "-disposition:v:0",
+            "attached_pic",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
 
 
 @needs_ffmpeg
@@ -70,12 +106,27 @@ def test_file_with_no_art_reports_zero_not_a_small_size(tmp_path: Path) -> None:
     queued for 'replacement' instead of a plain fetch."""
     f = tmp_path / "bare.m4a"
     subprocess.run(
-        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-         "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-         "-c:a", "alac", str(f)], check=True, capture_output=True)
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-c:a",
+            "alac",
+            str(f),
+        ],
+        check=True,
+        capture_output=True,
+    )
     assert _embedded_art(str(f)) == (False, 0)
 
 
+@needs_ffmpeg
 def test_min_edge_floor_rejects_a_same_size_offer() -> None:
     """The contract the replacement relies on: asking for better than 300
     must not accept 300 back."""
@@ -83,10 +134,25 @@ def test_min_edge_floor_rejects_a_same_size_offer() -> None:
 
     # A 300x300 JPEG header is 'too small' when the floor is its own size.
     blob = subprocess.run(
-        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-         "-f", "lavfi", "-i", "color=c=red:s=300x300:d=1",
-         "-frames:v", "1", "-f", "image2", "-"],
-        check=True, capture_output=True).stdout
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=300x300:d=1",
+            "-frames:v",
+            "1",
+            "-f",
+            "image2",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
     assert image_dimensions(blob) == (300, 300)
     assert is_too_small(blob, 301) is True
     assert is_too_small(blob, 300) is False

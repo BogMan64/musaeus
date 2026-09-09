@@ -40,19 +40,48 @@ needs_ffmpeg = pytest.mark.skipif(
 
 def _alac(path: Path, depth_fmt: str, rate: int = 44100) -> None:
     subprocess.run(
-        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-         "-f", "lavfi", "-i", f"sine=frequency=440:duration=1:sample_rate={rate}",
-         "-c:a", "alac", "-sample_fmt", depth_fmt, str(path)],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration=1:sample_rate={rate}",
+            "-c:a",
+            "alac",
+            "-sample_fmt",
+            depth_fmt,
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
     )
 
 
 def _fmt(path: Path) -> str:
-    return subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "a:0",
-         "-show_entries", "stream=sample_fmt", "-of", "csv=p=0", str(path)],
-        capture_output=True, text=True,
-    ).stdout.strip().rstrip(",")
+    return (
+        subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=sample_fmt",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        .stdout.strip()
+        .rstrip(",")
+    )
 
 
 class TestSourceSampleFmt:
@@ -70,6 +99,7 @@ class TestSourceSampleFmt:
         _alac(f, "s32p")
         assert source_sample_fmt(f) == "s32p"
 
+    @needs_ffmpeg
     def test_unreadable_file_defers_to_ffmpeg(self, tmp_path: Path) -> None:
         """None means 'do not state a format', not 'assume 16-bit'."""
         bad = tmp_path / "not-audio.m4a"
@@ -79,8 +109,9 @@ class TestSourceSampleFmt:
 
 class TestBakeCommand:
     def _cmd(self, fmt, has_art=False):
-        return build_bake_command(Path("in.m4a"), Path("out.m4a.bake_tmp"),
-                                  "anull", has_art, sample_fmt=fmt)
+        return build_bake_command(
+            Path("in.m4a"), Path("out.m4a.bake_tmp"), "anull", has_art, sample_fmt=fmt
+        )
 
     @pytest.mark.parametrize("has_art", [False, True])
     def test_format_is_stated_when_known(self, has_art: bool) -> None:
@@ -108,7 +139,8 @@ class TestRoundTrip:
         out = tmp_path / "out.m4a"
         subprocess.run(
             build_bake_command(src, out, "anull", False, sample_fmt=source_sample_fmt(src)),
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         assert _fmt(out) == fmt
 
@@ -126,22 +158,29 @@ class TestRoundTrip:
         _alac(src, "s16p")
 
         passthrough = tmp_path / "passthrough.m4a"
-        subprocess.run(build_bake_command(src, passthrough, "anull", False, sample_fmt=None),
-                       check=True, capture_output=True)
+        subprocess.run(
+            build_bake_command(src, passthrough, "anull", False, sample_fmt=None),
+            check=True,
+            capture_output=True,
+        )
         assert _fmt(passthrough) == "s16p", "no filter, no widening -- not the encoder's doing"
 
         loud = tmp_path / "loudnorm.m4a"
         subprocess.run(
-            build_bake_command(src, loud, "loudnorm=I=-18:TP=-1.0:LRA=11.0",
-                               False, sample_fmt=None),
-            check=True, capture_output=True,
+            build_bake_command(
+                src, loud, "loudnorm=I=-18:TP=-1.0:LRA=11.0", False, sample_fmt=None
+            ),
+            check=True,
+            capture_output=True,
         )
         assert _fmt(loud) != "s16p", "loudnorm should widen an unpinned bake"
 
         pinned = tmp_path / "pinned.m4a"
         subprocess.run(
-            build_bake_command(src, pinned, "loudnorm=I=-18:TP=-1.0:LRA=11.0",
-                               False, sample_fmt="s16p"),
-            check=True, capture_output=True,
+            build_bake_command(
+                src, pinned, "loudnorm=I=-18:TP=-1.0:LRA=11.0", False, sample_fmt="s16p"
+            ),
+            check=True,
+            capture_output=True,
         )
         assert _fmt(pinned) == "s16p", "stating the format must hold it at the source depth"
