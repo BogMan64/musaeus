@@ -573,3 +573,115 @@ Related: in `dupe_resolver.py:532` and `tribute_quarantine.py:283`, the manifest
 - **P0-F**: create a row with `status='CATALOGUED'` and a `file_path` under ALAC-Library, run `OrganizeStage.dry_run()`; observe the `ValueError`. Then confirm that removing the `relative_to` call causes a move into INBOX — this documents *why* the query must be scoped first.
 
 **Single most valuable change if only one thing is done:** add ffmpeg to CI (P1-G). It costs two lines and turns 46 dormant tests into live coverage of every P0 in this report.
+
+
+---
+---
+
+# ADDENDUM — 2026-09-09, after receiving the Reconstruction Document
+
+**Read this before acting on anything above.**
+
+Everything above reviewed `main` @ `c632ffa`, dated **2026-08-21**. That was the wrong tree. The live state of this project is `fix/dedupe-policy-and-permissions-sweep` @ `f4cb90d` (**PR #14**, open), dated 2026-09-08: **246 commits, 295 changed files, +57,636 lines**, 88,434 LOC across 314 Python files versus main's 35,821 across 121.
+
+Nothing the Reconstruction Document describes exists on `main` — no `musaeus/state/`, no `doctor`, no `editions.py`, `artist_form.py`, `duration.py`, `protected_artists.py`, `safety/recovery.py`, no `deny_list`/`genre_validate`/`classical_composer`/`spellcheck`/`identity_tag`/`original_year` stages, no `docs/reconstruction/`. Main has 36 stage files; PR #14 has 41.
+
+I re-ran every finding against `f4cb90d`. Results below. **Two of my P0s were already fixed — one of them exactly as I recommended.** Four survive.
+
+## Findings that are obsolete — already fixed on PR #14
+
+| ID | Status on `f4cb90d` |
+|---|---|
+| **P0-B** (unlink before commit) | **Fixed, and fixed the way I recommended.** `canonicalize.py:913` now commits per row immediately before disposing the original, with a comment describing precisely the orphan-in-STAGING failure mode I derived independently. Better than my suggestion: disposal now routes through a journalled `boundary.quarantine()` (`safety/recovery.py`, fsync-per-append) rather than `unlink()` where a checkpoint is active. |
+| **P0-F** (organize mass-move) | **Fixed.** `in_non_library_area()` (`organize.py:132`) plus a per-file `dest_root` — `alac_library` for a finalized row, `inbox` for an un-finalized one — and `relative_to(dest_root)` replacing `relative_to(ctx.inbox)`. The 10,660-file figure is in the comment at `:597`. `OrganizeStage` is now wired into the pipeline (`stages/__init__.py:360`). Their fix is better than my "scope the query" suggestion: the query stays broad and the *target* resolves per file. |
+| **P1-A** (4 broken CLI commands) | **Fixed.** All four `scripts/musaeus_*.py` restored, and `tests/test_cli_script_imports_resolve.py` walks the AST of every module to assert each `from scripts.X import` target exists. |
+
+## Findings that survive on the live branch — re-verified today
+
+| ID | Status | Evidence on `f4cb90d` |
+|---|---|---|
+| **P0-A** | **UNFIXED — byte-identical** | `_verify_conversion` still fails open when either duration is `None`; `_duration()` still reads only `format.duration` with no `streams[0]` fallback; stream count still never compared despite the docstring; tolerance still 1.5s. Lines `151-168` are in the **uncovered** set. |
+| **P0-C** | **UNFIXED** | `finalize.py:128-129` still compares `src_size`/`tmp_size` only. `audio_hash` *is* now selected (`:228`, `:237`) but is used solely for the hash index, never to verify the copy. No fsync in finalize — the only `os.fsync` in the tree is the recovery journal (`safety/recovery.py:374`). |
+| **P0-D** | **UNFIXED** | `grep -rln IntegrityError musaeus/stages/` → still exactly `canonicalize.py`, `finalize.py`, `organize.py`. `dupe_resolver`, `tribute_quarantine` and `corrupt` still guard a post-move `UPDATE` with `except OSError` alone. |
+| **P0-E** | **UNFIXED** | `grep -n dup_status musaeus/stages/dupe_resolver.py` → one hit, `:284`, the SELECT. Still never read. |
+| **P0-G** | **Partially fixed** | The sibling-duration comparison from §5 now exists (`corrupt.py:111`, `longest_by_song`). But `:193-194` still derives `title = path.stem` from the **filename**, and `:10` still documents an `--apply` flag that does not exist. |
+| **P1-H** | **UNFIXED** | `approval.py:300` still interpolates the TSV-supplied `entry.field_name` into `UPDATE archive SET {…}` with no allowlist. |
+| **P2-C** | **UNFIXED** | The claim your own §2 calls "the most load-bearing false statement in the codebase" is still in three places: `README.md:296`, `README.md:370`, `musaeus/__init__.py:12`. |
+
+## New findings — not in my report, and not in the Reconstruction Document
+
+### N-1 — PR #14 is red in CI and `mergeable_state: blocked`
+
+```
+$ gh api repos/BogMan64/musaeus/commits/f4cb90d/check-runs
+test (3.12): failure    typecheck: failure    lint: failure
+test (3.10): cancelled  test (3.11): cancelled
+```
+
+All three jobs fail. Reproduced locally:
+
+- **lint** — `ruff check musaeus/ tests/` **passes**, but `ruff format --check` reports **142 files would be reformatted**. The head commit is *"lint: clear the 36 ruff findings in CI's scope"*; it cleared `ruff check` but CI runs `ruff format --check` as a separate step (`ci.yml:21-22`).
+- **typecheck** — **19 mypy errors in 16 files.** Nine are the *same* error: `Incompatible return value type (got "_NoVerification", expected "list[str]")` in `base.py:206` and eight stages. One signature change was never propagated. Two look genuinely substantive: `sentinel.py:323` `Value of type "str | None" is not indexable`, and `console.py:397` `"type" has no attribute "NAME"`.
+- **test (3.12)** — 2 failed, 2229 passed, 308 skipped. Both failures are `FileNotFoundError: 'ffmpeg'` / `'ffprobe'`: `test_alac_bake_sample_fmt.py::test_unreadable_file_defers_to_ffmpeg` and `test_albumart_undersized.py::test_min_edge_floor_rejects_a_same_size_offer` invoke the binaries with **no skip guard**, while ~275 sibling tests guard correctly. As written they cannot pass in CI.
+
+This matters beyond the individual errors: **246 commits of careful, well-reasoned work are sitting behind a red gate on an open PR.** The Repair Register work is real and good — and none of it can merge.
+
+### N-2 — The semgrep rules are not wired to anything
+
+`.semgrep/rules.yml` and `.semgrepignore` exist. `tests/test_semgrep_actually_scans_what_it_claims.py` exists and asserts the rules scan the tree they claim to. Two commits are dedicated to them (`8274f21`, `6a288bf`).
+
+```
+$ grep -c semgrep .github/workflows/ci.yml
+0
+```
+
+**Nothing runs semgrep.** Not CI, not the pre-push hook, not a Makefile. The rules are correct, the test guarding the rules passes, and the scanner never executes.
+
+This is your own §5 pattern — *"a check that finds nothing is not the same as a check that found nothing wrong"* — reproduced in the newest guard in the repository. It is the exact sibling of `library files with no row: 0` beside 19 GB it could not see. The test proves the rules are well-formed; nothing proves they ever ran.
+
+### N-3 — The ffmpeg coverage gap got 6× worse, and is now camouflaged
+
+Skips went **49 → 308**. Grouped by reason:
+
+```
+ 99  ffmpeg/ffprobe not available
+ 71  ffmpeg needed to mint a real m4a
+ 26  ffmpeg not available
+ 21  ffmpeg unavailable
+ 17  ffmpeg/fpcalc not available
+ 15  requires ffmpeg/ffprobe
+  9  requires ffmpeg and ffprobe
+  9  requires ffmpeg
+  8  ffmpeg/ffprobe required -- this test exists to exercise a real conversion
+```
+
+~275 skips, **nine different wordings for one condition.** No single grep finds them; no count surfaces in CI. And `canonicalize.py` coverage is **still exactly 20%** — the file grew from 210 to 315 statements and the covered fraction did not move. `_verify_conversion` (P0-A) sits in the uncovered range on the live branch, as it did on main.
+
+`.[dev,fuzzy]` also does not install `essentia`, so the `bpm` extra is never exercised either.
+
+**P1-G is therefore not just still open — it is the single reason P0-A has survived two and a half weeks of intensive, high-quality repair work.** Twenty-six Repair Register findings were triaged and fixed in that window. The one class of bug that cannot be caught is the one whose tests never run.
+
+## Where this changes my recommendations
+
+**Supersede the sequence in the body above with this:**
+
+1. **Get PR #14 green.** `ruff format` (mechanical), the 9 `_NoVerification` signatures (one change), the 2 unguarded tests (add the skip guard their siblings use), then look hard at `sentinel.py:323` and `console.py:397`. Nothing else matters until 246 commits can merge.
+2. **Add ffmpeg to the CI test job.** Still two lines. On the live branch it converts **~275** dormant tests into live coverage, and it is what would have caught P0-A.
+3. **Wire semgrep into CI** (N-2). The rules and their guard test already exist; only the invocation is missing.
+4. **Standardise the skip reason** to one constant, or better, a shared `requires_ffmpeg` marker, so the coverage gap is greppable and countable.
+5. Then **P0-A**, **P0-C**, **P0-D**, **P0-E**, **P0-G**'s remaining half, **P1-H**, **P2-C** — the seven findings above that survive on live code.
+
+## On the document itself
+
+The Reconstruction Document is the most valuable artefact in this project and its central claim is correct: the judgement is what cannot be recovered. Three of its rulings would have changed my review had I read it first — the `&`/`and` asymmetry, the deliberate breadth of tribute-quarantine, and the denylist-not-allowlist direction of the decode classifier all look like defects from the code alone, and I would have flagged at least the third.
+
+Two places where it and the live tree disagree, both in the tree's favour:
+
+- **§6 lists 30 stages; `f4cb90d` has 41 stage modules.** Worth a recount before the numbers are quoted again.
+- **§2's "act on this" framing holds, and is stronger than stated.** I verified all four claims independently: nothing outside `musaeus/state/` calls `migrate()`, the legacy `duplicates` table has no UNIQUE constraint, `rebuild.py` is disabled, and no P0 state table exists in a live DB. Add a fifth: the false "source of truth" claim is still shipping in `README.md` **and in `musaeus/__init__.py:12`**, so it is in the package metadata a new reader meets first.
+
+One caution the document earns the right to state and I will restate: it says *"where this document and the code disagree, read the code."* That is what this addendum did, and it is why two of my seven P0s dissolved. **I would extend it — where the code and CI disagree, run CI.** My original review's worst error was not a wrong finding; it was reviewing a branch nobody had worked on for eighteen days without first checking which ref was live. That check costs one command:
+
+```bash
+git for-each-ref --sort=-committerdate refs/remotes/ --format='%(committerdate:short) %(refname:short)'
+```
