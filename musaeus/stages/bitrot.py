@@ -126,6 +126,48 @@ class BitRotStage(BaseStage):
 
     NAME = "bitrot"
 
+    @classmethod
+    def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
+        """Files this stage would hash. Read-only; see planner.py.
+
+        The count is every audio file in ALAC_Archive, because that is what a
+        verify pass reads. The *description* carries the number that actually
+        matters, and it is not the total: how many of those files have no
+        baseline row.
+
+        A file with no baseline is reported by verify as **new**, not as
+        corrupt. So an archive that is mostly unbaselined produces a green
+        verify that has compared nothing — the same shape as the
+        `library files with no row: 0` incident, and measured here on
+        2026-09-08 as a baseline that was 0% valid while reporting clean.
+        Anyone previewing this stage is deciding whether to commit hours of
+        hashing; the coverage figure is the one that answers them.
+
+        Walks the archive (~16k files, ~1 s). Read-only, and cheap against the
+        hours it exists to let you avoid.
+        """
+        files = _scan_archive_files(cfg.alac_archive)
+        total = len(files)
+        if not total:
+            return 0, f"no audio files under {cfg.alac_archive}"
+
+        tables = {
+            r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        if "archive_tier_hashes" not in tables:
+            return total, (
+                f"{total} file(s) to hash — no baseline table exists yet, so a "
+                "verify would report every one as new and compare nothing"
+            )
+
+        baselined = {r[0] for r in conn.execute("SELECT path FROM archive_tier_hashes")}
+        without = sum(1 for p in files if str(p) not in baselined)
+        pct = 100.0 * (total - without) / total
+        return total, (
+            f"{total} file(s) to hash; {without} have no baseline "
+            f"({pct:.1f}% covered) — a verify reports those as new, not as corrupt"
+        )
+
     def validate(self, ctx: RunContext) -> None:
         """No external dependency to check -- pure Python hashing via
         the same helper Sentinel itself uses to compute full_hash."""

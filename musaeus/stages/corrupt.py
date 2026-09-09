@@ -353,6 +353,25 @@ class CorruptStage(BaseStage):
     #: use site in _scan for why this exists and how the number was picked.
     NEW_ARRIVAL_DECODE_BUDGET = 200
 
+    @classmethod
+    def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
+        """Rows this stage would act on. Read-only; see planner.py.
+
+        Mirrors _scan's own WHERE clause rather than validate's, because the
+        preview must answer for what the stage *does*: validate counts every
+        CATALOGUED row, _scan skips those with a NULL file_path. Two counts
+        that disagree about the same stage is the failure this codebase keeps
+        finding, so there is one query and _scan owns its shape.
+        """
+        n = conn.execute(
+            "SELECT COUNT(*) FROM archive "
+            "WHERE status = 'CATALOGUED' AND file_path IS NOT NULL"
+        ).fetchone()[0]
+        return int(n), (
+            f"CATALOGUED tracks to scan; at most {cls.NEW_ARRIVAL_DECODE_BUDGET} "
+            "never-checked files are decoded per run"
+        )
+
     def validate(self, ctx: RunContext) -> None:
         count = ctx.conn.execute(
             "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'"

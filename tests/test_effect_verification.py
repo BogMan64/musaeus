@@ -183,8 +183,8 @@ class TestStageHooksAreCorrectlyBound:
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
         conn.execute(
-            "CREATE TABLE archive (artist TEXT, genre TEXT, status TEXT, bpm REAL, "
-            "rg_tagged_at TEXT, finalized_at TEXT)"
+            "CREATE TABLE archive (file_path TEXT, artist TEXT, genre TEXT, status TEXT, "
+            "bpm REAL, rg_tagged_at TEXT, finalized_at TEXT)"
         )
         conn.execute("CREATE TABLE duplicates (group_id TEXT, status TEXT)")
         conn.commit()
@@ -195,3 +195,48 @@ class TestStageHooksAreCorrectlyBound:
             count, desc = stage.plan_candidates(conn, cfg)
             assert isinstance(count, int)
             assert desc
+
+    def test_every_plan_candidates_anywhere_is_callable(self, tmp_path):
+        """The same arity check, over every stage rather than one pipeline.
+
+        The test above walks DEFAULT_PIPELINE, so a stage outside it is
+        unguarded — and `bitrot` is deliberately outside it (standalone, not
+        part of any pipeline). Its preview is reached by `musaeus bitrot
+        --dry-run`, which is a real CLI path, so "the arity test does not
+        cover it" is a guard that cannot fire for exactly the stage most
+        likely to need one.
+        """
+        import sqlite3
+
+        from musaeus import stages as stages_mod
+        from musaeus.stages.base import BaseStage
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "CREATE TABLE archive (file_path TEXT, artist TEXT, genre TEXT, status TEXT, "
+            "bpm REAL, rg_tagged_at TEXT, finalized_at TEXT)"
+        )
+        conn.execute("CREATE TABLE duplicates (group_id TEXT, status TEXT)")
+        conn.commit()
+        cfg = SimpleNamespace(
+            inbox=None,
+            vault_root=tmp_path,
+            alac_library=tmp_path / "lib",
+            alac_archive=tmp_path / "ALAC_Archive",
+        )
+
+        checked = []
+        for name in dir(stages_mod):
+            stage = getattr(stages_mod, name)
+            if not isinstance(stage, type) or not issubclass(stage, BaseStage):
+                continue
+            if "plan_candidates" not in stage.__dict__:
+                continue
+            count, desc = stage.plan_candidates(conn, cfg)
+            assert isinstance(count, int), f"{name} returned a non-int count"
+            assert desc, f"{name} returned an empty description"
+            checked.append(name)
+
+        # Coverage: a loop that matched nothing would pass silently.
+        assert len(checked) >= 10, f"only checked {checked} — is the walk reaching the stages?"
