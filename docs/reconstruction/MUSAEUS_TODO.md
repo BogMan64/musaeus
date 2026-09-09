@@ -439,10 +439,32 @@ The §5 pattern, five more times. Each of these *looks* like protection.
 | id | state | what it costs |
 |---|---|---|
 | **M-03** | open, CONFIRMED | line 545 inlines `max(1.0, src * 0.02)` while `_DURATION_TOLERANCE_SEC = 2.0` sits at line 142, and the comment claims they agree. A 30 s track drifting 1.4 s on AAC priming is **accepted at write time and rejected on the next run — deleted and re-encoded for ever**. The guarding test greps for the constant and is structurally blind to an inline literal. `musaeus/duration.py:63` already has `tolerance_for()`; call it. |
-| **M-04** | open, CONFIRMED BY EXECUTION | `is_protected('Andrews Sisters (the)')` is True; `'Andrews Sisters, The'`, `'The Andrews Sisters'` and `'Andrews Sisters'` are all False — and `normalize.py` actively rewrites the working spelling into the dormant one. `genre_law._key()` already folds all three article forms and its docstring records that 246 rules were dormant for this exact reason. The test pins the dormant spelling, cementing it. |
+| **M-04** | **FIXED** | `is_protected('Andrews Sisters (the)')` is True; `'Andrews Sisters, The'`, `'The Andrews Sisters'` and `'Andrews Sisters'` are all False — and `normalize.py` actively rewrites the working spelling into the dormant one. `genre_law._key()` already folds all three article forms and its docstring records that 246 rules were dormant for this exact reason. The test pins the dormant spelling, cementing it. |
 | **M-10** | open, CONFIRMED | `PROTECTED_ARTIST_NAMES` exists in two modules with **disjoint** contents, so the "one home" guard — which keys on overlap ≥ 2 — can never fire. `normalize.py` runs `UPDATE archive SET artist=?` and imports nothing from canon. |
 | **M-09** | open, CONFIRMED | `_load()` clears `_allowed` but not `_allowed_lower`, so a reload after the file disappears raises `ValueError` instead of returning None. |
 | **M-11** | open, CORRECTED then CONFIRMED | the ERROR-severity semgrep rule has **never scanned `tests/`** — semgrep's bundled defaults exclude it and `--no-git-ignore` does not lift it. Naming a file directly returns five real hits. |
+
+
+**M-04, measured (2026-09-08).** Of the thirteen canon entries, **exactly one
+was dormant** — `andrews sisters (the)` — and the library stores that artist
+as **"Andrews Sisters, The", 4 rows**, which is precisely the spelling that
+returned False. The other twelve matched their stored spelling already, so
+the blast radius was one artist and four files.
+
+The *failure mode* is the systemic part, and it is why this is worth more
+than four rows: `normalize.py` rewrites names **into** the suffix form, so
+the pipeline actively converted the one working spelling into a non-working
+one before anything asked whether it was protected. A dormant rule looks
+exactly like an absent one.
+
+`is_protected()` now folds through `GenreLaw._key()` rather than restating
+the rule — two modules folding differently *is* the incident, and GenreLaw's
+own docstring records 246 genre rules dormant for the same reason. A test
+pins the coupling so they cannot drift apart again, and another runs the
+whole live artist list through it.
+
+`&` is deliberately **not** folded: "Of Monsters and Men" spells its own name
+with "and", and a blanket ampersand fold would protect a name nobody listed.
 
 ### Tier 3 — operator-facing and robustness
 

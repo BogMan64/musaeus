@@ -40,6 +40,16 @@ matching against the set directly, so the caller cannot forget to fold case.
 
 from __future__ import annotations
 
+# The article convention is a property of this library, not of GenreLaw --
+# but it must be spelled once. GenreLaw._key() already folds "The X" /
+# "X, The" / "X (the)" to one form, and its docstring records what happens
+# when two modules fold differently: 246 genre rules were dormant because the
+# law and the library disagreed about what an artist is called. Importing it
+# rather than restating it is the whole lesson of that incident. No cycle --
+# genre_law imports nothing from this package -- and the import costs ~5 ms
+# with no file read until a GenreLaw is constructed.
+from .genre_law import GenreLaw
+
 #: Lower-cased. Compare with is_protected(), not with `in` against a raw name.
 PROTECTED_ARTIST_NAMES: frozenset[str] = frozenset(
     {
@@ -64,6 +74,37 @@ PROTECTED_ARTIST_NAMES: frozenset[str] = frozenset(
 )
 
 
+#: The same names under the article fold, built once at import.
+_PROTECTED_KEYS: frozenset[str] = frozenset(
+    GenreLaw._key(n) for n in PROTECTED_ARTIST_NAMES
+)
+
+
 def is_protected(name: str | None) -> bool:
-    """True when this artist name must not be split, folded or re-cased."""
-    return (name or "").strip().lower() in PROTECTED_ARTIST_NAMES
+    """True when this artist name must not be split, folded or re-cased.
+
+    Folds the article convention, because otherwise the protection is
+    dormant for every spelling the library actually stores.
+
+    Measured 2026-09-08 (M-04): the canon holds "andrews sisters (the)", and
+    before this fix `is_protected` lowercased and nothing else. So
+
+        is_protected("Andrews Sisters (the)")  -> True
+        is_protected("Andrews Sisters, The")   -> False
+        is_protected("The Andrews Sisters")    -> False
+        is_protected("Andrews Sisters")        -> False
+
+    Only the first is a spelling this library never produces. Worse,
+    `normalize.py`'s article repair rewrites names INTO the suffix form, so
+    the pipeline actively converted the one working spelling into a
+    non-working one before asking whether it was protected.
+
+    A dormant rule looks exactly like an absent one -- nothing reported it,
+    exactly as GenreLaw's own docstring warns.
+
+    Note what is NOT folded: `&` stays `&`. "Of Monsters and Men" spells its
+    own name with "and", and a blanket ampersand fold would merge it with a
+    hypothetical "&" spelling and re-introduce the collision the canon
+    comments already warn about.
+    """
+    return GenreLaw._key(name or "") in _PROTECTED_KEYS
