@@ -395,8 +395,23 @@ against the MUSAEUS copy before assuming it applies twice.
 | **M-02** | **FIXED `3bb430b`** | **the Register's figure was an inference and is wrong by three orders of magnitude — see below.** Original entry: **the biggest one left.** The resume check compares duration *only*, so every output encoded before the `-ar` cap and `-ac 2` downmix reports `SKIP DONE`. By the code's own docstring that is **4,862 of 10,545 files above 48 kHz, 4,223 of them at 192 kHz**. The car edition is silently wrong for thousands of files and **a normal re-run will never fix them**. Fix: compare sample rate and channel count too — ask "is this what the current settings would produce", not "is something roughly this long here". |
 | **M-05** | **FIXED `3363bf2`** | `--dry-run` is nested inside `if args.from_catalogue:`, so a dry run over hand-dropped files takes the else branch into a real ~44-hour encode, with masking and DB writes. A safety flag that does not stop anything. `--limit` and `--budget-gb` are ignored outside that branch too. |
 | **M-14** | **FIXED — and it was CONFIRMED, not plausible** | leaked `_staged_<pid>` trees were never cleaned after a successful build, and `find_input_files()` excluded `_output` but not them, so a later non-catalogue run re-ingested the whole catalogue. **Measured 2026-09-08: 3 leaked trees, 41,811 symlinks, 0 genuine dropped files — the script reported 41,031 inputs for a library of ~16,000.** Found while *verifying M-05*: its new dry-run guard printed the 41,031. Before M-05, that same command would have encoded them. |
-| **O-01/O-02** | open, ORPHEUS + vendored | the noise chain gates on `.exists()`: a truncated or 96 kHz bed is accepted and mixed under all ~10,000 tracks. The generator grew `_is_good_track` for exactly this; the consumer never did. |
+| **O-01/O-02** | **FIXED `ac0d1ef`** (MUSAEUS copy) | the noise chain gates on `.exists()`: a truncated or 96 kHz bed is accepted and mixed under all ~10,000 tracks. The generator grew `_is_good_track` for exactly this; the consumer never did. **`copy_noise_tracks` now validates each bed and refuses by name. Two further M-12-shaped holes closed with it: an unprobeable bed took the raw-copy branch precisely because nothing could tell what it was, and a failed re-encode copied the source as-is — shipping the 96 kHz file the re-encode existed to replace. ORPHEUS's own copy is untouched; see below.** |
 
+
+**O-01/O-02 left one thing open, and it is worth knowing (2026-09-08).**
+`orpheus_noise_generator._decodes_cleanly` — the check the consumer now reuses —
+is a surviving copy of the "any stderr means damage" rule that `c9542c4` fixed
+elsewhere. It passes no `-vn` and treats any stderr as damage, so a file with
+broken cover art and perfect audio reads as damaged. It is **correct for the
+beds it faces** and that is measured, not assumed: all six in `RUNS/Noise` probe
+as a single audio stream, no artwork, 44.1 kHz. It is wrong in general.
+
+Not fixed here for two reasons. The file is shared with ORPHEUS (`SCRIPTS/`
+carries the same function), so changing it is the sync question rather than a
+bug fix; and the corrected version lives in `musaeus.duration`, which this
+vendored tree deliberately does not import. **If a noise bed ever carries
+artwork, this check will call it damaged — loudly and wrongly, but never
+silently**, which is the right way round for a bed that goes under everything.
 
 **M-02, measured after the fix (2026-09-08).** The Register cites *"4,862 of
 10,545 files above 48 kHz"* as the damage. That is a count of **sources that
