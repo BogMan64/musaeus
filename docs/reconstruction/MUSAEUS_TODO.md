@@ -366,8 +366,8 @@ against the MUSAEUS copy before assuming it applies twice.
 |---|---|---|
 | **M-01** | **FIXED `88ecf5c`** | an unreadable source deleted its own good encode |
 | **M-02** | **FIXED `3bb430b`** | **the Register's figure was an inference and is wrong by three orders of magnitude — see below.** Original entry: **the biggest one left.** The resume check compares duration *only*, so every output encoded before the `-ar` cap and `-ac 2` downmix reports `SKIP DONE`. By the code's own docstring that is **4,862 of 10,545 files above 48 kHz, 4,223 of them at 192 kHz**. The car edition is silently wrong for thousands of files and **a normal re-run will never fix them**. Fix: compare sample rate and channel count too — ask "is this what the current settings would produce", not "is something roughly this long here". |
-| **M-05** | open, CONFIRMED | `--dry-run` is nested inside `if args.from_catalogue:`, so a dry run over hand-dropped files takes the else branch into a real ~44-hour encode, with masking and DB writes. A safety flag that does not stop anything. `--limit` and `--budget-gb` are ignored outside that branch too. |
-| **M-14** | open, PLAUSIBLE | leaked `_staged_<pid>` symlink trees are never cleaned after a successful catalogue build, and a later non-catalogue run walks into them and re-encodes the whole catalogue down the path catalogue mode exists to avoid. **Reproduce before repairing.** |
+| **M-05** | **FIXED `3363bf2`** | `--dry-run` is nested inside `if args.from_catalogue:`, so a dry run over hand-dropped files takes the else branch into a real ~44-hour encode, with masking and DB writes. A safety flag that does not stop anything. `--limit` and `--budget-gb` are ignored outside that branch too. |
+| **M-14** | **FIXED — and it was CONFIRMED, not plausible** | leaked `_staged_<pid>` trees were never cleaned after a successful build, and `find_input_files()` excluded `_output` but not them, so a later non-catalogue run re-ingested the whole catalogue. **Measured 2026-09-08: 3 leaked trees, 41,811 symlinks, 0 genuine dropped files — the script reported 41,031 inputs for a library of ~16,000.** Found while *verifying M-05*: its new dry-run guard printed the 41,031. Before M-05, that same command would have encoded them. |
 | **O-01/O-02** | open, ORPHEUS + vendored | the noise chain gates on `.exists()`: a truncated or 96 kHz bed is accepted and mixed under all ~10,000 tracks. The generator grew `_is_good_track` for exactly this; the consumer never did. |
 
 
@@ -422,6 +422,15 @@ under-reported and nobody would have known. It was rewritten to emit
 `PROBE_FAILED` instead of skipping, and re-run clean: 3 offenders, 0 probe
 failures, agreeing with the count. **A measurement script needs the same
 "report your coverage" discipline as the checks it is measuring.**
+
+
+**The three leaked trees are still on disk and now harmless.** `find_input_files()`
+skips them by name, so nothing will walk into them again; the cleanup only removes
+*this* run's tree, deliberately — sweeping other PIDs' trees is what caused the
+2026-09-01 incident where a dry run deleted the staging a live build was reading
+from. They are symlinks only (276 MB of links, no audio) under
+`RUNS/AAC-Car-Masked/`. **Deleting them is safe and needs Grey's word; nothing
+breaks if they stay.**
 
 ### Tier 2 — guards that cannot fire
 

@@ -63,6 +63,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import shutil
@@ -82,12 +83,33 @@ VENDOR_DIR = Path(__file__).resolve().parent / "vendor"
 AUDIO_EXTENSIONS = {".m4a", ".flac", ".alac", ".wav", ".aiff"}
 
 
+# Every directory name under the input root that is this script's own
+# bookkeeping rather than somebody's dropped audio.
+_NOT_INPUT = ("_output", "_staged_")
+
+
 def find_input_files(input_dir: Path) -> list[Path]:
+    """Audio a human put here, excluding anything this script created itself.
+
+    `_staged_<pid>` trees are symlink farms built by --from-catalogue. They
+    were excluded from cleanup but not from discovery, so a later run WITHOUT
+    --from-catalogue walked into them and re-ingested the whole catalogue as
+    though it had been hand-dropped -- rglob follows a symlink to a file as a
+    file. Measured 2026-09-08: three leaked trees holding 41,811 symlinks
+    against zero genuine dropped files, so this path found 41,031 "inputs"
+    for a library of ~16,000. (M-14.)
+
+    Skipping them by name is the durable half of the fix: it holds for trees
+    left by earlier versions, by other PIDs, and by runs that died before
+    they could clean up. The cleanup added in main() stops new ones
+    accumulating; this stops the ones already there from doing harm.
+    """
     files = []
     for p in sorted(input_dir.rglob("*")):
         if not p.is_file() or p.suffix.lower() not in AUDIO_EXTENSIONS:
             continue
-        if "_output" in p.relative_to(input_dir).parts:
+        parts = p.relative_to(input_dir).parts
+        if any(part == "_output" or part.startswith("_staged_") for part in parts):
             continue
         files.append(p)
     return files
@@ -247,6 +269,18 @@ def main() -> int:
         if staging_dir.exists():
             shutil.rmtree(staging_dir)
         staging_dir.mkdir(parents=True, exist_ok=True)
+        # Remove THIS run's tree however the run ends -- success, error or
+        # Ctrl-C. Before this, it was cleaned only on entry (which a fresh
+        # PID never satisfies) and after a dry run, so every successful build
+        # left one behind for ever.
+        #
+        # Deliberately only this PID's tree. The per-process naming exists
+        # because a shared "_staged" let one run delete the symlinks another
+        # was reading; sweeping other PIDs' trees here would reintroduce
+        # exactly that, and a concurrent build is the normal case on this
+        # machine. Trees left by dead processes are made harmless by
+        # find_input_files() instead, and can be removed by hand.
+        atexit.register(shutil.rmtree, staging_dir, ignore_errors=True)
         conn_sel = open_db(cfg.db_path)
         try:
             files, tracks = stage_from_catalogue(
