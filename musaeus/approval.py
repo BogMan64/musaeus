@@ -291,11 +291,30 @@ def apply_approved_fixes(
     report = ReviewReport()
     entries = read_review_tsv(review_path)
 
+    # A column name cannot be a bound parameter, so it is interpolated -- and
+    # it arrives from a TSV a human edits by hand. Interpolating it unchecked
+    # meant a typo silently created no-op SQL at best, and at worst a crafted
+    # value became arbitrary SQL against the library. (P1-H, 2026-09-09.)
+    #
+    # The allowlist is read from the live schema rather than hard-coded, so a
+    # column added by ensure_columns() is accepted without anyone remembering
+    # to update a list here -- and a name that is not a column is refused
+    # before it can reach the statement.
+    allowed_fields = {row[1] for row in conn.execute("PRAGMA table_info(archive)").fetchall()}
+
     for entry in entries:
         if entry.approve == "yes":
             report.approved += 1
+            if entry.field_name not in allowed_fields:
+                report.errors.append(
+                    f"{entry.file_path}: refused -- {entry.field_name!r} is not a "
+                    f"column of archive. Nothing was changed for this row."
+                )
+                continue
             if not dry_run:
-                # Update archive
+                # Update archive. field_name is interpolated because SQLite
+                # cannot bind an identifier; it is checked against the live
+                # schema above, and the VALUE is still bound.
                 conn.execute(
                     f"UPDATE archive SET {entry.field_name} = ? WHERE file_path = ?",
                     (entry.suggested_value, entry.file_path),
