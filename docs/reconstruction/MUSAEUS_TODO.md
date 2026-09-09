@@ -365,10 +365,51 @@ against the MUSAEUS copy before assuming it applies twice.
 | id | state | what it costs |
 |---|---|---|
 | **M-01** | **FIXED `88ecf5c`** | an unreadable source deleted its own good encode |
-| **M-02** | open, CONFIRMED | **the biggest one left.** The resume check compares duration *only*, so every output encoded before the `-ar` cap and `-ac 2` downmix reports `SKIP DONE`. By the code's own docstring that is **4,862 of 10,545 files above 48 kHz, 4,223 of them at 192 kHz**. The car edition is silently wrong for thousands of files and **a normal re-run will never fix them**. Fix: compare sample rate and channel count too — ask "is this what the current settings would produce", not "is something roughly this long here". |
+| **M-02** | **FIXED `3bb430b`** | **the Register's figure was an inference and is wrong by three orders of magnitude — see below.** Original entry: **the biggest one left.** The resume check compares duration *only*, so every output encoded before the `-ar` cap and `-ac 2` downmix reports `SKIP DONE`. By the code's own docstring that is **4,862 of 10,545 files above 48 kHz, 4,223 of them at 192 kHz**. The car edition is silently wrong for thousands of files and **a normal re-run will never fix them**. Fix: compare sample rate and channel count too — ask "is this what the current settings would produce", not "is something roughly this long here". |
 | **M-05** | open, CONFIRMED | `--dry-run` is nested inside `if args.from_catalogue:`, so a dry run over hand-dropped files takes the else branch into a real ~44-hour encode, with masking and DB writes. A safety flag that does not stop anything. `--limit` and `--budget-gb` are ignored outside that branch too. |
 | **M-14** | open, PLAUSIBLE | leaked `_staged_<pid>` symlink trees are never cleaned after a successful catalogue build, and a later non-catalogue run walks into them and re-encodes the whole catalogue down the path catalogue mode exists to avoid. **Reproduce before repairing.** |
 | **O-01/O-02** | open, ORPHEUS + vendored | the noise chain gates on `.exists()`: a truncated or 96 kHz bed is accepted and mixed under all ~10,000 tracks. The generator grew `_is_good_track` for exactly this; the consumer never did. |
+
+
+**M-02, measured after the fix (2026-09-08).** The Register cites *"4,862 of
+10,545 files above 48 kHz"* as the damage. That is a count of **sources that
+trigger the cap** — the live DB says 5,370 above 48 kHz, 4,465 of them at
+192 kHz — **not** a count of wrong outputs. Probing all **15,891** encoded
+files found:
+
+| | |
+|---|---|
+| outputs above 48 kHz | **0** |
+| outputs with more than 2 channels | **3** |
+
+The rate cap is working on encode. What M-02 actually left behind is a stale
+pre-cap remainder of **three files**, all 48 kHz 5.1, all now correctly
+refused by the fixed check:
+
+- `Hoobastank - The Reason` — source 48 kHz/6ch
+- `Billy Squier - The Big Beat` — source 48 kHz/6ch
+- `Beck - The Paisley Experience` — **source 192 kHz/6ch, output 48 kHz/6ch**
+
+**The Beck file is worth a second look and is evidence for M-12.** Its rate
+was capped 192 → 48 while its channels were not downmixed, in the same
+encode. `-ar` and `-ac` are set from two separate probes
+(`probe_sample_rate` and `probe_channels`), and M-12 says both flags vanish
+when their probe returns None. An output where one applied and the other did
+not is exactly that shape. It may instead be an encode predating the `-ac`
+addition — **check the file's mtime against the commit that added `-ac 2`
+before concluding.** Either way M-12 is no longer purely PLAUSIBLE.
+
+**The repair is three files, not a rebuild.** The defect was real — a blind
+check hides its misses for ever — but knowing the size changes what you
+schedule. A normal `--from-catalogue` run will now redo these three.
+
+**A note on measuring it.** The first offender scan reported one file; an
+independent count said three. The scan was simply still running — but its
+script also exited silently whenever a probe failed, so it *could* have
+under-reported and nobody would have known. It was rewritten to emit
+`PROBE_FAILED` instead of skipping, and re-run clean: 3 offenders, 0 probe
+failures, agreeing with the count. **A measurement script needs the same
+"report your coverage" discipline as the checks it is measuring.**
 
 ### Tier 2 — guards that cannot fire
 
