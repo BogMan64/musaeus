@@ -768,6 +768,20 @@ class CanonicalizeStage(BaseStage):
         except CanonicalizeError as exc:
             self._quarantine_failed_staging(ctx, tmp_output, staging_name, source, exc)
             return "ERROR", str(exc)
+        except subprocess.TimeoutExpired as exc:
+            # P1-K, 2026-09-09. TimeoutExpired inherits from SubprocessError,
+            # not OSError, so neither handler caught it: a single stalled
+            # ffmpeg (600s) or ffprobe (30s) escaped _process_one, skipped
+            # _quarantine_failed_staging entirely, and killed the whole run --
+            # leaving its half-written .staging file behind with nothing
+            # recording why. Exactly the shape fixed in build_alac_library on
+            # 2026-09-06 for the same reason.
+            self._quarantine_failed_staging(ctx, tmp_output, staging_name, source, exc)
+            secs = int(exc.timeout) if exc.timeout else "?"
+            return "ERROR", (
+                f"timed out after {secs}s and was killed -- a stall, not a slow "
+                f"file; the source is untouched"
+            )
         except OSError as exc:
             self._quarantine_failed_staging(ctx, tmp_output, staging_name, source, exc)
             return "ERROR", f"filesystem error: {exc}"

@@ -807,6 +807,19 @@ class Console:
                     p = db_path.parent / (db_path.name + suffix)
                     if p.exists():
                         p.unlink()
+                # Clear the resume state too, exactly as `musaeus reset` does.
+                #
+                # P1-D, 2026-09-09. The CLI's reset calls _clear_resume(); this
+                # path did not. The resume file records which stages finished,
+                # keyed on stage name and nothing else -- so after a hard reset
+                # the next `musaeus run` reads a file that still says "ingest,
+                # sentinel, scholar: done" and SKIPS them against a brand-new
+                # empty database. The run reports success having processed
+                # nothing, which is the worst shape of failure this project
+                # has: a green result that measured nothing.
+                from .cli import _clear_resume
+
+                _clear_resume()
                 _ok(f"Database deleted: {db_path}")
                 _info("Restart musaeus to begin fresh — Ingest will re-register all inbox files.")
                 # Stop the console — DB is gone
