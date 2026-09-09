@@ -105,7 +105,23 @@ def _save_env(path: Path, env: dict[str, str]) -> None:
 
 
 def needs_setup() -> bool:
-    """Return True if the setup wizard should run (no vault configured)."""
+    """Return True if the setup wizard should run (no vault configured).
+
+    Consults the environment first. Without that check this asked only whether
+    ``~/.config/musaeus/settings.env`` exists, so exporting ``MUSAEUS_VAULT_ROOT``
+    was not enough to configure MUSAEUS: every command dropped into the
+    interactive wizard, which then aborts because nothing can answer it. That
+    blocks every non-interactive use — containers, cron, systemd — and the
+    Docker image had to work around it by seeding the file, which left the
+    image and a bare ``pip install`` diverging.
+
+    ``MusicConfig.from_env()`` already treats the variable as sufficient. This
+    function disagreeing with it was the same fact living in two places.
+
+    Found 2026-09-05 by running the container, not by reading the code.
+    """
+    if os.environ.get("MUSAEUS_VAULT_ROOT"):
+        return False  # the environment already answers the question
     if not _SETTINGS_FILE.exists():
         return True
     env = _load_env(_SETTINGS_FILE)

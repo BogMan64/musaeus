@@ -171,7 +171,34 @@ Do NOT run `organize` while the bake runs; both move files.
    Until one of those lands, treat a clean `bitrot verify` as meaningful
    only if its `new:` count is near zero. **Check that line first.**
 
-3. **`--dry-run` previews nothing for 21 of the 31 stages.** It prints
+3. **PARTLY CLOSED 2026-09-08 — `corrupt` and `bitrot` now preview.** The two
+   the note below picks out as worth doing first both have a
+   `plan_candidates(conn, cfg)`, and both are reachable from the real CLI:
+   `musaeus dry-run` shows corrupt, `musaeus bitrot --dry-run` shows bitrot.
+   Ten stages had one; twelve do now. The remaining 19 still print
+   `no preview available`, and everything the entry says about them stands.
+
+   Measured against the live vault at the time of writing:
+
+   ```
+   corrupt    16,103  CATALOGUED tracks to scan; at most 200 never-checked
+                      files are decoded per run
+   bitrot     15,813  15813 file(s) to hash; 0 have no baseline (100.0%
+                      covered) — a verify reports those as new, not as corrupt
+   ```
+
+   **bitrot's preview leads with baseline coverage, not with a total.** That
+   is the number the 2026-09-08 verify pass proves you need: an unbaselined
+   file is reported as *new*, not as corrupt, so a mostly-unbaselined archive
+   returns a green verify having compared nothing. The 100.0% above is the
+   rebaseline holding; the figure independently reproduces the handoff's
+   15,813, from a directory walk rather than from the same query.
+
+   Arity was guarded only across `DEFAULT_PIPELINE`, which does not contain
+   bitrot — a guard that could not fire for the one standalone stage. There is
+   now a second check over every stage that defines the hook (12 found).
+
+   ~~**`--dry-run` previews nothing for 21 of the 31 stages.**~~ It prints
    `no preview available for this stage` and the run wrapper never calls
    the stage at all (`musaeus/planner.py:199` — a stage without a
    `plan_candidates` method gets a `None` count and is skipped).
@@ -786,9 +813,46 @@ damage.
 
 ---
 
-## Deferred by Grey (2026-09-05) — pin all modules at startup
+## ~~Deferred by Grey (2026-09-05) — pin all modules at startup~~ — DONE 2026-09-08
 
-**Not urgent. Do it when the pipeline is idle.**
+**Done with the pipeline idle, which was the condition Grey set.** Both P0 jobs
+and all five §7 jobs were confirmed clear by PID first.
+
+`cli.py` gained `_pin_modules()`, called from `main()` immediately after logging
+is configured and **before any command dispatch** — so it covers `--skip` runs,
+which is the whole reason it is not in `PreflightStage`. Failures are logged and
+never abort: a pin that can refuse to start is worse than the staleness it
+prevents.
+
+**Measured 2026-09-08: 98 modules, 0.066 s, zero failures** (97 on 2026-09-05 —
+the package grew by one). `musaeus.__main__` is skipped, verified still absent
+from `sys.modules` afterwards; importing it runs the CLI and blocks.
+
+Guarded by `tests/test_startup_pins_modules.py` — 6 tests, including that every
+module is resident afterwards, that the count is checked against the real package
+size rather than a constant that would rot, that a broken module is reported
+rather than raised, and that the call sits before dispatch and *not* in preflight.
+
+One trap worth recording: the first version referenced a module-level `logger`
+that `cli.py` did not have. `python3 -m py_compile` passed it — a `NameError` is
+a runtime error, not a syntax error — and it would have crashed every single
+invocation. Measure the artifact, not the report: the thing that caught it was
+running `musaeus -v status` and reading the output.
+
+**Not done: the deferred imports themselves — 59, measured 2026-09-08** with the
+entry's own grep. The pin makes them harmless for a running process, which is
+what mattered; it does not tidy them.
+
+Also verified on the unconfigured first-run path (`env -u MUSAEUS_VAULT_ROOT
+HOME=/tmp/no-such-home`), since the pin now imports `config.py` before the
+wizard can write `settings.env`: 98 modules, **zero warnings**. `_load_env()` is
+a no-op when the file is absent and the `ValueError` lives in `from_env()`, not
+at import — reasoned first, then measured, because the reasoning is worth
+exactly nothing here on its own.
+
+Original entry follows.
+
+~~**Not urgent. Do it when the pipeline is idle.**~~
 
 The 2026-09-05 handoff-doc loss had a root cause deeper than the missing
 doc: `cli.py` imported `handoff.py` inside a function, so a 42-hour-old
@@ -854,7 +918,25 @@ strings — `settings.json` also holds env blocks and API headers. 8 tests in
 
 ---
 
-## Small, deferred (2026-09-05) — needs_setup() ignores the environment
+## ~~Small, deferred (2026-09-05) — needs_setup() ignores the environment~~ — DONE 2026-09-08
+
+`needs_setup()` now returns False when `MUSAEUS_VAULT_ROOT` holds a non-empty
+value, exactly as the entry below specifies. The image and a bare `pip install`
+no longer diverge.
+
+The empty-string case is treated as *unconfigured*, deliberately: the check is
+truthiness on the **value**, not presence of the key. `MUSAEUS_VAULT_ROOT=` is
+not an answer — the same distinction that made `MUSAEUS_FORCE_REENCODE=0` mean
+*on* (M-06, fixed the same day).
+
+Guarded by `tests/test_needs_setup_reads_the_environment.py` — 5 tests, driving
+the real function with a real environment rather than asserting on its source,
+since the defect was found by running the container and not by reading the code.
+The fixture redirects `_SETTINGS_FILE` to a path that does not exist; without
+that, the developer's own `settings.env` answers every case and all five tests
+pass over nothing.
+
+Original entry follows.
 
 `needs_setup()` (`musaeus/setup/wizard.py`) tests only for
 `~/.config/musaeus/settings.env`. It never consults `os.environ`, so
