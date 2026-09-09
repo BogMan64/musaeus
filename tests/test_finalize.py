@@ -417,11 +417,20 @@ class TestFinalizeBatchDate:
         # any deeper or shallower.
         assert expected.relative_to(ctx.alac_library).parts[0] == _TEST_BATCH_DATE
 
-    def test_default_batch_date_is_todays_utc_date(self, cfg):
-        """Without an explicit override, the batch date defaults to the
-        real current UTC date, not a fixed/stale value."""
+    def test_default_batch_date_is_todays_utc_date(self, cfg, monkeypatch):
+        """With batch folders ENABLED and no explicit override, the stamp is
+        the real current UTC date, not a fixed or stale value.
+
+        This test asserted the same thing about the DEFAULT until
+        2026-09-09, when batch folders became opt-in
+        (MUSAEUS_BATCH_FOLDERS). The date logic it covers is unchanged and
+        still worth pinning, so the flag is set here rather than the test
+        being deleted -- what moved is which behaviour is the default, not
+        whether dated folders work.
+        """
         from datetime import datetime, timezone
 
+        monkeypatch.setenv("MUSAEUS_BATCH_FOLDERS", "1")
         cfg.ensure_dirs()
         conn = open_db(cfg.db_path)
         real_ctx = RunContext.new(cfg, conn, dry_run=False)
@@ -433,6 +442,21 @@ class TestFinalizeBatchDate:
         today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
         expected = real_ctx.alac_library / today / "Artist" / "Album" / "Artist - Title.m4a"
         assert expected.exists()
+
+    def test_with_the_flag_off_a_finalized_file_lands_flat(self, cfg, monkeypatch):
+        """The companion assertion, and the one that would have caught a
+        half-applied change: no date folder at all, artist directly under
+        the library."""
+        monkeypatch.delenv("MUSAEUS_BATCH_FOLDERS", raising=False)
+        cfg.ensure_dirs()
+        conn = open_db(cfg.db_path)
+        real_ctx = RunContext.new(cfg, conn, dry_run=False)
+
+        _make_canonicalized_track(real_ctx, "track.m4a", "Artist", "Album", "Title")
+        FinalizeStage().execute(real_ctx)
+
+        expected = real_ctx.alac_library / "Artist" / "Album" / "Artist - Title.m4a"
+        assert expected.exists(), "expected the artist directly under the library"
 
     def test_all_files_in_one_run_share_the_same_batch_date(self, ctx):
         """The date is computed once per run, not per file -- two files

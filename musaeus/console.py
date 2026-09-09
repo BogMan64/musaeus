@@ -1093,7 +1093,13 @@ class Console:
         _section("Build an Edition")
         names = ["lossless", "car", "iphone"]
         labels = [
-            "Lossless  — ALAC, -18 LUFS  → /home/grey/Music",
+            # Was a hardcoded "/home/grey/Music". The EditionSpec carries no
+            # destination at all, so that string was the menu asserting a
+            # fact nothing in the code held -- it would have kept naming
+            # that path however MUSAEUS_ALAC_LIBRARY was set. Read the real
+            # configured root instead, so the label cannot drift from where
+            # files actually land.
+            f"Lossless  — ALAC, -18 LUFS  → {self._config.alac_library}",
             "Car       — AAC 256k, -14 LUFS, ≤48 kHz  → USB",
             "iPhone    — AAC 256k, -14 LUFS, size-budgeted",
             "Back",

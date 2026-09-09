@@ -101,6 +101,23 @@ from .organize import build_track_filename, sanitize_path_component, unique_path
 
 logger = logging.getLogger(__name__)
 
+
+def _batch_folders_enabled() -> bool:
+    """Whether finalized files go under a dated batch folder.
+
+    Off unless MUSAEUS_BATCH_FOLDERS is set to one of 1/true/yes/on. Read
+    at call time rather than at import so a test (or a single run) can set
+    it without reloading the module -- the same reason the CAR builder
+    reads its flags the same way.
+    """
+    return os.environ.get("MUSAEUS_BATCH_FOLDERS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 _COMMIT_EVERY = 25
 
 
@@ -270,17 +287,33 @@ class FinalizeStage(BaseStage):
 
     def _batch_date(self, ctx: RunContext) -> str:
         """
-        YYYY-MM-DD stamp for this batch's top-level ALAC-Library folder
-        (Grey's explicit request: a dated folder above everything, so a
-        whole batch can be copied to cold-storage archives in one shot).
-        Overridable via ctx.set("finalize_batch_date", ...) for tests --
-        without an override, every file finalized in the same run gets
+        YYYY-MM-DD stamp for this batch's top-level ALAC-Library folder.
+
+        Grey's original request, and it earned its place: a dated folder
+        above everything lets a whole batch be copied to cold storage in
+        one shot. Overridable via ctx.set("finalize_batch_date", ...) for
+        tests -- without an override every file finalized in one run gets
         the same stamp (computed once, not per-file, so a run spanning
-        midnight doesn't split one batch across two date folders).
+        midnight does not split one batch across two date folders).
+
+        OFF BY DEFAULT since 2026-09-09, and the reason is measurement
+        rather than taste. 1,493 of 2,773 catalogued artists sat in more
+        than one folder; 1,466 of those were split by this layer alone,
+        with a correct name in every copy. Elvis Presley was in four
+        folders. That defeats Grey's standing rule -- "when I look for a
+        song it will be first by artist, so group them into one folder" --
+        and no amount of name-fixing can touch it.
+
+        The layer is kept rather than deleted because its purpose is real:
+        Grey wants it back for the RC. Set MUSAEUS_BATCH_FOLDERS=1 and it
+        returns exactly as it was. What changed is only the default, so
+        the beta files flat and nothing has to be migrated later.
         """
         override = ctx.get("finalize_batch_date")
         if override:
             return str(override)
+        if not _batch_folders_enabled():
+            return ""
         from datetime import datetime, timezone
 
         return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
@@ -294,7 +327,9 @@ class FinalizeStage(BaseStage):
         artist_safe = sanitize_path_component(artist)
         album_safe = sanitize_path_component(album)
 
-        target_dir = ctx.alac_library / self._batch_date(ctx) / artist_safe / album_safe
+        batch = self._batch_date(ctx)
+        base = ctx.alac_library / batch if batch else ctx.alac_library
+        target_dir = base / artist_safe / album_safe
         candidate = target_dir / new_filename
 
         # Same self-is-not-a-collision guard organize.py needed: if the
