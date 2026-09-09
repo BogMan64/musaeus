@@ -3,7 +3,8 @@
 Collision-safe per SOP §4.12: disk move first, DB update by rowid second,
 revert the disk move if the DB write fails. Never overwrites an existing file.
 """
-import sqlite3, sys
+import sqlite3
+import sys
 from pathlib import Path
 
 DB = "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db"
@@ -20,12 +21,15 @@ moved = skipped = failed = 0
 for r in rows:
     src = Path(r["file_path"])
     if not src.exists():
-        print(f"SKIP missing: {src}"); skipped += 1; continue
+        print(f"SKIP missing: {src}")
+        skipped += 1
+        continue
 
     parts = list(src.parts)
     idx = next((i for i, s in enumerate(parts) if "(the)" in s.lower()), None)
     if idx is None:
-        skipped += 1; continue
+        skipped += 1
+        continue
     parts[idx] = r["artist"]                      # corrected artist folder
     dst = Path(*parts)
     # filename also embeds the artist -- keep it consistent with the folder
@@ -34,12 +38,17 @@ for r in rows:
         if "(the)" in old_prefix.lower():
             dst = dst.with_name(dst.name.replace(old_prefix, r["artist"], 1))
     if dst == src:
-        skipped += 1; continue
+        skipped += 1
+        continue
     if dst.exists():
-        print(f"SKIP target exists: {dst}"); skipped += 1; continue
+        print(f"SKIP target exists: {dst}")
+        skipped += 1
+        continue
 
     if not APPLY:
-        print(f"WOULD MOVE\n   {src}\n-> {dst}"); moved += 1; continue
+        print(f"WOULD MOVE\n   {src}\n-> {dst}")
+        moved += 1
+        continue
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     src.rename(dst)                                # disk first

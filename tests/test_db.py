@@ -186,19 +186,32 @@ class TestValidationIssues:
         count = tmp_db.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
         assert count == 1
 
-    def test_different_runs_allowed(self, tmp_db):
-        """Same file+issue but different run_id → two rows (OK)."""
+    def test_the_same_issue_in_a_later_run_stays_one_row(self, tmp_db):
+        """Reversed 2026-08-29. This used to assert two rows, deliberately.
+
+        run_id was in the uniqueness key, so "the same problem, seen again"
+        was a brand-new row every run. The table reached 343,938 rows, was
+        pruned to 15,604 on 2026-08-24, and regrew 30-50k per run because
+        the key had not changed -- the prune was treating the symptom.
+
+        One row per (file_path, issue) now, with run_id and checked_at
+        carrying the most recent sighting. See tests/test_validation_issues_key.py
+        for the migration that collapses the rows this bred.
+        """
         for run in ("run_001", "run_002"):
             tmp_db.execute(
                 """
-                INSERT OR IGNORE INTO validation_issues (file_path, issue, run_id)
+                INSERT INTO validation_issues (file_path, issue, run_id)
                 VALUES (?, ?, ?)
+                ON CONFLICT(file_path, issue) DO UPDATE SET run_id = excluded.run_id
                 """,
                 ("/vault/bad.mp3", "missing_artist", run),
             )
         tmp_db.commit()
         count = tmp_db.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
-        assert count == 2
+        assert count == 1
+        row = tmp_db.execute("SELECT run_id FROM validation_issues").fetchone()
+        assert row["run_id"] == "run_002", "last-seen must advance"
 
 
 # ── snapshot_db_before_wipe ────────────────────────────────────────────────────

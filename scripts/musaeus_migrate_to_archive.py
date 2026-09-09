@@ -71,13 +71,34 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from musaeus.config import MusicConfig  # noqa: E402
 from musaeus.stages.organize import sanitize_path_component, unique_path  # noqa: E402
 
-VAULT_ROOT = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT")
-DB_PATH = VAULT_ROOT / "musaeus.db"
-ALAC_LIBRARY = VAULT_ROOT / "ALAC-Library"
-ALAC_ARCHIVE = VAULT_ROOT / "ALAC_Archive"
-DUPES_HOLDING = ALAC_LIBRARY / "DUPES_MOVED_FOR_REVIEW"
+# Resolved from config, NOT hardcoded.
+#
+# These were literal paths under VAULT_ROOT ("ALAC-Library", "ALAC_Archive")
+# when this was written on 2026-08-18. The libraries later moved under a
+# Libraries/ subdirectory and this script was not updated, so every query it
+# ran matched NOTHING and it reported "0 would migrate, 0 skipped" -- a
+# confident, specific, wrong answer that would have said "nothing to do"
+# for ever. Found 2026-09-05 only because the bake warned about 7,755 rows
+# this script claimed did not exist.
+#
+# config is now the single source of these paths (alac_archive was not wired
+# into it in August, which is why they were literals here; it is now).
+_CFG = MusicConfig.from_env()
+VAULT_ROOT = _CFG.vault_root
+DB_PATH = _CFG.db_path
+ALAC_LIBRARY = _CFG.alac_library
+ALAC_ARCHIVE = _CFG.alac_archive
+# Both locations: config puts the holding area under ALAC_Archive, but
+# candidates are selected under ALAC_LIBRARY, so a same-named directory
+# there would otherwise slip through. Verified empty on 2026-09-05; the
+# second entry costs nothing and stops that being load-bearing.
+DUPES_HOLDING_DIRS = (
+    _CFG.dupes_review_dir,
+    _CFG.alac_library / "DUPES_MOVED_FOR_REVIEW",
+)
 
 
 def _candidate_rows(conn: sqlite3.Connection) -> list[dict]:
@@ -92,6 +113,16 @@ def _candidate_rows(conn: sqlite3.Connection) -> list[dict]:
          WHERE status = 'CATALOGUED'
            AND finalized_at IS NOT NULL
            AND file_path LIKE ? || '%'
+           -- Never move a row whose file_path is a BAKED copy. After the
+           -- LUFS bake a row points at its output in ALAC-Library, not at
+           -- its master; migrating that puts normalised audio into the
+           -- pristine tier and collides it with the master it came from.
+           -- Done for real on 2026-09-05: 1,765 baked copies landed in
+           -- ALAC_Archive, 1,277 renamed " (2).m4a" against their own
+           -- masters. Reversed from a pre-migration DB snapshot, but the
+           -- tier split is the whole point, so the guard belongs in the
+           -- query rather than in whoever runs it.
+           AND (lufs_baked_at IS NULL OR lufs_baked_at = '')
          ORDER BY file_path
         """,
         (str(ALAC_LIBRARY),),
@@ -99,7 +130,7 @@ def _candidate_rows(conn: sqlite3.Connection) -> list[dict]:
     out = []
     for r in rows:
         fp = Path(r["file_path"])
-        if str(fp).startswith(str(DUPES_HOLDING)):
+        if any(str(fp).startswith(str(d)) for d in DUPES_HOLDING_DIRS):
             continue
         out.append(dict(r))
     return out

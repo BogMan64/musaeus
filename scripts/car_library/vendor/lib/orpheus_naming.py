@@ -14,10 +14,9 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
-from .orpheus_paths import METADATA_ROOT, DB_PATH
 from .orpheus_db import open_db, write_with_retry
+from .orpheus_paths import DB_PATH, METADATA_ROOT
 
 METADATA_DIR = METADATA_ROOT
 
@@ -302,7 +301,7 @@ def _pick_field(row: dict, names: list[str]) -> str:
     return ""
 
 
-_ARTIST_CANON_CACHE: Optional[dict[str, str]] = None
+_ARTIST_CANON_CACHE: dict[str, str] | None = None
 
 
 def load_artist_canon_map() -> dict[str, str]:
@@ -406,9 +405,7 @@ def ascii_friendly(value: str) -> str:
     return text
 
 
-def sanitize_path_component(
-    value: str, unknown: str = UNKNOWN, force_ascii: bool = True
-) -> str:
+def sanitize_path_component(value: str, unknown: str = UNKNOWN, force_ascii: bool = True) -> str:
     """
     Filesystem sanitizer.
 
@@ -636,9 +633,7 @@ def build_clean_audio_metadata(
         clean_artist_value = clean_album_artist
 
     clean_album_value = clean_metadata_album(album, fallback="Unknown Album")
-    clean_title_value = clean_metadata_title(
-        title, fallback=fallback_title or "Unknown Title"
-    )
+    clean_title_value = clean_metadata_title(title, fallback=fallback_title or "Unknown Title")
     clean_track_value = clean_metadata_track_number(track)
     clean_disc_value = clean_metadata_track_number(disc)
 
@@ -829,7 +824,7 @@ def log_naming_event(
     title: str = "",
     filename: str = "",
     method: str = "",
-    details: Optional[dict] = None,
+    details: dict | None = None,
 ) -> None:
     try:
         ensure_naming_db_tables()
@@ -893,7 +888,7 @@ def log_metadata_cleaning_event(
     source_path: Path | str,
     raw_tags: dict[str, str],
     clean_tags: dict[str, str],
-    details: Optional[dict] = None,
+    details: dict | None = None,
 ) -> None:
     try:
         ensure_naming_db_tables()

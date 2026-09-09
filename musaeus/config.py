@@ -89,12 +89,31 @@ class MusicConfig:
 
     # Database
     db_path: Path
+    libraries: Path = None  # type: ignore[assignment]
+    alac_archive: Path = None  # type: ignore[assignment]
+    car_library: Path = None  # type: ignore[assignment]
+    iphone_library: Path = None  # type: ignore[assignment]
+    playlists: Path = None  # type: ignore[assignment]
+
+    # Curator export target (exports.curator.root). None means "not
+    # configured", and Curator refuses rather than inventing a path.
+    #
+    # This field did not exist. CuratorStage._get_export_root has always
+    # ended in `getattr(ctx.config, "car_export_root", None)`, so its
+    # "fall back to config" branch could never return anything: the
+    # attribute was never declared here, and getattr's default hid that
+    # completely. Anyone who set a configuration value watched it be
+    # ignored in silence, and --export-root was in practice mandatory on
+    # every invocation.
+    curator_export_root: Path | None = None
 
     # API keys (may be None if not configured)
     groq_api_key: str | None = field(default=None, repr=False)
     lastfm_api_key: str | None = field(default=None, repr=False)
     openrouter_api_key: str | None = field(default=None, repr=False)
     acousticid_api_key: str | None = field(default=None, repr=False)
+    discogs_consumer_key: str | None = field(default=None, repr=False)
+    discogs_consumer_secret: str | None = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls) -> MusicConfig:
@@ -118,7 +137,18 @@ class MusicConfig:
         quarantine = _p("MUSAEUS_QUARANTINE", vault_root / "QUARANTINE")
         runs_root = _p("MUSAEUS_RUNS_ROOT", vault_root / "RUNS")
         meta_dir = _p("MUSAEUS_META_DIR", vault_root / "MetaData")
-        alac_library = _p("MUSAEUS_ALAC_LIBRARY", vault_root / "ALAC-Library")
+        # The four library trees live under one parent as of 2026-08-31 (Grey's
+        # call) so the vault root lists as workflow folders + one Libraries/.
+        # Each keeps its own env override, so an existing deployment that sets
+        # MUSAEUS_ALAC_LIBRARY is unaffected by the move.
+        libraries = _p("MUSAEUS_LIBRARIES", vault_root / "Libraries")
+        alac_library = _p("MUSAEUS_ALAC_LIBRARY", libraries / "ALAC-Library")
+        alac_archive = _p("MUSAEUS_ALAC_ARCHIVE", libraries / "ALAC_Archive")
+        car_library = _p("MUSAEUS_CAR_LIBRARY", libraries / "CAR_Library")
+        iphone_library = _p("MUSAEUS_IPHONE_LIBRARY", libraries / "iPHONE_Library")
+        playlists = _p("MUSAEUS_PLAYLISTS", libraries / "Playlists")
+
+        curator_export_root_raw = os.environ.get("MUSAEUS_CURATOR_EXPORT_ROOT", "")
 
         return cls(
             vault_root=vault_root,
@@ -127,23 +157,55 @@ class MusicConfig:
             quarantine=quarantine,
             runs_root=runs_root,
             meta_dir=meta_dir,
+            libraries=libraries,
             alac_library=alac_library,
+            alac_archive=alac_archive,
+            car_library=car_library,
+            iphone_library=iphone_library,
+            playlists=playlists,
             db_path=db_path,
+            curator_export_root=(
+                Path(curator_export_root_raw).expanduser() if curator_export_root_raw else None
+            ),
             groq_api_key=os.environ.get("GROQ_API_KEY") or None,
             lastfm_api_key=os.environ.get("LASTFM_API_KEY") or None,
             openrouter_api_key=os.environ.get("OPENROUTER_API_KEY") or None,
             acousticid_api_key=os.environ.get("ACOUSTICID_API_KEY") or None,
+            discogs_consumer_key=os.environ.get("DISCOGS_CONSUMER_KEY") or None,
+            discogs_consumer_secret=os.environ.get("DISCOGS_CONSUMER_SECRET") or None,
         )
 
+    def __post_init__(self) -> None:
+        # from_env() fills these, but Config is also constructed directly
+        # (tests, tooling). Derive the same layout from vault_root rather
+        # than leaving None for a caller to trip over at use time.
+        if self.libraries is None:
+            self.libraries = self.vault_root / "Libraries"
+        if self.alac_archive is None:
+            self.alac_archive = self.libraries / "ALAC_Archive"
+        if self.car_library is None:
+            self.car_library = self.libraries / "CAR_Library"
+        if self.iphone_library is None:
+            self.iphone_library = self.libraries / "iPHONE_Library"
+        if self.playlists is None:
+            self.playlists = self.libraries / "Playlists"
+
     # ── ALAC-Library derived paths ───────────────────────────────────────────
-    # Everything here lives under alac_library itself (not the vault DB) so
+    # Everything here lives under alac_archive itself (not the vault DB) so
     # it survives a DB wipe between batches.
+    #
+    # Moved from alac_library to alac_archive 2026-08-31 with the masters.
+    # All three hold or describe MASTER files: two are review folders full
+    # of masters set aside rather than deleted, and the third is the
+    # re-sourcing list for masters that could not be archived losslessly.
+    # An edition is derived and disposable -- parking the only copy of a
+    # removed master inside one would lose it on the next rebuild.
 
     @property
     def dupes_review_dir(self) -> Path:
         """Losing duplicates land here, never deleted. ORPHEUS
         LESSER_DUPES_MOVED_FOR_REVIEW convention."""
-        return self.alac_library / "DUPES_MOVED_FOR_REVIEW"
+        return self.alac_archive / "DUPES_MOVED_FOR_REVIEW"
 
     @property
     def tribute_review_dir(self) -> Path:
@@ -153,20 +215,50 @@ class MusicConfig:
         script already used (TRIBUTE_REMOVED_FOR_REVIEW), for consistency
         with that precedent rather than introducing a second name for the
         same concept."""
-        return self.alac_library / "TRIBUTE_REMOVED_FOR_REVIEW"
+        return self.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW"
 
     @property
     def hash_index_path(self) -> Path:
         """Persistent audio-hash index of everything already finalized into
         ALAC-Library, used for cross-batch dedup once musaeus.db has been
-        wiped. A plain SQLite file, separate from the transient vault DB."""
-        return self.alac_library / "_history" / "hash_index.db"
+        wiped. A plain SQLite file, separate from the transient vault DB.
+
+        Lives OUTSIDE alac_library as of 2026-08-21 -- see db_history_dir
+        for why."""
+        return self.db_history_dir / "hash_index.db"
+
+    @property
+    def mb_cache_path(self) -> Path:
+        """Persistent MusicBrainz lookup cache.
+
+        Same reasoning as hash_index_path: musaeus.db is transient
+        per-batch state, so a cache kept there is thrown away between
+        batches and every batch re-asks MusicBrainz about the same
+        artists. At ~3.9 tracks per artist that is most of a run's wall
+        clock -- an observed 10-file run spent its time on HTTP 503s and
+        repeated 5-second rate-limit backoffs, not on ffmpeg.
+
+        Answers are cached across runs so a given artist is asked once,
+        not once per batch."""
+        return self.db_history_dir / "mb_cache.db"
 
     @property
     def db_history_dir(self) -> Path:
         """Where a musaeus.db snapshot is copied before it's wiped at the
-        end of a completed batch."""
-        return self.alac_library / "_history"
+        end of a completed batch, and where the hash ledger lives.
+
+        Moved out of ALAC-Library/_history/ on 2026-08-21 after a
+        third-party duplicate-finder (PerfectTunes), pointed at the music
+        library, emptied it: the snapshots are ~464 MB near-identical
+        SQLite files, which is exactly what such a tool is built to find
+        and delete. It took the hash ledger with them, and the next audit
+        failed on 18,405 rows.
+
+        Nothing was lost that time -- the ledger rebuilds from the archive
+        table -- but a directory of backups sitting inside the directory
+        being scanned is a standing invitation. Anything that is not audio
+        now lives beside the library rather than within it."""
+        return self.vault_root / "_db_backups"
 
     @property
     def tunemymusic_csv_path(self) -> Path:
@@ -174,7 +266,7 @@ class MusicConfig:
         Canonicalize transcoded rather than archived losslessly. Appended
         across batches, lives at the top of ALAC-Library so it survives a
         DB wipe."""
-        return self.alac_library / "TuneMyMusic.csv"
+        return self.alac_archive / "TuneMyMusic.csv"
 
     def ensure_dirs(self) -> None:
         """Create all required directories if they don't exist."""
@@ -208,6 +300,7 @@ class MusicConfig:
             f"  Groq key   : {'✓ set' if self.groq_api_key else '✗ not set'}",
             f"  Last.fm    : {'✓ set' if self.lastfm_api_key else '✗ not set'}",
             f"  AcousticID : {'✓ set' if self.acousticid_api_key else '✗ not set'}",
+            f"  Discogs    : {'✓ set' if (self.discogs_consumer_key and self.discogs_consumer_secret) else '✗ not set'}",
         ]
         return "\n".join(lines)
 

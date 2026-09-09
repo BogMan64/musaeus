@@ -82,16 +82,43 @@ independent of which lossy container it happened to arrive in.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import sqlite3
 from pathlib import Path
 
-from ..context import RunContext, StageResult
+from ..context import RunContext, StageResult, elision
 from ..db import open_hash_index, record_finalized_hash
+from ..filing import folder_for
+from ..filing import load as filing_load
+from ..safety.mutation import MutationBoundary, PreconditionError, UnmanagedPathError
+from ..safety.recovery import (
+    JOURNAL_FILENAME,
+    CollisionError,
+    OperationJournal,
+    create_checkpoint,
+)
 from .base import BaseStage
 from .organize import build_track_filename, sanitize_path_component, unique_path
 
 logger = logging.getLogger(__name__)
+
+
+def _batch_folders_enabled() -> bool:
+    """Whether finalized files go under a dated batch folder.
+
+    Off unless MUSAEUS_BATCH_FOLDERS is set to one of 1/true/yes/on. Read
+    at call time rather than at import so a test (or a single run) can set
+    it without reloading the module -- the same reason the CAR builder
+    reads its flags the same way.
+    """
+    return os.environ.get("MUSAEUS_BATCH_FOLDERS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
 
 _COMMIT_EVERY = 25
 
@@ -124,7 +151,31 @@ def _copy_then_verify_then_swap(source: Path, target: Path) -> None:
                 f"size mismatch after copy: source={src_size} bytes, copy={tmp_size} bytes"
             )
 
+        # Force the copy to disk BEFORE the rename, and the rename itself
+        # before the caller deletes the source.
+        #
+        # P0-C, 2026-09-09. shutil.copy2 returns once the bytes are in the
+        # page cache, not once they are on the platter. The caller then
+        # renames and, at finalize.py:540, unlinks the original. A power loss
+        # anywhere in that window left a target whose data had never been
+        # written and a source that no longer existed -- and for a CONVERTED
+        # row, STAGING holds the only copy, so the recording was simply gone.
+        # The database, at PRAGMA synchronous=NORMAL, could not be relied on
+        # to remember what had happened either.
+        #
+        # The directory fsync is the half people forget: without it the
+        # rename can be lost even when the file's own data is safe, leaving
+        # the bytes on disk under a name nothing points to.
+        with open(tmp_target, "rb") as fh:
+            os.fsync(fh.fileno())
+
         tmp_target.rename(target)  # tmp_target and target share a parent -> atomic
+
+        dir_fd = os.open(str(target.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
 
     except Exception:
         if tmp_target.exists():
@@ -166,14 +217,52 @@ class FinalizeStage(BaseStage):
 
     NAME = "finalize"
 
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A file this stage claims to have moved must be AT the new path.
+
+        Moves are the costliest thing to get silently wrong: a stage that
+        reports "moved 6,480 files" while the DB and disk disagree leaves
+        rows pointing at nothing, and that is precisely how a file ended up
+        treated as its own duplicate (scope doc section 4.17). Sampling a
+        few is enough to catch a wholesale failure.
+        """
+        rows = ctx.conn.execute(
+            "SELECT file_path FROM archive WHERE status = ? ORDER BY last_seen DESC LIMIT 5",
+            ("CATALOGUED",),
+        ).fetchall()
+        missing = [r["file_path"] for r in rows if not Path(r["file_path"]).exists()]
+        if not rows or not missing:
+            return []
+        return [
+            f"reported {result.files_changed} change(s) but {len(missing)} of "
+            f"{len(rows)} sampled CATALOGUED rows name a file that is not on disk"
+        ]
+
     def validate(self, ctx: RunContext) -> None:
-        count = ctx.conn.execute(
+        """Report the work set, not the table.
+
+        This used to count every canonicalized row and announce it as "ready
+        to finalize" -- on a settled library that printed 10,746 when the
+        actual work was a handful of new files, which reads as though the
+        whole library is about to be re-normalised. _get_pending() has always
+        filtered on finalized_at, so nothing was ever re-baked; the number was
+        simply describing a different set than the one that gets processed.
+        Same shape as the ingest planner reporting 0 with 20 files waiting:
+        a count is only useful if it counts what the stage will actually do.
+        """
+        canonicalized, pending = ctx.conn.execute(
             """
-            SELECT COUNT(*) FROM archive
+            SELECT COUNT(*),
+                   COUNT(*) FILTER (WHERE finalized_at IS NULL OR finalized_at = '')
+              FROM archive
              WHERE status='CATALOGUED' AND canonicalized_at IS NOT NULL
             """
-        ).fetchone()[0]
-        logger.info("[finalize] %d canonicalized file(s) ready to finalize", count)
+        ).fetchone()
+        logger.info(
+            "[finalize] %d file(s) awaiting finalize (%d already finalized, skipped)",
+            pending,
+            canonicalized - pending,
+        )
 
     def _get_pending(self, ctx: RunContext, force: bool) -> list[dict]:
         if force:
@@ -200,31 +289,68 @@ class FinalizeStage(BaseStage):
 
     def _batch_date(self, ctx: RunContext) -> str:
         """
-        YYYY-MM-DD stamp for this batch's top-level ALAC-Library folder
-        (Grey's explicit request: a dated folder above everything, so a
-        whole batch can be copied to cold-storage archives in one shot).
-        Overridable via ctx.set("finalize_batch_date", ...) for tests --
-        without an override, every file finalized in the same run gets
+        YYYY-MM-DD stamp for this batch's top-level ALAC-Library folder.
+
+        Grey's original request, and it earned its place: a dated folder
+        above everything lets a whole batch be copied to cold storage in
+        one shot. Overridable via ctx.set("finalize_batch_date", ...) for
+        tests -- without an override every file finalized in one run gets
         the same stamp (computed once, not per-file, so a run spanning
-        midnight doesn't split one batch across two date folders).
+        midnight does not split one batch across two date folders).
+
+        OFF BY DEFAULT since 2026-09-09, and the reason is measurement
+        rather than taste. 1,493 of 2,773 catalogued artists sat in more
+        than one folder; 1,466 of those were split by this layer alone,
+        with a correct name in every copy. Elvis Presley was in four
+        folders. That defeats Grey's standing rule -- "when I look for a
+        song it will be first by artist, so group them into one folder" --
+        and no amount of name-fixing can touch it.
+
+        The layer is kept rather than deleted because its purpose is real:
+        Grey wants it back for the RC. Set MUSAEUS_BATCH_FOLDERS=1 and it
+        returns exactly as it was. What changed is only the default, so
+        the beta files flat and nothing has to be migrated later.
         """
         override = ctx.get("finalize_batch_date")
         if override:
             return str(override)
+        if not _batch_folders_enabled():
+            return ""
         from datetime import datetime, timezone
 
         return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+
+    def _filing(self, ctx: RunContext) -> dict[str, str]:
+        """MetaData/artist_filing.tsv, loaded once per run.
+
+        Cached on the context rather than the stage: a stage instance is
+        cheap and short-lived, and re-reading the file per track would make
+        a 16,000-file run do 16,000 opens for a map that cannot change
+        mid-run.
+        """
+        cached = ctx.get("_artist_filing")
+        if cached is None:
+            loaded: dict[str, str] = filing_load(ctx.config.meta_dir)
+            ctx.set("_artist_filing", loaded)
+            return loaded
+        return dict(cached)
 
     def _target_path(self, ctx: RunContext, row: dict, source: Path) -> Path:
         artist = row.get("artist") or "Unknown Artist"
         album = row.get("album") or "Unsorted"
         title = row.get("title") or "Unknown Title"
 
+        # The FILENAME keeps the full credit; only the FOLDER is filed under
+        # the shorter name. Grey looks for the artist by folder and reads the
+        # credit on the track, so collapsing both would lose information the
+        # tag is carrying on purpose.
         new_filename = build_track_filename(artist, title, source.suffix)
-        artist_safe = sanitize_path_component(artist)
+        artist_safe = sanitize_path_component(folder_for(artist, self._filing(ctx)))
         album_safe = sanitize_path_component(album)
 
-        target_dir = ctx.alac_library / self._batch_date(ctx) / artist_safe / album_safe
+        batch = self._batch_date(ctx)
+        base = ctx.alac_library / batch if batch else ctx.alac_library
+        target_dir = base / artist_safe / album_safe
         candidate = target_dir / new_filename
 
         # Same self-is-not-a-collision guard organize.py needed: if the
@@ -271,6 +397,58 @@ class FinalizeStage(BaseStage):
 
     # ── run ───────────────────────────────────────────────────────────────────
 
+    #: Set MUSAEUS_FINALIZE_CHECKPOINT=0 to run without a recovery
+    #: boundary. Kept as an escape hatch, not a default: a finalize with no
+    #: journal is a finalize nobody can undo.
+    CHECKPOINT_ENV = "MUSAEUS_FINALIZE_CHECKPOINT"
+
+    def _open_boundary(self, ctx: RunContext, result: StageResult):
+        """Checkpoint the sources and open a journalled mutation boundary.
+
+        Scope is deliberate. The SOURCES (STAGING) are what finalize can
+        destroy, so those are checkpointed. The DESTINATION -- ALAC-Library,
+        468 GB against a 100 GB cap -- is not, and does not need to be:
+        finalize only adds to it, so undoing a finalize means moving the
+        file back out, which the journal alone supports.
+
+        source_root spans the vault because a move crosses from STAGING to
+        ALAC-Library and both ends must validate; the checkpoint stays
+        narrow regardless.
+
+        Returns None when disabled or when no checkpoint can be made, and
+        says which in the result -- a run with no boundary must announce
+        itself rather than look identical to one that has it.
+        """
+        if os.environ.get(self.CHECKPOINT_ENV, "1").strip().lower() in ("0", "false", "no"):
+            result.notes.append("recovery boundary: DISABLED by " + self.CHECKPOINT_ENV)
+            return None
+        try:
+            recovery_root = ctx.config.runs_root / "recovery"
+            recovery_root.mkdir(parents=True, exist_ok=True)
+            checkpoint = create_checkpoint(
+                ctx.config.staging,
+                recovery_root,
+                checkpoint_id=f"finalize_{ctx.run_id}",
+                capture_tags=True,
+            )
+            journal = OperationJournal(checkpoint.root / JOURNAL_FILENAME)
+            boundary = MutationBoundary(
+                checkpoint,
+                journal,
+                run_id=ctx.run_id,
+                source_root=ctx.config.vault_root,
+            )
+            coverage = checkpoint.coverage()
+            result.notes.append(
+                f"recovery boundary: checkpoint {checkpoint.checkpoint_id} "
+                f"({coverage['items']} item(s), journal at {journal.path})"
+            )
+            return boundary
+        except Exception as exc:
+            result.notes.append(f"recovery boundary: UNAVAILABLE ({exc})")
+            logger.warning("[finalize] no recovery boundary: %s", exc)
+            return None
+
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)
         force: bool = ctx.get("finalize_force", False)
@@ -285,6 +463,8 @@ class FinalizeStage(BaseStage):
 
         hash_conn = open_hash_index(ctx.config.hash_index_path)
         indexed = 0
+        boundary = self._open_boundary(ctx, result)
+        move_ops: dict[str, str] = {}  # source path -> journal operation id
 
         try:
             for i, row in enumerate(pending, 1):
@@ -317,8 +497,36 @@ class FinalizeStage(BaseStage):
                     continue
 
                 try:
-                    _copy_then_verify_then_swap(source, target)
-                except (FinalizeError, OSError) as exc:
+                    if boundary is not None:
+                        # Same copy -> verify -> atomic rename this stage has
+                        # always done; the boundary adopted it. The gain is
+                        # the journal: without it a finalize is unrecoverable
+                        # once the source is gone. release_source is deferred
+                        # until the archive row lands, because that UPDATE can
+                        # still hit a UNIQUE collision.
+                        move_ops[str(source)] = boundary.move(source, target, release_source=False)
+                    else:
+                        _copy_then_verify_then_swap(source, target)
+                except (
+                    FinalizeError,
+                    OSError,
+                    UnmanagedPathError,
+                    PreconditionError,
+                    CollisionError,
+                ) as exc:
+                    # The boundary's refusals are per-ROW facts, not stage
+                    # facts. Learned on 2026-08-25: exactly one of 10,873 rows
+                    # sits outside the vault (a stray Projects/<Artist>/INBOX/
+                    # directory), the boundary correctly refused to move what
+                    # it could not restore, UnmanagedPathError was in neither
+                    # arm of this tuple, and the escape took the whole stage
+                    # down -- four good files left unfinalized because of one
+                    # bad one. The refusal was right; letting it escape wasn't.
+                    #
+                    # RollbackFailedError is deliberately NOT caught. It cannot
+                    # arise from move(), and if it ever did it would mean the
+                    # world is inconsistent -- that must stop the stage, not
+                    # scroll past as one row's error.
                     result.files_errored += 1
                     result.errors.append(f"{source.name}: {exc}")
                     logger.warning("[finalize] %s: %s", source, exc)
@@ -365,6 +573,7 @@ class FinalizeStage(BaseStage):
                         target,
                         exc,
                     )
+                    move_ops.pop(str(source), None)
                     try:
                         target.unlink(missing_ok=True)
                     except OSError as revert_exc:
@@ -400,7 +609,15 @@ class FinalizeStage(BaseStage):
                 # passthrough row. Either way this is what keeps STAGING
                 # trending back to empty.
                 try:
-                    source.unlink()
+                    op = move_ops.pop(str(source), None)
+                    if boundary is not None and op is not None:
+                        # Journals that the source went, so recovery can tell
+                        # "destination exists, source gone" from "destination
+                        # exists, source still there" -- different situations
+                        # that must not be inferred from one record.
+                        boundary.release_source(op, source)
+                    else:
+                        source.unlink()
                 except OSError as exc:
                     logger.warning(
                         "[finalize] %s finalized to %s but source could not be removed: %s",
@@ -458,7 +675,7 @@ class FinalizeStage(BaseStage):
                 result.notes.append(f"  {source.name} -> {target}")
                 shown += 1
         if total > shown:
-            result.notes.append(f"  ... and {total - shown} more")
+            result.notes.append(f"  {elision(total - shown)}")
 
         result.notes.append("  no files will be written, no DB changes")
 

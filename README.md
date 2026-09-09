@@ -27,6 +27,28 @@ musaeus
 
 ---
 
+## Running in Docker
+
+For trying MUSAEUS on a machine that is not the one it was built on — or on
+someone else's music — there is a container image. It pins the versions
+MUSAEUS was developed against (Debian 12, Python 3.11, ffmpeg 5.1, fpcalc
+1.5.1), so a bug report describes the same encoder the maintainer has.
+
+```bash
+MUSAEUS_UID=$(id -u) MUSAEUS_GID=$(id -g) docker compose build
+mkdir -p vault/INBOX && cp /some/music/*.flac vault/INBOX/   # COPIES
+docker compose run --rm musaeus run --dry-run
+```
+
+**`musaeus run` mutates immediately; previewing is `--dry-run`.** Read
+[docs/TESTING_ON_YOUR_OWN_FILES.md](docs/TESTING_ON_YOUR_OWN_FILES.md)
+before a first real run — especially if the files are not yours.
+
+The database lives on a Docker named volume rather than in `vault/`, because
+SQLite's WAL mode needs locking that Docker Desktop's Windows and macOS bind
+mounts do not reliably provide. The full test suite (2,123 tests) passes
+inside the image.
+
 ## Installation
 
 ```bash
@@ -271,7 +293,7 @@ SQLite with WAL mode. Path: `$MUSAEUS_DB_PATH` or `<vault>/musaeus.db`.
 | Table              | Purpose                                              |
 |--------------------|------------------------------------------------------|
 | `archive`          | One row per known file — current state               |
-| `events`           | Immutable append-only event log (source of truth)    |
+| `events`           | Append-only audit trail — NOT a rebuild source (see below) |
 | `duplicates`       | Detected duplicate groups pending review             |
 | `validation_issues`| Issues flagged during processing                     |
 | `metadata_cache`   | Raw ffprobe JSON output                              |
@@ -345,7 +367,15 @@ musaeus/
 
 **Design principles:**
 - One `RunContext` per pipeline run — no global state
-- Event log as source of truth — DB is always rebuildable
+- **`archive` is primary; the event log is an audit trail.** It records why
+  every change happened, and `musaeus doctor` and the review artefacts lean on
+  it heavily — but it cannot reconstruct the archive. Hashes were written
+  truncated to 16 characters, and album, genre, year, track, duration,
+  sample_rate, channels and codec were never recorded at all. `rebuild.py` has
+  been disabled since 2026-08-21. **There is no rebuild: back up `archive`.**
+  These two lines claimed the opposite until 2026-09-09 (P2-C), which is the
+  most consequential false statement the codebase carried — it would have sent
+  someone into a recovery believing a rebuild was available.
 - Every stage implements `run()`, `dry_run()`, `validate()`
 - Stages never commit the DB — `ctx.record_stage()` does
 - Periodic commits every N files (crash resilience)

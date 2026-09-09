@@ -28,7 +28,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from ..context import RunContext, StageResult
+from ..context import RunContext, StageResult, elision
 from ..db import upsert_archive
 from .base import BaseStage
 
@@ -189,11 +189,42 @@ class ScholarStage(BaseStage):
         for row in pending[:10]:
             result.notes.append(f"  ~ {Path(row['file_path']).name}")
         if len(pending) > 10:
-            result.notes.append(f"  ... and {len(pending) - 10} more")
+            result.notes.append(f"  {elision(len(pending) - 10)}")
         ctx.record_stage(result)
         return result
 
     # ── Run ───────────────────────────────────────────────────────────────────
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A row scholar says it read metadata from must carry metadata.
+
+        Scholar's whole job is turning a file into artist/title/album. If
+        the probe silently returns nothing -- an unreadable container, a
+        tag dialect it does not parse -- the row still advances and every
+        later stage inherits a blank identity it cannot recover.
+        """
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path, a.artist, a.title FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE e.run_id = ? AND e.event_type IN ('METADATA_EXTRACTED')
+             ORDER BY e.id DESC LIMIT 10
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        blank = [
+            Path(r["file_path"]).name
+            for r in rows
+            if not (r["artist"] or "").strip() and not (r["title"] or "").strip()
+        ]
+        if not blank:
+            return []
+        return [
+            f"{len(blank)} of {len(rows)} row(s) were read but carry neither "
+            f"artist nor title: {', '.join(blank[:3])}"
+        ]
 
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)

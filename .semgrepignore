@@ -1,0 +1,50 @@
+# MUSAEUS — what semgrep may not look at.
+#
+# The point of this file is a single line near the bottom: `!tests/`.
+#
+# semgrep ships default excludes that contain `tests/`. Creating any
+# .semgrepignore replaces those defaults wholesale, so this file must also
+# restate the ordinary noise directories -- otherwise "fixing" the tests gap
+# would start linting .venv and node_modules.
+#
+# M-11, 2026-09-08: the README documented
+#     semgrep --config .semgrep/rules.yml musaeus/ scripts/ tests/
+# and called the result clean. It was clean because the third path scanned
+# ZERO files -- 136 scanned, none from tests/ -- and `--no-git-ignore` does
+# not lift a semgrepignore. An ERROR-severity rule had never examined the
+# tree it actually matches in, and the passing exit code said so every time.
+
+.git/
+.venv/
+venv/
+node_modules/
+__pycache__/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+build/
+dist/
+
+# Re-included deliberately. These rules guard against re-implementing a
+# thing the repo already owns -- reading a duration, adding a DB column --
+# and a test that hand-rolls one can drift from the real definition exactly
+# as production code can. Where a test genuinely needs to, it says so with
+# an inline `# nosemgrep:` and a reason, which is a recorded decision rather
+# than a silent gap.
+!tests/
+
+# Vendored ORPHEUS code, excluded on purpose and worth stating rather than
+# leaving to a default. These rules say "do not re-implement what the repo
+# already owns", and vendoring IS a deliberate re-implementation: the files
+# run standalone and cannot import musaeus. Their duplication is pinned by
+# tests instead -- see tests/test_car_duration_tolerance_is_one_rule.py,
+# which asserts the vendored tolerance rule matches musaeus/duration.py
+# across ten values. That test is the guard here, not this linter.
+#
+# Until 2026-09-08 this directory was excluded by accident, along with
+# tests/, by semgrep's bundled defaults. Fixing the tests gap exposed three
+# findings in here that had never been reported. The exclusion stays; the
+# reason is now written down.
+scripts/car_library/vendor/

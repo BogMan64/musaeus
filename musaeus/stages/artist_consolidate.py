@@ -28,11 +28,13 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from ..canon import ArtistCanon
-from ..context import StageResult
+from ..context import StageResult, elision
 from .base import BaseStage
 
 if TYPE_CHECKING:
     from ..context import RunContext
+
+from ..canon.protected_artists import PROTECTED_ARTIST_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -60,17 +62,10 @@ CANON_ARTIST_DISPLAY = {
 }
 
 # Protected artist names (don't modify these)
-PROTECTED_FULL_ARTIST_NAMES = {
-    "crosby, stills & nash",
-    "crosby, stills, nash & young",
-    "earth, wind & fire",
-    "simon & garfunkel",
-    "hall & oates",
-    "adam & the ants",
-    "barney bentall & the legendary hearts",
-    "of monsters and men",
-    "andrews sisters (the)",
-}
+# Re-exported from the single home (canon/protected_artists.py). This was
+# a fourth copy holding 9 of the 13 -- a strict subset, so nothing is
+# lost by pointing it at the shared set and four names are gained.
+PROTECTED_FULL_ARTIST_NAMES: frozenset[str] = PROTECTED_ARTIST_NAMES
 
 
 def _collapse_spaces(value: str) -> str:
@@ -203,14 +198,35 @@ def _smart_title(text: str) -> str:
         text = text[: m.start()]
         suffix = ", The"
 
+    source = text.split()
     words = []
-    for word in text.split():
-        if word.lower() in {"and", "of", "the"}:
+    for i, word in enumerate(source):
+        prev = source[i - 1] if i else ""
+        if any(ch.isupper() for ch in word[1:]):
+            # An interior capital is deliberate spelling, not sloppiness:
+            # McKennitt, McFerrin, DeBarge, T-Bone, SwitchOTR, R.E.M.
+            # Blindly title-casing these cost 33 tracks of "Loreena
+            # Mckennitt" and turned SwitchOTR into Switchotr on 2026-09-05.
+            # Measured against the live library: this rule alone rescues 83
+            # artists / 195 tracks that the old loop rewrote wrongly.
+            words.append(word)
+        elif word.lower() in {"and", "of", "the"} and i > 0 and prev not in {"&", ","}:
+            # Connector words go lowercase only MID-name. Never in first
+            # position, and never straight after "&" or a comma, which
+            # introduce a new band name: "Kool & The Gang" keeps its capital
+            # T, and so do Hootie, Echo, Gerry and the Family Stone.
             words.append(word.lower())
         elif word.isupper() and len(word) <= 5:
             words.append(word)  # Keep acronyms like ABBA
         else:
-            words.append(word[:1].upper() + word[1:].lower())
+            # Capitalise each hyphen-separated part, so Bachman-Turner and
+            # Sainte-Marie survive rather than becoming Bachman-turner.
+            words.append(
+                "-".join(
+                    part[:1].upper() + part[1:].lower() if part else part
+                    for part in word.split("-")
+                )
+            )
     return " ".join(words) + suffix
 
 
@@ -411,13 +427,46 @@ class ArtistConsolidateStage(BaseStage):
         for old, new in sample:
             result.notes.append(f"  '{old}' → '{new}'")
         if len(changes) > 10:
-            result.notes.append(f"  ... and {len(changes) - 10} more")
+            result.notes.append(f"  {elision(len(changes) - 10)}")
 
         ctx.record_stage(result)
         return result
 
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._consolidate(ctx, dry_run=True)
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """No row may still carry a name the canon explicitly maps away.
+
+        The canon is the deliberate half of this stage: every entry is a
+        mapping somebody wrote down. If run() reports changes but a mapped
+        raw name is still sitting in archive.artist, the mapping silently
+        did not apply -- which is what a normalisation-key change, a
+        status filter, or a commit that never happened all look like from
+        outside.
+
+        Checks the explicit mappings only, not the fuzzy variant grouping:
+        grouping is a judgement call with no single right answer, while an
+        exact canon entry is a promise. resolve_exact() is the same lookup
+        run() uses, so this asks whether the promise was kept.
+        """
+        canon = ArtistCanon(ctx.config.meta_dir / "artist_canon.tsv")
+        rows = ctx.conn.execute(
+            "SELECT DISTINCT artist FROM archive "
+            " WHERE status = 'CATALOGUED' AND artist IS NOT NULL AND artist <> ''"
+        ).fetchall()
+        stale = []
+        for r in rows:
+            raw = r["artist"]
+            mapped = canon.resolve_exact(raw)
+            if mapped and mapped != raw:
+                stale.append(f"{raw!r} should be {mapped!r}")
+        if not stale:
+            return []
+        return [
+            f"{len(stale)} artist name(s) still carry a value the canon maps "
+            f"away: {'; '.join(stale[:3])}"
+        ]
 
     def run(self, ctx: RunContext) -> StageResult:
         return self._consolidate(ctx, dry_run=False)

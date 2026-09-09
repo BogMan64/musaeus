@@ -11,7 +11,7 @@ import pytest
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db, upsert_archive
-from musaeus.stages.neardupe import NearDupeStage, _group_id, _normalise
+from musaeus.stages.neardupe import NearDupeStage, _group_id, _is_different_piece, _normalise
 
 # Skip all tests if rapidfuzz is not available
 rapidfuzz = pytest.importorskip("rapidfuzz")
@@ -200,3 +200,53 @@ class TestNearDupeRun:
         result = NearDupeStage().execute(ctx)
         assert result.files_processed == 0
         assert result.files_changed == 0
+
+
+class TestClassicalWorksAreNotDuplicates:
+    """Different movements of one work are different pieces of music.
+
+    Found 2026-08-23 in the pending queue: Vivaldi's "Violin Concerto
+    No. 1 in G minor, RV 317 - I. Allegro" and "- II. Adagio" were grouped
+    as a duplicate pair. They share a long work title, so a stripped
+    fuzz.ratio scores them in the 90s -- the threshold cannot separate
+    them, only the marker can.
+
+    A classical title carries TWO independent identifiers and conflating
+    them was the first version's bug: a work number (No./Op./RV/BWV) says
+    WHICH PIECE, a movement marker (I./II./Act 2) says WHICH PART. The
+    first attempt matched whichever appeared first and returned the work
+    number for both movements, leaving the pair grouped -- exactly the
+    case it was written for.
+    """
+
+    def test_different_movements_of_one_work_are_different_pieces(self):
+        assert _is_different_piece(
+            "Violin Concerto No. 1 in G minor, RV 317 - I. Allegro",
+            "Violin Concerto No. 1 in G minor, RV 317 - II. Adagio",
+        )
+
+    def test_different_work_numbers_are_different_pieces(self):
+        assert _is_different_piece("Symphony No. 5", "Symphony No. 9")
+
+    def test_different_acts_are_different_pieces(self):
+        assert _is_different_piece("Serse - Act 1 Ombra mai fu", "Serse - Act 2 Aria")
+
+    def test_the_same_movement_remastered_is_still_a_duplicate(self):
+        """The guard must not block genuine version-variant pairs."""
+        assert not _is_different_piece(
+            "Water Music Suite No. 1 - Air", "Water Music Suite No. 1 - Air (Remastered)"
+        )
+
+    def test_ordinary_pop_titles_are_unaffected(self):
+        assert not _is_different_piece("Yesterday", "Yesterday (Remaster)")
+        assert not _is_different_piece("Feel Like Making Love", "Feel like Makin' Love")
+
+    def test_one_sided_markers_do_not_assert_a_difference(self):
+        """Conservative by design.
+
+        A marker on one side only is the ordinary "Live"/"Remaster" case
+        the existing stripping already handles; asserting a difference
+        there would block real duplicates.
+        """
+        assert not _is_different_piece("Symphony No. 5", "Symphony")
+        assert not _is_different_piece("Sonata - I. Allegro", "Sonata")

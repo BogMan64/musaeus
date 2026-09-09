@@ -7,7 +7,9 @@ Detects truncated or corrupt audio files via ffprobe analysis.
 What it does:
   1. Checks filesize vs duration ratio (codec-appropriate thresholds)
   2. Flags suspiciously short tracks (<45s) unless they match keywords
-  3. Quarantines corrupt files to VAULT/QUARANTINE/corrupted/ (if --apply)
+  3. Quarantines corrupt files to VAULT/QUARANTINE/corrupted/ on a real
+     run. There is no --apply flag and there never was; a dry run is
+     what reports without moving. (P0-G, 2026-09-09.)
   4. Reports findings to validation_issues table
 
 Based on ORPHEUS orpheus_corrupt_detector.py
@@ -15,20 +17,26 @@ Based on ORPHEUS orpheus_corrupt_detector.py
 
 from __future__ import annotations
 
-import json
 import logging
 import re
+import sqlite3
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..context import StageResult
+from ..context import StageResult, elision
+from ..deep_scan import ensure_columns as deep_scan_ensure_columns
+from ..doctor import song_key
+from ..duration import duration_with_source
 from .base import BaseStage
 
 if TYPE_CHECKING:
     from ..context import RunContext
 
 logger = logging.getLogger(__name__)
+
+# A whole-file decode of a long hi-res track is minutes, not seconds.
+_DECODE_TIMEOUT_S = 600
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
 
@@ -60,6 +68,35 @@ MIN_BYTES_PER_SEC: dict[str, int] = {
 # Tracks shorter than this are flagged as suspiciously short
 MIN_DURATION_SEC = 45  # 45 seconds
 
+# A file this short is not a recording at all, whatever it calls itself. No
+# keyword exempts it: an "intro" of one second is still not an intro.
+NEAR_ZERO_SEC = 3.0
+
+# The RELATIVE rule, ported from doctor 2026-09-07 on Grey's instruction.
+#
+# MIN_DURATION_SEC is absolute, and absolute floors cannot tell a fragment
+# from a short song. Measured against the 22 fragments doctor found: this
+# stage caught 13 and missed 9 -- five for being over 45s (Def Leppard 48s
+# beside a 4:27 copy, Player 56s, Olivia Newton-John 57s, Mr. Mister 59s)
+# and four to keyword exemptions (Elvis "Can't Help Falling in Love (Epic
+# intro)" at 21s beside a 2:57 copy).
+#
+# Raising the floor is not the fix. Measured on the live library, a 120s
+# floor flags 397 complete recordings -- "Hit the Road Jack" (2:00), "All
+# Shook Up" (1:58), "It's Not Unusual" (2:00). Early rock and 60s pop are
+# supposed to be short.
+#
+# What separates a fragment from a short song is length relative to ANOTHER
+# COPY OF THE SAME RECORDING. A 21-second "Cruel Summer" is wrong because a
+# 179-second one sits beside it; a 33-second "Bookends Theme" is fine
+# because the longest copy is 83 seconds.
+FRAGMENT_MAX_SEC = 60.0
+FRAGMENT_SIBLING_MIN_SEC = 120.0
+assert FRAGMENT_MAX_SEC * 2 <= FRAGMENT_SIBLING_MIN_SEC, (
+    "a flagged file must be at most half its sibling; adjust both bounds "
+    "together or restore an explicit ratio test"
+)
+
 # Short-track keywords — these are allowed to be short
 SHORT_OK_KEYWORDS = re.compile(
     r"\b(intro|outro|skit|reprise|interlude|snippet|clip|"
@@ -68,50 +105,53 @@ SHORT_OK_KEYWORDS = re.compile(
 )
 
 
+def _longest_sibling(row, longest_by_song: dict) -> float:
+    """The longest OTHER copy of this recording, 0 if this row IS the longest.
+
+    Returning this row's own duration would make every file its own sibling
+    and flag nothing, which is the quiet way this check could stop working.
+    """
+    longest = longest_by_song.get(song_key(row["artist"], row["title"]), 0.0)
+    return 0.0 if longest <= (row["duration"] or 0.0) else longest
+
+
 def ffprobe_duration(path: Path) -> float | None:
-    """Get actual decoded duration in seconds via ffprobe."""
-    cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-select_streams",
-        "a:0",
-        "-show_entries",
-        "stream=duration",
-        "-of",
-        "json",
-        str(path),
-    ]
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        data = json.loads(r.stdout)
-        streams = data.get("streams", [])
-        if streams and streams[0].get("duration"):
-            return float(streams[0]["duration"])
+    """The duration ffprobe REPORTS. Metadata, never a measurement.
 
-        # Fallback: format duration
-        cmd2 = [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "json",
-            str(path),
-        ]
-        r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=15)
-        data2 = json.loads(r2.stdout)
-        dur = data2.get("format", {}).get("duration")
-        return float(dur) if dur else None
-    except Exception:
-        return None
+    Delegates to musaeus.duration.duration_with_source, which does exactly
+    this (stream first, container fallback) and is the single definition
+    after 2026-09-02's audit found seven independent copies of "read the
+    duration", split unnamed between container and stream. This function
+    used to carry its own copy of the same two ffprobe calls; a semgrep
+    rule written to guard against a THIRD copy caught this one still
+    standing the same day.
+
+    In MP4 -- every file in this library -- both stream and container
+    duration live in the same moov atom, written before the audio, so both
+    survive the audio being cut off. Measured 2026-09-02 on a truncated
+    30 s file: stream said 30.0, container said 30.0, and 409 frames
+    actually decoded. This docstring said "actual decoded duration" until
+    that measurement -- exactly backwards, since nothing here decodes.
+    Use ffmpeg_decode_check for that.
+    """
+    return duration_with_source(path)[0]
 
 
-def check_file(path: Path, codec: str | None, duration_db: float | None) -> tuple[bool, str]:
+def check_file(
+    path: Path,
+    codec: str | None,
+    duration_db: float | None,
+    longest_sibling_sec: float = 0.0,
+    title: str | None = None,
+) -> tuple[bool, str]:
     """
     Check if file is corrupt based on size/duration ratio.
     Returns (is_suspect, reason).
+
+    *longest_sibling_sec* is the duration of the longest OTHER copy of the
+    same recording, or 0 when the caller has no library to compare against.
+    Passed in rather than looked up so this stays a pure function of its
+    arguments -- the caller already holds every row.
     """
     try:
         size_bytes = path.stat().st_size
@@ -146,20 +186,217 @@ def check_file(path: Path, codec: str | None, duration_db: float | None) -> tupl
         )
         return True, reason
 
-    # Check 2: suspiciously short duration
+    # Check 2: not a recording at all. Deliberately BEFORE the keyword
+    # exemption -- nothing legitimate is under three seconds, and ORPHEUS's
+    # equivalent floor of `< 1.0` let a 1-second file through on the boundary.
+    if declared_sec < NEAR_ZERO_SEC:
+        return True, f"duration {declared_sec:.1f}s -- not a recording"
+
+    # Check 3: suspiciously short duration (absolute)
     if declared_sec < MIN_DURATION_SEC:
-        title = path.stem
-        if not SHORT_OK_KEYWORDS.search(title):
+        # The row's title first, the filename second. Reading only path.stem
+        # worked for organised files -- MUSAEUS names them "Artist - Title" --
+        # and failed for anything still carrying its arrival name. A track
+        # called "01 - track01.m4a" whose title is "Intro" lost its exemption
+        # and was physically moved to QUARANTINE. Searching both keeps the
+        # organised case working and stops the un-organised one being punished
+        # for a filename it has not been given yet. (P0-G, 2026-09-09.)
+        haystack = f"{title or ''} {path.stem}"
+        if not SHORT_OK_KEYWORDS.search(haystack):
             reason = f"duration {declared_sec:.0f}s suspiciously short"
             return True, reason
 
+    # Check 4: short RELATIVE to another copy of the same recording.
+    #
+    # No keyword exemption here, and that is the point. The exemptions above
+    # fire on the title alone, so "(Epic intro)" excused a 21-second Elvis
+    # clip that has a 2:57 copy beside it. A much longer copy of the same
+    # recording is evidence the title cannot override.
+    if declared_sec < FRAGMENT_MAX_SEC and longest_sibling_sec >= FRAGMENT_SIBLING_MIN_SEC:
+        return True, (
+            f"duration {declared_sec:.0f}s, but another copy of this "
+            f"recording runs {longest_sibling_sec:.0f}s -- likely a preview clip"
+        )
+
     return False, ""
+
+
+# An .m4a carries its cover art as a second, VIDEO stream, and `ffmpeg -i
+# file -f null -` decodes every stream in the container, not just the audio.
+# So a file with broken artwork and perfect audio still writes decoder errors
+# to stderr. `-vn` stops ffmpeg DECODING the artwork, which removes most of
+# them, and it is in the command below. It cannot remove all of them: the
+# mjpeg header is parsed at demux time, before stream selection applies, so
+# two lines survive `-vn` and plain `ffprobe` prints them too. Hence both a
+# narrower command and a classifier -- neither alone is enough.
+#
+# Measured 2026-09-08 on `Andy Gibb - (Love Is) Thicker Than Water` and
+# `Baltimora - Tarzan Boy`: both decode their full ALAC stream with exit 0,
+# and both were reported as damaged solely on `[mjpeg @ ...] unable to decode
+# APP fields`. They are the regression fixtures for this function.
+#
+# This is a DENYLIST -- drop lines known to come from an image decoder, keep
+# everything else -- and the direction matters. An unrecognised image codec
+# leaks through as a false positive, which lands in the review CSV and gets a
+# ruling. An allowlist of known audio errors would fail the other way: an
+# unrecognised audio error would be dropped and a damaged master would be
+# baked into an edition. Fail towards the human, not towards the encoder.
+_IMAGE_DECODER_TAGS = frozenset(
+    {
+        "mjpeg",
+        "png",
+        "bmp",
+        "gif",
+        "tiff",
+        "webp",
+        "image2",
+        "swscaler",
+    }
+)
+_TAGGED_STDERR_RE = re.compile(r"^\[(?P<tag>[A-Za-z0-9_]+) @ 0x[0-9a-f]+\]")
+_STREAM_DECODE_ERROR_RE = re.compile(r"^Error while decoding stream #\d+:(?P<idx>\d+)")
+# A muxer throughput complaint, not a statement about the audio. It only
+# appears without `-vn`; the rule is here so the classifier still holds if
+# someone later changes the command.
+_PACKETS_BUFFERED_RE = re.compile(r"^Too many packets buffered for output stream \d+:(?P<idx>\d+)")
+
+
+def audio_stream_index(path: Path) -> int | None:
+    """The container index of the first audio stream, or None if unknown.
+
+    Needed because ffmpeg's `Error while decoding stream #0:1` lines carry no
+    bracketed decoder tag, so they cannot be attributed by name -- only by
+    which stream they name. On these files #0:1 is the artwork.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=index",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    raw = (proc.stdout or "").strip().splitlines()
+    if not raw:
+        return None
+    try:
+        return int(raw[0].strip().rstrip(","))
+    except ValueError:
+        return None
+
+
+def audio_relevant_stderr(stderr: str, audio_index: int | None) -> str:
+    """Strip the lines that describe the artwork, keep the ones about audio.
+
+    Pure and side-effect free on purpose: the classification is what is worth
+    testing, and it can be tested without ffmpeg or a real damaged file.
+    """
+    kept = []
+    for line in (stderr or "").splitlines():
+        if not line.strip():
+            continue
+        tagged = _TAGGED_STDERR_RE.match(line)
+        if tagged and tagged.group("tag").lower() in _IMAGE_DECODER_TAGS:
+            continue
+        streamed = _STREAM_DECODE_ERROR_RE.match(line) or _PACKETS_BUFFERED_RE.match(line)
+        # `audio_index` is an INPUT stream index and these lines name an
+        # OUTPUT one. With no -map they agree, and where they do not the
+        # mismatch keeps the line rather than dropping it -- a false
+        # positive a human rules on, not a silent acquittal.
+        if streamed and audio_index is not None and int(streamed.group("idx")) != audio_index:
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def ffmpeg_decode_check(path: Path, seconds: int = 0) -> tuple[bool, str]:
+    """Actually DECODE the audio and report whether ffmpeg found errors.
+
+    CorruptStage's other checks are heuristics on the container -- filesize
+    against duration, suspiciously short tracks. They describe the file's
+    shape, never its contents, so a file whose header is fine and whose
+    audio is damaged passes them cleanly.
+
+    Two such files sat in the library undetected: `Aerosmith - What It
+    Takes` and `Diana Ross - The Boss`, both raising "invalid zero block
+    size" on decode. They surfaced 2026-08-31 only as a side effect of a
+    full re-hash, which decodes as a byproduct -- not because anything was
+    checking.
+
+    Ported from ORPHEUS's SCRIPTS/orpheus_accurip_checker.py, with one
+    change: ORPHEUS decodes the first 10 seconds, which cannot see damage
+    later in the track. `seconds=0` decodes the whole file. The caller
+    chooses, because a full decode over a large library is not free.
+
+    Cover-art errors are not audio errors -- see the note above
+    `audio_relevant_stderr`. Within DEFAULT_PIPELINE this stage runs BEFORE
+    `albumart`, so the files it sees usually carry no artwork yet and the
+    distinction never arose; it surfaced when scripts/decode_audit.py became
+    the first thing to decode the FINISHED library.
+    """
+    cmd = ["ffmpeg", "-v", "error", "-i", str(path)]
+    if seconds:
+        cmd += ["-t", str(seconds)]
+    # -vn: decode the audio, not the cover art. Without it a file with broken
+    # artwork also emits "Error while decoding stream #0:1" and "Too many
+    # packets buffered for output stream 0:1", neither of which is a fact
+    # about the audio.
+    cmd += ["-vn", "-f", "null", "-"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_DECODE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return False, f"decode timed out after {_DECODE_TIMEOUT_S}s"
+    except OSError as exc:
+        return False, f"ffmpeg unavailable: {exc}"
+    detail = (proc.stderr or "").strip()
+    if detail:
+        # Only pay for the extra ffprobe when there is something to classify.
+        detail = audio_relevant_stderr(detail, audio_stream_index(path))
+    if proc.returncode != 0 or detail:
+        return False, (detail or f"ffmpeg exited {proc.returncode}").strip()[:200]
+    return True, ""
 
 
 class CorruptStage(BaseStage):
     """Detect and quarantine corrupt/truncated audio files."""
 
     NAME = "corrupt"
+
+    #: Bound on how many never-checked, non-suspect files get decoded per
+    #: run for the "right-sized but damaged" class check_file() cannot see
+    #: at all. Overridable per-instance for tests. See the comment at its
+    #: use site in _scan for why this exists and how the number was picked.
+    NEW_ARRIVAL_DECODE_BUDGET = 200
+
+    @classmethod
+    def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
+        """Rows this stage would act on. Read-only; see planner.py.
+
+        Mirrors _scan's own WHERE clause rather than validate's, because the
+        preview must answer for what the stage *does*: validate counts every
+        CATALOGUED row, _scan skips those with a NULL file_path. Two counts
+        that disagree about the same stage is the failure this codebase keeps
+        finding, so there is one query and _scan owns its shape.
+        """
+        n = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE status = 'CATALOGUED' AND file_path IS NOT NULL"
+        ).fetchone()[0]
+        return int(n), (
+            f"CATALOGUED tracks to scan; at most {cls.NEW_ARRIVAL_DECODE_BUDGET} "
+            "never-checked files are decoded per run"
+        )
 
     def validate(self, ctx: RunContext) -> None:
         count = ctx.conn.execute(
@@ -171,17 +408,50 @@ class CorruptStage(BaseStage):
         """Scan for corrupt files, optionally quarantine them."""
         result = self._make_result(dry_run=dry_run)
         conn = ctx.conn
+        # The decode columns are owned by deep_scan and added lazily, so on
+        # a database where deep_scan has never run they do not exist yet.
+        # Reusing its helper rather than adding a sixth _ensure_columns.
+        if not dry_run:
+            deep_scan_ensure_columns(conn)
+
+        # decode_ok/decode_checked_at exist once deep_scan_ensure_columns
+        # has run at least once with dry_run=False. A dry run never calls
+        # it (a preview must not alter schema), so on a database that has
+        # never done a real run, selecting those columns would raise
+        # "no such column". Select them only if they are actually there;
+        # NULL stands in otherwise, which is exactly what "never checked"
+        # means anyway.
+        _has_decode_cols = {"decode_ok", "decode_checked_at"} <= {
+            r[1] for r in conn.execute("PRAGMA table_info(archive)").fetchall()
+        }
+        decode_cols_sql = (
+            "decode_ok, decode_checked_at"
+            if _has_decode_cols
+            else "NULL AS decode_ok, NULL AS decode_checked_at"
+        )
 
         # Get all CATALOGUED tracks with file specs
         rows = conn.execute(
-            """
-            SELECT file_path, codec, duration, title
+            f"""
+            SELECT file_path, codec, duration, artist, title, {decode_cols_sql}
             FROM archive
             WHERE status = 'CATALOGUED'
               AND file_path IS NOT NULL
             ORDER BY artist, album
             """
         ).fetchall()
+
+        # Longest duration per recording, for check 4. Built once from the
+        # rows already fetched -- song_key is doctor's, imported rather than
+        # reimplemented so the two cannot disagree about what "the same
+        # recording" means.
+        longest_by_song: dict[tuple[str, str], float] = {}
+        for _r in rows:
+            if not _r["duration"]:
+                continue
+            _k = song_key(_r["artist"], _r["title"])
+            if _r["duration"] > longest_by_song.get(_k, 0.0):
+                longest_by_song[_k] = _r["duration"]
 
         if not rows:
             logger.info("[corrupt] No CATALOGUED tracks to scan")
@@ -192,6 +462,23 @@ class CorruptStage(BaseStage):
         logger.info(f"[{self.NAME}] Scanning {len(rows):,} tracks for corruption...")
 
         suspects: list[dict] = []
+        cleared = 0
+        # Files never decode-checked by ANYTHING (this stage's suspect
+        # path or deep_scan) that the size ratio does not flag either --
+        # the class that hid Billy Joel, The Who, Billy Ocean, and others:
+        # right-sized files with damage inside the stream, invisible to
+        # check_file() by construction. Decoded here too, but BOUNDED.
+        #
+        # Unbounded would repeat the exact AcousticID mistake this project
+        # already lived through: wired in unconditionally, its first run
+        # was a full-library migration that held the DB write lock for
+        # 21 hours. deep_scan exists precisely to pay that backlog down
+        # -- idle-only, resumable, outside any pipeline run -- and this
+        # budget exists so Act 1 never tries to do deep_scan's job
+        # synchronously. 200 files at the ~1.46s/file measured 2026-09-02
+        # is ~5 minutes added to a run with many new arrivals; a genuinely
+        # large backlog is left for deep_scan rather than blocking here.
+        new_arrival_decodes = 0
         quarantine_dir = ctx.vault_root / "QUARANTINE" / "corrupted"
 
         for row in rows:
@@ -202,7 +489,78 @@ class CorruptStage(BaseStage):
                 result.files_skipped += 1
                 continue
 
-            is_corrupt, reason = check_file(file_path, row["codec"], row["duration"])
+            # Already known undecodable -- by THIS stage on a prior run, or
+            # by deep_scan, which shares these columns rather than keeping
+            # its own. Trust it rather than paying for a second decode of
+            # a file already proven bad.
+            if row["decode_ok"] == 0:
+                is_corrupt = True
+                reason = "previously found undecodable on decode (see decode_errors)"
+                is_suspect = False
+            else:
+                is_suspect, reason = check_file(
+                    file_path,
+                    row["codec"],
+                    row["duration"],
+                    _longest_sibling(row, longest_by_song),
+                    title=row["title"],
+                )
+
+                # The size ratio is a PRIORITISER, not a verdict -- deep_scan.py
+                # says so and has the numbers: it flagged 418 files, of which 2
+                # were damaged and 91 were undamaged Bing Crosby / Count Basie
+                # mono recordings that genuinely compress to ~13% of PCM.
+                #
+                # This stage MOVES files to QUARANTINE. Acting on the ratio
+                # alone meant physically removing ~91 good masters on a
+                # heuristic that was right about 0.5% of the time.
+                should_decode = is_suspect
+                # The class the ratio cannot see at all: right-sized files
+                # with the damage inside the stream. Decode a BOUNDED number
+                # of never-checked, non-suspect files too, so genuinely new
+                # arrivals get a real answer before dedup -- not just files
+                # the shape heuristic happened to flag.
+                if (
+                    not is_suspect
+                    and row["decode_checked_at"] is None
+                    and new_arrival_decodes < self.NEW_ARRIVAL_DECODE_BUDGET
+                ):
+                    should_decode = True
+                    new_arrival_decodes += 1
+
+                if should_decode:
+                    decoded_ok, decode_err = ffmpeg_decode_check(file_path, seconds=0)
+                    if not dry_run:
+                        conn.execute(
+                            "UPDATE archive SET decode_checked_at = datetime('now'), "
+                            "decode_ok = ?, decode_errors = ? WHERE file_path = ?",
+                            (1 if decoded_ok else 0, 0 if decoded_ok else 1, str(file_path)),
+                        )
+                    if decoded_ok:
+                        # Either flagged by shape and intact on inspection,
+                        # or a never-checked file that turned out fine.
+                        result.files_skipped += 1
+                        if is_suspect:
+                            logger.info(
+                                "[%s] cleared: %s — %s, but decodes cleanly",
+                                self.NAME,
+                                file_path.name,
+                                reason,
+                            )
+                            cleared += 1
+                        continue
+                    reason = (
+                        f"{reason}; decode failed: {decode_err}"
+                        if is_suspect
+                        else (f"decode failed: {decode_err}")
+                    )
+
+                # Reaching here without the "decoded cleanly" continue
+                # above means: either should_decode was True and the decode
+                # failed, or should_decode was False and nothing was
+                # attempted this row. should_decode already equals
+                # is_suspect in the second case, so this covers both.
+                is_corrupt = should_decode
 
             if is_corrupt:
                 result.files_changed += 1
@@ -222,9 +580,16 @@ class CorruptStage(BaseStage):
                     conn.execute(
                         """
                         INSERT INTO validation_issues
-                            (file_path, issue, severity, run_id)
-                        VALUES (?, ?, ?, ?)
-                        ON CONFLICT(file_path, issue, run_id) DO NOTHING
+                            (file_path, issue, severity, run_id, checked_at)
+                        VALUES (?, ?, ?, ?, datetime('now'))
+                        -- Keyed without run_id, so a recurring issue UPDATES
+                        -- its last-seen stamp instead of breeding a new row
+                        -- every run. DO NOTHING here would freeze checked_at
+                        -- at the first sighting and make the table look stale.
+                        ON CONFLICT(file_path, issue) DO UPDATE SET
+                            run_id     = excluded.run_id,
+                            severity   = excluded.severity,
+                            checked_at = excluded.checked_at
                         """,
                         (str(file_path), "CORRUPT_FILE", "error", ctx.run_id),
                     )
@@ -261,10 +626,37 @@ class CorruptStage(BaseStage):
                         # later stage reading file_path for this row would
                         # hit a "missing on disk" surprise instead of ever
                         # seeing the real quarantine location).
-                        conn.execute(
-                            "UPDATE archive SET status='QUARANTINED', file_path=? WHERE file_path=?",
-                            (str(dest), str(file_path)),
-                        )
+                        try:
+                            conn.execute(
+                                "UPDATE archive SET status='QUARANTINED', "
+                                "file_path=? WHERE file_path=?",
+                                (str(dest), str(file_path)),
+                            )
+                        except sqlite3.IntegrityError as exc:
+                            # file_path is UNIQUE and IntegrityError is not an
+                            # OSError, so the handler below never caught it:
+                            # the file was already in QUARANTINE and the
+                            # exception escaped, aborting the stage with disk
+                            # and database disagreeing and no manifest at all
+                            # -- CorruptStage writes none. (P0-D, 2026-09-09.)
+                            try:
+                                shutil.move(str(dest), str(file_path))
+                                note = "move reverted"
+                            except OSError as revert_exc:
+                                note = (
+                                    f"COULD NOT REVERT -- the file is at {dest} "
+                                    f"while its row still points at {file_path}; "
+                                    f"needs a manual fix ({revert_exc})"
+                                )
+                            logger.error(
+                                "[%s] DB collision quarantining %s (%s); %s",
+                                self.NAME,
+                                file_path,
+                                exc,
+                                note,
+                            )
+                            result.files_errored += 1
+                            result.errors.append(f"{file_path.name}: DB collision, {note}")
                     except OSError as e:
                         logger.error(f"[{self.NAME}] Failed to quarantine: {e}")
                         result.files_errored += 1
@@ -279,15 +671,60 @@ class CorruptStage(BaseStage):
             for s in suspects[:10]:  # Show first 10
                 result.notes.append(f"  ⚠ {Path(s['file_path']).name}: {s['reason']}")
             if len(suspects) > 10:
-                result.notes.append(f"  ... and {len(suspects) - 10} more")
+                result.notes.append(f"  {elision(len(suspects) - 10)}")
         else:
             result.notes.append("✓ No corrupt files detected")
+
+        # Say how many the cheap check accused and the decode acquitted.
+        # Silence here would hide the whole point of the change: on this
+        # library the ratio is expected to be wrong far more often than it
+        # is right, and a stage that quietly drops those would look
+        # identical to one that never flagged them.
+        if cleared:
+            result.notes.append(
+                f"{cleared} file(s) flagged by size ratio but decoded cleanly — not corrupt"
+            )
 
         ctx.record_stage(result)
         return result
 
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._scan(ctx, dry_run=True)
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A file this stage says it quarantined must actually be in quarantine.
+
+        Corrupt moves files out of the library and rewrites status and
+        file_path in one step. If the move fails but the row is written
+        anyway, the DB points at a path holding nothing and the corrupt
+        file stays in the library -- the row says handled, the disk says
+        otherwise, and every later stage skips it as QUARANTINED.
+
+        Checks the DISK, not the status column: that a QUARANTINED row's
+        file is where the row now claims, and that the claim is inside the
+        quarantine tree rather than still in the library.
+        """
+        rows = ctx.conn.execute(
+            """
+            SELECT a.file_path FROM archive a
+              JOIN events e ON e.file_path = a.file_path
+             WHERE a.status = 'QUARANTINED' AND e.run_id = ?
+               AND e.event_type IN ('QUARANTINE', 'CORRUPT_DETECTED')
+             ORDER BY e.id DESC LIMIT 8
+            """,
+            (ctx.run_id,),
+        ).fetchall()
+        if not rows:
+            return []
+        problems: list[str] = []
+        qroot = str(ctx.quarantine)
+        for r in rows:
+            p = Path(r["file_path"])
+            if not p.exists():
+                problems.append(f"quarantined row points at nothing: {p.name}")
+            elif not str(p).startswith(qroot):
+                problems.append(f"{p.name}: marked QUARANTINED but still outside {qroot}")
+        return problems
 
     def run(self, ctx: RunContext) -> StageResult:
         return self._scan(ctx, dry_run=False)
