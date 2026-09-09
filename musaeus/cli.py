@@ -151,6 +151,8 @@ from .stages.base import BaseStage
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 
+logger = logging.getLogger(__name__)
+
 
 def _setup_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
@@ -159,6 +161,67 @@ def _setup_logging(verbose: bool) -> None:
         format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
         datefmt="%H:%M:%S",
     )
+
+
+# ── Module pinning ────────────────────────────────────────────────────────────
+
+
+def _pin_modules() -> tuple[int, list[tuple[str, str]]]:
+    """Import every musaeus module now, so a mid-run edit cannot reach this process.
+
+    **A long-running process runs the code it imported at startup** — except
+    where it does not, and that exception is the hazard this closes. Python
+    caches modules in ``sys.modules``, so a *deferred* import inside a function
+    body is resolved the first time that function is called, which may be hours
+    after launch. The module then arrives fresh from disk and binds against
+    dependencies loaded at startup. That is a mixture of two versions, not a
+    rollback to either.
+
+    It has already cost a day's work. On 2026-09-05 ``cli.py`` imported
+    ``handoff.py`` inside a function, and a 42-hour-old process loaded *fresh*
+    handoff code against a *stale* ``musaeus.context``; the handoff document
+    was lost. Eager-importing ``handoff`` fixed that one call site, and left
+    every other deferred import as the same trap unsprung.
+
+    Importing everything up front makes a later ``.py`` edit inert for this
+    process, because Python never re-reads a module it already holds. That is
+    the whole mechanism.
+
+    This is belt-and-braces with ``musaeus_pipeline_guard.sh``, deliberately.
+    The hook warns a human who is about to edit during a run; the pin makes the
+    edit harmless if they do it anyway. A warning that depends on somebody
+    reading it is not a guarantee.
+
+    Measured 2026-09-05: 97 modules, 0.15 s, zero failures.
+
+    Returns (modules_imported, [(module_name, error), ...]).
+    """
+    import importlib
+    import pkgutil
+
+    import musaeus
+
+    imported = 0
+    failed: list[tuple[str, str]] = []
+
+    for mi in pkgutil.walk_packages(musaeus.__path__, "musaeus."):
+        if mi.name.rsplit(".", 1)[-1] == "__main__":
+            # Importing __main__ RUNS the CLI: it opens the interactive console
+            # and blocks forever. Verified, not guessed — and it is also the
+            # proof that a module in this package can carry import-time side
+            # effects, which is why the handler below never aborts.
+            continue
+        try:
+            importlib.import_module(mi.name)
+            imported += 1
+        except Exception as exc:
+            # Report and continue. A module that cannot be imported is a real
+            # problem, but it is not a reason to take down every run of every
+            # command — and a pin that can refuse to start is worse than the
+            # staleness it prevents.
+            failed.append((mi.name, f"{type(exc).__name__}: {exc}"))
+
+    return imported, failed
 
 
 # ── Resume state ──────────────────────────────────────────────────────────────
@@ -1511,6 +1574,16 @@ def main() -> None:
     show_progress = getattr(args, "progress", True)  # Default to True
 
     _setup_logging(verbose)
+
+    # Pin every module before any command runs. Deliberately here and not in
+    # PreflightStage: preflight is skippable (`musaeus run --skip ...`), and a
+    # partial run is precisely when somebody is most likely to be mid-edit. A
+    # guard living inside a skippable stage is missing exactly when it is
+    # needed. See _pin_modules for what goes wrong without it.
+    _pinned, _pin_failures = _pin_modules()
+    logger.debug("[pin] %d module(s) imported at startup", _pinned)
+    for _name, _err in _pin_failures:
+        logger.warning("[pin] %s did not import: %s", _name, _err)
 
     # Enable progress tracking if requested
     if verbose:
