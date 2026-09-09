@@ -424,13 +424,28 @@ failures, agreeing with the count. **A measurement script needs the same
 "report your coverage" discipline as the checks it is measuring.**
 
 
-**The three leaked trees are still on disk and now harmless.** `find_input_files()`
-skips them by name, so nothing will walk into them again; the cleanup only removes
-*this* run's tree, deliberately — sweeping other PIDs' trees is what caused the
-2026-09-01 incident where a dry run deleted the staging a live build was reading
-from. They are symlinks only (276 MB of links, no audio) under
-`RUNS/AAC-Car-Masked/`. **Deleting them is safe and needs Grey's word; nothing
-breaks if they stay.**
+~~**The three leaked trees are still on disk and now harmless.**~~ **DELETED
+2026-09-08 on Grey's word.** `find_input_files()` skips them by name, so nothing
+would have walked into them again; the cleanup only removes *this* run's tree,
+deliberately — sweeping other PIDs' trees is what caused the 2026-09-01 incident
+where a dry run deleted the staging a live build was reading from.
+
+Removed by hand instead, with all five §7 jobs confirmed clear first, so no build
+was reading from them. Measured immediately before deletion, and it matched the
+Register's figures exactly:
+
+| tree | symlinks | regular files | size |
+|---|---|---|---|
+| `_staged_2384574` | 15,684 | **0** | 101 MB |
+| `_staged_3083696` | 15,684 | **0** | 101 MB |
+| `_staged_34543` | 10,443 | **0** | 74 MB |
+| | **41,811** | **0** | **276 MB** |
+
+Zero regular files in any of the three: nothing but symlinks and the directories
+holding them, every link pointing out to `Libraries/ALAC_Archive/`. `rm -rf` on a
+symlink removes the link and never the target, and a canary target was stat'd
+before and after to prove it — `MGMT — Time to Pretend`, 72,294,065 bytes, byte
+identical afterwards. `_output/` was not touched.
 
 ### Tier 2 — guards that cannot fire
 
@@ -438,7 +453,7 @@ The §5 pattern, five more times. Each of these *looks* like protection.
 
 | id | state | what it costs |
 |---|---|---|
-| **M-03** | open, CONFIRMED | line 545 inlines `max(1.0, src * 0.02)` while `_DURATION_TOLERANCE_SEC = 2.0` sits at line 142, and the comment claims they agree. A 30 s track drifting 1.4 s on AAC priming is **accepted at write time and rejected on the next run — deleted and re-encoded for ever**. The guarding test greps for the constant and is structurally blind to an inline literal. `musaeus/duration.py:63` already has `tolerance_for()`; call it. |
+| **M-03** | **FIXED** | line 545 inlines `max(1.0, src * 0.02)` while `_DURATION_TOLERANCE_SEC = 2.0` sits at line 142, and the comment claims they agree. A 30 s track drifting 1.4 s on AAC priming is **accepted at write time and rejected on the next run — deleted and re-encoded for ever**. The guarding test greps for the constant and is structurally blind to an inline literal. `musaeus/duration.py:63` already has `tolerance_for()`; call it. |
 | **M-04** | **FIXED** | `is_protected('Andrews Sisters (the)')` is True; `'Andrews Sisters, The'`, `'The Andrews Sisters'` and `'Andrews Sisters'` are all False — and `normalize.py` actively rewrites the working spelling into the dormant one. `genre_law._key()` already folds all three article forms and its docstring records that 246 rules were dormant for this exact reason. The test pins the dormant spelling, cementing it. |
 | **M-10** | **FIXED** | `PROTECTED_ARTIST_NAMES` exists in two modules with **disjoint** contents, so the "one home" guard — which keys on overlap ≥ 2 — can never fire. `normalize.py` runs `UPDATE archive SET artist=?` and imports nothing from canon. |
 | **M-09** | open, CONFIRMED | `_load()` clears `_allowed` but not `_allowed_lower`, so a reload after the file disappears raises `ValueError` instead of returning None. |
@@ -491,6 +506,36 @@ recurring shape.
 A new guard now keys on the **identifier**, not the contents, and it was
 proved red-then-green against a deliberately reintroduced collision before
 being kept.
+
+
+**M-03 (2026-09-08).** There were **three** rules, not two:
+
+| where | rule | 30 s track, 1.4 s drift |
+|---|---|---|
+| `_verify_bake` | flat `2.0`, no scaling | **accepts** |
+| `_output_matches_source` | inline `max(1.0, src * 0.02)` | **rejects** |
+| `musaeus.duration.tolerance_for` | `max(2.0, recorded * 0.02)` | accepts |
+
+So a track that AAC priming drifts by 1.4 s was **accepted at write time and
+rejected on the next run** — deleted, re-encoded, and reported `CONVERTED`,
+every run, for ever.
+
+Two things hid it. The resume check's comment claimed it asked *"the same
+thing `_verify_bake` asks of a fresh encode"*, which was false — a claim that
+reads as verification and is decoration. And the guarding test greps for
+`_DURATION_TOLERANCE_SEC\s*=\s*([0-9.]+)`, finds the `2.0` on its own line,
+and passes: **an inline literal is structurally invisible to it.**
+
+Both call sites now use one `_duration_tolerance()`, a deliberate **mirror**
+of `musaeus/duration.py` — this file is vendored ORPHEUS code that runs
+standalone and cannot import `musaeus`. A test pins the two copies across ten
+values, which is the only thing keeping them honest. The `1.0` floor is gone:
+it appears in no ruling, and 2026-09-02 settled 1.5-vs-2.0 at 2.0.
+
+The new guard parses the file rather than grepping it, and was proved
+red-then-green. A first draft *did* grep, and failed on the docstring of the
+very function that fixes the bug — a guard that cannot tell code from prose
+is the same class of mistake as one that cannot see an inline literal.
 
 ### Tier 3 — operator-facing and robustness
 

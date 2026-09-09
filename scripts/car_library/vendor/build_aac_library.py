@@ -147,6 +147,41 @@ TARGET_LRA = "11.0"
 # slightly even when the audio content is correct.
 _DURATION_TOLERANCE_SEC = 2.0
 
+
+def _duration_tolerance(recorded_sec: float | None) -> float:
+    """How far a duration of this length may drift before it means something.
+
+    A MIRROR of `musaeus/duration.py`'s `tolerance_for()`, kept in step by a
+    test rather than by an import: this file is vendored ORPHEUS code and
+    runs standalone, importing `lib.orpheus_naming` and friends, not
+    `musaeus`. Adding a musaeus import here would break the standalone
+    property the vendoring exists to preserve.
+
+    The floor is a floor, not the whole answer -- a flat 2 s is right for a
+    short track and far too strict for a long one, where container rounding
+    and encoder padding scale with length. 2% of a five-minute track is 6 s.
+
+    M-03, 2026-09-08. Before this there were THREE rules in two functions:
+
+        _verify_bake            flat 2.0, no scaling
+        _output_matches_source  inline max(1.0, src * 0.02)
+        musaeus.duration        max(2.0, recorded * 0.02)
+
+    and a comment claiming the second asked "the same thing _verify_bake
+    asks of a fresh encode". It did not. A 30 s track drifting 1.4 s on AAC
+    priming was ACCEPTED at write time by the flat 2.0 and REJECTED on the
+    next run by the 1.0 floor -- so it was deleted and re-encoded, every
+    run, for ever, reporting success each time.
+
+    The 1.0 floor appears in no ruling. The 2026-09-02 ruling settled
+    1.5-vs-2.0 at 2.0, and CLAUDE.md already lists this constant as a
+    recurring duplication ("5 copies, 1.5 four times, 2.0 once, same stated
+    rationale"). This is the sixth copy, named so it can be pinned.
+    """
+    if not recorded_sec or recorded_sec <= 0:
+        return _DURATION_TOLERANCE_SEC
+    return max(_DURATION_TOLERANCE_SEC, recorded_sec * 0.02)
+
 PROFILES = {
     "car": {
         "folder": "AAC_CAR",
@@ -362,7 +397,7 @@ def _verify_bake(source: Path, output: Path) -> None:
     if (
         src_dur is not None
         and out_dur is not None
-        and abs(src_dur - out_dur) > _DURATION_TOLERANCE_SEC
+        and abs(src_dur - out_dur) > _duration_tolerance(src_dur)
     ):
         raise RuntimeError(
             f"verification failed: duration mismatch (source={src_dur:.2f}s, output={out_dur:.2f}s)"
@@ -566,7 +601,9 @@ def _output_matches_source(source: Path, output: Path) -> bool:
     Existence alone is not enough: a truncated file from an interrupted run
     would then be preserved permanently. Duration is the cheap check that
     catches it -- a partial encode is short, and a file ffprobe cannot read
-    returns nothing.
+    returns nothing. The tolerance is `_duration_tolerance()`, the same rule
+    `_verify_bake` applies to a fresh encode; before M-03 this inlined a
+    different one and the two disagreed.
 
     Duration alone is not enough either, and that was M-02 in the Repair
     Register. This check exists so a re-run resumes instead of re-encoding
@@ -593,7 +630,9 @@ def _output_matches_source(source: Path, output: Path) -> bool:
         return False
     if src is None or out is None or src <= 0:
         return False
-    if abs(src - out) > max(1.0, src * 0.02):
+    # The same rule _verify_bake applies to a fresh encode -- which is what
+    # the comment here always claimed and, until M-03, was not true.
+    if abs(src - out) > _duration_tolerance(src):
         return False
 
     src_rate, src_ch = _probe_rate_and_channels(source)
