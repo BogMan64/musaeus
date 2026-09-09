@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -140,18 +141,39 @@ def _gather(conn) -> dict:  # type: ignore[type-arg]
     d["codecs"] = [(r["c"], r["cnt"]) for r in codec_rows]
 
     # ── Duplicate groups ──────────────────────────────────────────────────────
-    try:
-        d["dupe_pending"] = conn.execute(
-            "SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE status='pending'"
-        ).fetchone()[0]
-        d["dupe_exact"] = conn.execute(
-            "SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE type='EXACT' AND status='pending'"
-        ).fetchone()[0]
-        d["dupe_near"] = conn.execute(
-            "SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE type='NEAR' AND status='pending'"
-        ).fetchone()[0]
-    except Exception:
-        d["dupe_pending"] = d["dupe_exact"] = d["dupe_near"] = 0
+    # The column is `duplicate_type`, not `type`. It always was -- see
+    # db.open_db()'s schema -- and the two queries below asked for `type`
+    # until 2026-09-09. That alone would have been a visible crash; what
+    # made it invisible was the bare `except Exception` around all three,
+    # which caught `no such column: type` from the SECOND query and set all
+    # three counts to zero, including the first one, which had succeeded.
+    #
+    # So this report said "0 dupe groups pending" while the database held
+    # 2,862. A wrong column name was being rendered as good news, and the
+    # only symptom was the absence of a warning.
+    #
+    # Each query is now tried on its own, and a query that cannot run
+    # records None -- "not known" -- rather than 0. The renderer prints an
+    # explicit "count unavailable" for None, because a report that silently
+    # substitutes zero for an error is worse than one that fails outright:
+    # zero is the answer that makes a reader stop looking.
+    for key, sql in (
+        ("dupe_pending", "SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE status='pending'"),
+        (
+            "dupe_exact",
+            "SELECT COUNT(DISTINCT group_id) FROM duplicates "
+            "WHERE duplicate_type='EXACT' AND status='pending'",
+        ),
+        (
+            "dupe_near",
+            "SELECT COUNT(DISTINCT group_id) FROM duplicates "
+            "WHERE duplicate_type='NEAR' AND status='pending'",
+        ),
+    ):
+        try:
+            d[key] = conn.execute(sql).fetchone()[0]
+        except sqlite3.Error:
+            d[key] = None
 
     # ── Health / validation issues ────────────────────────────────────────────
     try:
@@ -246,10 +268,19 @@ def _print_report(d: dict, cfg, wide: bool = False) -> None:
     pending_items = []
     if d["no_genre"]:
         pending_items.append(f"  ⚠  {d['no_genre']:,} track(s) missing genre  → `musaeus enrich`")
-    if d["dupe_pending"]:
+    if d["dupe_pending"] is None:
+        pending_items.append(
+            "  ?  dupe group count unavailable — the duplicates table did not "
+            "answer. This is NOT zero pending; it is unknown."
+        )
+    elif d["dupe_pending"]:
+
+        def _n(v):
+            return "?" if v is None else v
+
         pending_items.append(
             f"  ⚠  {d['dupe_pending']} dupe group(s) pending "
-            f"({d['dupe_exact']} exact / {d['dupe_near']} near)  → `musaeus dedupe`"
+            f"({_n(d['dupe_exact'])} exact / {_n(d['dupe_near'])} near)  → `musaeus dedupe`"
         )
     if d["health_errors"]:
         pending_items.append(
