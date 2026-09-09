@@ -471,11 +471,19 @@ def car_sample_rate(source_rate: int | None) -> int | None:
 
 def probe_sample_rate(file_path: Path) -> int | None:
     """Source sample rate, or None when it cannot be read (leave it alone)."""
-    proc = subprocess.run(
-        [FFPROBE, "-v", "error", "-select_streams", "a:0",
-         "-show_entries", "stream=sample_rate", "-of", "csv=p=0", str(file_path)],
-        capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SEC,
-    )
+    try:
+        proc = subprocess.run(
+            [FFPROBE, "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=sample_rate", "-of", "csv=p=0", str(file_path)],
+            capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SEC,
+        )
+    except (subprocess.SubprocessError, OSError):
+        # A deadline that fires means what a bad exit code already means
+        # here: this file cannot be measured. Answer with the function's own
+        # "unreadable" value rather than letting the exception travel to a
+        # broad handler three frames away, where it reads as a mystery
+        # rather than as an unreadable file. (M-08.)
+        return None
     raw = (proc.stdout or "").strip().splitlines()
     if proc.returncode != 0 or not raw:
         return None
@@ -491,11 +499,15 @@ def probe_channels(file_path: Path) -> int | None:
     Mirrors probe_sample_rate deliberately: the two format properties that
     must be STATED rather than inherited are read the same way.
     """
-    proc = subprocess.run(
-        [FFPROBE, "-v", "error", "-select_streams", "a:0",
-         "-show_entries", "stream=channels", "-of", "csv=p=0", str(file_path)],
-        capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SEC,
-    )
+    try:
+        proc = subprocess.run(
+            [FFPROBE, "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=channels", "-of", "csv=p=0", str(file_path)],
+            capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SEC,
+        )
+    except (subprocess.SubprocessError, OSError):
+        # See probe_sample_rate: a fired deadline is an unreadable file.
+        return None
     raw = (proc.stdout or "").strip().splitlines()
     if proc.returncode != 0 or not raw:
         return None
@@ -671,11 +683,15 @@ def _output_matches_source(source: Path, output: Path) -> bool:
 
 
 def _probe_duration(path: Path) -> float | None:
-    res = subprocess.run(
-        [FFPROBE, "-v", "error", "-show_entries", "format=duration",
-         "-of", "csv=p=0", str(path)],
-        capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SEC,
-    )
+    try:
+        res = subprocess.run(
+            [FFPROBE, "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SEC,
+        )
+    except (subprocess.SubprocessError, OSError):
+        # See probe_sample_rate: a fired deadline is an unreadable file.
+        return None
     if res.returncode != 0:
         return None
     try:
@@ -754,6 +770,23 @@ def convert_one(file_path: Path, profile_name: str) -> str:
                     "place. Check the source before re-running.")
             output_file.unlink()  # genuinely unusable: fall through and redo it
 
+        # Refuse rather than encode unpinned. Both flags below are emitted
+        # conditionally -- `["-ar", rate] if rate else []` and `["-ac","2"] if
+        # channels > 2` -- and both probes answer None on any ffprobe failure,
+        # so a failed probe does not produce a wrong rate, it produces NO -ar
+        # at all. car_sample_rate's own docstring says what that costs: "the
+        # rate must ALWAYS be stated... an unpinned encode takes the FILTER's
+        # rate, not the source's. Measured 2026-08-31: a 44,100 Hz master came
+        # out as 96,000 Hz AAC." The silence is the bug. (M-12.)
+        source_rate = probe_sample_rate(file_path)
+        source_channels = probe_channels(file_path)
+        if source_rate is None or source_channels is None:
+            raise RuntimeError(
+                "could not read the source sample rate or channel count, so "
+                "the encode would be unpinned and could come out at the "
+                "filter's rate rather than the source's -- refusing this file")
+        target_rate = car_sample_rate(source_rate)
+
         measured = ffmpeg_measure_loudnorm(file_path, target_i, TARGET_TP, TARGET_LRA)
         loudnorm_filter = build_second_pass_filter(measured, target_i, TARGET_TP, TARGET_LRA)
 
@@ -764,8 +797,8 @@ def convert_one(file_path: Path, profile_name: str) -> str:
             has_attached_picture=has_attached_picture,
             clean_tags=clean_tags,
             loudnorm_filter=loudnorm_filter,
-            target_rate=car_sample_rate(probe_sample_rate(file_path)),
-            source_channels=probe_channels(file_path),
+            target_rate=target_rate,
+            source_channels=source_channels,
         )
 
         subprocess.run(cmd, capture_output=True, text=True, check=True)

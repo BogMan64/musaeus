@@ -593,7 +593,7 @@ rather than the environment, and treats empty output as an error.
 | **M-06** | **FIXED** | `MUSAEUS_FORCE_REENCODE=0` turns force-reencode **on** — `bool("0")` is True. Setting it to `0`/`false`/`no` to *disable* the override triggers a full 10,545-file re-encode. Verified 2026-09-08. Worth grepping both repos for the pattern. |
 | **M-07** | **FIXED** | a comment tells the operator to use `--force`; the script defines no such flag, and never names the env var that does work. |
 | **M-08** | **FIXED** | three ffprobe helpers dropped the `timeout=30` their sibling in the same file uses. ffprobe blocks for ever on a truncated container — exactly this code's input — and with `MAX_WORKERS = 4`, four such files hang the build silently. |
-| **M-12** | open, PLAUSIBLE | `-ar` and `-ac` are dropped whenever the probe returns None, producing the unpinned encode the docstring warns about (a 44.1 kHz master emerged as 96 kHz AAC, measured 2026-08-31). Refuse the file instead. |
+| **M-12** | **FIXED — and it was real** | `-ar` and `-ac` are dropped whenever the probe returns None, producing the unpinned encode the docstring warns about (a 44.1 kHz master emerged as 96 kHz AAC, measured 2026-08-31). Refuse the file instead. |
 
 
 **M-06 / M-07 / M-08 (2026-09-08), fixed together — one file, one shape.**
@@ -622,6 +622,31 @@ the history and named `--force` while doing it — so the guard flagged it,
 correctly. The history moved to git and this file; the comment now only says
 what works. That is the right division: a comment's job is to instruct, not
 to narrate.
+
+
+**M-12 (2026-09-08) — confirmed, and it is subtler than "the flags are
+dropped".** A failed probe does not produce a *wrong* rate; it produces
+**no `-ar` at all**, because both flags are emitted conditionally and both
+probes answer `None` on any ffprobe failure. `car_sample_rate`'s own
+docstring says what silence costs: *"an unpinned encode takes the FILTER's
+rate, not the source's. Measured 2026-08-31: a 44,100 Hz master came out as
+96,000 Hz AAC."*
+
+`car_sample_rate(None) → None` is correct on its own terms — "unreadable: do
+not guess". **The defect was the caller reading "do not guess" as permission
+to proceed.** It now refuses, and `convert_one` turns that into one ERROR
+line for that file while the build carries on.
+
+**A defect I introduced this morning, found while fixing this one.** M-08's
+`timeout=` stopped the probes hanging — but none of them caught
+`TimeoutExpired`, so a fired deadline became an uncaught exception landing on
+`convert_one`'s broad `except Exception` three frames away, where it reads as
+a mystery rather than as an unreadable file. Each probe now answers with its
+own documented "unreadable" value, which the M-12 guard then refuses. **One
+way for a file to be unmeasurable, one response to it.**
+
+That is worth stating plainly: a fix that converts a silent hang into a
+generic error is an improvement and still not finished.
 
 ### Tier 4 — documentation
 
