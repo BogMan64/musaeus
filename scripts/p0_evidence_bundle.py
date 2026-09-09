@@ -73,11 +73,15 @@ GATES: dict[str, tuple[str, str]] = {
     ),
     "failed_stage_not_skipped_by_resume": (
         "MCR-005",
-        "tests/test_p0_08_run_lifecycle.py::TestResumeEligibility",
-    ),
-    "prerequisite_blocking_names_recovery": (
-        "MCR-005",
-        "tests/test_p0_08_run_lifecycle.py::TestPrerequisiteGating",
+        # Repointed 2026-09-09, and this is STRONGER evidence than what it
+        # replaced. It used to name test_p0_08_run_lifecycle.py, which tested
+        # musaeus/state/run_state.py -- a module the running program never
+        # imported. This test drives cli._run_pipeline itself: it forces a
+        # stage to fail, asserts the stage is absent from the resume file, and
+        # asserts the second invocation still reports failure rather than
+        # skipping it. run_state.py was soft-deleted the same day.
+        "tests/test_p0_01_characterization.py::"
+        "TestResumeRecordsFailedStageAsCompleteCharacterization",
     ),
     "cancellation_recorded_and_terminal_truthful": (
         "MCR-005",
@@ -141,6 +145,18 @@ NOT_COVERED: dict[str, str] = {
         "PARTIAL. A drift guard exists and two stale help lines are corrected. 24 of 57 "
         "commands remain undocumented by deliberate decision -- publishing them requires "
         "their behaviour to be fixture-proven first, which is Grey's call per command."
+    ),
+    "prerequisite_blocking_names_recovery": (
+        "MCR-005. WAS listed as a passing gate until 2026-09-09, on the strength "
+        "of test_p0_08_run_lifecycle.py::TestPrerequisiteGating. That test proved "
+        "musaeus/state/run_state.py's gating helpers worked; it did not prove "
+        "MUSAEUS gates anything, because nothing in the running program ever "
+        "imported that module -- verified by importing musaeus.cli, "
+        "musaeus.preflight and musaeus.console and listing what loads. The module "
+        "was soft-deleted to NUC8TB and the gate is moved here rather than "
+        "repointed, because there is no live equivalent to point it at: "
+        "prerequisite gating was never wired. Restoring the module would restore "
+        "the test, not the evidence."
     ),
     "fsync_durability": (
         "The journal's fsync guards machine-level crash, which cannot be simulated "

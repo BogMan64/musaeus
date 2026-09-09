@@ -36,14 +36,52 @@ from musaeus.state.cancellation import (
 )
 from musaeus.state.events import (
     RUN_CANCELLATION_REQUESTED,
+    RUN_CREATED,
+    STAGE_SUCCEEDED,
     append_event,
+    new_event,
     read_events,
 )
 from musaeus.state.migrator import migrate
-from musaeus.state.projector import CANCELLED, FAILED, apply_event, project
-from musaeus.state.run_state import REASON_RUN_CANCELLED, evaluate_gating, linear_graph
+from musaeus.state.projector import CANCELLED, FAILED, project
 from tests.disposable_vault import FakeClock
-from tests.test_p0_08_run_lifecycle import PIPELINE, _run_created, _succeeded
+
+# These two builders used to be imported from tests/test_p0_08_run_lifecycle.py,
+# which went out with musaeus/state/run_state.py on 2026-09-09 (soft-deleted to
+# NUC8TB). They are inlined here rather than left as a cross-file import so this
+# file, which covers the LIVE CancellationGate used by musaeus/safety/mutation.py,
+# does not depend on a module that no longer exists.
+
+
+def _run_created(run_id: str = "run-A", config_digest: str = "cfg-1"):
+    return new_event(
+        run_id,
+        0,
+        RUN_CREATED,
+        {
+            "mode": "execute",
+            "config_digest": config_digest,
+            "scope_summary": {},
+            "authority": "granted",
+        },
+    )
+
+
+def _succeeded(run_id, seq, stage_id, attempt=1, in_d="in", out_d="out"):
+    return new_event(
+        run_id,
+        seq,
+        STAGE_SUCCEEDED,
+        {
+            "stage_id": stage_id,
+            "attempt": attempt,
+            "input_digest": in_d,
+            "output_digest": out_d,
+            "counts": {},
+        },
+        stage_id=stage_id,
+        attempt=attempt,
+    )
 
 
 @pytest.fixture
@@ -170,38 +208,6 @@ class TestObservation:
         clock.advance(minutes=5)
         gate.observe(clock.utcnow_iso())
         assert gate.observed_at == first, "the moment mutation had to stop does not move"
-
-    def test_no_downstream_stage_starts_after_cancellation(self):
-        """MCR-005: no new stage begins once cancellation is requested.
-        Enforced in the gate rather than per stage, so a stage cannot be
-        written that forgets to ask."""
-        events = (
-            _run_created(),
-            _succeeded("run-A", 1, "IngestStage"),
-        )
-        state = project(events)
-        graph = linear_graph(PIPELINE)
-        assert evaluate_gating(graph, state, "run-A")["ForgeStage"].eligible is True
-
-        from musaeus.state.events import new_event
-
-        cancelled_state = apply_event(
-            state,
-            new_event(
-                "run-A",
-                2,
-                RUN_CANCELLATION_REQUESTED,
-                {
-                    "requested_by": "grey",
-                    "requested_at": "2026-08-23T22:00:00Z",
-                    "reason_code": "operator_request",
-                },
-            ),
-        )
-        decisions = evaluate_gating(graph, cancelled_state, "run-A")
-        assert all(not d.eligible for d in decisions.values())
-        assert decisions["ForgeStage"].blockers[0].reason_code == REASON_RUN_CANCELLED
-        assert "do not start further work" in decisions["ForgeStage"].recovery_action
 
 
 # ── Terminal outcomes ─────────────────────────────────────────────────────────
