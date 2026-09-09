@@ -1,0 +1,19 @@
+# P0-19 G11 baseline — captured at rehearsal start (metadata only, stat not open)
+captured_at_utc: 2026-09-09T03:09:35Z
+
+/home/grey/Music size=241664 mtime=1788215748 mode=755
+/home/grey/.config/musaeus size=4096 mtime=1788921910 mode=755
+/mnt/FORGE2TB/Projects/MUSAEUS_VAULT size=4096 mtime=1788920785 mode=755
+/mnt/FORGE2TB/Projects/MUSAEUS_TEST_VAULT ABSENT
+/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db size=1018736640 mtime=1788922628 mode=644
+
+## MUSAEUS_RECOVERY existence (must be absent)
+/home/grey/Projects/MUSAEUS_RECOVERY ABSENT (correct)
+
+## crontab snapshot (read-only)
+    crontabs/grey/: fopen: Permission denied
+
+## live musaeus/vault processes at rehearsal start
+    1676038 bash /home/grey/musaeus_jobs/bitrot.sh verify
+    1676041 python3 -m musaeus bitrot
+    1731386 /usr/bin/python3 /home/grey/.local/bin/musaeus

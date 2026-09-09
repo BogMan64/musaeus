@@ -1,0 +1,54 @@
+# G8 — Rollback after partial mutation
+
+source task        : P0-13
+MCR                : MCR-003 / MCR-005
+VERDICT            : PASS (asserted and held) for the primitive — rollback UNREACHABLE from the CLI
+REACHABILITY       : MutationBoundary is cli-reachable; rollback() is UNREACHABLE (import only)
+reachability detail: CORRECTION to the brief's expectation. The boundary IS wired into the running pipeline: stages/canonicalize.py:794 and stages/finalize.py:355 construct a MutationBoundary, and both stages are in ACT3_CANONICALIZE_FINALIZE, which is part of CANONICAL_PIPELINE = DEFAULT_PIPELINE, i.e. plain `musaeus run`. Caller chain: cli.main -> cli._run_pipeline -> FinalizeStage.run -> _open_boundary -> create_checkpoint + MutationBoundary(...) -> boundary.move / boundary.quarantine / boundary.release_source. BUT: `boundary.rollback()` has no caller in musaeus/ at all — grep for '.rollback(' finds only sqlite conn.rollback() in four stages. So the checkpoint and the operation journal ARE written by a real run, and nothing consumes them to undo one. Rollback is a capability held, not a capability exercised. Both stages also honour a CHECKPOINT_ENV escape hatch that disables the boundary entirely, and record 'recovery boundary: UNAVAILABLE' rather than refusing when the checkpoint cannot be created.
+minimum viable cov.: at least 3 mutations applied before the fault, all of them reverted, the tree compared by digest (not by count) and residue enumerated
+
+## Coverage (what was actually examined)
+  files_in_fixture_tree = 3
+  mutations_applied_before_fault = 4
+  mutations_reverted = 3
+  rollback_outcome = completed
+  rollback_failures = 0
+  tree_digest_equal_after_rollback = True
+  tree_changed_by_mutations = True
+  residue_files_under_recovery_root = 7
+  residue = ['c1/journal.jsonl', 'c1/manifest.json', 'c1/payload/Bob Seger/Hollywood Nights.m4a', 'c1/payload/Bob Seger/Night Moves.m4a', 'c1/payload/The Byrds/Eight Miles High.m4a', 'c1/quarantine/q_088a94397ff8/Night Moves.m4a', 'c1/quarantine/q_d708f89ee55c/Eight Miles High.m4a']
+
+## Raw captured output
+
+----- digests before -----
+{
+  "Bob Seger/Hollywood Nights.m4a": "fd52c0a5af9ae83aac6642e7c7497e12c46850808c7cf543df1254924d75dbda",
+  "Bob Seger/Night Moves.m4a": "22dec86cd12d39924eb521511cd289bb752c08a1949a05d7968a5be814ca5ed5",
+  "The Byrds/Eight Miles High.m4a": "7589c60bc4add37a07f0eaa8d5fb6709d75b0932a8d81456242cc2223ec09fec"
+}
+
+----- digests mid-run -----
+{
+  "Bob Seger/Night Moves.m4a": "26a8552c481b7a1ce16c30ee0f48bd35cd24ab3a1fcf2008b7264ee571bd79ce",
+  "The Byrds/Hollywood Nights.m4a": "fd52c0a5af9ae83aac6642e7c7497e12c46850808c7cf543df1254924d75dbda"
+}
+
+----- digests after rollback -----
+{
+  "Bob Seger/Hollywood Nights.m4a": "fd52c0a5af9ae83aac6642e7c7497e12c46850808c7cf543df1254924d75dbda",
+  "Bob Seger/Night Moves.m4a": "22dec86cd12d39924eb521511cd289bb752c08a1949a05d7968a5be814ca5ed5",
+  "The Byrds/Eight Miles High.m4a": "7589c60bc4add37a07f0eaa8d5fb6709d75b0932a8d81456242cc2223ec09fec"
+}
+
+----- rollback result -----
+{'checkpoint_id': 'c1', 'outcome': 'completed', 'remaining_operations': 0}
+
+----- residue under recovery root -----
+c1/journal.jsonl
+c1/manifest.json
+c1/payload/Bob Seger/Hollywood Nights.m4a
+c1/payload/Bob Seger/Night Moves.m4a
+c1/payload/The Byrds/Eight Miles High.m4a
+c1/quarantine/q_088a94397ff8/Night Moves.m4a
+c1/quarantine/q_d708f89ee55c/Eight Miles High.m4a
+

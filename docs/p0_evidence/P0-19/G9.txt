@@ -1,0 +1,135 @@
+# G9 — Big Kahuna missing-root block — NO TARGET
+
+source task        : P0-15
+MCR                : MCR-002 / MCR-007
+VERDICT            : NO TARGET — NOT APPLICABLE (substitute exercised separately and refused)
+REACHABILITY       : no-target
+reachability detail: There is nothing left to block. `--big-kahuna` and `BIG_KAHUNA_PIPELINE` do not exist in musaeus/ — the only textual match is musaeus/exports.py's own module docstring recording that fact. tasks.md closes P0-03 as superseded, not implemented, for the same reason. What survives is `musaeus curator --export-root`, exercised separately below under its own label.
+minimum viable cov.: the whole musaeus/ package searched for the flag and the pipeline constant; the surviving substitute exercised through the real CLI and its refusal captured
+
+## Coverage (what was actually examined)
+  python_files_searched = 100
+  grep_matches_total = 1
+  grep_matches_in_code = 0
+  grep_matches = ['musaeus/exports.py:24:  * `--big-kahuna` and `BIG_KAHUNA_PIPELINE` do not exist anywhere in']
+  substitute_exercised = musaeus curator (no --export-root, no configured root)
+  substitute_exit_code = 1
+
+## Findings
+  - Recorded as NOT APPLICABLE, per the brief's §6. Not green (there is no block, so a tick would be a false statement) and not dropped (P0-19 names the gate, so an unexplained omission would look complete).
+  - The substitute refused with exit 1. Reported under its own label so it cannot silently inherit G9's name.
+
+## Raw captured output
+
+----- child resolved-config assertion -----
+$ /usr/bin/python3 -c 
+import json, os, sys
+_FIXTURE_ROOT = os.path.abspath(os.environ["P0_19_FIXTURE_ROOT"])
+import musaeus
+print("CHILD_MUSAEUS_PACKAGE " + os.path.dirname(os.path.abspath(musaeus.__file__)))
+from musaeus.config import MusicConfig
+_cfg = MusicConfig.from_env()
+_fields = {
+    "vault_root": str(_cfg.vault_root),
+    "db_path": str(_cfg.db_path),
+    "alac_library": str(_cfg.alac_library),
+    "runs_root": str(_cfg.runs_root),
+}
+print("CHILD_RESOLVED_CONFIG " + json.dumps(_fields, sort_keys=True))
+_bad = {
+    k: v for k, v in _fields.items()
+    if not (os.path.abspath(v) == _FIXTURE_ROOT
+            or os.path.abspath(v).startswith(_FIXTURE_ROOT + os.sep))
+}
+if _bad:
+    print("CHILD_PRECONDITION_ABORT " + json.dumps(_bad, sort_keys=True), file=sys.stderr)
+    raise SystemExit(97)
+print("CHILD_PRECONDITION_OK fixture_root=" + _FIXTURE_ROOT)
+
+
+import sys
+from musaeus.cli import main
+sys.argv = ["musaeus", "curator"]
+main()
+
+[exit 1]
+--- stdout ---
+CHILD_MUSAEUS_PACKAGE /mnt/FORGE2TB/Projects/MUSAEUS-kiro/musaeus
+CHILD_RESOLVED_CONFIG {"alac_library": "/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/Libraries/ALAC-Library", "db_path": "/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/musaeus.db", "runs_root": "/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/RUNS", "vault_root": "/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault"}
+CHILD_PRECONDITION_OK fixture_root=/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault
+
+Musaeus pipeline  —  run_id=run_20260909T035454Z_30f008
+  ⚠ Missing API keys: Groq, Last.fm, AcousticID (run 'musaeus setup' to configure)
+
+  ✗  curator: FAILED | processed=0 changed=0 skipped=0 errors=0
+
+
+--- stderr ---
+20:54:54  ERROR     musaeus.stages.base  [curator] validation failed: no export root is set. Pass --export-root, or set exports.curator.root (MUSAEUS_CURATOR_EXPORT_ROOT) in your configuration.
+  -> pass --export-root PATH or set MUSAEUS_CURATOR_EXPORT_ROOT
+20:54:54  ERROR     musaeus.stages.base  [curator] failure report: /tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/RUNS/FAILURES/curator_run_20260909T035454Z_30f008_20260909T035454709514Z.json
+       ERROR: ValidationError: no export root is set. Pass --export-root, or set exports.curator.root (MUSAEUS_CURATOR_EXPORT_ROOT) in your configuration.
+  -> pass --export-root PATH or set MUSAEUS_CURATOR_EXPORT_ROOT
+       ERROR: Failure report: /tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/RUNS/FAILURES/curator_run_20260909T035454Z_30f008_20260909T035454709514Z.json
+  Pipeline finished with errors.  run_id=run_20260909T035454Z_30f008
+  ForClaudeHandoff doc (needs attention): /tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/RUNS/HANDOFFS/ForClaudeHandoff_run_20260909T035454Z_30f008.md
+
+----- grep -rnE 'big.kahuna|big_kahuna|BIG_KAHUNA' --include=*.py musaeus/ -----
+musaeus/exports.py:24:  * `--big-kahuna` and `BIG_KAHUNA_PIPELINE` do not exist anywhere in
+
+----- musaeus/exports.py docstring, relevant clause -----
+`--big-kahuna` and `BIG_KAHUNA_PIPELINE` do not exist anywhere in this codebase. The half of P0-15 addressed to them has no target; what remains live is `musaeus curator --export-root`.
+
+----- SUBSTITUTE: musaeus curator with no resolved export root -----
+$ /usr/bin/python3 -c 
+import json, os, sys
+_FIXTURE_ROOT = os.path.abspath(os.environ["P0_19_FIXTURE_ROOT"])
+import musaeus
+print("CHILD_MUSAEUS_PACKAGE " + os.path.dirname(os.path.abspath(musaeus.__file__)))
+from musaeus.config import MusicConfig
+_cfg = MusicConfig.from_env()
+_fields = {
+    "vault_root": str(_cfg.vault_root),
+    "db_path": str(_cfg.db_path),
+    "alac_library": str(_cfg.alac_library),
+    "runs_root": str(_cfg.runs_root),
+}
+print("CHILD_RESOLVED_CONFIG " + json.dumps(_fields, sort_keys=True))
+_bad = {
+    k: v for k, v in _fields.items()
+    if not (os.path.abspath(v) == _FIXTURE_ROOT
+            or os.path.abspath(v).startswith(_FIXTURE_ROOT + os.sep))
+}
+if _bad:
+    print("CHILD_PRECONDITION_ABORT " + json.dumps(_bad, sort_keys=True), file=sys.stderr)
+    raise SystemExit(97)
+print("CHILD_PRECONDITION_OK fixture_root=" + _FIXTURE_ROOT)
+
+
+import sys
+from musaeus.cli import main
+sys.argv = ["musaeus", "curator"]
+main()
+
+[exit 1]
+--- stdout ---
+CHILD_MUSAEUS_PACKAGE /mnt/FORGE2TB/Projects/MUSAEUS-kiro/musaeus
+CHILD_RESOLVED_CONFIG {"alac_library": "/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/Libraries/ALAC-Library", "db_path": "/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/musaeus.db", "runs_root": "/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/RUNS", "vault_root": "/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault"}
+CHILD_PRECONDITION_OK fixture_root=/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault
+
+Musaeus pipeline  —  run_id=run_20260909T035454Z_30f008
+  ⚠ Missing API keys: Groq, Last.fm, AcousticID (run 'musaeus setup' to configure)
+
+  ✗  curator: FAILED | processed=0 changed=0 skipped=0 errors=0
+
+
+--- stderr ---
+20:54:54  ERROR     musaeus.stages.base  [curator] validation failed: no export root is set. Pass --export-root, or set exports.curator.root (MUSAEUS_CURATOR_EXPORT_ROOT) in your configuration.
+  -> pass --export-root PATH or set MUSAEUS_CURATOR_EXPORT_ROOT
+20:54:54  ERROR     musaeus.stages.base  [curator] failure report: /tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/RUNS/FAILURES/curator_run_20260909T035454Z_30f008_20260909T035454709514Z.json
+       ERROR: ValidationError: no export root is set. Pass --export-root, or set exports.curator.root (MUSAEUS_CURATOR_EXPORT_ROOT) in your configuration.
+  -> pass --export-root PATH or set MUSAEUS_CURATOR_EXPORT_ROOT
+       ERROR: Failure report: /tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/RUNS/FAILURES/curator_run_20260909T035454Z_30f008_20260909T035454709514Z.json
+  Pipeline finished with errors.  run_id=run_20260909T035454Z_30f008
+  ForClaudeHandoff doc (needs attention): /tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/RUNS/HANDOFFS/ForClaudeHandoff_run_20260909T035454Z_30f008.md
+

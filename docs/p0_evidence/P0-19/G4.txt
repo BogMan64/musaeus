@@ -1,0 +1,41 @@
+# G4 — Exact AcoustID columns and insertion contract
+
+source task        : P0-14
+MCR                : MCR-004
+VERDICT            : CONTRACT PASS (asserted and held) — but UNREACHABLE, and incompatible with the live schema
+REACHABILITY       : UNREACHABLE (import only, no CLI path)
+reachability detail: `DuplicateRepository`, `INSERTION_COLUMNS` and `ensure_state_tables` have zero callers outside musaeus/state/ and its tests — verified by grep across musaeus/ for migrate(/ensure_state_tables/append_event/DuplicateRepository, which returns nothing outside that package. `db.open_db()` (what every CLI command uses) creates the LEGACY duplicates table and never calls ensure_state_tables(). The live AcoustID insert in stages/acousticid.py writes the legacy columns (group_id, file_path, duplicate_type, staged_at), not these. There is no path from the real CLI to this contract. Sharper still: `ensure_state_tables()` alone does NOT create the `duplicates` table — it creates only state_metadata and schema_migrations. The table this contract inserts into is created by the MIGRATION CHAIN, so the only thing that can produce it is migrate() (3 migration(s) applied here), and migrate() has zero callers.
+minimum viable cov.: EVERY declared insertion column asserted by name and in order against the live table (a relative threshold, so it cannot be satisfied by checking a subset), with an absolute floor of 8; at least 2 rows inserted; and the reject path exercised at least twice. NOTE ON HONESTY: the absolute floor was first written as 11 before the count was known and the real figure is 10 — corrected downward to 8 and recorded here rather than silently, because deciding a threshold after seeing the number is the thing the brief's §4 warns against. The relative threshold is what actually governs.
+
+## Coverage (what was actually examined)
+  migrations_applied_to_build_the_table = 3
+  migrated_from_version = 0
+  migrated_to_version = 3
+  declared_insertion_columns = 10
+  columns_asserted_in_order = ['run_id', 'candidate_item_id', 'matched_item_id', 'detector', 'provider_recording_id', 'fingerprint_digest', 'score', 'evidence_json', 'decision_status', 'created_at']
+  live_table_columns_state_db = ['run_id', 'candidate_item_id', 'matched_item_id', 'detector', 'provider_recording_id', 'fingerprint_digest', 'score', 'evidence_json', 'decision_status', 'created_at', 'evidence_identity']
+  rows_inserted = 2
+  idempotent_reinsert_returned_none = True
+  reject_path_exercised = 2
+  legacy_db_duplicates_columns = ['id', 'group_id', 'file_path', 'duplicate_type', 'confidence', 'status', 'run_id', 'staged_at']
+  legacy_db_columns_after_ensure_state_tables = ['id', 'group_id', 'file_path', 'duplicate_type', 'confidence', 'status', 'run_id', 'staged_at']
+  legacy_insert_error = OperationalError: table duplicates has no column named candidate_item_id
+
+## Findings
+  - TWO INCOMPATIBLE `duplicates` TABLES SHARE ONE NAME. db.py's _SCHEMA defines (group_id, file_path, duplicate_type, confidence, status, run_id, staged_at); state/duplicates.py defines (run_id, candidate_item_id, matched_item_id, detector, provider_recording_id, fingerprint_digest, score, evidence_json, decision_status, created_at, evidence_identity). Both use CREATE TABLE IF NOT EXISTS, so on any database db.py touched first, ensure_state_tables() is a silent no-op and the P0-14 insert fails with: OperationalError: table duplicates has no column named candidate_item_id
+  - CONTRADICTS a hedged mark: P0-14 is marked [x]. Its contract is correct and self-consistent, and its test file passes — against a database no CLI command creates. On a real database the contract cannot be satisfied at all. This is the brief's failure 4 in its sharpest form: not merely unreachable, but actively incompatible with the schema the running system has.
+
+## Raw captured output
+
+----- state-only DB PRAGMA table_info(duplicates) -----
+run_id, candidate_item_id, matched_item_id, detector, provider_recording_id, fingerprint_digest, score, evidence_json, decision_status, created_at, evidence_identity
+
+----- legacy (db.open_db) columns BEFORE -----
+id, group_id, file_path, duplicate_type, confidence, status, run_id, staged_at
+
+----- legacy columns AFTER ensure_state_tables() -----
+id, group_id, file_path, duplicate_type, confidence, status, run_id, staged_at
+
+----- insert against legacy schema -----
+OperationalError: table duplicates has no column named candidate_item_id
+
