@@ -648,6 +648,54 @@ way for a file to be unmeasurable, one response to it.**
 That is worth stating plainly: a fix that converts a silent hang into a
 generic error is an improvement and still not finished.
 
+
+### M-15 and M-16 — findings my own triage missed
+
+Both were in the Register and absent from the triage above until 2026-09-08.
+Recorded plainly: a triage that silently drops two of thirty is the same
+failure as a check that scans nothing.
+
+**M-16 — FIXED. Two rules that matched only their own fixtures.** Verified by
+probe file, not by reading:
+
+| form | before | after |
+|---|---|---|
+| `re.compile(r"^(The\|A\|An)\s+")` | missed | caught |
+| `re.sub(r"^The\s+")` (capitalised) | missed | caught |
+| `[([{` unescaped class | missed | caught |
+| the two fixture spellings | caught | caught |
+
+Both rules passed their own validation while missing the codebase. The
+seventh instance today of *a check that finds nothing is not a check that
+found nothing wrong.*
+
+The broadened rules immediately found real code the old ones could not see: a
+hand-written **nine-language** article regex in `musaeus_upgrade_check.py`.
+It is **not** replaced by `artist_form.comparison_key`, which handles English
+only — substituting would silently narrow the match. Suppressed with the
+reason and left here as an open ruling: **should `artist_form` grow a
+multi-language comparison key, or should this script keep its own?**
+
+Two mistakes worth keeping. The first broadened bracket pattern produced a
+**false positive** on `\[([^\]]+)\]` — an escaped literal plus a group, not
+a multi-style class; fixed with a lookbehind requiring an unescaped opening
+bracket. And the first suppression sat at the top of a six-line explanation:
+**semgrep reads only the line immediately above a match**, so the marker was
+never seen. The guard caught both.
+
+**M-15 — premise disproved, decision left to Grey.** The ruff exclusion says
+the vendored tree is *"kept byte-identical to upstream so it can be re-synced
+without conflicts."* Measured: upstream's `build_aac_library.py` is **461
+lines**, this copy is **980**, and seven of today's fixes are in it.
+Byte-identity is not recoverable. Cost of the exclusion, measured the same
+day: **16 ruff errors nobody has seen** — 6 non-pep585, 5 non-pep604, 3
+unsorted-imports, 2 deprecated-import; all cosmetic, 14 auto-fixable.
+
+The Register is right that holding both is the worst of each — no re-sync
+**and** no lint. The false rationale is corrected in `pyproject.toml`.
+**Deleting the exclusion is a one-line change that reformats 980 lines of
+vendored code, so it is a policy call and is left for you.**
+
 ### Tier 4 — documentation
 
 - **M-13 — FIXED 2026-09-08.** The reconstruction document ordered "treat a

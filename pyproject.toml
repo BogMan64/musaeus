@@ -46,10 +46,27 @@ include = ["musaeus*"]
 target-version = "py310"
 line-length = 100
 
-# Vendored ORPHEUS code is kept byte-identical to upstream so it can be
-# re-synced without conflicts. `ruff --fix scripts/` modernised three of
-# these files on 2026-08-23 (typing.Optional -> |, import reordering) and
-# the changes were reverted; excluded here so it cannot happen again.
+# Vendored ORPHEUS code, excluded from ruff.
+#
+# THE ORIGINAL REASON NO LONGER HOLDS, and this comment used to assert it as
+# though it did: "kept byte-identical to upstream so it can be re-synced
+# without conflicts". Measured 2026-09-08 -- upstream's build_aac_library.py
+# is 461 lines, this copy is 980. The fork is deep and deliberate (M-01,
+# M-02, M-03, M-06, M-07, M-08, M-12 all landed here), so byte-identity is
+# not recoverable and a clean re-sync is not available either way.
+#
+# What the exclusion costs, measured the same day: 16 ruff errors nobody has
+# seen -- 6 non-pep585-annotation, 5 non-pep604-annotation-optional, 3
+# unsorted-imports, 2 deprecated-import. All cosmetic; 14 auto-fixable.
+# These are the same modernisations `ruff --fix` made on 2026-08-23 and that
+# were reverted to protect the byte-identity now gone.
+#
+# M-15 in the Repair Register puts the choice plainly: restore byte-identity
+# and keep the exclusion, or accept the fork and drop it. Holding both is the
+# worst of each -- no re-sync AND no lint. The fork is already accepted in
+# fact; formalising it by deleting this line is a one-line change awaiting
+# Grey's ruling, recorded in MUSAEUS_TODO.md rather than made unilaterally,
+# because reformatting 980 lines of vendored code is a policy decision.
 exclude = ["scripts/car_library/vendor"]
 
 [tool.ruff.lint]

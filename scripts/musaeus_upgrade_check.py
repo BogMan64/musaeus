@@ -38,6 +38,16 @@ from musaeus.db import open_db
 
 # ── Normalisation ─────────────────────────────────────────────────────────────
 
+# artist_form.comparison_key handles English article forms only. This strips
+# leading articles in nine languages AND punctuation, for fuzzy title
+# matching, so substituting the canon would silently narrow the match. It is
+# a real duplication of the CONCEPT and is recorded as an open ruling in
+# MUSAEUS_TODO.md (M-16) rather than hidden.
+#
+# The marker below must be on the line IMMEDIATELY above the match --
+# semgrep reads only that one line, so a marker at the top of an explanation
+# block is not seen at all. Found the same day, by the guard failing.
+# nosemgrep: article-strip-regex-outside-artist-form -- see the note above
 _ARTICLE_RE = re.compile(
     r"^(the|a|an|le|la|les|el|los|de|het|een|die|das|ein|eine)\s+",
     re.IGNORECASE,
