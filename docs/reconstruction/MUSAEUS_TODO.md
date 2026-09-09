@@ -590,10 +590,38 @@ rather than the environment, and treats empty output as an error.
 
 | id | state | what it costs |
 |---|---|---|
-| **M-06** | open, CONFIRMED | `MUSAEUS_FORCE_REENCODE=0` turns force-reencode **on** — `bool("0")` is True. Setting it to `0`/`false`/`no` to *disable* the override triggers a full 10,545-file re-encode. Verified 2026-09-08. Worth grepping both repos for the pattern. |
-| **M-07** | open, CONFIRMED | a comment tells the operator to use `--force`; the script defines no such flag, and never names the env var that does work. |
-| **M-08** | open, CONFIRMED | three ffprobe helpers dropped the `timeout=30` their sibling in the same file uses. ffprobe blocks for ever on a truncated container — exactly this code's input — and with `MAX_WORKERS = 4`, four such files hang the build silently. |
+| **M-06** | **FIXED** | `MUSAEUS_FORCE_REENCODE=0` turns force-reencode **on** — `bool("0")` is True. Setting it to `0`/`false`/`no` to *disable* the override triggers a full 10,545-file re-encode. Verified 2026-09-08. Worth grepping both repos for the pattern. |
+| **M-07** | **FIXED** | a comment tells the operator to use `--force`; the script defines no such flag, and never names the env var that does work. |
+| **M-08** | **FIXED** | three ffprobe helpers dropped the `timeout=30` their sibling in the same file uses. ffprobe blocks for ever on a truncated container — exactly this code's input — and with `MAX_WORKERS = 4`, four such files hang the build silently. |
 | **M-12** | open, PLAUSIBLE | `-ar` and `-ac` are dropped whenever the probe returns None, producing the unpinned encode the docstring warns about (a 44.1 kHz master emerged as 96 kHz AAC, measured 2026-08-31). Refuse the file instead. |
+
+
+**M-06 / M-07 / M-08 (2026-09-08), fixed together — one file, one shape.**
+Each is the code and the operator disagreeing about what it does.
+
+- **M-06** — `bool(os.environ.get(...))` tests *presence*, and `bool("0")` is
+  True. Setting `MUSAEUS_FORCE_REENCODE` to `0`, `false` or `no` — the three
+  spellings anyone reaches for to turn an override off — re-encoded all
+  10,545 files. Now `_env_flag()` reads the value; worth grepping both repos
+  for the pattern.
+- **M-07** — a comment named a `--force` flag the script has never defined,
+  so following it produced an argparse error while the control that works
+  went unnamed. **A wrong instruction costs more than a missing one.** A test
+  now parses the real `add_argument` calls and refuses any comment naming a
+  flag that is not among them.
+- **M-08** — `probe_sample_rate`, `probe_channels` and `_probe_duration`
+  dropped the `timeout=30` their sibling `_probe` has always carried. ffprobe
+  blocks for ever on a truncated container, which is this script's diet, and
+  with `MAX_WORKERS = 4` four such files exhaust the pool and the build stops
+  with no output and no error. **A hang is the worst failure available: it
+  looks like slow progress.** Every helper is now asserted to have a deadline,
+  per-helper, so a new one cannot be added without one.
+
+**The M-07 test caught my own fix.** My first replacement comment explained
+the history and named `--force` while doing it — so the guard flagged it,
+correctly. The history moved to git and this file; the comment now only says
+what works. That is the right division: a comment's job is to instruct, not
+to narrate.
 
 ### Tier 4 — documentation
 

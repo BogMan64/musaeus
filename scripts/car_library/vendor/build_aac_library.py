@@ -124,7 +124,25 @@ FFPROBE = "ffprobe"
 
 MAX_WORKERS = 4
 OVERWRITE = True
-FORCE_REENCODE = bool(os.environ.get("MUSAEUS_FORCE_REENCODE"))
+def _env_flag(name: str) -> bool:
+    """Read a boolean environment variable by its VALUE, not its presence.
+
+    M-06, 2026-09-08. This was `bool(os.environ.get(name))`, which tests
+    whether the variable is set at all. `bool("0")` is True, so anyone
+    setting MUSAEUS_FORCE_REENCODE=0 -- or `false`, or `no` -- to turn the
+    override OFF turned it ON, and re-encoded all 10,545 files instead of
+    none. The one spelling that disabled it was unsetting it entirely, which
+    is the one an operator reaches for last.
+
+    Worth grepping both repos for the pattern rather than fixing only here.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return False
+    return raw.strip().lower() not in ("", "0", "false", "no", "off")
+
+
+FORCE_REENCODE = _env_flag("MUSAEUS_FORCE_REENCODE")
 
 # ffprobe blocks indefinitely on a truncated container -- precisely this
 # script's input. _probe has carried a timeout since it was written; the
@@ -456,7 +474,7 @@ def probe_sample_rate(file_path: Path) -> int | None:
     proc = subprocess.run(
         [FFPROBE, "-v", "error", "-select_streams", "a:0",
          "-show_entries", "stream=sample_rate", "-of", "csv=p=0", str(file_path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SEC,
     )
     raw = (proc.stdout or "").strip().splitlines()
     if proc.returncode != 0 or not raw:
@@ -476,7 +494,7 @@ def probe_channels(file_path: Path) -> int | None:
     proc = subprocess.run(
         [FFPROBE, "-v", "error", "-select_streams", "a:0",
          "-show_entries", "stream=channels", "-of", "csv=p=0", str(file_path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SEC,
     )
     raw = (proc.stdout or "").strip().splitlines()
     if proc.returncode != 0 or not raw:
@@ -656,7 +674,7 @@ def _probe_duration(path: Path) -> float | None:
     res = subprocess.run(
         [FFPROBE, "-v", "error", "-show_entries", "format=duration",
          "-of", "csv=p=0", str(path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SEC,
     )
     if res.returncode != 0:
         return None
@@ -707,7 +725,13 @@ def convert_one(file_path: Path, profile_name: str) -> str:
         # corrupt output would then be kept for ever, which is worse than
         # re-encoding it. It has to be a readable audio file whose duration
         # matches the source, which is the same thing _verify_bake asks of a
-        # fresh encode. --force re-encodes regardless.
+        # fresh encode. Set MUSAEUS_FORCE_REENCODE=1 to re-encode regardless.
+        #
+        # That environment variable is the only override this script has;
+        # it defines no flag for it. Until 2026-09-08 this comment named one
+        # that has never existed, so following it produced an argparse error
+        # while the control that works went unnamed (M-07). The history is in
+        # git and the TODO -- a comment's job is to say what works.
         if output_file.exists() and not FORCE_REENCODE:
             if _output_matches_source(file_path, output_file):
                 return f"SKIP DONE | {file_path.name} | already encoded"
