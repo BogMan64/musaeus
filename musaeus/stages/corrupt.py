@@ -283,13 +283,16 @@ def audio_relevant_stderr(stderr: str, audio_index: int | None) -> str:
             continue
         streamed = (_STREAM_DECODE_ERROR_RE.match(line)
                     or _PACKETS_BUFFERED_RE.match(line))
-        if streamed and audio_index is not None:
-            # `audio_index` is an INPUT stream index and these lines name an
-            # OUTPUT one. With no -map they agree, and where they do not the
-            # mismatch keeps the line rather than dropping it -- a false
-            # positive a human rules on, not a silent acquittal.
-            if int(streamed.group("idx")) != audio_index:
-                continue
+        # `audio_index` is an INPUT stream index and these lines name an
+        # OUTPUT one. With no -map they agree, and where they do not the
+        # mismatch keeps the line rather than dropping it -- a false
+        # positive a human rules on, not a silent acquittal.
+        if (
+            streamed
+            and audio_index is not None
+            and int(streamed.group("idx")) != audio_index
+        ):
+            continue
         kept.append(line)
     return "\n".join(kept)
 

@@ -139,10 +139,10 @@ def _want_replacement(ctx, path: Path, err: str) -> str | None:
     # with ffprobe actually running against a fixture file. The gain being
     # traded away is a sys.modules dict lookup per call, which is nothing
     # beside the CSV re-read this change actually removes.
+    from ..wanted_list import already_owned
     from .bpm import _tunemymusic_csv_has_track
     from .canonicalize import _append_tunemymusic_row
     from .scholar import ProbeError, _extract_meta, _probe
-    from ..wanted_list import already_owned
 
     try:
         meta = _extract_meta(_probe(path))

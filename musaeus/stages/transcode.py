@@ -53,7 +53,7 @@ from pathlib import Path
 from ..config import LOSSLESS_CODECS as _LOSSLESS_CODECS
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
-from .base import BaseStage, NO_VERIFICATION, StageError
+from .base import NO_VERIFICATION, BaseStage, StageError
 from .canonicalize import _has_attached_picture, _probe_streams
 
 logger = logging.getLogger(__name__)

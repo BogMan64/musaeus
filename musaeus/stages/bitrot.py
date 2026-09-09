@@ -96,7 +96,7 @@ from pathlib import Path
 from ..config import AUDIO_EXTENSIONS
 from ..context import RunContext, StageResult, elision
 from ..hasher import audio_hash, file_hash
-from .base import BaseStage, NO_VERIFICATION
+from .base import NO_VERIFICATION, BaseStage
 
 logger = logging.getLogger(__name__)
 

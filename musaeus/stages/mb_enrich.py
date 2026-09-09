@@ -33,10 +33,10 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 import re
 import time
 import urllib.error
+from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -49,7 +49,7 @@ from ..db import (
     open_mb_cache,
 )
 from ..network_policy import check as _network_check
-from .base import BaseStage, NO_VERIFICATION
+from .base import NO_VERIFICATION, BaseStage
 from .enrich import _clean_artist_for_lookup
 
 logger = logging.getLogger(__name__)

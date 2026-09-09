@@ -46,6 +46,7 @@ and it moves the file.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import shutil
@@ -255,10 +256,8 @@ class ClassicalComposerStage(BaseStage):
             for d in (album_dir, artist_dir):
                 if d is None or d in _PROTECTED_DIRS(ctx):
                     continue
-                try:
+                with contextlib.suppress(OSError):
                     d.rmdir()
-                except OSError:
-                    pass
 
         ctx.record_stage(result)
         return result

@@ -109,8 +109,8 @@ from pathlib import Path
 from . import __version__
 from .config import get_config
 from .context import RunContext, elision, head_with_remainder
-from .handoff import write_handoff_doc
 from .db import open_db, snapshot_db_before_wipe
+from .handoff import write_handoff_doc
 from .stages import (
     ARCHIVE_PIPELINE,
     DEFAULT_PIPELINE,

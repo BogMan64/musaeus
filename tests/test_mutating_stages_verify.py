@@ -19,9 +19,14 @@ import pytest
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db, upsert_archive
+from musaeus.stages import (
+    AuditorStage,
+    CorruptStage,
+    CuratorStage,
+    IntegrityStage,
+    VariousArtistsFixStage,
+)
 from musaeus.stages.base import NO_VERIFICATION
-from musaeus.stages import (AuditorStage, CorruptStage, CuratorStage,
-                            IntegrityStage, VariousArtistsFixStage)
 
 
 @pytest.fixture

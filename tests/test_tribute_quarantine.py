@@ -343,7 +343,7 @@ class TestTributeInTheTitle:
             ("Led Zepagain", "Whole Lotta Love - a Tribute to Led Zeppelin"),
         ):
             caught, reason = is_junk(artist, title, "")
-            assert caught, "%s / %s was not caught" % (artist, title)
+            assert caught, f"{artist} / {title} was not caught"
 
     def test_a_piano_cover_product_is_junk(self):
         assert is_junk("Piano Covers", "Nirvana - Heart Shaped Box - Piano Cover", "")[0]

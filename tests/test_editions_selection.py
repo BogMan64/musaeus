@@ -26,8 +26,16 @@ import sqlite3
 import pytest
 
 from musaeus.editions import (
-    CAR, IPHONE, LOSSLESS, DEFAULT_GENRE_PRIORITY, EditionSpec, Track,
-    estimated_bytes, genre_rank, load_tracks, output_path_for, select_edition,
+    CAR,
+    DEFAULT_GENRE_PRIORITY,
+    IPHONE,
+    LOSSLESS,
+    Track,
+    estimated_bytes,
+    genre_rank,
+    load_tracks,
+    output_path_for,
+    select_edition,
 )
 
 
@@ -48,8 +56,8 @@ def _add(c, path, *, artist="A", album="Al", title="T", genre="Rock",
 
 
 def _track(**kw) -> Track:
-    base = dict(file_path="/m/A/Al/t.m4a", artist="A", album="Al", title="T",
-                genre="Rock", duration=240.0, size_bytes=40_000_000)
+    base = {"file_path": "/m/A/Al/t.m4a", "artist": "A", "album": "Al", "title": "T",
+            "genre": "Rock", "duration": 240.0, "size_bytes": 40_000_000}
     base.update(kw)
     return Track(**base)
 

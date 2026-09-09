@@ -84,11 +84,10 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from ..artist_form import sort_form
+from ..canon.protected_artists import PROTECTED_ARTIST_NAMES
 from ..context import RunContext, StageResult
 from .base import BaseStage
 from .sanitize import SMART_QUOTE_MAP
-
-from ..canon.protected_artists import PROTECTED_ARTIST_NAMES
 
 logger = logging.getLogger(__name__)
 

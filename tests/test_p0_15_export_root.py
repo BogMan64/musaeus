@@ -25,8 +25,8 @@ test coverage at all. A NameError introduced into it passed the entire
 
 from __future__ import annotations
 
-import inspect
 import dataclasses
+import inspect
 import os
 import stat
 from pathlib import Path

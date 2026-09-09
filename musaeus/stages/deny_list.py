@@ -130,7 +130,7 @@ class DenyListStage(BaseStage):
         blocked = 0
         advisory = 0
         try:
-            for i, row in enumerate(rows, 1):
+            for row in rows:
                 result.files_processed += 1
                 entry = lookup_denied_hash(conn, row["audio_hash"])
                 if entry is None:

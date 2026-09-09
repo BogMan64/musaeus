@@ -35,7 +35,7 @@ from pathlib import Path
 
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
-from .base import BaseStage, NO_VERIFICATION, StageError
+from .base import NO_VERIFICATION, BaseStage, StageError
 
 logger = logging.getLogger(__name__)
 

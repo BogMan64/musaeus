@@ -23,10 +23,11 @@ import subprocess
 import sys
 import time
 
-import pytest
-
 from musaeus.idle_throttle import (
-    DEFAULT_IDLE_S, IdleThrottle, _descendants, available,
+    DEFAULT_IDLE_S,
+    IdleThrottle,
+    _descendants,
+    available,
 )
 
 

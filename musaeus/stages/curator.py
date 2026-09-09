@@ -30,6 +30,7 @@ import re
 import shutil
 from pathlib import Path
 
+from ..canon.protected_artists import PROTECTED_ARTIST_NAMES
 from ..context import RunContext, StageResult
 from ..exports import (
     ExportRootError,
@@ -38,8 +39,6 @@ from ..exports import (
     validate_export_root,
 )
 from .base import BaseStage, StageError
-
-from ..canon.protected_artists import PROTECTED_ARTIST_NAMES
 
 logger = logging.getLogger(__name__)
 

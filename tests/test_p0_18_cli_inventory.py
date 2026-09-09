@@ -17,8 +17,8 @@ cannot widen unnoticed; which of them to publish is Grey's call.
 
 from __future__ import annotations
 
-import inspect
 import argparse
+import inspect
 import re
 from pathlib import Path
 

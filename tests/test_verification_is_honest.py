@@ -30,9 +30,20 @@ from musaeus.stages.base import NO_VERIFICATION, BaseStage
 
 class TestSentinel:
     def test_no_verification_is_not_an_empty_list(self) -> None:
-        """The whole point: these must be distinguishable."""
-        assert NO_VERIFICATION is not []
+        """The whole point: these must be distinguishable.
+
+        This line used to read `assert NO_VERIFICATION is not []`, which is a
+        tautology: `[]` builds a fresh object every time, so `x is not []` is
+        True whatever x is — including if someone redefined the sentinel *as*
+        an empty list, which is the one thing this test exists to catch. An
+        assertion that cannot fail, guarding the exact distinction the module
+        docstring above is about. Found by ruff F632, 2026-09-08.
+
+        The `!=` below is the assertion that does the work, and the isinstance
+        check states the contract directly rather than by consequence.
+        """
         assert NO_VERIFICATION != []
+        assert not isinstance(NO_VERIFICATION, list)
 
     def test_it_is_falsy_so_careless_checks_still_read_as_no_problems(self) -> None:
         """`if problems:` must not treat "did not look" as "found faults"."""

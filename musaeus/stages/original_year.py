@@ -55,7 +55,7 @@ from datetime import datetime, timezone
 from ..brackets import CLOSE, OPEN, strip_bracketed
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
-from .base import BaseStage, NO_VERIFICATION
+from .base import NO_VERIFICATION, BaseStage
 from .enrich import _clean_artist_for_lookup
 from .mb_enrich import _mb_get, _same_artist
 

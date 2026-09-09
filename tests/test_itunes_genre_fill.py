@@ -109,7 +109,7 @@ class TestUnknownArtists:
     def test_results_are_ordered_by_track_count(self, vault):
         _add(vault, "Small", "Rock")
         for i in range(3):
-            _add(vault, "Big", "Rock", title="t%d" % i)
+            _add(vault, "Big", "Rock", title=f"t{i}")
         assert [a for a, _ in unknown_artists(vault)] == ["Big", "Small"]
 
 

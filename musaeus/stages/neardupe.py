@@ -40,9 +40,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from pathlib import Path
 import re
 import unicodedata
+from pathlib import Path
 
 try:
     from rapidfuzz import fuzz

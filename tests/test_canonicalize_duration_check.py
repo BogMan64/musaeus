@@ -80,7 +80,6 @@ class TestImplementationShape:
     def test_duration_is_read_from_the_audio_stream_not_the_container(self) -> None:
         """The container's duration is frequently intact on a truncated
         file — that is precisely why those four masters were invisible."""
-        from pathlib import Path
         src = inspect.getsource(canonicalize_mod)
         block = src[src.index("conversion truncated the audio") - 1600:
                     src.index("conversion truncated the audio")]
@@ -88,12 +87,10 @@ class TestImplementationShape:
         assert "streams" in block
 
     def test_the_recorded_duration_is_selected_by_the_sample_query(self) -> None:
-        from pathlib import Path
         src = inspect.getsource(canonicalize_mod)
         assert "SELECT a.file_path, a.audio_hash, a.duration" in src
 
     def test_a_missing_recorded_duration_does_not_raise_a_false_alarm(self) -> None:
         """Nothing to compare against is not evidence of truncation."""
-        from pathlib import Path
         src = inspect.getsource(canonicalize_mod)
         assert "if recorded and recorded > 0:" in src

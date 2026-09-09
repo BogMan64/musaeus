@@ -18,18 +18,18 @@ said so.
 
 from __future__ import annotations
 
-import inspect
 import contextlib
+import inspect
 import sqlite3
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from musaeus.state import duplicates as duplicates_mod
-from musaeus.stages import acousticid as acousticid_mod
 from musaeus.db import open_db
 from musaeus.network_policy import NetworkPolicy, get_gateway
+from musaeus.stages import acousticid as acousticid_mod
+from musaeus.state import duplicates as duplicates_mod
 from musaeus.state.duplicates import (
     DECISION_PENDING,
     DETECTOR_ACOUSTID,

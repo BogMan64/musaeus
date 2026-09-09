@@ -47,8 +47,8 @@ def conn() -> sqlite3.Connection:
 
 
 def _add(c, path, **kw):
-    d = dict(artist="A", title="T", status="CATALOGUED", duration=300.0,
-             size_bytes=100_000_000, sample_rate=44100, codec="alac")
+    d = {"artist": "A", "title": "T", "status": "CATALOGUED", "duration": 300.0,
+         "size_bytes": 100_000_000, "sample_rate": 44100, "codec": "alac"}
     d.update(kw)
     c.execute("INSERT INTO archive (file_path,artist,title,status,duration,"
               "size_bytes,sample_rate,codec) VALUES (?,?,?,?,?,?,?,?)",

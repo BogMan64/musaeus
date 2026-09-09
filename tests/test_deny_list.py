@@ -17,15 +17,14 @@ owner's library would be far worse than a re-ingest slipping through).
 from __future__ import annotations
 
 from pathlib import Path
-
 from unittest.mock import MagicMock
-from musaeus.stages.deny_list import _ADVISORY_REASONS
+
 import pytest
 
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import deny_hash, ensure_deny_list, open_db, open_hash_index, upsert_archive
-from musaeus.stages.deny_list import DenyListStage
+from musaeus.stages.deny_list import _ADVISORY_REASONS, DenyListStage
 
 
 @pytest.fixture
