@@ -29,10 +29,12 @@ from musaeus.stages.corrupt import (
 @pytest.fixture
 def track(tmp_path):
     """A file big enough that check 1 (size vs duration) never fires."""
+
     def _make(name: str, kib: int = 4096):
         p = tmp_path / name
         p.write_bytes(b"\0" * (kib * 1024))
         return p
+
     return _make
 
 
@@ -75,7 +77,10 @@ class TestRelativeToASibling:
         title cannot override."""
         suspect, _ = check_file(
             track("Elvis Presley - Can't Help Falling in Love (Epic intro).m4a"),
-            "alac", 21.0, 177.0)
+            "alac",
+            21.0,
+            177.0,
+        )
         assert suspect
 
     def test_no_sibling_means_no_opinion(self, track):
@@ -124,25 +129,67 @@ class TestLongestSibling:
 
     def _map(self, artist, title, seconds):
         from musaeus.doctor import song_key
+
         return {song_key(artist, title): seconds}
 
     def test_the_only_copy_has_no_sibling(self):
         from musaeus.stages.corrupt import _longest_sibling
+
         row = {"artist": "A", "title": "T", "duration": 300.0}
         assert _longest_sibling(row, self._map("A", "T", 300.0)) == 0.0
 
     def test_a_longer_copy_is_a_sibling(self):
         from musaeus.stages.corrupt import _longest_sibling
+
         row = {"artist": "A", "title": "T", "duration": 20.0}
         assert _longest_sibling(row, self._map("A", "T", 300.0)) == 300.0
 
     def test_an_unknown_recording_has_no_sibling(self):
         from musaeus.stages.corrupt import _longest_sibling
+
         row = {"artist": "A", "title": "T", "duration": 20.0}
         assert _longest_sibling(row, {}) == 0.0
 
     def test_a_row_with_no_duration_is_safe(self):
         """duration can be NULL; `or 0.0` must hold or this raises."""
         from musaeus.stages.corrupt import _longest_sibling
+
         row = {"artist": "A", "title": "T", "duration": None}
         assert _longest_sibling(row, self._map("A", "T", 300.0)) == 300.0
+
+
+# ── P0-G: the keyword exemption must see the row's title ─────────────────────
+#
+# check_file() read `path.stem` and nothing else. MUSAEUS names organised
+# files "Artist - Title.m4a", so the exemption worked for anything already
+# filed -- and failed for everything still carrying its arrival name. A
+# 30-second track named "01 - track01.m4a" whose row says "Intro" lost its
+# exemption and was physically MOVED to QUARANTINE.
+#
+# Two months of arrivals pass through INBOX with supplier filenames. The
+# exemption existed precisely so that intros, outros and reprises are not
+# treated as damage, and it was switched off for exactly the files least
+# likely to be named helpfully.
+
+
+def test_the_row_title_earns_the_exemption_when_the_filename_cannot(track) -> None:
+    from musaeus.stages.corrupt import check_file
+
+    suspect, reason = check_file(track("01 - track01.m4a"), "alac", 30.0, title="Intro")
+    assert not suspect, reason
+
+
+def test_a_helpful_filename_still_works_on_its_own(track) -> None:
+    """The organised case, unchanged."""
+    from musaeus.stages.corrupt import check_file
+
+    suspect, _ = check_file(track("Band - Song (intro).m4a"), "alac", 30.0)
+    assert not suspect
+
+
+def test_a_short_track_with_no_keyword_anywhere_is_still_flagged(track) -> None:
+    """The exemption must not become 'never flag anything'."""
+    from musaeus.stages.corrupt import check_file
+
+    suspect, reason = check_file(track("01 - track01.m4a"), "alac", 30.0, title="Some Song")
+    assert suspect and "suspiciously short" in reason

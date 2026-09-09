@@ -35,6 +35,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
@@ -435,10 +436,36 @@ class TributeQuarantineStage(BaseStage):
                 result.errors.append(f"{source.name}: {exc}")
                 continue
 
-            ctx.conn.execute(
-                "UPDATE archive SET status = 'TRIBUTE_REVIEW', file_path = ? WHERE id = ?",
-                (str(target), row["id"]),
-            )
+            # archive.file_path is UNIQUE, so this UPDATE can raise
+            # IntegrityError when another row already holds the destination.
+            # IntegrityError is not an OSError, so the handler above never saw
+            # it: the exception escaped mid-loop with the file already moved,
+            # leaving disk and database disagreeing and -- because the
+            # manifest is written after the loop -- no restore script at all.
+            # Reported as P0-D on 2026-09-09. Revert the move so the two stay
+            # in step; if the revert also fails, say so loudly rather than
+            # continuing quietly.
+            try:
+                ctx.conn.execute(
+                    "UPDATE archive SET status = 'TRIBUTE_REVIEW', file_path = ? WHERE id = ?",
+                    (str(target), row["id"]),
+                )
+            except sqlite3.IntegrityError as exc:
+                try:
+                    shutil.move(str(target), str(source))
+                    note = "move reverted"
+                except OSError as revert_exc:
+                    note = (
+                        f"COULD NOT REVERT -- {source.name} is at {target} on "
+                        f"disk while its row still points at {source}; needs a "
+                        f"manual fix ({revert_exc})"
+                    )
+                logger.error(
+                    "[%s] DB collision for %s -> %s (%s); %s", self.NAME, source, target, exc, note
+                )
+                result.files_errored += 1
+                result.errors.append(f"{source.name}: DB collision, {note}")
+                continue
             ctx.log_event(
                 "TRIBUTE_QUARANTINED",
                 file_path=str(target),
@@ -447,10 +474,15 @@ class TributeQuarantineStage(BaseStage):
                 stage=self.NAME,
                 note=reason,
             )
-            moved.append({
-                "source": str(source), "destination": str(target), "reason": reason,
-                "artist": row.get("artist") or "", "title": row.get("title") or "",
-            })
+            moved.append(
+                {
+                    "source": str(source),
+                    "destination": str(target),
+                    "reason": reason,
+                    "artist": row.get("artist") or "",
+                    "title": row.get("title") or "",
+                }
+            )
             result.files_changed += 1
             logger.info("[tribute-quarantine] %s -> %s (%s)", source, target, reason)
 
