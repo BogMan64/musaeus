@@ -49,11 +49,23 @@ class TestTheFlag:
         assert _batch_folders_enabled() is True
 
 
+class _Cfg:
+    def __init__(self, meta_dir: Path) -> None:
+        self.meta_dir = meta_dir
+
+
 class _Ctx:
-    """The two attributes _target_path actually touches."""
+    """The attributes _target_path actually touches.
+
+    `config.meta_dir` joined the list when filing names landed: the stage
+    reads MetaData/artist_filing.tsv to decide the folder. Pointing it at
+    an empty tmp_path keeps these tests about batch folders -- with no
+    filing file, every artist is filed under their own tag.
+    """
 
     def __init__(self, lib: Path) -> None:
         self.alac_library = lib
+        self.config = _Cfg(lib.parent / "MetaData")
         self._d: dict = {}
 
     def get(self, key, default=None):

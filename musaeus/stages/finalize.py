@@ -89,6 +89,8 @@ from pathlib import Path
 
 from ..context import RunContext, StageResult, elision
 from ..db import open_hash_index, record_finalized_hash
+from ..filing import folder_for
+from ..filing import load as filing_load
 from ..safety.mutation import MutationBoundary, PreconditionError, UnmanagedPathError
 from ..safety.recovery import (
     JOURNAL_FILENAME,
@@ -318,13 +320,32 @@ class FinalizeStage(BaseStage):
 
         return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
 
+    def _filing(self, ctx: RunContext) -> dict[str, str]:
+        """MetaData/artist_filing.tsv, loaded once per run.
+
+        Cached on the context rather than the stage: a stage instance is
+        cheap and short-lived, and re-reading the file per track would make
+        a 16,000-file run do 16,000 opens for a map that cannot change
+        mid-run.
+        """
+        cached = ctx.get("_artist_filing")
+        if cached is None:
+            loaded: dict[str, str] = filing_load(ctx.config.meta_dir)
+            ctx.set("_artist_filing", loaded)
+            return loaded
+        return dict(cached)
+
     def _target_path(self, ctx: RunContext, row: dict, source: Path) -> Path:
         artist = row.get("artist") or "Unknown Artist"
         album = row.get("album") or "Unsorted"
         title = row.get("title") or "Unknown Title"
 
+        # The FILENAME keeps the full credit; only the FOLDER is filed under
+        # the shorter name. Grey looks for the artist by folder and reads the
+        # credit on the track, so collapsing both would lose information the
+        # tag is carrying on purpose.
         new_filename = build_track_filename(artist, title, source.suffix)
-        artist_safe = sanitize_path_component(artist)
+        artist_safe = sanitize_path_component(folder_for(artist, self._filing(ctx)))
         album_safe = sanitize_path_component(album)
 
         batch = self._batch_date(ctx)
