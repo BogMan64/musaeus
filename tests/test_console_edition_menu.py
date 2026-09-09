@@ -71,8 +71,10 @@ class TestEditionMenu:
     ) -> None:
         _seed(cfg)
         con = _console(cfg)
-        # iphone additionally prompts for a budget; a blank answer is valid.
-        responses = iter([str(idx), ""])
+        # iphone additionally prompts for a budget (blank is valid) and then
+        # offers to build. Declining that offer is what keeps this a preview,
+        # so the third answer is deliberately not "BUILD".
+        responses = iter([str(idx), "", "no"])
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
 
         before = sorted(p.name for p in Path(cfg.vault_root).rglob("*") if p.is_file())
@@ -96,7 +98,7 @@ class TestEditionMenu:
         library does not go into a 30 GB phone."""
         _seed(cfg)
         con = _console(cfg)
-        responses = iter(["2", "0.02"])  # 20 MB: fits some, not all
+        responses = iter(["2", "0.02", "no"])  # 20 MB: fits some, not all
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
         con._edition_menu()
         out = capsys.readouterr().out

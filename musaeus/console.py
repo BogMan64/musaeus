@@ -1149,10 +1149,68 @@ class Console:
                 "Lowest-priority genres are dropped first."
             )
 
-        _info("Selection only — nothing was encoded or written.")
+        _info("Selection only — nothing has been encoded or written yet.")
+
+        # The build is offered here for the iPhone edition and NOT for the
+        # others, and the asymmetry is the point.
+        #
+        # A budgeted iPhone edition is a few thousand tracks and a couple of
+        # hours. The Car edition is ~10,500 tracks and roughly 44 hours, and
+        # Lossless is a bake over the whole library. Putting a 44-hour job
+        # behind a single menu keystroke is how someone starts one by
+        # mis-typing, and this console is the friendlier of the two routes --
+        # so it is the likelier place for that to happen.
+        #
+        # Added 2026-09-09 on Grey's ruling. The preview above stays the
+        # default answer; building is a second, explicit decision.
+        if spec.name != "iphone":
+            _info(
+                "To build it, run the builder for that edition; both pause "
+                "while you use the machine."
+            )
+            return
+
+        if not sel.included:
+            _warn("Nothing selected — there is nothing to build.")
+            return
+
+        hours = max(1, round(len(sel.included) * 2.2 / 3600))
         _info(
-            "To build it, run the builder for that edition; both pause while you use the machine."
+            f"Building would encode {len(sel.included):,} track(s) — roughly "
+            f"{hours} hour(s). It pauses while you use the machine, and it "
+            f"resumes if interrupted."
         )
+        if _prompt("Build it now? Type BUILD to confirm").strip() != "BUILD":
+            _info("Not built. The selection above is unchanged.")
+            return
+
+        import subprocess
+        import sys
+
+        builder = (
+            Path(__file__).resolve().parent.parent
+            / "scripts"
+            / "car_library"
+            / "build_car_library.py"
+        )
+        if not builder.exists():
+            _err(f"Builder not found at {builder}")
+            return
+
+        cmd = [sys.executable, str(builder), "--from-catalogue", "--edition", "iphone", "--no-mask"]
+        if budget:
+            cmd += ["--budget-gb", str(budget / 1_000_000_000)]
+        _info("Running: " + " ".join(cmd[1:]))
+        _info("Ctrl-C stops it; already-encoded files are kept and skipped next time.")
+        try:
+            rc = subprocess.run(cmd).returncode
+        except KeyboardInterrupt:
+            _warn("Stopped. Encoded files are kept; re-run to continue.")
+            return
+        if rc == 0:
+            _ok("iPhone edition built.")
+        else:
+            _err(f"Builder exited {rc} — see the output above.")
 
     def _usb_menu(self) -> None:
         """Front door to scripts/usb_transfer/transfer_to_usb.py.
