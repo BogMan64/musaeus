@@ -42,6 +42,7 @@ Pipeline commands:
     acousticid       Acoustic fingerprint dedup via fpcalc + AcousticID API
     transcode        Lossless → 256k AAC export via ffmpeg
     report           Dashboard: library stats, genre/bitrate breakdown
+    convergence      Did the last pass change less than the one before?
     upgrade-check    Find lossy tracks where a lossless version exists
 
 Review commands:
@@ -88,6 +89,9 @@ Examples:
     musaeus transcode --export-root /mnt/USB/AAC
     musaeus report
     musaeus report --json
+    musaeus convergence
+    musaeus convergence --runs 10
+    musaeus convergence --oscillations
     musaeus upgrade-check
     musaeus upgrade-check --csv
     musaeus dedupe
@@ -1388,6 +1392,14 @@ def _build_parser() -> argparse.ArgumentParser:
     neardupe_p.add_argument("--dry-run", action="store_true", help="Show matches without staging")
 
     # report
+    conv_p = sub.add_parser(
+        "convergence",
+        help="Did the last pass change less than the one before? (read-only)",
+    )
+    conv_p.add_argument("--runs", type=int, default=5, help="how many pipeline runs to compare")
+    conv_p.add_argument("--oscillations", action="store_true", help="only the loop detector")
+    conv_p.add_argument("--csv", metavar="PATH", help="write oscillating files to a CSV")
+
     report_p = sub.add_parser("report", help="Dashboard: library stats, genre/bitrate breakdown")
     report_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
     report_p.add_argument("--wide", action="store_true", help="Use wider terminal columns (100)")
@@ -1903,6 +1915,23 @@ def main() -> None:
 
         elif command == "neardupe":
             sys.exit(_run_pipeline([NearDupeStage], dry_run=dry_run))
+
+        elif command == "convergence":
+            # The front door for Grey's run-until-it-settles plan. A script
+            # nobody remembers the path to is a script nobody runs, which is
+            # the same argument that put the iPhone build in the console.
+            import runpy
+
+            sys.argv = ["convergence_report.py", "--runs", str(args.runs)]
+            if getattr(args, "oscillations", False):
+                sys.argv.append("--oscillations")
+            if getattr(args, "csv", None):
+                sys.argv += ["--csv", args.csv]
+            runpy.run_path(
+                str(Path(__file__).resolve().parent.parent / "scripts" / "convergence_report.py"),
+                run_name="__main__",
+            )
+            sys.exit(0)
 
         elif command == "report":
             import json as _json
