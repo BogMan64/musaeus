@@ -27,18 +27,20 @@ from musaeus.stages.genre_validate import GenreValidateStage
 @pytest.fixture
 def ctx(tmp_path) -> RunContext:
     cfg = MusicConfig(
-        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-        quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
-        meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+        vault_root=tmp_path,
+        inbox=tmp_path / "INBOX",
+        staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "QUARANTINE",
+        runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "ALAC-Library",
         db_path=tmp_path / "musaeus.db",
     )
     cfg.meta_dir.mkdir(parents=True, exist_ok=True)
     (cfg.meta_dir / "Genre_Allowed.txt").write_text(
         "# vocabulary\nAlternative\nRock\nPop\nClassical\n", encoding="utf-8"
     )
-    (cfg.meta_dir / "Genre_Canonical_Map.txt").write_text(
-        "Pop Rock => Pop\n", encoding="utf-8"
-    )
+    (cfg.meta_dir / "Genre_Canonical_Map.txt").write_text("Pop Rock => Pop\n", encoding="utf-8")
     (cfg.meta_dir / "MasterLaw.csv").write_bytes(
         b"artist,genre\r\nBarenaked Ladies,Alternative\r\nNobody In Law,Rock\r\n"
     )
@@ -48,8 +50,16 @@ def ctx(tmp_path) -> RunContext:
 def _track(ctx, artist, genre, name="t.m4a"):
     p = ctx.config.alac_library / name
     p.parent.mkdir(parents=True, exist_ok=True)
-    upsert_archive(ctx.conn, {"file_path": str(p), "status": "CATALOGUED",
-                              "artist": artist, "title": "T", "genre": genre})
+    upsert_archive(
+        ctx.conn,
+        {
+            "file_path": str(p),
+            "status": "CATALOGUED",
+            "artist": artist,
+            "title": "T",
+            "genre": genre,
+        },
+    )
     ctx.conn.commit()
 
 

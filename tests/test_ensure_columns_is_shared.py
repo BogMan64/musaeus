@@ -1,4 +1,4 @@
-'''One way to add a column, and a guard that keeps it that way.
+"""One way to add a column, and a guard that keeps it that way.
 
 Nine modules had written the same eight-line function -- integrity,
 mb_enrich, transcode, original_year, identity_tag, acousticid, auditor,
@@ -15,7 +15,7 @@ reading, not the choice).
 The last test here is the one that matters. Every other fix this session
 removed duplication that had already happened; this one makes the next
 copy fail CI instead of waiting to be noticed.
-'''
+"""
 
 from __future__ import annotations
 
@@ -128,12 +128,12 @@ def test_only_db_may_alter_a_table() -> None:
                 sql = node.value
             elif isinstance(node, ast.JoinedStr):
                 sql = "".join(
-                    v.value for v in node.values
+                    v.value
+                    for v in node.values
                     if isinstance(v, ast.Constant) and isinstance(v.value, str)
                 )
             if sql and "ALTER TABLE" in sql.upper() and "ADD COLUMN" in sql.upper():
                 offenders.append(f"{path.relative_to(_ROOT)}:{node.lineno}")
     assert not offenders, (
-        "ALTER TABLE ... ADD COLUMN outside db.py — use db.ensure_columns "
-        f"instead: {offenders}"
+        f"ALTER TABLE ... ADD COLUMN outside db.py — use db.ensure_columns instead: {offenders}"
     )

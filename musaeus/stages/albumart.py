@@ -70,6 +70,8 @@ def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
             ("art_px", "INTEGER"),
         ),
     )
+
+
 def _embedded_art(path: str) -> tuple[bool, int]:
     """(has_art, longest_edge_px) for the file's embedded cover.
 
@@ -191,7 +193,6 @@ def _embed_art(audio_path: str, art_path: Path) -> bool:
 # ── Stage ─────────────────────────────────────────────────────────────────────
 
 
-
 def _fetch_sidecar(ctx: RunContext, fp: str, result: StageResult) -> Path | None:
     """Fetch cover art from the network and drop it beside the file.
 
@@ -201,9 +202,7 @@ def _fetch_sidecar(ctx: RunContext, fp: str, result: StageResult) -> Path | None
     """
     from ..art_sources import ArtUnavailable, fetch_album_art
 
-    row = ctx.conn.execute(
-        "SELECT artist, album FROM archive WHERE file_path=?", (fp,)
-    ).fetchone()
+    row = ctx.conn.execute("SELECT artist, album FROM archive WHERE file_path=?", (fp,)).fetchone()
     if row is None:
         return None
     artist = str(row["artist"] or "").strip()
@@ -229,7 +228,10 @@ def _fetch_sidecar(ctx: RunContext, fp: str, result: StageResult) -> Path | None
         return None
 
     ctx.log_event(
-        "ART_FETCHED", file_path=fp, new_value=source, stage="albumart",
+        "ART_FETCHED",
+        file_path=fp,
+        new_value=source,
+        stage="albumart",
         note=describe(blob),
     )
     logger.info("[albumart] fetched %s from %s for %s", describe(blob), source, Path(fp).name)
@@ -248,9 +250,7 @@ def _replace_undersized(
     """
     from ..art_sources import ArtUnavailable, fetch_album_art
 
-    row = ctx.conn.execute(
-        "SELECT artist, album FROM archive WHERE file_path=?", (fp,)
-    ).fetchone()
+    row = ctx.conn.execute("SELECT artist, album FROM archive WHERE file_path=?", (fp,)).fetchone()
     if row is None:
         return None
     artist = str(row["artist"] or "").strip()
@@ -259,8 +259,12 @@ def _replace_undersized(
         return None
 
     try:
-        got = fetch_album_art(artist, album, ctx.config.lastfm_api_key or "",
-                              min_edge=max(current_px + 1, MIN_EDGE_PX))
+        got = fetch_album_art(
+            artist,
+            album,
+            ctx.config.lastfm_api_key or "",
+            min_edge=max(current_px + 1, MIN_EDGE_PX),
+        )
     except ArtUnavailable as exc:
         logger.debug("[albumart] could not ask for %r/%r: %s", artist, album, exc)
         return None
@@ -271,16 +275,29 @@ def _replace_undersized(
     dims = image_dimensions(blob)
     new_px = max(dims) if dims else 0
     if new_px <= current_px:
-        logger.debug("[albumart] %s offered %dpx for %s, not better than %dpx",
-                     source, new_px, Path(fp).name, current_px)
+        logger.debug(
+            "[albumart] %s offered %dpx for %s, not better than %dpx",
+            source,
+            new_px,
+            Path(fp).name,
+            current_px,
+        )
         return None
 
     ctx.log_event(
-        "ART_UPGRADED", file_path=fp, old_value=f"{current_px}px",
-        new_value=f"{new_px}px from {source}", stage="albumart",
+        "ART_UPGRADED",
+        file_path=fp,
+        old_value=f"{current_px}px",
+        new_value=f"{new_px}px from {source}",
+        stage="albumart",
     )
-    logger.info("[albumart] upgrading %s: %dpx -> %s from %s",
-                Path(fp).name, current_px, describe(blob), source)
+    logger.info(
+        "[albumart] upgrading %s: %dpx -> %s from %s",
+        Path(fp).name,
+        current_px,
+        describe(blob),
+        source,
+    )
     return blob
 
 
@@ -323,9 +340,7 @@ class AlbumArtStage(BaseStage):
             return []
 
         artless = [
-            Path(r["file_path"]).name
-            for r in checked
-            if not _has_embedded_art(r["file_path"])
+            Path(r["file_path"]).name for r in checked if not _has_embedded_art(r["file_path"])
         ]
         if not artless:
             return []
@@ -362,8 +377,9 @@ class AlbumArtStage(BaseStage):
         force = ctx.get("albumart_force", False)
         # Replacing a too-small cover reaches the network and rewrites audio,
         # so it is live-run only, exactly like the missing-art fetch.
-        replace_small = ctx.get("albumart_replace_small", True) and not dry_run \
-            and bool(shutil.which("ffmpeg"))
+        replace_small = (
+            ctx.get("albumart_replace_small", True) and not dry_run and bool(shutil.which("ffmpeg"))
+        )
         embed = ctx.get("albumart_embed", True) and not dry_run and shutil.which("ffmpeg")
 
         try:
@@ -408,8 +424,7 @@ class AlbumArtStage(BaseStage):
 
             if not dry_run:
                 ctx.conn.execute(
-                    "UPDATE archive SET has_art=?, art_checked_at=?, art_px=? "
-                    "WHERE file_path=?",
+                    "UPDATE archive SET has_art=?, art_checked_at=?, art_px=? WHERE file_path=?",
                     (1 if has else 0, now, art_px or None, fp),
                 )
 
@@ -438,8 +453,7 @@ class AlbumArtStage(BaseStage):
                                 )
                             else:
                                 embed_failed.append(fp)
-                                logger.warning("[albumart] upgrade embed failed: %s",
-                                               Path(fp).name)
+                                logger.warning("[albumart] upgrade embed failed: %s", Path(fp).name)
             else:
                 missing_art.append(fp)
                 # Try sidecar embed

@@ -55,7 +55,7 @@ from datetime import datetime, timezone
 from ..brackets import CLOSE, OPEN, strip_bracketed
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
-from .base import NO_VERIFICATION, BaseStage
+from .base import NO_VERIFICATION, BaseStage, VerifyResult
 from .enrich import _clean_artist_for_lookup
 from .mb_enrich import _mb_get, _same_artist
 
@@ -86,6 +86,7 @@ _TRANSIENT = "lookup error:"
 def is_transient(reason: str) -> bool:
     """True when a miss was the network's fault and is worth retrying."""
     return reason.startswith(_TRANSIENT)
+
 
 # Parenthetical/bracketed markers that describe the *edition*, not the
 # recording. Stripped before searching so "California Girls (Stereo)" and
@@ -272,6 +273,8 @@ def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
             ("original_year_checked_at", "TEXT"),
         ),
     )
+
+
 class OriginalYearStage(BaseStage):
     """
     Fill `original_year` from MusicBrainz for catalogued tracks.
@@ -400,7 +403,7 @@ class OriginalYearStage(BaseStage):
         ctx.record_stage(result)
         return result
 
-    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> VerifyResult:
         """Assert the promise this stage makes: it adds a fact, it destroys none.
 
         The post-condition that matters is about the column this stage does
@@ -415,8 +418,7 @@ class OriginalYearStage(BaseStage):
         # erroring check degrades silently to no check at all, which is the
         # failure this whole mechanism exists to prevent.
         cols = {r[1] for r in ctx.conn.execute("PRAGMA table_info(archive)")}
-        if not {"original_year", "original_year_source",
-                "original_year_checked_at"} <= cols:
+        if not {"original_year", "original_year_source", "original_year_checked_at"} <= cols:
             return NO_VERIFICATION
 
         problems: list[str] = []
@@ -439,9 +441,7 @@ class OriginalYearStage(BaseStage):
             "AND trim(year) != '' AND CAST(original_year AS INTEGER) > CAST(year AS INTEGER)"
         ).fetchone()[0]
         if impossible:
-            problems.append(
-                f"{impossible} row(s) carry an original_year later than their own year"
-            )
+            problems.append(f"{impossible} row(s) carry an original_year later than their own year")
 
         # A row that was written must carry both the value and its provenance;
         # a half-written row is the silent-no-op shape in a new costume.

@@ -244,21 +244,25 @@ class TestVerifyEffectChecksTheCanonWasApplied:
 
     def _row(self, ctx, artist):
         from musaeus.db import upsert_archive
+
         p = ctx.config.alac_library / f"{artist}.m4a"
-        upsert_archive(ctx.conn, {"file_path": str(p), "status": "CATALOGUED",
-                                  "artist": artist, "title": "t"})
+        upsert_archive(
+            ctx.conn, {"file_path": str(p), "status": "CATALOGUED", "artist": artist, "title": "t"}
+        )
         ctx.conn.commit()
 
     def test_an_applied_mapping_passes(self, ctx):
         self._canon(ctx, [("Dire Strats", "Dire Straits")])
         self._row(ctx, "Dire Straits")
         from unittest.mock import MagicMock
+
         assert ArtistConsolidateStage().verify_effect(ctx, MagicMock(files_changed=1)) == []
 
     def test_a_mapping_that_never_applied_is_caught(self, ctx):
         self._canon(ctx, [("Dire Strats", "Dire Straits")])
-        self._row(ctx, "Dire Strats")          # still the raw name
+        self._row(ctx, "Dire Strats")  # still the raw name
         from unittest.mock import MagicMock
+
         problems = ArtistConsolidateStage().verify_effect(ctx, MagicMock(files_changed=1))
         assert problems, "a row still carrying a mapped name must not pass"
         assert "Dire Straits" in problems[0]
@@ -269,4 +273,5 @@ class TestVerifyEffectChecksTheCanonWasApplied:
         self._canon(ctx, [("Tone-Loc", "Tone-Loc")])
         self._row(ctx, "Tone-Loc")
         from unittest.mock import MagicMock
+
         assert ArtistConsolidateStage().verify_effect(ctx, MagicMock(files_changed=1)) == []

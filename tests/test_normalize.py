@@ -210,19 +210,31 @@ class TestCapitalisationIsNotOverwritten:
     Two distinct faults sat behind those nine.
     """
 
-    @pytest.mark.parametrize("name", [
-        "R.E.M", "O.S.T", "M.I.A",           # no trailing period -- 29 live tracks
-        "R.E.M.", "U.S.A.",                  # with one -- already worked
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "R.E.M",
+            "O.S.T",
+            "M.I.A",  # no trailing period -- 29 live tracks
+            "R.E.M.",
+            "U.S.A.",  # with one -- already worked
+        ],
+    )
     def test_a_dotted_abbreviation_survives_without_a_trailing_period(self, name):
         """_DOTTED_ABBREV_RE required a trailing period, so "R.E.M." was
         protected while "R.E.M" -- the commoner spelling, and 26 tracks in
         the live library -- came out "R.e.m"."""
         assert _normalise_artist(name) in (None, name)
 
-    @pytest.mark.parametrize("name", [
-        "Loreena McKennitt", "Bobby McFerrin", "DeBarge", "T-Bone Walker",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Loreena McKennitt",
+            "Bobby McFerrin",
+            "DeBarge",
+            "T-Bone Walker",
+        ],
+    )
     def test_a_mixed_case_interior_capital_survives(self, name):
         assert _normalise_artist(name) in (None, name)
 
@@ -232,10 +244,13 @@ class TestCapitalisationIsNotOverwritten:
         rule, so these live on _KEEP_CAPS, decided one at a time."""
         assert _normalise_artist(name) in (None, name)
 
-    @pytest.mark.parametrize("raw,want", [
-        ("2 LIVE CREW", "2 Live Crew"),
-        ("DAVID ROSE", "David Rose"),
-    ])
+    @pytest.mark.parametrize(
+        "raw,want",
+        [
+            ("2 LIVE CREW", "2 Live Crew"),
+            ("DAVID ROSE", "David Rose"),
+        ],
+    )
     def test_shouted_words_are_still_title_cased(self, raw, want):
         """The counterpart the first draft of this fix broke: "short and
         all-caps means acronym" preserved ABBA correctly but also left "2

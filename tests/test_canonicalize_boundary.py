@@ -65,9 +65,19 @@ def cfg(tmp_path: Path) -> MusicConfig:
 def _gen_flac(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
-         "-c:a", "flac", str(path)],
-        capture_output=True, check=True,
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=2",
+            "-c:a",
+            "flac",
+            str(path),
+        ],
+        capture_output=True,
+        check=True,
     )
 
 
@@ -76,12 +86,22 @@ def _sha(path: Path) -> str:
 
 
 def _register(ctx: RunContext, path: Path) -> None:
-    upsert_archive(ctx.conn, {
-        "file_path": str(path), "filename": path.name, "ext": ".flac",
-        "status": "CATALOGUED", "codec": "flac", "artist": "Test Artist",
-        "title": "Test Title", "bitrate": 900000, "sample_rate": 44100,
-        "channels": 1, "duration": 2.0,
-    })
+    upsert_archive(
+        ctx.conn,
+        {
+            "file_path": str(path),
+            "filename": path.name,
+            "ext": ".flac",
+            "status": "CATALOGUED",
+            "codec": "flac",
+            "artist": "Test Artist",
+            "title": "Test Title",
+            "bitrate": 900000,
+            "sample_rate": 44100,
+            "channels": 1,
+            "duration": 2.0,
+        },
+    )
     ctx.conn.commit()
 
 
@@ -149,9 +169,7 @@ class TestCrashBetweenDisposalAndCommit:
             conn.close()  # discards any still-open transaction, as a crash would
 
         conn2 = open_db(cfg.db_path)
-        row = conn2.execute(
-            "SELECT file_path, canonicalized_at FROM archive"
-        ).fetchone()
+        row = conn2.execute("SELECT file_path, canonicalized_at FROM archive").fetchone()
         conn2.close()
 
         assert row["canonicalized_at"] is not None, (
@@ -174,8 +192,8 @@ class TestEscapeHatch:
         result = CanonicalizeStage().run(ctx)
         conn.close()
 
-        assert any(
-            "recovery boundary: DISABLED" in n for n in result.notes
-        ), f"a run without a boundary must announce itself; notes were {result.notes}"
+        assert any("recovery boundary: DISABLED" in n for n in result.notes), (
+            f"a run without a boundary must announce itself; notes were {result.notes}"
+        )
         assert not source.exists()
         assert not _quarantined_files(cfg), "disabled boundary should not hold anything"

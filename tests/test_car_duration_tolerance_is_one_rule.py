@@ -47,15 +47,19 @@ import pytest
 
 from musaeus.duration import TOLERANCE_SEC, tolerance_for
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]
-                       / "scripts" / "car_library" / "vendor"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "vendor"))
 from build_aac_library import (  # noqa: E402
     _DURATION_TOLERANCE_SEC,
     _duration_tolerance,
 )
 
-_SCRIPT = (Path(__file__).resolve().parents[1]
-           / "scripts" / "car_library" / "vendor" / "build_aac_library.py")
+_SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "car_library"
+    / "vendor"
+    / "build_aac_library.py"
+)
 
 
 @pytest.mark.parametrize("recorded", [None, 0, -5, 0.5, 1, 30, 100, 300, 600, 3600])
@@ -97,30 +101,44 @@ def test_no_inline_tolerance_literal_survives() -> None:
     tree = ast.parse(_SCRIPT.read_text())
     offenders = []
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                and node.func.id == "max" and len(node.args) == 2):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "max"
+            and len(node.args) == 2
+        ):
             continue
         first, second = node.args
         # max(<number>, <something> * <something>) is a scaled tolerance
-        if (isinstance(first, ast.Constant) and isinstance(first.value, (int, float))
-                and isinstance(second, ast.BinOp) and isinstance(second.op, ast.Mult)):
+        if (
+            isinstance(first, ast.Constant)
+            and isinstance(first.value, (int, float))
+            and isinstance(second, ast.BinOp)
+            and isinstance(second.op, ast.Mult)
+        ):
             offenders.append((node.lineno, ast.unparse(node)))
     # The one inside _duration_tolerance() is the rule itself; any other is
     # a second opinion about the same question.
-    allowed = {n.lineno for n in ast.walk(tree)
-               if isinstance(n, ast.FunctionDef) and n.name == "_duration_tolerance"}
-    stray = [o for o in offenders
-             if not any(a <= o[0] <= a + 45 for a in allowed)]
+    allowed = {
+        n.lineno
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_duration_tolerance"
+    }
+    stray = [o for o in offenders if not any(a <= o[0] <= a + 45 for a in allowed)]
     assert not stray, f"an inline duration tolerance is back: {stray}"
 
 
 # ── the loop itself ──────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("recorded,drift", [
-    (30, 1.4),     # the Register's case: AAC priming on a short track
-    (30, 1.9),
-    (600, 11.0),   # a long track, where the flat floor was far too strict
-])
+
+@pytest.mark.parametrize(
+    "recorded,drift",
+    [
+        (30, 1.4),  # the Register's case: AAC priming on a short track
+        (30, 1.9),
+        (600, 11.0),  # a long track, where the flat floor was far too strict
+    ],
+)
 def test_a_drift_accepted_at_write_time_is_accepted_on_resume(recorded, drift) -> None:
     """The property that closes the loop, asserted directly on the rule.
 
@@ -135,13 +153,12 @@ def test_a_drift_accepted_at_write_time_is_accepted_on_resume(recorded, drift) -
 
 def test_a_real_truncation_is_still_rejected_by_both(tmp_path: Path) -> None:
     """Widening the tolerance must not swallow a genuinely short encode."""
-    assert _duration_tolerance(300) < 15.0   # a 5-minute track cut to 4:45
-    assert _duration_tolerance(30) < 28.0    # a 30 s track cut to 2 s
+    assert _duration_tolerance(300) < 15.0  # a 5-minute track cut to 4:45
+    assert _duration_tolerance(30) < 28.0  # a 30 s track cut to 2 s
 
 
 def test_the_resume_check_uses_the_shared_rule(tmp_path: Path) -> None:
     """Structural: the caller must reach the named rule, not re-inline one."""
     text = _SCRIPT.read_text()
     body = text.split("def _output_matches_source")[1].split("\ndef ")[0]
-    assert "_duration_tolerance(" in body, \
-        "the resume check no longer uses the shared tolerance"
+    assert "_duration_tolerance(" in body, "the resume check no longer uses the shared tolerance"

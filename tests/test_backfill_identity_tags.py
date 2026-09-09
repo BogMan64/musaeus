@@ -34,9 +34,22 @@ MBID_B = "f37c537b-3557-4031-bfd6-ab63ced32854"
 def _make_m4a(path: Path, artist: str = "") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-         "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "0.3",
-         "-c:a", "alac", str(path)],
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=stereo",
+            "-t",
+            "0.3",
+            "-c:a",
+            "alac",
+            str(path),
+        ],
         check=True,
     )
     if artist:
@@ -216,8 +229,9 @@ def test_the_journal_is_durable_before_the_file_is_touched(tmp_path, monkeypatch
     cache = bit.load_cache(_make_cache(tmp_path / "c.db", [("24kgoldn", MBID_A, 1)]))
     planned, _, _ = bit.scan(lib, cache, None)
     journal = tmp_path / "j.jsonl"
-    monkeypatch.setattr(bit, "write_identity", lambda p, v: (_ for _ in ()).throw(
-        KeyboardInterrupt("power cut")))
+    monkeypatch.setattr(
+        bit, "write_identity", lambda p, v: (_ for _ in ()).throw(KeyboardInterrupt("power cut"))
+    )
     with pytest.raises(KeyboardInterrupt):
         bit.apply(planned, journal)
     assert json.loads(journal.read_text().strip())["mb_artist_id"] == MBID_A
@@ -265,9 +279,9 @@ def test_dry_run_writes_nothing(tmp_path):
     c = _make_cache(tmp_path / "c.db", [("24kgoldn", MBID_A, 1)])
     out = subprocess.run(
         [sys.executable, str(_SCRIPT), "--root", str(lib), "--cache", str(c)],
-        capture_output=True, text=True,
-        env={**__import__("os").environ,
-             "MUSAEUS_VAULT_ROOT": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        env={**__import__("os").environ, "MUSAEUS_VAULT_ROOT": str(tmp_path)},
     )
     assert "DRY RUN" in out.stdout, out.stdout + out.stderr
     assert not read_identity(p).get("mb_artist_id")

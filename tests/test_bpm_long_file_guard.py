@@ -1,4 +1,5 @@
 """A 12-hour file OOM-killed a whole run at the BPM stage (2026-08-23)."""
+
 import sqlite3
 import types
 
@@ -12,7 +13,8 @@ def _ctx(duration, channels=2, tmp=None):
     c.execute("INSERT INTO archive VALUES (?,?,?)", (str(tmp), channels, duration))
     ev = []
     return types.SimpleNamespace(
-        conn=c, run_id="r1",
+        conn=c,
+        run_id="r1",
         log_event=lambda *a, **k: ev.append(k.get("event_type") or (a[0] if a else None)),
     ), ev
 

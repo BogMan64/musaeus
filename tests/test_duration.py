@@ -53,9 +53,23 @@ def intact(tmp_path: Path) -> Path:
     """
     p = tmp_path / "intact.m4a"
     subprocess.run(
-        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=30",
-         "-c:a", "aac", "-movflags", "+faststart", str(p), "-y"],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=30",
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+faststart",
+            str(p),
+            "-y",
+        ],
+        check=True,
+        capture_output=True,
     )
     return p
 
@@ -83,7 +97,9 @@ def test_neither_metadata_source_can_see_truncation(truncated: Path) -> None:
 def test_only_decoding_catches_it(truncated: Path) -> None:
     ok, err = decodes_cleanly(truncated)
     assert not ok
-    assert err and ("exhausted" in err.lower() or "partial" in err.lower() or "invalid" in err.lower())
+    assert err and (
+        "exhausted" in err.lower() or "partial" in err.lower() or "invalid" in err.lower()
+    )
 
 
 def test_a_clean_decode_reports_no_error(intact: Path) -> None:
@@ -98,7 +114,8 @@ def test_the_exit_code_alone_would_have_passed_it(truncated: Path) -> None:
     """
     r = subprocess.run(
         ["ffmpeg", "-v", "error", "-nostats", "-i", str(truncated), "-f", "null", "-"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     assert r.returncode == 0, "if ffmpeg ever starts failing here, relax this test"
     assert r.stderr.strip(), "the evidence is on stderr, not in the exit code"
@@ -159,4 +176,3 @@ def test_the_standalone_scripts_agree_on_the_value() -> None:
         found = re.findall(r"_DURATION_TOLERANCE_SEC\s*=\s*([0-9.]+)", src)
         assert found, f"{rel} lost its tolerance constant"
         assert float(found[0]) == 2.0, f"{rel} has {found[0]}, expected 2.0"
-

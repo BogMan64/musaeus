@@ -22,9 +22,13 @@ from musaeus.console import Console
 @pytest.fixture
 def cfg(tmp_path: Path) -> MusicConfig:
     return MusicConfig(
-        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-        quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
-        meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+        vault_root=tmp_path,
+        inbox=tmp_path / "INBOX",
+        staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "QUARANTINE",
+        runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "ALAC-Library",
         db_path=tmp_path / "musaeus.db",
     )
 
@@ -92,7 +96,9 @@ class TestUSBMenu:
         assert "--execute" in rec.calls[1]
         assert "--library" in rec.calls[1] and "car" in rec.calls[1]
 
-    def test_non_root_gets_sudo_prefixed_not_silently_skipped(self, cfg, monkeypatch, capsys) -> None:
+    def test_non_root_gets_sudo_prefixed_not_silently_skipped(
+        self, cfg, monkeypatch, capsys
+    ) -> None:
         con = _console(cfg)
         rec = _Recorder()
         monkeypatch.setattr("subprocess.run", rec)

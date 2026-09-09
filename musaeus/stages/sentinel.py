@@ -162,7 +162,8 @@ def _want_replacement(ctx, path: Path, err: str) -> str | None:
         logger.warning(
             "[sentinel] %s failed to decode, but the error looks environmental "
             "(%s) — not listing a replacement",
-            path.name, (err or "").strip()[:120],
+            path.name,
+            (err or "").strip()[:120],
         )
         return None
 
@@ -318,6 +319,12 @@ class SentinelStage(BaseStage):
             again, err = audio_hash_safe(path)
             if err:
                 problems.append(f"{path.name}: stored a hash but cannot be re-hashed: {err}")
+            elif again is None:
+                # audio_hash_safe returns (None, str(exc)). A HasherError whose
+                # message is empty makes `err` falsy while `again` stays None,
+                # and the branch below would then slice None. Rare, reachable,
+                # and it would crash the check rather than report the file.
+                problems.append(f"{path.name}: re-hashing returned no digest and no error")
             elif again != row["audio_hash"]:
                 problems.append(
                     f"{path.name}: re-hashing gives {again[:12]}… but "

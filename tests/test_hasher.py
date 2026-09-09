@@ -76,9 +76,7 @@ def flooding_ffmpeg(tmp_path, monkeypatch):
 
 def test_a_flood_of_stderr_does_not_deadlock(flooding_ffmpeg):
     """THE regression. Without concurrent draining this never returns."""
-    finished, box, elapsed = _run_with_deadlock_guard(
-        lambda: audio_hash(flooding_ffmpeg)
-    )
+    finished, box, elapsed = _run_with_deadlock_guard(lambda: audio_hash(flooding_ffmpeg))
     assert finished, (
         f"audio_hash deadlocked: still blocked after {elapsed:.0f}s with "
         f"{_FLOOD_BYTES} bytes on stderr"
@@ -101,9 +99,7 @@ def test_a_failing_ffmpeg_still_reports_its_stderr(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", os.environ["PATH"])
     _fake_ffmpeg(
         tmp_path,
-        "import sys\n"
-        "sys.stderr.write('Invalid data found when processing input')\n"
-        "sys.exit(1)\n",
+        "import sys\nsys.stderr.write('Invalid data found when processing input')\nsys.exit(1)\n",
     )
     src = tmp_path / "broken.m4a"
     src.write_bytes(b"placeholder")
@@ -167,9 +163,20 @@ def test_hi_res_is_hashed_from_pcm_not_from_the_container(tmp_path, rate, monkey
     monkeypatch.setenv("PATH", os.environ["PATH"])  # keep the real ffmpeg
     src = tmp_path / f"hires_{rate}.m4a"
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
-         "-i", f"sine=frequency=440:duration=1:sample_rate={rate}",
-         "-c:a", "alac", str(src)],
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration=1:sample_rate={rate}",
+            "-c:a",
+            "alac",
+            str(src),
+        ],
         check=True,
     )
 
@@ -189,6 +196,5 @@ def test_hi_res_is_hashed_from_pcm_not_from_the_container(tmp_path, rate, monkey
 
     assert file_hash(src) != a1, "fixture did not actually change the container"
     assert audio_hash(src) == a1, (
-        "re-tagging changed audio_hash -- sentinel's 'no duplicate on re-tag' "
-        "contract is broken"
+        "re-tagging changed audio_hash -- sentinel's 'no duplicate on re-tag' contract is broken"
     )

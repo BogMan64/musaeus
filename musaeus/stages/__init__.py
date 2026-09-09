@@ -141,6 +141,7 @@ from .albumart import AlbumArtStage
 from .artist_consolidate import ArtistConsolidateStage
 from .audit import AuditStage
 from .auditor import AuditorStage
+from .base import BaseStage
 from .bitrot import BitRotStage
 from .bpm import BPMStage
 from .canonicalize import CanonicalizeStage
@@ -427,7 +428,10 @@ CANONICAL_PIPELINE: list[type] = (
 # `musaeus run --dry-run` remains the safe way to preview this before
 # ever running it live (subject to P0-02's current fail-closed guard --
 # see consumer-readiness safety spec).
-DEFAULT_PIPELINE: list[type] = CANONICAL_PIPELINE
+# list[type[BaseStage]], not list[type]: every member has .NAME, and
+# saying so is what lets a caller read it without a cast. console.py:397
+# did exactly that and was the last mypy error in the file.
+DEFAULT_PIPELINE: list[type[BaseStage]] = CANONICAL_PIPELINE
 
 # Extended pipeline (run with `musaeus run --full`)
 FULL_PIPELINE: list[type] = [

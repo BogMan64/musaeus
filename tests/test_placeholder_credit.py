@@ -23,7 +23,9 @@ from musaeus.stages.various_artists_fix import (
 
 
 class TestPlaceholderCreditMatching:
-    @pytest.mark.parametrize("name", ["Soundtrack", "soundtrack", "  SOUNDTRACK ", "Original Soundtrack"])
+    @pytest.mark.parametrize(
+        "name", ["Soundtrack", "soundtrack", "  SOUNDTRACK ", "Original Soundtrack"]
+    )
     def test_bare_soundtrack_labels_are_placeholders(self, name):
         assert is_placeholder_credit(name) is True
 
@@ -164,9 +166,13 @@ class TestTheMoveAndTheRowStayInStep:
         from musaeus.stages.various_artists_fix import VariousArtistsFixStage
 
         cfg = MusicConfig(
-            vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-            quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
-            meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+            vault_root=tmp_path,
+            inbox=tmp_path / "INBOX",
+            staging=tmp_path / "STAGING",
+            quarantine=tmp_path / "QUARANTINE",
+            runs_root=tmp_path / "RUNS",
+            meta_dir=tmp_path / "MetaData",
+            alac_library=tmp_path / "ALAC-Library",
             db_path=tmp_path / "musaeus.db",
         )
         ctx = RunContext.new(cfg, open_db(cfg.db_path), dry_run=False)
@@ -174,18 +180,22 @@ class TestTheMoveAndTheRowStayInStep:
         src.mkdir(parents=True)
         f = src / "Various Artists - Al Green - Let's Stay Together.m4a"
         f.write_bytes(b"audio")
-        upsert_archive(ctx.conn, {"file_path": str(f), "status": "CATALOGUED",
-                                  "artist": "Various Artists",
-                                  "title": "Al Green - Let's Stay Together"})
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(f),
+                "status": "CATALOGUED",
+                "artist": "Various Artists",
+                "title": "Al Green - Let's Stay Together",
+            },
+        )
         ctx.conn.commit()
 
         def boom(*a, **k):
             raise OSError("disk full")
 
         monkeypatch.setattr(_shutil, "move", boom)
-        monkeypatch.setattr(
-            "musaeus.stages.various_artists_fix.shutil.move", boom, raising=False
-        )
+        monkeypatch.setattr("musaeus.stages.various_artists_fix.shutil.move", boom, raising=False)
 
         VariousArtistsFixStage().run(ctx)
 

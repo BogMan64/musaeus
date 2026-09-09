@@ -168,8 +168,8 @@ class TestVerify:
 
         assert any("new (no baseline yet" in n and "1" in n for n in result.notes)
         assert not ctx.conn.execute(
-            "SELECT 1 FROM events WHERE event_type='BITROT_DETECTED'").fetchone(), \
-            "an unbaselined file is not corrupt"
+            "SELECT 1 FROM events WHERE event_type='BITROT_DETECTED'"
+        ).fetchone(), "an unbaselined file is not corrupt"
         assert result.success is False
         assert any("verified almost nothing" in n for n in result.notes)
 

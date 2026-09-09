@@ -25,9 +25,7 @@ from musaeus.workspace import (
 
 
 def _git(args, cwd):
-    return subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True
-    )
+    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True)
 
 
 @pytest.fixture
@@ -147,12 +145,20 @@ def test_unmerged_commits_on_a_missing_base_is_empty_not_an_error(repo, tmp_path
 
 def test_describe_marks_the_current_checkout_with_a_star():
     here = Worktree(
-        path=__import__("pathlib").Path("/x"), branch="work/x", head="abc1234",
-        is_current=True, exists=True, dirty=0,
+        path=__import__("pathlib").Path("/x"),
+        branch="work/x",
+        head="abc1234",
+        is_current=True,
+        exists=True,
+        dirty=0,
     )
     there = Worktree(
-        path=__import__("pathlib").Path("/y"), branch="main", head="def5678",
-        is_current=False, exists=True, dirty=0,
+        path=__import__("pathlib").Path("/y"),
+        branch="main",
+        head="def5678",
+        is_current=False,
+        exists=True,
+        dirty=0,
     )
     assert here.describe().startswith("* ")
     assert there.describe().startswith("  ")
@@ -160,8 +166,12 @@ def test_describe_marks_the_current_checkout_with_a_star():
 
 def test_label_falls_back_to_the_short_head_when_detached():
     wt = Worktree(
-        path=__import__("pathlib").Path("/x"), branch="", head="abcdef1234567",
-        is_current=False, exists=True, dirty=0,
+        path=__import__("pathlib").Path("/x"),
+        branch="",
+        head="abcdef1234567",
+        is_current=False,
+        exists=True,
+        dirty=0,
     )
     assert wt.label == "abcdef1"
 
@@ -181,6 +191,7 @@ def test_docs_come_back_newest_first(monkeypatch, tmp_path):
         p = d / name
         p.write_text("#\n")
         import os
+
         os.utime(p, (mtime, mtime))
     monkeypatch.setenv("MUSAEUS_DOC_ROOT", str(tmp_path))
     assert [p.name for p in list_docs()] == ["new.md", "old.md"]

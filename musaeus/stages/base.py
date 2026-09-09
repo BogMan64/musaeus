@@ -55,6 +55,16 @@ class _NoVerification:
 #: Returned by BaseStage.verify_effect when a stage implements no check.
 NO_VERIFICATION = _NoVerification()
 
+#: What a verify_effect() may return. The sentinel is part of the contract,
+#: not an escape from it: a stage says either "here is what I found" (a list,
+#: possibly empty) or "I did not look" (NO_VERIFICATION), and callers
+#: distinguish the two by identity before truthiness.
+#
+# Named 2026-09-09. The signature said `list[str]` while nine stages returned
+# the sentinel, so mypy reported the same error nine times and CI stayed red.
+# One un-propagated signature, not nine mistakes.
+VerifyResult = list[str] | _NoVerification
+
 
 class StageError(Exception):
     """
@@ -167,7 +177,7 @@ class BaseStage(ABC):
             )
             return ""
 
-    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> VerifyResult:
         """Check that this stage's claimed effect actually happened.
 
         Return a list of problems; an empty list means the claim held.
@@ -220,12 +230,14 @@ class BaseStage(ABC):
             logger.warning("[%s] effect verification errored: %s", self.NAME, exc)
             result.verify_notes.append(f"verification errored: {exc}")
             return
-        if problems is NO_VERIFICATION:
+        # isinstance, not `is`: both are exact here -- _NoVerification has
+        # __slots__ and exactly one instance -- but only isinstance narrows the
+        # union for a type checker, and the un-narrowed signature is what kept
+        # CI red with nine copies of one error.
+        if isinstance(problems, _NoVerification):
             # No claim, rather than a hollow one. The seal stays unprinted.
             result.verified = None
-            result.verify_notes.append(
-                "no effect verification implemented for this stage"
-            )
+            result.verify_notes.append("no effect verification implemented for this stage")
             return
         result.verified = not problems
         if problems:

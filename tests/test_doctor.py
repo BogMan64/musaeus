@@ -77,7 +77,15 @@ def vault(tmp_path: Path):
 
 
 def _add(
-    vault, name, *, artist, title, status="CATALOGUED", on_disk=True, genre="Rock", indexed=True,
+    vault,
+    name,
+    *,
+    artist,
+    title,
+    status="CATALOGUED",
+    on_disk=True,
+    genre="Rock",
+    indexed=True,
     duration=200.0,
 ):
     """Add a row, and by default index it.
@@ -239,12 +247,15 @@ class TestSoleCopyFallsBackToAudioHash:
         import sqlite3
 
         kept = _add(vault, "kept.m4a", artist="Antonio Vivaldi", title="The Four Seasons")
-        gone = _add(vault, "dupe.m4a", artist="Giuliano Carmignola",
-                    title="The Four Seasons", on_disk=True)
+        gone = _add(
+            vault, "dupe.m4a", artist="Giuliano Carmignola", title="The Four Seasons", on_disk=True
+        )
         # same recording, same audio, different credit
         conn = sqlite3.connect(vault.db_path)
-        conn.execute("UPDATE archive SET audio_hash='deadbeef' WHERE file_path IN (?,?)",
-                     (str(kept), str(gone)))
+        conn.execute(
+            "UPDATE archive SET audio_hash='deadbeef' WHERE file_path IN (?,?)",
+            (str(kept), str(gone)),
+        )
         conn.execute("UPDATE archive SET status='DUPE_REVIEW' WHERE file_path=?", (str(gone),))
         conn.commit()
         conn.close()
@@ -265,8 +276,10 @@ class TestSoleCopyFallsBackToAudioHash:
         _add(vault, "other.m4a", artist="Someone Else", title="Different Song")
         gone = _add(vault, "only.m4a", artist="Lost Artist", title="Only Copy")
         conn = sqlite3.connect(vault.db_path)
-        conn.execute("UPDATE archive SET status='DUPE_REVIEW', audio_hash='uniquehash' "
-                     "WHERE file_path=?", (str(gone),))
+        conn.execute(
+            "UPDATE archive SET status='DUPE_REVIEW', audio_hash='uniquehash' WHERE file_path=?",
+            (str(gone),),
+        )
         conn.commit()
         conn.close()
 
@@ -299,7 +312,9 @@ class TestRejectedAudioPresentAnyway:
 
     def _same_hash(self, vault, a, b):
         conn = sqlite3.connect(vault.db_path)
-        h = conn.execute("SELECT audio_hash FROM archive WHERE file_path=?", (str(a),)).fetchone()[0]
+        h = conn.execute("SELECT audio_hash FROM archive WHERE file_path=?", (str(a),)).fetchone()[
+            0
+        ]
         conn.execute("UPDATE archive SET audio_hash=? WHERE file_path=?", (h, str(b)))
         conn.commit()
         conn.close()
@@ -310,8 +325,8 @@ class TestRejectedAudioPresentAnyway:
         # run against the live library: 4 findings, all of them the sources.
         src = _add(vault, "bella.flac", artist="Santana", title="Bella")
         twin = _add(vault, "bella.m4a", artist="Santana", title="Bella")
-        self._same_hash(vault, src, twin)     # the same truncated audio
-        self._reject(vault, src)              # the FLAC was refused
+        self._same_hash(vault, src, twin)  # the same truncated audio
+        self._reject(vault, src)  # the FLAC was refused
         f = _finding(diagnose(vault), "rejected audio present anyway")
         assert f.level == "fail"
         assert f.count == 1
@@ -335,8 +350,13 @@ class TestRejectedAudioPresentAnyway:
         different recording and shares no audio_hash, so it cannot trip
         this one."""
         _add(vault, "studio.m4a", artist="Alice Cooper", title="Is It My Body", duration=160.0)
-        _add(vault, "live.m4a", artist="Alice Cooper",
-             title="Is It My Body (Live in Miami)", duration=486.0)
+        _add(
+            vault,
+            "live.m4a",
+            artist="Alice Cooper",
+            title="Is It My Body (Live in Miami)",
+            duration=486.0,
+        )
         assert _finding(diagnose(vault), "rejected audio present anyway").level == "ok"
 
 
@@ -355,7 +375,9 @@ class TestRemovedKnockOffStillHeld:
 
     def _hash_of(self, vault, p):
         conn = sqlite3.connect(vault.db_path)
-        h = conn.execute("SELECT audio_hash FROM archive WHERE file_path=?", (str(p),)).fetchone()[0]
+        h = conn.execute("SELECT audio_hash FROM archive WHERE file_path=?", (str(p),)).fetchone()[
+            0
+        ]
         conn.close()
         return h
 
@@ -366,8 +388,9 @@ class TestRemovedKnockOffStillHeld:
         conn.close()
 
     def test_a_quarantined_knockoff_with_a_catalogued_twin_is_caught(self, vault):
-        gone = _add(vault, "junk.m4a", artist="Karaoke Channel", title="Hallelujah",
-                    status="TRIBUTE_REVIEW")
+        gone = _add(
+            vault, "junk.m4a", artist="Karaoke Channel", title="Hallelujah", status="TRIBUTE_REVIEW"
+        )
         kept = _add(vault, "twin.m4a", artist="Karaoke Channel", title="Hallelujah")
         self._set_hash(vault, kept, self._hash_of(vault, gone))
         f = _finding(diagnose(vault), "removed audio still held")
@@ -377,8 +400,9 @@ class TestRemovedKnockOffStillHeld:
     def test_a_MANUALLY_deleted_knockoff_counts_too(self, vault):
         """Grey's own ruling sets DELETED, not TRIBUTE_REVIEW. Keying on the
         automatic status alone would miss the case this was built for."""
-        gone = _add(vault, "chuck.m4a", artist="Chuck Billy", title="Seek & Destroy",
-                    status="DELETED")
+        gone = _add(
+            vault, "chuck.m4a", artist="Chuck Billy", title="Seek & Destroy", status="DELETED"
+        )
         kept = _add(vault, "chuck_twin.m4a", artist="Chuck Billy", title="Seek & Destroy")
         self._set_hash(vault, kept, self._hash_of(vault, gone))
         assert _finding(diagnose(vault), "removed audio still held").level == "fail"
@@ -391,8 +415,10 @@ class TestRemovedKnockOffStillHeld:
         gone = _add(vault, "bella_lib.m4a", artist="Santana", title="Bella", status="DELETED")
         self._set_hash(vault, gone, self._hash_of(vault, src))
         conn = sqlite3.connect(vault.db_path)
-        conn.execute("INSERT INTO events (event_type, file_path, old_value) VALUES (?,?,?)",
-                     ("CANONICALIZE_VERIFY_FAILED", str(src) + ".FAILED_VERIFY", str(src)))
+        conn.execute(
+            "INSERT INTO events (event_type, file_path, old_value) VALUES (?,?,?)",
+            ("CANONICALIZE_VERIFY_FAILED", str(src) + ".FAILED_VERIFY", str(src)),
+        )
         conn.commit()
         conn.close()
         assert _finding(diagnose(vault), "removed audio still held").level == "ok"
@@ -400,8 +426,13 @@ class TestRemovedKnockOffStillHeld:
     def test_a_genuine_recording_sharing_a_title_is_untouched(self, vault):
         """Metallica's own "Seek & Destroy" must never be swept up with the
         tribute version. Different audio, different hash."""
-        _add(vault, "junk2.m4a", artist="Tribute Band", title="Seek & Destroy",
-             status="TRIBUTE_REVIEW")
+        _add(
+            vault,
+            "junk2.m4a",
+            artist="Tribute Band",
+            title="Seek & Destroy",
+            status="TRIBUTE_REVIEW",
+        )
         _add(vault, "real.m4a", artist="Metallica", title="Seek & Destroy")
         assert _finding(diagnose(vault), "removed audio still held").level == "ok"
 
@@ -432,8 +463,9 @@ class TestDuplicateRefusalsDoNotCollapse:
         a = _add(vault, "bella_1.flac", artist="Carlos Santana", title="Bella")
         b = _add(vault, "bella_2.flac", artist="Carlos Santana", title="Bella")
         conn = sqlite3.connect(vault.db_path)
-        conn.execute("UPDATE archive SET audio_hash='shared_h' WHERE file_path IN (?,?)",
-                     (str(a), str(b)))
+        conn.execute(
+            "UPDATE archive SET audio_hash='shared_h' WHERE file_path IN (?,?)", (str(a), str(b))
+        )
         conn.commit()
         conn.close()
         self._reject(vault, a)
@@ -462,18 +494,22 @@ class TestDedupPurgeIsNotAKnockOff:
 
     def _purge_event(self, vault, path):
         conn = sqlite3.connect(vault.db_path)
-        conn.execute("INSERT INTO events (event_type, file_path) VALUES (?,?)",
-                     ("DUPE_PURGED", str(path)))
+        conn.execute(
+            "INSERT INTO events (event_type, file_path) VALUES (?,?)", ("DUPE_PURGED", str(path))
+        )
         conn.commit()
         conn.close()
 
     def _twin(self, vault):
-        gone = _add(vault, "dupe.m4a", artist="Bad Company", title="Feel Like Makin' Love",
-                    status="DELETED")
+        gone = _add(
+            vault, "dupe.m4a", artist="Bad Company", title="Feel Like Makin' Love", status="DELETED"
+        )
         kept = _add(vault, "keeper.m4a", artist="Bad Company", title="Feel Like Makin' Love")
         conn = sqlite3.connect(vault.db_path)
-        conn.execute("UPDATE archive SET audio_hash='twin_h' WHERE file_path IN (?,?)",
-                     (str(gone), str(kept)))
+        conn.execute(
+            "UPDATE archive SET audio_hash='twin_h' WHERE file_path IN (?,?)",
+            (str(gone), str(kept)),
+        )
         conn.commit()
         conn.close()
         return gone, kept
@@ -539,18 +575,18 @@ class TestAuthoritiesAgree:
     def test_a_law_genre_outside_the_vocabulary_is_reported(self, vault):
         """Both files claim authority; the law would write a value the
         allow-list rejects."""
-        self._meta(vault,
-                   law="artist,genre\nSomebody,Folk/Roots\n",
-                   allowed="Jazz\nRock\n")
+        self._meta(vault, law="artist,genre\nSomebody,Folk/Roots\n", allowed="Jazz\nRock\n")
         f = _finding(diagnose(vault), "authorities agree")
         assert f.level == "fail"
         assert "Folk/Roots" in f.detail
 
     def test_agreement_is_reported_as_ok(self, vault):
-        self._meta(vault,
-                   canon="Dire Strats\tDire Straits\n",
-                   law="artist,genre\nDire Straits,Rock\n",
-                   allowed="Rock\nJazz\n")
+        self._meta(
+            vault,
+            canon="Dire Strats\tDire Straits\n",
+            law="artist,genre\nDire Straits,Rock\n",
+            allowed="Rock\nJazz\n",
+        )
         assert _finding(diagnose(vault), "authorities agree").level == "ok"
 
     def test_no_canon_files_is_not_a_failure(self, vault):
@@ -629,16 +665,13 @@ class TestTruncatedFragments:
     """
 
     def test_a_near_zero_file_is_flagged(self, vault):
-        _add(vault, "palmer.m4a", artist="Robert Palmer",
-             title="Addicted To Love", duration=0.4)
+        _add(vault, "palmer.m4a", artist="Robert Palmer", title="Addicted To Love", duration=0.4)
         f = _finding(diagnose(vault), "truncated fragments")
         assert f.level == "warn" and f.count == 1
 
     def test_a_clip_beside_the_full_track_is_flagged(self, vault):
-        _add(vault, "cruel_full.m4a", artist="Taylor Swift",
-             title="Cruel Summer", duration=179.0)
-        _add(vault, "cruel_clip.m4a", artist="Taylor Swift",
-             title="Cruel Summer", duration=21.0)
+        _add(vault, "cruel_full.m4a", artist="Taylor Swift", title="Cruel Summer", duration=179.0)
+        _add(vault, "cruel_clip.m4a", artist="Taylor Swift", title="Cruel Summer", duration=21.0)
         f = _finding(diagnose(vault), "truncated fragments")
         assert f.level == "warn" and f.count == 1
         assert "cruel_clip" in f.detail
@@ -646,19 +679,27 @@ class TestTruncatedFragments:
     def test_a_complete_two_minute_song_is_NOT_flagged(self, vault):
         """The whole reason the floor is not raised. This is the case a
         120-second rule would destroy 397 times over."""
-        _add(vault, "jack.m4a", artist="Ray Charles",
-             title="Hit the Road Jack", duration=120.0)
-        _add(vault, "shook.m4a", artist="Elvis Presley",
-             title="All Shook Up", duration=118.0)
+        _add(vault, "jack.m4a", artist="Ray Charles", title="Hit the Road Jack", duration=120.0)
+        _add(vault, "shook.m4a", artist="Elvis Presley", title="All Shook Up", duration=118.0)
         assert _finding(diagnose(vault), "truncated fragments").level == "ok"
 
     def test_a_short_song_with_only_short_siblings_is_spared(self, vault):
         """Simon & Garfunkel's 'Bookends Theme' is 33s and 83s. Both are
         real; neither sibling is long enough to accuse the other."""
-        _add(vault, "bookends_a.m4a", artist="Simon & Garfunkel",
-             title="Bookends Theme", duration=33.0)
-        _add(vault, "bookends_b.m4a", artist="Simon & Garfunkel",
-             title="Bookends Theme", duration=83.0)
+        _add(
+            vault,
+            "bookends_a.m4a",
+            artist="Simon & Garfunkel",
+            title="Bookends Theme",
+            duration=33.0,
+        )
+        _add(
+            vault,
+            "bookends_b.m4a",
+            artist="Simon & Garfunkel",
+            title="Bookends Theme",
+            duration=83.0,
+        )
         assert _finding(diagnose(vault), "truncated fragments").level == "ok"
 
     def test_an_edit_is_not_a_fragment(self, vault):
@@ -685,6 +726,5 @@ class TestTruncatedFragments:
     def test_a_missing_file_is_not_reported_as_a_fragment(self, vault):
         """A row whose file is gone is check 1's business, not this one."""
         _add(vault, "gone_full.m4a", artist="Band", title="Tune", duration=200.0)
-        _add(vault, "gone_clip.m4a", artist="Band", title="Tune", duration=20.0,
-             on_disk=False)
+        _add(vault, "gone_clip.m4a", artist="Band", title="Tune", duration=20.0, on_disk=False)
         assert _finding(diagnose(vault), "truncated fragments").level == "ok"

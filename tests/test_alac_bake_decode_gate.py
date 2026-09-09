@@ -71,19 +71,38 @@ def conn(cfg: MusicConfig):
 def _tone(path: Path, seconds: int = 3) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-v", "error", "-f", "lavfi",
-         "-i", f"sine=frequency=440:duration={seconds}",
-         "-c:a", "alac", str(path), "-y"],
-        check=True, capture_output=True)
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration={seconds}",
+            "-c:a",
+            "alac",
+            str(path),
+            "-y",
+        ],
+        check=True,
+        capture_output=True,
+    )
     return path
 
 
 def _row(conn, path: Path) -> int:
-    upsert_archive(conn, {"file_path": str(path), "status": "CATALOGUED",
-                          "codec": "alac", "duration": 3.0, "title": path.stem})
+    upsert_archive(
+        conn,
+        {
+            "file_path": str(path),
+            "status": "CATALOGUED",
+            "codec": "alac",
+            "duration": 3.0,
+            "title": path.stem,
+        },
+    )
     conn.commit()
-    return conn.execute("SELECT id FROM archive WHERE file_path = ?",
-                        (str(path),)).fetchone()["id"]
+    return conn.execute("SELECT id FROM archive WHERE file_path = ?", (str(path),)).fetchone()["id"]
 
 
 def test_a_sound_master_passes_the_gate(conn, cfg) -> None:
@@ -95,8 +114,9 @@ def test_the_verdict_is_recorded_so_the_next_run_need_not_repeat_it(conn, cfg) -
     f = _tone(cfg.vault_root / "ALAC_Archive" / "A" / "good.m4a")
     rid = _row(conn, f)
     _bal._decode_gate(conn, rid, f, execute=True)
-    got = conn.execute("SELECT decode_ok, decode_checked_at FROM archive WHERE id = ?",
-                       (rid,)).fetchone()
+    got = conn.execute(
+        "SELECT decode_ok, decode_checked_at FROM archive WHERE id = ?", (rid,)
+    ).fetchone()
     assert got["decode_ok"] == 1
     assert got["decode_checked_at"]
 
@@ -106,8 +126,7 @@ def test_a_dry_run_records_nothing(conn, cfg) -> None:
     f = _tone(cfg.vault_root / "ALAC_Archive" / "A" / "good.m4a")
     rid = _row(conn, f)
     _bal._decode_gate(conn, rid, f, execute=False)
-    got = conn.execute("SELECT decode_checked_at FROM archive WHERE id = ?",
-                       (rid,)).fetchone()
+    got = conn.execute("SELECT decode_checked_at FROM archive WHERE id = ?", (rid,)).fetchone()
     assert got["decode_checked_at"] is None
 
 
@@ -133,8 +152,10 @@ def test_a_row_already_known_bad_is_refused_without_decoding_again(conn, cfg, mo
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_bytes(b"not real audio -- decode_ok is pre-set, so nothing should read it")
     rid = _row(conn, f)
-    conn.execute("UPDATE archive SET decode_ok = 0, decode_checked_at = ? WHERE id = ?",
-                 ("2026-09-06 00:00:00", rid))
+    conn.execute(
+        "UPDATE archive SET decode_ok = 0, decode_checked_at = ? WHERE id = ?",
+        ("2026-09-06 00:00:00", rid),
+    )
     conn.commit()
 
     def _explode(*a, **k):
@@ -150,8 +171,12 @@ def test_a_never_checked_row_is_decoded_rather_than_waved_through(conn, cfg) -> 
     """The hole this closes: unchecked must not be treated as checked-and-fine."""
     f = _tone(cfg.vault_root / "ALAC_Archive" / "A" / "fresh.m4a")
     rid = _row(conn, f)
-    assert conn.execute("SELECT decode_checked_at FROM archive WHERE id = ?",
-                        (rid,)).fetchone()["decode_checked_at"] is None
+    assert (
+        conn.execute("SELECT decode_checked_at FROM archive WHERE id = ?", (rid,)).fetchone()[
+            "decode_checked_at"
+        ]
+        is None
+    )
     calls: list[Path] = []
     real = _bal.ffmpeg_decode_check
     try:

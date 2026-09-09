@@ -129,9 +129,7 @@ class TestTheRowSurvivesAnOutage:
         with policy(NetworkPolicy.ALLOWED):
             mb_enrich.MBEnrichStage().run(ctx)
 
-        row = ctx.conn.execute(
-            "SELECT mb_enriched_at, mb_artist_id FROM archive"
-        ).fetchone()
+        row = ctx.conn.execute("SELECT mb_enriched_at, mb_artist_id FROM archive").fetchone()
         # The assertion that would have caught this: not "did the stage
         # survive" but "is the row still going to be asked again".
         assert row["mb_enriched_at"] is None, "an outage must not mark a row done"

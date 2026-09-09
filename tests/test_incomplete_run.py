@@ -20,9 +20,13 @@ from musaeus.db import open_db
 @pytest.fixture
 def ctx(tmp_path) -> RunContext:
     cfg = MusicConfig(
-        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-        quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
-        meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+        vault_root=tmp_path,
+        inbox=tmp_path / "INBOX",
+        staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "QUARANTINE",
+        runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "ALAC-Library",
         db_path=tmp_path / "musaeus.db",
     )
     cfg.meta_dir.mkdir(parents=True, exist_ok=True)

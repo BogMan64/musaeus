@@ -54,9 +54,10 @@ def _schema_of(conn, name):
 
 def _indexes_of(conn, name):
     return sorted(
-        r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=? "
-            "AND sql IS NOT NULL", (name,)
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL",
+            (name,),
         )
     )
 

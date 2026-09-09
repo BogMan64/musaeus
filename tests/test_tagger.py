@@ -342,8 +342,7 @@ class TestAlbumArtistRepair:
         db_row = {"artist": db_artist, "album": album, "genre": genre}
         out = TaggerStage()._compute_changes(
             db_row,
-            {"artist": db_artist, "albumartist": file_albumartist,
-             "album": album, "genre": genre},
+            {"artist": db_artist, "albumartist": file_albumartist, "album": album, "genre": genre},
         )
         return {k: v for k, v in out.items() if k == "albumartist"}
 
@@ -369,9 +368,7 @@ class TestAlbumArtistRepair:
         }
 
     def test_parenthetical_variant_is_corrected(self):
-        assert self._changes("Ronettes, The", "Ronettes (the)") == {
-            "albumartist": "The Ronettes"
-        }
+        assert self._changes("Ronettes, The", "Ronettes (the)") == {"albumartist": "The Ronettes"}
 
     def test_already_canonical_is_left_alone(self):
         assert self._changes("Beatles, The", "Beatles, The") == {}
@@ -383,9 +380,10 @@ class TestAlbumArtistRepair:
     def test_split_credit_on_a_real_album_is_preserved(self):
         # On an album the credit IS the album's artist. Live example:
         # "Art Blakey & The Jazz Messengers" on "Moanin'".
-        assert self._changes(
-            "Johnny Cash", "Johnny Cash, The Tennessee Two", album="At Folsom Prison"
-        ) == {}
+        assert (
+            self._changes("Johnny Cash", "Johnny Cash, The Tennessee Two", album="At Folsom Prison")
+            == {}
+        )
 
     def test_split_credit_on_a_loose_single_follows_the_artist(self):
         # No album: the credit is a leftover, and the canon already collapsed
@@ -451,15 +449,11 @@ class TestAlbumArtistRepair:
         """
         assert self._changes("24kgoldn", "24kGoldn, iann dior") == {}
         # ... but an exactly-matching lead still mirrors
-        assert self._changes("50 Cent", "50 Cent, Nate Dogg") == {
-            "albumartist": "50 Cent"
-        }
+        assert self._changes("50 Cent", "50 Cent, Nate Dogg") == {"albumartist": "50 Cent"}
 
     def test_article_convention_still_applies_despite_the_casing_guard(self):
         # Differs by more than case, so it is convention, not damage.
-        assert self._changes("Ad Libs, The", "THE AD LIBS") == {
-            "albumartist": "The Ad Libs"
-        }
+        assert self._changes("Ad Libs, The", "THE AD LIBS") == {"albumartist": "The Ad Libs"}
 
     def test_unrelated_albumartist_is_preserved(self):
         assert self._changes("Beatles, The", "Rolling Stones, The") == {}
@@ -556,7 +550,7 @@ class TestTaggerActuallyWritesToDisk:
         assert not tags.get("soar"), "no article, so no sort tag"
 
     def test_a_stylized_name_is_not_rearranged_on_disk(self, ctx, tmp_path):
-        """"De La Soul" -> "La Soul, De" was live corruption, 2026-08-16."""
+        """ "De La Soul" -> "La Soul, De" was live corruption, 2026-08-16."""
         track = tmp_path / "song3.m4a"
         self._make_m4a(track)
         upsert_archive(
@@ -625,22 +619,31 @@ class TestVerifyEffectReadsTheFileBack:
     def _tagged_row(self, ctx, path: Path, artist: str, title: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"x")
-        upsert_archive(ctx.conn, {
-            "file_path": str(path), "status": "CATALOGUED",
-            "artist": artist, "title": title,
-        })
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(path),
+                "status": "CATALOGUED",
+                "artist": artist,
+                "title": title,
+            },
+        )
         ctx.log_event("TAGGER_WRITE", file_path=str(path), stage="tagger")
         ctx.conn.commit()
 
     def _probe_stub(self, artist, title):
-        return {"format": {"tags": {"artist": artist, "title": title}},
-                "streams": [{"codec_type": "audio", "codec_name": "alac"}]}
+        return {
+            "format": {"tags": {"artist": artist, "title": title}},
+            "streams": [{"codec_type": "audio", "codec_name": "alac"}],
+        }
 
     def test_tags_that_landed_are_not_flagged(self, ctx, tmp_path, monkeypatch):
         f = tmp_path / "ok.m4a"
         self._tagged_row(ctx, f, "Bill Withers", "Ain't No Sunshine")
-        monkeypatch.setattr("musaeus.stages.scholar._probe",
-                            lambda _p: self._probe_stub("Bill Withers", "Ain't No Sunshine"))
+        monkeypatch.setattr(
+            "musaeus.stages.scholar._probe",
+            lambda _p: self._probe_stub("Bill Withers", "Ain't No Sunshine"),
+        )
         assert TaggerStage().verify_effect(ctx, MagicMock(files_changed=1)) == []
 
     def test_a_silent_save_failure_is_caught(self, ctx, tmp_path, monkeypatch):
@@ -648,8 +651,10 @@ class TestVerifyEffectReadsTheFileBack:
         This is exactly what a failed mutagen save() looks like from outside."""
         f = tmp_path / "stale.m4a"
         self._tagged_row(ctx, f, "Bill Withers", "Ain't No Sunshine")
-        monkeypatch.setattr("musaeus.stages.scholar._probe",
-                            lambda _p: self._probe_stub("Unknown Artist", "Track 01"))
+        monkeypatch.setattr(
+            "musaeus.stages.scholar._probe",
+            lambda _p: self._probe_stub("Unknown Artist", "Track 01"),
+        )
         problems = TaggerStage().verify_effect(ctx, MagicMock(files_changed=1))
         assert problems, "a file whose tags never changed must not pass"
         assert any("artist" in p for p in problems)
@@ -658,8 +663,10 @@ class TestVerifyEffectReadsTheFileBack:
         """Tag readers differ on case; that is not a failed write."""
         f = tmp_path / "case.m4a"
         self._tagged_row(ctx, f, "Bill Withers", "Ain't No Sunshine")
-        monkeypatch.setattr("musaeus.stages.scholar._probe",
-                            lambda _p: self._probe_stub("BILL WITHERS", "ain't no sunshine"))
+        monkeypatch.setattr(
+            "musaeus.stages.scholar._probe",
+            lambda _p: self._probe_stub("BILL WITHERS", "ain't no sunshine"),
+        )
         assert TaggerStage().verify_effect(ctx, MagicMock(files_changed=1)) == []
 
     def test_a_vanished_file_is_reported(self, ctx, tmp_path):
@@ -677,6 +684,7 @@ class TestVerifyEffectReadsTheFileBack:
         Turning a read problem into a verification failure is the
         crying-wolf half of the same mistake."""
         from musaeus.stages.scholar import ProbeError
+
         f = tmp_path / "unreadable.m4a"
         self._tagged_row(ctx, f, "A", "B")
 
@@ -685,6 +693,7 @@ class TestVerifyEffectReadsTheFileBack:
 
         monkeypatch.setattr("musaeus.stages.scholar._probe", _boom)
         from musaeus.stages.base import NO_VERIFICATION
+
         out = TaggerStage().verify_effect(ctx, MagicMock(files_changed=1))
         assert out is NO_VERIFICATION or out == []
 
@@ -712,17 +721,26 @@ class TestArtistTagDoesNotOscillate:
 
     def _tags(self, **over):
         base = {
-            "artist": "The Zombies", "albumartist": "The Zombies",
-            "sort_artist": "Zombies, The", "sort_albumartist": "Zombies, The",
-            "album": "Odessey", "title": "Time of the Season",
-            "genre": "Psychedelic Rock", "year": "", "track": "",
+            "artist": "The Zombies",
+            "albumartist": "The Zombies",
+            "sort_artist": "Zombies, The",
+            "sort_albumartist": "Zombies, The",
+            "album": "Odessey",
+            "title": "Time of the Season",
+            "genre": "Psychedelic Rock",
+            "year": "",
+            "track": "",
         }
         base.update(over)
         return base
 
     def _row(self, **over):
-        base = {"artist": "Zombies, The", "album": "Odessey",
-                "title": "Time of the Season", "genre": "Psychedelic Rock"}
+        base = {
+            "artist": "Zombies, The",
+            "album": "Odessey",
+            "title": "Time of the Season",
+            "genre": "Psychedelic Rock",
+        }
         base.update(over)
         return base
 
@@ -732,10 +750,16 @@ class TestArtistTagDoesNotOscillate:
     def test_the_sort_form_is_never_written_into_the_artist_tag(self):
         """The specific failure: whatever else changes, the artist tag must
         never be handed the row's sort form."""
-        for tags in (self._tags(), self._tags(artist="Zombies, The"),
-                     self._tags(artist="THE ZOMBIES"), self._tags(genre="Rock")):
+        for tags in (
+            self._tags(),
+            self._tags(artist="Zombies, The"),
+            self._tags(artist="THE ZOMBIES"),
+            self._tags(genre="Rock"),
+        ):
             got = TaggerStage()._compute_changes(self._row(), tags).get("artist")
-            assert got != "Zombies, The", f"sort form written into the artist tag from {tags['artist']!r}"
+            assert got != "Zombies, The", (
+                f"sort form written into the artist tag from {tags['artist']!r}"
+            )
 
     def test_a_wrong_artist_tag_is_still_repaired_to_the_natural_form(self):
         """The fix must not make the rule inert."""
@@ -753,6 +777,7 @@ class TestArtistTagDoesNotOscillate:
 
     def test_a_non_article_artist_still_round_trips(self):
         row = self._row(artist="Pink Floyd")
-        tags = self._tags(artist="Pink Floyd", albumartist="Pink Floyd",
-                          sort_artist="", sort_albumartist="")
+        tags = self._tags(
+            artist="Pink Floyd", albumartist="Pink Floyd", sort_artist="", sort_albumartist=""
+        )
         assert TaggerStage()._compute_changes(row, tags) == {}

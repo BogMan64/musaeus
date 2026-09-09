@@ -22,16 +22,33 @@ pytestmark = pytest.mark.skipif(
     not shutil.which("ffmpeg"), reason="ffmpeg needed to mint a real m4a"
 )
 
-_ATOMS = {"artist": "\xa9ART", "albumartist": "aART",
-          "sort_artist": "soar", "sort_albumartist": "soaa"}
+_ATOMS = {
+    "artist": "\xa9ART",
+    "albumartist": "aART",
+    "sort_artist": "soar",
+    "sort_albumartist": "soaa",
+}
 
 
 def _make_m4a(path: Path, **tags: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-         "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "0.3",
-         "-c:a", "alac", str(path)],
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=stereo",
+            "-t",
+            "0.3",
+            "-c:a",
+            "alac",
+            str(path),
+        ],
         check=True,
     )
     from mutagen.mp4 import MP4
@@ -56,37 +73,45 @@ def _on_disk(path: Path) -> dict[str, str]:
 
 
 def test_an_article_artist_is_split_across_both_fields():
-    fields = {"artist": "Stooges, The", "albumartist": "", "sort_artist": "",
-              "sort_albumartist": ""}
-    assert sp.plan_for(fields) == {
-        "artist": "The Stooges", "sort_artist": "Stooges, The"
+    fields = {
+        "artist": "Stooges, The",
+        "albumartist": "",
+        "sort_artist": "",
+        "sort_albumartist": "",
     }
+    assert sp.plan_for(fields) == {"artist": "The Stooges", "sort_artist": "Stooges, The"}
 
 
 def test_a_name_with_no_article_is_not_planned():
     for name in ("Dusty Springfield", "TLC", "AC/DC"):
-        fields = {"artist": name, "albumartist": "", "sort_artist": "",
-                  "sort_albumartist": ""}
+        fields = {"artist": name, "albumartist": "", "sort_artist": "", "sort_albumartist": ""}
         assert sp.plan_for(fields) == {}
 
 
 def test_a_stylized_name_is_not_planned():
-    """"De La Soul" -> "La Soul, De" was live corruption, 2026-08-16."""
+    """ "De La Soul" -> "La Soul, De" was live corruption, 2026-08-16."""
     for name in ("De La Soul", "Los Lobos", "La Roux"):
-        fields = {"artist": name, "albumartist": "", "sort_artist": "",
-                  "sort_albumartist": ""}
+        fields = {"artist": name, "albumartist": "", "sort_artist": "", "sort_albumartist": ""}
         assert sp.plan_for(fields) == {}
 
 
 def test_an_already_split_file_is_not_replanned():
-    fields = {"artist": "The Stooges", "albumartist": "",
-              "sort_artist": "Stooges, The", "sort_albumartist": ""}
+    fields = {
+        "artist": "The Stooges",
+        "albumartist": "",
+        "sort_artist": "Stooges, The",
+        "sort_albumartist": "",
+    }
     assert sp.plan_for(fields) == {}
 
 
 def test_albumartist_follows_only_when_it_already_agreed():
-    agreed = {"artist": "Stooges, The", "albumartist": "Stooges, The",
-              "sort_artist": "", "sort_albumartist": ""}
+    agreed = {
+        "artist": "Stooges, The",
+        "albumartist": "Stooges, The",
+        "sort_artist": "",
+        "sort_albumartist": "",
+    }
     plan = sp.plan_for(agreed)
     assert plan["albumartist"] == "The Stooges"
     assert plan["sort_albumartist"] == "Stooges, The"
@@ -94,16 +119,24 @@ def test_albumartist_follows_only_when_it_already_agreed():
 
 def test_a_genuinely_different_albumartist_is_left_alone():
     """A compilation's albumartist is not the track artist."""
-    fields = {"artist": "Stooges, The", "albumartist": "Various Artists",
-              "sort_artist": "", "sort_albumartist": ""}
+    fields = {
+        "artist": "Stooges, The",
+        "albumartist": "Various Artists",
+        "sort_artist": "",
+        "sort_albumartist": "",
+    }
     plan = sp.plan_for(fields)
     assert "albumartist" not in plan
     assert "sort_albumartist" not in plan
 
 
 def test_an_absent_albumartist_is_not_invented():
-    fields = {"artist": "Stooges, The", "albumartist": "",
-              "sort_artist": "", "sort_albumartist": ""}
+    fields = {
+        "artist": "Stooges, The",
+        "albumartist": "",
+        "sort_artist": "",
+        "sort_albumartist": "",
+    }
     assert "albumartist" not in sp.plan_for(fields)
 
 
@@ -173,8 +206,9 @@ def test_the_journal_is_durable_before_the_file_is_touched(tmp_path, monkeypatch
     _make_m4a(lib / "1.m4a", artist="Stooges, The")
     planned, _ = sp.scan(lib, None)
     journal = tmp_path / "j.jsonl"
-    monkeypatch.setattr(sp, "write_fields", lambda p, v: (_ for _ in ()).throw(
-        KeyboardInterrupt("power cut")))
+    monkeypatch.setattr(
+        sp, "write_fields", lambda p, v: (_ for _ in ()).throw(KeyboardInterrupt("power cut"))
+    )
     with pytest.raises(KeyboardInterrupt):
         sp.apply(planned, journal)
     assert json.loads(journal.read_text().strip())["before"]["artist"] == "Stooges, The"
@@ -217,7 +251,8 @@ def test_dry_run_writes_nothing(tmp_path):
     p = _make_m4a(lib / "1.m4a", artist="Stooges, The")
     out = subprocess.run(
         [sys.executable, str(_SCRIPT), "--root", str(lib)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
         env={**__import__("os").environ, "MUSAEUS_VAULT_ROOT": str(tmp_path)},
     )
     assert "DRY RUN" in out.stdout, out.stdout + out.stderr

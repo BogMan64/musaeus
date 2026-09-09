@@ -453,9 +453,9 @@ class OrganizeStage(BaseStage):
                 f"not at the new path, e.g. {Path(absent[0]).name}"
             )
         left_behind = [
-            r["old_value"] for r in rows
-            if r["old_value"] and Path(r["old_value"]).exists()
-            and Path(r["new_value"]).exists()
+            r["old_value"]
+            for r in rows
+            if r["old_value"] and Path(r["old_value"]).exists() and Path(r["new_value"]).exists()
         ]
         if left_behind:
             problems.append(
@@ -492,8 +492,7 @@ class OrganizeStage(BaseStage):
         # No library yet, or unreadable: the bare roots still answer.
         with contextlib.suppress(OSError):
             roots.extend(
-                d for d in ctx.alac_library.iterdir()
-                if d.is_dir() and _BATCH_DIR_RE.match(d.name)
+                d for d in ctx.alac_library.iterdir() if d.is_dir() and _BATCH_DIR_RE.match(d.name)
             )
         return roots
 

@@ -33,7 +33,8 @@ def vault(tmp_path):
     (meta / "MasterLaw.csv").write_text("Byrds, The,Rock\n", encoding="utf-8")
     (meta / "Genre_Allowed.txt").write_text("Rock\nJazz\nHoliday\n", encoding="utf-8")
     (meta / "Genre_Canonical_Map.txt").write_text(
-        "# a comment\nAlternative/Indie => Alternative\nblues => Blues\n", encoding="utf-8")
+        "# a comment\nAlternative/Indie => Alternative\nblues => Blues\n", encoding="utf-8"
+    )
     db = tmp_path / "musaeus.db"
     conn = sqlite3.connect(db)
     conn.execute("CREATE TABLE archive (artist TEXT, title TEXT, genre TEXT, status TEXT)")
@@ -97,7 +98,7 @@ class TestUnknownArtists:
         assert unknown_artists(vault) == []
 
     def test_the_article_convention_folds(self, vault):
-        """"Byrds, The" is in the law; "The Byrds" must not read as unknown.
+        """ "Byrds, The" is in the law; "The Byrds" must not read as unknown.
         That mismatch left 246 MasterLaw rules dormant once already."""
         assert fold("The Byrds") == fold("Byrds, The") == fold("Byrds (the)")
 

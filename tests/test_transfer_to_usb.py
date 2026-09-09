@@ -55,9 +55,7 @@ from scripts.usb_transfer.transfer_to_usb import (  # noqa: E402
 _DESTRUCTIVE = {"umount", "wipefs", "parted", "mkfs.exfat", "mkfs.vfat", "mount"}
 
 
-def _device(
-    path="/dev/sdb", size=64_000_000_000, removable=True, mountpoints=None
-) -> BlockDevice:
+def _device(path="/dev/sdb", size=64_000_000_000, removable=True, mountpoints=None) -> BlockDevice:
     return BlockDevice(
         path=path,
         size_bytes=size,
@@ -813,7 +811,8 @@ class TestMainEndToEnd:
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
         monkeypatch.setattr(
-            usb_mod, "copy_with_verification",
+            usb_mod,
+            "copy_with_verification",
             lambda files, source_root, dest_root, **kw: CopyResult(ok=[str(f) for f in files]),
         )
         monkeypatch.setattr(
@@ -860,7 +859,8 @@ class TestMainEndToEnd:
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
         monkeypatch.setattr(
-            usb_mod, "copy_with_verification",
+            usb_mod,
+            "copy_with_verification",
             lambda files, source_root, dest_root, **kw: CopyResult(ok=[str(f) for f in files]),
         )
         monkeypatch.setattr(
@@ -1125,7 +1125,14 @@ class TestFilesystemFormatCommands:
         the stick on that alone."""
         mkpart = build_wipe_and_format_commands("/dev/sdb", filesystem="fat32")[2]
         assert mkpart == [
-            "parted", "--script", "/dev/sdb", "mkpart", "primary", "fat32", "0%", "100%"
+            "parted",
+            "--script",
+            "/dev/sdb",
+            "mkpart",
+            "primary",
+            "fat32",
+            "0%",
+            "100%",
         ]
 
     def test_does_not_execute_anything_for_either_filesystem(self, monkeypatch):
@@ -1183,9 +1190,9 @@ class TestFat32FileSizeGuard:
         monkeypatch.setattr(
             Path,
             "stat",
-            lambda self, **kw: type("S", (), {"st_size": 4 * 1024**3})()
-            if self == f
-            else real_stat(self, **kw),
+            lambda self, **kw: (
+                type("S", (), {"st_size": 4 * 1024**3})() if self == f else real_stat(self, **kw)
+            ),
         )
         flagged = files_too_big_for_fat32([f])
         assert [path for path, _ in flagged] == [f]
@@ -1378,11 +1385,24 @@ class TestFat32ExecutePath:
         assert usb_mod.main() == 0
 
         assert [c[0] for c in calls] == [
-            "wipefs", "parted", "parted", "<wait>", "mkfs.vfat", "mount", "umount"
+            "wipefs",
+            "parted",
+            "parted",
+            "<wait>",
+            "mkfs.vfat",
+            "mount",
+            "umount",
         ]
         assert calls[1] == ["parted", "--script", "/dev/sdz", "mklabel", "msdos"]
         assert calls[2] == [
-            "parted", "--script", "/dev/sdz", "mkpart", "primary", "fat32", "0%", "100%"
+            "parted",
+            "--script",
+            "/dev/sdz",
+            "mkpart",
+            "primary",
+            "fat32",
+            "0%",
+            "100%",
         ]
         assert calls[3] == ["<wait>", "/dev/sdz1"]
         assert calls[4] == ["mkfs.vfat", "-F", "32", "-n", "MUSAEUS", "/dev/sdz1"]
@@ -1455,7 +1475,9 @@ def _no_format_env(tmp_path, monkeypatch, dev=None):
     stick.mkdir(exist_ok=True)
 
     monkeypatch.setattr(usb_mod, "get_config", lambda: cfg)
-    monkeypatch.setattr(usb_mod, "list_removable_devices", lambda: [dev or _device(path="/dev/sdz")])
+    monkeypatch.setattr(
+        usb_mod, "list_removable_devices", lambda: [dev or _device(path="/dev/sdz")]
+    )
     monkeypatch.setattr(usb_mod, "critical_backing_disks", lambda *a, **k: set())
 
     def _boom(*a, **k):
@@ -1572,7 +1594,9 @@ class TestNoFormatTargetResolution:
     def test_dest_that_is_not_a_directory_is_refused(self, tmp_path, monkeypatch):
         cfg, stick = _no_format_env(tmp_path, monkeypatch)
         monkeypatch.setattr(
-            sys, "argv", ["prog", "--library", "car", "--no-format", "--dest", str(tmp_path / "nope")]
+            sys,
+            "argv",
+            ["prog", "--library", "car", "--no-format", "--dest", str(tmp_path / "nope")],
         )
         assert usb_mod.main() == 1
 
@@ -1597,9 +1621,7 @@ class TestNoFormatTargetResolution:
         dev = _device(path="/dev/sdz")
         dev.partitions = ["/dev/sdz1"]
         cfg, stick = _no_format_env(tmp_path, monkeypatch, dev=dev)
-        monkeypatch.setattr(
-            subprocess, "run", lambda *a, **k: _FakeCompleted(returncode=1)
-        )
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _FakeCompleted(returncode=1))
         monkeypatch.setattr(
             sys, "argv", ["prog", "--library", "car", "--no-format", "--device", "/dev/sdz"]
         )
@@ -1612,7 +1634,9 @@ class TestNoFormatTargetResolution:
 
         original = mod._findmnt_target
         try:
-            mod._findmnt_target = lambda source: "/media/one" if source.endswith("1") else "/media/two"
+            mod._findmnt_target = lambda source: (
+                "/media/one" if source.endswith("1") else "/media/two"
+            )
             with pytest.raises(UsbTargetError, match="2 mounted partitions"):
                 mounted_dir_for_device(dev)
         finally:
@@ -1646,9 +1670,7 @@ class TestNoFormatFreeSpace:
     def test_too_little_space_names_both_numbers(self, tmp_path, monkeypatch):
         f = tmp_path / "track.m4a"
         f.write_bytes(b"x" * 4096)
-        monkeypatch.setattr(
-            usb_mod.shutil, "disk_usage", lambda p: type("U", (), {"free": 100})()
-        )
+        monkeypatch.setattr(usb_mod.shutil, "disk_usage", lambda p: type("U", (), {"free": 100})())
         with pytest.raises(UsbTargetError) as exc:
             check_free_space(tmp_path, [f])
         message = str(exc.value)
@@ -1657,9 +1679,7 @@ class TestNoFormatFreeSpace:
 
     def test_main_refuses_before_copying_when_space_is_short(self, tmp_path, monkeypatch):
         cfg, stick = _no_format_env(tmp_path, monkeypatch)
-        monkeypatch.setattr(
-            usb_mod.shutil, "disk_usage", lambda p: type("U", (), {"free": 0})()
-        )
+        monkeypatch.setattr(usb_mod.shutil, "disk_usage", lambda p: type("U", (), {"free": 0})())
         monkeypatch.setattr(
             sys,
             "argv",

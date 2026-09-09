@@ -99,10 +99,13 @@ class TestBothScriptsAgree:
     they were deliberately written to share a shape, which is how one bug
     became two."""
 
-    @pytest.mark.parametrize("path", [
-        "scripts/musaeus_migrate_to_archive.py",
-        "scripts/alac_library/build_alac_library.py",
-    ])
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "scripts/musaeus_migrate_to_archive.py",
+            "scripts/alac_library/build_alac_library.py",
+        ],
+    )
     def test_the_baked_exclusion_is_present(self, path):
         src = (_ROOT / path).read_text(encoding="utf-8")
         assert "lufs_baked_at IS NULL OR lufs_baked_at = ''" in src, (

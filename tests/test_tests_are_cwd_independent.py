@@ -28,8 +28,12 @@ def _relative_source_reads(tree: ast.AST) -> list[int]:
     """
     bad: list[int] = []
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                and node.func.id == "Path" and node.args):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "Path"
+            and node.args
+        ):
             continue
         arg = node.args[0]
         if not (isinstance(arg, ast.Constant) and isinstance(arg.value, str)):
@@ -79,8 +83,8 @@ def test_the_guard_can_actually_see_a_violation() -> None:
 def test_an_anchored_path_is_allowed() -> None:
     """Path(__file__)-based reads are cwd-independent and must stay legal."""
     tree = ast.parse(
-        'from pathlib import Path\n'
-        'ROOT = Path(__file__).resolve().parent.parent\n'
+        "from pathlib import Path\n"
+        "ROOT = Path(__file__).resolve().parent.parent\n"
         'src = (ROOT / "musaeus" / "cli.py").read_text()\n'
     )
     assert not _relative_source_reads(tree)

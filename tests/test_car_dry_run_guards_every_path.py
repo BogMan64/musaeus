@@ -37,8 +37,7 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPT = (Path(__file__).resolve().parents[1]
-           / "scripts" / "car_library" / "build_car_library.py")
+_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
 
 
 def _main_body() -> list[ast.stmt]:
@@ -64,23 +63,31 @@ def test_the_dry_run_guard_is_not_nested_inside_the_catalogue_branch() -> None:
     that is not inside `if args.from_catalogue:`. Before the fix there was
     none — every dry_run test sat one level deeper.
     """
+
     def is_dry_run_test(stmt: ast.stmt) -> bool:
-        return (isinstance(stmt, ast.If)
-                and isinstance(stmt.test, ast.Attribute)
-                and stmt.test.attr == "dry_run")
+        return (
+            isinstance(stmt, ast.If)
+            and isinstance(stmt.test, ast.Attribute)
+            and stmt.test.attr == "dry_run"
+        )
 
     top_level_guards = [s for s in _main_body() if is_dry_run_test(s)]
     assert top_level_guards, (
         "no top-level `if args.dry_run:` in main() — the only guard is nested "
-        "inside a mode branch, which is M-05")
+        "inside a mode branch, which is M-05"
+    )
 
 
 def test_the_guard_returns_rather_than_falling_through() -> None:
     for stmt in _main_body():
-        if (isinstance(stmt, ast.If) and isinstance(stmt.test, ast.Attribute)
-                and stmt.test.attr == "dry_run"):
-            assert any(isinstance(s, ast.Return) for s in stmt.body), \
+        if (
+            isinstance(stmt, ast.If)
+            and isinstance(stmt.test, ast.Attribute)
+            and stmt.test.attr == "dry_run"
+        ):
+            assert any(isinstance(s, ast.Return) for s in stmt.body), (
                 "the dry-run guard must return, not merely print"
+            )
             return
     pytest.fail("no top-level dry-run guard found")
 
@@ -106,7 +113,10 @@ def test_limit_outside_catalogue_mode_is_refused_not_ignored() -> None:
     """Verified by running the real CLI, not by reading the source."""
     proc = subprocess.run(
         [sys.executable, str(_SCRIPT), "--dry-run", "--limit", "5"],
-        capture_output=True, text=True, timeout=120)
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
     assert proc.returncode != 0, "--limit without --from-catalogue was accepted"
     assert "--from-catalogue" in proc.stderr, proc.stderr
 
@@ -114,7 +124,10 @@ def test_limit_outside_catalogue_mode_is_refused_not_ignored() -> None:
 def test_budget_gb_outside_catalogue_mode_is_refused_not_ignored() -> None:
     proc = subprocess.run(
         [sys.executable, str(_SCRIPT), "--dry-run", "--budget-gb", "30"],
-        capture_output=True, text=True, timeout=120)
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
     assert proc.returncode != 0, "--budget-gb without --from-catalogue was accepted"
     assert "--from-catalogue" in proc.stderr, proc.stderr
 
@@ -126,8 +139,8 @@ def test_those_flags_are_still_accepted_in_catalogue_mode() -> None:
     any work, so this cannot touch the vault.
     """
     proc = subprocess.run(
-        [sys.executable, str(_SCRIPT), "--help"],
-        capture_output=True, text=True, timeout=120)
+        [sys.executable, str(_SCRIPT), "--help"], capture_output=True, text=True, timeout=120
+    )
     assert proc.returncode == 0
     for flag in ("--limit", "--budget-gb", "--dry-run", "--from-catalogue"):
         assert flag in proc.stdout, f"{flag} vanished from the interface"

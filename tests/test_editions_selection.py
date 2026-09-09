@@ -49,15 +49,34 @@ def conn() -> sqlite3.Connection:
     return c
 
 
-def _add(c, path, *, artist="A", album="Al", title="T", genre="Rock",
-         duration=240.0, size=40_000_000, status="CATALOGUED"):
-    c.execute("INSERT INTO archive VALUES (?,?,?,?,?,?,?,?)",
-              (path, artist, album, title, genre, duration, size, status))
+def _add(
+    c,
+    path,
+    *,
+    artist="A",
+    album="Al",
+    title="T",
+    genre="Rock",
+    duration=240.0,
+    size=40_000_000,
+    status="CATALOGUED",
+):
+    c.execute(
+        "INSERT INTO archive VALUES (?,?,?,?,?,?,?,?)",
+        (path, artist, album, title, genre, duration, size, status),
+    )
 
 
 def _track(**kw) -> Track:
-    base = {"file_path": "/m/A/Al/t.m4a", "artist": "A", "album": "Al", "title": "T",
-            "genre": "Rock", "duration": 240.0, "size_bytes": 40_000_000}
+    base = {
+        "file_path": "/m/A/Al/t.m4a",
+        "artist": "A",
+        "album": "Al",
+        "title": "T",
+        "genre": "Rock",
+        "duration": 240.0,
+        "size_bytes": 40_000_000,
+    }
     base.update(kw)
     return Track(**base)
 
@@ -115,7 +134,7 @@ class TestBudget:
 
     def test_fills_up_to_the_budget_and_reports_the_rest(self, conn) -> None:
         for i in range(10):
-            _add(conn, f"/m/{i}.m4a", duration=240.0)   # ~7.8 MB each
+            _add(conn, f"/m/{i}.m4a", duration=240.0)  # ~7.8 MB each
         sel = select_edition(conn, CAR, budget_bytes=25_000_000)
         assert 0 < len(sel.included) < 10
         assert sel.estimated_bytes <= 25_000_000
@@ -124,8 +143,8 @@ class TestBudget:
     def test_an_oversized_track_is_skipped_not_fatal(self, conn) -> None:
         """The bug this test exists for: a naive fill stops at the first
         item that will not fit and strands everything after it."""
-        _add(conn, "/m/huge.m4a", genre="Rock", duration=36_000.0)     # 10 h
-        _add(conn, "/m/small.m4a", genre="Rock", duration=180.0)       # 3 min
+        _add(conn, "/m/huge.m4a", genre="Rock", duration=36_000.0)  # 10 h
+        _add(conn, "/m/small.m4a", genre="Rock", duration=180.0)  # 3 min
         sel = select_edition(conn, CAR, budget_bytes=20_000_000)
         assert [t.file_path for t in sel.included] == ["/m/small.m4a"]
         assert [t.file_path for t in sel.skipped_for_budget] == ["/m/huge.m4a"]
@@ -153,8 +172,13 @@ class TestDeterminism:
         """A rebuild that silently differs from what was delivered is worse
         than one that fails."""
         for i in range(20):
-            _add(conn, f"/m/{i}.m4a", genre=["Rock", "Jazz", "Blues"][i % 3],
-                 artist=f"Artist{i % 4}", duration=200.0 + i)
+            _add(
+                conn,
+                f"/m/{i}.m4a",
+                genre=["Rock", "Jazz", "Blues"][i % 3],
+                artist=f"Artist{i % 4}",
+                duration=200.0 + i,
+            )
         a = [t.file_path for t in select_edition(conn, CAR, budget_bytes=40_000_000).included]
         b = [t.file_path for t in select_edition(conn, CAR, budget_bytes=40_000_000).included]
         assert a == b and a
@@ -163,7 +187,10 @@ class TestDeterminism:
 class TestOutputPaths:
     def test_mirrors_the_master_artist_album_shape(self) -> None:
         from pathlib import Path
-        t = _track(file_path="/vault/ALAC_Archive/2026-08-27A/ABBA/Voulez-Vous/ABBA - Chiquitita.m4a")
+
+        t = _track(
+            file_path="/vault/ALAC_Archive/2026-08-27A/ABBA/Voulez-Vous/ABBA - Chiquitita.m4a"
+        )
         got = output_path_for(t, CAR, Path("/out"))
         assert got == Path("/out/ABBA/Voulez-Vous/ABBA - Chiquitita.m4a")
 

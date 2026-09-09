@@ -56,20 +56,20 @@ def test_the_round_trip_closes(stored, natural, sort):
 
 
 def test_the_parenthetical_form_is_converted_not_accepted():
-    """"(the)" is a real but WRONG form; it regressed three times."""
+    """ "(the)" is a real but WRONG form; it regressed three times."""
     assert natural_form("Archies (the)") == "The Archies"
     assert sort_form("Archies (the)") == "Archies, The"
 
 
 def test_the_double_spelling_does_not_produce_two_articles():
-    """"Beatles, The (the)" must not become "The Beatles, The"."""
+    """ "Beatles, The (the)" must not become "The Beatles, The"."""
     assert natural_form("Beatles, The (the)") == "The Beatles"
     assert sort_form("Beatles, The (the)") == "Beatles, The"
 
 
 @pytest.mark.parametrize("name", PROTECTED)
 def test_a_stylized_name_survives_both_directions(name):
-    """"De La Soul" -> "La Soul, De" was live corruption, 2026-08-16."""
+    """ "De La Soul" -> "La Soul, De" was live corruption, 2026-08-16."""
     assert natural_form(name) == name
     assert sort_form(name) == name
     assert not has_article(name)

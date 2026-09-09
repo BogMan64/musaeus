@@ -292,7 +292,7 @@ def _rebuild_validation_issues(conn: sqlite3.Connection) -> int:
     )
     after = conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
     conn.commit()
-    return before - after
+    return int(before) - int(after)
 
 
 def ensure_columns(
@@ -349,8 +349,7 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
     if _validation_issues_key_includes_run_id(conn):
         removed = _rebuild_validation_issues(conn)
         logger.info(
-            "[db] validation_issues re-keyed on (file_path, issue); "
-            "%d duplicate row(s) collapsed",
+            "[db] validation_issues re-keyed on (file_path, issue); %d duplicate row(s) collapsed",
             removed,
         )
 
@@ -583,9 +582,10 @@ def lookup_denied_hash(conn: sqlite3.Connection, audio_hash: str) -> sqlite3.Row
     explaining why something got through.
     """
     conn.row_factory = sqlite3.Row
-    return conn.execute(
+    row: sqlite3.Row | None = conn.execute(
         "SELECT * FROM denied_hashes WHERE audio_hash = ?", (audio_hash,)
     ).fetchone()
+    return row
 
 
 def lookup_finalized_hash(conn: sqlite3.Connection, audio_hash: str) -> list[sqlite3.Row]:

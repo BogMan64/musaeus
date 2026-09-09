@@ -53,7 +53,7 @@ from pathlib import Path
 from ..config import LOSSLESS_CODECS as _LOSSLESS_CODECS
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
-from .base import NO_VERIFICATION, BaseStage, StageError
+from .base import NO_VERIFICATION, BaseStage, StageError, VerifyResult
 from .canonicalize import _has_attached_picture, _probe_streams
 
 logger = logging.getLogger(__name__)
@@ -86,6 +86,8 @@ def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
             ("transcode_at", "TEXT"),
         ),
     )
+
+
 def _best_aac_encoder() -> str:
     """Return libfdk_aac if ffmpeg has it, else built-in aac."""
     ffmpeg = shutil.which("ffmpeg")
@@ -335,7 +337,7 @@ class TranscodeStage(BaseStage):
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._transcode(ctx, dry_run=True)
 
-    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> VerifyResult:
         """A transcode this stage recorded must exist and hold audio.
 
         The row advertises where the output "is". ffmpeg exiting non-zero,

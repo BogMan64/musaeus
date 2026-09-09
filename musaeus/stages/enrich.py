@@ -326,9 +326,7 @@ class EnrichStage(BaseStage):
         ).fetchall()
         if not rows:
             return []
-        blank = [
-            Path(r["file_path"]).name for r in rows if not (r["genre"] or "").strip()
-        ]
+        blank = [Path(r["file_path"]).name for r in rows if not (r["genre"] or "").strip()]
         if not blank:
             return []
         return [

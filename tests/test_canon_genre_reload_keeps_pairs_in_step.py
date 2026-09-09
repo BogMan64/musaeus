@@ -127,5 +127,4 @@ def test_the_docstring_names_files_that_exist() -> None:
     assert named, "the docstring no longer names its backing files"
     assert any("Genre_Allowed.txt" in ln for ln in named), named
     assert any("Genre_Canonical_Map.txt" in ln for ln in named), named
-    assert not any("genre_map.tsv" in ln or "genre_allowed.txt" in ln
-                   for ln in named), named
+    assert not any("genre_map.tsv" in ln or "genre_allowed.txt" in ln for ln in named), named

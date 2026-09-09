@@ -83,6 +83,8 @@ def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
             ("acousticid_checked_at", "TEXT"),
         ),
     )
+
+
 def _fpcalc(path: str) -> tuple[float, str]:
     """
     Run fpcalc on an audio file.
@@ -202,15 +204,16 @@ def _pick_matching_recording(
         rid = rec.get("id")
         if not rid:
             continue
+        rid = str(rid)
         rt = _norm_for_match(rec.get("title", ""))
         if not rt or (rt not in wt and wt not in rt):
             continue
         artists = [_norm_for_match(a.get("name", "")) for a in rec.get("artists", [])]
         if wa and artists and not any(a and (a in wa or wa in a) for a in artists):
-            continue          # title agrees, artist does not -- a cover
+            continue  # title agrees, artist does not -- a cover
         if wa and artists:
-            return rid        # both agree: done
-        best = best or rid    # title agrees, no artist to check
+            return rid  # both agree: done
+        best = best or rid  # title agrees, no artist to check
     return best
 
 
@@ -297,7 +300,10 @@ def _acousticid_lookup(
             return chosen, score
         logger.debug(
             "[acousticid] %d recording(s) scored %.2f but none matched %r / %r",
-            len(recordings), score, want_artist, want_title,
+            len(recordings),
+            score,
+            want_artist,
+            want_title,
         )
 
     return None
@@ -448,7 +454,9 @@ class AcousticIDStage(BaseStage):
                 time.sleep(_RATE_LIMIT_S)
                 try:
                     match = _acousticid_lookup(
-                        fingerprint, duration, api_key,
+                        fingerprint,
+                        duration,
+                        api_key,
                         want_artist=_row_get(row, "artist"),
                         want_title=_row_get(row, "title"),
                     )
@@ -544,18 +552,29 @@ class AcousticIDStage(BaseStage):
                         other_artist = _row_get(other, "artist") if other else ""
                         mine = _norm_for_match(_row_get(row, "artist"))
                         theirs = _norm_for_match(other_artist)
-                        if mine and theirs and mine != theirs \
-                                and mine not in theirs and theirs not in mine:
+                        if (
+                            mine
+                            and theirs
+                            and mine != theirs
+                            and mine not in theirs
+                            and theirs not in mine
+                        ):
                             logger.info(
                                 "[acousticid] REJECTED pair, cross-artist (%s vs %s): %s == %s",
-                                _row_get(row, "artist"), other_artist, fp, other_fp,
+                                _row_get(row, "artist"),
+                                other_artist,
+                                fp,
+                                other_fp,
                             )
                             continue
 
                         if other_dur and abs(other_dur - duration) > _DUPE_DURATION_TOLERANCE_S:
                             logger.info(
                                 "[acousticid] REJECTED pair, %.0fs vs %.0fs: %s == %s",
-                                duration, other_dur, fp, other_fp,
+                                duration,
+                                other_dur,
+                                fp,
+                                other_fp,
                             )
                             continue
                         dupes_found += 1

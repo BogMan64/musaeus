@@ -36,9 +36,19 @@ def conn() -> sqlite3.Connection:
         file_path TEXT PRIMARY KEY, artist TEXT, album TEXT, title TEXT,
         genre TEXT, duration REAL, size_bytes INTEGER, status TEXT)""")
     for i in range(40):
-        c.execute("INSERT INTO archive VALUES (?,?,?,?,?,?,?,?)",
-                  (f"/m/{i:03d}.m4a", "A", "Al", f"T{i}",
-                   ["Rock", "Jazz", "Blues"][i % 3], 240.0, 40_000_000, "CATALOGUED"))
+        c.execute(
+            "INSERT INTO archive VALUES (?,?,?,?,?,?,?,?)",
+            (
+                f"/m/{i:03d}.m4a",
+                "A",
+                "Al",
+                f"T{i}",
+                ["Rock", "Jazz", "Blues"][i % 3],
+                240.0,
+                40_000_000,
+                "CATALOGUED",
+            ),
+        )
     return c
 
 

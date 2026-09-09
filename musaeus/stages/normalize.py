@@ -203,9 +203,7 @@ PROTECTED_ARTIST_CASING: frozenset[str] = frozenset(
 )
 
 # Lowercased for lookup, since a tag arrives in whatever case it likes.
-_PROTECTED_CASING_LOOKUP: dict[str, str] = {
-    name.lower(): name for name in PROTECTED_ARTIST_CASING
-}
+_PROTECTED_CASING_LOOKUP: dict[str, str] = {name.lower(): name for name in PROTECTED_ARTIST_CASING}
 
 
 # Short words that stay lowercase in title-case (MusicBrainz standard)

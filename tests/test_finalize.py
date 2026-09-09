@@ -595,8 +595,11 @@ class TestFinalizeRecoveryBoundary:
         """
         good = [
             _make_staged_track(
-                ctx, f"Good Artist - Track {n}.m4a",
-                artist="Good Artist", album="Album", title=f"Track {n}",
+                ctx,
+                f"Good Artist - Track {n}.m4a",
+                artist="Good Artist",
+                album="Album",
+                title=f"Track {n}",
                 audio_hash=f"cafe{n:04d}",
             )
             for n in range(4)
@@ -611,9 +614,12 @@ class TestFinalizeRecoveryBoundary:
         upsert_archive(
             ctx.conn,
             {
-                "file_path": str(stray), "status": "CATALOGUED",
-                "artist": "Johann Sebastian Bach", "album": "Cantata BWV 147",
-                "title": "Jesu, Joy Of Man's Desiring", "audio_hash": "beef0001",
+                "file_path": str(stray),
+                "status": "CATALOGUED",
+                "artist": "Johann Sebastian Bach",
+                "album": "Cantata BWV 147",
+                "title": "Jesu, Joy Of Man's Desiring",
+                "audio_hash": "beef0001",
             },
         )
         ctx.conn.execute(

@@ -80,10 +80,14 @@ class TestNamesThatLookLikeComposersButAreNot:
 class TestCanonMatching:
     def test_the_composer_is_found_wherever_it_sits_in_the_credit(self):
         # Position varies -- these two are real, and reversed.
-        assert composer_for("Dubravka Tomsic, Johann Sebastian Bach", "Italian Concerto", CANON)[0] \
+        assert (
+            composer_for("Dubravka Tomsic, Johann Sebastian Bach", "Italian Concerto", CANON)[0]
             == "Johann Sebastian Bach"
-        assert composer_for("Johann Sebastian Bach, Dubravka Tomsic", "Italian Concerto", CANON)[0] \
+        )
+        assert (
+            composer_for("Johann Sebastian Bach, Dubravka Tomsic", "Italian Concerto", CANON)[0]
             == "Johann Sebastian Bach"
+        )
 
     def test_a_title_prefix_resolves_it(self):
         got, how = composer_for("Academy of St Martin In the Fields", "Handel - Water Music", CANON)
@@ -97,9 +101,13 @@ class TestCanonMatching:
 @pytest.fixture
 def ctx(tmp_path) -> RunContext:
     cfg = MusicConfig(
-        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-        quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
-        meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+        vault_root=tmp_path,
+        inbox=tmp_path / "INBOX",
+        staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "QUARANTINE",
+        runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "ALAC-Library",
         db_path=tmp_path / "musaeus.db",
     )
     cfg.meta_dir.mkdir(parents=True, exist_ok=True)
@@ -113,8 +121,16 @@ def _track(ctx, artist, title, genre="Classical"):
     p = ctx.config.alac_library / "2026-08-18" / artist / "Unsorted" / f"{artist} - {title}.m4a"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(b"audio")
-    upsert_archive(ctx.conn, {"file_path": str(p), "status": "CATALOGUED",
-                              "artist": artist, "title": title, "genre": genre})
+    upsert_archive(
+        ctx.conn,
+        {
+            "file_path": str(p),
+            "status": "CATALOGUED",
+            "artist": artist,
+            "title": title,
+            "genre": genre,
+        },
+    )
     ctx.conn.commit()
     return p
 
@@ -150,8 +166,10 @@ class TestTheStage:
         result = ClassicalComposerStage().dry_run(ctx)
         assert result.files_changed == 1
         assert src.exists()
-        assert ctx.conn.execute("SELECT artist FROM archive").fetchone()["artist"] \
+        assert (
+            ctx.conn.execute("SELECT artist FROM archive").fetchone()["artist"]
             == "Academy of St Martin In the Fields"
+        )
 
     def test_verify_effect_reports_anything_still_resolvable(self, ctx):
         _track(ctx, "Academy of St Martin In the Fields", "Concerto, BWV 1043")
@@ -178,8 +196,16 @@ def _inbox_track(ctx, artist, title, genre="Classical"):
     ctx.config.inbox.mkdir(parents=True, exist_ok=True)
     p = ctx.config.inbox / f"{artist} - {title}.m4a"
     p.write_bytes(b"audio")
-    upsert_archive(ctx.conn, {"file_path": str(p), "status": "CATALOGUED",
-                              "artist": artist, "title": title, "genre": genre})
+    upsert_archive(
+        ctx.conn,
+        {
+            "file_path": str(p),
+            "status": "CATALOGUED",
+            "artist": artist,
+            "title": title,
+            "genre": genre,
+        },
+    )
     ctx.conn.commit()
     return p
 
@@ -228,6 +254,4 @@ class TestAFlatInboxTrackStaysInTheVault:
         row = ctx.conn.execute("SELECT artist, file_path FROM archive").fetchone()
         assert not src.exists()
         assert "Johann Sebastian Bach" in row["file_path"]
-        assert Path(row["file_path"]).resolve().is_relative_to(
-            ctx.config.alac_library.resolve()
-        )
+        assert Path(row["file_path"]).resolve().is_relative_to(ctx.config.alac_library.resolve())

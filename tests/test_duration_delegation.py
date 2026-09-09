@@ -26,9 +26,23 @@ pytestmark = pytest.mark.skipif(
 def _tone(path: Path, seconds: int = 5) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
-         "-c:a", "aac", "-movflags", "+faststart", str(path), "-y"],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration={seconds}",
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+faststart",
+            str(path),
+            "-y",
+        ],
+        check=True,
+        capture_output=True,
     )
     return path
 

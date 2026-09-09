@@ -64,7 +64,9 @@ def fingerprint(root: Path | None = None) -> str:
 def changed_files(baseline: dict[Path, str], root: Path | None = None) -> list[Path]:
     """Which files differ from the per-file baseline (for the message)."""
     now = per_file(root)
-    return sorted(set(baseline) ^ set(now) | {p for p in set(baseline) & set(now) if baseline[p] != now[p]})
+    return sorted(
+        set(baseline) ^ set(now) | {p for p in set(baseline) & set(now) if baseline[p] != now[p]}
+    )
 
 
 def per_file(root: Path | None = None) -> dict[Path, str]:

@@ -378,9 +378,9 @@ class NearDupeStage(BaseStage):
             Path(r["file_path"]).name
             for r in rows
             if not ctx.conn.execute(
-                "SELECT 1 FROM duplicates WHERE file_path = ? "
-                " AND duplicate_type = 'NEAR' LIMIT 1",
-                (r["file_path"],)).fetchone()
+                "SELECT 1 FROM duplicates WHERE file_path = ?  AND duplicate_type = 'NEAR' LIMIT 1",
+                (r["file_path"],),
+            ).fetchone()
         ]
         if not unstaged:
             return []

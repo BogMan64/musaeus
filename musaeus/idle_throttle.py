@@ -50,9 +50,12 @@ class _XIdle:
 
     class _Info(ctypes.Structure):
         _fields_ = [
-            ("window", ctypes.c_ulong), ("state", ctypes.c_int),
-            ("kind", ctypes.c_int), ("til_or_since", ctypes.c_ulong),
-            ("idle", ctypes.c_ulong), ("eventMask", ctypes.c_ulong),
+            ("window", ctypes.c_ulong),
+            ("state", ctypes.c_int),
+            ("kind", ctypes.c_int),
+            ("til_or_since", ctypes.c_ulong),
+            ("idle", ctypes.c_ulong),
+            ("eventMask", ctypes.c_ulong),
         ]
 
     def __init__(self) -> None:
@@ -65,9 +68,7 @@ class _XIdle:
             self._x11 = ctypes.CDLL(x11n)
             self._xss = ctypes.CDLL(xssn)
             self._x11.XOpenDisplay.restype = ctypes.c_void_p
-            self._dpy = self._x11.XOpenDisplay(
-                os.environ.get("DISPLAY", ":0").encode()
-            )
+            self._dpy = self._x11.XOpenDisplay(os.environ.get("DISPLAY", ":0").encode())
             if not self._dpy:
                 return
             self._xss.XScreenSaverAllocInfo.restype = ctypes.POINTER(self._Info)
@@ -201,8 +202,9 @@ class IdleThrottle:
             target=self._run, args=(probe,), daemon=True, name="idle-throttle"
         )
         self._thread.start()
-        logger.info("[idle] throttle active — pausing while in use, "
-                    "resuming after %.0fs quiet", self.idle_s)
+        logger.info(
+            "[idle] throttle active — pausing while in use, resuming after %.0fs quiet", self.idle_s
+        )
         return self
 
     def __exit__(self, *exc) -> None:
@@ -233,7 +235,7 @@ class IdleThrottle:
         pids = _descendants(os.getpid())
         # Stop deepest-first so a parent cannot spawn past a frozen child.
         n = 0
-        for p in (reversed(pids) if sig == signal.SIGSTOP else pids):
+        for p in reversed(pids) if sig == signal.SIGSTOP else pids:
             try:
                 os.kill(p, sig)
                 n += 1

@@ -94,10 +94,14 @@ def test_only_mb_misses_are_attempted(conn, monkeypatch) -> None:
 
     calls = []
     monkeypatch.setattr(
-        discogs, "search_artist",
+        discogs,
+        "search_artist",
         lambda name, key, secret: calls.append(name) or None,
     )
-    ctx = _Ctx(conn, SimpleNamespace(discogs_consumer_key="fake-key", discogs_consumer_secret="fake-secret"))
+    ctx = _Ctx(
+        conn,
+        SimpleNamespace(discogs_consumer_key="fake-key", discogs_consumer_secret="fake-secret"),
+    )
     MBEnrichStage()._discogs_fallback(ctx, _Result(), dry_run=False)
 
     assert calls == ["Missed By MB"]
@@ -107,10 +111,14 @@ def test_a_discogs_hit_writes_its_own_columns_not_mb_columns(conn, monkeypatch) 
     """The whole point: never write into mb_artist_id/mb_artist_name."""
     _row(conn, "Jake Shimabukuro")
     monkeypatch.setattr(
-        discogs, "search_artist",
+        discogs,
+        "search_artist",
         lambda name, key, secret: ("999888", "Jake Shimabukuro"),
     )
-    ctx = _Ctx(conn, SimpleNamespace(discogs_consumer_key="fake-key", discogs_consumer_secret="fake-secret"))
+    ctx = _Ctx(
+        conn,
+        SimpleNamespace(discogs_consumer_key="fake-key", discogs_consumer_secret="fake-secret"),
+    )
     MBEnrichStage()._discogs_fallback(ctx, _Result(), dry_run=False)
 
     row = dict(conn.execute("SELECT * FROM archive").fetchone())
@@ -123,7 +131,10 @@ def test_a_discogs_hit_writes_its_own_columns_not_mb_columns(conn, monkeypatch) 
 def test_a_discogs_miss_is_stamped_so_it_is_not_retried_forever(conn, monkeypatch) -> None:
     _row(conn, "Nobody Anywhere Has Heard Of")
     monkeypatch.setattr(discogs, "search_artist", lambda name, key, secret: None)
-    ctx = _Ctx(conn, SimpleNamespace(discogs_consumer_key="fake-key", discogs_consumer_secret="fake-secret"))
+    ctx = _Ctx(
+        conn,
+        SimpleNamespace(discogs_consumer_key="fake-key", discogs_consumer_secret="fake-secret"),
+    )
     MBEnrichStage()._discogs_fallback(ctx, _Result(), dry_run=False)
 
     row = dict(conn.execute("SELECT * FROM archive").fetchone())
@@ -143,7 +154,10 @@ def test_a_transport_failure_is_not_stamped_and_retries_next_run(conn, monkeypat
 
     monkeypatch.setattr(discogs, "search_artist", boom)
     _row(conn, "Transient Failure Artist")
-    ctx = _Ctx(conn, SimpleNamespace(discogs_consumer_key="fake-key", discogs_consumer_secret="fake-secret"))
+    ctx = _Ctx(
+        conn,
+        SimpleNamespace(discogs_consumer_key="fake-key", discogs_consumer_secret="fake-secret"),
+    )
     MBEnrichStage()._discogs_fallback(ctx, _Result(), dry_run=False)
 
     row = dict(conn.execute("SELECT * FROM archive").fetchone())
@@ -161,10 +175,14 @@ def test_already_discogs_checked_rows_are_not_re_attempted(conn, monkeypatch) ->
 
     calls = []
     monkeypatch.setattr(
-        discogs, "search_artist",
+        discogs,
+        "search_artist",
         lambda name, key, secret: calls.append(name) or None,
     )
-    ctx = _Ctx(conn, SimpleNamespace(discogs_consumer_key="fake-key", discogs_consumer_secret="fake-secret"))
+    ctx = _Ctx(
+        conn,
+        SimpleNamespace(discogs_consumer_key="fake-key", discogs_consumer_secret="fake-secret"),
+    )
     MBEnrichStage()._discogs_fallback(ctx, _Result(), dry_run=False)
     assert calls == []
 
@@ -173,10 +191,14 @@ def test_a_dry_run_makes_no_network_call_and_writes_nothing(conn, monkeypatch) -
     _row(conn, "Would Be Tried")
     called = []
     monkeypatch.setattr(
-        discogs, "search_artist",
+        discogs,
+        "search_artist",
         lambda name, key, secret: called.append(name) or None,
     )
-    ctx = _Ctx(conn, SimpleNamespace(discogs_consumer_key="fake-key", discogs_consumer_secret="fake-secret"))
+    ctx = _Ctx(
+        conn,
+        SimpleNamespace(discogs_consumer_key="fake-key", discogs_consumer_secret="fake-secret"),
+    )
     result = _Result()
     MBEnrichStage()._discogs_fallback(ctx, result, dry_run=True)
 
@@ -197,10 +219,14 @@ def test_multiple_rows_for_the_same_artist_all_get_the_result(conn, monkeypatch)
 
     calls = []
     monkeypatch.setattr(
-        discogs, "search_artist",
+        discogs,
+        "search_artist",
         lambda name, key, secret: calls.append(name) or ("42", "Prolific Artist"),
     )
-    ctx = _Ctx(conn, SimpleNamespace(discogs_consumer_key="fake-key", discogs_consumer_secret="fake-secret"))
+    ctx = _Ctx(
+        conn,
+        SimpleNamespace(discogs_consumer_key="fake-key", discogs_consumer_secret="fake-secret"),
+    )
     MBEnrichStage()._discogs_fallback(ctx, _Result(), dry_run=False)
 
     assert calls == ["Prolific Artist"], "must query once per unique artist, not per row"

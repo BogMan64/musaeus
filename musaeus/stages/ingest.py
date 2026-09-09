@@ -160,11 +160,7 @@ class IngestStage(BaseStage):
         ).fetchall()
         if not rows:
             return []
-        missing = [
-            Path(r["file_path"]).name
-            for r in rows
-            if not Path(r["file_path"]).exists()
-        ]
+        missing = [Path(r["file_path"]).name for r in rows if not Path(r["file_path"]).exists()]
         if not missing:
             return []
         return [

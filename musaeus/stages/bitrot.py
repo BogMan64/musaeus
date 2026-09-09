@@ -96,7 +96,7 @@ from pathlib import Path
 from ..config import AUDIO_EXTENSIONS
 from ..context import RunContext, StageResult, elision
 from ..hasher import audio_hash, file_hash
-from .base import NO_VERIFICATION, BaseStage
+from .base import NO_VERIFICATION, BaseStage, VerifyResult
 
 logger = logging.getLogger(__name__)
 
@@ -151,9 +151,7 @@ class BitRotStage(BaseStage):
         if not total:
             return 0, f"no audio files under {cfg.alac_archive}"
 
-        tables = {
-            r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        }
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "archive_tier_hashes" not in tables:
             return total, (
                 f"{total} file(s) to hash — no baseline table exists yet, so a "
@@ -224,8 +222,8 @@ class BitRotStage(BaseStage):
                 result.errors.append(f"{path.name}: {exc}")
                 continue
             ctx.conn.execute(
-                "UPDATE archive_tier_hashes SET audio_hash = ? WHERE path = ?",
-                (ah, str(path)))
+                "UPDATE archive_tier_hashes SET audio_hash = ? WHERE path = ?", (ah, str(path))
+            )
             result.files_changed += 1
             if i % _COMMIT_EVERY == 0:
                 ctx.conn.commit()
@@ -329,7 +327,8 @@ class BitRotStage(BaseStage):
         result.notes.append(f"files to verify: {len(files)}")
 
         rows = ctx.conn.execute(
-            "SELECT path, sha256, audio_hash FROM archive_tier_hashes").fetchall()
+            "SELECT path, sha256, audio_hash FROM archive_tier_hashes"
+        ).fetchall()
         baseline = {r["path"]: r["sha256"] for r in rows}
         baseline_audio = {r["path"]: r["audio_hash"] for r in rows}
         # The reverse index is what makes a moved file recognisable. PCM
@@ -415,7 +414,7 @@ class BitRotStage(BaseStage):
                         new_value=current_hash,
                         stage=self.NAME,
                         note="bytes changed and no PCM identity was baselined, "
-                             "so a re-tag cannot be distinguished from rot",
+                        "so a re-tag cannot be distinguished from rot",
                     )
                     logger.warning("[bitrot] UNCLASSIFIED CHANGE: %s", path.name)
                 else:
@@ -427,7 +426,7 @@ class BitRotStage(BaseStage):
                         new_value=current_hash,
                         stage=self.NAME,
                         note="ALAC_Archive audio changed since baseline "
-                             "(PCM identity differs, so this is not a re-tag)",
+                        "(PCM identity differs, so this is not a re-tag)",
                     )
                     logger.warning("[bitrot] MISMATCH: %s", path.name)
 
@@ -436,26 +435,25 @@ class BitRotStage(BaseStage):
 
         # A baselined row is only missing if nothing on disk claimed it --
         # a moved file claims its origin row, so it must not count as gone.
-        missing = [
-            p for p in baseline
-            if p not in matched_paths and not Path(p).exists()
-        ]
+        missing = [p for p in baseline if p not in matched_paths and not Path(p).exists()]
 
         result.notes.append(f"ok: {ok_count}")
-        result.notes.append(f"corrupt (audio changed since baseline): "
-                            f"{len(corrupt) - unclassified}")
+        result.notes.append(
+            f"corrupt (audio changed since baseline): {len(corrupt) - unclassified}"
+        )
         if unclassified:
             result.notes.append(
                 f"changed, unclassifiable: {unclassified}  (baselined before the "
                 f"PCM identity was recorded — re-baseline to enable re-tag "
-                f"detection, but read these first)")
+                f"detection, but read these first)"
+            )
         if moved:
-            result.notes.append(
-                f"moved since baseline (recognised by PCM identity): {moved}")
+            result.notes.append(f"moved since baseline (recognised by PCM identity): {moved}")
         if retagged:
             result.notes.append(
                 f"re-tagged, audio identical: {retagged}  (benign; re-baseline "
-                f"to stop reporting them)")
+                f"to stop reporting them)"
+            )
         result.notes.append(f"new (no baseline yet — run --rebaseline): {new_files}")
         result.notes.append(f"missing from disk (was baselined, gone now): {len(missing)}")
         # The number that decides whether a clean run means anything. A
@@ -467,7 +465,8 @@ class BitRotStage(BaseStage):
             result.notes.append(
                 f"NOT A CLEAN RESULT: {new_files} of {len(files)} files have no "
                 f"baseline, so this run verified almost nothing. Run "
-                f"--rebaseline before trusting a pass.")
+                f"--rebaseline before trusting a pass."
+            )
         if corrupt:
             result.success = False
             for fp, stored, current in corrupt[:20]:
@@ -480,7 +479,7 @@ class BitRotStage(BaseStage):
         ctx.record_stage(result)
         return result
 
-    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> VerifyResult:
         """A file this stage baselined must have a hash recorded for it.
 
         BitRot's value is entirely in the baseline: without a stored
@@ -489,8 +488,9 @@ class BitRotStage(BaseStage):
         fails silently for ever, by never detecting the rot it exists to
         detect. That is the worst shape of unverified stage.
         """
-        tables = {r[0] for r in ctx.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {
+            r[0] for r in ctx.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
         if "archive_tier_hashes" not in tables:
             return NO_VERIFICATION
         rows = ctx.conn.execute(
@@ -504,8 +504,8 @@ class BitRotStage(BaseStage):
             Path(r["file_path"]).name
             for r in rows
             if not ctx.conn.execute(
-                "SELECT 1 FROM archive_tier_hashes WHERE path = ? LIMIT 1",
-                (r["file_path"],)).fetchone()
+                "SELECT 1 FROM archive_tier_hashes WHERE path = ? LIMIT 1", (r["file_path"],)
+            ).fetchone()
         ]
         if not unbaselined:
             return []

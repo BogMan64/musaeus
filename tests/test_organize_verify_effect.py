@@ -45,15 +45,17 @@ def conn() -> sqlite3.Connection:
 
 
 def _event(c, old, new, kind="ORGANIZE_MOVE", run="run_test"):
-    c.execute("INSERT INTO events (run_id,stage,event_type,old_value,new_value) "
-              "VALUES (?,?,?,?,?)", (run, "organize", kind, str(old), str(new)))
+    c.execute(
+        "INSERT INTO events (run_id,stage,event_type,old_value,new_value) VALUES (?,?,?,?,?)",
+        (run, "organize", kind, str(old), str(new)),
+    )
     c.commit()
 
 
 def test_a_move_that_landed_verifies(conn, tmp_path: Path) -> None:
     old, new = tmp_path / "a.m4a", tmp_path / "Artist" / "b.m4a"
     new.parent.mkdir(parents=True)
-    new.write_text("x")            # moved: only the new path exists
+    new.write_text("x")  # moved: only the new path exists
     _event(conn, old, new)
     assert OrganizeStage().verify_effect(_Ctx(conn), None) == []
 
@@ -73,7 +75,7 @@ def test_a_copy_masquerading_as_a_move_is_reported(conn, tmp_path: Path) -> None
     old, new = tmp_path / "a.m4a", tmp_path / "Artist" / "a.m4a"
     new.parent.mkdir(parents=True)
     old.write_text("x")
-    new.write_text("x")            # BOTH exist
+    new.write_text("x")  # BOTH exist
     _event(conn, old, new)
     problems = OrganizeStage().verify_effect(_Ctx(conn), None)
     assert problems and "BOTH" in problems[0]

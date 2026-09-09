@@ -20,9 +20,7 @@ from musaeus.handoff import write_handoff_doc
 
 
 def _ctx(tmp_path: Path, stage_results: list[StageResult], run_id: str = "run_test"):
-    return SimpleNamespace(
-        stage_results=stage_results, runs_root=tmp_path / "RUNS", run_id=run_id
-    )
+    return SimpleNamespace(stage_results=stage_results, runs_root=tmp_path / "RUNS", run_id=run_id)
 
 
 def _ok(stage: str, **kw) -> StageResult:
@@ -41,7 +39,9 @@ def test_a_verification_failure_is_the_priority_section(tmp_path: Path) -> None:
     happen -- the class of bug this whole project keeps finding, and the
     reason the file should say to look here first."""
     bad = StageResult(
-        stage_name="corrupt", success=True, verified=False,
+        stage_name="corrupt",
+        success=True,
+        verified=False,
         verify_notes=["Song.m4a: decode failed: Input buffer exhausted"],
     )
     ctx = _ctx(tmp_path, [_ok("ingest"), bad])
@@ -62,7 +62,9 @@ def test_a_verification_failure_is_the_priority_section(tmp_path: Path) -> None:
 
 def test_a_stage_that_reported_failure_without_crashing_is_captured(tmp_path: Path) -> None:
     failed = StageResult(
-        stage_name="mb_enrich", success=False, files_errored=3,
+        stage_name="mb_enrich",
+        success=False,
+        files_errored=3,
         errors=["network timeout for 'Some Artist'"],
     )
     ctx = _ctx(tmp_path, [failed])
@@ -116,13 +118,22 @@ def test_only_this_runs_failure_reports_are_included(tmp_path: Path) -> None:
     failures_dir = tmp_path / "RUNS" / "FAILURES"
     failures_dir.mkdir(parents=True)
     (failures_dir / "ingest_run_OLD_20260101T000000000000Z.json").write_text(
-        json.dumps({"stage": "ingest", "exception_type": "OldError",
-                    "exception_message": "from a previous run", "traceback": "...",
-                    "phase": "run", "run_id": "run_OLD", "occurred_at": "x"})
+        json.dumps(
+            {
+                "stage": "ingest",
+                "exception_type": "OldError",
+                "exception_message": "from a previous run",
+                "traceback": "...",
+                "phase": "run",
+                "run_id": "run_OLD",
+                "occurred_at": "x",
+            }
+        )
     )
 
-    bad = StageResult(stage_name="corrupt", success=True, verified=False,
-                       verify_notes=["today's problem"])
+    bad = StageResult(
+        stage_name="corrupt", success=True, verified=False, verify_notes=["today's problem"]
+    )
     ctx = _ctx(tmp_path, [bad], run_id="run_TODAY")
     path = write_handoff_doc(ctx)
 
@@ -133,10 +144,10 @@ def test_only_this_runs_failure_reports_are_included(tmp_path: Path) -> None:
 
 
 def test_a_run_with_both_kinds_of_issue_gets_both_sections(tmp_path: Path) -> None:
-    bad = StageResult(stage_name="corrupt", success=True, verified=False,
-                       verify_notes=["decode mismatch"])
-    failed = StageResult(stage_name="mb_enrich", success=False,
-                          errors=["timeout"])
+    bad = StageResult(
+        stage_name="corrupt", success=True, verified=False, verify_notes=["decode mismatch"]
+    )
+    failed = StageResult(stage_name="mb_enrich", success=False, errors=["timeout"])
     ctx = _ctx(tmp_path, [bad, failed])
     text = write_handoff_doc(ctx).read_text()
     assert "Verification failures" in text
@@ -148,8 +159,9 @@ def test_an_unreadable_failure_report_is_skipped_not_fatal(tmp_path: Path) -> No
     failures_dir.mkdir(parents=True)
     (failures_dir / "x_run_test_20260101T000000000000Z.json").write_text("{not valid json")
 
-    bad = StageResult(stage_name="corrupt", success=True, verified=False,
-                       verify_notes=["real problem"])
+    bad = StageResult(
+        stage_name="corrupt", success=True, verified=False, verify_notes=["real problem"]
+    )
     ctx = _ctx(tmp_path, [bad], run_id="run_test")
     # must not raise despite the corrupt report sitting alongside a real issue
     path = write_handoff_doc(ctx)
@@ -160,8 +172,7 @@ def test_an_unreadable_failure_report_is_skipped_not_fatal(tmp_path: Path) -> No
 def test_the_doc_orients_a_tool_less_reader(tmp_path: Path) -> None:
     """The file has to work for someone who cannot verify anything --
     it should say so, not just dump data."""
-    bad = StageResult(stage_name="corrupt", success=True, verified=False,
-                       verify_notes=["x"])
+    bad = StageResult(stage_name="corrupt", success=True, verified=False, verify_notes=["x"])
     ctx = _ctx(tmp_path, [bad])
     text = write_handoff_doc(ctx).read_text()
     assert "no file or tool access" in text.lower()
@@ -192,7 +203,9 @@ def test_a_stage_with_thousands_of_errors_stays_pasteable(tmp_path: Path) -> Non
     rendering all of them made a ~400KB file that could not be pasted
     anywhere. Asserts the positive: twenty entries, then an honest count."""
     flood = StageResult(
-        stage_name="scholar", success=False, files_errored=3094,
+        stage_name="scholar",
+        success=False,
+        files_errored=3094,
         errors=[f"Missing: /vault/INBOX/track_{n}.m4a" for n in range(3094)],
     )
     ctx = _ctx(tmp_path, [flood])
@@ -246,8 +259,13 @@ def test_the_undo_record_survives_truncation(tmp_path: Path) -> None:
         "manifest: /vault/DUPES_MOVED_FOR_REVIEW/2026-09-04/manifest.json",
         "restore script: /vault/DUPES_MOVED_FOR_REVIEW/2026-09-04/restore.sh",
     ]
-    failed = StageResult(stage_name="dupe-resolver", success=False,
-                         files_errored=1, errors=["one bad path"], notes=notes)
+    failed = StageResult(
+        stage_name="dupe-resolver",
+        success=False,
+        files_errored=1,
+        errors=["one bad path"],
+        notes=notes,
+    )
     text = write_handoff_doc(_ctx(tmp_path, [failed])).read_text()
 
     assert "restore script: /vault/DUPES_MOVED_FOR_REVIEW/2026-09-04/restore.sh" in text
@@ -279,7 +297,7 @@ def test_a_handoff_failure_is_loud_not_silent() -> None:
 
     # guarded: a raising write_handoff_doc must not escape, must warn, must
     # mark the run failed
-    body = source[source.index("handoff_path = write_handoff_doc(ctx)") - 400:]
+    body = source[source.index("handoff_path = write_handoff_doc(ctx)") - 400 :]
     assert "try:" in body
     assert "could not write the ForClaudeHandoff doc" in body
     assert "exit_code = 1" in body

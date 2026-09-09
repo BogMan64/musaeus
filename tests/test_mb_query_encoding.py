@@ -92,7 +92,9 @@ class TestArtistIdentityGuard:
             mb_enrich,
             "_mb_get",
             lambda *a, **k: {
-                "artists": [{"id": f"mbid-{i}", "name": n, "score": 100} for i, n in enumerate(names)]
+                "artists": [
+                    {"id": f"mbid-{i}", "name": n, "score": 100} for i, n in enumerate(names)
+                ]
             },
         )
 
@@ -109,9 +111,7 @@ class TestArtistIdentityGuard:
             ("Dean", "Dean Martin"),
         ],
     )
-    def test_a_different_act_is_refused_despite_a_perfect_score(
-        self, monkeypatch, ours, theirs
-    ):
+    def test_a_different_act_is_refused_despite_a_perfect_score(self, monkeypatch, ours, theirs):
         self._results(monkeypatch, [theirs])
         assert mb_enrich._search_artist(ours) is None
 
@@ -146,7 +146,7 @@ class TestArtistIdentityGuard:
 
 
 class TestAmpersandEquivalence:
-    """"&" and "and" are the same word in a band name.
+    """ "&" and "and" are the same word in a band name.
 
     The identity guard was added to stop score>=85 writing wrong MBIDs, and
     in doing so introduced the mirror-image bug: stripping punctuation made
@@ -241,9 +241,7 @@ class TestArtistSearchUsesTheNaturalNameForm:
         monkeypatch.setattr(
             mb_enrich,
             "_mb_get",
-            lambda p, q: {
-                "artists": [{"id": "wrong", "name": "The Rolling Stones", "score": 100}]
-            },
+            lambda p, q: {"artists": [{"id": "wrong", "name": "The Rolling Stones", "score": 100}]},
         )
         assert mb_enrich._search_artist("Stooges, The") is None
 
@@ -251,8 +249,6 @@ class TestArtistSearchUsesTheNaturalNameForm:
         monkeypatch.setattr(
             mb_enrich,
             "_mb_get",
-            lambda p, q: {
-                "artists": [{"id": "794c6bf2", "name": "The Stooges", "score": 100}]
-            },
+            lambda p, q: {"artists": [{"id": "794c6bf2", "name": "The Stooges", "score": 100}]},
         )
         assert mb_enrich._search_artist("Stooges, The") == ("794c6bf2", "The Stooges")

@@ -77,8 +77,9 @@ def pcm_bytes_per_second(sample_rate: int | None) -> int:
     return (sample_rate or 44100) * 2 * 2
 
 
-def size_ratio(size_bytes: int | None, duration: float | None,
-               sample_rate: int | None) -> float | None:
+def size_ratio(
+    size_bytes: int | None, duration: float | None, sample_rate: int | None
+) -> float | None:
     """Stored size as a fraction of raw PCM. None when unknowable."""
     if not size_bytes or not duration or duration <= 0:
         return None
@@ -116,10 +117,12 @@ def pending_rows(conn: sqlite3.Connection, *, limit: int | None = None) -> list:
          WHERE status = 'CATALOGUED' AND decode_checked_at IS NULL
         """
     ).fetchall()
-    rows.sort(key=lambda r: (
-        not looks_suspicious(r),
-        size_ratio(r["size_bytes"], r["duration"], r["sample_rate"]) or 1.0,
-    ))
+    rows.sort(
+        key=lambda r: (
+            not looks_suspicious(r),
+            size_ratio(r["size_bytes"], r["duration"], r["sample_rate"]) or 1.0,
+        )
+    )
     return rows[:limit] if limit else rows
 
 

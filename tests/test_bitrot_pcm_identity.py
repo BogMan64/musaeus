@@ -74,10 +74,22 @@ def ctx(cfg: MusicConfig) -> RunContext:
 def _tone(path: Path, freq: int = 440, seconds: int = 2) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-v", "error", "-f", "lavfi",
-         "-i", f"sine=frequency={freq}:duration={seconds}",
-         "-c:a", "alac", str(path), "-y"],
-        check=True, capture_output=True)
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency={freq}:duration={seconds}",
+            "-c:a",
+            "alac",
+            str(path),
+            "-y",
+        ],
+        check=True,
+        capture_output=True,
+    )
     return path
 
 
@@ -85,9 +97,22 @@ def _retag(path: Path, comment: str) -> None:
     """Rewrite the container with a new tag. Same PCM, different bytes."""
     tmp = path.with_suffix(".retag.m4a")
     subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", str(path), "-c", "copy",
-         "-metadata", f"comment={comment}", str(tmp), "-y"],
-        check=True, capture_output=True)
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(path),
+            "-c",
+            "copy",
+            "-metadata",
+            f"comment={comment}",
+            str(tmp),
+            "-y",
+        ],
+        check=True,
+        capture_output=True,
+    )
     tmp.replace(path)
 
 
@@ -151,7 +176,8 @@ def test_a_retagged_file_is_benign_not_rot(ctx) -> None:
     assert _note(result, "corrupt (audio changed since baseline)").endswith("0")
     assert result.success is True
     assert not ctx.conn.execute(
-        "SELECT 1 FROM events WHERE event_type='BITROT_DETECTED'").fetchone()
+        "SELECT 1 FROM events WHERE event_type='BITROT_DETECTED'"
+    ).fetchone()
 
 
 def test_changed_audio_is_rot(ctx) -> None:
@@ -164,8 +190,7 @@ def test_changed_audio_is_rot(ctx) -> None:
 
     assert result.success is False
     assert _note(result, "corrupt (audio changed since baseline)").endswith("1")
-    ev = ctx.conn.execute(
-        "SELECT note FROM events WHERE event_type='BITROT_DETECTED'").fetchone()
+    ev = ctx.conn.execute("SELECT note FROM events WHERE event_type='BITROT_DETECTED'").fetchone()
     assert "not a re-tag" in ev["note"]
 
 
@@ -257,8 +282,9 @@ def test_backfill_lets_verify_recognise_a_move_it_would_have_missed(ctx) -> None
     src.rename(dest)
 
     before = BitRotStage().run(ctx)
-    assert _note(before, "new (no baseline yet").endswith("1"), \
+    assert _note(before, "new (no baseline yet").endswith("1"), (
         "without a PCM identity the move is invisible — this is the old bug"
+    )
 
     # The move already happened, so the backfill can no longer read the
     # origin path. Backfill is a migration to run BEFORE things move.

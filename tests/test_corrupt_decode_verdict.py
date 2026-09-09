@@ -57,9 +57,23 @@ def ctx(cfg: MusicConfig) -> RunContext:
 def _tone(path: Path, seconds: int = 3) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
-         "-c:a", "aac", "-movflags", "+faststart", str(path), "-y"],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration={seconds}",
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+faststart",
+            str(path),
+            "-y",
+        ],
+        check=True,
+        capture_output=True,
     )
     return path
 
@@ -70,17 +84,23 @@ def _register(ctx: RunContext, path: Path, declared_duration: float) -> None:
     That is what trips the size-ratio heuristic -- exactly the shape of a
     genuine old mono recording that compresses unusually well.
     """
-    upsert_archive(ctx.conn, {
-        "file_path": str(path), "status": "CATALOGUED",
-        "codec": "aac", "duration": declared_duration, "title": path.stem,
-    })
+    upsert_archive(
+        ctx.conn,
+        {
+            "file_path": str(path),
+            "status": "CATALOGUED",
+            "codec": "aac",
+            "duration": declared_duration,
+            "title": path.stem,
+        },
+    )
     ctx.conn.commit()
 
 
 def test_a_file_the_ratio_accuses_but_the_decode_acquits_is_left_alone(ctx, cfg) -> None:
     """The 91-undamaged-masters case. This is the whole point."""
     f = _tone(cfg.alac_library / "Count Basie" / "Album" / "track.m4a")
-    _register(ctx, f, declared_duration=600.0)   # 3s of audio claiming 10 minutes
+    _register(ctx, f, declared_duration=600.0)  # 3s of audio claiming 10 minutes
 
     result = CorruptStage()._scan(ctx, dry_run=False)
 
@@ -100,7 +120,7 @@ def test_a_truncated_file_is_still_caught(ctx, cfg) -> None:
     """The decode must remain a real verdict, not a rubber stamp."""
     f = _tone(cfg.alac_library / "C" / "D" / "broken.m4a", seconds=30)
     data = f.read_bytes()
-    f.write_bytes(data[: len(data) // 3])        # header intact, audio cut
+    f.write_bytes(data[: len(data) // 3])  # header intact, audio cut
     _register(ctx, f, declared_duration=30.0)
 
     CorruptStage()._scan(ctx, dry_run=False)
@@ -217,13 +237,13 @@ def test_already_checked_intact_files_are_never_re_decoded(ctx, cfg) -> None:
     _register(ctx, f, declared_duration=50.0)
     ensure_columns(ctx.conn)
     ctx.conn.execute(
-        "UPDATE archive SET decode_checked_at = datetime('now'), decode_ok = 1 "
-        "WHERE file_path = ?",
+        "UPDATE archive SET decode_checked_at = datetime('now'), decode_ok = 1 WHERE file_path = ?",
         (str(f),),
     )
     ctx.conn.commit()
 
     import musaeus.stages.corrupt as corrupt_mod
+
     calls = {"n": 0}
     real = corrupt_mod.ffmpeg_decode_check
 
@@ -258,6 +278,7 @@ def test_a_row_deep_scan_already_marked_bad_is_quarantined_without_a_new_decode(
     ctx.conn.commit()
 
     import musaeus.stages.corrupt as corrupt_mod
+
     calls = {"n": 0}
     real = corrupt_mod.ffmpeg_decode_check
 
@@ -296,7 +317,8 @@ def test_the_new_arrival_decode_budget_is_bounded(ctx, cfg) -> None:
     checked = [
         ctx.conn.execute(
             "SELECT decode_checked_at FROM archive WHERE file_path = ?", (str(f),)
-        ).fetchone()["decode_checked_at"] is not None
+        ).fetchone()["decode_checked_at"]
+        is not None
         for f in (f1, f2)
     ]
     assert sum(checked) == 1, (

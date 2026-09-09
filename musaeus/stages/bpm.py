@@ -593,8 +593,7 @@ class BPMStage(BaseStage):
         if not bad:
             return []
         return [
-            f"{len(bad)} of {len(rows)} analysed track(s) carry no usable BPM: "
-            f"{', '.join(bad[:3])}"
+            f"{len(bad)} of {len(rows)} analysed track(s) carry no usable BPM: {', '.join(bad[:3])}"
         ]
 
     def run(self, ctx: RunContext) -> StageResult:

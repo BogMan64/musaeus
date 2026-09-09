@@ -78,6 +78,7 @@ def tolerance_for(recorded_sec: float | None) -> float:
         return TOLERANCE_SEC
     return max(TOLERANCE_SEC, recorded_sec * 0.02)
 
+
 _TIMEOUT_S = 15
 #: A full decode of a long track is minutes, not seconds.
 _DECODE_TIMEOUT_S = 900
@@ -98,7 +99,8 @@ def _probe(args: list[str], path: Path) -> dict | None:
         )
         if r.returncode != 0:
             return None
-        return json.loads(r.stdout)
+        probe: dict = json.loads(r.stdout)
+        return probe
     except (subprocess.SubprocessError, OSError, ValueError):
         return None
 

@@ -50,7 +50,7 @@ class EditionSpec:
     """What an edition IS -- the target, not the selection."""
 
     name: str
-    codec: str                      # "alac" | "aac"
+    codec: str  # "alac" | "aac"
     lufs_target: float
     bitrate_kbps: int | None = None  # None = lossless
     max_sample_rate: int | None = None
@@ -64,10 +64,10 @@ class EditionSpec:
 #: masters are never baked, each edition bakes exactly once from them, and
 #: no edition is ever built from another.
 LOSSLESS = EditionSpec("lossless", codec="alac", lufs_target=-18.0)
-CAR = EditionSpec("car", codec="aac", lufs_target=-14.0,
-                  bitrate_kbps=256, max_sample_rate=48_000)
-IPHONE = EditionSpec("iphone", codec="aac", lufs_target=-14.0,
-                     bitrate_kbps=256, max_sample_rate=48_000)
+CAR = EditionSpec("car", codec="aac", lufs_target=-14.0, bitrate_kbps=256, max_sample_rate=48_000)
+IPHONE = EditionSpec(
+    "iphone", codec="aac", lufs_target=-14.0, bitrate_kbps=256, max_sample_rate=48_000
+)
 
 EDITIONS = {e.name: e for e in (LOSSLESS, CAR, IPHONE)}
 
@@ -75,10 +75,24 @@ EDITIONS = {e.name: e for e in (LOSSLESS, CAR, IPHONE)}
 #: are simply skipped, and any genre not named here follows in alphabetical
 #: order, so adding a genre to the catalogue never silently drops it.
 DEFAULT_GENRE_PRIORITY: tuple[str, ...] = (
-    "Rock", "Classic Pop", "Rock N'Roll", "R&B/Funk/Soul", "Blues",
-    "Soft Rock", "Hard Rock", "Southern Rock", "Alternative", "Country",
-    "Folk", "Singer-Songwriter", "Celtic", "Jazz", "Disco/Electronic",
-    "Hip Hop", "Soundtrack", "Classical",
+    "Rock",
+    "Classic Pop",
+    "Rock N'Roll",
+    "R&B/Funk/Soul",
+    "Blues",
+    "Soft Rock",
+    "Hard Rock",
+    "Southern Rock",
+    "Alternative",
+    "Country",
+    "Folk",
+    "Singer-Songwriter",
+    "Celtic",
+    "Jazz",
+    "Disco/Electronic",
+    "Hip Hop",
+    "Soundtrack",
+    "Classical",
 )
 
 
@@ -110,8 +124,10 @@ class Selection:
 
     def summary(self) -> str:
         gb = self.estimated_bytes / 1_000_000_000
-        line = (f"{self.spec.name}: {len(self.included):,} track(s), "
-                f"~{gb:.1f} GB, {self.total_duration_s / 3600:.1f} h")
+        line = (
+            f"{self.spec.name}: {len(self.included):,} track(s), "
+            f"~{gb:.1f} GB, {self.total_duration_s / 3600:.1f} h"
+        )
         if self.budget_bytes is not None:
             line += f" of {self.budget_bytes / 1_000_000_000:.1f} GB budget"
         if self.skipped_for_budget:
@@ -178,12 +194,17 @@ def load_tracks(
             continue
         if artists is not None and artist not in artists:
             continue
-        out.append(Track(
-            file_path=r["file_path"], artist=artist,
-            album=(r["album"] or "").strip(), title=(r["title"] or "").strip(),
-            genre=genre, duration=float(r["duration"] or 0.0),
-            size_bytes=int(r["size_bytes"] or 0),
-        ))
+        out.append(
+            Track(
+                file_path=r["file_path"],
+                artist=artist,
+                album=(r["album"] or "").strip(),
+                title=(r["title"] or "").strip(),
+                genre=genre,
+                duration=float(r["duration"] or 0.0),
+                size_bytes=int(r["size_bytes"] or 0),
+            )
+        )
     return out
 
 
@@ -201,10 +222,15 @@ def select_edition(
 
     # Deterministic: the same catalogue and criteria must always produce the
     # same edition, or a rebuild silently differs from what was delivered.
-    tracks.sort(key=lambda t: (
-        genre_rank(t.genre, genre_priority), t.artist.lower(),
-        t.album.lower(), t.title.lower(), t.file_path,
-    ))
+    tracks.sort(
+        key=lambda t: (
+            genre_rank(t.genre, genre_priority),
+            t.artist.lower(),
+            t.album.lower(),
+            t.title.lower(),
+            t.file_path,
+        )
+    )
 
     sel = Selection(spec=spec, budget_bytes=budget_bytes)
     if budget_bytes is None:

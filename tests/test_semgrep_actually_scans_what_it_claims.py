@@ -47,7 +47,8 @@ _RULES = _ROOT / ".semgrep" / "rules.yml"
 _IGNORE = _ROOT / ".semgrepignore"
 
 needs_semgrep = pytest.mark.skipif(
-    not shutil.which("semgrep"), reason="semgrep is a dev dependency")
+    not shutil.which("semgrep"), reason="semgrep is a dev dependency"
+)
 
 
 def _scan(*paths: str) -> dict:
@@ -71,11 +72,16 @@ def _scan(*paths: str) -> dict:
     env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
     proc = subprocess.run(
         ["semgrep", "--config", str(_RULES), *paths, "--quiet", "--json"],
-        cwd=str(_ROOT), capture_output=True, text=True, timeout=900, env=env)
+        cwd=str(_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=900,
+        env=env,
+    )
     if not proc.stdout.strip():
         raise AssertionError(
-            f"semgrep produced no output (rc={proc.returncode}): "
-            f"{proc.stderr[:300]}")
+            f"semgrep produced no output (rc={proc.returncode}): {proc.stderr[:300]}"
+        )
     return json.loads(proc.stdout)
 
 
@@ -90,8 +96,9 @@ def test_the_vendor_exclusion_is_explicit_not_accidental() -> None:
     """It was excluded by a default nobody chose. Now it is a decision."""
     body = _IGNORE.read_text()
     assert "scripts/car_library/vendor/" in body
-    assert "vendoring IS a deliberate re-implementation" in body, \
+    assert "vendoring IS a deliberate re-implementation" in body, (
         "the vendor exclusion has lost the reason it was made"
+    )
 
 
 @needs_semgrep
@@ -104,7 +111,8 @@ def test_the_documented_command_actually_scans_the_tests_tree() -> None:
     from_tests = [p for p in scanned if p.startswith("tests/")]
     assert from_tests, (
         "the documented command scanned no test files -- a rule that claims "
-        "to cover tests/ has examined it not once")
+        "to cover tests/ has examined it not once"
+    )
     assert len(from_tests) > 50, len(from_tests)
 
 
@@ -124,7 +132,8 @@ def test_the_defaults_alone_would_still_hide_the_tests_tree() -> None:
         stash.rename(_IGNORE)
     assert not scanned, (
         "semgrep's defaults no longer exclude tests/; the .semgrepignore may "
-        "be simplified, but check the vendor exclusion still applies")
+        "be simplified, but check the vendor exclusion still applies"
+    )
 
 
 @needs_semgrep
@@ -136,8 +145,7 @@ def test_the_tree_is_clean_under_real_coverage() -> None:
     """
     results = _scan("musaeus/", "scripts/", "tests/").get("results", [])
     assert not results, [
-        f"{r['path']}:{r['start']['line']} {r['check_id'].split('.')[-1]}"
-        for r in results
+        f"{r['path']}:{r['start']['line']} {r['check_id'].split('.')[-1]}" for r in results
     ]
 
 
@@ -158,5 +166,4 @@ def test_every_suppression_carries_a_reason() -> None:
             after = stripped.split("nosemgrep", 1)[1]
             if ":" not in after or "--" not in after:
                 bare.append(f"{path.relative_to(_ROOT)}:{i}")
-    assert not bare, (
-        "nosemgrep without `: <rule-id> -- <reason>`: " + ", ".join(bare))
+    assert not bare, "nosemgrep without `: <rule-id> -- <reason>`: " + ", ".join(bare)

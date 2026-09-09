@@ -44,9 +44,23 @@ pytestmark = pytest.mark.skipif(
 def _make_audio(path: Path, rate: int, seconds: float = 3.0, colour: str = "pink") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
-         f"anoisesrc=colour={colour}:duration={seconds}:sample_rate={rate}",
-         "-ac", "2", "-c:a", "aac", "-b:a", "128k", str(path)],
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"anoisesrc=colour={colour}:duration={seconds}:sample_rate={rate}",
+            "-ac",
+            "2",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            str(path),
+        ],
         check=True,
     )
     return path

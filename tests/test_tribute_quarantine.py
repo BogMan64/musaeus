@@ -239,15 +239,18 @@ class TestTributeQuarantineRun:
 class TestWantedListExport:
     def test_a_credited_knockoff_produces_a_wanted_list(self, ctx, cfg) -> None:
         _make_row(
-            ctx, "Steely Dan Tribute/song.m4a",
+            ctx,
+            "Steely Dan Tribute/song.m4a",
             artist="Karaoke Channel, The",
             title="Midnight Cruiser [In the Style of Steely Dan]",
         )
         result = TributeQuarantineStage().run(ctx)
 
-        wanted_files = list((cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
-            "tunemymusic_*.csv"
-        ))
+        wanted_files = list(
+            (cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+                "tunemymusic_*.csv"
+            )
+        )
         assert len(wanted_files) == 1
         assert wanted_files[0].read_text().strip() == "Steely Dan - Midnight Cruiser"
         assert any("wanted list" in n for n in result.notes)
@@ -257,24 +260,29 @@ class TestWantedListExport:
         should never be asked to re-acquire something he already has."""
         _make_row(ctx, "Real/song.m4a", artist="Steely Dan", title="Midnight Cruiser")
         _make_row(
-            ctx, "Fake/song.m4a",
+            ctx,
+            "Fake/song.m4a",
             artist="Karaoke Channel, The",
             title="Midnight Cruiser [In the Style of Steely Dan]",
         )
         TributeQuarantineStage().run(ctx)
 
-        wanted_files = list((cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
-            "tunemymusic_*.csv"
-        ))
+        wanted_files = list(
+            (cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+                "tunemymusic_*.csv"
+            )
+        )
         assert wanted_files == []
 
     def test_an_uncredited_knockoff_writes_no_wanted_list(self, ctx, cfg) -> None:
         _make_row(ctx, "Fake/song.m4a", artist="Karaoke Channel, The", title="What's Up")
         result = TributeQuarantineStage().run(ctx)
 
-        wanted_files = list((cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
-            "tunemymusic_*.csv"
-        ))
+        wanted_files = list(
+            (cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+                "tunemymusic_*.csv"
+            )
+        )
         assert wanted_files == []
         assert not any("wanted list" in n for n in result.notes)
 
@@ -284,7 +292,8 @@ class TestWantedListExport:
         csv.DictWriter raises on any row key outside its declared
         fieldnames unless told to ignore extras."""
         _make_row(
-            ctx, "Steely Dan Tribute/song.m4a",
+            ctx,
+            "Steely Dan Tribute/song.m4a",
             artist="Karaoke Channel, The",
             title="Midnight Cruiser [In the Style of Steely Dan]",
         )
@@ -302,20 +311,24 @@ class TestWantedListExport:
 
     def test_multiple_credited_tracks_all_appear(self, ctx, cfg) -> None:
         _make_row(
-            ctx, "A/song.m4a",
+            ctx,
+            "A/song.m4a",
             artist="Karaoke Channel, The",
             title="Song A [In the Style of Artist One]",
         )
         _make_row(
-            ctx, "B/song.m4a",
+            ctx,
+            "B/song.m4a",
             artist="Karaoke Channel, The",
             title="Song B [In the Style of Artist Two]",
         )
         TributeQuarantineStage().run(ctx)
 
-        wanted_files = list((cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
-            "tunemymusic_*.csv"
-        ))
+        wanted_files = list(
+            (cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+                "tunemymusic_*.csv"
+            )
+        )
         lines = wanted_files[0].read_text().strip().splitlines()
         assert set(lines) == {"Artist One - Song A", "Artist Two - Song B"}
 
@@ -338,7 +351,10 @@ class TestTributeInTheTitle:
 
     def test_a_tribute_named_only_in_the_title_is_junk(self):
         for artist, title in (
-            ("Classic Blues Tones", "Bad To The Bone - George Thorogood and The Destroyers Tribute"),
+            (
+                "Classic Blues Tones",
+                "Bad To The Bone - George Thorogood and The Destroyers Tribute",
+            ),
             ("Scott D. Davis", "In the End (Piano Tribute to Linkin Park)"),
             ("Led Zepagain", "Whole Lotta Love - a Tribute to Led Zeppelin"),
         ):
@@ -357,10 +373,14 @@ class TestTributeInTheTitle:
             "Bruce Springsteen",
             "(Your Love Keeps Lifting Me) Higher and Higher [With Darlene Love, "
             "John Fogerty, Sam Moore, Billy Joel And Tom Morello] "
-            "[A Tribute To Jackie Wilson]", "")[0]
+            "[A Tribute To Jackie Wilson]",
+            "",
+        )[0]
         assert not is_junk(
             "Three Tenors, Los Angeles Music Center Opera Chorus, The",
-            "A Tribute to Hollywood - Singin' in the Rain (Arr. Schifrin) [Live]", "")[0]
+            "A Tribute to Hollywood - Singin' in the Rain (Arr. Schifrin) [Live]",
+            "",
+        )[0]
 
     def test_spirits_own_song_title_is_protected(self):
         """'Tribute To The Rain Woods' is Spirit's own composition."""
@@ -371,6 +391,6 @@ class TestTributeInTheTitle:
         'cover version' alone would have quarantined these two, and the
         library is full of covers by real artists."""
         assert not is_junk(
-            "Morse/portnoy/george",
-            "Feelin' Stronger Everyday (2020 Remastered cover version)", "")[0]
+            "Morse/portnoy/george", "Feelin' Stronger Everyday (2020 Remastered cover version)", ""
+        )[0]
         assert not is_junk("Johnny Cash", "Hurt (cover version)", "")[0]

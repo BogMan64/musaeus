@@ -27,8 +27,20 @@ def _encode(path: Path, seconds: int = 3) -> bool:
     if not shutil.which("ffmpeg"):
         return False
     r = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
-         "-i", f"sine=frequency=440:duration={seconds}", "-c:a", "alac", str(path)],
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration={seconds}",
+            "-c:a",
+            "alac",
+            str(path),
+        ],
         capture_output=True,
     )
     return r.returncode == 0 and path.exists()
@@ -44,8 +56,7 @@ def track(tmp_path) -> Path:
 
 class TestIdentitySurvivesToTheRebuild:
     def test_mbids_written_to_the_file_are_recovered(self, track):
-        write_identity(track, {"mb_artist_id": MBID,
-                               "acousticid_recording": "rec-123"})
+        write_identity(track, {"mb_artist_id": MBID, "acousticid_recording": "rec-123"})
         got = _read_all_tags(track)
         assert got.get("mb_artist_id") == MBID
         assert got.get("acousticid_recording") == "rec-123"
@@ -62,8 +73,7 @@ class TestIdentitySurvivesToTheRebuild:
         write_identity(track, {"chromaprint": FP, "chromaprint_duration": "300"})
         got = _read_all_tags(track)
         assert "chromaprint" not in got, (
-            "a fingerprint whose recorded duration disagrees with the audio "
-            "must not be recovered"
+            "a fingerprint whose recorded duration disagrees with the audio must not be recovered"
         )
 
     def test_a_file_with_no_identity_yields_nothing(self, track):

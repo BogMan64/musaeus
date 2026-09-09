@@ -40,12 +40,15 @@ class TestCarSampleRate:
         """
         assert car_sample_rate(rate) == rate
 
-    @pytest.mark.parametrize("source,expected", [
-        (192_000, 48_000),   # /4  -- 40% of the library
-        (96_000, 48_000),    # /2
-        (88_200, 44_100),    # /2  -- stays in the 44.1 family
-        (176_400, 44_100),   # /4  -- stays in the 44.1 family
-    ])
+    @pytest.mark.parametrize(
+        "source,expected",
+        [
+            (192_000, 48_000),  # /4  -- 40% of the library
+            (96_000, 48_000),  # /2
+            (88_200, 44_100),  # /2  -- stays in the 44.1 family
+            (176_400, 44_100),  # /4  -- stays in the 44.1 family
+        ],
+    )
     def test_downsampled_within_its_own_clock_family(self, source, expected) -> None:
         assert car_sample_rate(source) == expected
 
@@ -72,9 +75,13 @@ class TestCarSampleRate:
 class TestFfmpegCommand:
     def _cmd(self, rate, has_pic=False):
         return build_ffmpeg_command(
-            input_file=Path("in.flac"), output_file=Path("out.m4a"),
-            bitrate="256k", has_attached_picture=has_pic,
-            clean_tags={}, loudnorm_filter="anull", target_rate=rate,
+            input_file=Path("in.flac"),
+            output_file=Path("out.m4a"),
+            bitrate="256k",
+            has_attached_picture=has_pic,
+            clean_tags={},
+            loudnorm_filter="anull",
+            target_rate=rate,
         )
 
     @pytest.mark.parametrize("has_pic", [False, True])

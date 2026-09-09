@@ -37,6 +37,7 @@ import re
 import time
 import urllib.error
 from pathlib import Path
+from typing import cast
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -49,7 +50,7 @@ from ..db import (
     open_mb_cache,
 )
 from ..network_policy import check as _network_check
-from .base import NO_VERIFICATION, BaseStage
+from .base import NO_VERIFICATION, BaseStage, VerifyResult
 from .enrich import _clean_artist_for_lookup
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,8 @@ def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
             ("mb_enriched_at", "TEXT"),
         ),
     )
+
+
 def _mb_get(path: str, params: dict[str, str]) -> dict:
     """
     Perform a GET request to the MusicBrainz JSON API.
@@ -393,7 +396,7 @@ class MBEnrichStage(BaseStage):
                     would_query_artists.add(artist_lower)
                     result.files_skipped += 1
                     continue
-                cached = _MISSING
+                cached: object = _MISSING
                 if mb_cache is not None:
                     try:
                         cached = mb_cache_get_artist(mb_cache, artist_lower)
@@ -402,7 +405,9 @@ class MBEnrichStage(BaseStage):
                     except Exception as exc:
                         logger.debug("[mb_enrich] cache read failed: %s", exc)
                 if cached is not _MISSING:
-                    artist_cache[artist_lower] = cached
+                    # Narrowed by the sentinel check: anything that is not
+                    # _MISSING came from the cache as the pair this map holds.
+                    artist_cache[artist_lower] = cast("tuple[str, str] | None", cached)
                     cache_hits += 1
                 else:
                     time.sleep(_RATE_LIMIT_S)
@@ -543,7 +548,6 @@ class MBEnrichStage(BaseStage):
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._enrich(ctx, dry_run=True)
 
-
     def _discogs_fallback(self, ctx: RunContext, result: StageResult, dry_run: bool) -> None:
         """Try Discogs for artists MusicBrainz already asked about and
         could not identify. See musaeus/discogs.py's module docstring for
@@ -675,7 +679,9 @@ class MBEnrichStage(BaseStage):
             ctx.conn.commit()
 
         if found:
-            result.notes.append(f"  {found} artist(s) found on Discogs after MusicBrainz missed them.")
+            result.notes.append(
+                f"  {found} artist(s) found on Discogs after MusicBrainz missed them."
+            )
         if not_found:
             result.notes.append(f"  {not_found} artist(s) not found on Discogs either.")
         if unavailable:
@@ -683,7 +689,7 @@ class MBEnrichStage(BaseStage):
                 f"  {unavailable} artist(s) got no answer from Discogs — retried next run."
             )
 
-    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> VerifyResult:
         """A row recorded as MB-matched must carry the identifier.
 
         MB_ARTIST_FOUND is logged when a lookup succeeds; the MBID is
@@ -705,11 +711,7 @@ class MBEnrichStage(BaseStage):
         ).fetchall()
         if not rows:
             return []
-        blank = [
-            Path(r["file_path"]).name
-            for r in rows
-            if not (r["mb_artist_id"] or "").strip()
-        ]
+        blank = [Path(r["file_path"]).name for r in rows if not (r["mb_artist_id"] or "").strip()]
         if not blank:
             return []
         return [

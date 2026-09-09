@@ -126,8 +126,7 @@ class TestSoftResetPreservesDecisions:
             ("/vault/dupe.m4a", "DUPE_REVIEW"),
             ("/vault/ghost.m4a", "GHOST"),
         ):
-            upsert_archive(conn, {"file_path": path, "status": status,
-                                  "audio_hash": "deadbeef"})
+            upsert_archive(conn, {"file_path": path, "status": status, "audio_hash": "deadbeef"})
         conn.commit()
         conn.close()
 

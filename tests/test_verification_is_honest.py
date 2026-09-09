@@ -65,6 +65,7 @@ class TestDefaultMakesNoClaim:
 
         class Bare(BaseStage):
             NAME = "bare"
+
             def run(self, ctx): ...
             def dry_run(self, ctx): ...
             def validate(self, ctx): ...
@@ -80,10 +81,12 @@ class TestDefaultMakesNoClaim:
 
         class Checks(BaseStage):
             NAME = "checks"
+
             def run(self, ctx): ...
             def dry_run(self, ctx): ...
             def validate(self, ctx): ...
-            def verify_effect(self, ctx, result): return []
+            def verify_effect(self, ctx, result):
+                return []
 
         result = StageResult(stage_name="checks", success=True)
         result.files_changed = 5
@@ -95,10 +98,12 @@ class TestDefaultMakesNoClaim:
 
         class Fails(BaseStage):
             NAME = "fails"
+
             def run(self, ctx): ...
             def dry_run(self, ctx): ...
             def validate(self, ctx): ...
-            def verify_effect(self, ctx, result): return ["nothing changed on disk"]
+            def verify_effect(self, ctx, result):
+                return ["nothing changed on disk"]
 
         result = StageResult(stage_name="fails", success=True)
         result.files_changed = 5

@@ -32,9 +32,13 @@ from musaeus.stages.base import NO_VERIFICATION
 @pytest.fixture
 def cfg(tmp_path: Path) -> MusicConfig:
     return MusicConfig(
-        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-        quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
-        meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+        vault_root=tmp_path,
+        inbox=tmp_path / "INBOX",
+        staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "QUARANTINE",
+        runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "ALAC-Library",
         db_path=tmp_path / "musaeus.db",
     )
 
@@ -94,8 +98,9 @@ class TestCurator:
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(b"copied")
         _row(ctx, src, status="CATALOGUED")
-        ctx.conn.execute("UPDATE archive SET car_export_path=? WHERE file_path=?",
-                         (str(dst), str(src)))
+        ctx.conn.execute(
+            "UPDATE archive SET car_export_path=? WHERE file_path=?", (str(dst), str(src))
+        )
         ctx.conn.commit()
         _event(ctx, src, "CURATOR_COPY")
         assert CuratorStage().verify_effect(ctx, _R) == []
@@ -103,8 +108,10 @@ class TestCurator:
     def test_a_missing_export_is_caught(self, ctx, cfg, tmp_path):
         src = cfg.alac_library / "s.m4a"
         _row(ctx, src, status="CATALOGUED")
-        ctx.conn.execute("UPDATE archive SET car_export_path=? WHERE file_path=?",
-                         (str(tmp_path / "USB" / "gone.m4a"), str(src)))
+        ctx.conn.execute(
+            "UPDATE archive SET car_export_path=? WHERE file_path=?",
+            (str(tmp_path / "USB" / "gone.m4a"), str(src)),
+        )
         ctx.conn.commit()
         _event(ctx, src, "CURATOR_COPY")
         assert CuratorStage().verify_effect(ctx, _R)
@@ -116,8 +123,9 @@ class TestCurator:
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(b"")
         _row(ctx, src, status="CATALOGUED")
-        ctx.conn.execute("UPDATE archive SET car_export_path=? WHERE file_path=?",
-                         (str(dst), str(src)))
+        ctx.conn.execute(
+            "UPDATE archive SET car_export_path=? WHERE file_path=?", (str(dst), str(src))
+        )
         ctx.conn.commit()
         _event(ctx, src, "CURATOR_COPY")
         problems = CuratorStage().verify_effect(ctx, _R)

@@ -75,9 +75,7 @@ PROTECTED_ARTIST_NAMES: frozenset[str] = frozenset(
 
 
 #: The same names under the article fold, built once at import.
-_PROTECTED_KEYS: frozenset[str] = frozenset(
-    GenreLaw._key(n) for n in PROTECTED_ARTIST_NAMES
-)
+_PROTECTED_KEYS: frozenset[str] = frozenset(GenreLaw._key(n) for n in PROTECTED_ARTIST_NAMES)
 
 
 def is_protected(name: str | None) -> bool:

@@ -28,8 +28,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]
-                       / "scripts" / "car_library" / "vendor"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "vendor"))
 from build_aac_library import _noise_bed_is_shippable  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
@@ -43,10 +42,25 @@ def complete_bed(tmp_path_factory) -> Path:
     """A short but genuinely complete bed, `moov` first so it survives a cut."""
     out = tmp_path_factory.mktemp("noise") / "bed.m4a"
     subprocess.run(
-        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
-         "-i", "anoisesrc=d=5:c=pink:r=44100",
-         "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart", str(out)],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "anoisesrc=d=5:c=pink:r=44100",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "256k",
+            "-movflags",
+            "+faststart",
+            str(out),
+        ],
+        check=True,
+        capture_output=True,
     )
     return out
 
@@ -138,8 +152,13 @@ class TestItReusesRatherThanReimplements:
         Guards the regression directly — someone restoring the old one-line
         glob would pass every test above, since those call the helper by hand.
         """
-        src = (Path(__file__).resolve().parents[1] / "scripts" / "car_library"
-               / "vendor" / "build_aac_library.py").read_text()
+        src = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "car_library"
+            / "vendor"
+            / "build_aac_library.py"
+        ).read_text()
         body = src.split("def copy_noise_tracks(")[1].split("\ndef ")[0]
 
         assert "_noise_bed_is_shippable" in body

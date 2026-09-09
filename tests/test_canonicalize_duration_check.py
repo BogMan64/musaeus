@@ -56,12 +56,15 @@ class TestTolerance:
         assert _problem_for(334.19, 151.98) is True
         assert _problem_for(363.29, 145.24) is True
 
-    @pytest.mark.parametrize("recorded,actual", [
-        (300.0, 300.0),      # identical
-        (300.0, 301.5),      # frame rounding
-        (300.0, 298.5),
-        (30.0, 31.0),        # short track, inside the 2s floor
-    ])
+    @pytest.mark.parametrize(
+        "recorded,actual",
+        [
+            (300.0, 300.0),  # identical
+            (300.0, 301.5),  # frame rounding
+            (300.0, 298.5),
+            (30.0, 31.0),  # short track, inside the 2s floor
+        ],
+    )
     def test_normal_encoder_drift_is_tolerated(self, recorded, actual) -> None:
         """Verification that cries wolf on rounding gets switched off."""
         assert _problem_for(recorded, actual) is False
@@ -81,8 +84,11 @@ class TestImplementationShape:
         """The container's duration is frequently intact on a truncated
         file — that is precisely why those four masters were invisible."""
         src = inspect.getsource(canonicalize_mod)
-        block = src[src.index("conversion truncated the audio") - 1600:
-                    src.index("conversion truncated the audio")]
+        block = src[
+            src.index("conversion truncated the audio") - 1600 : src.index(
+                "conversion truncated the audio"
+            )
+        ]
         assert 'codec_type") == "audio"' in block
         assert "streams" in block
 

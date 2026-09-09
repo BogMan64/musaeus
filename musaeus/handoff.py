@@ -171,15 +171,9 @@ def _render(run_id: str, issues: list[dict[str, Any]], crashes: list[dict[str, A
     if verify_failures:
         lines.append(f"## Verification failures ({len(verify_failures)})")
         lines.append("")
-        lines.append(
-            "A stage's OWN after-the-fact check found its claimed effect did"
-        )
-        lines.append(
-            "not actually happen -- this is not a crash, the stage completed"
-        )
-        lines.append(
-            "and reported success, but a second, independent check caught a"
-        )
+        lines.append("A stage's OWN after-the-fact check found its claimed effect did")
+        lines.append("not actually happen -- this is not a crash, the stage completed")
+        lines.append("and reported success, but a second, independent check caught a")
         lines.append("mismatch. Treat these as the higher-priority half of this file.")
         lines.append("")
         for i in verify_failures:

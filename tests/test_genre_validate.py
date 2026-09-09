@@ -154,7 +154,6 @@ class TestGenreValidateStage:
         assert any("nothing to validate against" in n for n in result.notes)
 
 
-
 @pytest.fixture
 def vault_with_genres(tmp_path: Path):
     """A vault whose allowed-genre list deliberately omits the genres given,
@@ -165,9 +164,13 @@ def vault_with_genres(tmp_path: Path):
 
     def _make(*genres: str) -> RunContext:
         cfg = MusicConfig(
-            vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-            quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
-            meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+            vault_root=tmp_path,
+            inbox=tmp_path / "INBOX",
+            staging=tmp_path / "STAGING",
+            quarantine=tmp_path / "QUARANTINE",
+            runs_root=tmp_path / "RUNS",
+            meta_dir=tmp_path / "MetaData",
+            alac_library=tmp_path / "ALAC-Library",
             db_path=tmp_path / "musaeus.db",
         )
         cfg.meta_dir.mkdir(parents=True, exist_ok=True)
@@ -177,18 +180,28 @@ def vault_with_genres(tmp_path: Path):
         # The vocabulary block is gated on a non-empty law -- without
         # MasterLaw.csv the whole check short-circuits and reports nothing.
         (cfg.meta_dir / "MasterLaw.csv").write_text(
-            "artist,genre\nSomebody Else,Jazz\n", encoding="utf-8")
+            "artist,genre\nSomebody Else,Jazz\n", encoding="utf-8"
+        )
         ctx = RunContext.new(cfg, open_db(cfg.db_path), dry_run=False)
         for i, g in enumerate(genres):
             f = cfg.alac_library / f"t{i}.m4a"
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_bytes(b"x")
-            upsert_archive(ctx.conn, {"file_path": str(f), "status": "CATALOGUED",
-                                      "artist": f"Artist {i}", "title": f"T{i}", "genre": g})
+            upsert_archive(
+                ctx.conn,
+                {
+                    "file_path": str(f),
+                    "status": "CATALOGUED",
+                    "artist": f"Artist {i}",
+                    "title": f"T{i}",
+                    "genre": g,
+                },
+            )
         ctx.conn.commit()
         return ctx
 
     return _make
+
 
 class TestAGenreContainingACommaIsNotAmbiguous:
     """A genre VALUE can itself contain ", ".
@@ -207,8 +220,11 @@ class TestAGenreContainingACommaIsNotAmbiguous:
     def test_a_comma_bearing_genre_is_reported_as_one_item(self, vault_with_genres):
         ctx = vault_with_genres("Pop, Rock", "Doo Wop")
         out = GenreValidateStage().verify_effect(ctx, MagicMock(files_changed=1))
-        vocab = [line for line in out if "outside the closed vocabulary" in line
-                 or "absent from Genre_Allowed" in line]
+        vocab = [
+            line
+            for line in out
+            if "outside the closed vocabulary" in line or "absent from Genre_Allowed" in line
+        ]
         assert vocab, "expected the vocabulary findings"
         for line in vocab:
             # the count the message states must match what a reader can see
@@ -237,39 +253,57 @@ class TestABlankGenreIsFilledFromTheLaw:
         from musaeus.db import open_db, upsert_archive
 
         cfg = MusicConfig(
-            vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-            quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
-            meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+            vault_root=tmp_path,
+            inbox=tmp_path / "INBOX",
+            staging=tmp_path / "STAGING",
+            quarantine=tmp_path / "QUARANTINE",
+            runs_root=tmp_path / "RUNS",
+            meta_dir=tmp_path / "MetaData",
+            alac_library=tmp_path / "ALAC-Library",
             db_path=tmp_path / "musaeus.db",
         )
         cfg.meta_dir.mkdir(parents=True, exist_ok=True)
-        (cfg.meta_dir / "MasterLaw.csv").write_text("artist,genre\n" + law_rows,
-                                                    encoding="utf-8")
+        (cfg.meta_dir / "MasterLaw.csv").write_text("artist,genre\n" + law_rows, encoding="utf-8")
         ctx = RunContext.new(cfg, open_db(cfg.db_path), dry_run=False)
         for i, (artist, genre) in enumerate(rows):
             f = cfg.alac_library / f"t{i}.m4a"
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_bytes(b"x")
-            upsert_archive(ctx.conn, {"file_path": str(f), "status": "CATALOGUED",
-                                      "artist": artist, "title": f"T{i}", "genre": genre})
+            upsert_archive(
+                ctx.conn,
+                {
+                    "file_path": str(f),
+                    "status": "CATALOGUED",
+                    "artist": artist,
+                    "title": f"T{i}",
+                    "genre": genre,
+                },
+            )
         ctx.conn.commit()
         ctx.set("genre_consolidate", True)
         return ctx
 
     def _genres(self, ctx, artist):
-        return [r[0] for r in ctx.conn.execute(
-            "SELECT genre FROM archive WHERE artist = ?", (artist,))]
+        return [
+            r[0] for r in ctx.conn.execute("SELECT genre FROM archive WHERE artist = ?", (artist,))
+        ]
 
     def test_the_law_fills_a_blank(self, tmp_path):
-        ctx = self._vault(tmp_path, "Gladys Knight,R&B/Funk/Soul\n",
-                          [("Gladys Knight", None), ("Gladys Knight", "")])
+        ctx = self._vault(
+            tmp_path,
+            "Gladys Knight,R&B/Funk/Soul\n",
+            [("Gladys Knight", None), ("Gladys Knight", "")],
+        )
         GenreValidateStage().run(ctx)
         assert self._genres(ctx, "Gladys Knight") == ["R&B/Funk/Soul"] * 2
 
     def test_an_existing_genre_is_never_overwritten(self, tmp_path):
         """Filling a blank must not become re-deciding a settled one."""
-        ctx = self._vault(tmp_path, "Gladys Knight,R&B/Funk/Soul\n",
-                          [("Gladys Knight", "Soul"), ("Gladys Knight", None)])
+        ctx = self._vault(
+            tmp_path,
+            "Gladys Knight,R&B/Funk/Soul\n",
+            [("Gladys Knight", "Soul"), ("Gladys Knight", None)],
+        )
         GenreValidateStage().run(ctx)
         assert sorted(self._genres(ctx, "Gladys Knight")) == ["R&B/Funk/Soul", "Soul"]
 
@@ -278,26 +312,32 @@ class TestABlankGenreIsFilledFromTheLaw:
         disagreement reads existing evidence; inventing a genre for a row
         that has none is a guess, and a guess written into the library is
         indistinguishable from a fact later."""
-        ctx = self._vault(tmp_path, "Somebody Else,Jazz\n",
-                          [("Obscure Band", None), ("Obscure Band", None)])
+        ctx = self._vault(
+            tmp_path, "Somebody Else,Jazz\n", [("Obscure Band", None), ("Obscure Band", None)]
+        )
         GenreValidateStage().run(ctx)
         assert self._genres(ctx, "Obscure Band") == [None, None]
 
     def test_a_majority_elsewhere_does_not_leak_into_a_blank(self, tmp_path):
-        ctx = self._vault(tmp_path, "Somebody Else,Jazz\n",
-                          [("Band X", "Rock"), ("Band X", "Rock"), ("Band X", None)])
+        ctx = self._vault(
+            tmp_path,
+            "Somebody Else,Jazz\n",
+            [("Band X", "Rock"), ("Band X", "Rock"), ("Band X", None)],
+        )
         GenreValidateStage().run(ctx)
         assert self._genres(ctx, "Band X").count(None) == 1
 
     def test_it_is_reported_separately_from_consolidation(self, tmp_path):
         """The count must be visible: a silent fill is indistinguishable
         from no fill."""
-        ctx = self._vault(tmp_path, "Gladys Knight,R&B/Funk/Soul\n",
-                          [("Gladys Knight", None)])
+        ctx = self._vault(tmp_path, "Gladys Knight,R&B/Funk/Soul\n", [("Gladys Knight", None)])
         result = GenreValidateStage().run(ctx)
-        assert any("given a genre from MasterLaw: 1" in n.replace("  ", " ")
-                   or "given a genre from MasterLaw:" in n and n.strip().endswith("1")
-                   for n in result.notes), result.notes
+        assert any(
+            "given a genre from MasterLaw: 1" in n.replace("  ", " ")
+            or "given a genre from MasterLaw:" in n
+            and n.strip().endswith("1")
+            for n in result.notes
+        ), result.notes
 
 
 class TestABlankGenreIsNotAnIllegalGenre:
@@ -323,30 +363,41 @@ class TestABlankGenreIsNotAnIllegalGenre:
         from musaeus.db import open_db, upsert_archive
 
         cfg = MusicConfig(
-            vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-            quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
-            meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+            vault_root=tmp_path,
+            inbox=tmp_path / "INBOX",
+            staging=tmp_path / "STAGING",
+            quarantine=tmp_path / "QUARANTINE",
+            runs_root=tmp_path / "RUNS",
+            meta_dir=tmp_path / "MetaData",
+            alac_library=tmp_path / "ALAC-Library",
             db_path=tmp_path / "musaeus.db",
         )
         cfg.meta_dir.mkdir(parents=True, exist_ok=True)
-        (cfg.meta_dir / "MasterLaw.csv").write_text("artist,genre\n" + law_rows,
-                                                    encoding="utf-8")
+        (cfg.meta_dir / "MasterLaw.csv").write_text("artist,genre\n" + law_rows, encoding="utf-8")
         # THE POINT OF THIS CLASS: a real vault always has this file.
-        (cfg.meta_dir / "Genre_Allowed.txt").write_text("\n".join(allowed) + "\n",
-                                                        encoding="utf-8")
+        (cfg.meta_dir / "Genre_Allowed.txt").write_text("\n".join(allowed) + "\n", encoding="utf-8")
         ctx = RunContext.new(cfg, open_db(cfg.db_path), dry_run=False)
         for i, (artist, genre) in enumerate(rows):
             f = cfg.alac_library / f"t{i}.m4a"
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_bytes(b"x")
-            upsert_archive(ctx.conn, {"file_path": str(f), "status": "CATALOGUED",
-                                      "artist": artist, "title": f"T{i}", "genre": genre})
+            upsert_archive(
+                ctx.conn,
+                {
+                    "file_path": str(f),
+                    "status": "CATALOGUED",
+                    "artist": artist,
+                    "title": f"T{i}",
+                    "genre": genre,
+                },
+            )
         ctx.conn.commit()
         return ctx
 
     def test_the_fill_is_counted_as_a_fill(self, tmp_path):
-        ctx = self._vault(tmp_path, "Gladys Knight,Soul\n", ["Soul", "Rock"],
-                          [("Gladys Knight", None)])
+        ctx = self._vault(
+            tmp_path, "Gladys Knight,Soul\n", ["Soul", "Rock"], [("Gladys Knight", None)]
+        )
         result = GenreValidateStage().run(ctx)
         notes = " ".join(result.notes)
         assert "filled empty genre:       1" in notes, notes
@@ -354,26 +405,32 @@ class TestABlankGenreIsNotAnIllegalGenre:
     def test_files_changed_reflects_the_rows_actually_written(self, tmp_path):
         """It said 0 while changing 13. verify_effect quotes this number
         back, so a wrong value here makes the verification misleading too."""
-        ctx = self._vault(tmp_path, "Gladys Knight,Soul\n", ["Soul"],
-                          [("Gladys Knight", None), ("Gladys Knight", "")])
+        ctx = self._vault(
+            tmp_path,
+            "Gladys Knight,Soul\n",
+            ["Soul"],
+            [("Gladys Knight", None), ("Gladys Knight", "")],
+        )
         result = GenreValidateStage().run(ctx)
         assert result.files_changed == 2
 
     def test_the_event_says_what_actually_happened(self, tmp_path):
         """GENRE_FILLED, not GENRE_OUTSIDE_VOCABULARY. The audit trail is
         how this system reconstructs itself; it must not misdescribe."""
-        ctx = self._vault(tmp_path, "Gladys Knight,Soul\n", ["Soul"],
-                          [("Gladys Knight", None)])
+        ctx = self._vault(tmp_path, "Gladys Knight,Soul\n", ["Soul"], [("Gladys Knight", None)])
         GenreValidateStage().run(ctx)
-        kinds = [r[0] for r in ctx.conn.execute(
-            "SELECT DISTINCT event_type FROM events WHERE event_type LIKE 'GENRE%'")]
+        kinds = [
+            r[0]
+            for r in ctx.conn.execute(
+                "SELECT DISTINCT event_type FROM events WHERE event_type LIKE 'GENRE%'"
+            )
+        ]
         assert "GENRE_FILLED" in kinds, kinds
         assert "GENRE_OUTSIDE_VOCABULARY" not in kinds, kinds
 
     def test_a_blank_with_no_law_entry_is_reported_separately(self, tmp_path):
         """Not silently lumped in with retired genres: it needs a ruling."""
-        ctx = self._vault(tmp_path, "Somebody Else,Soul\n", ["Soul"],
-                          [("Unknown Act", None)])
+        ctx = self._vault(tmp_path, "Somebody Else,Soul\n", ["Soul"], [("Unknown Act", None)])
         result = GenreValidateStage().run(ctx)
         notes = " ".join(result.notes)
         assert "no genre, artist not in the law: 1" in notes, notes
@@ -381,8 +438,9 @@ class TestABlankGenreIsNotAnIllegalGenre:
 
     def test_a_genuinely_illegal_genre_still_goes_to_the_other_branch(self, tmp_path):
         """The fix must not disarm the vocabulary check it sits in front of."""
-        ctx = self._vault(tmp_path, "Gladys Knight,Soul\n", ["Soul"],
-                          [("Gladys Knight", "Retired Genre")])
+        ctx = self._vault(
+            tmp_path, "Gladys Knight,Soul\n", ["Soul"], [("Gladys Knight", "Retired Genre")]
+        )
         result = GenreValidateStage().run(ctx)
         notes = " ".join(result.notes)
         assert "outside the vocabulary: 1" in notes, notes

@@ -96,17 +96,37 @@ def _setup(cfg: MusicConfig):
     src = cfg.inbox / "track.flac"
     src.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-y", "-f", "lavfi", "-i", f"sine=frequency=440:duration={_DURATION_S}",
-         "-c:a", "flac", str(src)],
-        capture_output=True, check=True,
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration={_DURATION_S}",
+            "-c:a",
+            "flac",
+            str(src),
+        ],
+        capture_output=True,
+        check=True,
     )
     conn = open_db(cfg.db_path)
     ctx = RunContext.new(cfg, conn, dry_run=False)
-    upsert_archive(conn, {
-        "file_path": str(src), "filename": src.name, "ext": ".flac",
-        "status": "CATALOGUED", "codec": "flac", "artist": "A", "title": "T",
-        "duration": float(_DURATION_S), "channels": 1, "sample_rate": 44100,
-    })
+    upsert_archive(
+        conn,
+        {
+            "file_path": str(src),
+            "filename": src.name,
+            "ext": ".flac",
+            "status": "CATALOGUED",
+            "codec": "flac",
+            "artist": "A",
+            "title": "T",
+            "duration": float(_DURATION_S),
+            "channels": 1,
+            "sample_rate": 44100,
+        },
+    )
     conn.commit()
     return conn, ctx, src
 
@@ -116,8 +136,7 @@ def _would_reselect(conn) -> int:
     a settled row is one this returns 0 for, and a deferred row is one it
     returns 1 for. Counters cannot tell those apart."""
     return conn.execute(
-        "SELECT COUNT(*) FROM archive "
-        "WHERE status='CATALOGUED' AND acousticid_checked_at IS NULL"
+        "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' AND acousticid_checked_at IS NULL"
     ).fetchone()[0]
 
 
@@ -127,16 +146,24 @@ def _row(conn):
     ).fetchone()
 
 
-_MATCH = {"status": "ok", "results": [
-    # The recording now has to AGREE with the row it is for (artist "A",
-    # title "T"). A bare id would be rejected -- deliberately: an id that
-    # cannot be checked against the file is exactly what let one polluted
-    # AcoustID entry become the identity of 14 unrelated tracks.
-    {"score": 0.95, "recordings": [
-        {"id": "rec-abc-123", "title": "T", "artists": [{"name": "A"}]}]}]}
+_MATCH = {
+    "status": "ok",
+    "results": [
+        # The recording now has to AGREE with the row it is for (artist "A",
+        # title "T"). A bare id would be rejected -- deliberately: an id that
+        # cannot be checked against the file is exactly what let one polluted
+        # AcoustID entry become the identity of 14 unrelated tracks.
+        {
+            "score": 0.95,
+            "recordings": [{"id": "rec-abc-123", "title": "T", "artists": [{"name": "A"}]}],
+        }
+    ],
+}
 _NO_MATCH = {"status": "ok", "results": []}
-_LOW_SCORE = {"status": "ok", "results": [
-    {"score": 0.42, "recordings": [{"id": "rec-should-be-ignored"}]}]}
+_LOW_SCORE = {
+    "status": "ok",
+    "results": [{"score": 0.42, "recordings": [{"id": "rec-should-be-ignored"}]}],
+}
 
 
 class TestAnswersSettleTheRow:
@@ -266,9 +293,7 @@ class TestFingerprintReuse:
 
 
 class TestVerifyEffect:
-    def test_a_stored_fingerprint_that_does_not_match_the_audio_is_caught(
-        self, cfg, monkeypatch
-    ):
+    def test_a_stored_fingerprint_that_does_not_match_the_audio_is_caught(self, cfg, monkeypatch):
         conn, ctx, _ = _setup(cfg)
         _serve(monkeypatch, _MATCH)
         result = AcousticIDStage().run(ctx)
@@ -311,9 +336,19 @@ class TestShortFileFingerprinting:
         src = cfg.inbox / "short.flac"
         src.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(
-            ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=35",
-             "-c:a", "flac", str(src)],
-            capture_output=True, check=True,
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=35",
+                "-c:a",
+                "flac",
+                str(src),
+            ],
+            capture_output=True,
+            check=True,
         )
         raw = subprocess.run(
             [shutil.which("fpcalc"), "-json", str(src)], capture_output=True, text=True
@@ -353,8 +388,11 @@ class TestShortFileFingerprinting:
 # and "98 Degrees - Give Me Just One Night" the CORRECT recording was present
 # in the list, at positions 2 and 3, behind the polluted entry.
 
-_POLLUTED = {"id": "172884e7", "title": "Now That We're Done",
-             "artists": [{"name": "Metro Station"}]}
+_POLLUTED = {
+    "id": "172884e7",
+    "title": "Now That We're Done",
+    "artists": [{"name": "Metro Station"}],
+}
 
 
 class TestRecordingMustAgreeWithTheFile:
@@ -364,16 +402,14 @@ class TestRecordingMustAgreeWithTheFile:
     def test_the_matching_recording_is_chosen_not_the_first(self):
         from musaeus.stages.acousticid import _pick_matching_recording
 
-        recs = self._recs({"id": "4892a9a2", "title": "Poison Arrow",
-                           "artists": [{"name": "ABC"}]})
+        recs = self._recs({"id": "4892a9a2", "title": "Poison Arrow", "artists": [{"name": "ABC"}]})
         assert _pick_matching_recording(recs, "ABC", "Poison Arrow") == "4892a9a2"
 
     def test_a_file_matching_nothing_gets_none_not_the_first(self):
         """The 14-track failure, directly."""
         from musaeus.stages.acousticid import _pick_matching_recording
 
-        recs = self._recs({"id": "4892a9a2", "title": "Poison Arrow",
-                           "artists": [{"name": "ABC"}]})
+        recs = self._recs({"id": "4892a9a2", "title": "Poison Arrow", "artists": [{"name": "ABC"}]})
         assert _pick_matching_recording(recs, "Bruno Mars", "That's What I Like") is None
 
     def test_a_cover_is_rejected_on_artist(self):
@@ -407,26 +443,46 @@ class TestRecordingMustAgreeWithTheFile:
 
         from musaeus.stages import acousticid as _a
 
-        payload = {"status": "ok", "results": [{"score": 1.0, "recordings": [
-            {"id": "172884e7", "title": "Now That We're Done",
-             "artists": [{"name": "Metro Station"}]},
-            {"id": "4892a9a2", "title": "Poison Arrow", "artists": [{"name": "ABC"}]},
-        ]}]}
+        payload = {
+            "status": "ok",
+            "results": [
+                {
+                    "score": 1.0,
+                    "recordings": [
+                        {
+                            "id": "172884e7",
+                            "title": "Now That We're Done",
+                            "artists": [{"name": "Metro Station"}],
+                        },
+                        {"id": "4892a9a2", "title": "Poison Arrow", "artists": [{"name": "ABC"}]},
+                    ],
+                }
+            ],
+        }
 
         class _Resp:
-            def read(self): return _json.dumps(payload).encode()
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
+            def read(self):
+                return _json.dumps(payload).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
 
         monkeypatch.setattr(_a, "urlopen", lambda *a, **k: _Resp())
         monkeypatch.setattr(_a, "_network_check", lambda *a, **k: None)
 
-        got = _a._acousticid_lookup("FP", 203.0, "key",
-                                    want_artist="ABC", want_title="Poison Arrow")
+        got = _a._acousticid_lookup(
+            "FP", 203.0, "key", want_artist="ABC", want_title="Poison Arrow"
+        )
         assert got is not None
         assert got[0] == "4892a9a2", "took the polluted first entry again"
 
         # ...and a file that matches nothing in the cluster gets no answer
-        assert _a._acousticid_lookup("FP", 206.0, "key",
-                                     want_artist="Bruno Mars",
-                                     want_title="That's What I Like") is None
+        assert (
+            _a._acousticid_lookup(
+                "FP", 206.0, "key", want_artist="Bruno Mars", want_title="That's What I Like"
+            )
+            is None
+        )

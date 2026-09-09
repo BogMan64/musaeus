@@ -328,9 +328,7 @@ class TestOrganizeStaysInsideItsRoot:
         moved_into_inbox = list(ctx.inbox.rglob("*.m4a"))
         assert moved_into_inbox == [], f"files escaped into the INBOX: {moved_into_inbox}"
 
-        row = ctx.conn.execute(
-            "SELECT file_path FROM archive WHERE title = 'Song One'"
-        ).fetchone()
+        row = ctx.conn.execute("SELECT file_path FROM archive WHERE title = 'Song One'").fetchone()
         assert Path(row["file_path"]) == expected
 
     def test_an_inbox_file_is_still_organized_within_the_inbox(self, ctx):
@@ -375,9 +373,7 @@ class TestOrganizeStaysInsideItsRoot:
 
     def test_dry_run_moves_nothing_out_of_the_library(self, ctx_dry):
         ctx_dry.alac_library.mkdir(parents=True, exist_ok=True)
-        src = _make_track_under(
-            ctx_dry, ctx_dry.alac_library, "flat.m4a", "A", "B", "C"
-        )
+        src = _make_track_under(ctx_dry, ctx_dry.alac_library, "flat.m4a", "A", "B", "C")
         OrganizeStage().dry_run(ctx_dry)
         assert src.exists()
         assert list(ctx_dry.inbox.rglob("*.m4a")) == []
@@ -399,8 +395,7 @@ class TestPathsUseTheSortForm:
         OrganizeStage().run(ctx)
 
         expected = (
-            ctx.inbox / "Stooges, The" / "Fun House"
-            / "Stooges, The - Down on the Street.m4a"
+            ctx.inbox / "Stooges, The" / "Fun House" / "Stooges, The - Down on the Street.m4a"
         )
         assert expected.exists(), "path must not follow the natural form"
         assert not (ctx.inbox / "The Stooges").exists()
@@ -419,7 +414,7 @@ class TestPathsUseTheSortForm:
         assert not (ctx.inbox / "The Stooges").exists()
 
     def test_a_stylized_name_is_not_rearranged_into_a_folder(self, ctx):
-        """"De La Soul" -> "La Soul, De" was live corruption, 2026-08-16."""
+        """ "De La Soul" -> "La Soul, De" was live corruption, 2026-08-16."""
         _make_track(ctx, "c.m4a", "De La Soul", "3 Feet High", "Me Myself and I")
         OrganizeStage().run(ctx)
         assert (ctx.inbox / "De La Soul" / "3 Feet High").is_dir()
@@ -515,10 +510,16 @@ class TestBatchTierIsPreserved:
         path = ctx.alac_library / batch / artist / album / f"{artist} - {title}.m4a"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"FAKE AUDIO DATA")
-        upsert_archive(ctx.conn, {
-            "file_path": str(path), "status": "CATALOGUED",
-            "artist": artist, "album": album, "title": title,
-        })
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(path),
+                "status": "CATALOGUED",
+                "artist": artist,
+                "album": album,
+                "title": title,
+            },
+        )
         ctx.conn.commit()
         return path
 
@@ -537,10 +538,16 @@ class TestBatchTierIsPreserved:
         batch.mkdir(parents=True, exist_ok=True)
         flat = batch / "flat.m4a"
         flat.write_bytes(b"FAKE AUDIO DATA")
-        upsert_archive(ctx.conn, {
-            "file_path": str(flat), "status": "CATALOGUED",
-            "artist": "Weezer", "album": "Blue Album", "title": "Buddy Holly",
-        })
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(flat),
+                "status": "CATALOGUED",
+                "artist": "Weezer",
+                "album": "Blue Album",
+                "title": "Buddy Holly",
+            },
+        )
         ctx.conn.commit()
 
         OrganizeStage().run(ctx)
@@ -571,10 +578,16 @@ class TestBatchTierIsPreserved:
         path = ctx.alac_library / "Weezer" / "Blue Album" / "Weezer - Undone.m4a"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"FAKE AUDIO DATA")
-        upsert_archive(ctx.conn, {
-            "file_path": str(path), "status": "CATALOGUED",
-            "artist": "Weezer", "album": "Blue Album", "title": "Undone",
-        })
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(path),
+                "status": "CATALOGUED",
+                "artist": "Weezer",
+                "album": "Blue Album",
+                "title": "Undone",
+            },
+        )
         ctx.conn.commit()
 
         OrganizeStage().run(ctx)
@@ -614,10 +627,16 @@ class TestSetAsideFoldersAreLeftAlone:
         src = ctx.alac_library / folder / "Weezer - Undone.m4a"
         src.parent.mkdir(parents=True, exist_ok=True)
         src.write_bytes(b"FAKE AUDIO DATA")
-        upsert_archive(ctx.conn, {
-            "file_path": str(src), "status": "CATALOGUED",
-            "artist": "Weezer", "album": "Blue Album", "title": "Undone",
-        })
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(src),
+                "status": "CATALOGUED",
+                "artist": "Weezer",
+                "album": "Blue Album",
+                "title": "Undone",
+            },
+        )
         ctx.conn.commit()
 
         OrganizeStage().run(ctx)
@@ -632,10 +651,16 @@ class TestSetAsideFoldersAreLeftAlone:
         batch.mkdir(parents=True, exist_ok=True)
         flat = batch / "flat.m4a"
         flat.write_bytes(b"FAKE AUDIO DATA")
-        upsert_archive(ctx.conn, {
-            "file_path": str(flat), "status": "CATALOGUED",
-            "artist": "Weezer", "album": "Blue Album", "title": "Undone",
-        })
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(flat),
+                "status": "CATALOGUED",
+                "artist": "Weezer",
+                "album": "Blue Album",
+                "title": "Undone",
+            },
+        )
         ctx.conn.commit()
 
         OrganizeStage().run(ctx)
@@ -702,7 +727,7 @@ def test_the_cap_survives_the_collision_it_creates(tmp_path: Path) -> None:
 
     # deep enough that the counter goes two digits and the budget shrinks
     for _ in range(12):
-        out = unique_path(first)          # must not raise OSError 36
+        out = unique_path(first)  # must not raise OSError 36
         assert len(out.name.encode("utf-8")) <= 255
         out.write_bytes(b"x")
 
@@ -713,7 +738,7 @@ def test_unique_path_shortens_whatever_it_is_handed(tmp_path: Path) -> None:
     classical_composer and deny_list all call it with no try/except."""
     from musaeus.stages.organize import unique_path
 
-    over = tmp_path / ("B" * 250 + ".m4a")     # already at the limit
+    over = tmp_path / ("B" * 250 + ".m4a")  # already at the limit
     over.write_bytes(b"x")
     out = unique_path(over)
     assert len(out.name.encode("utf-8")) <= 255

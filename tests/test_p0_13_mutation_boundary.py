@@ -142,7 +142,9 @@ class TestQuarantineFirst:
         )
 
     def test_every_applied_operation_is_journalled(self, boundary, library):
-        boundary.fixture_write_tags(library / "Bob Seger" / "Night Moves.m4a", {"artist": "Bob Seger"})
+        boundary.fixture_write_tags(
+            library / "Bob Seger" / "Night Moves.m4a", {"artist": "Bob Seger"}
+        )
         boundary.fixture_write_artwork(library / "The Byrds" / "Eight Miles High.m4a", b"JPEGDATA")
         boundary.move(
             library / "Bob Seger" / "Hollywood Nights.m4a",
@@ -239,7 +241,9 @@ class TestRollbackRestoresExactly:
     def test_rollback_after_a_mixed_batch_restores_hashes_and_locations(self, boundary, library):
         before = _snapshot(library)
 
-        boundary.fixture_write_tags(library / "Bob Seger" / "Night Moves.m4a", {"artist": "Bob Seger"})
+        boundary.fixture_write_tags(
+            library / "Bob Seger" / "Night Moves.m4a", {"artist": "Bob Seger"}
+        )
         boundary.fixture_write_artwork(library / "The Byrds" / "Eight Miles High.m4a", b"JPEGDATA")
         boundary.move(
             library / "Bob Seger" / "Hollywood Nights.m4a",

@@ -100,16 +100,15 @@ class TestCacheStaysHonest:
             "a change on disk must invalidate the cache"
         )
 
-    @pytest.mark.skipif(not hasattr(bpm, "remember_tunemymusic_track"),
-                        reason="cache API not present in this build")
-    def test_remember_keeps_the_cache_warm_without_a_reread(
-        self, tmp_path, counting_open
-    ):
+    @pytest.mark.skipif(
+        not hasattr(bpm, "remember_tunemymusic_track"), reason="cache API not present in this build"
+    )
+    def test_remember_keeps_the_cache_warm_without_a_reread(self, tmp_path, counting_open):
         """An append must not force the next lookup to re-read -- that is
         exactly the O(K^2) behaviour being removed."""
         csv_path = tmp_path / "TuneMyMusic.csv"
         _write_csv(csv_path, [("One", "A")])
-        bpm._tunemymusic_csv_has_track(csv_path, "One", "A")   # read #1
+        bpm._tunemymusic_csv_has_track(csv_path, "One", "A")  # read #1
         before = counting_open["n"]
 
         with open(csv_path, "a", newline="", encoding="utf-8") as fh:
@@ -122,8 +121,9 @@ class TestCacheStaysHonest:
             "remember_tunemymusic_track should have updated the cache in place"
         )
 
-    @pytest.mark.skipif(not hasattr(bpm, "remember_tunemymusic_track"),
-                        reason="cache API not present in this build")
+    @pytest.mark.skipif(
+        not hasattr(bpm, "remember_tunemymusic_track"), reason="cache API not present in this build"
+    )
     def test_within_run_duplicates_are_still_caught(self, tmp_path):
         csv_path = tmp_path / "TuneMyMusic.csv"
         _write_csv(csv_path, [])

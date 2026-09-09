@@ -333,8 +333,10 @@ class Console:
         _info("so a live run now would use the OLD code.")
 
         if not auto_restart_enabled():
-            _err("Refusing the live run. Restart the console, or unset "
-                 "MUSAEUS_AUTO_RESTART to restart automatically.")
+            _err(
+                "Refusing the live run. Restart the console, or unset "
+                "MUSAEUS_AUTO_RESTART to restart automatically."
+            )
             return False
 
         _info("Restarting into a fresh interpreter...")
@@ -344,8 +346,7 @@ class Console:
             # fds either way, so flush first.
             self._source.restart()  # does not return
         except OSError as exc:
-            _err(f"Could not restart automatically ({exc}). Quit and relaunch "
-                 f"before running live.")
+            _err(f"Could not restart automatically ({exc}). Quit and relaunch before running live.")
             return False
         return False  # unreachable; execv either replaces us or raised
 
@@ -722,9 +723,7 @@ class Console:
                 if not include_decisions:
                     where += " AND status NOT IN ('QUARANTINED','DUPE_REVIEW','GHOST')"
 
-                count = conn.execute(
-                    f"SELECT COUNT(*) FROM archive WHERE {where}"
-                ).fetchone()[0]
+                count = conn.execute(f"SELECT COUNT(*) FROM archive WHERE {where}").fetchone()[0]
                 kept = conn.execute(
                     "SELECT status, COUNT(*) FROM archive "
                     "WHERE status IN ('QUARANTINED','DUPE_REVIEW','GHOST') "
@@ -1118,10 +1117,12 @@ class Console:
             conn.close()
 
         _ok(sel.summary())
-        _info(f"Format: {spec.codec.upper()}"
-              + (f" {spec.bitrate_kbps}k" if spec.bitrate_kbps else " (lossless)")
-              + f", {spec.lufs_target} LUFS"
-              + (f", capped at {spec.max_sample_rate} Hz" if spec.max_sample_rate else ""))
+        _info(
+            f"Format: {spec.codec.upper()}"
+            + (f" {spec.bitrate_kbps}k" if spec.bitrate_kbps else " (lossless)")
+            + f", {spec.lufs_target} LUFS"
+            + (f", capped at {spec.max_sample_rate} Hz" if spec.max_sample_rate else "")
+        )
 
         by_genre: dict[str, int] = {}
         for t in sel.included:
@@ -1130,12 +1131,15 @@ class Console:
             print(f"      {n:>6,}  {g}")
 
         if sel.skipped_for_budget:
-            _warn(f"{len(sel.skipped_for_budget):,} track(s) do not fit. "
-                  "Lowest-priority genres are dropped first.")
+            _warn(
+                f"{len(sel.skipped_for_budget):,} track(s) do not fit. "
+                "Lowest-priority genres are dropped first."
+            )
 
         _info("Selection only — nothing was encoded or written.")
-        _info("To build it, run the builder for that edition; "
-              "both pause while you use the machine.")
+        _info(
+            "To build it, run the builder for that edition; both pause while you use the machine."
+        )
 
     def _usb_menu(self) -> None:
         """Front door to scripts/usb_transfer/transfer_to_usb.py.
@@ -1154,7 +1158,9 @@ class Console:
         _section("USB Transfer")
         script = (
             Path(__file__).resolve().parent.parent
-            / "scripts" / "usb_transfer" / "transfer_to_usb.py"
+            / "scripts"
+            / "usb_transfer"
+            / "transfer_to_usb.py"
         )
         if not script.exists():
             _err(f"Script not found: {script}")

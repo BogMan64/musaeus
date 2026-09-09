@@ -101,9 +101,7 @@ class TestVocabularyCheckCatchesWhatPermitsCannot:
 
         assert not any("Genre_Allowed.txt" in p for p in problems)
 
-    def test_a_missing_vocabulary_file_disables_the_check_rather_than_failing_everything(
-        self, ctx
-    ):
+    def test_a_missing_vocabulary_file_disables_the_check_rather_than_failing_everything(self, ctx):
         # A vault without the file must not have every genre reported as
         # unlisted — that would be a check that always fires, which is as
         # useless as one that never does.

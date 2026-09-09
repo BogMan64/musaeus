@@ -47,13 +47,30 @@ def conn() -> sqlite3.Connection:
 
 
 def _add(c, path, **kw):
-    d = {"artist": "A", "title": "T", "status": "CATALOGUED", "duration": 300.0,
-         "size_bytes": 100_000_000, "sample_rate": 44100, "codec": "alac"}
+    d = {
+        "artist": "A",
+        "title": "T",
+        "status": "CATALOGUED",
+        "duration": 300.0,
+        "size_bytes": 100_000_000,
+        "sample_rate": 44100,
+        "codec": "alac",
+    }
     d.update(kw)
-    c.execute("INSERT INTO archive (file_path,artist,title,status,duration,"
-              "size_bytes,sample_rate,codec) VALUES (?,?,?,?,?,?,?,?)",
-              (path, d["artist"], d["title"], d["status"], d["duration"],
-               d["size_bytes"], d["sample_rate"], d["codec"]))
+    c.execute(
+        "INSERT INTO archive (file_path,artist,title,status,duration,"
+        "size_bytes,sample_rate,codec) VALUES (?,?,?,?,?,?,?,?)",
+        (
+            path,
+            d["artist"],
+            d["title"],
+            d["status"],
+            d["duration"],
+            d["size_bytes"],
+            d["sample_rate"],
+            d["codec"],
+        ),
+    )
 
 
 class TestSizeRatio:
@@ -118,8 +135,9 @@ class TestResumability:
         ensure_columns(conn)
         _add(conn, "/done.m4a")
         _add(conn, "/todo.m4a")
-        conn.execute("UPDATE archive SET decode_checked_at='2026-09-01' "
-                     "WHERE file_path='/done.m4a'")
+        conn.execute(
+            "UPDATE archive SET decode_checked_at='2026-09-01' WHERE file_path='/done.m4a'"
+        )
         assert [r["file_path"] for r in pending_rows(conn)] == ["/todo.m4a"]
 
     def test_only_catalogued_rows_are_scanned(self, conn) -> None:
@@ -178,8 +196,10 @@ class TestIdleOnly:
 
         class _Fake:
             available = True
+
             def __init__(self):
                 self.ms = 10_000
+
             def idle_ms(self):
                 return self.ms
 
@@ -222,7 +242,9 @@ class TestIdleOnly:
 
         class _Broken:
             available = True
-            def idle_ms(self): raise OSError("display went away")
+
+            def idle_ms(self):
+                raise OSError("display went away")
 
         monkeypatch.setattr(it, "_XIdle", lambda: _Broken())
         assert it.is_idle() is False

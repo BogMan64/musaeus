@@ -29,9 +29,22 @@ pytestmark = pytest.mark.skipif(
 def _make_m4a(path: Path, artist: str = "", albumartist: str = "") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-         "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "0.3",
-         "-c:a", "alac", str(path)],
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=stereo",
+            "-t",
+            "0.3",
+            "-c:a",
+            "alac",
+            str(path),
+        ],
         check=True,
     )
     from mutagen.mp4 import MP4
@@ -100,9 +113,7 @@ def test_a_typography_only_difference_is_refused():
     """sanitize_path_component flattens these, so adopting them drifts tag vs path."""
     assert rac.canonical_spelling("Guns N' Roses", "Guns N’ Roses") is None
     assert rac.canonical_spelling("Olivia Newton-John", "Olivia Newton‐John") is None
-    assert rac.canonical_spelling(
-        "Bachman-Turner Overdrive", "Bachman–Turner Overdrive"
-    ) is None
+    assert rac.canonical_spelling("Bachman-Turner Overdrive", "Bachman–Turner Overdrive") is None
 
 
 def test_casing_still_wins_through_typography():
@@ -122,9 +133,7 @@ def test_ascii_punctuation_maps_the_whole_set():
 def test_a_name_with_a_forbidden_character_is_refused():
     """MusicBrainz really does publish these, and a path cannot hold them."""
     assert rac.canonical_spelling("Nsync", "*NSYNC") is None
-    assert rac.canonical_spelling(
-        "Eddie -Cleanhead- Vinson", 'Eddie "Cleanhead" Vinson'
-    ) is None
+    assert rac.canonical_spelling("Eddie -Cleanhead- Vinson", 'Eddie "Cleanhead" Vinson') is None
 
 
 # ── scan ──────────────────────────────────────────────────────────────────────
@@ -199,8 +208,9 @@ def test_the_journal_is_durable_before_the_file_is_touched(tmp_path, monkeypatch
     names = rac.load_mb_names(_cache(tmp_path / "c.db", [("tlc", "TLC", 1)]))
     planned, _ = rac.scan(lib, names, None)
     journal = tmp_path / "j.jsonl"
-    monkeypatch.setattr(rac, "write_fields", lambda p, v: (_ for _ in ()).throw(
-        KeyboardInterrupt("power cut")))
+    monkeypatch.setattr(
+        rac, "write_fields", lambda p, v: (_ for _ in ()).throw(KeyboardInterrupt("power cut"))
+    )
     with pytest.raises(KeyboardInterrupt):
         rac.apply(planned, journal)
     assert json.loads(journal.read_text().strip())["old_artist"] == "Tlc"
@@ -246,7 +256,8 @@ def test_dry_run_writes_nothing(tmp_path):
     c = _cache(tmp_path / "c.db", [("tlc", "TLC", 1)])
     out = subprocess.run(
         [sys.executable, str(_SCRIPT), "--root", str(lib), "--cache", str(c)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
         env={**__import__("os").environ, "MUSAEUS_VAULT_ROOT": str(tmp_path)},
     )
     assert "DRY RUN" in out.stdout, out.stdout + out.stderr

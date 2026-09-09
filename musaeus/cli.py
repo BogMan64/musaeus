@@ -472,7 +472,10 @@ def _run_pipeline(
         for err in head_errs:
             print(f"       ERROR: {err}", file=sys.stderr)
         if more_errors:
-            print(f"       {elision(more_errors, suffix='(full list in the run log)')}", file=sys.stderr)
+            print(
+                f"       {elision(more_errors, suffix='(full list in the run log)')}",
+                file=sys.stderr,
+            )
         for err in tail_errs:
             print(f"       ERROR: {err}", file=sys.stderr)
 
@@ -529,8 +532,7 @@ def _run_pipeline(
         handoff_path = None
         exit_code = 1
         print(
-            f"  WARNING: could not write the ForClaudeHandoff doc: "
-            f"{type(exc).__name__}: {exc}",
+            f"  WARNING: could not write the ForClaudeHandoff doc: {type(exc).__name__}: {exc}",
             file=sys.stderr,
         )
         traceback.print_exc()
@@ -858,19 +860,19 @@ def _cmd_deep_scan(args) -> int:
     try:
         ensure_columns(conn)
         if args.reset:
-            conn.execute("UPDATE archive SET decode_checked_at=NULL, "
-                         "decode_ok=NULL, decode_errors=NULL")
+            conn.execute(
+                "UPDATE archive SET decode_checked_at=NULL, decode_ok=NULL, decode_errors=NULL"
+            )
             conn.commit()
             print("  previous results cleared.")
 
-        total = conn.execute(
-            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'").fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'").fetchone()[0]
         done = conn.execute(
             "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' "
-            "AND decode_checked_at IS NOT NULL").fetchone()[0]
+            "AND decode_checked_at IS NOT NULL"
+        ).fetchone()[0]
         pending = len(pending_rows(conn))
-        print(f"\n  Deep integrity scan — {done:,} of {total:,} checked, "
-              f"{pending:,} pending")
+        print(f"\n  Deep integrity scan — {done:,} of {total:,} checked, {pending:,} pending")
         if not args.now:
             print("  Idle-only: runs while the machine is untouched, yields on input.")
             print("  Interruptible and resumable — Ctrl-C loses nothing.\n")
@@ -879,21 +881,28 @@ def _cmd_deep_scan(args) -> int:
 
         def report(row, ok, n_err):
             if not ok:
-                print(f"    CORRUPT  {(row['artist'] or '')[:24]:24} — "
-                      f"{(row['title'] or '')[:34]}  ({n_err} error(s))")
+                print(
+                    f"    CORRUPT  {(row['artist'] or '')[:24]:24} — "
+                    f"{(row['title'] or '')[:34]}  ({n_err} error(s))"
+                )
 
-        prog = scan(conn, limit=args.limit, idle_only=not args.now,
-                    decode_seconds=args.seconds, on_result=report)
+        prog = scan(
+            conn,
+            limit=args.limit,
+            idle_only=not args.now,
+            decode_seconds=args.seconds,
+            on_result=report,
+        )
 
-        print(f"\n  Checked {prog.checked:,} file(s). "
-              f"Corrupt: {len(prog.corrupt)}.")
+        print(f"\n  Checked {prog.checked:,} file(s). Corrupt: {len(prog.corrupt)}.")
         if prog.yielded_to_user:
             print(f"  Yielded to you {prog.yielded_to_user} time(s).")
-        bad = conn.execute(
-            "SELECT COUNT(*) FROM archive WHERE decode_ok = 0").fetchone()[0]
+        bad = conn.execute("SELECT COUNT(*) FROM archive WHERE decode_ok = 0").fetchone()[0]
         if bad:
-            print(f"  {bad} master(s) fail to decode overall — "
-                  "candidates for TuneMyMusic.csv re-sourcing.")
+            print(
+                f"  {bad} master(s) fail to decode overall — "
+                "candidates for TuneMyMusic.csv re-sourcing."
+            )
     except KeyboardInterrupt:
         print("\n  Interrupted. Progress is saved; re-run to continue.")
         return 0
@@ -924,7 +933,8 @@ def _cmd_edition(args) -> int:
     conn = open_db(cfg.db_path)
     try:
         sel = select_edition(
-            conn, spec,
+            conn,
+            spec,
             genres=set(args.genre) if args.genre else None,
             artists=set(args.artist) if args.artist else None,
             budget_bytes=budget,
@@ -934,15 +944,19 @@ def _cmd_edition(args) -> int:
 
     print()
     print(f"  Edition : {spec.name}")
-    print(f"  Format  : {spec.codec.upper()}"
-          + (f" {spec.bitrate_kbps}k" if spec.bitrate_kbps else " (lossless)")
-          + f", {spec.lufs_target} LUFS"
-          + (f", capped at {spec.max_sample_rate} Hz" if spec.max_sample_rate else ""))
+    print(
+        f"  Format  : {spec.codec.upper()}"
+        + (f" {spec.bitrate_kbps}k" if spec.bitrate_kbps else " (lossless)")
+        + f", {spec.lufs_target} LUFS"
+        + (f", capped at {spec.max_sample_rate} Hz" if spec.max_sample_rate else "")
+    )
     print(f"  {sel.summary()}")
 
     if sel.skipped_for_budget:
-        print(f"\n  {len(sel.skipped_for_budget):,} track(s) did not fit. "
-              f"Lowest-priority genres are dropped first.")
+        print(
+            f"\n  {len(sel.skipped_for_budget):,} track(s) did not fit. "
+            f"Lowest-priority genres are dropped first."
+        )
 
     if args.list:
         print()
@@ -1405,9 +1419,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Fingerprint + report, no DB writes"
     )
     acousticid_p.add_argument(
-        "--limit", type=int, metavar="N", default=0,
+        "--limit",
+        type=int,
+        metavar="N",
+        default=0,
         help="Process at most N files, so the backlog can be drained in "
-             "sittings rather than one lock-holding pass (0 = no limit)",
+        "sittings rather than one lock-holding pass (0 = no limit)",
     )
 
     # transcode
@@ -1474,33 +1491,58 @@ def _build_parser() -> argparse.ArgumentParser:
         "deep-scan",
         help="Decode-verify masters for silent truncation; runs only while idle",
     )
-    deepscan_p.add_argument("--limit", type=int, metavar="N", default=None,
-                            help="Check at most N files this pass")
-    deepscan_p.add_argument("--now", action="store_true",
-                            help="Run immediately at full speed instead of waiting "
-                                 "for the machine to be idle")
-    deepscan_p.add_argument("--seconds", type=int, metavar="S", default=0,
-                            help="Decode only the first S seconds (0 = whole file). "
-                                 "A partial decode cannot see damage later in a track")
-    deepscan_p.add_argument("--reset", action="store_true",
-                            help="Clear all previous results and start a fresh pass")
+    deepscan_p.add_argument(
+        "--limit", type=int, metavar="N", default=None, help="Check at most N files this pass"
+    )
+    deepscan_p.add_argument(
+        "--now",
+        action="store_true",
+        help="Run immediately at full speed instead of waiting for the machine to be idle",
+    )
+    deepscan_p.add_argument(
+        "--seconds",
+        type=int,
+        metavar="S",
+        default=0,
+        help="Decode only the first S seconds (0 = whole file). "
+        "A partial decode cannot see damage later in a track",
+    )
+    deepscan_p.add_argument(
+        "--reset", action="store_true", help="Clear all previous results and start a fresh pass"
+    )
 
     # edition
     edition_p = sub.add_parser(
         "edition",
         help="Preview what would go into an edition (selection only — encodes nothing)",
     )
-    edition_p.add_argument("name", choices=("lossless", "car", "iphone"),
-                           help="Which edition to select for")
-    edition_p.add_argument("--budget-gb", type=float, metavar="GB", default=None,
-                           help="Device budget; fills in genre-priority order and "
-                                "reports what did not fit")
-    edition_p.add_argument("--genre", action="append", metavar="NAME", default=None,
-                           help="Restrict to this genre (exact match; repeatable)")
-    edition_p.add_argument("--artist", action="append", metavar="NAME", default=None,
-                           help="Restrict to this artist (exact match; repeatable)")
-    edition_p.add_argument("--list", action="store_true",
-                           help="Print every selected track, not just the summary")
+    edition_p.add_argument(
+        "name", choices=("lossless", "car", "iphone"), help="Which edition to select for"
+    )
+    edition_p.add_argument(
+        "--budget-gb",
+        type=float,
+        metavar="GB",
+        default=None,
+        help="Device budget; fills in genre-priority order and reports what did not fit",
+    )
+    edition_p.add_argument(
+        "--genre",
+        action="append",
+        metavar="NAME",
+        default=None,
+        help="Restrict to this genre (exact match; repeatable)",
+    )
+    edition_p.add_argument(
+        "--artist",
+        action="append",
+        metavar="NAME",
+        default=None,
+        help="Restrict to this artist (exact match; repeatable)",
+    )
+    edition_p.add_argument(
+        "--list", action="store_true", help="Print every selected track, not just the summary"
+    )
 
     playlist_p = sub.add_parser(
         "playlist",

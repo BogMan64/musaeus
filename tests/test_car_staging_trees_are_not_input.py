@@ -46,8 +46,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "car_library"))
 from build_car_library import find_input_files  # noqa: E402
 
-_SCRIPT = (Path(__file__).resolve().parents[1]
-           / "scripts" / "car_library" / "build_car_library.py")
+_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
 
 
 def _drop(root: Path, rel: str) -> Path:
@@ -111,12 +110,15 @@ def test_this_run_registers_its_own_cleanup(tmp_path: Path) -> None:
     before the fix, the only rmtree calls were on entry and after a dry run.
     """
     text = _SCRIPT.read_text()
-    assert "atexit.register(shutil.rmtree, staging_dir" in text, \
+    assert "atexit.register(shutil.rmtree, staging_dir" in text, (
         "this run's staging tree is not cleaned up on exit"
+    )
 
     tree = ast.parse(text)
-    assert any(isinstance(n, ast.Import) and any(a.name == "atexit" for a in n.names)
-               for n in ast.walk(tree)), "atexit is used but not imported"
+    assert any(
+        isinstance(n, ast.Import) and any(a.name == "atexit" for a in n.names)
+        for n in ast.walk(tree)
+    ), "atexit is used but not imported"
 
 
 def test_the_cleanup_is_scoped_to_this_process(tmp_path: Path) -> None:
@@ -130,5 +132,4 @@ def test_the_cleanup_is_scoped_to_this_process(tmp_path: Path) -> None:
     reg = text.split("atexit.register(shutil.rmtree,")[1].split(")")[0]
     assert "staging_dir" in reg, reg
     for wildcard in ("_staged_*", "glob", "iterdir"):
-        assert wildcard not in reg, \
-            f"cleanup must target this PID's tree only, found {wildcard!r}"
+        assert wildcard not in reg, f"cleanup must target this PID's tree only, found {wildcard!r}"

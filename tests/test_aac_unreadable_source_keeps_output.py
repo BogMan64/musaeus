@@ -52,14 +52,28 @@ needs_ffmpeg = pytest.mark.skipif(
 def _tone(path: Path, seconds: float) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-         "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
-         "-c:a", "aac", str(path)],
-        check=True, capture_output=True)
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration={seconds}",
+            "-c:a",
+            "aac",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
     return path
 
 
 # ── the discrimination the fix rests on ──────────────────────────────────────
+
 
 @needs_ffmpeg
 def test_an_unreadable_source_is_indistinguishable_from_a_bad_output(tmp_path: Path) -> None:
@@ -91,6 +105,7 @@ def test_probe_returns_none_for_an_unreadable_source(tmp_path: Path) -> None:
 
 
 # ── the behaviour itself ─────────────────────────────────────────────────────
+
 
 def _run_resume_branch(source: Path, output: Path) -> str:
     """Exercise convert_one's resume decision without a real encode.

@@ -60,8 +60,16 @@ def _deny(ctx, h, name="Knock Off - Hey Jude.m4a"):
 def _incoming(ctx, name, audio_hash, status="HASHED"):
     p = ctx.config.inbox / name
     p.write_bytes(b"audio")
-    upsert_archive(ctx.conn, {"file_path": str(p), "status": status,
-                              "audio_hash": audio_hash, "artist": "X", "title": "Y"})
+    upsert_archive(
+        ctx.conn,
+        {
+            "file_path": str(p),
+            "status": status,
+            "audio_hash": audio_hash,
+            "artist": "X",
+            "title": "Y",
+        },
+    )
     ctx.conn.commit()
     return p
 
@@ -249,9 +257,7 @@ class TestQuarantineClearsTheFinalizedMarker:
 
         DenyListStage().run(ctx)
 
-        row = ctx.conn.execute(
-            "SELECT status, file_path, finalized_at FROM archive"
-        ).fetchone()
+        row = ctx.conn.execute("SELECT status, file_path, finalized_at FROM archive").fetchone()
         assert row["status"] == "QUARANTINED"
         assert row["finalized_at"] is None, "a quarantined row is not finalized"
         # And the audit invariant this exists to protect:
@@ -301,8 +307,9 @@ class TestVerifyEffectHonoursAdvisory:
         p = ctx.config.alac_library / f"{audio_hash[:8]}.m4a"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(b"x")
-        upsert_archive(ctx.conn, {"file_path": str(p), "status": "CATALOGUED",
-                                  "audio_hash": audio_hash})
+        upsert_archive(
+            ctx.conn, {"file_path": str(p), "status": "CATALOGUED", "audio_hash": audio_hash}
+        )
         ctx.conn.commit()
 
     def test_an_advisory_entry_is_not_reported_as_a_leak(self, ctx):

@@ -48,9 +48,21 @@ TRACKS = 6
 
 def _codec_of(path: Path) -> str:
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "a:0",
-         "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
-        capture_output=True, text=True, check=False,
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     return out.stdout.strip().split(",")[0]
 
@@ -59,14 +71,30 @@ def _make_aac(path: Path, freq: int, artist: str, title: str) -> Path:
     """A real AAC file with a distinct tone, so its audio_hash is unique."""
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-         "-f", "lavfi", "-i", f"sine=frequency={freq}:duration=1",
-         "-c:a", "aac", "-b:a", "128k",
-         "-metadata", f"artist={artist}",
-         "-metadata", f"title={title}",
-         "-metadata", "album=Test Album",
-         "-metadata", "genre=Rock",
-         str(path)],
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency={freq}:duration=1",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-metadata",
+            f"artist={artist}",
+            "-metadata",
+            f"title={title}",
+            "-metadata",
+            "album=Test Album",
+            "-metadata",
+            "genre=Rock",
+            str(path),
+        ],
         check=True,
     )
     assert _codec_of(path) == "aac", "fixture must start as AAC or it proves nothing"
@@ -134,9 +162,7 @@ class TestCanonicalizeConvertsRealAudio:
         result = CanonicalizeStage().run(ctx)
         assert result.files_errored == 0, result.errors
 
-        for row in ctx.conn.execute(
-            "SELECT file_path, canon_action FROM archive"
-        ).fetchall():
+        for row in ctx.conn.execute("SELECT file_path, canon_action FROM archive").fetchall():
             assert row["canon_action"] == "PASSTHROUGH", (
                 f"AAC-in-.m4a took the {row['canon_action']} branch -- that is "
                 "a lossy re-encode of an already-canonical file"
@@ -151,15 +177,33 @@ class TestCanonicalizeConvertsRealAudio:
 
         flac = vault.cfg.inbox / "lossless.flac"
         subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
-             "-i", "sine=frequency=440:duration=1", str(flac)],
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1",
+                str(flac),
+            ],
             check=True,
         )
         assert _codec_of(flac) == "flac"
-        upsert_archive(ctx.conn, {
-            "file_path": str(flac), "status": "CATALOGUED", "artist": "A",
-            "album": "B", "title": "C", "genre": "Rock", "codec": "flac",
-        })
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(flac),
+                "status": "CATALOGUED",
+                "artist": "A",
+                "album": "B",
+                "title": "C",
+                "genre": "Rock",
+                "codec": "flac",
+            },
+        )
         ctx.conn.commit()
 
         result = CanonicalizeStage().run(ctx)
@@ -174,7 +218,7 @@ class TestCanonicalizeConvertsRealAudio:
         assert _codec_of(out) == "alac", f"still {_codec_of(out)}"
 
     def test_an_unrecognised_codec_is_refused_not_re_encoded(self, ctx, vault):
-        """"We do not know what this is" must not mean "re-encode it".
+        """ "We do not know what this is" must not mean "re-encode it".
 
         The fall-through for an unrecognised codec was TRANSCODE, a lossy
         re-encode. The live database holds 63 rows with no codec recorded.
@@ -184,11 +228,18 @@ class TestCanonicalizeConvertsRealAudio:
         odd = vault.cfg.inbox / "mystery.m4a"
         _make_aac(odd, 330, "Who", "Knows")
         ctx.conn.execute("DELETE FROM archive")
-        upsert_archive(ctx.conn, {
-            "file_path": str(odd), "status": "CATALOGUED", "artist": "Who",
-            "album": "B", "title": "Knows", "genre": "Rock",
-            "codec": "not_a_real_codec",
-        })
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(odd),
+                "status": "CATALOGUED",
+                "artist": "Who",
+                "album": "B",
+                "title": "Knows",
+                "genre": "Rock",
+                "codec": "not_a_real_codec",
+            },
+        )
         ctx.conn.commit()
         before = odd.read_bytes()
 
@@ -202,15 +253,14 @@ class TestCanonicalizeConvertsRealAudio:
         _stage_tracks(ctx, vault)
         CanonicalizeStage().run(ctx)
 
-        roots = [vault.cfg.alac_library, vault.cfg.inbox, vault.cfg.staging,
-                 vault.cfg.quarantine]
+        roots = [vault.cfg.alac_library, vault.cfg.inbox, vault.cfg.staging, vault.cfg.quarantine]
         for row in ctx.conn.execute("SELECT file_path FROM archive").fetchall():
             p = Path(row["file_path"])
             if not p.exists():
                 continue
-            assert any(
-                str(p.resolve()).startswith(str(r.resolve())) for r in roots
-            ), f"{p} escaped every root this run knows about"
+            assert any(str(p.resolve()).startswith(str(r.resolve())) for r in roots), (
+                f"{p} escaped every root this run knows about"
+            )
 
     def test_nothing_lands_outside_the_vault(self, ctx, vault):
         """Three tracks once escaped to a SIBLING of the vault root."""
@@ -218,7 +268,8 @@ class TestCanonicalizeConvertsRealAudio:
         CanonicalizeStage().run(ctx)
 
         strays = [
-            p for p in vault.root.parent.rglob("*.m4a")
+            p
+            for p in vault.root.parent.rglob("*.m4a")
             if not str(p.resolve()).startswith(str(vault.root.resolve()))
         ]
         assert strays == [], f"audio outside the vault: {strays}"
@@ -243,14 +294,32 @@ class TestBoundaryProtectsTheOriginal:
         for i in range(3):
             f = vault.cfg.inbox / f"lossless{i}.flac"
             subprocess.run(
-                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
-                 "-i", f"sine=frequency={330 + i * 40}:duration=1", str(f)],
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    f"sine=frequency={330 + i * 40}:duration=1",
+                    str(f),
+                ],
                 check=True,
             )
-            upsert_archive(ctx.conn, {
-                "file_path": str(f), "status": "CATALOGUED", "artist": f"A{i}",
-                "album": "B", "title": f"T{i}", "genre": "Rock", "codec": "flac",
-            })
+            upsert_archive(
+                ctx.conn,
+                {
+                    "file_path": str(f),
+                    "status": "CATALOGUED",
+                    "artist": f"A{i}",
+                    "album": "B",
+                    "title": f"T{i}",
+                    "genre": "Rock",
+                    "codec": "flac",
+                },
+            )
             originals[f.name] = f.read_bytes()
         ctx.conn.commit()
 

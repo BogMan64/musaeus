@@ -391,14 +391,15 @@ class TestBakeVerifiesLoudness:
         out.write_bytes(b"x")
         probe = {"streams": [{"codec_type": "audio"}], "format": {"duration": "200.0"}}
         monkeypatch.setattr(_bal, "_probe_streams", lambda p: probe)
-        _bal.verify_bake(src, out, achieved=-18.1, target_i="-18.0")   # must not raise
+        _bal.verify_bake(src, out, achieved=-18.1, target_i="-18.0")  # must not raise
 
     def test_an_unverifiable_bake_still_checks_the_rest(self, tmp_path, monkeypatch):
         """achieved=None must not silently pass a broken output either."""
         src, out = tmp_path / "a.m4a", tmp_path / "b.m4a"
         src.write_bytes(b"x")
         out.write_bytes(b"x")
-        monkeypatch.setattr(_bal, "_probe_streams",
-                            lambda p: {"streams": [], "format": {"duration": "200.0"}})
+        monkeypatch.setattr(
+            _bal, "_probe_streams", lambda p: {"streams": [], "format": {"duration": "200.0"}}
+        )
         with pytest.raises(RuntimeError, match="no audio stream"):
             _bal.verify_bake(src, out, achieved=None)

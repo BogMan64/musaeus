@@ -26,9 +26,13 @@ from musaeus.editions import EDITIONS
 @pytest.fixture
 def cfg(tmp_path: Path) -> MusicConfig:
     return MusicConfig(
-        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-        quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
-        meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+        vault_root=tmp_path,
+        inbox=tmp_path / "INBOX",
+        staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "QUARANTINE",
+        runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "ALAC-Library",
         db_path=tmp_path / "musaeus.db",
     )
 
@@ -43,11 +47,19 @@ def _seed(cfg: MusicConfig) -> None:
     cfg.ensure_dirs()
     conn = open_db(cfg.db_path)
     for i in range(6):
-        upsert_archive(conn, {
-            "file_path": f"/vault/a{i}.m4a", "status": "CATALOGUED",
-            "artist": "A", "album": "Al", "title": f"T{i}",
-            "genre": "Rock", "duration": 240.0, "size_bytes": 40_000_000,
-        })
+        upsert_archive(
+            conn,
+            {
+                "file_path": f"/vault/a{i}.m4a",
+                "status": "CATALOGUED",
+                "artist": "A",
+                "album": "Al",
+                "title": f"T{i}",
+                "genre": "Rock",
+                "duration": 240.0,
+                "size_bytes": 40_000_000,
+            },
+        )
     conn.commit()
     conn.close()
 

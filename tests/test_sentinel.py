@@ -273,9 +273,7 @@ class TestMissingFileIsGhostedNotDeleted:
 
         SentinelStage().execute(ctx)
 
-        row = ctx.conn.execute(
-            "SELECT status FROM archive WHERE file_path = ?", (gone,)
-        ).fetchone()
+        row = ctx.conn.execute("SELECT status FROM archive WHERE file_path = ?", (gone,)).fetchone()
         assert row is not None, "the row was DELETED; it must be marked instead"
         assert row["status"] == "GHOST"
 
@@ -298,9 +296,7 @@ class TestMissingFileIsGhostedNotDeleted:
 class TestPhantomsAreNotDuplicateTargets:
     @patch("musaeus.stages.sentinel.audio_hash_safe")
     @patch("musaeus.stages.sentinel.file_hash")
-    def test_a_ghost_row_is_not_matched_as_a_duplicate(
-        self, mock_fh, mock_ah, ctx, tmp_path
-    ):
+    def test_a_ghost_row_is_not_matched_as_a_duplicate(self, mock_fh, mock_ah, ctx, tmp_path):
         """A new file must not be quarantined against a row whose file is gone."""
         shared = "a" * 64
         ctx.conn.execute(
@@ -338,8 +334,7 @@ class TestPhantomsAreNotDuplicateTargets:
         quarantined.parent.mkdir(parents=True, exist_ok=True)
         quarantined.write_bytes(b"AUDIO")
         ctx.conn.execute(
-            "INSERT INTO archive (file_path, audio_hash, status) "
-            "VALUES (?, ?, 'QUARANTINED')",
+            "INSERT INTO archive (file_path, audio_hash, status) VALUES (?, ?, 'QUARANTINED')",
             (str(quarantined), shared),
         )
         arrival = tmp_path / "new3.flac"
@@ -359,9 +354,7 @@ class TestPhantomsAreNotDuplicateTargets:
 
     @patch("musaeus.stages.sentinel.audio_hash_safe")
     @patch("musaeus.stages.sentinel.file_hash")
-    def test_a_row_whose_file_vanished_is_not_matched_either(
-        self, mock_fh, mock_ah, ctx, tmp_path
-    ):
+    def test_a_row_whose_file_vanished_is_not_matched_either(self, mock_fh, mock_ah, ctx, tmp_path):
         """Status says live, disk says gone. The disk is the true answer."""
         shared = "b" * 64
         ctx.conn.execute(
@@ -385,9 +378,7 @@ class TestPhantomsAreNotDuplicateTargets:
 
     @patch("musaeus.stages.sentinel.audio_hash_safe")
     @patch("musaeus.stages.sentinel.file_hash")
-    def test_a_genuine_live_duplicate_is_still_caught(
-        self, mock_fh, mock_ah, ctx, tmp_path
-    ):
+    def test_a_genuine_live_duplicate_is_still_caught(self, mock_fh, mock_ah, ctx, tmp_path):
         """The guard must not suppress real duplicates."""
         shared = "c" * 64
         original = tmp_path / "original.flac"
@@ -427,9 +418,7 @@ class TestPhantomsAreNotDuplicateTargets:
 class TestReHashingDoesNotDemote:
     @patch("musaeus.stages.sentinel.audio_hash_safe")
     @patch("musaeus.stages.sentinel.file_hash")
-    def test_a_finalized_catalogued_row_keeps_its_status(
-        self, mock_fh, mock_ah, ctx, tmp_path
-    ):
+    def test_a_finalized_catalogued_row_keeps_its_status(self, mock_fh, mock_ah, ctx, tmp_path):
         track = tmp_path / "finalized.flac"
         track.write_bytes(b"AUDIO")
         ctx.conn.execute(
@@ -511,11 +500,17 @@ class TestSentinelWantedList:
         bad.write_bytes(b"not really audio")
         _insert_pending(ctx, str(bad))
 
-        with patch("musaeus.stages.sentinel.audio_hash_safe",
-                   return_value=(None, "ffmpeg exited 69: invalid element channel count")), \
-             patch("musaeus.stages.sentinel.file_hash", return_value="f" * 64), \
-             patch("musaeus.stages.scholar._probe",
-                   return_value=self._probe_stub("Aerosmith", "What It Takes", "Big Ones")):
+        with (
+            patch(
+                "musaeus.stages.sentinel.audio_hash_safe",
+                return_value=(None, "ffmpeg exited 69: invalid element channel count"),
+            ),
+            patch("musaeus.stages.sentinel.file_hash", return_value="f" * 64),
+            patch(
+                "musaeus.stages.scholar._probe",
+                return_value=self._probe_stub("Aerosmith", "What It Takes", "Big Ones"),
+            ),
+        ):
             SentinelStage().execute(ctx)
 
         rows = list(csv.reader(ctx.config.tunemymusic_csv_path.open(encoding="utf-8")))
@@ -526,10 +521,15 @@ class TestSentinelWantedList:
         """Bowie's "Cat People" failed to decode in one copy while a clean
         53MB master sat in the library. Asking Grey to re-buy what he owns
         is how a useful list becomes one he stops reading."""
-        upsert_archive(ctx.conn, {
-            "file_path": str(tmp_path / "good.m4a"), "status": "CATALOGUED",
-            "artist": "David Bowie", "title": "Cat People",
-        })
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(tmp_path / "good.m4a"),
+                "status": "CATALOGUED",
+                "artist": "David Bowie",
+                "title": "Cat People",
+            },
+        )
         ctx.conn.commit()
 
         bad = tmp_path / "INBOX" / "David Bowie - Cat People.m4a"
@@ -537,10 +537,14 @@ class TestSentinelWantedList:
         bad.write_bytes(b"truncated")
         _insert_pending(ctx, str(bad))
 
-        with patch("musaeus.stages.sentinel.audio_hash_safe", return_value=(None, "partial file")), \
-             patch("musaeus.stages.sentinel.file_hash", return_value="e" * 64), \
-             patch("musaeus.stages.scholar._probe",
-                   return_value=self._probe_stub("David Bowie", "Cat People")):
+        with (
+            patch("musaeus.stages.sentinel.audio_hash_safe", return_value=(None, "partial file")),
+            patch("musaeus.stages.sentinel.file_hash", return_value="e" * 64),
+            patch(
+                "musaeus.stages.scholar._probe",
+                return_value=self._probe_stub("David Bowie", "Cat People"),
+            ),
+        ):
             SentinelStage().execute(ctx)
 
         assert not ctx.config.tunemymusic_csv_path.exists(), (
@@ -554,10 +558,14 @@ class TestSentinelWantedList:
         bad.write_bytes(b"bad")
         _insert_pending(ctx, str(bad))
 
-        with patch("musaeus.stages.sentinel.audio_hash_safe", return_value=(None, "boom")), \
-             patch("musaeus.stages.sentinel.file_hash", return_value="d" * 64), \
-             patch("musaeus.stages.sentinel._want_replacement",
-                   side_effect=RuntimeError("disk on fire")):
+        with (
+            patch("musaeus.stages.sentinel.audio_hash_safe", return_value=(None, "boom")),
+            patch("musaeus.stages.sentinel.file_hash", return_value="d" * 64),
+            patch(
+                "musaeus.stages.sentinel._want_replacement",
+                side_effect=RuntimeError("disk on fire"),
+            ),
+        ):
             result = SentinelStage().execute(ctx)
 
         assert result.files_errored == 1  # the hash failure is still counted
@@ -582,25 +590,34 @@ class TestARottedLibraryMasterIsReported:
             "streams": [{"codec_type": "audio", "codec_name": "alac"}],
         }
 
-    def test_a_catalogued_row_that_stopped_decoding_reaches_the_wanted_list(
-        self, ctx, tmp_path
-    ):
+    def test_a_catalogued_row_that_stopped_decoding_reaches_the_wanted_list(self, ctx, tmp_path):
         rotted = tmp_path / "INBOX" / "Aerosmith - What It Takes.m4a"
         rotted.parent.mkdir(parents=True, exist_ok=True)
         rotted.write_bytes(b"header only")
         # CATALOGUED, tagged, but audio_hash has gone NULL -- so sentinel
         # re-selects it, and it is now its own "already owned" match.
-        upsert_archive(ctx.conn, {
-            "file_path": str(rotted), "status": "CATALOGUED",
-            "artist": "Aerosmith", "title": "What It Takes",
-        })
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(rotted),
+                "status": "CATALOGUED",
+                "artist": "Aerosmith",
+                "title": "What It Takes",
+            },
+        )
         ctx.conn.commit()
 
-        with patch("musaeus.stages.sentinel.audio_hash_safe",
-                   return_value=(None, "ffmpeg exited 69: invalid data found")), \
-             patch("musaeus.stages.sentinel.file_hash", return_value="c" * 64), \
-             patch("musaeus.stages.scholar._probe",
-                   return_value=self._probe_stub("Aerosmith", "What It Takes")):
+        with (
+            patch(
+                "musaeus.stages.sentinel.audio_hash_safe",
+                return_value=(None, "ffmpeg exited 69: invalid data found"),
+            ),
+            patch("musaeus.stages.sentinel.file_hash", return_value="c" * 64),
+            patch(
+                "musaeus.stages.scholar._probe",
+                return_value=self._probe_stub("Aerosmith", "What It Takes"),
+            ),
+        ):
             SentinelStage().execute(ctx)
 
         csv_path = ctx.config.tunemymusic_csv_path
@@ -611,26 +628,35 @@ class TestARottedLibraryMasterIsReported:
         body = csv_path.read_text(encoding="utf-8")
         assert "What It Takes" in body
 
-    def test_a_DIFFERENT_catalogued_copy_still_suppresses_the_listing(
-        self, ctx, tmp_path
-    ):
+    def test_a_DIFFERENT_catalogued_copy_still_suppresses_the_listing(self, ctx, tmp_path):
         """The Bowie case must keep working: a clean copy elsewhere in the
         library still means do not ask Grey to re-buy it."""
         bad = tmp_path / "INBOX" / "bowie_bad.m4a"
         bad.parent.mkdir(parents=True, exist_ok=True)
         bad.write_bytes(b"broken")
         _insert_pending(ctx, str(bad))
-        upsert_archive(ctx.conn, {
-            "file_path": str(tmp_path / "LIB" / "bowie_good.m4a"),
-            "status": "CATALOGUED", "artist": "David Bowie", "title": "Cat People",
-        })
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(tmp_path / "LIB" / "bowie_good.m4a"),
+                "status": "CATALOGUED",
+                "artist": "David Bowie",
+                "title": "Cat People",
+            },
+        )
         ctx.conn.commit()
 
-        with patch("musaeus.stages.sentinel.audio_hash_safe",
-                   return_value=(None, "ffmpeg exited 69: invalid data found")), \
-             patch("musaeus.stages.sentinel.file_hash", return_value="b" * 64), \
-             patch("musaeus.stages.scholar._probe",
-                   return_value=self._probe_stub("David Bowie", "Cat People")):
+        with (
+            patch(
+                "musaeus.stages.sentinel.audio_hash_safe",
+                return_value=(None, "ffmpeg exited 69: invalid data found"),
+            ),
+            patch("musaeus.stages.sentinel.file_hash", return_value="b" * 64),
+            patch(
+                "musaeus.stages.scholar._probe",
+                return_value=self._probe_stub("David Bowie", "Cat People"),
+            ),
+        ):
             SentinelStage().execute(ctx)
 
         assert not ctx.config.tunemymusic_csv_path.exists()
@@ -657,37 +683,45 @@ class TestAFlakyMountDoesNotBookAPurchase:
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(b"x")
         _insert_pending(ctx, str(f))
-        with patch("musaeus.stages.sentinel.audio_hash_safe", return_value=(None, err)), \
-             patch("musaeus.stages.sentinel.file_hash", return_value="a" * 64), \
-             patch("musaeus.stages.scholar._probe",
-                   return_value=self._probe_stub("Journey", "Keep on Runnin")):
+        with (
+            patch("musaeus.stages.sentinel.audio_hash_safe", return_value=(None, err)),
+            patch("musaeus.stages.sentinel.file_hash", return_value="a" * 64),
+            patch(
+                "musaeus.stages.scholar._probe",
+                return_value=self._probe_stub("Journey", "Keep on Runnin"),
+            ),
+        ):
             SentinelStage().execute(ctx)
         return ctx.config.tunemymusic_csv_path
 
-    @pytest.mark.parametrize("err", [
-        "ffmpeg exited 1 for /x.m4a: Input/output error",
-        "ffmpeg exited 1 for /x.m4a: No such file or directory",
-        "ffmpeg exited -9 for /x.m4a: ",                    # OOM-killed
-        "ffmpeg exited 1 for /x.m4a: Too many open files",
-        "ffmpeg not found — cannot compute audio hash for /x.m4a",
-        "ffmpeg timed out (>300s) for /x.m4a and the full-file fallback also failed: EIO",
-    ])
+    @pytest.mark.parametrize(
+        "err",
+        [
+            "ffmpeg exited 1 for /x.m4a: Input/output error",
+            "ffmpeg exited 1 for /x.m4a: No such file or directory",
+            "ffmpeg exited -9 for /x.m4a: ",  # OOM-killed
+            "ffmpeg exited 1 for /x.m4a: Too many open files",
+            "ffmpeg not found — cannot compute audio hash for /x.m4a",
+            "ffmpeg timed out (>300s) for /x.m4a and the full-file fallback also failed: EIO",
+        ],
+    )
     def test_an_environmental_failure_writes_nothing(self, ctx, tmp_path, err):
         csv_path = self._run(ctx, tmp_path, err)
         assert not csv_path.exists(), (
-            f"the machine is having a bad day; that is not evidence the file "
-            f"is rotten. err={err!r}"
+            f"the machine is having a bad day; that is not evidence the file is rotten. err={err!r}"
         )
 
-    @pytest.mark.parametrize("err", [
-        "ffmpeg exited 69 for /x.m4a: Invalid data found when processing input",
-        "ffmpeg exited 1 for /x.m4a: moov atom not found",
-        "ffmpeg exited 183 for /x.m4a: something unfamiliar",   # unknown -> still listed
-    ])
+    @pytest.mark.parametrize(
+        "err",
+        [
+            "ffmpeg exited 69 for /x.m4a: Invalid data found when processing input",
+            "ffmpeg exited 1 for /x.m4a: moov atom not found",
+            "ffmpeg exited 183 for /x.m4a: something unfamiliar",  # unknown -> still listed
+        ],
+    )
     def test_a_genuine_decode_refusal_still_lists(self, ctx, tmp_path, err):
         csv_path = self._run(ctx, tmp_path, err)
         assert csv_path.exists(), (
-            f"a file ffmpeg refused to decode is the whole point of the list. "
-            f"err={err!r}"
+            f"a file ffmpeg refused to decode is the whole point of the list. err={err!r}"
         )
         assert "Keep on Runnin" in csv_path.read_text(encoding="utf-8")

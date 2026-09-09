@@ -74,9 +74,7 @@ def test_no_module_redefines_the_protected_list() -> None:
 
 def test_the_guard_can_actually_see_a_violation() -> None:
     """A guard nobody has watched fail is a guard nobody should trust."""
-    tree = ast.parse(
-        'X = {\n    "earth, wind & fire",\n    "hall & oates",\n}\n'
-    )
+    tree = ast.parse('X = {\n    "earth, wind & fire",\n    "hall & oates",\n}\n')
     assert _copies_of_the_canon(tree), "the detector misses the pattern it guards"
 
 
@@ -95,18 +93,26 @@ def test_the_union_of_the_old_copies_is_all_present() -> None:
     """Nothing was dropped in the merge. These are the 13 names the three
     divergent copies held between them."""
     for name in [
-        "adam & the ants", "andrews sisters (the)",
+        "adam & the ants",
+        "andrews sisters (the)",
         "barney bentall & the legendary hearts",
-        "big brother & the holding company", "crosby, stills & nash",
-        "crosby, stills, nash & young", "dr. hook & the medicine show",
-        "earth, wind & fire", "hall & oates", "keith & kristyn getty",
-        "of monsters and men", "simon & garfunkel", "sly & the family stone",
+        "big brother & the holding company",
+        "crosby, stills & nash",
+        "crosby, stills, nash & young",
+        "dr. hook & the medicine show",
+        "earth, wind & fire",
+        "hall & oates",
+        "keith & kristyn getty",
+        "of monsters and men",
+        "simon & garfunkel",
+        "sly & the family stone",
     ]:
         assert name in PROTECTED_ARTIST_NAMES, name
 
 
 def test_every_stage_that_folds_artists_sees_the_same_object() -> None:
     from musaeus.stages import artist_consolidate, curator, organize
+
     assert curator._PROTECTED_ARTIST_NAMES is PROTECTED_ARTIST_NAMES
     assert organize._PROTECTED_ARTIST_NAMES is PROTECTED_ARTIST_NAMES
     assert artist_consolidate.PROTECTED_FULL_ARTIST_NAMES is PROTECTED_ARTIST_NAMES
@@ -155,8 +161,11 @@ def test_only_the_canon_defines_the_protected_name() -> None:
             target = None
             if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
                 target = node.target
-            elif isinstance(node, ast.Assign) and len(node.targets) == 1 \
-                    and isinstance(node.targets[0], ast.Name):
+            elif (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+            ):
                 target = node.targets[0]
             if target is None or target.id != "PROTECTED_ARTIST_NAMES":
                 continue
@@ -166,13 +175,13 @@ def test_only_the_canon_defines_the_protected_name() -> None:
             value = node.value
             if isinstance(value, (ast.Set, ast.List, ast.Tuple, ast.Dict)) or (
                 isinstance(value, ast.Call)
-                and any(isinstance(a, (ast.Set, ast.List, ast.Tuple, ast.Dict))
-                        for a in value.args)
+                and any(isinstance(a, (ast.Set, ast.List, ast.Tuple, ast.Dict)) for a in value.args)
             ):
                 offenders.append(f"{path.relative_to(_ROOT)}:{target.lineno}")
     assert not offenders, (
         "PROTECTED_ARTIST_NAMES is defined with fresh contents outside "
-        "musaeus/canon/protected_artists.py: " + ", ".join(offenders) +
-        ". Two sets under one name is M-10 -- import the canon, or give "
+        "musaeus/canon/protected_artists.py: "
+        + ", ".join(offenders)
+        + ". Two sets under one name is M-10 -- import the canon, or give "
         "yours a name that says what it protects against."
     )

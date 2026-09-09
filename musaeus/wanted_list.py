@@ -60,9 +60,7 @@ _CREDIT_PATTERNS: list[re.Pattern[str]] = [
 #: dash rather than a bracket -- "Song - Sound-A-Like As Made Famous By
 #: X" -- plus the karaoke/instrumental labels the credit patterns above
 #: leave behind once the credited name is removed.
-_TRAILING_MARKUP_RE = re.compile(
-    r"\s*-\s*(sound-?a-?like|karaoke|instrumental).*", re.IGNORECASE
-)
+_TRAILING_MARKUP_RE = re.compile(r"\s*-\s*(sound-?a-?like|karaoke|instrumental).*", re.IGNORECASE)
 
 
 def extract_credited_artist(title: str) -> str | None:
@@ -135,7 +133,7 @@ def already_owned(
 
 
 def wanted_lines(conn: sqlite3.Connection, quarantined: list[dict]) -> list[str]:
-    """"Artist - Title" lines for TuneMyMusic, from a batch of quarantined
+    """ "Artist - Title" lines for TuneMyMusic, from a batch of quarantined
     rows.
 
     *quarantined* items need "title" (and may have "artist", used only

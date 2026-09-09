@@ -40,7 +40,8 @@ def _string_literals(tree: ast.AST):
             yield node.value, node.lineno
         elif isinstance(node, ast.JoinedStr):
             joined = "".join(
-                v.value for v in node.values
+                v.value
+                for v in node.values
                 if isinstance(v, ast.Constant) and isinstance(v.value, str)
             )
             yield joined, node.lineno
@@ -76,14 +77,12 @@ def test_the_guard_can_actually_see_a_violation() -> None:
     fires on a synthetic copy rather than assuming it would.
     """
     tree = ast.parse('x = f"  ... and {n} more"\n')
-    hits = [t for t, _ in _string_literals(tree)
-            if "... and " in t.lower() and "more" in t.lower()]
+    hits = [t for t, _ in _string_literals(tree) if "... and " in t.lower() and "more" in t.lower()]
     assert hits, "the detector does not recognise the very pattern it guards"
 
 
 def test_prose_about_the_idiom_is_not_flagged() -> None:
     """Docstrings discuss this wording on purpose and must stay legal."""
     tree = ast.parse('def f():\n    """prints ... and N more when truncated"""\n    return 1\n')
-    hits = [t for t, _ in _string_literals(tree)
-            if "... and " in t.lower() and "more" in t.lower()]
+    hits = [t for t, _ in _string_literals(tree) if "... and " in t.lower() and "more" in t.lower()]
     assert not hits, "a docstring mentioning the idiom must not fail the build"

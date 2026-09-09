@@ -100,16 +100,20 @@ def _guard_env(tmp_path, monkeypatch, *, registered=True, script="exec", setting
         pass
     else:
         entries = (
-            [{"matcher": "Edit|Write|Bash",
-              "hooks": [{"type": "command", "command": str(hook)}]}]
-            if registered else []
+            [{"matcher": "Edit|Write|Bash", "hooks": [{"type": "command", "command": str(hook)}]}]
+            if registered
+            else []
         )
-        st.write_text(_json.dumps({
-            # A realistic settings file also holds secrets; they must never
-            # reach a preflight message.
-            "env": {"SECRET_TOKEN": "sk-must-not-leak"},
-            "hooks": {"PreToolUse": entries},
-        }))
+        st.write_text(
+            _json.dumps(
+                {
+                    # A realistic settings file also holds secrets; they must never
+                    # reach a preflight message.
+                    "env": {"SECRET_TOKEN": "sk-must-not-leak"},
+                    "hooks": {"PreToolUse": entries},
+                }
+            )
+        )
 
     monkeypatch.setattr(pf, "_CLAUDE_SETTINGS", st)
     monkeypatch.setattr(pf, "_EDIT_GUARD_SCRIPT", hook)

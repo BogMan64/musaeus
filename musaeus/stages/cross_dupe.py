@@ -230,7 +230,8 @@ class CrossDupeStage(BaseStage):
             if not ctx.conn.execute(
                 "SELECT 1 FROM duplicates WHERE file_path = ? "
                 " AND duplicate_type = 'CROSS_BATCH' LIMIT 1",
-                (r["file_path"],)).fetchone()
+                (r["file_path"],),
+            ).fetchone()
         ]
         if not unstaged:
             return []

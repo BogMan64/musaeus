@@ -34,8 +34,14 @@ from build_aac_library import build_ffmpeg_command  # noqa: E402
 
 def _cmd(channels: int | None, *, has_art: bool = False) -> list[str]:
     return build_ffmpeg_command(
-        Path("in.m4a"), Path("out.m4a"), "256k", has_art, {}, "loudnorm=x",
-        44_100, channels,
+        Path("in.m4a"),
+        Path("out.m4a"),
+        "256k",
+        has_art,
+        {},
+        "loudnorm=x",
+        44_100,
+        channels,
     )
 
 

@@ -121,8 +121,7 @@ class GenreValidateStage(BaseStage):
                 if unlisted:
                     problems.append(
                         f"{len(unlisted)} genre(s) in use but absent from "
-                        "Genre_Allowed.txt: "
-                        + ", ".join(repr(g) for g in unlisted[:5])
+                        "Genre_Allowed.txt: " + ", ".join(repr(g) for g in unlisted[:5])
                     )
 
             # permits() is deliberately forgiving, which leaves a gap: a stored
@@ -134,9 +133,7 @@ class GenreValidateStage(BaseStage):
             # case or punctuation variant is reported rather than absorbed.
             canon = {g: g for g in law.genres}
             variants = [
-                r["genre"]
-                for r in stray
-                if r["genre"] not in canon and law.permits(r["genre"])
+                r["genre"] for r in stray if r["genre"] not in canon and law.permits(r["genre"])
             ]
             if variants:
                 problems.append(
@@ -327,15 +324,12 @@ class GenreValidateStage(BaseStage):
         result.notes.append(f"  artist unknown to law:   {unknown}")
         if blank_unknown:
             result.notes.append(
-                f"  no genre, artist not in the law: {blank_unknown}"
-                "  (needs a ruling)"
+                f"  no genre, artist not in the law: {blank_unknown}  (needs a ruling)"
             )
         verb2 = "would correct" if dry_run else "corrected"
         result.notes.append(f"  {verb2} genre outside the vocabulary: {illegal_fixed}")
         if illegal_stuck:
-            result.notes.append(
-                "  OUTSIDE THE VOCABULARY and unresolvable -- these need a ruling:"
-            )
+            result.notes.append("  OUTSIDE THE VOCABULARY and unresolvable -- these need a ruling:")
             for g, n in sorted(illegal_stuck.items(), key=lambda kv: -kv[1]):
                 result.notes.append(f"    {g!r}  ({n} file{'s' if n != 1 else ''})")
         result.notes.append(

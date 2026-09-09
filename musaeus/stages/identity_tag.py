@@ -137,9 +137,7 @@ class IdentityTagStage(BaseStage):
                 logger.warning("[identity-tag] not verified for %s (%s)", path.name, detail)
                 continue
 
-            ctx.conn.execute(
-                f"UPDATE archive SET {_MARKER}=? WHERE id=?", (now, row["id"])
-            )
+            ctx.conn.execute(f"UPDATE archive SET {_MARKER}=? WHERE id=?", (now, row["id"]))
             ctx.log_event(
                 "IDENTITY_TAGGED",
                 file_path=str(path),

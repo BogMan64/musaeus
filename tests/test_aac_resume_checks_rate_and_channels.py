@@ -56,12 +56,27 @@ def _tone(path: Path, seconds: float, rate: int = 44_100, channels: int = 2) -> 
     path.parent.mkdir(parents=True, exist_ok=True)
     layout = {1: "mono", 2: "stereo", 6: "5.1"}[channels]
     subprocess.run(
-        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-         "-f", "lavfi", "-i",
-         f"sine=frequency=440:duration={seconds}:sample_rate={rate}",
-         "-af", f"aformat=channel_layouts={layout}",
-         "-c:a", "aac", "-ar", str(rate), str(path)],
-        check=True, capture_output=True)
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration={seconds}:sample_rate={rate}",
+            "-af",
+            f"aformat=channel_layouts={layout}",
+            "-c:a",
+            "aac",
+            "-ar",
+            str(rate),
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
     return path
 
 
@@ -80,15 +95,17 @@ def test_the_probe_fails_soft_on_junk(tmp_path: Path) -> None:
 
 # ── the finding ──────────────────────────────────────────────────────────────
 
+
 @needs_ffmpeg
 def test_a_96k_output_from_a_96k_source_is_redone(tmp_path: Path) -> None:
     """The exact M-02 case: right duration, wrong rate, previously SKIP DONE."""
     source = _tone(tmp_path / "src.m4a", 5.0, rate=96_000)
-    stale = _tone(tmp_path / "out.m4a", 5.0, rate=96_000)   # encoded before the cap
+    stale = _tone(tmp_path / "out.m4a", 5.0, rate=96_000)  # encoded before the cap
 
     assert car_sample_rate(96_000) == 48_000, "policy: 96k caps to 48k"
-    assert _output_matches_source(source, stale) is False, \
+    assert _output_matches_source(source, stale) is False, (
         "a pre-cap output must not report already-encoded"
+    )
 
 
 @needs_ffmpeg
@@ -114,6 +131,7 @@ def test_a_surround_source_downmixed_to_stereo_is_kept(tmp_path: Path) -> None:
 
 
 # ── the two things the fix must NOT break ────────────────────────────────────
+
 
 @needs_ffmpeg
 def test_a_mono_source_stays_mono_and_is_not_re_encoded_for_ever(tmp_path: Path) -> None:

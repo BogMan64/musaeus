@@ -477,9 +477,13 @@ class TestDryRunAgreesWithRun:
         from musaeus.stages.canonicalize import CanonicalizeStage
 
         cfg = MusicConfig(
-            vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-            quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
-            meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+            vault_root=tmp_path,
+            inbox=tmp_path / "INBOX",
+            staging=tmp_path / "STAGING",
+            quarantine=tmp_path / "QUARANTINE",
+            runs_root=tmp_path / "RUNS",
+            meta_dir=tmp_path / "MetaData",
+            alac_library=tmp_path / "ALAC-Library",
             db_path=tmp_path / "musaeus.db",
         )
         cfg.ensure_dirs()
@@ -491,13 +495,30 @@ class TestDryRunAgreesWithRun:
         # be UNKNOWN either way and would not discriminate.
         f = cfg.inbox / "already fine.m4a"
         f.write_bytes(b"not really audio")
-        upsert_archive(conn, {"file_path": str(f), "status": "CATALOGUED",
-                              "codec": "aac", "ext": "", "artist": "A", "title": "B"})
+        upsert_archive(
+            conn,
+            {
+                "file_path": str(f),
+                "status": "CATALOGUED",
+                "codec": "aac",
+                "ext": "",
+                "artist": "A",
+                "title": "B",
+            },
+        )
         # ...and one the run would REFUSE outright.
         g = cfg.inbox / "mystery.mkv"
         g.write_bytes(b"not really audio")
-        upsert_archive(conn, {"file_path": str(g), "status": "CATALOGUED",
-                              "codec": "dts", "artist": "C", "title": "D"})
+        upsert_archive(
+            conn,
+            {
+                "file_path": str(g),
+                "status": "CATALOGUED",
+                "codec": "dts",
+                "artist": "C",
+                "title": "D",
+            },
+        )
         conn.commit()
 
         result = CanonicalizeStage().dry_run(ctx)
@@ -521,53 +542,65 @@ class TestVerifyEffectChecksTheClaim:
     def _row(self, ctx, path: Path, claimed: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"x")
-        upsert_archive(ctx.conn, {
-            "file_path": str(path), "status": "CATALOGUED",
-            "audio_hash": "a" * 64, "duration": 100.0,
-        })
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(path),
+                "status": "CATALOGUED",
+                "audio_hash": "a" * 64,
+                "duration": 100.0,
+            },
+        )
         # run() writes canon_action on the row AND logs the event with the
         # same string. The fixture has to do both, or it tests a shape
         # production never produces -- which is how the seal came to read its
         # claim from the event join in the first place. upsert_archive has no
         # canon_action field, so this mirrors run()'s own direct UPDATE.
-        ctx.conn.execute("UPDATE archive SET canon_action = ? WHERE file_path = ?",
-                         (claimed, str(path)))
-        ctx.log_event("CANONICALIZE", file_path=str(path),
-                      new_value=claimed, stage="canonicalize")
+        ctx.conn.execute(
+            "UPDATE archive SET canon_action = ? WHERE file_path = ?", (claimed, str(path))
+        )
+        ctx.log_event("CANONICALIZE", file_path=str(path), new_value=claimed, stage="canonicalize")
         ctx.conn.commit()
 
     def _probe(self, codec: str):
-        return {"streams": [{"codec_type": "audio", "codec_name": codec,
-                             "duration": "100.0"}]}
+        return {"streams": [{"codec_type": "audio", "codec_name": codec, "duration": "100.0"}]}
 
-    @pytest.mark.parametrize("claimed,codec", [
-        ("PASSTHROUGH", "aac"),    # the false positive that started this
-        ("PASSTHROUGH", "alac"),
-        ("CONVERTED", "alac"),
-        ("TRANSCODED", "aac"),
-    ])
+    @pytest.mark.parametrize(
+        "claimed,codec",
+        [
+            ("PASSTHROUGH", "aac"),  # the false positive that started this
+            ("PASSTHROUGH", "alac"),
+            ("CONVERTED", "alac"),
+            ("TRANSCODED", "aac"),
+        ],
+    )
     def test_an_outcome_that_honoured_its_contract_is_not_flagged(
         self, ctx, tmp_path, monkeypatch, claimed, codec
     ):
         f = tmp_path / "INBOX" / f"{claimed}_{codec}.m4a"
         self._row(ctx, f, claimed)
-        monkeypatch.setattr("musaeus.stages.canonicalize._probe_streams",
-                            lambda _p: self._probe(codec))
+        monkeypatch.setattr(
+            "musaeus.stages.canonicalize._probe_streams", lambda _p: self._probe(codec)
+        )
         problems = CanonicalizeStage().verify_effect(ctx, _StageResultStub())
         assert problems == [], problems
 
-    @pytest.mark.parametrize("claimed,codec", [
-        ("CONVERTED", "aac"),     # claimed a lossless conversion, still lossy
-        ("TRANSCODED", "alac"),   # claimed a 256k AAC export, is not
-        ("PASSTHROUGH", "mp3"),   # "already canonical" and demonstrably not
-    ])
+    @pytest.mark.parametrize(
+        "claimed,codec",
+        [
+            ("CONVERTED", "aac"),  # claimed a lossless conversion, still lossy
+            ("TRANSCODED", "alac"),  # claimed a 256k AAC export, is not
+            ("PASSTHROUGH", "mp3"),  # "already canonical" and demonstrably not
+        ],
+    )
     def test_an_outcome_that_broke_its_contract_is_still_caught(
         self, ctx, tmp_path, monkeypatch, claimed, codec
     ):
         f = tmp_path / "INBOX" / f"bad_{claimed}_{codec}.m4a"
         self._row(ctx, f, claimed)
-        monkeypatch.setattr("musaeus.stages.canonicalize._probe_streams",
-                            lambda _p: self._probe(codec))
+        monkeypatch.setattr(
+            "musaeus.stages.canonicalize._probe_streams", lambda _p: self._probe(codec)
+        )
         problems = CanonicalizeStage().verify_effect(ctx, _StageResultStub())
         assert len(problems) == 1
         assert claimed in problems[0] and codec in problems[0]
@@ -575,6 +608,7 @@ class TestVerifyEffectChecksTheClaim:
 
 class _StageResultStub:
     """verify_effect only needs the argument to exist."""
+
     files_changed = 0
 
 
@@ -588,20 +622,26 @@ class TestVerifyEffectFailsClosed:
     A default in a verification seal must fail closed."""
 
     def _probe(self, codec: str):
-        return {"streams": [{"codec_type": "audio", "codec_name": codec,
-                             "duration": "100.0"}]}
+        return {"streams": [{"codec_type": "audio", "codec_name": codec, "duration": "100.0"}]}
 
     def _row(self, ctx, path: Path, canon_action) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"x")
-        upsert_archive(ctx.conn, {
-            "file_path": str(path), "status": "CATALOGUED",
-            "audio_hash": "a" * 64, "duration": 100.0,
-        })
-        ctx.conn.execute("UPDATE archive SET canon_action = ? WHERE file_path = ?",
-                         (canon_action, str(path)))
-        ctx.log_event("CANONICALIZE", file_path=str(path),
-                      new_value=canon_action, stage="canonicalize")
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(path),
+                "status": "CATALOGUED",
+                "audio_hash": "a" * 64,
+                "duration": 100.0,
+            },
+        )
+        ctx.conn.execute(
+            "UPDATE archive SET canon_action = ? WHERE file_path = ?", (canon_action, str(path))
+        )
+        ctx.log_event(
+            "CANONICALIZE", file_path=str(path), new_value=canon_action, stage="canonicalize"
+        )
         ctx.conn.commit()
 
     @pytest.mark.parametrize("canon_action", ["REMASTERED", "", None])
@@ -611,33 +651,38 @@ class TestVerifyEffectFailsClosed:
         f = tmp_path / "INBOX" / "unknown_outcome.m4a"
         self._row(ctx, f, canon_action)
         # alac would satisfy the old permissive fallback and pass silently.
-        monkeypatch.setattr("musaeus.stages.canonicalize._probe_streams",
-                            lambda _p: self._probe("alac"))
-        problems = CanonicalizeStage().verify_effect(ctx, _StageResultStub())
-        assert problems, (
-            "an outcome this check cannot verify must not be sealed as verified"
+        monkeypatch.setattr(
+            "musaeus.stages.canonicalize._probe_streams", lambda _p: self._probe("alac")
         )
+        problems = CanonicalizeStage().verify_effect(ctx, _StageResultStub())
+        assert problems, "an outcome this check cannot verify must not be sealed as verified"
         assert "does not know how to verify" in problems[0]
 
-    def test_the_claim_comes_from_the_row_not_the_event(
-        self, ctx, tmp_path, monkeypatch
-    ):
+    def test_the_claim_comes_from_the_row_not_the_event(self, ctx, tmp_path, monkeypatch):
         """canon_action is authoritative. If the event disagrees -- a stale
         or second event for the same path -- the row wins."""
         f = tmp_path / "INBOX" / "disagreement.m4a"
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(b"x")
-        upsert_archive(ctx.conn, {
-            "file_path": str(f), "status": "CATALOGUED",
-            "audio_hash": "a" * 64, "duration": 100.0,
-        })
-        ctx.conn.execute("UPDATE archive SET canon_action='CONVERTED' WHERE file_path = ?",
-                         (str(f),))   # the row says lossless
-        ctx.log_event("CANONICALIZE", file_path=str(f),
-                      new_value="TRANSCODED", stage="canonicalize")
+        upsert_archive(
+            ctx.conn,
+            {
+                "file_path": str(f),
+                "status": "CATALOGUED",
+                "audio_hash": "a" * 64,
+                "duration": 100.0,
+            },
+        )
+        ctx.conn.execute(
+            "UPDATE archive SET canon_action='CONVERTED' WHERE file_path = ?", (str(f),)
+        )  # the row says lossless
+        ctx.log_event(
+            "CANONICALIZE", file_path=str(f), new_value="TRANSCODED", stage="canonicalize"
+        )
         ctx.conn.commit()
         # aac satisfies the EVENT's claim but breaks the ROW's.
-        monkeypatch.setattr("musaeus.stages.canonicalize._probe_streams",
-                            lambda _p: self._probe("aac"))
+        monkeypatch.setattr(
+            "musaeus.stages.canonicalize._probe_streams", lambda _p: self._probe("aac")
+        )
         problems = CanonicalizeStage().verify_effect(ctx, _StageResultStub())
         assert problems, "the row claimed CONVERTED; aac does not honour that"

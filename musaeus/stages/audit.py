@@ -163,9 +163,7 @@ class AuditStage(BaseStage):
         # that fails 10,423 times for correct state is the crying-wolf half
         # of SOP 4.27, and it blocks the DB-wipe workflow it exists to guard.
         final_roots = [
-            r.resolve()
-            for r in (ctx.alac_library, ctx.config.alac_archive)
-            if r.exists()
+            r.resolve() for r in (ctx.alac_library, ctx.config.alac_archive) if r.exists()
         ]
         db_side_paths: set[Path] = set()
 

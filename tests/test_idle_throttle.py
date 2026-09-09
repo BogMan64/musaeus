@@ -75,7 +75,7 @@ class TestNeverLeavesChildrenFrozen:
         monkeypatch.setenv("MUSAEUS_NO_IDLE_THROTTLE", "1")
         t = IdleThrottle()
         with t:
-            t._paused = True          # pretend a pause was in effect
+            t._paused = True  # pretend a pause was in effect
         assert t._stop.is_set()
 
     def test_stopping_a_real_child_and_resuming_it_works(self) -> None:
@@ -86,13 +86,15 @@ class TestNeverLeavesChildrenFrozen:
             time.sleep(0.3)
             os.kill(proc.pid, signal.SIGSTOP)
             time.sleep(0.2)
-            state = subprocess.run(["ps", "-o", "stat=", "-p", str(proc.pid)],
-                                   capture_output=True, text=True).stdout.strip()
+            state = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(proc.pid)], capture_output=True, text=True
+            ).stdout.strip()
             assert state.startswith("T"), f"expected stopped, got {state!r}"
             os.kill(proc.pid, signal.SIGCONT)
             time.sleep(0.2)
-            state = subprocess.run(["ps", "-o", "stat=", "-p", str(proc.pid)],
-                                   capture_output=True, text=True).stdout.strip()
+            state = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(proc.pid)], capture_output=True, text=True
+            ).stdout.strip()
             assert not state.startswith("T"), f"expected running, got {state!r}"
         finally:
             proc.kill()
@@ -100,6 +102,6 @@ class TestNeverLeavesChildrenFrozen:
 
 
 def test_resume_delay_is_in_the_range_grey_asked_for() -> None:
-    """"30 to 45 seconds of quiet" -- long enough that a pause between
+    """ "30 to 45 seconds of quiet" -- long enough that a pause between
     keystrokes does not restart the encode in someone's face."""
     assert 30.0 <= DEFAULT_IDLE_S <= 45.0

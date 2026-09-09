@@ -29,7 +29,9 @@ from unittest.mock import patch
 
 import pytest
 
-_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "alac_library" / "build_alac_library.py"
+_SCRIPT = (
+    Path(__file__).resolve().parent.parent / "scripts" / "alac_library" / "build_alac_library.py"
+)
 _spec = ilu.spec_from_file_location("build_alac_library_timeouts", _SCRIPT)
 assert _spec and _spec.loader
 bal = ilu.module_from_spec(_spec)
@@ -162,11 +164,15 @@ def test_a_timeout_is_reported_per_file_and_does_not_propagate(tmp_path: Path) -
         def commit(self):
             pass
 
-    with patch.object(bal, "_probe_streams", return_value=_probe("300", 48000)), \
-         patch.object(bal, "_has_attached_picture", return_value=False), \
-         patch.object(
-             bal, "ffmpeg_measure_loudnorm",
-             side_effect=subprocess.TimeoutExpired(cmd=["ffmpeg"], timeout=600)):
+    with (
+        patch.object(bal, "_probe_streams", return_value=_probe("300", 48000)),
+        patch.object(bal, "_has_attached_picture", return_value=False),
+        patch.object(
+            bal,
+            "ffmpeg_measure_loudnorm",
+            side_effect=subprocess.TimeoutExpired(cmd=["ffmpeg"], timeout=600),
+        ),
+    ):
         out = bal._process_one(_Conn(), row, archive, tmp_path / "Lib", execute=True)
 
     assert isinstance(out, str), "a stalled file must not raise out of _process_one"

@@ -42,13 +42,16 @@ from musaeus.canon.protected_artists import (
 )
 
 
-@pytest.mark.parametrize("spelling", [
-    "Andrews Sisters (the)",
-    "Andrews Sisters, The",
-    "The Andrews Sisters",
-    "Andrews Sisters",
-    "  andrews   sisters ,  the  ",
-])
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "Andrews Sisters (the)",
+        "Andrews Sisters, The",
+        "The Andrews Sisters",
+        "Andrews Sisters",
+        "  andrews   sisters ,  the  ",
+    ],
+)
 def test_every_article_spelling_is_protected(spelling: str) -> None:
     assert is_protected(spelling) is True, spelling
 
@@ -65,7 +68,7 @@ def test_a_name_not_in_the_canon_is_still_unprotected() -> None:
 
 
 def test_ampersands_are_not_folded_into_and() -> None:
-    """"Of Monsters and Men" spells its own name with "and".
+    """ "Of Monsters and Men" spells its own name with "and".
 
     The canon comments say a blanket ampersand rule would be wrong. Folding
     & into and here would merge that entry with a hypothetical "&" spelling
@@ -103,8 +106,7 @@ def test_no_canon_entry_is_dormant() -> None:
 
 
 @pytest.mark.skipif(
-    not __import__("pathlib").Path(
-        "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db").exists(),
+    not __import__("pathlib").Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db").exists(),
     reason="live vault not present",
 )
 def test_the_live_library_spellings_are_all_protected() -> None:
@@ -113,12 +115,11 @@ def test_the_live_library_spellings_are_all_protected() -> None:
     Skipped when the vault is absent, so the suite stays portable; run
     against the real library it is the check that actually matters.
     """
-    conn = sqlite3.connect(
-        "file:/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db?mode=ro", uri=True)
+    conn = sqlite3.connect("file:/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db?mode=ro", uri=True)
     keys = {GenreLaw._key(n) for n in PROTECTED_ARTIST_NAMES}
     unprotected = [
-        a for (a,) in conn.execute(
-            "SELECT DISTINCT artist FROM archive WHERE status='CATALOGUED'")
+        a
+        for (a,) in conn.execute("SELECT DISTINCT artist FROM archive WHERE status='CATALOGUED'")
         if a and GenreLaw._key(a) in keys and not is_protected(a)
     ]
     conn.close()

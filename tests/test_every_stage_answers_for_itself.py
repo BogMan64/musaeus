@@ -29,8 +29,7 @@ def _stages():
 def test_no_stage_is_silent() -> None:
     """A stage with neither a check nor a declaration is an omission."""
     silent = [
-        name for name, cls in _stages()
-        if "verify_effect" not in cls.__dict__ and cls.CLAIMS_EFFECT
+        name for name, cls in _stages() if "verify_effect" not in cls.__dict__ and cls.CLAIMS_EFFECT
     ]
     assert not silent, (
         "these stages claim an effect but never check it — give them a "
@@ -43,7 +42,8 @@ def test_a_stage_declaring_no_claim_says_so_in_its_own_body() -> None:
     stage that makes no claim must set it itself, where a reader looking at
     that file can see it."""
     undeclared = [
-        name for name, cls in _stages()
+        name
+        for name, cls in _stages()
         if not cls.CLAIMS_EFFECT and "CLAIMS_EFFECT" not in cls.__dict__
     ]
     assert not undeclared, f"CLAIMS_EFFECT inherited rather than declared: {undeclared}"

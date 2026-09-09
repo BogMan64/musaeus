@@ -43,9 +43,13 @@ class _Ctx:
 @pytest.fixture
 def conn(tmp_path: Path):
     cfg = MusicConfig(
-        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-        quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
-        meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+        vault_root=tmp_path,
+        inbox=tmp_path / "INBOX",
+        staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "QUARANTINE",
+        runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "ALAC-Library",
         db_path=tmp_path / "musaeus.db",
     )
     cfg.ensure_dirs()
@@ -63,29 +67,80 @@ def conn(tmp_path: Path):
 
 def _alac(path: Path, with_art: bool) -> None:
     subprocess.run(
-        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-         "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-         "-c:a", "alac", str(path)], check=True, capture_output=True)
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-c:a",
+            "alac",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
     if not with_art:
         return
     art = path.with_suffix(".jpg")
     subprocess.run(
-        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-         "-f", "lavfi", "-i", "color=c=red:s=600x600:d=1", "-frames:v", "1",
-         str(art)], check=True, capture_output=True)
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=600x600:d=1",
+            "-frames:v",
+            "1",
+            str(art),
+        ],
+        check=True,
+        capture_output=True,
+    )
     out = path.with_name("withart.m4a")
     subprocess.run(
-        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(path),
-         "-i", str(art), "-map", "0:a", "-map", "1:v", "-c:a", "copy",
-         "-c:v", "mjpeg", "-disposition:v:0", "attached_pic", str(out)],
-        check=True, capture_output=True)
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(path),
+            "-i",
+            str(art),
+            "-map",
+            "0:a",
+            "-map",
+            "1:v",
+            "-c:a",
+            "copy",
+            "-c:v",
+            "mjpeg",
+            "-disposition:v:0",
+            "attached_pic",
+            str(out),
+        ],
+        check=True,
+        capture_output=True,
+    )
     out.replace(path)
 
 
 def _row(conn, path: Path, has_art: int) -> None:
     conn.execute(
         "INSERT INTO archive (file_path, status, has_art, art_checked_at) "
-        "VALUES (?,?,?,datetime('now'))", (str(path), "CATALOGUED", has_art))
+        "VALUES (?,?,?,datetime('now'))",
+        (str(path), "CATALOGUED", has_art),
+    )
     conn.commit()
 
 

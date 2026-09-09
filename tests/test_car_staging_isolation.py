@@ -22,8 +22,9 @@ import os
 import re
 from pathlib import Path
 
-_SRC = (Path(__file__).resolve().parents[1]
-        / "scripts" / "car_library" / "build_car_library.py").read_text()
+_SRC = (
+    Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
+).read_text()
 
 
 def test_staging_path_is_process_scoped() -> None:
@@ -35,6 +36,7 @@ def test_staging_path_is_process_scoped() -> None:
 def test_two_processes_would_get_different_staging_paths() -> None:
     def staging_for(pid: int) -> str:
         return f"_staged_{pid}"
+
     assert staging_for(os.getpid()) != staging_for(os.getpid() + 1)
 
 

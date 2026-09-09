@@ -526,9 +526,7 @@ class ForgeStage(BaseStage):
             r128 = lufs_to_rg(lufs, reference=R128_APPLE_REFERENCE) if lufs is not None else None
             peak = row["rg_peak"] if row["rg_peak"] is not None else 0.0
 
-            if write_rg_tags(
-                path, row["rg_gain"], peak, r128_gain=r128, reference=target_lufs
-            ):
+            if write_rg_tags(path, row["rg_gain"], peak, r128_gain=r128, reference=target_lufs):
                 written += 1
                 # The file now genuinely carries the tag, so rg_tagged_at must
                 # say so or the next ordinary Forge run re-measures it. Stamped

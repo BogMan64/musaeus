@@ -34,7 +34,7 @@ from typing import Any
 
 from ..artist_form import has_article, natural_form, sort_form
 from ..context import RunContext, StageResult
-from .base import NO_VERIFICATION, BaseStage, StageError
+from .base import NO_VERIFICATION, BaseStage, StageError, VerifyResult
 from .normalize import _move_article_to_suffix
 
 logger = logging.getLogger(__name__)
@@ -196,9 +196,7 @@ def albumartist_should_follow(
         return False
 
     folded = _fold_name(artist)
-    return (
-        _fold_name(lead) == folded or _fold_name(_first_credit(artist)) == _fold_name(aa)
-    )
+    return _fold_name(lead) == folded or _fold_name(_first_credit(artist)) == _fold_name(aa)
 
 
 # ── Tag read/write helpers ────────────────────────────────────────────────────
@@ -491,7 +489,7 @@ class TaggerStage(BaseStage):
 
     # ── run ───────────────────────────────────────────────────────────────────
 
-    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> VerifyResult:
         """A file this stage says it tagged must actually carry those tags.
 
         Tagger is the same shape as AlbumArt, which on 2026-08-31 reported
@@ -555,9 +553,7 @@ class TaggerStage(BaseStage):
                     want = natural_form(want)
                 got = (meta.get(field) or "").strip()
                 if want and got and want.casefold() != got.casefold():
-                    problems.append(
-                        f"{path.name}: {field} on disk is {got!r}, row says {want!r}"
-                    )
+                    problems.append(f"{path.name}: {field} on disk is {got!r}, row says {want!r}")
         if not checked and not problems:
             return NO_VERIFICATION
         return problems

@@ -28,8 +28,20 @@ def _encode(path: Path) -> bool:
     if not shutil.which("ffmpeg"):
         return False
     r = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
-         "-i", "sine=frequency=440:duration=1", "-c:a", "alac", str(path)],
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-c:a",
+            "alac",
+            str(path),
+        ],
         capture_output=True,
     )
     return r.returncode == 0 and path.exists()
@@ -38,9 +50,13 @@ def _encode(path: Path) -> bool:
 @pytest.fixture
 def ctx(tmp_path) -> RunContext:
     cfg = MusicConfig(
-        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-        quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
-        meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+        vault_root=tmp_path,
+        inbox=tmp_path / "INBOX",
+        staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "QUARANTINE",
+        runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "ALAC-Library",
         db_path=tmp_path / "musaeus.db",
     )
     cfg.meta_dir.mkdir(parents=True, exist_ok=True)
@@ -52,8 +68,15 @@ def _track(ctx, name="t.m4a", mbid=MBID):
     p = ctx.config.alac_library / name
     if not _encode(p):
         pytest.skip("ffmpeg unavailable")
-    upsert_archive(ctx.conn, {"file_path": str(p), "status": "CATALOGUED",
-                              "artist": "Bryan Ferry", "title": "Slave to Love"})
+    upsert_archive(
+        ctx.conn,
+        {
+            "file_path": str(p),
+            "status": "CATALOGUED",
+            "artist": "Bryan Ferry",
+            "title": "Slave to Love",
+        },
+    )
     # nosemgrep: alter-table-add-column-outside-db -- a fixture builds the column ensure_columns() would add, to test the stage in isolation
     ctx.conn.execute("ALTER TABLE archive ADD COLUMN mb_artist_id TEXT")
     ctx.conn.execute("UPDATE archive SET mb_artist_id=? WHERE file_path=?", (mbid, str(p)))
@@ -117,6 +140,7 @@ class TestVerifyEffectReadsDisk:
         result = stage.run(ctx)
         # Strip the tag behind the stage's back; verify_effect must notice.
         from mutagen.mp4 import MP4
+
         a = MP4(str(p))
         a.tags.clear()
         a.save()
@@ -134,9 +158,13 @@ def test_dry_run_works_on_a_database_lacking_the_marker_column(tmp_path):
     from musaeus.stages.identity_tag import IdentityTagStage
 
     cfg = MusicConfig(
-        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-        quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
-        meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+        vault_root=tmp_path,
+        inbox=tmp_path / "INBOX",
+        staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "QUARANTINE",
+        runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "ALAC-Library",
         db_path=tmp_path / "musaeus.db",
     )
     cfg.ensure_dirs()
@@ -157,5 +185,5 @@ def test_dry_run_works_on_a_database_lacking_the_marker_column(tmp_path):
     conn.commit()
 
     ctx = RunContext.new(cfg, conn, dry_run=True)
-    result = IdentityTagStage().dry_run(ctx)   # must not raise
+    result = IdentityTagStage().dry_run(ctx)  # must not raise
     assert result is not None

@@ -77,10 +77,11 @@ def _get(url: str, *, accept: str | None = None) -> bytes | None:
     req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=_TIMEOUT_S) as resp:
-            return resp.read()
+            body: bytes = resp.read()
+            return body
     except urllib.error.HTTPError as exc:
         if exc.code in (404, 400):
-            return None          # answered: nothing there
+            return None  # answered: nothing there
         raise ArtUnavailable(f"HTTP {exc.code} for {url}") from exc
     except Exception as exc:
         raise ArtUnavailable(str(exc)) from exc
@@ -91,7 +92,8 @@ def _get_json(url: str) -> dict | None:
     if raw is None:
         return None
     try:
-        return json.loads(raw.decode("utf-8"))
+        parsed: dict = json.loads(raw.decode("utf-8"))
+        return parsed
     except Exception as exc:
         raise ArtUnavailable(f"unparseable JSON from {url}: {exc}") from exc
 
@@ -150,9 +152,7 @@ def fetch_deezer(artist: str, album: str) -> bytes | None:
     if not artist:
         return None
     term = f"{artist} {album}".strip()
-    data = _get_json("https://api.deezer.com/search/album?" + urlencode(
-        {"q": term, "limit": 5}
-    ))
+    data = _get_json("https://api.deezer.com/search/album?" + urlencode({"q": term, "limit": 5}))
     if not data:
         return None
     want = _norm(album)
@@ -199,8 +199,13 @@ def fetch_lastfm(artist: str, album: str, api_key: str) -> bytes | None:
     if not (api_key and artist and album):
         return None
     url = "https://ws.audioscrobbler.com/2.0/?" + urlencode(
-        {"method": "album.getinfo", "api_key": api_key, "artist": artist,
-         "album": album, "format": "json"}
+        {
+            "method": "album.getinfo",
+            "api_key": api_key,
+            "artist": artist,
+            "album": album,
+            "format": "json",
+        }
     )
     data = _get_json(url)
     if not data:
@@ -243,7 +248,7 @@ def fetch_album_art(
     """
     attempts = 0
     unavailable = 0
-    best: tuple[bytes, str] | None = None   # largest sub-threshold fallback
+    best: tuple[bytes, str] | None = None  # largest sub-threshold fallback
     for name, fn in (
         ("itunes", lambda: fetch_itunes(artist, album)),
         ("deezer", lambda: fetch_deezer(artist, album)),
@@ -264,8 +269,13 @@ def fetch_album_art(
         # source is worse than a 600x600 from the second, and embedding the
         # small one just moves the file from "no art" to "bad art".
         if is_too_small(blob, min_edge):
-            logger.debug("[art] %s gave %s for %r / %r -- holding, trying next",
-                         name, describe(blob), artist, album)
+            logger.debug(
+                "[art] %s gave %s for %r / %r -- holding, trying next",
+                name,
+                describe(blob),
+                artist,
+                album,
+            )
             # Keep the LARGEST sub-threshold image, not the first one seen:
             # if nothing clears the floor we still want the best on offer.
             if best is None or _longest_edge(blob) > _longest_edge(best[0]):
@@ -275,8 +285,13 @@ def fetch_album_art(
         return blob, name
 
     if best is not None:
-        logger.info("[art] only undersized art found for %r / %r: %s from %s",
-                    artist, album, describe(best[0]), best[1])
+        logger.info(
+            "[art] only undersized art found for %r / %r: %s from %s",
+            artist,
+            album,
+            describe(best[0]),
+            best[1],
+        )
         return best
     if unavailable == attempts:
         raise ArtUnavailable("no art source answered")

@@ -69,13 +69,12 @@ logger = logging.getLogger(__name__)
 # silently refused genuine records. Re-labelled on Grey's instruction
 # 2026-08-31; kept on the list, because the observation is still true and
 # worth surfacing, but downgraded to advisory.
-_ADVISORY_REASONS = (
-    "absent from the library at the 2026-08-24 backfill; cause unrecorded",
-)
+_ADVISORY_REASONS = ("absent from the library at the 2026-08-24 backfill; cause unrecorded",)
 
 
 def _is_advisory(reason: str | None) -> bool:
     return (reason or "").strip() in _ADVISORY_REASONS
+
 
 _COMMIT_EVERY = 25
 
@@ -150,7 +149,8 @@ class DenyListStage(BaseStage):
                     # with a message claiming the owner had chosen it.
                     logger.info(
                         "[deny-list] noting %s (%s) — advisory, not blocked",
-                        label, entry["reason"],
+                        label,
+                        entry["reason"],
                     )
                     advisory += 1
                     result.notes.append(f"  [advisory] previously absent: {label}")
@@ -223,9 +223,7 @@ class DenyListStage(BaseStage):
         verb = "would refuse" if dry_run else "refused"
         result.notes.append(f"{verb}: {blocked}")
         if advisory:
-            result.notes.append(
-                f"noted but allowed through (advisory reason): {advisory}"
-            )
+            result.notes.append(f"noted but allowed through (advisory reason): {advisory}")
         if blocked:
             result.notes.append("quarantined, not deleted — reversible if any was wanted")
         ctx.record_stage(result)

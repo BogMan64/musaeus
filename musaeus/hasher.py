@@ -243,7 +243,8 @@ def audio_hash(path: Path) -> str:
                 "audio decode timed out (>%ss) for %s — falling back to a "
                 "full-file hash. NOTE: this hash covers the container, so it "
                 "changes on re-tag and cannot match across containers.",
-                _TIMEOUT_SECS, path.name,
+                _TIMEOUT_SECS,
+                path.name,
             )
             try:
                 return file_hash(path)

@@ -35,7 +35,7 @@ from pathlib import Path
 
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
-from .base import NO_VERIFICATION, BaseStage, StageError
+from .base import NO_VERIFICATION, BaseStage, StageError, VerifyResult
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,8 @@ def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
             ("integrity_checked_at", "TEXT"),
         ),
     )
+
+
 def _check_file(path: str) -> tuple[bool, str]:
     """
     Run ffmpeg decode-test on a file (decode to null output).
@@ -243,7 +245,7 @@ class IntegrityStage(BaseStage):
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._check(ctx, dry_run=True)
 
-    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> VerifyResult:
         """Every row this stage decided about must carry the decision.
 
         Integrity's claim is that it ran a decode test and recorded the
@@ -270,9 +272,7 @@ class IntegrityStage(BaseStage):
         ).fetchall()
         if not rows:
             return []
-        unrecorded = [
-            Path(r["file_path"]).name for r in rows if not r["integrity_checked_at"]
-        ]
+        unrecorded = [Path(r["file_path"]).name for r in rows if not r["integrity_checked_at"]]
         if not unrecorded:
             return []
         return [

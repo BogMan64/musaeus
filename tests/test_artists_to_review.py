@@ -25,7 +25,8 @@ def vault(tmp_path):
     meta.mkdir()
     (meta / "MasterLaw.csv").write_text("Byrds, The,Rock\nLizzo,Pop\n", encoding="utf-8")
     (meta / "artist_canon.tsv").write_text(
-        "# comment\nDanny\tDanny & The Juniors\n", encoding="utf-8")
+        "# comment\nDanny\tDanny & The Juniors\n", encoding="utf-8"
+    )
     db = tmp_path / "musaeus.db"
     conn = sqlite3.connect(db)
     conn.execute("CREATE TABLE archive (artist TEXT, title TEXT, status TEXT)")

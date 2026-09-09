@@ -6,6 +6,7 @@ The"). 246 rules were dormant purely because their key never matched, and
 a dormant rule is indistinguishable from an absent one -- nothing reported
 it for as long as the file existed.
 """
+
 import csv
 
 from musaeus.canon.genre_law import GenreLaw

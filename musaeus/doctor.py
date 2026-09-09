@@ -106,8 +106,7 @@ def diagnose(cfg: MusicConfig) -> Report:
     conn.row_factory = sqlite3.Row
 
     rows = conn.execute(
-        "SELECT file_path, artist, title, status, audio_hash, finalized_at, "
-        "duration FROM archive"
+        "SELECT file_path, artist, title, status, audio_hash, finalized_at, duration FROM archive"
     ).fetchall()
     lib = [r for r in rows if r["status"] == "CATALOGUED"]
     on_disk = {r["file_path"] for r in rows if Path(r["file_path"]).exists()}
@@ -186,9 +185,7 @@ def diagnose(cfg: MusicConfig) -> Report:
         p
         for d in review_dirs
         for p in d.rglob("*")
-        if p.is_file()
-        and p.suffix.lower() in _AUDIO_SUFFIXES
-        and str(p) not in known
+        if p.is_file() and p.suffix.lower() in _AUDIO_SUFFIXES and str(p) not in known
     ]
     if stranded:
         size_gb = sum(p.stat().st_size for p in stranded) / 1024**3
@@ -230,9 +227,9 @@ def diagnose(cfg: MusicConfig) -> Report:
     #     short reprise filed under the same title as the full track (the
     #     Eagles' "Doolin-Dalton (Reprise II)") can land here. That is why
     #     this warns rather than fails: it is a list to read, not a verdict.
-    _NEAR_ZERO_S = 3.0        # a file this short is not a recording at all
-    _FRAGMENT_MAX_S = 60.0    # only ever suspect a short file
-    _SIBLING_MIN_S = 120.0    # ...against a sibling long enough to mean it
+    _NEAR_ZERO_S = 3.0  # a file this short is not a recording at all
+    _FRAGMENT_MAX_S = 60.0  # only ever suspect a short file
+    _SIBLING_MIN_S = 120.0  # ...against a sibling long enough to mean it
     #     There was a fourth constant here, a 0.5 ratio requiring the file to
     #     be under half its sibling. Mutation testing killed it: with a 60s
     #     ceiling and a 120s floor, anything reaching that test is under half
@@ -251,7 +248,7 @@ def diagnose(cfg: MusicConfig) -> Report:
         if r["duration"]:
             by_song.setdefault(song_key(r["artist"], r["title"]), []).append(r)
 
-    fragments = []
+    fragments: list[tuple] = []
     for r in lib:
         d = r["duration"] or 0
         if not d or r["file_path"] not in on_disk:
@@ -505,9 +502,7 @@ def diagnose(cfg: MusicConfig) -> Report:
     removed_knockoff_hashes = {
         r["audio_hash"]
         for r in rows
-        if _removed_as_knockoff(r)
-        and r["audio_hash"]
-        and r["audio_hash"] not in rejected_hashes
+        if _removed_as_knockoff(r) and r["audio_hash"] and r["audio_hash"] not in rejected_hashes
     }
     knockoff_paths = {r["file_path"] for r in rows if _removed_as_knockoff(r)}
     #      The knockoff_paths test is belt-and-braces, NOT the load-bearing
@@ -524,6 +519,7 @@ def diagnose(cfg: MusicConfig) -> Report:
         and r["file_path"] not in knockoff_paths
         and r["file_path"] in on_disk
     ]
+
     #      NAMING. This was called "removed knock-off still held" until
     #      2026-09-06. It is broader than that name: a DELETED row with no
     #      DUPE_PURGED counts, and rows are deleted for reasons that are not
@@ -630,8 +626,7 @@ def _authority_disagreements(cfg: MusicConfig, rep: Report) -> None:
             chains = [
                 f"{raw!r} -> {target!r} -> {canon.resolve_exact(target)!r}"
                 for raw, target in canon._map.items()
-                if canon.resolve_exact(target)
-                and canon.resolve_exact(target) != target
+                if canon.resolve_exact(target) and canon.resolve_exact(target) != target
             ]
             if chains:
                 problems.append(

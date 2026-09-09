@@ -31,9 +31,22 @@ def _make_m4a(path: Path, **tags: str) -> Path:
     """A real, tiny, tagged ALAC file -- not a fixture pretending to be one."""
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-         "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "0.3",
-         "-c:a", "alac", str(path)],
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=stereo",
+            "-t",
+            "0.3",
+            "-c:a",
+            "alac",
+            str(path),
+        ],
         check=True,
     )
     if tags:
@@ -42,8 +55,12 @@ def _make_m4a(path: Path, **tags: str) -> Path:
         audio = MP4(str(path))
         if audio.tags is None:
             audio.add_tags()
-        for key, val in (("artist", "\xa9ART"), ("albumartist", "aART"),
-                         ("album", "\xa9alb"), ("genre", "\xa9gen")):
+        for key, val in (
+            ("artist", "\xa9ART"),
+            ("albumartist", "aART"),
+            ("album", "\xa9alb"),
+            ("genre", "\xa9gen"),
+        ):
             if key in tags:
                 audio[val] = [tags[key]]
         audio.save()
@@ -61,19 +78,20 @@ def _albumartist_on_disk(path: Path) -> str:
 
 
 def test_reads_the_four_fields_it_decides_on(tmp_path):
-    p = _make_m4a(tmp_path / "a.m4a", artist="Abba", albumartist="ABBA",
-                  album="Gold", genre="Classic Pop")
+    p = _make_m4a(
+        tmp_path / "a.m4a", artist="Abba", albumartist="ABBA", album="Gold", genre="Classic Pop"
+    )
     assert raa.read_fields(p) == {
-        "artist": "Abba", "albumartist": "ABBA",
-        "album": "Gold", "genre": "Classic Pop",
+        "artist": "Abba",
+        "albumartist": "ABBA",
+        "album": "Gold",
+        "genre": "Classic Pop",
     }
 
 
 def test_missing_tags_read_as_empty_not_none(tmp_path):
     p = _make_m4a(tmp_path / "a.m4a", artist="Solo")
-    assert raa.read_fields(p) == {
-        "artist": "Solo", "albumartist": "", "album": "", "genre": ""
-    }
+    assert raa.read_fields(p) == {"artist": "Solo", "albumartist": "", "album": "", "genre": ""}
 
 
 def test_an_unreadable_file_is_none_rather_than_a_guess(tmp_path):
@@ -150,11 +168,16 @@ def test_a_write_that_cannot_happen_reports_failure(tmp_path):
 def test_scan_plans_only_what_the_rule_allows(tmp_path):
     lib = tmp_path / "lib"
     _make_m4a(lib / "1.m4a", artist="50 Cent", albumartist="50 Cent, Nate Dogg")
-    _make_m4a(lib / "2.m4a", artist="Art Blakey",
-              albumartist="Art Blakey & The Jazz Messengers", album="Moanin'")
+    _make_m4a(
+        lib / "2.m4a",
+        artist="Art Blakey",
+        albumartist="Art Blakey & The Jazz Messengers",
+        album="Moanin'",
+    )
     _make_m4a(lib / "3.m4a", artist="Tlc", albumartist="TLC")
-    _make_m4a(lib / "4.m4a", artist="Antonio Vivaldi",
-              albumartist="Anne-Sophie Mutter", genre="Classical")
+    _make_m4a(
+        lib / "4.m4a", artist="Antonio Vivaldi", albumartist="Anne-Sophie Mutter", genre="Classical"
+    )
     _make_m4a(lib / "5.m4a", artist="Beatles, The", albumartist="Beatles, The")
 
     planned, tally = raa.scan(lib, None)
@@ -206,8 +229,9 @@ def test_the_journal_record_is_durable_before_the_file_is_touched(tmp_path, monk
     planned, _ = raa.scan(lib, None)
     journal = tmp_path / "j.jsonl"
 
-    monkeypatch.setattr(raa, "write_albumartist", lambda p, v: (_ for _ in ()).throw(
-        KeyboardInterrupt("power cut")))
+    monkeypatch.setattr(
+        raa, "write_albumartist", lambda p, v: (_ for _ in ()).throw(KeyboardInterrupt("power cut"))
+    )
     with pytest.raises(KeyboardInterrupt):
         raa.apply(planned, journal)
 
@@ -284,7 +308,9 @@ def test_dry_run_writes_nothing(tmp_path):
     p = _make_m4a(lib / "1.m4a", artist="50 Cent", albumartist="50 Cent, Nate Dogg")
     out = subprocess.run(
         [sys.executable, str(_SCRIPT), "--root", str(lib)],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     assert "DRY RUN" in out.stdout
     assert _albumartist_on_disk(p) == "50 Cent, Nate Dogg"

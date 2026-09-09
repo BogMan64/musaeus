@@ -24,8 +24,11 @@ def _png(w: int, h: int, pad: int = 20_000) -> bytes:
 
 
 class _Resp(io.BytesIO):
-    def __enter__(self): return self
-    def __exit__(self, *a): return False
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
 
 
 # ── dimensions ────────────────────────────────────────────────────────────────
@@ -46,7 +49,7 @@ def test_too_small_uses_the_longest_edge():
 
 
 def test_unreadable_dimensions_are_not_reported_as_too_small():
-    """"Cannot tell" is not "too small" -- flagging on ignorance would send
+    """ "Cannot tell" is not "too small" -- flagging on ignorance would send
     every unusual image for replacement."""
     assert not is_too_small(b"\xff\xd8\xff" + b"\x00" * 30_000)
 
@@ -62,12 +65,11 @@ def test_describe_flags_the_small_ones():
 class TestSourcePreference:
     def test_a_usable_image_short_circuits_the_remaining_sources(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(A, "fetch_itunes",
-                            lambda a, b: (calls.append("itunes"), _png(600, 600))[1])
-        monkeypatch.setattr(A, "fetch_coverartarchive",
-                            lambda a, b: calls.append("caa"))
-        monkeypatch.setattr(A, "fetch_lastfm",
-                            lambda a, b, k: calls.append("lastfm"))
+        monkeypatch.setattr(
+            A, "fetch_itunes", lambda a, b: (calls.append("itunes"), _png(600, 600))[1]
+        )
+        monkeypatch.setattr(A, "fetch_coverartarchive", lambda a, b: calls.append("caa"))
+        monkeypatch.setattr(A, "fetch_lastfm", lambda a, b, k: calls.append("lastfm"))
         blob, src = A.fetch_album_art("Artist", "Album")
         assert src == "itunes"
         assert calls == ["itunes"], "kept asking after a good answer"
@@ -100,8 +102,10 @@ class TestSourcePreference:
         """Three states, not two. A timeout must not settle a row as
         'this album has no art' -- the same rule as mb_enrich's
         LookupUnavailable."""
+
         def boom(*a):
             raise A.ArtUnavailable("timeout")
+
         for n in ("fetch_itunes", "fetch_coverartarchive", "fetch_lastfm"):
             monkeypatch.setattr(A, n, boom)
         with pytest.raises(A.ArtUnavailable):
@@ -115,8 +119,9 @@ def test_no_source_reaches_the_network_under_local_only(monkeypatch):
     """Preview must not fetch. Same gateway Enrich and MBEnrich answer to."""
     from musaeus.network_policy import NetworkPolicy, policy
 
-    monkeypatch.setattr(A.urllib.request, "urlopen",
-                        lambda *a, **k: pytest.fail("reached the network"))
+    monkeypatch.setattr(
+        A.urllib.request, "urlopen", lambda *a, **k: pytest.fail("reached the network")
+    )
     with policy(NetworkPolicy.LOCAL_ONLY):
         # No art, and -- the point -- no urlopen. With a Last.fm key every
         # source is refused, so the three-state rule applies and it raises;
@@ -139,10 +144,12 @@ def test_itunes_prefers_an_exact_album_match(monkeypatch):
     seen = {}
 
     def fake_json(url):
-        return {"results": [
-            {"collectionName": "Wrong Album", "artworkUrl100": "http://x/wrong100x100bb.png"},
-            {"collectionName": "Right Album", "artworkUrl100": "http://x/right100x100bb.png"},
-        ]}
+        return {
+            "results": [
+                {"collectionName": "Wrong Album", "artworkUrl100": "http://x/wrong100x100bb.png"},
+                {"collectionName": "Right Album", "artworkUrl100": "http://x/right100x100bb.png"},
+            ]
+        }
 
     def fake_get(url, accept=None):
         seen["url"] = url

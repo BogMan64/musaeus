@@ -36,8 +36,20 @@ def _encode(path: Path, codec: str) -> bool:
     if not shutil.which("ffmpeg"):
         return False
     r = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
-         "-i", "sine=frequency=440:duration=1", "-c:a", codec, str(path)],
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-c:a",
+            codec,
+            str(path),
+        ],
         capture_output=True,
     )
     return r.returncode == 0 and path.exists()

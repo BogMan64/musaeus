@@ -69,9 +69,7 @@ def _run_one(ctx: RunContext, path: Path, measured=("ok",)):
         patch("musaeus.stages.forge.write_rg_tags", return_value=True),
     ):
         measure.return_value = (-14.0, -1.0, measured[0])
-        status = ForgeStage()._process_one(
-            ctx, str(path), dry_run=False, target_lufs=-16.0
-        )
+        status = ForgeStage()._process_one(ctx, str(path), dry_run=False, target_lufs=-16.0)
     return status, measure
 
 
@@ -164,9 +162,7 @@ class TestExistingTagsWinOverTheGuard:
             patch("musaeus.stages.forge.read_existing_rg_tags", return_value=existing),
             patch("musaeus.stages.forge.measure_loudness") as measure,
         ):
-            status = ForgeStage()._process_one(
-                ctx, str(track), dry_run=False, target_lufs=-16.0
-            )
+            status = ForgeStage()._process_one(ctx, str(track), dry_run=False, target_lufs=-16.0)
 
         assert status == "tag_shortcut"
         measure.assert_not_called()

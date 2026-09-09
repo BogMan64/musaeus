@@ -139,10 +139,19 @@ def test_kept_reasons_are_reported_for_every_kept_checkpoint(tmp_path):
 
 def test_dry_run_deletes_nothing(tmp_path, monkeypatch, capsys):
     d = _checkpoint(tmp_path, "ancient", 400)
-    monkeypatch.setattr(sys, "argv", [
-        "prune_recovery.py", "--root", str(tmp_path),
-        "--keep-last", "0", "--min-age-days", "1",
-    ])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prune_recovery.py",
+            "--root",
+            str(tmp_path),
+            "--keep-last",
+            "0",
+            "--min-age-days",
+            "1",
+        ],
+    )
     assert pr.main() == 0
     assert d.exists(), "a dry run must not delete"
     assert "DRY RUN" in capsys.readouterr().out
@@ -151,10 +160,20 @@ def test_dry_run_deletes_nothing(tmp_path, monkeypatch, capsys):
 def test_apply_deletes_only_the_eligible(tmp_path, monkeypatch):
     doomed = _checkpoint(tmp_path, "ancient", 400)
     safe = _checkpoint(tmp_path, "recent", 1)
-    monkeypatch.setattr(sys, "argv", [
-        "prune_recovery.py", "--root", str(tmp_path),
-        "--keep-last", "0", "--min-age-days", "14", "--apply",
-    ])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prune_recovery.py",
+            "--root",
+            str(tmp_path),
+            "--keep-last",
+            "0",
+            "--min-age-days",
+            "14",
+            "--apply",
+        ],
+    )
     assert pr.main() == 0
     assert not doomed.exists()
     assert safe.exists()

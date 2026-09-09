@@ -354,9 +354,7 @@ class VariousArtistsFixStage(BaseStage):
             if not p.exists():
                 problems.append(f"fixed row points at nothing: {p.name}")
             if (r["artist"] or "").strip().lower() in {"various artists", "various"}:
-                problems.append(
-                    f"{p.name}: still recorded as {r['artist']!r} after a fix"
-                )
+                problems.append(f"{p.name}: still recorded as {r['artist']!r} after a fix")
         return problems
 
     def run(self, ctx: RunContext) -> StageResult:
@@ -395,9 +393,7 @@ class VariousArtistsFixStage(BaseStage):
             real_artist = _move_article_to_suffix(real_artist.strip())
             clean_title = strip_leading_credit(row.get("title") or "", real_artist)
             new_genre = self._genre_from_library(ctx, real_artist)
-            target = self._target_path(
-                ctx, {**row, "title": clean_title}, source, real_artist
-            )
+            target = self._target_path(ctx, {**row, "title": clean_title}, source, real_artist)
             # Database first, then the move, then commit -- so the two cannot
             # disagree. A move is not transactional and cannot be rolled back;
             # a DB write can. Doing it the other way round means a failed

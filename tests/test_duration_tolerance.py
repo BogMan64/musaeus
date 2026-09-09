@@ -38,6 +38,4 @@ class TestToleranceFor:
     def test_it_matches_the_literal_it_replaced(self):
         """Behaviour-preserving by construction, pinned so it stays that way."""
         for recorded in (1, 30, 99, 100, 101, 160, 300, 486, 3600):
-            assert tolerance_for(recorded) == pytest.approx(
-                max(2.0, recorded * 0.02)
-            ), recorded
+            assert tolerance_for(recorded) == pytest.approx(max(2.0, recorded * 0.02)), recorded

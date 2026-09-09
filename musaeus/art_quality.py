@@ -47,16 +47,29 @@ def image_dimensions(blob: bytes) -> tuple[int, int] | None:
                 continue
             marker = blob[i + 1]
             # SOF0..SOF15 carry the frame size; skip the ones that do not.
-            if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
-                          0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
-                h, w = struct.unpack(">HH", blob[i + 5:i + 9])
+            if marker in (
+                0xC0,
+                0xC1,
+                0xC2,
+                0xC3,
+                0xC5,
+                0xC6,
+                0xC7,
+                0xC9,
+                0xCA,
+                0xCB,
+                0xCD,
+                0xCE,
+                0xCF,
+            ):
+                h, w = struct.unpack(">HH", blob[i + 5 : i + 9])
                 return int(w), int(h)
             if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
                 i += 2
                 continue
             if i + 4 > n:
                 break
-            seg = struct.unpack(">H", blob[i + 2:i + 4])[0]
+            seg = struct.unpack(">H", blob[i + 2 : i + 4])[0]
             if seg < 2:
                 break
             i += 2 + seg

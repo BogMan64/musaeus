@@ -181,15 +181,17 @@ def _read_all_tags(path: Path, known_duration: float | str | None = None) -> dic
             # for audio the file no longer holds.
             if not (recorded and actual):
                 logger.debug(
-                    "chromaprint for %s cannot be checked (recorded=%r actual=%r) "
-                    "-- not trusted",
-                    path, recorded, actual,
+                    "chromaprint for %s cannot be checked (recorded=%r actual=%r) -- not trusted",
+                    path,
+                    recorded,
+                    actual,
                 )
             elif abs(float(recorded) - float(actual)) > 2.0:
                 logger.debug(
-                    "chromaprint for %s describes %.1fs but the audio is %.1fs "
-                    "-- not trusted",
-                    path, float(recorded), float(actual),
+                    "chromaprint for %s describes %.1fs but the audio is %.1fs -- not trusted",
+                    path,
+                    float(recorded),
+                    float(actual),
                 )
             else:
                 out["chromaprint"] = fp
@@ -263,7 +265,7 @@ def create_rebuild_table(conn: sqlite3.Connection, table: str) -> None:
     # `CREATE TABLE archive(` or `CREATE TABLE "archive"(`
     for pattern in (f'CREATE TABLE "{_ARCHIVE}"', f"CREATE TABLE {_ARCHIVE}"):
         if ddl.startswith(pattern):
-            ddl = f'CREATE TABLE "{table}"' + ddl[len(pattern):]
+            ddl = f'CREATE TABLE "{table}"' + ddl[len(pattern) :]
             break
     else:
         raise RuntimeError(f"unrecognised archive DDL, refusing to rebuild: {ddl[:60]}")

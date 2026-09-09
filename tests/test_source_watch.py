@@ -50,6 +50,7 @@ class TestDriftDetection:
         # mtime-based detection would cry drift after any checkout or copy.
         w = SourceWatch(pkg)
         import os
+
         os.utime(pkg / "a.py", (0, 0))
         assert not w.drifted()
 

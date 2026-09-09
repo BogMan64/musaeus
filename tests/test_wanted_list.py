@@ -28,11 +28,12 @@ class TestExtractCreditedArtist:
         "title,expected",
         [
             ("Midnight Cruiser [In the Style of Steely Dan]", "Steely Dan"),
-            ("The South's Gonna Do It Again (Originally Performed By the Charlie "
-             "Daniels Band)", "the Charlie Daniels Band"),
+            (
+                "The South's Gonna Do It Again (Originally Performed By the Charlie Daniels Band)",
+                "the Charlie Daniels Band",
+            ),
             ("Don't You Want Me (As Made Famous by The Human League)", "The Human League"),
-            ("Nuthin' But a G Thang - Sound-a-Like As Made Famous By - Dr. Dre",
-             "Dr. Dre"),
+            ("Nuthin' But a G Thang - Sound-a-Like As Made Famous By - Dr. Dre", "Dr. Dre"),
         ],
     )
     def test_the_three_proven_patterns(self, title, expected):

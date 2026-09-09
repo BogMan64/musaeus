@@ -43,10 +43,25 @@ pytestmark = pytest.mark.skipif(
 def _tagged(path: Path, artist: str, title: str, seconds: int = 1) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
-         "-c:a", "aac", "-metadata", f"artist={artist}", "-metadata", f"title={title}",
-         str(path), "-y"],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration={seconds}",
+            "-c:a",
+            "aac",
+            "-metadata",
+            f"artist={artist}",
+            "-metadata",
+            f"title={title}",
+            str(path),
+            "-y",
+        ],
+        check=True,
+        capture_output=True,
     )
     return path
 
@@ -74,9 +89,21 @@ def test_files_with_no_tags_are_skipped_not_crashed_on(tmp_path: Path) -> None:
     out = tmp_path / "out"
     out.mkdir()
     subprocess.run(
-        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-         "-c:a", "aac", str(out / "untagged.m4a"), "-y"],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-c:a",
+            "aac",
+            str(out / "untagged.m4a"),
+            "-y",
+        ],
+        check=True,
+        capture_output=True,
     )
     idx = bcl._index_output_by_tags(out)
     assert idx == {}
@@ -144,16 +171,16 @@ def test_the_index_is_built_once_outside_the_matching_loop() -> None:
     """
     import ast
 
-    src_path = Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
+    src_path = (
+        Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
+    )
     tree = ast.parse(src_path.read_text(), filename=str(src_path))
 
-    main_fn = next(
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "main"
-    )
+    main_fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main")
 
     index_calls = [
-        n for n in ast.walk(main_fn)
+        n
+        for n in ast.walk(main_fn)
         if isinstance(n, ast.Call)
         and isinstance(n.func, ast.Name)
         and n.func.id == "_index_output_by_tags"
@@ -163,10 +190,9 @@ def test_the_index_is_built_once_outside_the_matching_loop() -> None:
     )
 
     src_loop = next(
-        n for n in ast.walk(main_fn)
-        if isinstance(n, ast.For)
-        and isinstance(n.target, ast.Name)
-        and n.target.id == "src"
+        n
+        for n in ast.walk(main_fn)
+        if isinstance(n, ast.For) and isinstance(n.target, ast.Name) and n.target.id == "src"
     )
     loop_line_range = range(src_loop.lineno, (src_loop.end_lineno or src_loop.lineno) + 1)
     assert index_calls[0].lineno not in loop_line_range, (

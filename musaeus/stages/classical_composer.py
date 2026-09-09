@@ -211,6 +211,8 @@ class ClassicalComposerStage(BaseStage):
             # gets filed under the composer by the stage whose task that
             # is. Move only what is already in the library.
             in_library = _is_within(src, ctx.config.alac_library)
+            album_dir: Path | None = None
+            artist_dir: Path | None = None
             if in_library:
                 album_dir, artist_dir = src.parent, src.parent.parent
                 dst_dir = artist_dir.with_name(sanitize_path_component(composer)) / album_dir.name
@@ -219,7 +221,6 @@ class ClassicalComposerStage(BaseStage):
                 )
                 dst_dir.mkdir(parents=True, exist_ok=True)
             else:
-                album_dir = artist_dir = None
                 dst = src
 
             # Row first, then the move, then commit. A move cannot be rolled

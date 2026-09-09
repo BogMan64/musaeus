@@ -36,7 +36,7 @@ from pathlib import Path
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
 from ..duration import TOLERANCE_SEC
-from .base import NO_VERIFICATION, BaseStage, StageError
+from .base import NO_VERIFICATION, BaseStage, StageError, VerifyResult
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,8 @@ def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
             ("auditor_checked_at", "TEXT"),
         ),
     )
+
+
 def _ffmpeg_lufs(path: Path, target_lufs: float, target_tp: float) -> tuple[float, float]:
     """
     Run ffmpeg loudnorm pass-1 analysis.
@@ -277,7 +279,7 @@ class AuditorStage(BaseStage):
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._audit(ctx, dry_run=True)
 
-    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> VerifyResult:
         """A row this stage measured must carry a plausible measurement.
 
         Auditor's whole output is a number written to a column, so the

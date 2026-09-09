@@ -34,8 +34,7 @@ from pathlib import Path
 
 import pytest
 
-_VENDOR = (Path(__file__).resolve().parents[1]
-           / "scripts" / "car_library" / "vendor")
+_VENDOR = Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "vendor"
 sys.path.insert(0, str(_VENDOR))
 from build_aac_library import _env_flag  # noqa: E402
 
@@ -43,6 +42,7 @@ _SCRIPT = _VENDOR / "build_aac_library.py"
 
 
 # ── M-06 ─────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.parametrize("value", ["0", "false", "False", "no", "NO", "off", ""])
 def test_the_spellings_an_operator_uses_to_say_no_mean_no(value, monkeypatch) -> None:
@@ -74,9 +74,12 @@ def test_the_force_flag_reads_its_value_not_its_presence() -> None:
     """
     tree = ast.parse(_SCRIPT.read_text())
     for node in ast.walk(tree):
-        if (isinstance(node, ast.Assign) and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-                and node.targets[0].id == "FORCE_REENCODE"):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "FORCE_REENCODE"
+        ):
             src = ast.unparse(node.value)
             assert "_env_flag" in src, src
             assert "bool(" not in src, f"presence test is back: {src}"
@@ -85,6 +88,7 @@ def test_the_force_flag_reads_its_value_not_its_presence() -> None:
 
 
 # ── M-07 ─────────────────────────────────────────────────────────────────────
+
 
 def test_no_comment_promises_a_flag_the_script_does_not_define() -> None:
     """A wrong instruction costs more than a missing one.
@@ -95,12 +99,11 @@ def test_no_comment_promises_a_flag_the_script_does_not_define() -> None:
     text = _SCRIPT.read_text()
     tree = ast.parse(text)
     defined = {
-        a.value for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and getattr(node.func, "attr", "") == "add_argument"
+        a.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "add_argument"
         for a in node.args
-        if isinstance(a, ast.Constant) and isinstance(a.value, str)
-        and a.value.startswith("--")
+        if isinstance(a, ast.Constant) and isinstance(a.value, str) and a.value.startswith("--")
     }
     promised: list[str] = []
     for i, line in enumerate(text.splitlines(), 1):
@@ -111,17 +114,24 @@ def test_no_comment_promises_a_flag_the_script_does_not_define() -> None:
             flag = word.strip(".,;:()")
             if flag.startswith("--") and len(flag) > 2 and flag not in defined:
                 promised.append(f"line {i}: {flag}")
-    assert not promised, (
-        "a comment names a flag this script does not define: "
-        + ", ".join(promised))
+    assert not promised, "a comment names a flag this script does not define: " + ", ".join(
+        promised
+    )
 
 
 # ── M-08 ─────────────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("fn", [
-    "_probe", "probe_sample_rate", "probe_channels",
-    "_probe_duration", "_probe_rate_and_channels",
-])
+
+@pytest.mark.parametrize(
+    "fn",
+    [
+        "_probe",
+        "probe_sample_rate",
+        "probe_channels",
+        "_probe_duration",
+        "_probe_rate_and_channels",
+    ],
+)
 def test_every_ffprobe_helper_has_a_deadline(fn: str) -> None:
     """ffprobe blocks for ever on a truncated container.
 
@@ -134,9 +144,9 @@ def test_every_ffprobe_helper_has_a_deadline(fn: str) -> None:
         if not isinstance(node, ast.FunctionDef) or node.name != fn:
             continue
         runs = [
-            n for n in ast.walk(node)
-            if isinstance(n, ast.Call)
-            and getattr(n.func, "attr", "") == "run"
+            n
+            for n in ast.walk(node)
+            if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "run"
         ]
         assert runs, f"{fn} no longer calls subprocess.run"
         for call in runs:

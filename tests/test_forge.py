@@ -634,9 +634,20 @@ class TestReplayGainReferenceRoundTrip:
         if not shutil.which("ffmpeg"):
             pytest.skip("ffmpeg not available")
         subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-             "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "0.3",
-             str(path)],
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=r=44100:cl=stereo",
+                "-t",
+                "0.3",
+                str(path),
+            ],
             check=True,
         )
         return path
