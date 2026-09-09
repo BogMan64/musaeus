@@ -126,6 +126,12 @@ MAX_WORKERS = 4
 OVERWRITE = True
 FORCE_REENCODE = bool(os.environ.get("MUSAEUS_FORCE_REENCODE"))
 
+# ffprobe blocks indefinitely on a truncated container -- precisely this
+# script's input. _probe has carried a timeout since it was written; the
+# later helpers did not (M-08). Four hung probes exhaust MAX_WORKERS and the
+# build stalls with no output at all.
+_PROBE_TIMEOUT_SEC = 30
+
 DEFAULT_LUFS = -16.0
 
 # Two-pass loudnorm targets not covered by the per-profile target_lufs value
@@ -527,13 +533,58 @@ def build_ffmpeg_command(
     return cmd
 
 
+def _probe_rate_and_channels(path: Path) -> tuple[int | None, int | None]:
+    """Sample rate and channel count in one ffprobe, or (None, None).
+
+    One call, not two: convert_one already spawns four ffprobes per file, and
+    -show_entries takes both fields at once.
+    """
+    try:
+        proc = subprocess.run(
+            [FFPROBE, "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=sample_rate,channels",
+             "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SEC)
+    except (subprocess.SubprocessError, OSError):
+        return None, None
+    raw = (proc.stdout or "").strip().splitlines()
+    if proc.returncode != 0 or not raw:
+        return None, None
+    parts = raw[0].split(",")
+    if len(parts) < 2:
+        return None, None
+    try:
+        # ffprobe prints the fields in declaration order: sample_rate,channels.
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None, None
+
+
 def _output_matches_source(source: Path, output: Path) -> bool:
-    """True when *output* is a usable encode of *source*.
+    """True when *output* is the encode the CURRENT settings would produce.
 
     Existence alone is not enough: a truncated file from an interrupted run
     would then be preserved permanently. Duration is the cheap check that
     catches it -- a partial encode is short, and a file ffprobe cannot read
     returns nothing.
+
+    Duration alone is not enough either, and that was M-02 in the Repair
+    Register. This check exists so a re-run resumes instead of re-encoding
+    9 hours of already-correct files -- but it was answering "is something
+    roughly this long present?" when the question is "is this the output the
+    current settings would produce?". Those came apart the moment the encoder
+    gained the `-ar` cap and the `-ac 2` downmix: an output encoded before
+    them has exactly the right DURATION and the wrong rate and channels, so
+    it reported `SKIP DONE | already encoded` for ever. By car_sample_rate's
+    own measurement that is 4,862 of 10,545 files above 48 kHz, 4,223 of them
+    at 192 kHz -- the files the cap was added FOR, kept out of reach of the
+    fix by the check that was supposed to protect them.
+
+    A property is compared only when it can be established. An unreadable
+    probe on either side leaves that property unjudged rather than failing
+    the file, because a False here means "delete and re-encode" and the
+    unreadable-source case is M-01: nothing is deleted on a measurement we
+    could not take. Duration remains mandatory.
     """
     try:
         src = _probe_duration(source)
@@ -542,7 +593,24 @@ def _output_matches_source(source: Path, output: Path) -> bool:
         return False
     if src is None or out is None or src <= 0:
         return False
-    return abs(src - out) <= max(1.0, src * 0.02)
+    if abs(src - out) > max(1.0, src * 0.02):
+        return False
+
+    src_rate, src_ch = _probe_rate_and_channels(source)
+    out_rate, out_ch = _probe_rate_and_channels(output)
+
+    want_rate = car_sample_rate(src_rate)
+    if want_rate is not None and out_rate is not None and out_rate != want_rate:
+        return False
+
+    # -ac 2 fires only above two channels; mono stays mono, which is why the
+    # expectation is "2 if the source is surround, otherwise unchanged".
+    if src_ch is not None and out_ch is not None:
+        want_ch = 2 if src_ch > 2 else src_ch
+        if out_ch != want_ch:
+            return False
+
+    return True
 
 
 def _probe_duration(path: Path) -> float | None:
