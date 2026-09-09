@@ -212,6 +212,20 @@ def main() -> int:
                              "81.7 GB of library does not fit a 30 GB phone.")
     args = parser.parse_args()
 
+    # --limit and --budget-gb only do anything inside the --from-catalogue
+    # branch, where selection happens. Outside it they were silently ignored:
+    # `--limit 5` over hand-dropped files encoded all of them. Reject rather
+    # than ignore -- a flag that is quietly dropped is worse than one that
+    # errors, because the operator believes it took effect. (M-05.)
+    if not args.from_catalogue:
+        ignored = [n for n, v in (("--limit", args.limit),
+                                  ("--budget-gb", args.budget_gb)) if v is not None]
+        if ignored:
+            parser.error(
+                f"{' and '.join(ignored)} only applies with --from-catalogue; "
+                "selection happens there. Re-run with --from-catalogue, or drop "
+                "the flag.")
+
     cfg = get_config()
     input_dir = cfg.runs_root / "AAC-Car-Masked"
     output_dir = input_dir / "_output"
@@ -265,6 +279,24 @@ def main() -> int:
     print(f"Found {len(files)} file(s) in {input_dir}:")
     for f in files:
         print(f"  {f.name}")
+
+    # --dry-run must stop EVERY path, not just the catalogue one.
+    #
+    # M-05: the only dry-run check lived inside `if args.from_catalogue:`, so
+    # a preview over hand-dropped files fell into the else branch and ran for
+    # real -- the masking prompt, an audio_hash of every input (a full decode
+    # each), the encode itself, and the database write at the end. The help
+    # text says "Report the plan and encode nothing" and states no dependency
+    # on another flag; argparse enforced none.
+    #
+    # This guard sits after both branches have produced `files` and before
+    # anything reads, decodes, prompts or writes, so the flag now means what
+    # it says whichever mode it is used in.
+    if args.dry_run:
+        print(f"\n[DRY RUN] Nothing encoded. {len(files):,} file(s) would be "
+              f"processed for the {args.edition} edition.")
+        print("    Nothing was read, decoded, prompted for or written.")
+        return 0
 
     if args.edition == "iphone" and not args.mask:
         # Masking exists to sit under road noise in a car. On headphones it
