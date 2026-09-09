@@ -177,9 +177,16 @@ def _has_attached_picture(probe: dict) -> bool:
 
 def _verify_conversion(source: Path, output: Path) -> None:
     """
-    Post-conversion check: output must have an audio stream, and its
-    duration must match the source within tolerance. Raises
-    CanonicalizeError on any mismatch — caller must not trust the output.
+    Post-conversion check: the output must carry the same number of audio
+    streams as the source, and its duration must match within tolerance.
+    Raises CanonicalizeError on any mismatch, or when either duration cannot
+    be measured — the caller must not trust the output.
+
+    Every branch here fails CLOSED. This function is the last thing standing
+    between a bad encode and `source.unlink()`, so "I could not check" has to
+    mean "do not proceed", never "carry on". Reported as P0-A on 2026-09-09
+    and fixed the same day; before that an unmeasurable duration skipped the
+    comparison entirely and returned success.
     """
     src_probe = _probe_streams(source)
     out_probe = _probe_streams(output)
@@ -188,20 +195,59 @@ def _verify_conversion(source: Path, output: Path) -> None:
     if not out_audio_streams:
         raise CanonicalizeError("verification failed: output has no audio stream")
 
+    src_audio_streams = [s for s in src_probe.get("streams", []) if s.get("codec_type") == "audio"]
+    if len(out_audio_streams) != len(src_audio_streams):
+        raise CanonicalizeError(
+            f"verification failed: audio stream count changed "
+            f"(source={len(src_audio_streams)}, output={len(out_audio_streams)})"
+        )
+
     def _duration(probe: dict) -> float | None:
+        """Container duration, falling back to the audio stream's own.
+
+        `format.duration` alone is not enough. WAV and AIFF routinely carry
+        no container duration at all, and those are exactly the sources this
+        stage converts and then DELETES. Reading one field and giving up was
+        half of P0-A.
+        """
         d = probe.get("format", {}).get("duration")
         try:
-            return float(d) if d else None
+            if d:
+                return float(d)
         except (TypeError, ValueError):
-            return None
+            pass
+        for stream in probe.get("streams", []):
+            if stream.get("codec_type") != "audio":
+                continue
+            sd = stream.get("duration")
+            try:
+                if sd:
+                    return float(sd)
+            except (TypeError, ValueError):
+                continue
+        return None
 
     src_dur = _duration(src_probe)
     out_dur = _duration(out_probe)
-    if (
-        src_dur is not None
-        and out_dur is not None
-        and abs(src_dur - out_dur) > _DURATION_TOLERANCE_SEC
-    ):
+
+    # FAIL CLOSED. This was the other half of P0-A, and the dangerous half:
+    # the comparison was guarded by `src_dur is not None and out_dur is not
+    # None`, so an unmeasurable duration meant NO comparison ran and the
+    # function returned success. Verification then amounted to "the output
+    # has an audio stream" -- a two-second truncated ALAC passed -- and the
+    # caller went on to delete the lossless original.
+    #
+    # An unverifiable conversion is a failed conversion. The caller
+    # quarantines the staged output and leaves the source alone, which is the
+    # right outcome for a file we cannot vouch for.
+    if src_dur is None or out_dur is None:
+        which = "source" if src_dur is None else "output"
+        raise CanonicalizeError(
+            f"verification failed: could not determine the {which} duration, "
+            f"so the conversion cannot be checked against the original"
+        )
+
+    if abs(src_dur - out_dur) > _DURATION_TOLERANCE_SEC:
         raise CanonicalizeError(
             f"verification failed: duration mismatch (source={src_dur:.2f}s, output={out_dur:.2f}s)"
         )
@@ -274,14 +320,9 @@ def _transcode_to_aac(source: Path, output: Path) -> None:
     # stage was just changed to stop defaulting to, left standing one branch
     # over. A stream copy is bit-exact.
     _src_audio = [st for st in probe.get("streams", []) if st.get("codec_type") == "audio"]
-    _already_aac = (
-        bool(_src_audio)
-        and str(_src_audio[0].get("codec_name", "")).lower() == "aac"
-    )
+    _already_aac = bool(_src_audio) and str(_src_audio[0].get("codec_name", "")).lower() == "aac"
     audio_args = (
-        ["-c:a", "copy"]
-        if _already_aac
-        else ["-c:a", "aac", "-b:a", AAC_TRANSCODE_BITRATE]
+        ["-c:a", "copy"] if _already_aac else ["-c:a", "aac", "-b:a", AAC_TRANSCODE_BITRATE]
     )
 
     cmd = ["ffmpeg", "-y" if output.exists() else "-n", "-i", str(source), "-threads", "2"]
@@ -580,9 +621,7 @@ class CanonicalizeStage(BaseStage):
             return codec
         try:
             probe = _probe_streams(source)
-            audio = [
-                st for st in probe.get("streams", []) if st.get("codec_type") == "audio"
-            ]
+            audio = [st for st in probe.get("streams", []) if st.get("codec_type") == "audio"]
             if audio:
                 return str(audio[0].get("codec_name") or "").lower()
         except Exception as exc:  # a probe failure is not a licence to re-encode
@@ -919,9 +958,7 @@ class CanonicalizeStage(BaseStage):
                         # where. Same filesystem, so it is a rename: peak
                         # disk is unchanged from the pre-canonicalize state,
                         # it just isn't reclaimed until the run is released.
-                        boundary.quarantine(
-                            Path(old_path), reason=f"canonicalized to {new_path}"
-                        )
+                        boundary.quarantine(Path(old_path), reason=f"canonicalized to {new_path}")
                     else:
                         Path(old_path).unlink(missing_ok=True)
                 except (
@@ -935,12 +972,8 @@ class CanonicalizeStage(BaseStage):
                     # the verified staged copy and that write is durable, so
                     # the only consequence is an original left in place.
                     result.files_errored += 1
-                    result.errors.append(
-                        f"{Path(old_path).name}: original not disposed: {exc}"
-                    )
-                    logger.warning(
-                        "[canonicalize] %s: original not disposed: %s", old_path, exc
-                    )
+                    result.errors.append(f"{Path(old_path).name}: original not disposed: {exc}")
+                    logger.warning("[canonicalize] %s: original not disposed: %s", old_path, exc)
                     continue
                 logger.info("[canonicalize] %s: %s -> %s", outcome, old_path, new_path)
             else:
