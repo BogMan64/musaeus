@@ -193,10 +193,12 @@ class TestDupeResolverSameBatchGroup:
 
         pairs = []
         for tag in ("a", "b", "c"):
-            hi = _make_archive_row(ctx, f"{tag}_hi.flac", f"Art{tag}", "Alb", "Ttl",
-                                   bitrate=900_000, size_bytes=500)
-            lo = _make_archive_row(ctx, f"{tag}_lo.m4a", f"Art{tag}", "Alb", "Ttl",
-                                   bitrate=128_000, size_bytes=200)
+            hi = _make_archive_row(
+                ctx, f"{tag}_hi.flac", f"Art{tag}", "Alb", "Ttl", bitrate=900_000, size_bytes=500
+            )
+            lo = _make_archive_row(
+                ctx, f"{tag}_lo.m4a", f"Art{tag}", "Alb", "Ttl", bitrate=128_000, size_bytes=200
+            )
             _stage_duplicate_pair(ctx, f"dup_{tag}", hi, lo)
             pairs.append((hi, lo))
 
@@ -1050,7 +1052,7 @@ class TestNoFileAppearsInTwoComponents:
     def test_a_path_shared_by_two_groups_yields_one_component(self, ctx, tmp_path):
         a, b, c = (tmp_path / n for n in ("a.m4a", "b.m4a", "c.m4a"))
         self._stage(ctx, "g1", a, b)
-        self._stage(ctx, "g2", b, c)          # b is in both
+        self._stage(ctx, "g2", b, c)  # b is in both
         comps = _connected_groups(ctx.conn, ["g1", "g2"])
         assert len(comps) == 1, f"g1 and g2 share b and must merge; got {comps}"
 
@@ -1058,9 +1060,9 @@ class TestNoFileAppearsInTwoComponents:
         """The property itself: across every component, each path once."""
         paths = {n: tmp_path / f"{n}.m4a" for n in "abcdef"}
         self._stage(ctx, "g1", paths["a"], paths["b"])
-        self._stage(ctx, "g2", paths["b"], paths["c"])   # chains onto g1
-        self._stage(ctx, "g3", paths["d"], paths["e"])   # separate
-        self._stage(ctx, "g4", paths["e"], paths["f"])   # chains onto g3
+        self._stage(ctx, "g2", paths["b"], paths["c"])  # chains onto g1
+        self._stage(ctx, "g3", paths["d"], paths["e"])  # separate
+        self._stage(ctx, "g4", paths["e"], paths["f"])  # chains onto g3
         comps = _connected_groups(ctx.conn, ["g1", "g2", "g3", "g4"])
 
         seen: dict[str, int] = {}
@@ -1085,3 +1087,69 @@ class TestNoFileAppearsInTwoComponents:
         self._stage(ctx, "g1", a, b)
         self._stage(ctx, "g2", c, d)
         assert len(_connected_groups(ctx.conn, ["g1", "g2"])) == 2
+
+
+# ── P0-E: an already-moved member cannot be named keeper ─────────────────────
+#
+# `dup_status` was selected by _get_group_members and never read. Losers are
+# marked 'archive' when they move; the keeper stays 'pending'. So the group is
+# still pending on the next run, every member is re-ranked -- moved ones
+# included -- and an already-moved file winning on bitrate would be named
+# keeper while the real keeper was moved away after it. The library would be
+# left with neither.
+
+
+def test_an_archived_member_never_outranks_a_live_one() -> None:
+    from musaeus.stages.dupe_resolver import _keeper_sort_key
+
+    moved_but_better = {
+        "codec": "flac",
+        "bitrate": 1000,
+        "size_bytes": 50_000_000,
+        "dup_status": "archive",
+        "title": "x",
+        "album": "y",
+    }
+    live_but_worse = {
+        "codec": "alac",
+        "bitrate": 900,
+        "size_bytes": 40_000_000,
+        "dup_status": "pending",
+        "title": "x",
+        "album": "y",
+    }
+
+    best = sorted([moved_but_better, live_but_worse], key=_keeper_sort_key)[0]
+    assert best is live_but_worse, "an already-moved file was chosen as keeper"
+
+
+def test_quality_still_decides_among_live_members() -> None:
+    """The new rank must not disturb the ordering it sits above."""
+    from musaeus.stages.dupe_resolver import _keeper_sort_key
+
+    lossy = {
+        "codec": "mp3",
+        "bitrate": 320,
+        "size_bytes": 10_000_000,
+        "dup_status": "pending",
+        "title": "x",
+        "album": "y",
+    }
+    lossless = {
+        "codec": "flac",
+        "bitrate": 900,
+        "size_bytes": 40_000_000,
+        "dup_status": "pending",
+        "title": "x",
+        "album": "y",
+    }
+
+    assert sorted([lossy, lossless], key=_keeper_sort_key)[0] is lossless
+
+
+def test_a_missing_dup_status_is_treated_as_live() -> None:
+    """The live-exact path builds members with no duplicates row at all."""
+    from musaeus.stages.dupe_resolver import _keeper_sort_key
+
+    m = {"codec": "flac", "bitrate": 900, "size_bytes": 40_000_000, "title": "x", "album": "y"}
+    assert _keeper_sort_key(m)[0] == 0

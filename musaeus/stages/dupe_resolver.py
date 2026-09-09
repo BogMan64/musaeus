@@ -243,7 +243,12 @@ def _is_reissue(m: dict) -> bool:
     return bool(_REISSUE_RE.search(haystack))
 
 
-def _keeper_sort_key(m: dict) -> tuple[int, int, int, int, int]:
+#: duplicates.status values meaning "this row has already been dealt with".
+#: A member in one of these states is not a candidate to keep.
+_ALREADY_RESOLVED: frozenset[str] = frozenset({"archive", "keep", "review"})
+
+
+def _keeper_sort_key(m: dict) -> tuple[int, int, int, int, int, int]:
     """Shared ordering rule: real lossless codec beats lossy
     UNCONDITIONALLY (a bitrate/size comparison across different codecs
     isn't a fair quality comparison -- a quiet, highly-compressible FLAC
@@ -268,6 +273,17 @@ def _keeper_sort_key(m: dict) -> tuple[int, int, int, int, int]:
     audio_hash-derived live EXACT clusters (see
     _get_live_exact_clusters) -- one rule, not two copies of it."""
     return (
+        # A member this resolver has already moved away cannot be the keeper.
+        # Ranked first because it is not a quality judgement at all -- it is
+        # whether the file is still where the library expects it.
+        #
+        # P0-E, 2026-09-09: `dup_status` was selected and never read. Losers
+        # are marked 'archive' while the keeper stays 'pending', so the group
+        # is still pending on the next run and every member -- moved ones
+        # included -- is re-ranked. An already-moved member winning on bitrate
+        # would be named keeper and the real keeper moved away after it,
+        # leaving the library with neither.
+        1 if (m.get("dup_status") or "") in _ALREADY_RESOLVED else 0,
         0 if (m.get("codec") or "").lower() in LOSSLESS_CODECS else 1,
         1 if _is_reissue(m) else 0,
         1 if _is_live(m) else 0,
