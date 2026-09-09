@@ -390,14 +390,26 @@ refused by the fixed check:
 - `Billy Squier - The Big Beat` — source 48 kHz/6ch
 - `Beck - The Paisley Experience` — **source 192 kHz/6ch, output 48 kHz/6ch**
 
-**The Beck file is worth a second look and is evidence for M-12.** Its rate
-was capped 192 → 48 while its channels were not downmixed, in the same
-encode. `-ar` and `-ac` are set from two separate probes
-(`probe_sample_rate` and `probe_channels`), and M-12 says both flags vanish
-when their probe returns None. An output where one applied and the other did
-not is exactly that shape. It may instead be an encode predating the `-ac`
-addition — **check the file's mtime against the commit that added `-ac 2`
-before concluding.** Either way M-12 is no longer purely PLAUSIBLE.
+**The Beck file is NOT evidence for M-12 — checked, and the plain
+explanation wins.** Its rate was capped 192 → 48 while its channels were not
+downmixed, which looked like M-12's signature (the two flags come from two
+independent probes, and M-12 says either vanishes when its probe returns
+None). The timeline refutes it:
+
+| | |
+|---|---|
+| `-ar` cap added | **2026-08-31** (`f70c6ad`) |
+| all three offending outputs encoded | **2026-09-01** |
+| `-ac 2` added | **2026-09-02** (`bbdd4db`) |
+
+All three were encoded in the one-day window when `-ar` existed and `-ac`
+did not. The asymmetry is chronology, not a probe failure. **M-12 remains
+PLAUSIBLE and still needs reproducing on its own terms.**
+
+Recorded because the wrong version of this note was committed first, and the
+check that overturned it — compare the file's mtime against the commit that
+added the flag — took about a minute. A finding that "looks like the shape
+of" a known defect is a hypothesis, not evidence for it.
 
 **The repair is three files, not a rebuild.** The defect was real — a blind
 check hides its misses for ever — but knowing the size changes what you
