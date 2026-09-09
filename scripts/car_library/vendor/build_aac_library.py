@@ -604,7 +604,24 @@ def convert_one(file_path: Path, profile_name: str) -> str:
         if output_file.exists() and not FORCE_REENCODE:
             if _output_matches_source(file_path, output_file):
                 return f"SKIP DONE | {file_path.name} | already encoded"
-            output_file.unlink()  # unusable: fall through and redo it
+            # Never destroy an existing encode because the SOURCE could not
+            # be read. _output_matches_source() returns False for two very
+            # different situations -- "this output is wrong" and "I could not
+            # measure the source" -- and only the first justifies deleting
+            # anything. Without this check an unreadable or missing master
+            # takes its good car copy down with it, which is the one case
+            # where the copy is the last surviving playable file.
+            #
+            # Reported as M-01 in the Repair Register, 2026-09-08. It had not
+            # fired: at the time of the fix no CATALOGUED row was missing its
+            # file, so the trigger did not exist. It is a latent defect, and
+            # the cost of it firing is silent, permanent data loss.
+            if _probe_duration(file_path) is None:
+                raise RuntimeError(
+                    "source could not be probed, so the existing encode cannot "
+                    "be verified against it -- the encode has been left in "
+                    "place. Check the source before re-running.")
+            output_file.unlink()  # genuinely unusable: fall through and redo it
 
         measured = ffmpeg_measure_loudnorm(file_path, target_i, TARGET_TP, TARGET_LRA)
         loudnorm_filter = build_second_pass_filter(measured, target_i, TARGET_TP, TARGET_LRA)
