@@ -132,7 +132,31 @@ def _copy_then_verify_then_swap(source: Path, target: Path) -> None:
                 f"size mismatch after copy: source={src_size} bytes, copy={tmp_size} bytes"
             )
 
+        # Force the copy to disk BEFORE the rename, and the rename itself
+        # before the caller deletes the source.
+        #
+        # P0-C, 2026-09-09. shutil.copy2 returns once the bytes are in the
+        # page cache, not once they are on the platter. The caller then
+        # renames and, at finalize.py:540, unlinks the original. A power loss
+        # anywhere in that window left a target whose data had never been
+        # written and a source that no longer existed -- and for a CONVERTED
+        # row, STAGING holds the only copy, so the recording was simply gone.
+        # The database, at PRAGMA synchronous=NORMAL, could not be relied on
+        # to remember what had happened either.
+        #
+        # The directory fsync is the half people forget: without it the
+        # rename can be lost even when the file's own data is safe, leaving
+        # the bytes on disk under a name nothing points to.
+        with open(tmp_target, "rb") as fh:
+            os.fsync(fh.fileno())
+
         tmp_target.rename(target)  # tmp_target and target share a parent -> atomic
+
+        dir_fd = os.open(str(target.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
 
     except Exception:
         if tmp_target.exists():
