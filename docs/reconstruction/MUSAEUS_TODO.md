@@ -763,6 +763,65 @@ repaired by re-running the build — the broken resume check is what hides
 them. Everything else in Tier 1 prevents future damage; M-02 is present
 damage.
 
+
+## P1d — Kiro's full-codebase review (PR #16), worked overnight 2026-09-09
+
+Thirty findings against `main`. Kiro caught its own stale base and re-verified
+every one against this branch — **246 commits ahead**, 2,580 tests against
+main's 582. Three of its P0s were already fixed here, one exactly as it
+recommended. **Seven survived, and all seven are now fixed.**
+
+### The finding underneath the findings
+
+**CI never installed ffmpeg.** ~275 tests skipped, and the ones that skipped
+were conversion, verification and quarantine — the only code in this project
+that can destroy an irreplaceable file. `canonicalize.py` sat at **20%
+coverage beside 2,500 passing tests**, and P0-A lived in the uncovered range.
+
+That is why P0-A survived two and a half weeks of intensive repair work in
+which twenty-six Register findings were fixed: **the one class of bug that
+cannot be caught is the one whose tests never run.** ffmpeg and semgrep are
+now both in CI, and the skip count is printed after every run so the drain is
+visible if it returns.
+
+### Fixed
+
+| id | what it was |
+|---|---|
+| **P0-A** | `_verify_conversion` failed **open** — an unmeasurable duration skipped the comparison entirely and returned success, so a 2-second truncated ALAC passed and the FLAC original was unlinked. Now fails closed, with a stream-level duration fallback and the stream-count check the docstring already claimed. |
+| **P0-C** | `finalize` had no `fsync`. A power cut between the rename and `source.unlink()` left an unwritten target and no original — and for a CONVERTED row, STAGING held the only copy. Now syncs the file **and its directory**. |
+| **P0-D** | `IntegrityError` is not an `OSError`, so a UNIQUE collision escaped mid-loop with the file already moved and no manifest written. Guarded in the two stages that needed it, with a sweep test so a new stage cannot reintroduce it. |
+| **P0-E** | `dup_status` was selected and never read. Losers are marked `archive` while the keeper stays `pending`, so the group is re-processed and an already-moved file could win keeper — leaving the library with neither copy. |
+| **P0-G** | `check_file` read its keyword exemption from `path.stem`, so an un-organised arrival named `01 - track01.m4a` whose title is *Intro* lost the exemption and was physically quarantined. |
+| **P1-H** | SQL injection through a hand-edited TSV. `artist = 'x' WHERE 1=1 --` would have rewritten every artist in the library from one approved row. Allowlisted from the live schema, so `ensure_columns()` additions still work. |
+| **P2-C** | The "event log is the source of truth, DB always rebuildable" claim, in three places. False since `rebuild.py` was disabled 2026-08-21 — and it would have sent someone into a recovery believing a rebuild existed. |
+
+### Also cleared — PR #14 was red on all three CI jobs
+
+**mypy 19 → 0.** Nine were one un-propagated signature (`verify_effect`
+returning the `NO_VERIFICATION` sentinel against a `list[str]` declaration).
+**Two were real bugs, not annotation noise:** a reachable `None` slice in
+`sentinel.py` when a `HasherError` carries an empty message, and
+`DEFAULT_PIPELINE` typed as bare `list[type]`. **ruff check and format:**
+green, 271 files. **semgrep:** wired and clean.
+
+### Checked before shipping
+
+Failing closed can mean refusing real work, so P0-A was measured against the
+live library first: **40 random files, all 40 report a container duration,
+none would be refused.** The fallback is a net for the WAV/AIFF edge case,
+not a new obstacle.
+
+### Still open from that review
+
+- **N-3's other half**: ~275 ffmpeg skips still use **nine different wording**
+  for one condition. A shared `requires_ffmpeg` marker would make the gap
+  greppable and countable. Mechanical; good Kiro work.
+- **36 pre-existing ruff findings** outside CI's scope, in files this session
+  never touched.
+- **14 ORPHEUS O-findings**, different repository. O-01/O-02 are the real
+  ones — noise beds validated by `.exists()` alone.
+
 ## P2 — needs Grey's judgement, cannot be automated
 
 3. ~~**QUARANTINE is 3.1 GB and nobody has ruled on it.**~~ **DONE — this
