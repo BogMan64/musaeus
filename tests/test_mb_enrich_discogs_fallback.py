@@ -153,6 +153,7 @@ def test_a_transport_failure_is_not_stamped_and_retries_next_run(conn, monkeypat
 def test_already_discogs_checked_rows_are_not_re_attempted(conn, monkeypatch) -> None:
     _row(conn, "Already Checked")
     conn.execute(
+        # nosemgrep: alter-table-add-column-outside-db -- a fixture builds the column ensure_columns() would add, to test the stage in isolation
         "ALTER TABLE archive ADD COLUMN discogs_checked_at TEXT"
     )
     conn.execute("UPDATE archive SET discogs_checked_at = '2026-09-01T00:00:00'")

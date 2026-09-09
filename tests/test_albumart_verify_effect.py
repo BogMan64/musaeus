@@ -54,6 +54,7 @@ def conn(tmp_path: Path):
         name = col.split()[0]
         cols = {r[1] for r in c.execute("PRAGMA table_info(archive)")}
         if name not in cols:
+            # nosemgrep: alter-table-add-column-outside-db -- a fixture builds the column ensure_columns() would add, to test the stage in isolation
             c.execute(f"ALTER TABLE archive ADD COLUMN {col}")
     c.commit()
     yield c

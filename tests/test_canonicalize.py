@@ -184,6 +184,7 @@ class TestConvert:
                 "-v",
                 "error",
                 "-show_entries",
+                # nosemgrep: duration-ffprobe-outside-duration-module -- asserts on the ffprobe command itself, so it must spell it out
                 "format=duration",
                 "-of",
                 "csv=p=0",

@@ -54,6 +54,7 @@ def _track(ctx, name="t.m4a", mbid=MBID):
         pytest.skip("ffmpeg unavailable")
     upsert_archive(ctx.conn, {"file_path": str(p), "status": "CATALOGUED",
                               "artist": "Bryan Ferry", "title": "Slave to Love"})
+    # nosemgrep: alter-table-add-column-outside-db -- a fixture builds the column ensure_columns() would add, to test the stage in isolation
     ctx.conn.execute("ALTER TABLE archive ADD COLUMN mb_artist_id TEXT")
     ctx.conn.execute("UPDATE archive SET mb_artist_id=? WHERE file_path=?", (mbid, str(p)))
     ctx.conn.commit()
@@ -147,6 +148,7 @@ def test_dry_run_works_on_a_database_lacking_the_marker_column(tmp_path):
     # The state this reproduces: at least one identity column present (so
     # _present() does not early-return) while identity_tagged_at is absent.
     if "mb_artist_id" not in [r[1] for r in conn.execute("PRAGMA table_info(archive)")]:
+        # nosemgrep: alter-table-add-column-outside-db -- a fixture builds the column ensure_columns() would add, to test the stage in isolation
         conn.execute("ALTER TABLE archive ADD COLUMN mb_artist_id TEXT")
     conn.execute(
         "INSERT INTO archive (file_path, status, mb_artist_id) "

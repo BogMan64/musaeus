@@ -457,7 +457,7 @@ The §5 pattern, five more times. Each of these *looks* like protection.
 | **M-04** | **FIXED** | `is_protected('Andrews Sisters (the)')` is True; `'Andrews Sisters, The'`, `'The Andrews Sisters'` and `'Andrews Sisters'` are all False — and `normalize.py` actively rewrites the working spelling into the dormant one. `genre_law._key()` already folds all three article forms and its docstring records that 246 rules were dormant for this exact reason. The test pins the dormant spelling, cementing it. |
 | **M-10** | **FIXED** | `PROTECTED_ARTIST_NAMES` exists in two modules with **disjoint** contents, so the "one home" guard — which keys on overlap ≥ 2 — can never fire. `normalize.py` runs `UPDATE archive SET artist=?` and imports nothing from canon. |
 | **M-09** | **FIXED** | `_load()` clears `_allowed` but not `_allowed_lower`, so a reload after the file disappears raises `ValueError` instead of returning None. |
-| **M-11** | open, CORRECTED then CONFIRMED | the ERROR-severity semgrep rule has **never scanned `tests/`** — semgrep's bundled defaults exclude it and `--no-git-ignore` does not lift it. Naming a file directly returns five real hits. |
+| **M-11** | **FIXED** | the ERROR-severity semgrep rule has **never scanned `tests/`** — semgrep's bundled defaults exclude it and `--no-git-ignore` does not lift it. Naming a file directly returns five real hits. |
 
 
 **M-04, measured (2026-09-08).** Of the thirteen canon entries, **exactly one
@@ -559,6 +559,32 @@ loader's own comment records what that cost: the real map has used `" => "`
 since it was written, so **not one of its 51 rules ever loaded**, and with no
 allowed file either, `resolve()` returned `None` for every genre ever passed
 to it — GenreCanon was wired into EnrichStage and doing nothing at all.
+
+
+**M-11 (2026-09-08).** Reproduced exactly: the documented command scanned
+**136 files, none from `tests/`**, and returned clean. An ERROR-severity rule
+had never examined the tree it actually matches in, and the passing exit code
+asserted coverage that did not exist.
+
+Fixing it exposed a **second gap the Register did not mention**: the same
+defaults were hiding `scripts/car_library/vendor/`, so three findings in the
+vendored ORPHEUS code had never been reported either.
+
+The command now scans **296 files, 160 from `tests/`**, and is clean —
+clean *because it looked*. Ten matches in `tests/` are suppressed inline,
+each carrying `# nosemgrep: <rule-id> -- <reason>`; a test refuses a bare
+`nosemgrep`, so every exception is a recorded decision. `vendor/` stays
+excluded but explicitly, with its reason written down and its duplication
+pinned by `test_car_duration_tolerance_is_one_rule.py` instead.
+
+**One trap for whoever runs these tests.** `conftest.py` redirects `HOME`
+before any import so the real credentials file cannot leak into the suite —
+correct, and it stays. But semgrep is installed under `~/.local`, so under
+the fake HOME its launcher cannot import itself, returns empty stdout, and
+that reads as "no findings". A first draft of the new test took that at face
+value: **a test about a scanner that silently scans nothing, itself silently
+scanning nothing.** It now takes the real home from the password database
+rather than the environment, and treats empty output as an error.
 
 ### Tier 3 — operator-facing and robustness
 

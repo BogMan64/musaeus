@@ -154,7 +154,9 @@ class TestMeasurementStages:
     def test_auditor_rejects_an_implausible_measurement(self, ctx, cfg):
         """A loudnorm parse that yields nothing writes NULL or 0.0 for every
         row; a presence-only check would call that success."""
+        # nosemgrep: alter-table-add-column-outside-db -- a fixture builds the column ensure_columns() would add, to test the stage in isolation
         ctx.conn.execute("ALTER TABLE archive ADD COLUMN auditor_lufs REAL")
+        # nosemgrep: alter-table-add-column-outside-db -- a fixture builds the column ensure_columns() would add, to test the stage in isolation
         ctx.conn.execute("ALTER TABLE archive ADD COLUMN auditor_checked_at TEXT")
         p = cfg.alac_library / "a.m4a"
         _row(ctx, p, status="CATALOGUED")
@@ -164,7 +166,9 @@ class TestMeasurementStages:
         assert AuditorStage().verify_effect(ctx, _R)
 
     def test_auditor_accepts_a_real_measurement(self, ctx, cfg):
+        # nosemgrep: alter-table-add-column-outside-db -- a fixture builds the column ensure_columns() would add, to test the stage in isolation
         ctx.conn.execute("ALTER TABLE archive ADD COLUMN auditor_lufs REAL")
+        # nosemgrep: alter-table-add-column-outside-db -- a fixture builds the column ensure_columns() would add, to test the stage in isolation
         ctx.conn.execute("ALTER TABLE archive ADD COLUMN auditor_checked_at TEXT")
         p = cfg.alac_library / "a.m4a"
         _row(ctx, p, status="CATALOGUED")
@@ -175,6 +179,7 @@ class TestMeasurementStages:
 
     def test_integrity_catches_an_unwritten_result(self, ctx, cfg):
         """The PermissionsStage failure: work reported, UPDATE touched nothing."""
+        # nosemgrep: alter-table-add-column-outside-db -- a fixture builds the column ensure_columns() would add, to test the stage in isolation
         ctx.conn.execute("ALTER TABLE archive ADD COLUMN integrity_checked_at TEXT")
         p = cfg.alac_library / "i.m4a"
         _row(ctx, p, status="CATALOGUED")
