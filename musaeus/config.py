@@ -18,7 +18,19 @@ Key env vars:
   MUSAEUS_STAGING      — staging area before vault (default: VAULT_ROOT/STAGING)
   MUSAEUS_QUARANTINE   — quarantine for bad files (default: VAULT_ROOT/QUARANTINE)
   MUSAEUS_META_DIR     — canon CSVs location (default: VAULT_ROOT/MetaData)
-  MUSAEUS_ALAC_LIBRARY — canonical finalized library (default: VAULT_ROOT/ALAC-Library)
+  MUSAEUS_ALAC_LIBRARY — canonical finalized library
+                         (default: VAULT_ROOT/Libraries/ALAC_Library)
+  MUSAEUS_ALAC_ARCHIVE — the masters, never baked
+                         (default: VAULT_ROOT/Libraries/ALAC-Archival)
+
+Mind the two spellings; they are not a typo and they are not interchangeable.
+The library directory is **ALAC_Library** (underscore) and the masters
+directory is **ALAC-Archival** (hyphen), which is what exists on disk. Prose
+in this codebase — including the paragraph below — calls the *tier*
+"ALAC-Library", and that name matches no directory. When the two disagree,
+the assignments in from_env() are authoritative; this docstring previously
+claimed a default of VAULT_ROOT/ALAC-Library, which was wrong about both the
+separator and the parent directory.
 
 ALAC-Library is the canonical, finalized output of the pipeline — distinct
 from INBOX (mutable working area). Physical presence of a file in
@@ -142,8 +154,8 @@ class MusicConfig:
         # Each keeps its own env override, so an existing deployment that sets
         # MUSAEUS_ALAC_LIBRARY is unaffected by the move.
         libraries = _p("MUSAEUS_LIBRARIES", vault_root / "Libraries")
-        alac_library = _p("MUSAEUS_ALAC_LIBRARY", libraries / "ALAC-Library")
-        alac_archive = _p("MUSAEUS_ALAC_ARCHIVE", libraries / "ALAC_Archive")
+        alac_library = _p("MUSAEUS_ALAC_LIBRARY", libraries / "ALAC_Library")
+        alac_archive = _p("MUSAEUS_ALAC_ARCHIVE", libraries / "ALAC-Archival")
         car_library = _p("MUSAEUS_CAR_LIBRARY", libraries / "CAR_Library")
         iphone_library = _p("MUSAEUS_IPHONE_LIBRARY", libraries / "iPHONE_Library")
         playlists = _p("MUSAEUS_PLAYLISTS", libraries / "Playlists")
@@ -182,7 +194,7 @@ class MusicConfig:
         if self.libraries is None:
             self.libraries = self.vault_root / "Libraries"
         if self.alac_archive is None:
-            self.alac_archive = self.libraries / "ALAC_Archive"
+            self.alac_archive = self.libraries / "ALAC-Archival"
         if self.car_library is None:
             self.car_library = self.libraries / "CAR_Library"
         if self.iphone_library is None:
