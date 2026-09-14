@@ -153,6 +153,33 @@ all fail. **This is a test/implementation mismatch, not a broken console**,
 and it predates the 09-14 documentation pass. Decide whether the 1-based menu
 is wanted; if it is, the tests move with it.
 
+#### The agreed order of operations for album names (Grey, 2026-09-14)
+
+**Review → apply to the vault → retag the masters → sync USB2.** In that
+order, and the order is the point.
+
+1. **Finish reviewing.** The proposal CSVs live in `~/Desktop/POST.Code/`.
+   Ruled so far: `1-AGREED` is applied automatically; a disagreement is
+   settled by **iTunes** (Grey, 2026-09-14); the 17 rows that are still
+   compilations after that are **accepted as they are**, because they are
+   live cuts, single edits and soundtrack singles that genuinely never had a
+   studio album.
+2. **Apply to the vault** with `scripts/album_names/apply_album_names.py`.
+   It refuses to overwrite an album that is already set, so re-running a CSV
+   is safe.
+3. **Retag the masters**, so the album name lives in the file and not only
+   in a database row that a rebuild discards.
+4. **Sync USB2 last.** USB2 already mirrors the masters — 11,554 files,
+   494 GB, verified 2026-09-14 against `ALAC-Archival` with one folder-name
+   difference (`10000 Maniacs` there, `10,000 Maniacs` in the vault) and a
+   5/5 byte-identical content spot-check. So this is a delta sync, not a
+   494 GB recopy.
+
+**Why not the other way round.** USB2 is the off-site backup. Pointing the
+pipeline at it, or writing names into it before the vault agrees, makes the
+backup the thing being managed — the same mistake as letting MUSAEUS see
+`/home/grey/Music`. The vault is authoritative; USB2 receives.
+
 #### The album-name utility, reviewed 2026-09-14
 
 `propose_album_names_v3.py` still lives only in `~/Desktop/POST.Code/`. It is
