@@ -253,10 +253,6 @@ class Console:
         else:
             _warn("ffprobe   : NOT FOUND — Scholar stage will fail")
 
-        if cfg.groq_api_key:
-            _ok("Groq API  : configured")
-        else:
-            _warn("Groq API  : not set (AI features unavailable)")
 
         # Ensure directories exist
         try:

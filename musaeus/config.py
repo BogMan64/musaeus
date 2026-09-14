@@ -120,7 +120,6 @@ class MusicConfig:
     curator_export_root: Path | None = None
 
     # API keys (may be None if not configured)
-    groq_api_key: str | None = field(default=None, repr=False)
     lastfm_api_key: str | None = field(default=None, repr=False)
     openrouter_api_key: str | None = field(default=None, repr=False)
     acousticid_api_key: str | None = field(default=None, repr=False)
@@ -179,7 +178,6 @@ class MusicConfig:
             curator_export_root=(
                 Path(curator_export_root_raw).expanduser() if curator_export_root_raw else None
             ),
-            groq_api_key=os.environ.get("GROQ_API_KEY") or None,
             lastfm_api_key=os.environ.get("LASTFM_API_KEY") or None,
             openrouter_api_key=os.environ.get("OPENROUTER_API_KEY") or None,
             acousticid_api_key=os.environ.get("ACOUSTICID_API_KEY") or None,
@@ -309,7 +307,6 @@ class MusicConfig:
             f"  MetaData   : {self.meta_dir}",
             f"  ALAC-Library: {self.alac_library}",
             f"  DB         : {self.db_path}",
-            f"  Groq key   : {'✓ set' if self.groq_api_key else '✗ not set'}",
             f"  Last.fm    : {'✓ set' if self.lastfm_api_key else '✗ not set'}",
             f"  AcousticID : {'✓ set' if self.acousticid_api_key else '✗ not set'}",
             f"  Discogs    : {'✓ set' if (self.discogs_consumer_key and self.discogs_consumer_secret) else '✗ not set'}",

@@ -407,8 +407,6 @@ def _run_pipeline(
 
     # Show API key status hint
     missing_keys = []
-    if not cfg.groq_api_key:
-        missing_keys.append("Groq")
     if not cfg.lastfm_api_key:
         missing_keys.append("Last.fm")
     if not cfg.acousticid_api_key:

@@ -66,7 +66,6 @@ Available stages:
   NearDupeStage  — metadata-based near-duplicate detection (fuzzy title match)
   AcousticIDStage — acoustic fingerprint dedup via fpcalc + AcousticID API
   TranscodeStage  — lossless → 256k AAC export via ffmpeg
-  ReviewerStage   — Groq AI metadata quality review
 
 DEFAULT_PIPELINE (`musaeus run`) is the full Act 1/2/3 + Enrichment chain.
 2026-08-17 briefly moved Canonicalize ahead of dedup (Grey's call at the

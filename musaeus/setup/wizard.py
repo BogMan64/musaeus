@@ -21,7 +21,21 @@ _CONFIG_DIR = Path.home() / ".config" / "musaeus"
 _SETTINGS_FILE = _CONFIG_DIR / "settings.env"
 _CREDENTIALS_FILE = _CONFIG_DIR / "credentials.env"
 
-# API keys the system can use, with registration URLs
+# API keys the system can use, with registration URLs.
+#
+# Removed 2026-09-14 as housekeeping, both verified unused before removal:
+#
+#   MUSICBRAINZ_API_KEY -- MusicBrainz requires no key. mb_enrich talks to
+#       musicbrainz.org with a User-Agent header and nothing else, per MB's
+#       own guidelines, so this only ever prompted for a credential that
+#       does not exist.
+#   GROQ_API_KEY -- the "AI metadata reviewer (reviewer stage)" it named has
+#       no implementation. ReviewerStage appears in one module docstring and
+#       one test comment; there is no such stage and nothing ever read the
+#       key.
+#
+# A menu that asks for credentials nothing consumes teaches the operator
+# that the menu is not to be believed.
 API_KEYS = {
     # Core (used by default pipeline stages)
     "LASTFM_API_KEY": {
@@ -30,12 +44,6 @@ API_KEYS = {
         "required": False,
         "used_by": "Genre enrichment (enrich stage)",
     },
-    "GROQ_API_KEY": {
-        "label": "Groq",
-        "url": "https://console.groq.com/keys",
-        "required": False,
-        "used_by": "AI metadata reviewer (reviewer stage)",
-    },
     "ACOUSTICID_API_KEY": {
         "label": "AcousticID",
         "url": "https://acoustid.org/api-key",
@@ -43,12 +51,6 @@ API_KEYS = {
         "used_by": "Acoustic fingerprint dedup (acousticid stage)",
     },
     # Extended (used by optional stages)
-    "MUSICBRAINZ_API_KEY": {
-        "label": "MusicBrainz",
-        "url": "https://musicbrainz.org/doc/MusicBrainz_API",
-        "required": False,
-        "used_by": "Artist/release enrichment (mb-enrich stage)",
-    },
     "DISCOGS_CONSUMER_KEY": {
         "label": "Discogs Consumer Key",
         "url": "https://www.discogs.com/settings/developers",
