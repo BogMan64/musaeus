@@ -21,7 +21,22 @@ pr = importlib.util.module_from_spec(_spec)
 sys.modules["prune_recovery"] = pr
 _spec.loader.exec_module(pr)
 
-NOW = datetime(2026, 8, 29, tzinfo=timezone.utc)
+# Real clock, deliberately -- NOT a frozen date.
+#
+# This was datetime(2026, 8, 29). The unit tests below pass `now=NOW` and so
+# stayed self-consistent, but the two that drive main() go through the CLI,
+# which reads the real clock. A checkpoint built "1 day before NOW" was
+# therefore 1 day old in August and 17 days old by 2026-09-14, so
+# test_apply_deletes_only_the_eligible started deleting the checkpoint it
+# exists to prove is protected -- and began failing on 2026-09-12, two days
+# before anyone noticed.
+#
+# Every assertion here is about RELATIVE age, so anchoring to the real clock
+# keeps the deterministic tests deterministic and stops the CLI tests from
+# drifting out from under themselves. A test that expires on a date nobody
+# wrote down is worse than no test: it goes red for a reason unrelated to the
+# code and trains everyone to ignore it.
+NOW = datetime.now(timezone.utc)
 
 
 def _checkpoint(root: Path, name: str, days_old: float, *, manifest: bool = True) -> Path:
