@@ -13,10 +13,16 @@ Counts in the body below were verified against the live vault on
 read "State on 2026-09-14" immediately below — it supersedes them.
 
 ~~**Claude Opus 5 access ends 2026-09-08. Kiro runs ~30 days after.**~~
-**Superseded 2026-09-14:** the subscription was renewed. There is no
-September deadline. Items written as "before Sept 8" were written under a
-deadline that no longer exists — the priority order still holds, the urgency
-does not.
+**Superseded 2026-09-14:** the subscription was renewed and the September
+deadline passed without incident. Items written as "before Sept 8" were
+written under a deadline that no longer exists — the priority order still
+holds, the urgency does not.
+
+**The working target is now 2026-10-11** (Grey, 2026-09-14): *"Hopefully you
+and I will be wrapped up by October 11."* That is roughly four weeks, and it
+is a target rather than a cliff — nothing is lost if it slips. Read every
+"before the 8th" below as "before the 11th of October", and read the ordering
+as still correct.
 
 **Wants live in `MUSAEUS_WISHLIST.md`, not here** (split 2026-09-07). The
 line is: a TODO item has a cost if left undone — something is unprotected or
@@ -1304,7 +1310,11 @@ Ordered by "would this be painful to discover alone in October?"
 
 4. **Port ORPHEUS's `build_aac_port_iphone.py`.** Still the only edition with no
    builder. Lowest of the four because it adds capability rather than protecting
-   what exists — and after the 8th, protection is what cannot be replaced.
+   what exists, and protection outranks capability whenever time is short.
+   *(Written under the Sept 8 deadline; the reasoning survives it. Note this
+   item is now partly overtaken — the iPhone edition HAS a builder as of
+   2026-09-09: `build_car_library.py --edition iphone`, reachable from the
+   console. What is still unported is ORPHEUS's genre-ranked selection.)*
 
 ## ~~Known gaps in CorruptStage~~ — CLOSED 2026-09-07
 
