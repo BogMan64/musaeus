@@ -53,8 +53,6 @@ two.
 from __future__ import annotations
 
 import argparse
-
-import contextlib
 import csv
 import json
 import os
@@ -205,7 +203,32 @@ class Throttle:
         self._last[key] = time.monotonic()
 
 
-def _choose(candidates: list[tuple[str, str, str, str]]) -> Answer:
+def _is_compilation(candidate: tuple) -> bool:
+    """Is this release a compilation?
+
+    Two ways of knowing, and they are NOT equal:
+
+      metadata -- the source told us the release type outright. MusicBrainz
+                  gives a release-group primary-type plus secondary-types, so
+                  "Album with no secondary type" means a studio album and
+                  "Album + Compilation" means a hits package. Authoritative.
+
+      the name -- guessing from words like "Greatest Hits". A heuristic, and
+                  a lossy one: it condemned "The Traveling Wilburys, Vol. 1"
+                  on 2026-09-14 because the pattern matches "Vol. N", when
+                  Vol. 1 and Vol. 3 ARE that band's studio albums. Five real
+                  albums were flagged as compilations by a rule that could
+                  not know better.
+
+    So metadata wins wherever we have it, and the regex is consulted only
+    when we do not. A guess must never override a fact.
+    """
+    if len(candidate) >= 5 and candidate[4] is not None:
+        return bool(candidate[4])
+    return bool(COMPILATION_RE.search(candidate[1]))
+
+
+def _choose(candidates: list[tuple]) -> Answer:
     if not candidates:
         return Answer()
 
@@ -218,14 +241,17 @@ def _choose(candidates: list[tuple[str, str, str, str]]) -> Answer:
         pool = candidates
         is_fallback = True
 
+    # Studio album first, THEN earliest. Ordering these the other way round
+    # hands you the earliest compilation -- and a hits package is often older
+    # than the remaster of the album it draws from.
     pool.sort(
         key=lambda c: (
+            _is_compilation(c),
             _year_of(c[2]),
-            bool(COMPILATION_RE.search(c[1])),
             len(c[1]),
         )
     )
-    _track, collection, year, source = pool[0]
+    _track, collection, year, source = pool[0][:4]
     cleaned = SINGLE_RE.sub("", collection).strip()
     return Answer(
         album=cleaned,
@@ -265,10 +291,26 @@ def ask_musicbrainz(artist: str, title: str, throttle: Throttle, **_kw) -> Answe
             continue
         for rel in rec.get("releases") or []:
             album = rel.get("title", "") or ""
-            if album:
-                candidates.append(
-                    (rec.get("title", ""), album, rel.get("date", "") or "", "musicbrainz")
-                )
+            if not album:
+                continue
+            # The whole reason MusicBrainz is worth its 1.1s/request: it says
+            # outright what KIND of release this is, so "is it a compilation"
+            # stops being a guess from the title. A release group is a studio
+            # album when its primary type is Album and it carries no secondary
+            # type -- secondary types are exactly Compilation, Live,
+            # Soundtrack, Remix and friends. Grey asked 2026-09-14 that this
+            # be standard rather than a one-off repair pass.
+            rg = rel.get("release-group") or {}
+            primary = rg.get("primary-type")
+            secondary = rg.get("secondary-types") or []
+            if primary is None and not secondary:
+                is_comp = None          # MB told us nothing; let the caller guess
+            else:
+                is_comp = bool(secondary) or primary != "Album"
+            candidates.append(
+                (rec.get("title", ""), album, rel.get("date", "") or "",
+                 "musicbrainz", is_comp)
+            )
     return _choose(candidates)
 
 
@@ -340,7 +382,7 @@ def verdict(itunes: Answer, deezer: Answer, third: Answer | None = None) -> tupl
             key=lambda a: (bool(a.year), a.source == "itunes", a.source == "musicbrainz"),
             reverse=True,
         )[0]
-        sources = ", ".join(sorted(set(a.source for a in top_group)))
+        sources = ", ".join(sorted({a.source for a in top_group}))
         return ("1-AGREED", winner.album, f"Agreed by: {sources}", winner)
 
     if len(valid) == 1:
