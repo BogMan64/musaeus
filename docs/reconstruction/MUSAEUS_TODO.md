@@ -1472,6 +1472,34 @@ disagreeing. That is the thing to keep looking for.
 
 ## Standing hazards
 
+- **Two claims that are each true can be false together.** Found 2026-09-14 in
+  `DOCUMENTATION/`. The recovery kit's document map lists `_duplicates/`
+  (6,966 files) and `reviews/` (1,681 files) as holding nothing unique. Both
+  statements are correct. **Acting on both destroys 8,405 files**, because the
+  two directories are largely copies *of each other* rather than of the main
+  documentation.
+
+  | action | removed | outcome |
+  |---|---|---|
+  | delete `_duplicates` alone | 6,966 | safe |
+  | delete `reviews` alone | 1,681 | safe |
+  | delete both | 8,647 | **8,405 unique files lost** |
+
+  My first two checks each returned "safe" and **both were circular** — each
+  left the other directory in the comparison set, so every file matched its own
+  copy next door. Only the third test, run against what would actually
+  *remain*, was honest. **When testing whether something is safe to delete,
+  compare against the survivors, never against the current tree.** Keep
+  `MANIFEST.json` and `undo.sh` regardless; they hold 8,924 move records and
+  are the only way to reverse the 2026-08-26 reorganisation.
+
+- **A guard can point at a path that no longer exists.** The one live cron job
+  wrote root-partition warnings to `FORGE2TB/ACTIVE_PROJECTS/...`, a tree
+  removed in the 2026-08-07 reorg, so the disk-full warning could not fire at
+  all. Repaired 2026-09-14 and proved by writing to it. Same family as the
+  `doctor` check that scanned the wrong tree: a guard nobody has watched fire
+  is a guard nobody knows is dead.
+
 - **A long-running process runs the code it imported at startup.** Six fixes
   committed 2026-09-03 are inert for the run in flight.
 - **Measure the artifact, not the report** — and "decodes clean" is not
