@@ -77,6 +77,8 @@ VERSION = "3.0"
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from musaeus.artist_form import natural_form  # noqa: E402
+from musaeus.brackets import CLOSE, OPEN  # noqa: E402
+from musaeus.db import ensure_columns  # noqa: E402
 
 VAULT_DB = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db")
 DEFAULT_CACHE = Path.home() / ".cache" / "album-names" / "cache.db"
@@ -119,10 +121,19 @@ COMPILATION_RE = re.compile(
 
 SINGLE_RE = re.compile(r"\s+-\s+(single|ep)\s*$", re.I)
 
+# Bracket classes come from musaeus.brackets, not from a fourth hand-written
+# copy. As written on the Desktop this covered parens and square brackets
+# only, omitting braces -- precisely the omission that rule exists to catch:
+# three copies existed on 2026-09-02, each missing a different style, and a
+# title in brace-brackets would have slipped straight through.
+#
+# (Deliberately described in words. Spelling the offending character class
+# out here would put the pattern back in the file, and semgrep scans
+# comments too -- which is how this very note first tripped the rule.)
 _TITLE_NOISE = re.compile(
-    r"\s*[\(\[](?:feat\.?|ft\.?|featuring|with)\s[^)\]]*[\)\]]"
-    r"|\s*[\(\[][^)\]]*(?:remaster|remastered|version|edit|mix|mono|stereo|"
-    r"single|album|radio|explicit|clean|bonus|deluxe|expanded)[^)\]]*[\)\]]"
+    rf"\s*[{OPEN}](?:feat\.?|ft\.?|featuring|with)\s[^{CLOSE}]*[{CLOSE}]"
+    rf"|\s*[{OPEN}][^{CLOSE}]*(?:remaster|remastered|version|edit|mix|mono|stereo|"
+    rf"single|album|radio|explicit|clean|bonus|deluxe|expanded)[^{CLOSE}]*[{CLOSE}]"
     r"|\s+-\s+(?:single|ep)\s*$",
     re.I,
 )
@@ -354,9 +365,10 @@ def cache_open(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path)
     con.execute(CACHE_DDL)
-    cols = [r[1] for r in con.execute("PRAGMA table_info(answer)").fetchall()]
-    if "is_self_titled" not in cols:
-        con.execute("ALTER TABLE answer ADD COLUMN is_self_titled INTEGER DEFAULT 0")
+    # musaeus.db.ensure_columns rather than a tenth hand-rolled
+    # PRAGMA-then-ALTER. It takes the table name, so it serves this cache
+    # exactly as it serves the vault's archive table.
+    ensure_columns(con, (("is_self_titled", "INTEGER DEFAULT 0"),), table="answer")
     con.commit()
     return con
 
