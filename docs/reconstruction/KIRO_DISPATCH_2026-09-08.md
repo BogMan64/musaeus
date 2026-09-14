@@ -1,5 +1,14 @@
 # Kiro Dispatch — 2026-09-08
 
+> **SPENT — historical record, 2026-09-14.** This dispatch was written for one
+> day and is not a standing brief. Two things it assumes are no longer true:
+>
+> - **Kiro's mode is now read-only and consult** (set by Grey 2026-09-09). The
+>   edit-and-commit steps below are not authorisation to do that today; Kiro is
+>   handed work that is already written out and does not originate changes.
+> - It was written on what was believed to be **the last day of Opus 5
+>   access**. The subscription was renewed; that deadline never arrived.
+
 Three assignments from Grey, in priority order. Written on the last day of Opus 5
 access; everything here is meant to be executable without that session.
 

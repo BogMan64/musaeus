@@ -8,10 +8,15 @@ listed the no-genre rows and the advisory deny entries as open when both were
 closed. That is the same two-places-disagreeing failure that produced every
 bug found this week. One file now. MUSAEUS_OPEN_ITEMS.md is archived.
 
-Every count below was verified against the live vault on 2026-09-07, not
-carried forward.
+Counts in the body below were verified against the live vault on
+**2026-09-07** and have NOT been re-verified since. Where a number matters,
+read "State on 2026-09-14" immediately below — it supersedes them.
 
-**Claude Opus 5 access ends 2026-09-08. Kiro runs ~30 days after.**
+~~**Claude Opus 5 access ends 2026-09-08. Kiro runs ~30 days after.**~~
+**Superseded 2026-09-14:** the subscription was renewed. There is no
+September deadline. Items written as "before Sept 8" were written under a
+deadline that no longer exists — the priority order still holds, the urgency
+does not.
 
 **Wants live in `MUSAEUS_WISHLIST.md`, not here** (split 2026-09-07). The
 line is: a TODO item has a cost if left undone — something is unprotected or
@@ -20,27 +25,120 @@ it. Given limited time, take the TODO.
 
 ---
 
-## P0 — running now, no action needed
+## State on 2026-09-14
 
-**The LUFS bake** (`scripts/alac_library/build_alac_library.py --execute`),
-PID 951539. **~1,800 of 16,200 left.**
+Measured against the live vault today, read-only. These numbers supersede
+every count elsewhere in this file.
+
+| | |
+|---|---|
+| CATALOGUED | **11,555** |
+| QUARANTINED | 18 |
+| GHOST | 1 |
+| total rows | 11,574 |
+| distinct artists | 3,025 |
+| CATALOGUED with no genre | 200 |
+| duplicate rows / groups staged | 5,422 / 2,830 |
+| MasterLaw artists | 3,501 |
+| `artist_filing.tsv` rules | 16 |
+| INBOX / INBOX_QUEUE | empty, empty |
+
+**Where those 11,555 catalogued rows actually point:**
+
+| | | |
+|---|---|---|
+| `Libraries/ALAC_Library` (the baked library) | **8,734** | finalized |
+| `Libraries/ALAC-Archival` (the masters) | **2,821** | **not yet baked** |
+
+**That 2,821 is the open work, and it is the number to watch.** A catalogued
+row whose `file_path` still points into the masters tree has been ingested
+and ruled on but never finalized into the library edition. It is not an
+error; it is the bake backlog, made visible. `CAR_Library` is currently
+**empty** — the AAC edition has not been rebuilt since the reorganisation.
+
+On-disk: masters 11,554 files / 494 GB, library 8,734 files / 392 GB.
+
+The database is `VAULT_ROOT/musaeus.db` (200 MB, last written 2026-09-14
+05:22) — **not** `MetaData/musaeus.db`. `MetaData/` holds the authority
+files only. Anything that connects to the wrong path gets a silently-created
+empty database rather than an error, which reads as a library of zero files.
+**This happened on 2026-09-14** — a read-only status query aimed at
+`MetaData/musaeus.db` created a 0-byte file there and reported "no such table:
+archive". The stray `MetaData/musaeus.db` should be deleted; it is not the
+database and its presence invites exactly this mistake again.
+
+**The Sept 7 counts are not comparable to these.** The 16,200-file figure in
+the retired P0 below counted the ALAC_Archive masters being baked; 11,555
+counts catalogued rows in the managed library after the archive moved to
+NUC8TB. Neither number is wrong; they count different things.
+
+### The undocumented window: 2026-09-10 → 2026-09-13
+
+**No commits were made in this window and no notes were written.** What
+follows is *observed from artefacts on 2026-09-14*, not recalled — the
+outcomes are visible, the decisions behind them are not recorded anywhere.
+
+Observed:
+
+- **An album-name proposal utility** (`propose_album_names_v3.py`, in
+  `~/Desktop/POST.Code/`, never added to the repository). Read-only against
+  the database, three-source consensus across **iTunes, Deezer and Spotify**,
+  paced at `--rate 2.5` after hitting iTunes HTTP 429s, caching to
+  `~/.cache/album-names/cache.db` (998 records). Output:
+  `MUSAEUS_album_names_PROPOSED.csv`, 500 rows, confidence-tiered
+  (`1-AGREED` where two or more sources concur).
+- **Unsorted albums are now 0.** The proposal CSV's paths all pointed into
+  `.../<artist>/Unsorted/...`. Those two facts are consistent with the
+  proposals having been applied, but *that is inference, not a record* —
+  `apply_agreed_albums.py` exists beside the generator, and whether it ran,
+  on how many rows, and with what review is not written down.
+- `Composer_Canon.tsv` edited on the 10th; the `Libraries` tree on the 12th;
+  `INBOX`, `RUNS` and `STAGING` on the 13th. `INBOX` and `INBOX_QUEUE` are
+  both empty now.
+- A `_db_backups/musaeus_pre_reset_20260910T040726...db` snapshot was taken
+  on the 10th — the name implies a deliberate reset, and the current database
+  is a different, later file.
+- Also on the Desktop: a Gemini code-review-and-testing plan (PDF, the 13th)
+  and idle-aware wrapper scripts (`idle_forge.sh`, `idle_run.sh`) using
+  `flock` and tracked PIDs to avoid SQLite lock collisions.
+
+**Two things to settle before relying on any of it**: whether the album
+proposals were reviewed before being applied, and whether
+`propose_album_names_v3.py` should be brought into the repository — right now
+a utility that writes to the library's metadata lives only on the Desktop,
+untested and unversioned.
+
+---
+
+## ~~P0 — running now, no action needed~~ — RETIRED 2026-09-14
+
+> Left in place because the measurement is still useful; the live-process
+> claim is not. **PID 951539 and PID 1953006 are long gone** — that text
+> described processes running on 2026-09-07 and was still saying "running
+> now" a week later. Do not trust a PID in a document.
+
+~~**The LUFS bake** (`scripts/alac_library/build_alac_library.py --execute`),
+PID 951539. **~1,800 of 16,200 left.**~~
 
 It only runs while you are away from the keyboard — IdleThrottle SIGSTOPs the
 encoder and releases 40s after the last input, so `ps` showing state `T` is
 correct behaviour, not a stall. Measured: **325/h unattended, 0/h during an
-hour of conversation.**
+hour of conversation.** *(Throttle behaviour still current — the useful part
+of this entry.)*
 
-**Queued behind it:** the decode scan of all files never decode-checked
+~~**Queued behind it:** the decode scan of all files never decode-checked
 (PID 1953006, waits on the bake, writes to
-`~/Desktop/MUSAEUS_corrupt_scan_2026-09-07.log`). This is the highest-value
-thing still to run — four corrupt masters surfaced overnight that only
-decoding could see, and ~74% of the library has never been checked.
+`~/Desktop/MUSAEUS_corrupt_scan_2026-09-07.log`).~~ **Still the
+highest-value thing to run, and still unrun as far as this document knows** —
+whether it completed during the undocumented Sept 10–13 window is not
+recorded. Re-check before assuming either way.
 
-Do NOT run `organize` while the bake runs; both move files.
+Do NOT run `organize` while a bake runs; both move files.
 
 ---
 
-## P1 — needs me, before Sept 8
+## P1 — needs me
+*(was "before Sept 8" — the deadline is gone, the order is not)*
 
 1. ~~**Lossless-fraud detection.**~~ **BUILT, MEASURED, REJECTED 2026-09-07.**
    It does not work on this library, and the data says so plainly. Do not
@@ -1103,13 +1201,72 @@ absolute rule. Measured against the 22 fragments doctor found: **13 caught,
 120s. It ignores absolute length and keywords entirely, which is exactly why
 it survives both cases above. ~1 hour with tests.
 
-## P4 — with Kiro, over the 30 days
+## P4 — with Kiro
 
-**The ORPHEUS harvest.** ~260 scripts, read-only, exploratory, and it continues
-after the 8th. Point it at `/mnt/FORGE2TB/Projects/ORPHEUS` — never at
-`MUSAEUS_VAULT`.
+**The ORPHEUS harvest.** ~260 scripts, read-only, exploratory. Point it at
+`/mnt/FORGE2TB/Projects/ORPHEUS` — **never at `MUSAEUS_VAULT`.**
 
-**Do not spend the last Claude days on ORPHEUS archaeology.**
+~~**Do not spend the last Claude days on ORPHEUS archaeology.**~~ The
+deadline that motivated this is gone (subscription renewed), but the
+priority judgement stands: archaeology is worth less than the library.
+
+**Kiro's mode is read-only and consult** (set 2026-09-09). Hand Kiro work
+that is already written out; Kiro does not originate changes to the vault.
+
+## Done 2026-09-09
+
+Nine commits, all pushed, HEAD `ccb40bd` on
+`fix/dedupe-policy-and-permissions-sweep`. The last substantive work in the
+repository before this document was updated.
+
+**Defects that were hiding real work**
+- `4453627` — **2,862 pending duplicate groups were reported as nothing at
+  all.** `scripts/musaeus_report.py` selected `type` from a table whose
+  column is `duplicate_type`; one shared bare `except Exception` swallowed
+  the error and the report printed a confident zero. Fixed, and the bare
+  except replaced with per-query `except sqlite3.Error` recording `None` —
+  the report now says "I could not measure this" instead of "there is
+  nothing here". A test pins the distinction.
+- **1,122 phantom and 361 straggler duplicate rows cleared** — rows pointing
+  at files that no longer existed, which had been inflating every dupe count.
+- The `duplicates` table name collision fixed; migration 0003 renames the old
+  table to `duplicates_legacy` and copies every row, so nothing is lost.
+
+**Authority work**
+- `ccb40bd` — **`musaeus/filing.py`: an artist's folder and an artist's tag
+  are two different questions.** `artist_canon.tsv` maps a raw tag to the
+  canonical TAG; the new `artist_filing.tsv` maps a canonical tag to the
+  FOLDER name. Opposite directions, deliberately separate files. `check()`
+  reports self-mappings, chains, and collisions with artist_canon.
+- `ecfcb96` — 52 artist folders merged onto the artist tag. Manifest and undo
+  file written *before* the first move.
+- MasterLaw merge-forward applied; the `Pop, Rock => Pop` retirement gap in
+  `Genre_Canonical_Map.txt` closed. MasterLaw now 3,501 artists.
+
+**Behaviour changes**
+- `f34abf8` — the dated batch folder is now **opt-in**, behind
+  `MUSAEUS_BATCH_FOLDERS`. Files land flat by default.
+- `381def1` — `musaeus convergence`: tells a pass that is settling from one
+  going in circles. The oscillation detector walks the whole value chain, so
+  A→B→A closes.
+- `dd47e29` — the iPhone edition can be built from the console menu.
+- `c8bf945` — `run_state.py` soft-deleted to NUC8TB. 480 lines the program
+  never loaded. **The first measurement said 1,848 lines and was wrong** — a
+  grep excluding `musaeus/state/` also excluded the `migrations/`
+  subpackage that imports it. Re-measured by execution.
+
+**Standing corrections from that day** — worth keeping, because each was a
+confident wrong number caught by someone else or by a test:
+- "595 files missing" was a filename match; on audio_hash + song_key the real
+  answer was 0 missing.
+- "3,936 orphaned rows" was a snapshot of a moving target — Grey was moving
+  files at the time.
+- 62 MasterLaw orphans called "mechanical, no conflicts": **Kiro caught it** —
+  9 were artists deliberately removed. `ArtistsToReview.csv` holds 26 REMOVE
+  decisions and had never been consulted. This is the authorities-drift
+  failure mode: several canon files that can silently disagree.
+- A quarantine regex on `/sleep/` caught "Sleeping At Last", a real
+  singer-songwriter.
 
 ## Done 2026-09-06
 

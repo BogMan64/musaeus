@@ -1,5 +1,20 @@
 # Instruction: finish MUSAEUS_RECONSTRUCTION.md
 
+> # ⛔ COMPLETED 2026-09-08 — DO NOT ACTION THIS BRIEF
+>
+> **Sections 1, 2, 6 and 7 were written on 2026-09-08 and are in
+> `docs/reconstruction/MUSAEUS_RECONSTRUCTION.md`.** All seven sections now
+> exist. This file is kept as a record of how the work was scoped and handed
+> over, not as an open task.
+>
+> Two statements below are also out of date: the working copy is the one in
+> the **repository**, not `~/Desktop/` (see the header of the reconstruction
+> document for why the Desktop copy must not be edited), and §3 now describes
+> **seven** authorities rather than six — `artist_filing.tsv` was added on
+> 2026-09-09.
+>
+> *Marked 2026-09-14.*
+
 **For whoever picks this up — VSCodium, Kiro, or a later Claude Code session.**
 Written 2026-09-07 by the session that wrote sections 3, 4 and 5.
 

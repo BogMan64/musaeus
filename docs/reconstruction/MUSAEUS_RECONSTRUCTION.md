@@ -18,6 +18,16 @@ a figure comes from the 2026-09-07 measurement pass it is marked; where it
 comes from code it carries a `file:line`. Cross-checked against
 `musaeus doctor` on 2026-09-08; where the two disagreed, `doctor` won.
 
+**Reviewed 2026-09-14.** The reasoning in this document still holds — that is
+what it was written to preserve, and none of it has been overturned. Two
+things changed underneath it and are marked inline where they matter:
+the storage topology (§ Editions — `ALAC_Archive` left the vault, and a third
+tree now exists that MUSAEUS must never see), and an artist's filing name
+becoming a separate authority from an artist's tag (§3). **Every file count in
+this document is a 2026-09-07 measurement**; for current numbers read "State
+on 2026-09-14" at the top of `MUSAEUS_TODO.md` rather than trusting a figure
+here.
+
 > **The working copy of this document is
 > `docs/reconstruction/MUSAEUS_RECONSTRUCTION.md`, in the repository. Edit that
 > one and commit.** `~/Desktop/MUSAEUS_RECONSTRUCTION.md` is a published
@@ -285,15 +295,17 @@ integrity_check` must return exactly `ok`, and the bytes are re-hashed
 
 ## 3. The authorities
 
-MUSAEUS keeps **six** separate stores of truth. Each is internally
+MUSAEUS keeps **seven** separate stores of truth *(six until 2026-09-09,
+when `artist_filing.tsv` was added — see below)*. Each is internally
 consistent. None is aware of the others. This is the single most important
 structural fact about the system, and nearly every serious bug found in its
 history has been two of them disagreeing.
 
 | authority | location | governs | size |
 |---|---|---|---|
-| `MasterLaw.csv` | `VAULT/MetaData/` | artist → genre | 3,472 rows |
-| `artist_canon.tsv` | `VAULT/MetaData/` | raw artist name → canonical name | 269 entries |
+| `MasterLaw.csv` | `VAULT/MetaData/` | artist → genre | 3,501 rows (2026-09-14) |
+| `artist_canon.tsv` | `VAULT/MetaData/` | raw artist name → canonical **tag** | 269 entries |
+| `artist_filing.tsv` | `VAULT/MetaData/` | canonical tag → **folder** name | 16 rules (added 2026-09-09) |
 | `Genre_Allowed.txt` | `VAULT/MetaData/` | the closed genre vocabulary | 49 genres |
 | `Genre_Canonical_Map.txt` | `VAULT/MetaData/` | raw genre → canonical genre | 207 mappings |
 | `denied_hashes` | `VAULT/_db_backups/hash_index.db` | audio refused re-ingest | 19 entries |
@@ -328,6 +340,23 @@ twice — see §5.
 matter: a name appearing only as a rename *target* is still an artist someone
 has ruled on. `resolve_exact()` does not follow chains, so an entry pointing
 at a name that is itself a key leaves a row stranded half-way.
+
+**`artist_filing.tsv` — canonical tag → folder name** (added 2026-09-09,
+`musaeus/filing.py`). **These are two different questions and the answers
+differ**, which is why this is a separate file pointing the opposite way:
+
+- `artist_canon.tsv` answers *what should the tag say?* — `KC` →
+  `KC & The Sunshine Band`.
+- `artist_filing.tsv` answers *what should the folder be called?* — and the
+  folder cannot always match the tag, because `/` and `"` are legal in a tag
+  and illegal in a filename.
+
+Conflating them means either a wrong tag or an unwritable path. `load()`
+refuses space-separated lines, empty sides, and contradictory duplicates;
+`check()` reports self-mappings, chains, and any key that collides with
+`artist_canon.tsv`. **A tag rule and a filing rule for the same artist must
+be changed together** — this is the same trap as the MasterLaw/artist_canon
+coupling described four paragraphs down.
 
 **`Genre_Allowed.txt` — the closed vocabulary.** 49 entries, one per line,
 `#` comments. **Split on newlines only**: `Pop, Rock` was one genre whose name
@@ -454,11 +483,46 @@ was never added to the deny list and the audio was re-ingested the next day.
 
 **Three tiers, and the direction of travel is one-way.**
 
-| tier | what it is | current |
+| tier | what it is | as of 2026-09-07 |
 |---|---|---|
 | `ALAC_Archive` | pristine masters, never baked | 15,820 files, 592 GB |
 | `ALAC-Library` | the −18 LUFS baked edition | 14,855 files, 613 GB |
 | `CAR_Library` | the AAC edition, −14 LUFS | 10,036 files, 72 GB |
+
+> **Where these live — revised 2026-09-09, and this part is a safety rule,
+> not bookkeeping.** There are now three trees, and MUSAEUS may only ever
+> see one of them:
+>
+> | tree | path | measured 2026-09-14 | MUSAEUS's relationship to it |
+> |---|---|---|---|
+> | the masters | `VAULT_ROOT/Libraries/`**`ALAC-Archival`** | 11,554 files, 494 GB | `config.alac_archive` — in the vault, read by the bake |
+> | the managed library | `VAULT_ROOT/Libraries/`**`ALAC_Library`** | 8,734 files, 392 GB | `config.alac_library` — **what MUSAEUS manages** |
+> | the AAC edition | `VAULT_ROOT/Libraries/CAR_Library` | **empty** (0 files) | derived; currently unbuilt |
+> | the off-site backup | `/mnt/NUC8TB_BACKUP/MUSAEUS_ALAC_Archive_20260905` | 13,991 files, 559 GB | read-only reference copy |
+> | the owner's active files | `/home/grey/Music` | — | **MUSAEUS must never know this exists** |
+>
+> **Mind the spelling — it is not consistent and it matters.** The masters
+> directory is `ALAC-Archival` (hyphen); the managed library is
+> `ALAC_Library` (**underscore**), while this document and much prose call
+> the *tier* "ALAC-Library" (hyphen). The authoritative answer is
+> `musaeus/config.py:145-146`, not the prose. Note that the module docstring
+> at `config.py:21` states the default is `VAULT_ROOT/ALAC-Library`, which
+> **disagrees with the code two dozen lines below it** — the docstring is
+> wrong; the code wins.
+>
+> A vault-internal `ALAC_Archive` directory no longer exists under that name;
+> text elsewhere in this document implying `VAULT_ROOT/ALAC_Archive/...`
+> describes the older layout.
+>
+> **Do not set `MUSAEUS_ALAC_LIBRARY` to `/home/grey/Music`, and do not add
+> it to any scan path.** That folder is the owner's own collection. He
+> decides what enters and leaves it; a pipeline that can see it is a pipeline
+> that can move his files out from under him. The console's library label is
+> deliberately a fixed string for this reason (`2933c3d`) — it was "fixed"
+> once to read the live path and the change was reverted on request.
+>
+> At RC the active-files folder also moves to NUC8TB. That does not change
+> the rule above.
 
 **Masters are never baked. Each edition bakes exactly once, from the masters.
 No edition is ever built from another.** An edition is derived and
