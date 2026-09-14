@@ -498,7 +498,7 @@ was never added to the deny list and the audio was re-ingested the next day.
 > | the masters | `VAULT_ROOT/Libraries/`**`ALAC-Archival`** | 11,554 files, 494 GB | `config.alac_archive` — in the vault, read by the bake |
 > | the managed library | `VAULT_ROOT/Libraries/`**`ALAC_Library`** | 8,734 files, 392 GB | `config.alac_library` — **what MUSAEUS manages** |
 > | the AAC edition | `VAULT_ROOT/Libraries/CAR_Library` | **empty** (0 files) | derived; currently unbuilt |
-> | the off-site backup | `/mnt/NUC8TB_BACKUP/MUSAEUS_ALAC_Archive_20260905` | 13,991 files, 559 GB | read-only reference copy |
+> | the off-site backup | `/mnt/NUC8TB_BACKUP/MUSAEUS_ALAC_Archive_20260905` | 14,436 files, 557 GB | read-only reference copy, taken 2026-09-05 |
 > | the owner's active files | `/home/grey/Music` | — | **MUSAEUS must never know this exists** |
 >
 > **Mind the spelling — it is not consistent and it matters.** The masters
@@ -509,6 +509,12 @@ was never added to the deny list and the audio was re-ingested the next day.
 > at `config.py:21` states the default is `VAULT_ROOT/ALAC-Library`, which
 > **disagrees with the code two dozen lines below it** — the docstring is
 > wrong; the code wins.
+>
+> **The backup holds 2,882 more files than the vault's masters tree**
+> (14,436 vs 11,554). That is a count difference only — nothing has compared
+> the two by name or by hash, so it is not yet known whether the backup holds
+> files the vault lost, or simply predates deletions the owner intended.
+> Do not act on this number in either direction until that comparison is run.
 >
 > A vault-internal `ALAC_Archive` directory no longer exists under that name;
 > text elsewhere in this document implying `VAULT_ROOT/ALAC_Archive/...`
