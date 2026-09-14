@@ -236,11 +236,22 @@ def run_wizard(force: bool = False) -> bool:
 
 # ── API key manager (console 'Enter/Update API Keys' menu) ─────────────────────
 
-# Exactly the four keys MusicConfig.from_env() actually reads (config.py) --
-# a subset of the broader API_KEYS dict above, which also lists keys no
-# stage currently consumes through the config object (MusicBrainz, Discogs,
-# Spotify client id/secret).
-MANAGED_KEYS = ["GROQ_API_KEY", "LASTFM_API_KEY", "OPENROUTER_API_KEY", "ACOUSTICID_API_KEY"]
+# EVERY key MUSAEUS can use, on Grey's instruction 2026-09-14: option 13
+# should ask about all of them.
+#
+# This used to be exactly the four that MusicConfig.from_env() reads, on the
+# reasoning that a key the config object never surfaces is a key nothing
+# consumes. That reasoning was wrong, and Spotify is the proof: the album-name
+# proposal utility reads SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET straight
+# from os.environ, so they are genuinely needed to run MUSAEUS while being
+# invisible to the only menu that offers to set them. The operator was left
+# exporting them by hand with nothing telling them that was required.
+#
+# Reading through MusicConfig is an implementation detail. Needing the key to
+# run the system is the thing the operator cares about, so that is the line
+# this list draws. Derived from API_KEYS so a key added there is never again
+# unreachable from the menu.
+MANAGED_KEYS = list(API_KEYS)
 
 
 def _confirm(prompt: str, default: bool = False) -> bool:
@@ -273,10 +284,11 @@ def _read_secret(prompt: str) -> str:
 
 def run_api_key_manager() -> None:
     """
-    Interactive 'Enter/Update API Keys' menu: walk the four keys
-    MusicConfig actually reads (config.py's from_env()), show current
-    status with the same checkmark convention as MusicConfig.describe(),
-    and let Grey update any of them one at a time. Always writes to
+    Interactive 'Enter/Update API Keys' menu: walk every key MUSAEUS can
+    use (MANAGED_KEYS -- see the note there on why this is no longer just
+    the four MusicConfig reads), show current status with the same
+    checkmark convention as MusicConfig.describe(), and let Grey update
+    any of them one at a time. Always writes to
     credentials.env specifically -- never settings.env, which is reserved
     for paths -- since credentials.env is the file already gitignored for
     secrets (see module docstring / config.py's loading-priority list).
