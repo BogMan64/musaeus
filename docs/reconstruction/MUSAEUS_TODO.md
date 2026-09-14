@@ -87,11 +87,37 @@ Observed:
   `~/.cache/album-names/cache.db` (998 records). Output:
   `MUSAEUS_album_names_PROPOSED.csv`, 500 rows, confidence-tiered
   (`1-AGREED` where two or more sources concur).
-- **Unsorted albums are now 0.** The proposal CSV's paths all pointed into
-  `.../<artist>/Unsorted/...`. Those two facts are consistent with the
-  proposals having been applied, but *that is inference, not a record* —
-  `apply_agreed_albums.py` exists beside the generator, and whether it ran,
-  on how many rows, and with what review is not written down.
+- ~~**Unsorted albums are now 0.**~~ **WRONG — corrected 2026-09-14 by
+  measuring.** That claim was carried forward from an earlier session's
+  summary and repeated here without being checked, in the very section that
+  warns against doing exactly that. The measured position:
+
+  | | |
+  |---|---|
+  | `Unsorted` directories on disk | **3,946** (1,665 in ALAC_Library, 2,281 in ALAC-Archival) |
+  | CATALOGUED rows filed under one | **6,135** |
+  | CATALOGUED rows with an empty album | **4,913** |
+  | rows the proposal utility targets today | **4,923** (empty + `My playlist%` + `%Unknown%`) |
+
+- **What actually happened in that window — established 2026-09-14 by
+  checking the CSV against the database, so this part is no longer inference.**
+  The real proposal file is `POST.Code/MUSAEUS_album_names_PROPOSED.csv` with
+  **6,142 rows** (the 500-row copy under `MUSAEUS_done/` is an earlier,
+  smaller run). Its verdict tiers:
+
+  | tier | rows | applied? |
+  |---|---|---|
+  | `1-AGREED` | 1,225 | **all 1,225 applied** — every row's album now equals its proposal exactly |
+  | `2-DEEZER ONLY` | 652 | not applied |
+  | `2-ITUNES ONLY` | 343 | not applied |
+  | `3-SOURCES DISAGREE` | 2,053 | not applied |
+  | `4-NO ANSWER` | 1,869 | not applied |
+
+  So `apply_agreed_albums.py` **did** run, only on the top tier, and did it
+  correctly: 1,225 checked, 1,225 match, 0 blank, 0 overwritten with
+  something else. The album-name job is **started, not finished** — the
+  ~4,900 rows the sources did not agree on are exactly the 4,913 that still
+  have a blank album, and they need a human, not another pass.
 - `Composer_Canon.tsv` edited on the 10th; the `Libraries` tree on the 12th;
   `INBOX`, `RUNS` and `STAGING` on the 13th. `INBOX` and `INBOX_QUEUE` are
   both empty now.
@@ -121,11 +147,42 @@ all fail. **This is a test/implementation mismatch, not a broken console**,
 and it predates the 09-14 documentation pass. Decide whether the 1-based menu
 is wanted; if it is, the tests move with it.
 
-**Two things to settle before relying on any of it**: whether the album
-proposals were reviewed before being applied, and whether
-`propose_album_names_v3.py` should be brought into the repository — right now
-a utility that writes to the library's metadata lives only on the Desktop,
-untested and unversioned.
+#### The album-name utility, reviewed 2026-09-14
+
+`propose_album_names_v3.py` still lives only in `~/Desktop/POST.Code/`. It is
+read-only on the vault (`mode=ro`; it writes a CSV and its own cache and
+nothing else), and that claim was checked rather than taken on trust.
+
+Four defects found and fixed while reviewing it:
+
+1. **Its test file was not Python.** `test_propose_album_names_v3.py` began
+   with `cat << 'EOF' > ~/Desktop/...` — a shell heredoc pasted verbatim —
+   so it had never once run. Repaired.
+2. **Coverage had gone backwards.** v2 had 22 tests; v3 shipped 9, dropping
+   noise-stripping, year parsing and single-detection entirely. Merged back
+   to **26 passing**, including the three-source cases.
+3. **Spotify was silently inert.** The script reads `os.environ` only, while
+   the console's option 13 writes to `~/.config/musaeus/credentials.env`.
+   Grey's Spotify keys were configured and unused, and the run said
+   "2 sources" with nothing to suggest a third was expected. It now loads
+   MUSAEUS's own env files (setdefault, so a shell export still wins) and
+   prints which sources are live.
+4. **A fetch failure was cached as an answer.** `cache_put` ran on the
+   `except FetchError` path, so one rate-limit blip recorded "this source has
+   nothing for this track" permanently and no later run would re-ask. Now a
+   transport failure is never cached.
+
+**Spotify cannot work at all**, and this is not a code problem: auth succeeds
+and issues a token, then `/v1/search` answers **HTTP 403 "Active premium
+subscription required for the owner of the app"**. A token is not permission
+to search. The script now probes once at startup and drops Spotify cleanly
+rather than failing once per track for thousands of tracks and spending the
+whole throttle budget collecting nothing. Restoring Spotify needs Premium on
+the account behind the app, not a code change.
+
+**Still open:** whether this utility comes into the repository. It writes
+nothing to the library, but `apply_agreed_albums.py` beside it does, and both
+are unversioned.
 
 ---
 
