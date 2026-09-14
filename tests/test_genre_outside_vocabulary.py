@@ -20,7 +20,7 @@ import pytest
 
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
-from musaeus.db import open_db, upsert_archive
+from musaeus.db import ensure_columns, open_db, upsert_archive
 from musaeus.stages.genre_validate import GenreValidateStage
 
 
@@ -98,13 +98,47 @@ class TestARetiredGenreDoesNotSurvive:
 
 
 class TestItDoesNotOverreach:
-    def test_a_legal_genre_that_merely_disagrees_with_the_law_is_untouched(self, ctx):
-        # §4.19: the library holds the owner's decision. "Rock" is in the
-        # vocabulary, so a disagreement with the law stays report-only.
+    def test_a_ruled_genre_that_disagrees_with_the_law_is_untouched(self, ctx):
+        """§4.19, narrowed 2026-09-14: the library holds the owner's decision
+        -- where the owner actually made one.
+
+        genre_ruled_at set means this conflict has been seen and a side
+        chosen. That IS a decision, and it stays report-only forever.
+        """
         _track(ctx, "Barenaked Ladies", "Rock")
+        # The stage adds this column lazily on its first live run; a row that
+        # already carries a ruling has to exist before the stage sees it.
+        ensure_columns(ctx.conn, (("genre_ruled_at", "TEXT"),))
+        ctx.conn.execute("UPDATE archive SET genre_ruled_at = '2026-09-01T00:00:00'")
+        ctx.conn.commit()
+
         result = GenreValidateStage().run(ctx)
         assert _genre(ctx) == "Rock"
-        assert any("CONFLICTS (report only)" in n for n in result.notes)
+        assert any("CONFLICTS (report only" in n for n in result.notes)
+
+    def test_an_unruled_genre_that_disagrees_with_the_law_loses_to_the_law(self, ctx):
+        """The other half of that narrowing, and the reason for it.
+
+        ScholarStage writes the file's embedded genre tag verbatim and never
+        consults MasterLaw, so a row nobody has reviewed holds whatever
+        iTunes or the rip said. Treating that as "the owner's decision" made
+        a stranger's tag outrank Grey's own law permanently, and left a
+        conflict no one could resolve -- the same shape as the "Pop, Rock"
+        failure in this module's docstring.
+        """
+        _track(ctx, "Barenaked Ladies", "Rock")
+        ensure_columns(ctx.conn, (("genre_ruled_at", "TEXT"),))
+        assert ctx.conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE genre_ruled_at IS NOT NULL"
+        ).fetchone()[0] == 0, "a fresh row must carry no ruling"
+
+        result = GenreValidateStage().run(ctx)
+        assert _genre(ctx) == "Alternative", "MasterLaw wins over an unreviewed source tag"
+        assert result.files_changed == 1
+        # and the correction records itself, so the row is not re-corrected later
+        assert ctx.conn.execute(
+            "SELECT genre_ruled_at FROM archive"
+        ).fetchone()[0], "the correction must stamp a ruling"
 
     def test_dry_run_changes_nothing(self, ctx):
         _track(ctx, "Barenaked Ladies", "Pop, Rock")

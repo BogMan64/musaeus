@@ -13,18 +13,23 @@ Rebuilt natively rather than ported: the crew needed CrewAI, Mem0, a
 qdrant vector store and an OmniRoute LLM router, none of which still
 exist here, and none of which a table lookup requires.
 
-Two jobs, kept deliberately separate because they carry different risk:
+Three jobs, kept deliberately separate because they carry different risk:
 
   FILL  -- the row has no genre and MasterLaw knows the artist. Additive,
            nothing is overwritten, so this runs by default. 881 rows on
            the live library at build time.
 
-  FLAG  -- the row has a genre that disagrees with MasterLaw (e.g. AC/DC
-           filed as "Rock" where the law says "Hard Rock"). REPORT ONLY.
-           Never auto-corrected, following the artist-canon precedent and
-           Grey's standing rule that these are judgement calls: "Rock" is
-           not wrong for AC/DC, it is just less specific, and which one
-           is right is the owner's decision, not a table's.
+  CORRECT -- the row has a genre that disagrees with MasterLaw AND no ruling
+           has been recorded (genre_ruled_at IS NULL). ScholarStage writes
+           source tags verbatim and never consults MasterLaw, so a fresh
+           row's genre is whatever iTunes or the rip said -- an opinion, not
+           a decision. MasterLaw wins over an unreviewed source tag.
+           Logged as GENRE_CORRECTED_FROM_LAW. genre_ruled_at is stamped so
+           this row is protected from future auto-correction.
+
+  FLAG  -- the row has a genre that disagrees with MasterLaw AND a ruling
+           IS recorded (genre_ruled_at IS NOT NULL). The owner has seen this
+           conflict and chosen a side. REPORT ONLY. Never auto-corrected.
 
 Separator note: the library stores "Disco-Electronic" where MasterLaw
 says "Disco/Electronic", because Sanitize strips "/" for filesystem
@@ -38,6 +43,7 @@ import logging
 
 from ..canon.genre_law import GenreLaw
 from ..context import RunContext, StageResult, elision
+from ..db import ensure_columns
 from .base import BaseStage
 
 logger = logging.getLogger(__name__)
@@ -58,6 +64,12 @@ class GenreValidateStage(BaseStage):
 
     NAME = "genre-validate"
 
+    #: Artists whose multi-genre state _check deliberately left alone this
+    #: run, so verify_effect can tell a pending ruling from a partial write.
+    #: Class-level default so verify_effect never raises on a path that never
+    #: reached _check (_consolidate, or an early return when MasterLaw is absent).
+    _conflict_artists: frozenset[str] = frozenset()
+
     def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
         """Assert the two rules this stage exists to enforce still hold.
 
@@ -73,11 +85,36 @@ class GenreValidateStage(BaseStage):
             "WHERE status='CATALOGUED' AND genre IS NOT NULL AND trim(genre)!='' "
             "GROUP BY artist HAVING n > 1 ORDER BY n DESC"
         ).fetchall()
-        if multi:
-            names = ", ".join(f"{r['artist']} ({r['n']})" for r in multi[:3])
+
+        # An artist can straddle two genres for two unlike reasons:
+        #
+        #   a partial write   -- consolidating 900 rows and missing 3. The
+        #                        defect this check exists for, invisible in
+        #                        any count the result carries.
+        #   a ruled conflict  -- the owner's genre disagrees with the law on
+        #                        some files, genre_ruled_at is set, and _check
+        #                        correctly left it alone awaiting no further
+        #                        action (the ruling IS the decision).
+        #
+        # Reporting the second as a failure made the stage unable to pass its
+        # own verification while any ruled conflict existed. Both are still
+        # surfaced, but only the first fails the seal.
+        pending = [r for r in multi if r["artist"] in self._conflict_artists]
+        unexpected = [r for r in multi if r["artist"] not in self._conflict_artists]
+
+        if unexpected:
+            names = ", ".join(f"{r['artist']} ({r['n']})" for r in unexpected[:3])
             problems.append(
-                f"{len(multi)} artist(s) still carry more than one genre after "
-                f"genre-validate claimed {result.files_changed} change(s): {names}"
+                f"{len(unexpected)} artist(s) carry more than one genre for no "
+                f"recorded reason after genre-validate claimed "
+                f"{result.files_changed} change(s): {names}"
+            )
+        if pending:
+            names = ", ".join(f"{r['artist']} ({r['n']})" for r in pending[:3])
+            result.notes.append(
+                f"  {len(pending)} artist(s) straddle two genres because a "
+                f"library-vs-law conflict is awaiting a ruling -- not a stage "
+                f"failure: {names}"
             )
 
         # Items are repr'd, not joined raw: a genre VALUE can itself contain
@@ -194,13 +231,28 @@ class GenreValidateStage(BaseStage):
             ctx.record_stage(result)
             return result
 
+        # genre_ruled_at distinguishes a genre the owner decided from a genre
+        # a source happened to tag. Without it the report-only rule protects
+        # rulings that do not exist -- ScholarStage writes source tags verbatim
+        # and never sets any ruling marker, so every fresh row looked like a
+        # human decision. Added lazily so a vault that never ran this stage
+        # before never grows the column until the first real run.
+        if not dry_run:
+            ensure_columns(ctx.conn, (("genre_ruled_at", "TEXT"),))
+
+        has_ruled_at = any(
+            r[1] == "genre_ruled_at"
+            for r in ctx.conn.execute("PRAGMA table_info(archive)")
+        )
+        ruled_col = "genre_ruled_at" if has_ruled_at else "NULL AS genre_ruled_at"
+
         rows = ctx.conn.execute(
-            "SELECT rowid AS rid, file_path, artist, genre FROM archive "
+            f"SELECT rowid AS rid, file_path, artist, genre, {ruled_col} FROM archive "
             "WHERE status='CATALOGUED' ORDER BY artist, album, track"
         ).fetchall()
         result.files_processed = len(rows)
 
-        filled = conflicts = unknown = agreed = illegal_fixed = 0
+        filled = conflicts = unknown = agreed = illegal_fixed = law_wins = 0
         blank_unknown = 0
         illegal_stuck: dict[str, int] = {}
         allowed = self._allowed_vocabulary(ctx)
@@ -247,7 +299,8 @@ class GenreValidateStage(BaseStage):
                 filled += 1
                 if not dry_run:
                     ctx.conn.execute(
-                        "UPDATE archive SET genre = ? WHERE rowid = ?",
+                        "UPDATE archive SET genre = ?, genre_ruled_at = datetime('now') "
+                        "WHERE rowid = ?",
                         (law_genre, row["rid"]),
                     )
                     ctx.log_event(
@@ -302,8 +355,49 @@ class GenreValidateStage(BaseStage):
 
             if law.agrees(artist, genre):
                 agreed += 1
+            elif not (row["genre_ruled_at"] or "").strip() and allowed and law_genre in allowed:
+                # NO RULING RECORDED -- there is no owner decision to protect.
+                #
+                # Report-only exists because "the library holds the owner's
+                # decision" (section 4.19). That is true of a file the owner
+                # has reviewed. It is NOT true of a file ingested ten minutes
+                # ago: ScholarStage writes the embedded genre tag verbatim and
+                # never consults MasterLaw, so a fresh row's genre is whatever
+                # the source said -- an opinion, not a ruling.
+                #
+                # Treating that as a decision made every new arrival a
+                # permanent conflict resolvable by nobody.
+                #
+                # Gated on the law's target being IN the vocabulary, and on a
+                # vocabulary existing. Always validate a mapped result against
+                # the current Genre_Allowed.txt, never against the map alone,
+                # because a map target can itself be stale. With no vocabulary
+                # file this falls back to report-only rather than writing a
+                # value nothing can check.
+                law_wins += 1
+                if not dry_run:
+                    ctx.conn.execute(
+                        "UPDATE archive SET genre = ?, genre_ruled_at = datetime('now') "
+                        "WHERE rowid = ?",
+                        (law_genre, row["rid"]),
+                    )
+                    ctx.log_event(
+                        "GENRE_CORRECTED_FROM_LAW",
+                        file_path=row["file_path"],
+                        old_value=genre,
+                        new_value=law_genre,
+                        stage=self.NAME,
+                        note=(
+                            f"no ruling recorded for {artist!r}; source tag "
+                            f"{genre!r} corrected to MasterLaw {law_genre!r}. "
+                            "TaggerStage must write the tag before Scholar "
+                            "reads this file again, or the upsert restores it."
+                        ),
+                    )
             else:
-                # Report only -- see module docstring.
+                # A RULING EXISTS (genre_ruled_at is set), or no vocabulary is
+                # loaded to validate the law's target against. Report only --
+                # the owner has seen this conflict and chosen a side.
                 conflicts += 1
                 key = (artist, genre, law_genre)
                 conflict_groups[key] = conflict_groups.get(key, 0) + 1
@@ -314,9 +408,14 @@ class GenreValidateStage(BaseStage):
         if not dry_run:
             ctx.conn.commit()
 
-        # Both branches write rows. Reporting only `filled` said 0 on a run
-        # that changed 13 files, and verify_effect quotes this number back.
-        result.files_changed = filled + illegal_fixed
+        # Remembered for verify_effect, which must distinguish an artist left
+        # alone on purpose (owner ruling exists) from one left alone by a
+        # partial write (which is the actual defect verify_effect exists to catch).
+        self._conflict_artists = frozenset(artist for (artist, _h, _l) in conflict_groups)
+
+        # All three write branches count toward files_changed so verify_effect
+        # quotes back a number that reflects what actually happened on disk.
+        result.files_changed = filled + illegal_fixed + law_wins
         verb = "would fill" if dry_run else "filled"
         result.notes.append(f"MasterLaw artists: {len(law)}")
         result.notes.append(f"  genre agrees:            {agreed}")
@@ -328,12 +427,18 @@ class GenreValidateStage(BaseStage):
             )
         verb2 = "would correct" if dry_run else "corrected"
         result.notes.append(f"  {verb2} genre outside the vocabulary: {illegal_fixed}")
+        if law_wins:
+            verb3 = "would correct" if dry_run else "corrected"
+            result.notes.append(
+                f"  {verb3} to law (no ruling recorded): {law_wins}"
+                "  (source tag, not a decision)"
+            )
         if illegal_stuck:
             result.notes.append("  OUTSIDE THE VOCABULARY and unresolvable -- these need a ruling:")
             for g, n in sorted(illegal_stuck.items(), key=lambda kv: -kv[1]):
                 result.notes.append(f"    {g!r}  ({n} file{'s' if n != 1 else ''})")
         result.notes.append(
-            f"  CONFLICTS (report only): {conflicts} file(s) "
+            f"  CONFLICTS (report only, ruling exists): {conflicts} file(s) "
             f"across {len(conflict_groups)} artist(s)"
         )
         if conflict_groups:

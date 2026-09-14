@@ -113,12 +113,30 @@ class TestGenreValidateStage:
         assert genres["/c.m4a"] == "Disco-Electronic"  # separator, untouched
         assert genres["/d.m4a"] == "Polka"  # law has no opinion
 
-    def test_conflicts_are_reported_not_corrected(self, tmp_path, law_csv):
+    def test_with_no_vocabulary_loaded_every_conflict_stays_report_only(
+        self, tmp_path, law_csv
+    ):
+        """The fail-safe, and what this fixture actually exercises.
+
+        _ctx builds a bare in-memory DB with no Genre_Allowed.txt, so
+        `allowed` is empty. The correct-from-law branch added 2026-09-14 is
+        gated on `allowed and law_genre in allowed`, which means a vault with
+        no vocabulary file falls back to report-only rather than writing a
+        value nothing can validate. A map or law target can itself be stale;
+        without the vocabulary there is nothing to check it against.
+
+        The ruled-vs-unruled distinction needs a vocabulary to be visible at
+        all, so it is covered in test_genre_outside_vocabulary.py, whose
+        fixture writes one. Asserting it here would pass for the wrong
+        reason -- the branch is unreachable in this fixture either way.
+        """
         ctx = _ctx(tmp_path, law_csv, [("/b.m4a", "CATALOGUED", "AC/DC", "Al", 1, "Rock")])
         result = GenreValidateStage().run(ctx)  # type: ignore[arg-type]
-        assert any("CONFLICTS (report only): 1 file(s) across 1 artist" in n for n in result.notes)
+        assert any("CONFLICTS (report only" in n and "1 file(s) across 1 artist" in n
+                   for n in result.notes)
         assert any("Hard Rock" in n for n in result.notes)
         assert result.files_changed == 0
+        assert ctx.conn.execute("SELECT genre FROM archive").fetchone()[0] == "Rock"
 
     def test_conflicts_are_grouped_by_artist_not_repeated_per_file(self, tmp_path, law_csv):
         """One decision per artist, however many tracks they have.
