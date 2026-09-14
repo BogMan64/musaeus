@@ -180,9 +180,69 @@ rather than failing once per track for thousands of tracks and spending the
 whole throttle budget collecting nothing. Restoring Spotify needs Premium on
 the account behind the app, not a code change.
 
-**Still open:** whether this utility comes into the repository. It writes
-nothing to the library, but `apply_agreed_albums.py` beside it does, and both
-are unversioned.
+**Resolved 2026-09-14: both are now in the repository**, as
+`scripts/album_names/propose_album_names.py` and `apply_album_names.py`, with
+52 tests and a README. Grey called it, and the move immediately paid for
+itself — see below.
+
+#### The article bug: 1,071 rows that were never actually asked about
+
+**This is the biggest single finding of the day, and it is the
+authorities-drift failure again.**
+
+MUSAEUS stores the article as a suffix — `Beatles, The` — so a folder-browsed
+library sorts under B. No music service has heard of that string.
+`musaeus/artist_form.py` exists precisely to say so, and had **already
+measured it on 2026-08-29**: *376 of 839 cached misses were in `X, The` form,
+and 0 of 2,158 hits were.* Not one article-suffix lookup had ever succeeded.
+
+The rule existed, in the right module, correct. The Desktop script could not
+import it, so it asked in the stored form and got silence.
+
+| | |
+|---|---|
+| proposal rows with a trailing-article artist | **1,072** |
+| of those, `4-NO ANSWER` | **1,071 — 99.9%** |
+| trailing-article rows in the DISAGREE tier | **0** |
+
+A perfect correlation. The Beatles, The Who, The Chieftains, The Rolling
+Stones, The Byrds, The Doors — none of them were ever actually asked about.
+
+    "Who, The" + "Baba O'Riley"  ->  itunes ''                deezer ''
+    "The Who"  + "Baba O'Riley"  ->  itunes "Who's Next (DE)" deezer same
+
+That second line is a `1-AGREED` that was being discarded. **Re-asking 25 of
+those rows through `natural_form()`: 19 resolved, 5 straight to `1-AGREED`.**
+Extrapolated across the 1,071: roughly 810 answers, ~210 auto-applicable.
+
+**The lesson is the one this project keeps relearning:** when a tool gives a
+uniformly bad answer, check whether it is being *asked* correctly before
+concluding the data is poor. The fix was one function call that already
+existed.
+
+#### Third source: MusicBrainz, replacing Spotify
+
+Spotify cannot be a source. MusicBrainz is free, needs no key, and ORPHEUS
+used it for this exact job (`SCRIPTS/orpheus_album_tagger.py`, MB score
+threshold 90). Its own relevance score is **not** trusted here — a search for
+Fleetwood Mac's "Dreams" returns a recording titled "Mac dreams" at score
+100 — so it is matched by the same strict folding as iTunes and Deezer.
+
+Measured on 12 real `3-SOURCES DISAGREE` rows: MusicBrainz answered 7 and
+broke the tie in 5. On `4-NO ANSWER` rows it answered 0 of 8 — because those
+were the article bug, not a missing source.
+
+#### The apply script's missing guard
+
+`apply_agreed_albums.py` selected on confidence alone and updated whatever
+row the CSV's `archive_id` named, **with no check on the current album**. It
+was safe only because that CSV happened to hold blank-album rows. Re-run
+after a later pass had filled some in and it would have replaced real album
+names with proposals — the rows it is least entitled to touch being exactly
+the ones a human had already ruled on.
+
+`apply_album_names.py` refuses. Dry-run against the already-applied CSV:
+**1,225 skipped, 0 written**. The old script would have rewritten all 1,225.
 
 ---
 
