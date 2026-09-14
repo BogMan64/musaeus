@@ -57,7 +57,7 @@ class TestUSBMenu:
         con = _console(cfg)
         rec = _Recorder()
         monkeypatch.setattr("subprocess.run", rec)
-        monkeypatch.setattr("builtins.input", lambda *a, **k: "2")
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "3")  # 3 = Back
         con._usb_menu()
         assert rec.calls == []
 
@@ -65,7 +65,7 @@ class TestUSBMenu:
         con = _console(cfg)
         rec = _Recorder()
         monkeypatch.setattr("subprocess.run", rec)
-        responses = iter(["0", "/dev/sdz", "no"])
+        responses = iter(["1", "/dev/sdz", "no"])   # 1 = ALAC
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
         con._usb_menu()
         assert len(rec.calls) == 1
@@ -77,7 +77,7 @@ class TestUSBMenu:
         con = _console(cfg)
         rec = _Recorder()
         monkeypatch.setattr("subprocess.run", rec)
-        responses = iter(["1", "/dev/sdz", "not yes"])
+        responses = iter(["2", "/dev/sdz", "not yes"])  # 2 = Car
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
         con._usb_menu()
         out = capsys.readouterr().out
@@ -89,7 +89,7 @@ class TestUSBMenu:
         rec = _Recorder()
         monkeypatch.setattr("subprocess.run", rec)
         monkeypatch.setattr("os.geteuid", lambda: 0)
-        responses = iter(["1", "/dev/sdz", "yes"])
+        responses = iter(["2", "/dev/sdz", "yes"])  # 2 = Car
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
         con._usb_menu()
         assert len(rec.calls) == 2
@@ -103,7 +103,7 @@ class TestUSBMenu:
         rec = _Recorder()
         monkeypatch.setattr("subprocess.run", rec)
         monkeypatch.setattr("os.geteuid", lambda: 1000)
-        responses = iter(["0", "/dev/sdz", "yes"])
+        responses = iter(["1", "/dev/sdz", "yes"])  # 1 = ALAC
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
         con._usb_menu()
         assert len(rec.calls) == 2
@@ -116,7 +116,7 @@ class TestUSBMenu:
         rec = _Recorder()
         monkeypatch.setattr("subprocess.run", rec)
         monkeypatch.setattr("os.geteuid", lambda: 0)
-        responses = iter(["0", "/dev/sdz", "yes"])
+        responses = iter(["1", "/dev/sdz", "yes"])  # 1 = ALAC
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
         con._usb_menu()
         assert rec.calls[1][0] != "sudo"
@@ -125,7 +125,7 @@ class TestUSBMenu:
         con = _console(cfg)
         rec = _Recorder()
         monkeypatch.setattr("subprocess.run", rec)
-        responses = iter(["0", "", "no"])
+        responses = iter(["1", "", "no"])   # 1 = ALAC
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
         con._usb_menu()
         assert "--device" not in rec.calls[0]

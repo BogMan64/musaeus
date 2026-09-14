@@ -46,7 +46,7 @@ class TestHardResetSnapshots:
         conn.close()
 
         con = _console_with_config(cfg)
-        responses = iter(["2", "DELETE", "DELETE"])
+        responses = iter(["3", "DELETE", "DELETE"])      # 3 = Hard reset
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
 
         con._reset_menu()
@@ -71,7 +71,7 @@ class TestHardResetSnapshots:
         conn.close()
 
         con = _console_with_config(cfg)
-        responses = iter(["2", "DELETE", "not-delete"])
+        responses = iter(["3", "DELETE", "not-delete"])  # 3 = Hard reset
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
 
         con._reset_menu()
@@ -91,7 +91,7 @@ class TestHardResetSnapshots:
         conn.close()
 
         con = _console_with_config(cfg)
-        responses = iter(["0", "YES"])
+        responses = iter(["1", "YES"])  # 1 = Soft reset (keeps decisions)
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
 
         con._reset_menu()
@@ -139,7 +139,7 @@ class TestSoftResetPreservesDecisions:
     def test_default_soft_reset_leaves_decisions_alone(self, cfg, monkeypatch):
         self._seeded(cfg)
         con = _console_with_config(cfg)
-        responses = iter(["0", "YES"])
+        responses = iter(["1", "YES"])  # 1 = Soft reset (keeps decisions)
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
 
         con._reset_menu()
@@ -154,7 +154,7 @@ class TestSoftResetPreservesDecisions:
         """audio_hash on a GHOST row is the last record of what the file was."""
         self._seeded(cfg)
         con = _console_with_config(cfg)
-        responses = iter(["0", "YES"])
+        responses = iter(["1", "YES"])  # 1 = Soft reset (keeps decisions)
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
 
         con._reset_menu()
@@ -170,7 +170,7 @@ class TestSoftResetPreservesDecisions:
         """The blunt instrument still exists -- it just has to be asked for."""
         self._seeded(cfg)
         con = _console_with_config(cfg)
-        responses = iter(["1", "RESET-ALL"])
+        responses = iter(["2", "RESET-ALL"])  # 2 = Soft reset incl. decisions
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
 
         con._reset_menu()
@@ -181,7 +181,7 @@ class TestSoftResetPreservesDecisions:
         """Typing the ordinary YES must not trigger the destructive variant."""
         self._seeded(cfg)
         con = _console_with_config(cfg)
-        responses = iter(["1", "YES"])
+        responses = iter(["2", "YES"])  # 2 = Soft reset incl. decisions
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
 
         con._reset_menu()

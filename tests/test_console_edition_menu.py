@@ -74,7 +74,11 @@ class TestEditionMenu:
         # iphone additionally prompts for a budget (blank is valid) and then
         # offers to build. Declining that offer is what keeps this a preview,
         # so the third answer is deliberately not "BUILD".
-        responses = iter([str(idx), "", "no"])
+        #
+        # idx is the 0-based position _edition_menu indexes EDITIONS by; the
+        # menu DISPLAYS it as idx + 1 and converts back. Tests drive the
+        # console the way a person does, so they type the displayed number.
+        responses = iter([str(idx + 1), "", "no"])
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
 
         before = sorted(p.name for p in Path(cfg.vault_root).rglob("*") if p.is_file())
@@ -89,7 +93,8 @@ class TestEditionMenu:
     def test_back_does_nothing(self, cfg, monkeypatch, capsys) -> None:
         _seed(cfg)
         con = _console(cfg)
-        monkeypatch.setattr("builtins.input", lambda *a, **k: "3")
+        # "Back" is the 4th label, displayed as 4.
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "4")
         con._edition_menu()
         assert "Selection only" not in capsys.readouterr().out
 
@@ -98,7 +103,7 @@ class TestEditionMenu:
         library does not go into a 30 GB phone."""
         _seed(cfg)
         con = _console(cfg)
-        responses = iter(["2", "0.02", "no"])  # 20 MB: fits some, not all
+        responses = iter(["3", "0.02", "no"])  # menu 3 = iphone; 20 MB fits some, not all
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
         con._edition_menu()
         out = capsys.readouterr().out
@@ -107,7 +112,7 @@ class TestEditionMenu:
     def test_a_bad_budget_is_refused_not_guessed(self, cfg, monkeypatch, capsys) -> None:
         _seed(cfg)
         con = _console(cfg)
-        responses = iter(["2", "loads"])
+        responses = iter(["3", "loads"])  # menu 3 = iphone
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
         con._edition_menu()
         out = capsys.readouterr().out

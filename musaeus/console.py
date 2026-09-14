@@ -125,17 +125,49 @@ def _prompt(prompt: str, default: str = "") -> str:
         return default
 
 
+#: Returned by _choose for a number that is not on the menu. Non-numeric on
+#: purpose -- callers int() the result inside a try and return on ValueError,
+#: so this routes to "nothing selected" without every caller needing its own
+#: range check.
+_NO_SELECTION = "no-selection"
+
+
 def _choose(prompt: str, options: list[str], default: str = "0") -> str:
     """
     Present a numbered menu and return the chosen value.
+    Displays 1-based numbers to the user; returns 0-based index as a string.
     Returns default on EOF.
+
+    **A number outside 1..len(options) is returned unchanged, as a string.**
+    Callers do `int(choice)` inside a `try` and return on ValueError, so an
+    out-of-range reply lands on that same "no selection" path.
+
+    This is not defensive decoration. Callers index a list with the result --
+    `["alac", "car"][idx]` in _usb_menu -- and Python indexes backwards from
+    a negative number rather than raising. Under the 1-based display added
+    2026-09-10 a typed "0" became idx -1, which selected the LAST entry and
+    walked on into a flow that wipes a device. Nothing refused it and
+    nothing said anything. Out-of-range must not reach a caller as an int.
     """
     print()
     for i, opt in enumerate(options):
-        print(f"    {_c(str(i), _BOLD, _CYAN)}  {opt}")
+        print(f"    {_c(str(i + 1), _BOLD, _CYAN)}  {opt}")
     try:
-        val = input(f"\n  {prompt} [0-{len(options) - 1}]: ").strip()
-        return val if val else default
+        val = input(f"\n  {prompt} [1-{len(options)}]: ").strip()
+        if not val:
+            return default
+        try:
+            n = int(val)
+        except ValueError:
+            return val
+        if not 1 <= n <= len(options):
+            # Deliberately NOT `val`: "0" is out of range but int("0") is
+            # perfectly happy, so returning it would hand the caller index 0
+            # -- a real menu entry the operator did not pick. The sentinel is
+            # non-numeric so every caller's int() raises and they return.
+            _warn(f"{val} is not on the menu — nothing selected.")
+            return _NO_SELECTION
+        return str(n - 1)
     except EOFError:
         return default
 

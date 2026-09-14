@@ -64,7 +64,11 @@ def _seed(cfg: MusicConfig) -> None:
 
 
 def _run(cfg, monkeypatch, answers: list[str]) -> list[list[str]]:
-    """Drive the menu with `answers` and return every command it launched."""
+    """Drive the menu with `answers` and return every command it launched.
+
+    Menu numbers are what the operator SEES: 1-based. iPhone is the 3rd
+    edition, so its answer is "3" even though EDITIONS indexes it at 2.
+    """
     _seed(cfg)
     con = Console()
     con._config = cfg
@@ -94,11 +98,11 @@ def test_only_the_literal_word_build_starts_an_encode(cfg, monkeypatch, answer) 
     """
     if answer.strip() == "BUILD":
         pytest.skip("accepted spelling — covered by the build test below")
-    assert _run(cfg, monkeypatch, ["2", "", answer]) == []
+    assert _run(cfg, monkeypatch, ["3", "", answer]) == []
 
 
 def test_typing_build_runs_the_iphone_builder_with_the_budget(cfg, monkeypatch) -> None:
-    launched = _run(cfg, monkeypatch, ["2", "0.02", "BUILD"])
+    launched = _run(cfg, monkeypatch, ["3", "0.02", "BUILD"])
     assert len(launched) == 1, "exactly one build should start"
     cmd = launched[0]
     assert any(c.endswith("build_car_library.py") for c in cmd)
@@ -111,7 +115,7 @@ def test_typing_build_runs_the_iphone_builder_with_the_budget(cfg, monkeypatch) 
 
 
 def test_a_blank_budget_passes_no_budget_flag(cfg, monkeypatch) -> None:
-    launched = _run(cfg, monkeypatch, ["2", "", "BUILD"])
+    launched = _run(cfg, monkeypatch, ["3", "", "BUILD"])
     assert len(launched) == 1
     assert "--budget-gb" not in launched[0]
 
@@ -124,4 +128,4 @@ def test_the_long_editions_are_never_offered_a_build(cfg, monkeypatch, idx, name
     offer is ever added for these, the menu consumes it and this test fails
     on the launched command rather than passing quietly.
     """
-    assert _run(cfg, monkeypatch, [str(idx), "BUILD"]) == []
+    assert _run(cfg, monkeypatch, [str(idx + 1), "BUILD"]) == []
