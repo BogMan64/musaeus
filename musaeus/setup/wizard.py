@@ -33,6 +33,13 @@ _CREDENTIALS_FILE = _CONFIG_DIR / "credentials.env"
 #       no implementation. ReviewerStage appears in one module docstring and
 #       one test comment; there is no such stage and nothing ever read the
 #       key.
+#   SPOTIFY_CLIENT_ID / _SECRET -- Spotify issues a token and then answers
+#       /v1/search with 403 "Active premium subscription required for the
+#       owner of the app". A token is not permission to search and no code
+#       change fixes an account requirement, so the album-name tool uses
+#       MusicBrainz instead (free, keyless). Nothing in MUSAEUS reads these.
+#   OPENROUTER_API_KEY -- Grey's ruling 2026-09-14: not to be used again.
+#       "Quality beats cost saving." Only ever appeared in config; no caller.
 #
 # A menu that asks for credentials nothing consumes teaches the operator
 # that the menu is not to be believed.
@@ -62,24 +69,6 @@ API_KEYS = {
         "url": "https://www.discogs.com/settings/developers",
         "required": False,
         "used_by": "Artist identity fallback (mb-enrich stage, paired with the consumer key)",
-    },
-    "SPOTIFY_CLIENT_ID": {
-        "label": "Spotify Client ID",
-        "url": "https://developer.spotify.com/dashboard/applications",
-        "required": False,
-        "used_by": "Genre classification (5-source voting)",
-    },
-    "SPOTIFY_CLIENT_SECRET": {
-        "label": "Spotify Client Secret",
-        "url": "https://developer.spotify.com/dashboard/applications",
-        "required": False,
-        "used_by": "Genre classification (5-source voting)",
-    },
-    "OPENROUTER_API_KEY": {
-        "label": "OpenRouter",
-        "url": "https://openrouter.ai/keys",
-        "required": False,
-        "used_by": "AI code review / overnight self-heal",
     },
 }
 
@@ -243,11 +232,11 @@ def run_wizard(force: bool = False) -> bool:
 #
 # This used to be exactly the four that MusicConfig.from_env() reads, on the
 # reasoning that a key the config object never surfaces is a key nothing
-# consumes. That reasoning was wrong, and Spotify is the proof: the album-name
-# proposal utility reads SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET straight
-# from os.environ, so they are genuinely needed to run MUSAEUS while being
-# invisible to the only menu that offers to set them. The operator was left
-# exporting them by hand with nothing telling them that was required.
+# consumes. That reasoning was wrong: a key can be read straight from
+# os.environ by a script the config object knows nothing about, which is
+# exactly what the album-name tool did with Spotify -- genuinely required to
+# run, invisible to the only menu that offers to set it, leaving the operator
+# exporting it by hand with nothing saying that was needed.
 #
 # Reading through MusicConfig is an implementation detail. Needing the key to
 # run the system is the thing the operator cares about, so that is the line

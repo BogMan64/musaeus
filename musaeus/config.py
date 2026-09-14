@@ -121,7 +121,6 @@ class MusicConfig:
 
     # API keys (may be None if not configured)
     lastfm_api_key: str | None = field(default=None, repr=False)
-    openrouter_api_key: str | None = field(default=None, repr=False)
     acousticid_api_key: str | None = field(default=None, repr=False)
     discogs_consumer_key: str | None = field(default=None, repr=False)
     discogs_consumer_secret: str | None = field(default=None, repr=False)
@@ -179,7 +178,6 @@ class MusicConfig:
                 Path(curator_export_root_raw).expanduser() if curator_export_root_raw else None
             ),
             lastfm_api_key=os.environ.get("LASTFM_API_KEY") or None,
-            openrouter_api_key=os.environ.get("OPENROUTER_API_KEY") or None,
             acousticid_api_key=os.environ.get("ACOUSTICID_API_KEY") or None,
             discogs_consumer_key=os.environ.get("DISCOGS_CONSUMER_KEY") or None,
             discogs_consumer_secret=os.environ.get("DISCOGS_CONSUMER_SECRET") or None,
