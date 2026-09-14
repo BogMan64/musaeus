@@ -251,6 +251,53 @@ def select_edition(
     return sel
 
 
+@dataclass
+class MasterResolution:
+    """What resolving a catalogue row to its master actually found."""
+
+    path: Path
+    #: True when `path` is the master; False when we fell back to the row's
+    #: own file_path because no master exists on disk.
+    is_master: bool
+
+
+def master_path_for(
+    file_path: str | Path, alac_library: Path, alac_archive: Path
+) -> MasterResolution:
+    """Resolve a catalogue row's file_path to the MASTER it was baked from.
+
+    **Every edition is built from the masters, never from another edition**
+    (scope, "Editions"). That rule was being broken silently: a baked row's
+    `file_path` follows the *edition*, so after the LUFS bake it points into
+    ALAC_Library at -18 LUFS, and the CAR builder symlinked exactly that --
+    8,734 of 11,555 tracks on 2026-09-14. Its own docstring said "master".
+    Grey ruled 2026-09-14: build from the masters.
+
+    The bake maps master -> library by a plain relative-path swap
+    (build_alac_library.py::_library_path_for), so the inverse is the same
+    swap back. Verified on the live vault 2026-09-14: all 8,734 baked rows
+    have their master present at the mirrored path, 0 missing.
+
+    A row already pointing into the archive is its own master and is
+    returned unchanged. A row whose master is genuinely absent falls back to
+    the row's own path with `is_master=False` -- encoding the edition copy
+    beats skipping the track, but the caller must COUNT those and say so
+    rather than let the fallback pass for the rule being honoured.
+    """
+    p = Path(file_path)
+    try:
+        rel = p.relative_to(alac_library)
+    except ValueError:
+        # Not under the library: either already a master, or somewhere else
+        # entirely. Either way there is nothing to map.
+        return MasterResolution(p, True)
+
+    master = alac_archive / rel
+    if master.is_file():
+        return MasterResolution(master, True)
+    return MasterResolution(p, False)
+
+
 def output_path_for(track: Track, spec: EditionSpec, root: Path) -> Path:
     """Where *track* lands in the edition.
 

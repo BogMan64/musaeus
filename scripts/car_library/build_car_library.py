@@ -168,7 +168,13 @@ def stage_from_catalogue(
     conn, staging_dir: Path, limit: int | None = None,
     edition: str = "car", budget_bytes: int | None = None,
 ) -> tuple[list[Path], list]:
-    """Symlink every CATALOGUED master into *staging_dir* for the encoder.
+    """Symlink the MASTER behind every CATALOGUED row into *staging_dir*.
+
+    "Master" is meant literally, and did not used to be: this linked
+    `t.file_path`, which after the LUFS bake names the -18 ALAC_Library copy
+    for every baked row -- so the car edition was being built out of the
+    lossless edition, which the scope forbids. Resolved through
+    editions.master_path_for since 2026-09-14 on Grey's ruling.
 
     The vendor encoder discovers work by walking a directory with
     rglob("*.m4a") and accepts no file list, so aiming it straight at
@@ -185,7 +191,12 @@ def stage_from_catalogue(
     costs nothing and cannot modify the originals. rglob sees a symlink to
     a file as a file, and ffmpeg reads through it.
     """
-    from musaeus.editions import EDITIONS, output_path_for, select_edition
+    from musaeus.editions import (
+        EDITIONS,
+        master_path_for,
+        output_path_for,
+        select_edition,
+    )
 
     spec = EDITIONS[edition]
     sel = select_edition(conn, spec, budget_bytes=budget_bytes)
@@ -195,17 +206,37 @@ def stage_from_catalogue(
               "genres are dropped first.")
     tracks = sel.included[:limit] if limit else sel.included
 
+    # Every edition is built from the MASTERS, never from another edition
+    # (Grey's ruling 2026-09-14). A baked row's file_path follows the
+    # edition, so after the LUFS bake it names the -18 library copy; linking
+    # that would build the car edition out of the lossless edition. See
+    # editions.master_path_for.
+    cfg = get_config()
     staged: list[Path] = []
+    from_master = fell_back = 0
     for t in tracks:
-        src = Path(t.file_path)
+        res = master_path_for(t.file_path, cfg.alac_library, cfg.alac_archive)
+        src = res.path
         if not src.is_file():
             continue
+        if res.is_master:
+            from_master += 1
+        else:
+            fell_back += 1
         link = output_path_for(t, spec, staging_dir)
         link.parent.mkdir(parents=True, exist_ok=True)
         if link.is_symlink() or link.exists():
             link.unlink()
         link.symlink_to(src)
         staged.append(link)
+
+    print(f"  sourced from masters: {from_master:,}")
+    if fell_back:
+        # Never silent. A fallback means this many tracks are being built
+        # from an edition rather than from a master, which is the thing the
+        # ruling forbids -- the operator has to be told, not reassured.
+        print(f"  ! {fell_back:,} track(s) have NO master on disk and were "
+              f"sourced from their library copy instead (-18 LUFS, not a master).")
     return staged, tracks
 
 
