@@ -102,6 +102,25 @@ Observed:
   and idle-aware wrapper scripts (`idle_forge.sh`, `idle_run.sh`) using
   `flock` and tracked PIDs to avoid SQLite lock collisions.
 
+#### Uncommitted in the working tree, and one of it is red
+
+137 lines across four tracked files were modified during that window and
+**never committed** (`musaeus/config.py`, `musaeus/console.py`,
+`musaeus/stages/genre_validate.py`,
+`scripts/alac_library/build_alac_library.py`), with `.bak-2026091*` files
+beside three of them. They are left alone here — they are somebody's
+in-progress work, not this document's to commit.
+
+**`tests/test_console_edition_menu.py` has 3 failing tests because of one of
+them.** `console.py`'s `_choose()` was changed from 0-based to 1-based menu
+numbering (displays `i + 1`, converts the reply back with `int(val) - 1`).
+The change is reasonable on its own — humans count from 1 — but the tests
+still drive the menu with 0-based input, so `test_back_does_nothing`,
+`test_iphone_budget_is_applied` and `test_a_bad_budget_is_refused_not_guessed`
+all fail. **This is a test/implementation mismatch, not a broken console**,
+and it predates the 09-14 documentation pass. Decide whether the 1-based menu
+is wanted; if it is, the tests move with it.
+
 **Two things to settle before relying on any of it**: whether the album
 proposals were reviewed before being applied, and whether
 `propose_album_names_v3.py` should be brought into the repository — right now
