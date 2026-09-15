@@ -27,10 +27,63 @@ def _ok(stage: str, **kw) -> StageResult:
     return StageResult(stage_name=stage, success=True, **kw)
 
 
-def test_a_clean_run_writes_nothing(tmp_path: Path) -> None:
+def test_a_clean_run_STILL_writes_a_document(tmp_path: Path) -> None:
+    """Changed 2026-09-14 on Grey's instruction; this used to assert the
+    opposite.
+
+    The file's job changed. It was "carry the problems", for which an
+    empty all-clear file is just one more thing to notice is empty. It is
+    now "the thing pasted into a tool-less session to ask what happened
+    last night" -- and a successful unattended run is exactly when there
+    is no other window into it. A run that changed 2,577 rows and a run
+    that changed none look identical from outside otherwise.
+    """
     ctx = _ctx(tmp_path, [_ok("ingest"), _ok("sentinel"), _ok("scholar")])
-    assert write_handoff_doc(ctx) is None
-    assert not (tmp_path / "RUNS" / "HANDOFFS").exists()
+    path = write_handoff_doc(ctx)
+    assert path is not None and path.is_file()
+    text = path.read_text()
+    assert "Nothing went wrong" in text
+    assert "## What this run did" in text
+
+
+def test_a_clean_run_says_plainly_that_nothing_broke(tmp_path: Path) -> None:
+    """The reader must not have to infer health from absence."""
+    ctx = _ctx(tmp_path, [_ok("ingest")])
+    text = write_handoff_doc(ctx).read_text()
+    assert "No stage crashed" in text
+    assert "Stage crashes" not in text
+    assert "Verification failures" not in text
+
+
+def test_the_summary_carries_what_each_stage_actually_did(tmp_path: Path) -> None:
+    """Counts alone do not carry "881 genres filled"; the notes do."""
+    r = _ok("genre-validate", files_processed=11555, files_changed=881)
+    r.notes.append("genre agrees: 11,274")
+    ctx = _ctx(tmp_path, [r])
+    text = write_handoff_doc(ctx).read_text()
+    assert "11,555" in text and "881" in text
+    assert "genre agrees: 11,274" in text
+    assert "881 file(s) changed" in text
+
+
+def test_a_failing_run_still_gets_the_summary_as_well_as_the_problems(tmp_path: Path) -> None:
+    """The two halves are complementary: what happened, and what broke."""
+    bad = StageResult(stage_name="finalize", success=False, files_errored=3)
+    bad.errors.append("ERROR: disk full")
+    ctx = _ctx(tmp_path, [_ok("ingest", files_changed=10), bad])
+    text = write_handoff_doc(ctx).read_text()
+    assert "## What this run did" in text
+    assert "Stages that reported failure" in text
+    assert "Nothing went wrong" not in text
+
+
+def test_the_verified_column_distinguishes_no_claim_from_a_pass(tmp_path: Path) -> None:
+    """verified is tri-state and the difference is the point: None means
+    the stage made no claim, True means it checked and it held."""
+    checked = StageResult(stage_name="a", success=True, verified=True)
+    silent = StageResult(stage_name="b", success=True, verified=None)
+    text = write_handoff_doc(_ctx(tmp_path, [checked, silent])).read_text()
+    assert "no claim" in text
 
 
 def test_a_verification_failure_is_the_priority_section(tmp_path: Path) -> None:

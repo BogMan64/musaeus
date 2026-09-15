@@ -38,6 +38,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from musaeus.handoff import write_tool_handoff  # noqa: E402
+
 VAULT_DB = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db")
 
 #: Tiers this will write without further argument. "1-AGREED" means two or
@@ -182,6 +184,39 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  no proposal in the row       {tally['skipped_no_proposal']:,}")
     if tally["row_not_found"]:
         print(f"  archive_id not in the DB     {tally['row_not_found']:,}")
+
+    if args.live:
+        problems = []
+        if tally["skipped_album_already_set"]:
+            problems.append(
+                f"{tally['skipped_album_already_set']:,} row(s) already had an album and "
+                "were left alone. A proposal never overwrites an existing album -- if you "
+                "expected these to change, the CSV is older than the catalogue."
+            )
+        if tally["row_not_found"]:
+            problems.append(
+                f"{tally['row_not_found']:,} archive_id(s) in the CSV are not in the "
+                "database. Those rows were deleted, or the CSV came from another vault."
+            )
+        hand = write_tool_handoff(
+            args.db.parent / "RUNS",
+            "album_names_apply",
+            summary={
+                "proposal CSV": str(args.csv_path),
+                "tiers applied": ", ".join(tiers),
+                "album names written": tally["written"],
+                "skipped, album already set": tally["skipped_album_already_set"],
+                "rows in another tier": tally["skipped_wrong_tier"],
+            },
+            notes=[
+                "Every write is logged to the events table as ALBUM_NAME_APPLIED, "
+                "grouped under one run_id, so this apply is reversible from the "
+                "event log rather than from memory.",
+            ],
+            problems=problems,
+        )
+        if hand:
+            print(f"\n-> {hand}   (paste this into any AI session)")
 
     if not args.live:
         print("\nTo write these, re-run with --live:")

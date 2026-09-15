@@ -130,13 +130,60 @@ def _capped(items: list[str], prefix: str = "") -> list[str]:
     return lines
 
 
-def _render(run_id: str, issues: list[dict[str, Any]], crashes: list[dict[str, Any]]) -> str:
+def _what_happened(stage_results: list[StageResult]) -> list[str]:
+    """What the run DID, stage by stage -- not only what went wrong.
+
+    Added 2026-09-14 on Grey's instruction. The original wrote nothing at
+    all for a clean run, on the reasoning that an empty all-clear file is
+    one more thing to notice is empty. True for a file whose only job is
+    to carry problems -- but this file's job changed: it is now the thing
+    he pastes into a tool-less session to ask "what happened last night?",
+    and a successful run is exactly the case where he has no other way to
+    see inside it.
+
+    A run that changed 2,577 rows and a run that changed none both look
+    identical from outside. That is the gap this closes.
+    """
+    lines = ["## What this run did", ""]
+    if not stage_results:
+        lines += ["No stages ran.", ""]
+        return lines
+
+    lines += ["| stage | processed | changed | errored | verified |",
+              "|---|---:|---:|---:|---|"]
+    for r in stage_results:
+        verdict = {True: "yes", False: "**NO**", None: "-- (no claim)"}[r.verified]
+        lines.append(
+            f"| {r.stage_name} | {r.files_processed:,} | {r.files_changed:,} "
+            f"| {r.files_errored:,} | {verdict} |"
+        )
+    lines.append("")
+
+    total_changed = sum(r.files_changed for r in stage_results)
+    lines += [f"**{total_changed:,} file(s) changed across {len(stage_results)} stage(s).**", ""]
+
+    # Stage notes are where a stage says what it actually decided -- the
+    # counts alone do not carry "881 genres filled" or "52 folders merged".
+    noted = [r for r in stage_results if r.notes]
+    if noted:
+        lines += ["### What each stage reported", ""]
+        for r in noted:
+            lines.append(f"**{r.stage_name}**")
+            lines.extend(_capped(list(r.notes)))
+            lines.append("")
+    return lines
+
+
+def _render(run_id: str, issues: list[dict[str, Any]], crashes: list[dict[str, Any]],
+            stage_results: list[StageResult] | None = None) -> str:
     now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
     lines = [
         f"# MUSAEUS ForClaudeHandoff — {run_id}",
         "",
-        f"Generated {now}. This file exists because something in this run",
-        "needs a human decision or a code fix -- see the sections below.",
+        f"Generated {now}. A complete account of this run: what it did, and",
+        "anything that needs a human decision or a code fix.",
+        "",
+        "**Paste this whole file** into any AI session to ask what happened.",
         "",
         "**If you are a fresh Claude session with no file or tool access:**",
         "everything needed to reason about each issue is inlined below --",
@@ -149,6 +196,16 @@ def _render(run_id: str, issues: list[dict[str, Any]], crashes: list[dict[str, A
         "---",
         "",
     ]
+
+    if not crashes and not issues:
+        lines += ["## Nothing went wrong", "",
+                  "No stage crashed, no stage reported failure, and every check",
+                  "that made a claim held. The run summary below is the whole story.",
+                  "", "---", ""]
+
+    if stage_results is not None:
+        lines.extend(_what_happened(stage_results))
+        lines += ["---", ""]
 
     if crashes:
         lines.append(f"## Stage crashes ({len(crashes)})")
@@ -197,9 +254,12 @@ def _render(run_id: str, issues: list[dict[str, Any]], crashes: list[dict[str, A
 
 
 def write_handoff_doc(ctx: RunContext) -> Path | None:
-    """Write RUNS/HANDOFFS/ForClaudeHandoff_<run_id>.md if this run has anything
-    worth a second look; return its path, or None (writing nothing) for
-    a clean run.
+    """Write RUNS/HANDOFFS/ForClaudeHandoff_<run_id>.md and return its path.
+
+    **Always writes, as of 2026-09-14.** It used to return None for a clean
+    run. Grey asked for the opposite: the file is what he pastes into a
+    tool-less session to ask what happened overnight, and a successful run
+    is precisely when he has no other window into it.
 
     Called once, at the end of the pipeline, after every stage has had
     the chance to run and record its result -- see cli.py's
@@ -207,11 +267,100 @@ def write_handoff_doc(ctx: RunContext) -> Path | None:
     """
     issues = _stage_issues(ctx.stage_results)
     crashes = _crash_reports(ctx.runs_root, ctx.run_id)
-    if not issues and not crashes:
-        return None
 
     out_dir = ctx.runs_root / "HANDOFFS"
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"ForClaudeHandoff_{ctx.run_id}.md"
-    path.write_text(_render(ctx.run_id, issues, crashes), encoding="utf-8")
+    path.write_text(
+        _render(ctx.run_id, issues, crashes, ctx.stage_results), encoding="utf-8"
+    )
     return path
+
+
+# ── Standalone tools ─────────────────────────────────────────────────────────
+#
+# The pipeline gets its handoff from write_handoff_doc above, which reads
+# ctx.stage_results. The long unattended jobs -- the LUFS bake, the CAR and
+# iPhone builds, the album-name proposal -- are NOT pipeline stages and have
+# no RunContext, so they produced nothing at all.
+#
+# They are also, in practice, the runs Grey most needs a morning summary of:
+# they run for hours while he is asleep, and a terminal that has scrolled or
+# a session that has ended takes the only account of them with it.
+
+
+def write_tool_handoff(
+    runs_root: Path,
+    tool: str,
+    *,
+    summary: dict[str, Any],
+    notes: list[str] | None = None,
+    problems: list[str] | None = None,
+    log_path: Path | None = None,
+) -> Path | None:
+    """Write a paste-able account of a standalone tool run.
+
+    Same destination and shape as the pipeline's handoff, so there is one
+    place to look and one format to read, whichever produced it.
+
+    `summary` is the headline numbers -- whatever the tool counts. `notes`
+    is what it decided. `problems` is what needs a human. All three are
+    written even when `problems` is empty, because "it ran and here is what
+    it did" is the common case and the one with no other record.
+
+    Never raises: a tool that finished its real work must not be reported
+    as failed because the report about it could not be written.
+    """
+    try:
+        now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+        stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out_dir = Path(runs_root) / "HANDOFFS"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"ForClaudeHandoff_{tool}_{stamp}.md"
+
+        lines = [
+            f"# MUSAEUS ForClaudeHandoff — {tool}",
+            "",
+            f"Generated {now}. A standalone tool run, not a pipeline run.",
+            "",
+            "**Paste this whole file** into any AI session to ask what happened.",
+            "",
+            "**If you are a session with no file or tool access:** everything",
+            "needed is inlined below. You cannot verify any of it against the",
+            "live system from here -- say so plainly rather than guessing with",
+            "unstated confidence. MUSAEUS is at github.com/BogMan64/musaeus.",
+            "",
+            "---",
+            "",
+            "## What this run did",
+            "",
+            "| | |",
+            "|---|---:|",
+        ]
+        for k, v in summary.items():
+            shown = f"{v:,}" if isinstance(v, int) else str(v)
+            lines.append(f"| {k} | {shown} |")
+        lines.append("")
+
+        if notes:
+            lines += ["### What it reported", ""]
+            lines.extend(_capped(list(notes)))
+            lines.append("")
+
+        if problems:
+            lines += ["---", "", f"## Needs attention ({len(problems)})", ""]
+            lines.extend(_capped(list(problems)))
+            lines.append("")
+        else:
+            lines += ["---", "", "## Nothing went wrong", "",
+                      "The tool reported no problems. The summary above is the whole story.",
+                      ""]
+
+        if log_path:
+            lines += [f"Full log: `{log_path}`", ""]
+
+        path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+        return path
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[handoff] could not write tool handoff for %s: %s", tool, exc)
+        return None

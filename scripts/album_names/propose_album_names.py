@@ -77,6 +77,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from musaeus.artist_form import natural_form  # noqa: E402
 from musaeus.brackets import CLOSE, OPEN  # noqa: E402
 from musaeus.db import ensure_columns  # noqa: E402
+from musaeus.handoff import write_tool_handoff  # noqa: E402
 
 VAULT_DB = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db")
 DEFAULT_CACHE = Path.home() / ".cache" / "album-names" / "cache.db"
@@ -671,6 +672,39 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print(f"-> {args.out}")
     print("Nothing was written to the database or to any audio file.")
+
+    # A morning-readable account of a run that happens while nobody watches.
+    problems = []
+    if interrupted:
+        problems.append(
+            f"INTERRUPTED at {len(rows):,} of {len(targets):,}. The CSV holds what "
+            "was finished; re-running resumes from the cache and costs nothing for "
+            "the tracks already asked about."
+        )
+    no_answer = counts.get("4-NO ANSWER", 0)
+    if no_answer:
+        problems.append(
+            f"{no_answer:,} track(s) got no answer from any source. Check the artist "
+            "form first -- a trailing-article name like 'Beatles, The' used to fail "
+            "every lookup, and that is a query bug, not missing data."
+        )
+    hand = write_tool_handoff(
+        args.db.parent / "RUNS",
+        "album_names_propose",
+        summary={
+            "tracks considered": len(targets),
+            "proposals written": len(rows),
+            "sources asked": ", ".join(n for n, _ in active_sources),
+            "restricted to": str(args.path_prefix) if args.path_prefix else "whole catalogue",
+            "flagged compilation": comps,
+            "self-titled fallback": st_count,
+            "output CSV": str(args.out),
+        },
+        notes=[f"{k}: {counts[k]:,}" for k in sorted(counts, key=lambda k: CONFIDENCE_ORDER.get(k, 9))],
+        problems=problems,
+    )
+    if hand:
+        print(f"-> {hand}   (paste this into any AI session)")
     return 1 if interrupted else 0
 
 
