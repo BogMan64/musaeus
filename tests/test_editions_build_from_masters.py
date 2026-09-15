@@ -25,6 +25,9 @@ from pathlib import Path
 
 import pytest
 
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "car_library"))
+
 from musaeus.editions import master_path_for
 
 
@@ -108,3 +111,51 @@ class TestItAcceptsWhatTheCatalogueStores:
         res = master_path_for(str(lib / "Artist" / "Album" / "s.m4a"), lib, arc)
         assert res.path == master
         assert res.is_master
+
+
+class TestPublishingOnlyTakesTheEdition:
+    """The encoder's output tree is not all music.
+
+    Beside its BATCH_nnn output it keeps ORPHEUS/Acoustic Treatment/ -- its
+    own copies of the white/pink/brown noise beds used for masking. Those are
+    working assets. Publishing "every .m4a under the output dir" filed all six
+    into CAR_Library on 2026-09-14, 414 MB of noise sitting in the library as
+    though it were an album. The originals in RUNS/Noise were untouched so
+    nothing was lost, but an edition must hold the library and nothing else.
+    """
+
+    def _tree(self, tmp_path):
+        out = tmp_path / "_output" / "encoded"
+        (out / "BATCH_001" / "Artist" / "Album").mkdir(parents=True)
+        (out / "BATCH_001" / "Artist" / "Album" / "song.m4a").write_bytes(b"\0")
+        (out / "ORPHEUS" / "Acoustic Treatment").mkdir(parents=True)
+        (out / "ORPHEUS" / "Acoustic Treatment" / "Brown_Noise_30min.m4a").write_bytes(b"\0")
+        return out
+
+    def test_batch_output_is_published(self, tmp_path):
+        from build_car_library import publish_edition
+
+        out = self._tree(tmp_path)
+        dest = tmp_path / "CAR_Library"
+        publish_edition(out, dest)
+        assert (dest / "Artist" / "Album" / "song.m4a").is_file()
+
+    def test_the_noise_beds_are_not_published(self, tmp_path):
+        from build_car_library import publish_edition
+
+        out = self._tree(tmp_path)
+        dest = tmp_path / "CAR_Library"
+        publish_edition(out, dest)
+        assert not list(dest.rglob("Brown_Noise_30min.m4a")), (
+            "a working asset must never be filed as music"
+        )
+        # and it stays where the encoder left it
+        assert (out / "ORPHEUS" / "Acoustic Treatment" / "Brown_Noise_30min.m4a").is_file()
+
+    def test_the_batch_layer_is_dropped(self, tmp_path):
+        from build_car_library import publish_edition
+
+        out = self._tree(tmp_path)
+        dest = tmp_path / "CAR_Library"
+        publish_edition(out, dest)
+        assert not (dest / "BATCH_001").exists(), "the edition mirrors Artist/Album"

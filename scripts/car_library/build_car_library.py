@@ -64,9 +64,11 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import contextlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -164,10 +166,89 @@ def _index_output_by_tags(output_dir: Path) -> dict[tuple[str, str], Path]:
     return index
 
 
+def publish_edition(final_dir: Path, dest_root: Path) -> Path:
+    """Move the finished encode into the edition's own library.
+
+    Grey's instruction 2026-09-14: the car edition belongs in
+    Libraries/CAR_Library, not buried in RUNS/AAC-Car-Masked/_output/.
+
+    RUNS is a working area -- staging symlinks, the raw encode, the masked
+    pass -- and the two stages have to stay separate because masking reads
+    what encoding wrote. So the working dirs stay where they are and the
+    FINISHED tree is published here at the end.
+
+    The vendored encoder writes <final>/BATCH_nnn/<Artist>/<Album>/file.
+    That BATCH layer is its own bookkeeping and is dropped: the edition
+    mirrors the masters' Artist/Album shape, so it stays diffable against
+    them. A rebuild overwrites its own previous output rather than
+    accumulating copies.
+
+    Moved rather than copied -- a second full copy of the edition costs
+    real disk for no benefit, and RUNS is not where it lives.
+    """
+    dest_root.mkdir(parents=True, exist_ok=True)
+    moved = skipped = 0
+    for src in sorted(final_dir.rglob("*")):
+        if not src.is_file() or src.suffix.lower() not in AUDIO_EXTENSIONS:
+            continue
+        rel = src.relative_to(final_dir).parts
+        # ONLY the encoder's per-run batch output is the edition. Its tree
+        # also holds ORPHEUS/Acoustic Treatment/, which is where it keeps its
+        # own copies of the noise beds -- working assets, not music. Publishing
+        # by "every .m4a under here" moved all six into CAR_Library on
+        # 2026-09-14 (414 MB of white/pink/brown noise filed as if it were an
+        # album). The originals in RUNS/Noise were untouched, so nothing was
+        # lost, but an edition must contain the library and nothing else.
+        if not rel[0].upper().startswith("BATCH_"):
+            skipped += 1
+            continue
+        # Keep Artist/Album/file; drop the BATCH_nnn layer.
+        tail = rel[-3:] if len(rel) >= 3 else rel
+        target = dest_root.joinpath(*tail)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(target))
+        moved += 1
+    print(f"  published {moved:,} file(s) to {dest_root}")
+    if skipped:
+        print(f"  ({skipped:,} non-batch file(s) left in place -- encoder working assets)")
+    return dest_root
+
+
+def _clean_up_on_termination() -> None:
+    """Make atexit handlers run when we are killed, not just when we exit.
+
+    atexit fires on a normal return, on an unhandled exception, and on
+    Ctrl-C (SIGINT becomes KeyboardInterrupt, which unwinds normally). It
+    does NOT fire on SIGTERM: Python's default handler terminates the
+    process immediately. So the staging tree survived every ending that
+    was not a human at a keyboard -- `timeout`, `kill`, a reboot, systemd
+    stopping the unit.
+
+    Measured 2026-09-14: a `timeout`-wrapped 12-track build was SIGTERMed
+    and left _staged_183396 behind with 12 symlinks. On the full 11,554
+    track build that is 11,554 dangling links, and a 44-hour encode is far
+    more likely to end by SIGTERM than by finishing while somebody watches.
+
+    Raising SystemExit from the handler puts us back on the normal exit
+    path, so the atexit cleanup registered above runs. 128+signum is the
+    conventional exit status for "killed by this signal".
+    """
+
+    def _exit(signum: int, _frame: object) -> None:
+        raise SystemExit(128 + signum)
+
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        # Not the main thread, or the platform lacks the signal. Arming
+        # cleanup-on-kill is a nicety; failing to arm it must never stop a
+        # build from starting.
+        with contextlib.suppress(ValueError, OSError):
+            signal.signal(sig, _exit)
+
+
 def stage_from_catalogue(
     conn, staging_dir: Path, limit: int | None = None,
     edition: str = "car", budget_bytes: int | None = None,
-) -> tuple[list[Path], list]:
+) -> tuple[list[Path], list, dict[Path, object]]:
     """Symlink the MASTER behind every CATALOGUED row into *staging_dir*.
 
     "Master" is meant literally, and did not used to be: this linked
@@ -213,6 +294,13 @@ def stage_from_catalogue(
     # editions.master_path_for.
     cfg = get_config()
     staged: list[Path] = []
+    # Which catalogue row each staged link came from. Selection already knows
+    # this; the encode phase used to re-derive it with
+    # `WHERE file_path = <resolved link target>`, which silently stopped
+    # matching the moment the link began resolving to the MASTER rather than
+    # to the row's own file_path. Carrying the row is both correct and what
+    # that code's own comment already claimed it was doing.
+    link_to_track: dict[Path, object] = {}
     from_master = fell_back = 0
     for t in tracks:
         res = master_path_for(t.file_path, cfg.alac_library, cfg.alac_archive)
@@ -229,6 +317,7 @@ def stage_from_catalogue(
             link.unlink()
         link.symlink_to(src)
         staged.append(link)
+        link_to_track[link] = t
 
     print(f"  sourced from masters: {from_master:,}")
     if fell_back:
@@ -237,7 +326,7 @@ def stage_from_catalogue(
         # ruling forbids -- the operator has to be told, not reassured.
         print(f"  ! {fell_back:,} track(s) have NO master on disk and were "
               f"sourced from their library copy instead (-18 LUFS, not a master).")
-    return staged, tracks
+    return staged, tracks, link_to_track
 
 
 def main() -> int:
@@ -312,9 +401,10 @@ def main() -> int:
         # machine. Trees left by dead processes are made harmless by
         # find_input_files() instead, and can be removed by hand.
         atexit.register(shutil.rmtree, staging_dir, ignore_errors=True)
+        _clean_up_on_termination()
         conn_sel = open_db(cfg.db_path)
         try:
-            files, tracks = stage_from_catalogue(
+            files, tracks, link_to_track = stage_from_catalogue(
                 conn_sel, staging_dir, args.limit,
                 edition=args.edition,
                 budget_bytes=int(args.budget_gb * 1_000_000_000) if args.budget_gb else None,
@@ -395,15 +485,17 @@ def main() -> int:
         # would decode all 10,545 files to rediscover what selection just
         # told us -- hours of CPU to answer a question we already answered.
         for link in files:
-            target = str(Path(link).resolve())
-            row = cfg_db.execute(
-                "SELECT file_path, artist, title FROM archive WHERE file_path = ?",
-                (target,),
-            ).fetchone()
-            source_rows[Path(link)] = dict(row) if row else None
-            if row is None:
-                print(f"  WARNING: staged {Path(link).name} resolves to {target}, "
-                      "which has no archive row")
+            t = link_to_track.get(Path(link))
+            if t is None:
+                source_rows[Path(link)] = None
+                print(f"  WARNING: staged {Path(link).name} has no catalogue row")
+                continue
+            # file_path is the ROW's path (the edition copy for a baked row),
+            # not the master the link resolves to -- it is the key every other
+            # table and query uses, so it is what must be written back.
+            source_rows[Path(link)] = {
+                "file_path": t.file_path, "artist": t.artist, "title": t.title,
+            }
     else:
         # Hand-dropped files: identity has to be rediscovered from the audio
         # itself, because nothing says where they came from.
@@ -473,6 +565,12 @@ def main() -> int:
     # car_export_path/noise_profile -- same mechanism curator.py uses
     # (UPDATE archive SET car_export_path=?, noise_profile=? WHERE
     # file_path=?), scoped only to files this run actually touched.
+    # Publish into the edition's library before recording paths, so
+    # car_export_path names where the file actually lives rather than a
+    # working directory that the next run overwrites.
+    dest_root = cfg.iphone_library if args.edition == "iphone" else cfg.car_library
+    final_dir = publish_edition(final_dir, dest_root)
+
     updated = 0
     unmatched: list[tuple[Path, str]] = []
     output_index = _index_output_by_tags(final_dir)
