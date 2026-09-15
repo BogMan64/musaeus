@@ -1,0 +1,187 @@
+"""Album-name proposal: pure logic.
+
+Ported from ~/Desktop/POST.Code/ on 2026-09-14 when the script moved into
+the repository. The Spotify cases became MusicBrainz cases -- the tier names
+never mentioned a source, so only the fixtures changed.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "album_names"))
+
+from propose_album_names import (
+    Answer,
+    _choose,
+    _is_single_release,
+    _year_of,
+    fold,
+    verdict,
+)
+
+
+class TestFold:
+    def test_case_insensitive(self):
+        assert fold("Hello World") == fold("hello world")
+
+    def test_accents_are_folded(self):
+        assert fold("Beyoncé") == fold("Beyonce")
+
+    def test_punctuation_is_stripped(self):
+        assert fold("Rock & Roll") == fold("Rock and Roll".replace("and", "&"))
+        assert fold("Don't Stop") == fold("Dont Stop")
+
+    def test_strip_noise_removes_featured_artist_clause(self):
+        assert fold("Candy Shop (feat. Olivia)", strip_noise=True) == fold(
+            "Candy Shop", strip_noise=True
+        )
+
+    def test_strip_noise_removes_remaster_qualifier(self):
+        assert fold("Voices Carry (2015 Remaster)", strip_noise=True) == fold(
+            "Voices Carry", strip_noise=True
+        )
+
+    def test_strip_noise_removes_bare_single_suffix(self):
+        assert fold("Broken Strings - Single", strip_noise=True) == fold(
+            "Broken Strings", strip_noise=True
+        )
+
+    def test_without_strip_noise_the_clause_is_kept(self):
+        assert fold("Song (Live)") != fold("Song")
+
+
+class TestYearOf:
+    def test_extracts_leading_year(self):
+        assert _year_of("1969-09-26") == 1969
+        assert _year_of("1971") == 1971
+
+    def test_junk_date_sorts_last(self):
+        assert _year_of("unknown") == 9999
+        assert _year_of("") == 9999
+        assert _year_of("unknown") > _year_of("2024")
+
+
+class TestIsSingleRelease:
+    def test_identical_title_and_collection_is_a_single(self):
+        assert _is_single_release("Candy Shop", "Candy Shop") is True
+
+    def test_collection_with_feat_clause_matching_track_is_a_single(self):
+        assert _is_single_release("Candy Shop", "Candy Shop (feat. Olivia)") is True
+
+    def test_a_real_album_is_not_a_single(self):
+        assert _is_single_release("Candy Shop", "The Massacre") is False
+
+    def test_empty_collection_is_not_a_single(self):
+        assert _is_single_release("Candy Shop", "") is False
+
+    def test_a_much_longer_collection_starting_with_the_track_is_not_a_single(self):
+        assert (
+            _is_single_release("Rock", "Rock and Roll Over: The Complete Sessions")
+            is False
+        )
+
+
+class TestSelfTitledFallback:
+    def test_falls_back_to_self_titled_album_when_no_distinct_album_exists(self):
+        cands = [("Iron Maiden", "Iron Maiden", "1980", "itunes")]
+        result = _choose(cands)
+        assert result.album == "Iron Maiden"
+        assert result.is_self_titled_fallback is True
+
+    def test_prefers_distinct_album_over_self_titled(self):
+        cands = [
+            ("Candy Shop", "Candy Shop", "2005", "itunes"),
+            ("Candy Shop", "The Massacre", "2005", "itunes"),
+        ]
+        result = _choose(cands)
+        assert result.album == "The Massacre"
+        assert result.is_self_titled_fallback is False
+
+
+class TestVerdict:
+    def test_agreement_between_sources_is_the_top_tier(self):
+        it = Answer(album="The Massacre", year="2005", source="itunes")
+        dz = Answer(album="The Massacre", year="", source="deezer")
+        confidence, album, note, _winner = verdict(it, dz)
+        assert confidence == "1-AGREED"
+        assert album == "The Massacre"
+        # v2 returned "" here. v3 names the sources that agreed, so the CSV
+        # says WHY a row is top-tier instead of asking you to take it on faith.
+        assert "itunes" in note and "deezer" in note
+
+    def test_agreement_is_accent_and_case_insensitive(self):
+        it = Answer(album="Beyonce", source="itunes")
+        dz = Answer(album="Beyoncé", source="deezer")
+        confidence, _album, _note, _winner = verdict(it, dz)
+        assert confidence == "1-AGREED"
+
+    def test_disagreement_keeps_itunes_and_explains_why(self):
+        it = Answer(album="The Massacre", year="2005", source="itunes")
+        dz = Answer(album="Get Rich or Die Tryin'", year="", source="deezer")
+        confidence, album, note, _winner = verdict(it, dz)
+        assert confidence == "3-SOURCES DISAGREE"
+        assert album == "The Massacre", "iTunes stays the tie-break winner"
+        # v2's note explained the year tie-break; v3's explains the source
+        # choice instead. Either way the note must say which source won and
+        # what it proposed -- a disagreement the CSV does not explain is a
+        # row the reviewer cannot rule on.
+        assert "itunes" in note.lower()
+        assert "The Massacre" in note
+
+    def test_itunes_only_is_a_distinct_tier_from_agreement(self):
+        it = Answer(album="El Dorado", source="itunes")
+        dz = Answer()
+        confidence, album, _note, _winner = verdict(it, dz)
+        assert confidence == "2-ITUNES ONLY"
+        assert album == "El Dorado"
+
+    def test_deezer_only_is_a_distinct_tier_from_agreement(self):
+        it = Answer()
+        dz = Answer(album="Some Album", source="deezer")
+        confidence, album, _note, _winner = verdict(it, dz)
+        assert confidence == "2-DEEZER ONLY"
+        assert album == "Some Album"
+
+    def test_neither_source_answering_is_its_own_tier_not_a_crash(self):
+        confidence, album, _note, _winner = verdict(Answer(), Answer())
+        assert confidence == "4-NO ANSWER"
+        assert album == ""
+
+
+class TestVerdictThreeSource:
+    def test_three_way_agreement(self):
+        it = Answer(album="The Massacre", year="2005", source="itunes")
+        dz = Answer(album="The Massacre", source="deezer")
+        sp = Answer(album="The Massacre", year="2005", source="musicbrainz")
+        confidence, album, _note, winner = verdict(it, dz, sp)
+        assert confidence == "1-AGREED"
+        assert album == "The Massacre"
+        assert winner.source in ("itunes", "musicbrainz")
+
+    def test_two_out_of_three_agreement(self):
+        it = Answer(album="The Massacre", source="itunes")
+        dz = Answer(album="Get Rich or Die Tryin'", source="deezer")
+        sp = Answer(album="The Massacre", source="musicbrainz")
+        confidence, album, note, winner = verdict(it, dz, sp)
+        assert confidence == "1-AGREED"
+        assert album == "The Massacre"
+        assert "itunes" in note and "musicbrainz" in note
+
+    def test_musicbrainz_only(self):
+        it = Answer()
+        dz = Answer()
+        sp = Answer(album="El Dorado", source="musicbrainz")
+        confidence, album, _note, winner = verdict(it, dz, sp)
+        assert confidence == "2-MUSICBRAINZ ONLY"
+        assert album == "El Dorado"
+        assert winner.source == "musicbrainz"
+
+    def test_disagreement_defaults_priorities(self):
+        it = Answer(album="Album A", source="itunes")
+        dz = Answer(album="Album B", source="deezer")
+        sp = Answer(album="Album C", source="musicbrainz")
+        confidence, album, _note, winner = verdict(it, dz, sp)
+        assert confidence == "3-SOURCES DISAGREE"
+        assert album == "Album A"

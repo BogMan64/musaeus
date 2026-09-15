@@ -47,6 +47,22 @@ os.environ["XDG_DATA_HOME"] = str(_SESSION_FAKE_HOME / ".local" / "share")
 os.environ["XDG_CACHE_HOME"] = str(_SESSION_FAKE_HOME / ".cache")
 os.environ["XDG_STATE_HOME"] = str(_SESSION_FAKE_HOME / ".local" / "state")
 
+# The idle throttle must never run inside the suite.
+#
+# It SIGSTOPs this process's ffmpeg/ffprobe children whenever the machine
+# is "in use", where in use means someone touched the keyboard or mouse in
+# the last 40 seconds. Any test that shells out to ffmpeg therefore passes
+# or fails according to whether a human is at the desk -- and it fails by
+# TIMING OUT, which reads exactly like a slow disk or a hung encoder.
+#
+# That cost real time on 2026-09-01: two LUFS bake tests were diagnosed as
+# losing a race against the concurrent car encode. They were not. ffprobe
+# on the fixture takes 0.077 s, the whole bake 0.626 s with the throttle
+# off, and past 90 s with it on -- the child was stopped, not starved. A
+# suite whose result depends on mouse movement cannot be trusted to mean
+# anything, which matters most when nobody is around to reinterpret it.
+os.environ["MUSAEUS_NO_IDLE_THROTTLE"] = "1"
+
 # Defense in depth: also explicitly clear anything that might already be
 # set in the ambient shell environment pytest was launched from (config.py
 # uses setdefault(), so these would otherwise survive the HOME redirect
@@ -121,6 +137,30 @@ def path_guard() -> PathGuard:
     """The session-wide PathGuard instance, for tests that want to inspect
     `.attempts` or deliberately provoke+catch RealPathAccessError."""
     return _path_guard
+
+
+@pytest.fixture(autouse=True)
+def _restore_network_policy():
+    """Put the process-wide network policy back after every test.
+
+    The gateway in musaeus/network_policy.py is module-level mutable
+    state. Before this fixture, a test that set ALLOWED and did not
+    restore it left every later test in the session running against a
+    permissive gateway -- so a safety assertion could pass in isolation
+    and silently stop meaning anything in the full run. Found when a
+    P0-14 test that read the policy passed alone and failed in the suite.
+
+    Autouse and unconditional: a fixture that has to be requested is one
+    a new test can forget to request, and the failure mode is invisible.
+    """
+    from musaeus.network_policy import get_gateway
+
+    gateway = get_gateway()
+    previous = gateway.policy
+    try:
+        yield
+    finally:
+        gateway.policy = previous
 
 
 @pytest.fixture(scope="session")

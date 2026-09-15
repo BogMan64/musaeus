@@ -1,32 +1,33 @@
 """
-MUSAEUS — P0-02 fail-closed dry-run/preview guard tests
+MUSAEUS — dry-run/preview behaviour (was P0-02 guard, now P0-04/P0-05)
 
-Task P0-02 (musaeus-consumer-readiness spec) added a temporary, blunt,
-fail-closed guard in musaeus/cli.py's _run_pipeline(): dry_run=True is
-now REJECTED (exit code 2) before any configuration, directory, database,
-or network initialisation, because P0-01's characterization pass proved
-that today, unguarded, dry_run=True unconditionally:
+History matters for reading these tests. P0-01 proved that unguarded,
+dry_run=True unconditionally called cfg.ensure_dirs() and
+RunContext.new()/record_stage() -- creating the real vault skeleton, the
+real SQLite DB, and RUN_START/STAGE_COMPLETE/RUN_END events -- before any
+stage ran, and that Enrich/MBEnrich/AcousticID still made live network
+calls regardless of the flag. P0-02 responded with a blunt fail-closed
+refusal: exit code 2, no preview at all.
 
-  1. calls cfg.ensure_dirs() (creates the real vault directory skeleton)
-     and RunContext.new()/record_stage() (creates/writes the real SQLite
-     DB, commits RUN_START/STAGE_COMPLETE/RUN_END events) before any
-     stage runs -- see tests/test_p0_01_characterization.py's now-updated
-     TestDefaultPipelineDryRunCharacterization tests; and
-  2. for EnrichStage/MBEnrichStage/AcousticIDStage specifically, still
-     makes a live Last.fm/MusicBrainz/AcoustID network call regardless of
-     dry_run -- see test_p0_01_characterization.py's
-     TestNetworkStageDryRunCharacterization.
+This file used to assert that refusal. It now asserts the thing the
+refusal was standing in for.
 
-This is a temporary, blunt compatibility patch, NOT the real preview fix
-(that is P0-04/P0-05, which introduce a typed RunMode.PREVIEW with a pure
-in-memory planner and do not exist in this repository yet).
+The spec's condition for lifting the guard was P0-04 AND P0-05 both
+implemented and fixture-proven. Both are: --dry-run routes to the pure
+planner (musaeus/planner.py), which never calls ensure_dirs(), never
+opens a writable connection, never logs an event, and never instantiates
+a stage -- a stage object being the mutation-capable thing. Network
+access is refused by the local-only gateway (musaeus/network_policy.py),
+which records every attempt BEFORE raising so that the broad `except`
+blocks in those stages cannot erase the evidence.
 
-This file builds entirely on the P0-01 fixture harness
-(tests/disposable_vault.py, tests/conftest.py) -- the disposable_vault,
-transport_harness, and path_guard fixtures -- rather than duplicating any
-of it. See tests/test_p0_01_characterization.py for the original
-unguarded-behaviour characterization these tests now guard against
-regressing.
+So the assertions flip from "is previewed with exit 2" to "succeeds,
+renders a plan, and changes nothing" -- a strictly stronger claim than
+the refusal ever made, because a refusal only proves nothing happened
+when nothing was allowed to start.
+
+Still built on the P0-01 fixture harness (tests/disposable_vault.py,
+tests/conftest.py).
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ from musaeus.stages import (
     EnrichStage,
     IngestStage,
     MBEnrichStage,
+    OriginalYearStage,
     PreflightStage,
 )
 from tests.disposable_vault import snapshot_vault_state
@@ -73,17 +75,32 @@ class TestRejectUnsafeDryRunHelper:
         assert cli_mod._reject_unsafe_dry_run([EnrichStage], dry_run=False) is None
         assert cli_mod._reject_unsafe_dry_run([], dry_run=False) is None
 
-    def test_returns_exit_code_2_when_dry_run_is_true_for_any_stage_list(self):
+    def test_the_helper_still_refuses_if_called_directly(self):
+        """_reject_unsafe_dry_run is retained, not deleted.
+
+        _run_pipeline no longer routes through it -- --dry-run goes to the
+        planner instead -- but any caller reaching the helper directly is
+        still asking for the old unsafe path and must still be refused.
+        """
         import musaeus.cli as cli_mod
 
         assert cli_mod._reject_unsafe_dry_run([PreflightStage], dry_run=True) == 2
         assert cli_mod._reject_unsafe_dry_run(DEFAULT_PIPELINE, dry_run=True) == 2
         assert cli_mod._reject_unsafe_dry_run([], dry_run=True) == 2
 
-    def test_network_stage_membership_is_exactly_the_three_named_stages(self):
+    def test_network_stage_membership_is_exactly_the_named_stages(self):
+        """The set is pinned so a stage that reaches the network cannot join
+        it silently. OriginalYearStage was added 2026-08-23: it makes one
+        MusicBrainz call per track inside the shared _process() path, in both
+        run and dry_run, exactly like the other three."""
         import musaeus.cli as cli_mod
 
-        assert {EnrichStage, MBEnrichStage, AcousticIDStage} == cli_mod._NETWORK_STAGES
+        assert {
+            EnrichStage,
+            MBEnrichStage,
+            AcousticIDStage,
+            OriginalYearStage,
+        } == cli_mod._NETWORK_STAGES
         assert PreflightStage not in cli_mod._NETWORK_STAGES
         assert IngestStage not in cli_mod._NETWORK_STAGES
 
@@ -102,12 +119,12 @@ class TestDryRunGuardBlocksDirsAndDB:
 
         rc = cli_mod._run_pipeline(DEFAULT_PIPELINE, dry_run=True)
 
-        assert rc == 2
+        assert rc == 0
         assert not disposable_vault.root.exists()
         assert not disposable_vault.cfg.inbox.exists()
         assert not disposable_vault.cfg.alac_library.exists()
         assert not cli_mod._RESUME_FILE.exists(), (
-            "a rejected dry-run must not reach _load_resume/_save_resume either"
+            "a previewed dry-run must not reach _load_resume/_save_resume either"
         )
 
     def test_guard_fires_before_the_db_file_is_created(self, disposable_vault, monkeypatch):
@@ -116,7 +133,7 @@ class TestDryRunGuardBlocksDirsAndDB:
 
         rc = cli_mod._run_pipeline([PreflightStage], dry_run=True)
 
-        assert rc == 2
+        assert rc == 0
         assert not disposable_vault.cfg.db_path.exists()
 
     def test_guard_fires_before_any_new_event_is_written_to_an_existing_db(
@@ -138,14 +155,14 @@ class TestDryRunGuardBlocksDirsAndDB:
             conn.close()
 
         rc_dry = cli_mod._run_pipeline([PreflightStage], dry_run=True)
-        assert rc_dry == 2
+        assert rc_dry == 0
 
         conn = sqlite3.connect(str(disposable_vault.cfg.db_path))
         try:
             after = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         finally:
             conn.close()
-        assert after == before, "a rejected dry-run must not append any new event"
+        assert after == before, "a previewed dry-run must not append any new event"
 
     def test_guard_exit_code_and_message_for_dir_db_path(
         self, disposable_vault, monkeypatch, capsys
@@ -154,17 +171,17 @@ class TestDryRunGuardBlocksDirsAndDB:
 
         rc = cli_mod._run_pipeline(DEFAULT_PIPELINE, dry_run=True)
 
-        assert rc == 2
+        assert rc == 0
         captured = capsys.readouterr()
-        assert captured.out == "", "a rejected dry-run must print nothing to stdout"
-        err_lower = captured.err.lower()
-        assert "temporarily disabled" in err_lower
-        assert "refused and did not run" in err_lower
-        assert "directories" in err_lower or "ensure_dirs" in captured.err
-        # Must never claim success or a completed no-op preview.
-        assert "no changes made" not in err_lower
-        assert "no managed state was changed" not in err_lower
-        assert "success" not in err_lower
+        # The plan is the product now, and it goes to stdout so it can be
+        # piped. The old refusal went to stderr; there should be none.
+        assert "PREVIEW ONLY" in captured.out
+        assert "mode: preview" in captured.out
+        assert "temporarily disabled" not in captured.err.lower()
+        # The old refusal was careful never to claim a completed no-op,
+        # because it had not previewed anything. The plan CAN make that
+        # claim, and states it explicitly -- that is the whole difference.
+        assert "nothing was changed" in captured.out
 
 
 # ── Guard fires before any network connection (the 3 network stages) ─────────
@@ -191,47 +208,52 @@ class TestDryRunGuardBlocksNetworkStages:
 
         rc = cli_mod._run_pipeline([stage_cls], dry_run=True)
 
-        assert rc == 2
+        assert rc == 0
         assert len(transport_harness.attempts) == attempts_before, (
             "the P0-02 guard must reject the network stage before it gets "
             "anywhere near making a connection -- if this fails, the "
             "transport_harness observed a real attempt"
         )
         # Dir/DB side effects must also be blocked, same as any other
-        # rejected dry-run.
+        # previewed dry-run.
         assert not disposable_vault.root.exists()
         assert not disposable_vault.cfg.db_path.exists()
 
-    def test_guard_message_names_the_offending_network_stage(
+    def test_a_network_stage_is_planned_without_reaching_the_network(
         self, disposable_vault, monkeypatch, capsys
     ):
+        """The guard used to name network stages in a refusal message.
+
+        It no longer refuses them: the local-only gateway makes the lookup
+        impossible, so the stage can be planned like any other. What must
+        hold is that planning it dispatches nothing -- asserted by the
+        transport harness in test_preview_zero_side_effects.py, and here by
+        the plan simply completing and stating that nothing was looked up.
+        """
         cli_mod = _patch_cli_for_vault(monkeypatch, disposable_vault)
 
         rc = cli_mod._run_pipeline([EnrichStage], dry_run=True)
 
-        assert rc == 2
-        err = capsys.readouterr().err
-        assert "EnrichStage" in err
-        assert "network" in err.lower()
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "PREVIEW ONLY" in out
+        assert "no network lookup was performed" in out
 
-    def test_guard_message_names_every_offending_stage_in_a_mixed_pipeline(
-        self, disposable_vault, monkeypatch, capsys
-    ):
-        """A pipeline mixing a network stage with an ordinary stage (the
-        shape of the real `overnight` command, which includes both
-        EnrichStage and MBEnrichStage alongside non-network stages) must
-        name every offending network stage, not just the first."""
+    def test_a_mixed_pipeline_plans_every_stage(self, disposable_vault, monkeypatch, capsys):
+        """Previously: the refusal had to name every network stage.
+
+        Now every stage is planned, network or not, and the plan reports
+        each one -- with a count where it can compute one and an em-dash
+        where it cannot, never a fabricated zero.
+        """
         cli_mod = _patch_cli_for_vault(monkeypatch, disposable_vault)
 
-        rc = cli_mod._run_pipeline([IngestStage, EnrichStage, MBEnrichStage], dry_run=True)
+        rc = cli_mod._run_pipeline([PreflightStage, EnrichStage], dry_run=True)
 
-        assert rc == 2
-        err = capsys.readouterr().err
-        assert "EnrichStage" in err
-        assert "MBEnrichStage" in err
-
-
-# ── Centrality: applies uniformly, not a per-subcommand allowlist ────────────
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "preflight" in out
+        assert "PREVIEW ONLY" in out
 
 
 class TestDryRunGuardAppliesCentrallyNotAsAllowlist:
@@ -241,34 +263,34 @@ class TestDryRunGuardAppliesCentrallyNotAsAllowlist:
     added/renamed. Prove this by exercising a spread of different
     single-stage pipelines -- the exact shape of every
     `musaeus <stage> --dry-run` dispatch branch in cli.py's main() -- and
-    confirming every one is rejected identically, purely because they
+    confirming every one is previewed identically, purely because they
     all funnel through the same _run_pipeline() function rather than
     each needing its own opt-in.
     """
 
     @pytest.mark.parametrize("stage_cls", [PreflightStage, IngestStage])
-    def test_arbitrary_single_stage_pipelines_are_rejected_under_dry_run(
+    def test_arbitrary_single_stage_pipelines_are_previewed_under_dry_run(
         self, disposable_vault, monkeypatch, stage_cls
     ):
         cli_mod = _patch_cli_for_vault(monkeypatch, disposable_vault)
         rc = cli_mod._run_pipeline([stage_cls], dry_run=True)
-        assert rc == 2
+        assert rc == 0
         assert not disposable_vault.root.exists()
 
-    def test_dry_run_alias_command_shape_is_rejected(self, disposable_vault, monkeypatch):
+    def test_dry_run_alias_command_shape_is_previewed(self, disposable_vault, monkeypatch):
         """`musaeus dry-run` hardcodes dry_run=True against
         DEFAULT_PIPELINE (see cli.py's `elif command == "dry-run":`
-        branch) -- confirm that exact call shape is rejected."""
+        branch) -- confirm that exact call shape is previewed."""
         cli_mod = _patch_cli_for_vault(monkeypatch, disposable_vault)
         rc = cli_mod._run_pipeline(DEFAULT_PIPELINE, dry_run=True)
-        assert rc == 2
+        assert rc == 0
 
-    def test_before_after_snapshot_is_identical_across_a_rejected_dry_run(
+    def test_before_after_snapshot_is_identical_across_a_previewed_dry_run(
         self, disposable_vault, monkeypatch
     ):
         """Uses the P0-01 harness's own snapshot_vault_state() tool --
         the same before/after equality check MCR-001 requires of a real
-        preview -- to prove a rejected dry-run leaves literally nothing
+        preview -- to prove a previewed dry-run leaves literally nothing
         different: directory tree, file hashes/tags, DB existence, event
         count, archive count, and DB content checksum all unchanged."""
         cli_mod = _patch_cli_for_vault(monkeypatch, disposable_vault)
@@ -277,7 +299,7 @@ class TestDryRunGuardAppliesCentrallyNotAsAllowlist:
         rc = cli_mod._run_pipeline(DEFAULT_PIPELINE, dry_run=True)
 
         after = snapshot_vault_state(disposable_vault)
-        assert rc == 2
+        assert rc == 0
         assert before.equals(after), before.diff(after)
 
 
@@ -296,7 +318,7 @@ class TestRealRunIsNotBlockedByTheGuard:
 
         rc = cli_mod._run_pipeline([PreflightStage], dry_run=False)
 
-        assert rc != 2, "a real (non-dry-run) invocation must never be rejected by the P0-02 guard"
+        assert rc != 2, "a real (non-dry-run) invocation must never be previewed by the P0-02 guard"
         assert disposable_vault.root.exists()
         assert disposable_vault.cfg.db_path.exists()
 
@@ -323,7 +345,7 @@ class TestRealRunIsNotBlockedByTheGuard:
         StageError and turns it into a failed StageResult (exit 1), so
         seeing exit 1 (not 2) proves _run_pipeline let dry_run=False
         proceed all the way into the real stage rather than being
-        rejected by _reject_unsafe_dry_run.
+        previewed by _reject_unsafe_dry_run.
         """
         cli_mod = _patch_cli_for_vault(monkeypatch, disposable_vault)
 

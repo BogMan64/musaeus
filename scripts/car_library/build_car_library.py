@@ -63,8 +63,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import atexit
+import contextlib
 import json
 import os
+import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -74,18 +78,42 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from musaeus.config import get_config  # noqa: E402
 from musaeus.db import open_db  # noqa: E402
+from musaeus.handoff import write_tool_handoff  # noqa: E402
 from musaeus.hasher import audio_hash_safe  # noqa: E402
+from musaeus.idle_throttle import IdleThrottle  # noqa: E402
+from musaeus.sleep_inhibit import reexec_under_inhibitor  # noqa: E402
 
 VENDOR_DIR = Path(__file__).resolve().parent / "vendor"
 AUDIO_EXTENSIONS = {".m4a", ".flac", ".alac", ".wav", ".aiff"}
 
 
+# Every directory name under the input root that is this script's own
+# bookkeeping rather than somebody's dropped audio.
+_NOT_INPUT = ("_output", "_staged_")
+
+
 def find_input_files(input_dir: Path) -> list[Path]:
+    """Audio a human put here, excluding anything this script created itself.
+
+    `_staged_<pid>` trees are symlink farms built by --from-catalogue. They
+    were excluded from cleanup but not from discovery, so a later run WITHOUT
+    --from-catalogue walked into them and re-ingested the whole catalogue as
+    though it had been hand-dropped -- rglob follows a symlink to a file as a
+    file. Measured 2026-09-08: three leaked trees holding 41,811 symlinks
+    against zero genuine dropped files, so this path found 41,031 "inputs"
+    for a library of ~16,000. (M-14.)
+
+    Skipping them by name is the durable half of the fix: it holds for trees
+    left by earlier versions, by other PIDs, and by runs that died before
+    they could clean up. The cleanup added in main() stops new ones
+    accumulating; this stops the ones already there from doing harm.
+    """
     files = []
     for p in sorted(input_dir.rglob("*")):
         if not p.is_file() or p.suffix.lower() not in AUDIO_EXTENSIONS:
             continue
-        if "_output" in p.relative_to(input_dir).parts:
+        parts = p.relative_to(input_dir).parts
+        if any(part == "_output" or part.startswith("_staged_") for part in parts):
             continue
         files.append(p)
     return files
@@ -107,24 +135,246 @@ def _read_tags(path: Path) -> tuple[str | None, str | None]:
         return None, None
 
 
-def _find_output_by_tags(output_dir: Path, artist: str, title: str) -> Path | None:
+def _index_output_by_tags(output_dir: Path) -> dict[tuple[str, str], Path]:
+    """(artist, title) -> path, for every file under *output_dir*, read once.
+
+    Replaces a per-source full-directory rescan. The matching loop below
+    used to call a linear rglob+ffprobe scan of the WHOLE output tree for
+    EVERY source file -- O(n^2) ffprobe subprocess calls. Modeled against
+    the 2026-09-01 car build (10,103 files each way): roughly 51 million
+    calls, an estimated 213 hours at an optimistic 15ms each. Measured
+    directly: the 2026-09-02 re-run ran for over 16 hours -- well past
+    idle-throttle contention -- and never produced a single "matched"
+    line, because it was still inside the first few thousand source files'
+    inner scans when the machine rebooted.
+
+    Building the index once costs one ffprobe per output file (n calls);
+    the matching loop below becomes n dict lookups. O(n) instead of O(n^2).
+
+    First occurrence wins per key, matching rglob()'s original enumeration
+    order -- so behaviour is identical to the old function wherever the
+    old function would have returned a result, just reachable in practice.
+    """
+    index: dict[tuple[str, str], Path] = {}
     for p in output_dir.rglob("*"):
         if not p.is_file():
             continue
         a, t = _read_tags(p)
-        if a == artist and t == title:
-            return p
-    return None
+        if a is None or t is None:
+            continue
+        key = (a, t)
+        if key not in index:
+            index[key] = p
+    return index
+
+
+def publish_edition(final_dir: Path, dest_root: Path) -> Path:
+    """Move the finished encode into the edition's own library.
+
+    Grey's instruction 2026-09-14: the car edition belongs in
+    Libraries/CAR_Library, not buried in RUNS/AAC-Car-Masked/_output/.
+
+    RUNS is a working area -- staging symlinks, the raw encode, the masked
+    pass -- and the two stages have to stay separate because masking reads
+    what encoding wrote. So the working dirs stay where they are and the
+    FINISHED tree is published here at the end.
+
+    The vendored encoder writes <final>/BATCH_nnn/<Artist>/<Album>/file.
+    That BATCH layer is its own bookkeeping and is dropped: the edition
+    mirrors the masters' Artist/Album shape, so it stays diffable against
+    them. A rebuild overwrites its own previous output rather than
+    accumulating copies.
+
+    Moved rather than copied -- a second full copy of the edition costs
+    real disk for no benefit, and RUNS is not where it lives.
+    """
+    dest_root.mkdir(parents=True, exist_ok=True)
+    moved = skipped = 0
+    for src in sorted(final_dir.rglob("*")):
+        if not src.is_file() or src.suffix.lower() not in AUDIO_EXTENSIONS:
+            continue
+        rel = src.relative_to(final_dir).parts
+        # ONLY the encoder's per-run batch output is the edition. Its tree
+        # also holds ORPHEUS/Acoustic Treatment/, which is where it keeps its
+        # own copies of the noise beds -- working assets, not music. Publishing
+        # by "every .m4a under here" moved all six into CAR_Library on
+        # 2026-09-14 (414 MB of white/pink/brown noise filed as if it were an
+        # album). The originals in RUNS/Noise were untouched, so nothing was
+        # lost, but an edition must contain the library and nothing else.
+        if not rel[0].upper().startswith("BATCH_"):
+            skipped += 1
+            continue
+        # Keep Artist/Album/file; drop the BATCH_nnn layer.
+        tail = rel[-3:] if len(rel) >= 3 else rel
+        target = dest_root.joinpath(*tail)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(target))
+        moved += 1
+    print(f"  published {moved:,} file(s) to {dest_root}")
+    if skipped:
+        print(f"  ({skipped:,} non-batch file(s) left in place -- encoder working assets)")
+    return dest_root
+
+
+def _clean_up_on_termination() -> None:
+    """Make atexit handlers run when we are killed, not just when we exit.
+
+    atexit fires on a normal return, on an unhandled exception, and on
+    Ctrl-C (SIGINT becomes KeyboardInterrupt, which unwinds normally). It
+    does NOT fire on SIGTERM: Python's default handler terminates the
+    process immediately. So the staging tree survived every ending that
+    was not a human at a keyboard -- `timeout`, `kill`, a reboot, systemd
+    stopping the unit.
+
+    Measured 2026-09-14: a `timeout`-wrapped 12-track build was SIGTERMed
+    and left _staged_183396 behind with 12 symlinks. On the full 11,554
+    track build that is 11,554 dangling links, and a 44-hour encode is far
+    more likely to end by SIGTERM than by finishing while somebody watches.
+
+    Raising SystemExit from the handler puts us back on the normal exit
+    path, so the atexit cleanup registered above runs. 128+signum is the
+    conventional exit status for "killed by this signal".
+    """
+
+    def _exit(signum: int, _frame: object) -> None:
+        raise SystemExit(128 + signum)
+
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        # Not the main thread, or the platform lacks the signal. Arming
+        # cleanup-on-kill is a nicety; failing to arm it must never stop a
+        # build from starting.
+        with contextlib.suppress(ValueError, OSError):
+            signal.signal(sig, _exit)
+
+
+def stage_from_catalogue(
+    conn, staging_dir: Path, limit: int | None = None,
+    edition: str = "car", budget_bytes: int | None = None,
+) -> tuple[list[Path], list, dict[Path, object], int]:
+    """Symlink the MASTER behind every CATALOGUED row into *staging_dir*.
+
+    "Master" is meant literally, and did not used to be: this linked
+    `t.file_path`, which after the LUFS bake names the -18 ALAC_Library copy
+    for every baked row -- so the car edition was being built out of the
+    lossless edition, which the scope forbids. Resolved through
+    editions.master_path_for since 2026-09-14 on Grey's ruling.
+
+    The vendor encoder discovers work by walking a directory with
+    rglob("*.m4a") and accepts no file list, so aiming it straight at
+    ALAC_Archive is not an option: the review folders now live inside the
+    archive, and DUPES_MOVED_FOR_REVIEW / TRIBUTE_REMOVED_FOR_REVIEW hold
+    masters deliberately set aside. Walking the archive would encode
+    removed knock-offs back into the car and quietly undo the removal.
+
+    So the catalogue decides, not the filesystem. Selection returns only
+    CATALOGUED rows, which by definition excludes anything quarantined,
+    staged for dupe review, or gone.
+
+    Symlinks rather than copies: 453 GB of masters staged by reference
+    costs nothing and cannot modify the originals. rglob sees a symlink to
+    a file as a file, and ffmpeg reads through it.
+    """
+    from musaeus.editions import (
+        EDITIONS,
+        master_path_for,
+        output_path_for,
+        select_edition,
+    )
+
+    spec = EDITIONS[edition]
+    sel = select_edition(conn, spec, budget_bytes=budget_bytes)
+    if sel.skipped_for_budget:
+        print(f"  {len(sel.skipped_for_budget):,} track(s) do not fit the "
+              f"{budget_bytes / 1_000_000_000:.0f} GB budget; lowest-priority "
+              "genres are dropped first.")
+    tracks = sel.included[:limit] if limit else sel.included
+
+    # Every edition is built from the MASTERS, never from another edition
+    # (Grey's ruling 2026-09-14). A baked row's file_path follows the
+    # edition, so after the LUFS bake it names the -18 library copy; linking
+    # that would build the car edition out of the lossless edition. See
+    # editions.master_path_for.
+    cfg = get_config()
+    staged: list[Path] = []
+    # Which catalogue row each staged link came from. Selection already knows
+    # this; the encode phase used to re-derive it with
+    # `WHERE file_path = <resolved link target>`, which silently stopped
+    # matching the moment the link began resolving to the MASTER rather than
+    # to the row's own file_path. Carrying the row is both correct and what
+    # that code's own comment already claimed it was doing.
+    link_to_track: dict[Path, object] = {}
+    from_master = fell_back = 0
+    for t in tracks:
+        res = master_path_for(t.file_path, cfg.alac_library, cfg.alac_archive)
+        src = res.path
+        if not src.is_file():
+            continue
+        if res.is_master:
+            from_master += 1
+        else:
+            fell_back += 1
+        link = output_path_for(t, spec, staging_dir)
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(src)
+        staged.append(link)
+        link_to_track[link] = t
+
+    print(f"  sourced from masters: {from_master:,}")
+    if fell_back:
+        # Never silent. A fallback means this many tracks are being built
+        # from an edition rather than from a master, which is the thing the
+        # ruling forbids -- the operator has to be told, not reassured.
+        print(f"  ! {fell_back:,} track(s) have NO master on disk and were "
+              f"sourced from their library copy instead (-18 LUFS, not a master).")
+    # fell_back is returned, not just printed: a track built from the -18
+    # library copy instead of its master is the scope rule being broken,
+    # and the handoff must be able to say so.
+    return staged, tracks, link_to_track, fell_back
 
 
 def main() -> int:
+    # Keep the machine awake for the whole run without touching the X11
+    # idle counter the throttle reads. See musaeus/sleep_inhibit.py.
+    reexec_under_inhibitor("car/iPhone edition build in progress")
     parser = argparse.ArgumentParser(
         description="MUSAEUS Car-Library Export -- AAC encode + optional noise masking"
     )
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--mask", action="store_true", help="Apply noise masking, skip the prompt")
     group.add_argument("--no-mask", action="store_true", help="Skip masking, skip the prompt")
+    parser.add_argument("--from-catalogue", action="store_true",
+                        help="Build from every CATALOGUED master rather than from "
+                             "files hand-dropped into the input folder")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Report the plan and encode nothing")
+    parser.add_argument("--limit", type=int, metavar="N", default=None,
+                        help="Stage at most N tracks (for a test build)")
+    parser.add_argument("--edition", choices=("car", "iphone"), default="car",
+                        help="Which edition to build. iPhone is the same format "
+                             "(AAC 256k, -14 LUFS, <=48 kHz) with a size budget "
+                             "and no masking -- headphones have no road noise to "
+                             "mask. Not a fourth script with its own spelling of "
+                             "--execute; an edition differing only in selection.")
+    parser.add_argument("--budget-gb", type=float, metavar="GB", default=None,
+                        help="Device budget. Required in practice for iphone: "
+                             "81.7 GB of library does not fit a 30 GB phone.")
     args = parser.parse_args()
+
+    # --limit and --budget-gb only do anything inside the --from-catalogue
+    # branch, where selection happens. Outside it they were silently ignored:
+    # `--limit 5` over hand-dropped files encoded all of them. Reject rather
+    # than ignore -- a flag that is quietly dropped is worse than one that
+    # errors, because the operator believes it took effect. (M-05.)
+    if not args.from_catalogue:
+        ignored = [n for n, v in (("--limit", args.limit),
+                                  ("--budget-gb", args.budget_gb)) if v is not None]
+        if ignored:
+            parser.error(
+                f"{' and '.join(ignored)} only applies with --from-catalogue; "
+                "selection happens there. Re-run with --from-catalogue, or drop "
+                "the flag.")
 
     cfg = get_config()
     input_dir = cfg.runs_root / "AAC-Car-Masked"
@@ -134,7 +384,64 @@ def main() -> int:
 
     input_dir.mkdir(parents=True, exist_ok=True)
 
-    files = find_input_files(input_dir)
+    # Defined before the branch, not inside it. The handoff at the end reads
+    # this unconditionally, and a run WITHOUT --from-catalogue (files dropped
+    # in by hand) would otherwise raise NameError after doing every minute of
+    # the encoding -- the worst possible moment to discover a typo.
+    # Hand-dropped files have no catalogue row and so no master to fall back
+    # from; zero is the honest value, not a placeholder.
+    fell_back_count = 0
+
+    if args.from_catalogue:
+        # Per-process staging. A shared "_staged" is not safe: this function
+        # rmtree's it on entry and again after a dry run, so a preview run
+        # deletes the symlink tree a LIVE encode is reading from. That
+        # happened 2026-09-01 -- an iPhone dry run pulled the staging out
+        # from under a running Car build at file 4,860, and the encoder
+        # spent the next 3,713 files reporting "No such file or directory".
+        # The encode was unharmed (already-converted output is skipped on a
+        # re-run) but hours of wall clock were lost to a preview.
+        staging_dir = input_dir / f"_staged_{os.getpid()}"
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir)
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        # Remove THIS run's tree however the run ends -- success, error or
+        # Ctrl-C. Before this, it was cleaned only on entry (which a fresh
+        # PID never satisfies) and after a dry run, so every successful build
+        # left one behind for ever.
+        #
+        # Deliberately only this PID's tree. The per-process naming exists
+        # because a shared "_staged" let one run delete the symlinks another
+        # was reading; sweeping other PIDs' trees here would reintroduce
+        # exactly that, and a concurrent build is the normal case on this
+        # machine. Trees left by dead processes are made harmless by
+        # find_input_files() instead, and can be removed by hand.
+        atexit.register(shutil.rmtree, staging_dir, ignore_errors=True)
+        _clean_up_on_termination()
+        conn_sel = open_db(cfg.db_path)
+        try:
+            files, tracks, link_to_track, fell_back_count = stage_from_catalogue(
+                conn_sel, staging_dir, args.limit,
+                edition=args.edition,
+                budget_bytes=int(args.budget_gb * 1_000_000_000) if args.budget_gb else None,
+            )
+        finally:
+            conn_sel.close()
+        input_dir = staging_dir
+        est_gb = sum(
+            t.duration * 256 * 1000 / 8 * 1.02 for t in tracks
+        ) / 1_000_000_000
+        print(f"Staged {len(files):,} master(s) from the catalogue "
+              f"(~{est_gb:.1f} GB of AAC to write).")
+        if args.dry_run:
+            print("\n[DRY RUN] Nothing encoded. First 10 of the plan:")
+            for t in tracks[:10]:
+                print(f"    [{t.genre or '-'}] {t.artist} — {t.title}")
+            print(f"\n    ... {len(tracks):,} track(s) total.")
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            return 0
+    else:
+        files = find_input_files(input_dir)
     if not files:
         print(f"No audio files found in {input_dir}")
         print("Place the ALAC/FLAC files you want converted there and re-run.")
@@ -144,7 +451,30 @@ def main() -> int:
     for f in files:
         print(f"  {f.name}")
 
-    if args.mask:
+    # --dry-run must stop EVERY path, not just the catalogue one.
+    #
+    # M-05: the only dry-run check lived inside `if args.from_catalogue:`, so
+    # a preview over hand-dropped files fell into the else branch and ran for
+    # real -- the masking prompt, an audio_hash of every input (a full decode
+    # each), the encode itself, and the database write at the end. The help
+    # text says "Report the plan and encode nothing" and states no dependency
+    # on another flag; argparse enforced none.
+    #
+    # This guard sits after both branches have produced `files` and before
+    # anything reads, decodes, prompts or writes, so the flag now means what
+    # it says whichever mode it is used in.
+    if args.dry_run:
+        print(f"\n[DRY RUN] Nothing encoded. {len(files):,} file(s) would be "
+              f"processed for the {args.edition} edition.")
+        print("    Nothing was read, decoded, prompted for or written.")
+        return 0
+
+    if args.edition == "iphone" and not args.mask:
+        # Masking exists to sit under road noise in a car. On headphones it
+        # is just noise mixed into the music.
+        apply_masking = False
+        print("iPhone edition: masking off (no cabin noise to mask).")
+    elif args.mask:
         apply_masking = True
     elif args.no_mask:
         apply_masking = False
@@ -157,31 +487,68 @@ def main() -> int:
     # only matches files that are already real CATALOGUED library content,
     # not arbitrary drops).
     cfg_db = open_db(cfg.db_path)
+    # An encode runs for hours and only writes to the DB at the very end.
+    # Losing that write to a lock means the files are on disk but unrecorded,
+    # and the next run re-encodes all of them. Measured 2026-08-31: a 5-track
+    # build died with "database is locked" because an acousticid drain held
+    # the write lock -- the audio was fine, the bookkeeping was gone. Wait for
+    # the lock rather than throwing away the work.
+    cfg_db.execute("PRAGMA busy_timeout = 300000")  # 5 minutes
     source_rows: dict[Path, dict | None] = {}
-    for src in files:
-        digest, err = audio_hash_safe(src)
-        if err or not digest:
-            print(f"  WARNING: could not hash {src.name}: {err}")
-            source_rows[src] = None
-            continue
-        row = cfg_db.execute(
-            "SELECT file_path, artist, title FROM archive WHERE audio_hash = ?", (digest,)
-        ).fetchone()
-        source_rows[src] = dict(row) if row else None
-        if row is None:
-            print(f"  WARNING: {src.name} has no matching archive row (not a known MUSAEUS file)")
+    if args.from_catalogue:
+        # The staged entries are symlinks to masters we selected FROM the
+        # database, so the row is already known. Re-deriving it by hashing
+        # would decode all 10,545 files to rediscover what selection just
+        # told us -- hours of CPU to answer a question we already answered.
+        for link in files:
+            t = link_to_track.get(Path(link))
+            if t is None:
+                source_rows[Path(link)] = None
+                print(f"  WARNING: staged {Path(link).name} has no catalogue row")
+                continue
+            # file_path is the ROW's path (the edition copy for a baked row),
+            # not the master the link resolves to -- it is the key every other
+            # table and query uses, so it is what must be written back.
+            source_rows[Path(link)] = {
+                "file_path": t.file_path, "artist": t.artist, "title": t.title,
+            }
+    else:
+        # Hand-dropped files: identity has to be rediscovered from the audio
+        # itself, because nothing says where they came from.
+        for src in files:
+            digest, err = audio_hash_safe(src)
+            if err or not digest:
+                print(f"  WARNING: could not hash {src.name}: {err}")
+                source_rows[src] = None
+                continue
+            row = cfg_db.execute(
+                "SELECT file_path, artist, title FROM archive WHERE audio_hash = ?", (digest,)
+            ).fetchone()
+            source_rows[src] = dict(row) if row else None
+            if row is None:
+                print(f"  WARNING: {src.name} has no matching archive row "
+                      "(not a known MUSAEUS file)")
 
     # Stage 1: encode
     encoded_dir.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env["ORPHEUS_AAC_INPUT_DIR"] = str(input_dir)
     env["ORPHEUS_AAC_OUTPUT_DIR"] = str(encoded_dir)
+    # Also needed by the encode step's copy_noise_tracks(), not just by the
+    # masker below -- without it the vendor falls back to ORPHEUS's RUNS.
+    env["ORPHEUS_NOISE_DIR"] = str(cfg.runs_root / "Noise")
     print("\n=== Encoding (ALAC/FLAC -> 256k AAC) ===")
-    result = subprocess.run(
-        [sys.executable, str(VENDOR_DIR / "build_aac_library.py"), "--profile", "car", "--apply"],
-        cwd=str(VENDOR_DIR),
-        env=env,
-    )
+    # A full edition is ~44 h of ffmpeg and drives load past 9 on 8 cores.
+    # Always on: it costs nothing when the machine is idle, and it is the
+    # difference between a build you can leave running and one you cannot
+    # use the machine through. MUSAEUS_NO_IDLE_THROTTLE=1 opts out.
+    with IdleThrottle():
+        result = subprocess.run(
+            [sys.executable, str(VENDOR_DIR / "build_aac_library.py"),
+             "--profile", "car", "--apply"],
+            cwd=str(VENDOR_DIR),
+            env=env,
+        )
     if result.returncode != 0:
         print("Encode step failed -- aborting.", file=sys.stderr)
         cfg_db.close()
@@ -195,14 +562,15 @@ def main() -> int:
         env = os.environ.copy()
         env["ORPHEUS_NOISE_DIR"] = str(cfg.runs_root / "Noise")
         print("\n=== Masking (mixing car-cabin noise under tracks) ===")
-        result = subprocess.run(
-            [
-                sys.executable, str(VENDOR_DIR / "orpheus_noise_masker.py"),
-                "--apply", "--src", str(encoded_dir), "--out", str(masked_dir), "--yes",
-            ],
-            cwd=str(VENDOR_DIR),
-            env=env,
-        )
+        with IdleThrottle():
+            result = subprocess.run(
+                [
+                    sys.executable, str(VENDOR_DIR / "orpheus_noise_masker.py"),
+                    "--apply", "--src", str(encoded_dir), "--out", str(masked_dir), "--yes",
+                ],
+                cwd=str(VENDOR_DIR),
+                env=env,
+            )
         if result.returncode != 0:
             print("Masking step failed -- output stops at the unmasked encode.", file=sys.stderr)
         else:
@@ -213,8 +581,15 @@ def main() -> int:
     # car_export_path/noise_profile -- same mechanism curator.py uses
     # (UPDATE archive SET car_export_path=?, noise_profile=? WHERE
     # file_path=?), scoped only to files this run actually touched.
+    # Publish into the edition's library before recording paths, so
+    # car_export_path names where the file actually lives rather than a
+    # working directory that the next run overwrites.
+    dest_root = cfg.iphone_library if args.edition == "iphone" else cfg.car_library
+    final_dir = publish_edition(final_dir, dest_root)
+
     updated = 0
     unmatched: list[tuple[Path, str]] = []
+    output_index = _index_output_by_tags(final_dir)
     for src in files:
         row = source_rows.get(src)
         if row is None:
@@ -225,7 +600,7 @@ def main() -> int:
         if not artist or not title:
             unmatched.append((src, "archive row missing artist/title tags to match against"))
             continue
-        out_path = _find_output_by_tags(final_dir, artist, title)
+        out_path = output_index.get((artist, title))
         if out_path is None:
             unmatched.append((src, f"no output file found under {final_dir} matching artist/title tags"))
             continue
@@ -245,6 +620,39 @@ def main() -> int:
 
     print(f"\nOutput: {final_dir}")
     print("Run `musaeus playlist` to regenerate playlists including this export.")
+
+    # This build runs for tens of hours and will outlive any session watching
+    # it. Without this it finishes into a scrolled terminal and leaves no
+    # account of itself at all -- which is the whole reason the handoff
+    # documents exist.
+    problems = [f"{src.name}: {reason}" for src, reason in unmatched]
+    if fell_back_count:
+        problems.append(
+            f"{fell_back_count:,} track(s) had NO master on disk and were built from "
+            "their -18 LUFS library copy instead. An edition is supposed to come from "
+            "the masters; these did not."
+        )
+    hand = write_tool_handoff(
+        cfg.runs_root,
+        f"{args.edition}_build",
+        summary={
+            "edition": args.edition,
+            "masking": "applied" if noise_profile != "clean" else "none",
+            "tracks staged": len(files),
+            "recorded in the catalogue": updated,
+            "could not be matched": len(unmatched),
+            "published to": str(final_dir),
+        },
+        notes=[
+            "Built from the MASTERS in ALAC-Archival, never from another edition "
+            "(scope: no edition is ever built from another).",
+            "car_export_path and noise_profile are written per row, so "
+            "`musaeus playlist` can prefer this export.",
+        ],
+        problems=problems,
+    )
+    if hand:
+        print(f"-> {hand}   (paste this into any AI session)")
     return 0
 
 

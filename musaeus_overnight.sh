@@ -186,10 +186,17 @@ FAILED_STAGES=""
 # every stage below (ghost/run/curator) supports it.
 run_stage() {
     local stage="$1"
+    shift
+    # Extra arguments are forwarded. Before 2026-08-22 this function read
+    # only $1 and dropped everything after it, so `run_stage run --skip
+    # dupe-resolver` would have run the FULL pipeline while the script
+    # looked like it was skipping a stage -- silently, and with the exact
+    # unattended behaviour the flag exists to prevent.
+    local extra=("$@")
     echo "──────────────────────────────────────────────────────────────"
-    echo "  Stage: ${stage}  — $(date '+%H:%M:%S')"
+    echo "  Stage: ${stage} ${extra[*]}  — $(date '+%H:%M:%S')"
     echo "──────────────────────────────────────────────────────────────"
-    if python3 -m musaeus "${stage}" ${DRY_FLAG} 2>&1; then
+    if python3 -m musaeus "${stage}" "${extra[@]}" ${DRY_FLAG} 2>&1; then
         echo "  ✓ ${stage} complete — $(date '+%H:%M:%S')"
         PASSED=$((PASSED + 1))
     else
@@ -219,6 +226,28 @@ fi
 # 2026-08-17 (previously separate steps below -- see the REMOVED note at
 # the top of this file). Canonicalize briefly ran ahead of dedup
 # 2026-08-17, reverted 2026-08-18 -- see __init__.py's module docstring.
+# --skip dupe-resolver REMOVED again 2026-08-23 (Grey's call), and the
+# reasoning changed rather than reversed.
+#
+# It was pulled on 08-22 because an unattended pass resolved 7,679 staged
+# groups and moved 6,480 files using a keeper rule that was only "lossless,
+# then bitrate" -- it had no way to know which copy Grey wanted. Since then
+# the rule encodes his actual preferences: lossless over lossy, original
+# over remaster, studio over live, then bitrate. NearDupe also no longer
+# groups different movements of a classical work as duplicates.
+#
+# So the objection was never to automation; it was to automating a decision
+# the code could not yet make correctly. History kept below.
+#
+# ---- previous note (2026-08-22) ----
+#
+# The 2026-08-22 06:00 run resolved 7,679 near-duplicate groups and
+# physically relocated 6,480 files, unattended. Those groups were staged
+# FOR REVIEW: MUSAEUS's documented rule is that exact/near duplicates are
+# never auto-resolved, and every interactive path honoured it while this
+# scheduled one quietly did the opposite. Detecting duplicates overnight is
+# useful; acting on them without a human is not. NearDupe/CrossDupe still
+# run and still stage their findings -- `musaeus dedupe` reviews them.
 run_stage run
 
 # Phase 2: Export (only when explicitly requested + disk space available)

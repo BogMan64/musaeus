@@ -1,0 +1,19 @@
+archive statuses:
+  CATALOGUED      16138
+  DELETED         10959
+  GHOST            3208
+  DUPE_REVIEW        51
+  PENDING             1
+events: 894275 rows, 95 distinct event_type values
+
+tiers:
+  ALAC_Archive    15820 files  592G
+  ALAC-Library    14855 files  613G
+  CAR_Library     10036 files  72G
+
+authorities:
+  MasterLaw.csv            3472 rows
+  artist_canon.tsv         263 entries
+  Genre_Allowed.txt        49 genres
+  Genre_Canonical_Map.txt  207 mappings
+  denied_hashes            19 entries

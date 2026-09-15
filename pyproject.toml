@@ -21,6 +21,7 @@ dev = [
     "pytest-cov",
     "ruff",
     "mypy>=1.5",
+    "semgrep",
 ]
 fuzzy = [
     "rapidfuzz>=3",
@@ -44,6 +45,20 @@ include = ["musaeus*"]
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+
+# Vendored ORPHEUS code is NOT excluded from ruff, deliberately.
+#
+# It was, on the stated grounds that the tree is "kept byte-identical to
+# upstream so it can be re-synced without conflicts". Measured 2026-09-08:
+# upstream's build_aac_library.py is 461 lines and this copy is 980, and
+# seven repairs landed in it that day alone (M-01, M-02, M-03, M-06, M-07,
+# M-08, M-12). Byte-identity was already gone, so the exclusion bought no
+# re-sync while costing 16 unseen lint errors -- the worst of each.
+#
+# The fork is accepted. That is the whole content of this decision: this is
+# MUSAEUS's copy now, it is maintained here, and it is linted like the rest
+# of the tree. Re-syncing from ORPHEUS was never going to be a clean pull
+# again; pretending otherwise hid real defects for weeks. (M-15.)
 
 [tool.ruff.lint]
 select = [
