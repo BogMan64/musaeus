@@ -281,6 +281,34 @@ def _choose(candidates: list[tuple]) -> Answer:
     )
 
 
+def ask_with_article_fallback(fn, artist: str, title: str, throttle: Throttle) -> Answer:
+    """Ask a source, and if it knows nothing, ask again without the article.
+
+    natural_form() turns the stored "Eagles, The" into "The Eagles", which
+    rescued 1,071 rows that every source had refused. But some bands are
+    canonically credited WITHOUT the article, and then the fix is the bug:
+
+        measured 2026-09-15
+        "The Eagles" + "Hotel California"  -> iTunes '' , Deezer ''
+        "Eagles"     + "Hotel California"  -> iTunes 'Selected Works', Deezer 'The Eagles'
+        "The Traveling Wilburys"           -> MusicBrainz 0 recordings
+        "Traveling Wilburys"               -> MusicBrainz 3 recordings
+
+    So neither form is right for every artist, and no table will tell us
+    which is which. Asking is cheap and only happens on a miss: the second
+    request is made ONLY when the first returned nothing at all, so the
+    common case still costs one request against MusicBrainz's 1/second.
+
+    Applied to all three sources in one place rather than three copies --
+    this codebase has been bitten repeatedly by the same rule living in
+    several modules and drifting apart.
+    """
+    got = fn(artist, title, throttle)
+    if got.album or not artist.lower().startswith("the "):
+        return got
+    return fn(artist[4:], title, throttle)
+
+
 def ask_musicbrainz(artist: str, title: str, throttle: Throttle, **_kw) -> Answer:
     """Third source, free and keyless.
 
@@ -300,22 +328,9 @@ def ask_musicbrainz(artist: str, title: str, throttle: Throttle, **_kw) -> Answe
             + "&fmt=json&limit=15"
         ) or {}
 
+    # The article retry lives in ask_with_article_fallback, which wraps all
+    # three sources -- one rule, one place.
     data = _search(artist)
-
-    # MusicBrainz canonicalises SOME artists without the leading article, and
-    # the quoted phrase search is exact -- so the natural form that rescued
-    # iTunes and Deezer can return nothing here. Measured 2026-09-15:
-    #   artist:"Traveling Wilburys"     -> 3 recordings
-    #   artist:"The Traveling Wilburys" -> 0
-    # One cheap retry without the article, only when the first try found
-    # nothing at all, so the common case still costs one request.
-    #
-    # Deliberately NOT applied everywhere: hit rates measured the same day
-    # were 59% for "The X" artists against 60% for the rest, so this is a
-    # minority of artists, not a systematic break. Retrying every query
-    # would double the slowest source's request count to fix a few percent.
-    if not (data.get("recordings") or []) and artist.lower().startswith("the "):
-        data = _search(artist[4:])
     want_title = fold(title, strip_noise=True)
     # comparison_key, not fold: it makes every form of one name compare
     # equal, so "The Traveling Wilburys" matches MusicBrainz's credit of
@@ -657,7 +672,9 @@ def main(argv: list[str] | None = None) -> int:
                 hit = cache_get(con, lookup_artist, title, source)
                 if hit is None and not args.offline:
                     try:
-                        hit = fn(lookup_artist, title, throttle)
+                        hit = ask_with_article_fallback(
+                            fn, lookup_artist, title, throttle
+                        )
                     except FetchError as exc:
                         # A transport failure is NOT an answer. Caching it
                         # would record "this source has nothing for this

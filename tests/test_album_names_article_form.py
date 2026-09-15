@@ -158,3 +158,78 @@ class TestMusicBrainzUsesTheArticleInsensitiveKey:
         src = inspect.getsource(m.ask_musicbrainz)
         assert "comparison_key" in src
         assert "fold((c.get" not in src, "the artist credit must not be matched by exact fold"
+
+
+class TestTheArticleFallbackAppliesToEverySource:
+    """Neither form of a name is right for every artist.
+
+    natural_form() turns "Eagles, The" into "The Eagles" and rescued 1,071
+    rows that every source had refused. For some bands that same fix is the
+    bug, because they are canonically credited WITHOUT the article:
+
+        measured 2026-09-15
+        "The Eagles" + "Hotel California" -> iTunes '', Deezer ''
+        "Eagles"     + "Hotel California" -> iTunes and Deezer both answer
+        "The Traveling Wilburys" -> MusicBrainz 0 recordings
+        "Traveling Wilburys"     -> MusicBrainz 3
+
+    No table says which artists are which, so the only honest move is to ask
+    again. One wrapper for all three sources -- this codebase has been bitten
+    repeatedly by one rule living in several modules and drifting.
+    """
+
+    def test_a_hit_on_the_first_try_costs_one_call(self):
+        from propose_album_names import Answer, Throttle, ask_with_article_fallback
+
+        calls = []
+
+        def fake(artist, title, throttle):
+            calls.append(artist)
+            return Answer(album="Hotel California", source="itunes")
+
+        got = ask_with_article_fallback(fake, "The Eagles", "x", Throttle(0))
+        assert got.album == "Hotel California"
+        assert calls == ["The Eagles"], "a source that answered must not be asked twice"
+
+    def test_a_miss_retries_without_the_article(self):
+        from propose_album_names import Answer, Throttle, ask_with_article_fallback
+
+        calls = []
+
+        def fake(artist, title, throttle):
+            calls.append(artist)
+            return Answer(album="Desperado") if artist == "Eagles" else Answer()
+
+        got = ask_with_article_fallback(fake, "The Eagles", "x", Throttle(0))
+        assert got.album == "Desperado"
+        assert calls == ["The Eagles", "Eagles"]
+
+    def test_an_artist_without_an_article_is_never_retried(self):
+        """The retry doubles the request count against a 1/second budget, so
+        it must fire only where it could possibly help."""
+        from propose_album_names import Answer, Throttle, ask_with_article_fallback
+
+        calls = []
+
+        def fake(artist, title, throttle):
+            calls.append(artist)
+            return Answer()
+
+        ask_with_article_fallback(fake, "Fleetwood Mac", "x", Throttle(0))
+        assert calls == ["Fleetwood Mac"]
+
+    def test_both_misses_return_an_empty_answer_not_a_crash(self):
+        from propose_album_names import Answer, Throttle, ask_with_article_fallback
+
+        got = ask_with_article_fallback(
+            lambda a, t, th: Answer(), "The Nobodies", "x", Throttle(0)
+        )
+        assert got.album == ""
+
+    def test_the_loop_actually_uses_the_wrapper(self):
+        """A unit test on the wrapper cannot catch the caller bypassing it."""
+        import inspect
+
+        import propose_album_names as m
+
+        assert "ask_with_article_fallback(" in inspect.getsource(m.main)
