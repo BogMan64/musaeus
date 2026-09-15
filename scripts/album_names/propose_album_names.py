@@ -46,8 +46,27 @@ required for the owner of the app" -- a token is not permission to search,
 and no code change fixes an account requirement. MusicBrainz needs no key at
 all, and ORPHEUS used it for this same job. Its own relevance score is NOT
 trusted: a search for Fleetwood Mac's "Dreams" returns "Mac dreams" at score
-100. Matching is by the same strict artist/title folding used for the other
-two.
+100.
+
+**Release types: CONFIRMED against the live API 2026-09-15.** The recording
+search does return `release-group` with `primary-type` and `secondary-types`
+inside each release -- verified directly, e.g. Queen's "Play the Game" comes
+back with "Golden Collection, Vol. 2" as Album+[Compilation] and "Queen on
+Fire" as Album+[Live]. So "is this a compilation" is answered by the source
+rather than guessed from the title, and the guess is used only where the
+source is silent. (This had been suspected absent, because a repair pass
+found 0 studio albums in 22 tries. Those 22 genuinely have no studio album:
+they are live cuts, single edits and soundtrack singles.)
+
+**The article is not the same on every source.** MusicBrainz canonicalises
+SOME artists without the leading "The" and its quoted phrase search is
+exact, so the natural form that rescued iTunes and Deezer returns nothing
+there: artist:"Traveling Wilburys" finds 3 recordings, artist:"The
+Traveling Wilburys" finds 0. Handled by one retry without the article, and
+by comparing artist credits with artist_form.comparison_key rather than an
+exact fold. Measured the same day: 59% of "The X" artists got an album from
+MusicBrainz against 60% of the rest, so this is a minority of artists, not a
+systematic break.
 """
 
 from __future__ import annotations
@@ -74,7 +93,7 @@ VERSION = "3.0"
 # from a checkout, which is how the console and the docs invoke it.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from musaeus.artist_form import natural_form  # noqa: E402
+from musaeus.artist_form import comparison_key, natural_form  # noqa: E402
 from musaeus.brackets import CLOSE, OPEN  # noqa: E402
 from musaeus.db import ensure_columns  # noqa: E402
 from musaeus.handoff import write_tool_handoff  # noqa: E402
@@ -272,23 +291,50 @@ def ask_musicbrainz(artist: str, title: str, throttle: Throttle, **_kw) -> Answe
     iTunes and Deezer, then handed to _choose, which already prefers the
     earliest non-compilation release.
     """
-    throttle.wait("musicbrainz")
-    query = f'artist:"{artist}" AND recording:"{title}"'
-    url = (
-        "https://musicbrainz.org/ws/2/recording?query="
-        + urllib.parse.quote(query)
-        + "&fmt=json&limit=15"
-    )
-    data = _get_json(url) or {}
+    def _search(name: str) -> dict:
+        throttle.wait("musicbrainz")
+        query = f'artist:"{name}" AND recording:"{title}"'
+        return _get_json(
+            "https://musicbrainz.org/ws/2/recording?query="
+            + urllib.parse.quote(query)
+            + "&fmt=json&limit=15"
+        ) or {}
+
+    data = _search(artist)
+
+    # MusicBrainz canonicalises SOME artists without the leading article, and
+    # the quoted phrase search is exact -- so the natural form that rescued
+    # iTunes and Deezer can return nothing here. Measured 2026-09-15:
+    #   artist:"Traveling Wilburys"     -> 3 recordings
+    #   artist:"The Traveling Wilburys" -> 0
+    # One cheap retry without the article, only when the first try found
+    # nothing at all, so the common case still costs one request.
+    #
+    # Deliberately NOT applied everywhere: hit rates measured the same day
+    # were 59% for "The X" artists against 60% for the rest, so this is a
+    # minority of artists, not a systematic break. Retrying every query
+    # would double the slowest source's request count to fix a few percent.
+    if not (data.get("recordings") or []) and artist.lower().startswith("the "):
+        data = _search(artist[4:])
     want_title = fold(title, strip_noise=True)
-    want_artist = fold(artist)
+    # comparison_key, not fold: it makes every form of one name compare
+    # equal, so "The Traveling Wilburys" matches MusicBrainz's credit of
+    # "Traveling Wilburys". fold() is exact, and rejected every candidate
+    # the article-fallback search had just found -- the retry succeeded and
+    # the filter threw the results away. comparison_key is the codebase's
+    # own answer to this and it guards "De La Soul" and "Peter, Paul and
+    # Mary" from being mangled, which a fresh regex here would not.
+    want_artist = comparison_key(artist)
 
     candidates = []
     for rec in data.get("recordings") or []:
         if fold(rec.get("title", ""), strip_noise=True) != want_title:
             continue
         credits = rec.get("artist-credit") or []
-        if not any(fold((c.get("artist") or {}).get("name", "")) == want_artist for c in credits):
+        if not any(
+            comparison_key((c.get("artist") or {}).get("name", "")) == want_artist
+            for c in credits
+        ):
             continue
         for rel in rec.get("releases") or []:
             album = rel.get("title", "") or ""

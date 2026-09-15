@@ -104,3 +104,57 @@ class TestMusicBrainzPacing:
         t = Throttle(3.0)
         assert t.gap_for("itunes") == pytest.approx(3.0)
         assert t.gap_for("musicbrainz") == pytest.approx(3.0)
+
+
+class TestMusicBrainzUsesTheArticleInsensitiveKey:
+    """The article is not the same on every source.
+
+    natural_form() rescued iTunes and Deezer -- 1,071 rows that had returned
+    nothing. MusicBrainz is the other way for SOME artists: it canonicalises
+    without the leading "The" and its quoted phrase search is exact, so
+    adding the article returns nothing at all. Measured 2026-09-15:
+
+        artist:"Traveling Wilburys"      -> 3 recordings
+        artist:"The Traveling Wilburys"  -> 0
+
+    Two fixes were needed and the first alone did nothing. Retrying the
+    SEARCH without the article found the recordings; the artist-credit
+    FILTER then threw them all away, because fold("The Traveling Wilburys")
+    is not fold("Traveling Wilburys"). comparison_key is the codebase's own
+    answer -- every form of one name compares equal -- and it protects
+    "De La Soul" and "Peter, Paul and Mary" from being mangled, which a
+    fresh regex here would not.
+    """
+
+    @pytest.mark.parametrize(
+        "ours,theirs",
+        [
+            ("The Traveling Wilburys", "Traveling Wilburys"),
+            ("The Beatles", "Beatles, The"),
+            ("Beatles, The", "The Beatles"),
+        ],
+    )
+    def test_every_form_of_a_name_compares_equal(self, ours, theirs):
+        from musaeus.artist_form import comparison_key
+
+        assert comparison_key(ours) == comparison_key(theirs)
+
+    @pytest.mark.parametrize("name", ["De La Soul", "Los Lobos", "Peter, Paul and Mary"])
+    def test_a_name_that_is_not_an_article_form_is_not_mangled(self, name):
+        """The reason to reuse comparison_key instead of a local regex:
+        tribute_quarantine grew its own and turned "Healing, The" into
+        "healing", which then missed the protected entry "the healing"."""
+        from musaeus.artist_form import comparison_key
+
+        assert comparison_key(name) == name.lower()
+
+    def test_the_filter_uses_comparison_key_not_an_exact_fold(self):
+        """Guards the half that was missed: the retry search succeeded and
+        the filter discarded its results anyway."""
+        import inspect
+
+        import propose_album_names as m
+
+        src = inspect.getsource(m.ask_musicbrainz)
+        assert "comparison_key" in src
+        assert "fold((c.get" not in src, "the artist credit must not be matched by exact fold"
