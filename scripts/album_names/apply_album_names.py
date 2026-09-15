@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime
 import sqlite3
 import sys
 from pathlib import Path
@@ -59,8 +60,21 @@ def apply_rows(
     tiers: tuple[str, ...],
     *,
     live: bool,
+    run_id: str | None = None,
 ) -> dict[str, int]:
-    """Apply proposals, returning a tally of what happened to each row."""
+    """Apply proposals, returning a tally of what happened to each row.
+
+    `run_id` groups this apply's events, matching the convention the rest of
+    the vault uses (`lufs_bake_20260914T122238Z` and friends). events.run_id
+    is NOT NULL in the real schema; omitting it aborted the first live apply
+    on 2026-09-14 with an IntegrityError -- cleanly, nothing written, but the
+    unit tests had passed because their fixture table did not carry the
+    constraint. A fixture looser than production is a test that agrees with
+    you for the wrong reason.
+    """
+    if run_id is None:
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        run_id = f"album_names_{stamp}"
     tally = {
         "considered": 0,
         "written": 0,
@@ -102,9 +116,10 @@ def apply_rows(
             )
             if log_events:
                 conn.execute(
-                    "INSERT INTO events (event_type, file_path, old_value, new_value, note) "
-                    "VALUES (?,?,?,?,?)",
+                    "INSERT INTO events (run_id, event_type, file_path, old_value, new_value, note) "
+                    "VALUES (?,?,?,?,?,?)",
                     (
+                        run_id,
                         "ALBUM_NAME_APPLIED",
                         row.get("file_path", ""),
                         "",
@@ -169,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  archive_id not in the DB     {tally['row_not_found']:,}")
 
     if not args.live:
-        print(f"\nTo write these, re-run with --live:")
+        print("\nTo write these, re-run with --live:")
         print(f"  python3 {Path(__file__).name} {args.csv_path} --live")
     return 0
 

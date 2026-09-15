@@ -28,9 +28,15 @@ from apply_album_names import apply_rows  # noqa: E402
 def conn() -> sqlite3.Connection:
     c = sqlite3.connect(":memory:")
     c.execute("CREATE TABLE archive (id INTEGER PRIMARY KEY, album TEXT, file_path TEXT)")
+    # Mirrors the REAL vault schema, run_id NOT NULL included. The looser
+    # fixture that used to be here let every test pass while the first live
+    # apply died on `NOT NULL constraint failed: events.run_id`. A fixture
+    # weaker than production is a test that agrees with you for the wrong
+    # reason -- the exact failure this project keeps cataloguing.
     c.execute(
-        "CREATE TABLE events (id INTEGER PRIMARY KEY, event_type TEXT, file_path TEXT, "
-        "old_value TEXT, new_value TEXT, note TEXT)"
+        "CREATE TABLE events (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, "
+        "ts TEXT DEFAULT (datetime('now')), event_type TEXT NOT NULL, file_path TEXT, "
+        "old_value TEXT, new_value TEXT, stage TEXT, note TEXT)"
     )
     c.executemany(
         "INSERT INTO archive (id, album, file_path) VALUES (?,?,?)",
@@ -105,6 +111,17 @@ class TestItLeavesAnAuditTrail:
             "SELECT event_type, old_value, new_value FROM events"
         ).fetchone()
         assert ev == ("ALBUM_NAME_APPLIED", "", "Revolver")
+
+    def test_every_event_carries_a_run_id(self, conn):
+        """events.run_id is NOT NULL in the real vault."""
+        apply_rows(conn, [_row(1, "Revolver")], ("1-AGREED",), live=True)
+        rid = conn.execute("SELECT run_id FROM events").fetchone()[0]
+        assert rid and rid.startswith("album_names_")
+
+    def test_one_apply_groups_its_events_under_one_run_id(self, conn):
+        apply_rows(conn, [_row(1, "A"), _row(3, "B")], ("1-AGREED",), live=True)
+        ids = {r[0] for r in conn.execute("SELECT run_id FROM events")}
+        assert len(ids) == 1, "an apply is one run, not one run per row"
 
     def test_a_missing_events_table_is_not_fatal(self, conn):
         """A vault that predates the events table must still be applyable."""
