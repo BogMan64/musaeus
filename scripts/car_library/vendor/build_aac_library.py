@@ -121,7 +121,29 @@ def resolve_input_dir(profile_name: str) -> Path:
 FFMPEG = "ffmpeg"
 FFPROBE = "ffprobe"
 
-MAX_WORKERS = 4
+def _workers_default() -> int:
+    """How many tracks to encode at once.
+
+    Was a flat 4. Measured on the 2026-09-15 car build of 11,554 tracks: with
+    4 workers the machine sat at 58-60% user CPU with 35-39% IDLE and ZERO
+    I/O wait on an 8-core box -- so the limit was this constant, not the
+    hardware and not the disk. At 283 tracks/hour that build was heading for
+    ~41 hours.
+
+    Each track costs two full decodes (loudnorm measure, then encode) plus a
+    masking pass, so the work is CPU-bound and parallelises cleanly.
+
+    Leaves a core free: the idle throttle already yields to Grey when he is
+    at the keyboard, but a build that saturates every core still makes the
+    machine unpleasant in the seconds before the throttle notices.
+    """
+    env = os.environ.get("MUSAEUS_AAC_WORKERS", "").strip()
+    if env.isdigit() and int(env) > 0:
+        return int(env)
+    return max(1, (os.cpu_count() or 4) - 1)
+
+
+MAX_WORKERS = _workers_default()
 OVERWRITE = True
 def _env_flag(name: str) -> bool:
     """Read a boolean environment variable by its VALUE, not its presence.
