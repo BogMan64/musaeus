@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -344,9 +345,12 @@ def test_a_handoff_failure_is_loud_not_silent() -> None:
     and exits non-zero instead of reporting success."""
     source = inspect.getsource(cli_mod)
 
-    # eager: imported at module level, never inside the function
-    assert "\nfrom .handoff import write_handoff_doc" in source
-    assert "    from .handoff import write_handoff_doc" not in source
+    # Eager: imported at module level, never inside the function. Matched on
+    # the SHAPE rather than one exact line -- the import gained act_of and
+    # write_act_handoff on 2026-09-14 and a literal-string assertion failed
+    # for a reason that had nothing to do with what it is guarding.
+    assert re.search(r"^from \.handoff import .*\bwrite_handoff_doc\b", source, re.M)
+    assert not re.search(r"^\s+from \.handoff import", source, re.M)
 
     # guarded: a raising write_handoff_doc must not escape, must warn, must
     # mark the run failed
@@ -354,3 +358,86 @@ def test_a_handoff_failure_is_loud_not_silent() -> None:
     assert "try:" in body
     assert "could not write the ForClaudeHandoff doc" in body
     assert "exit_code = 1" in body
+
+
+# ── Per-Act reports (Grey, 2026-09-14) ───────────────────────────────────────
+
+
+class TestPerActReports:
+    """A run that dies in Act 2 must still leave Act 1's account behind.
+
+    The run-level handoff is written at the very end, so an interrupted run
+    hands over nothing at all -- including nothing about the Act that
+    completed perfectly well before the failure. A partial run is exactly
+    when knowing what DID happen is worth most.
+    """
+
+    def test_a_stage_is_attributed_to_its_act(self) -> None:
+        from musaeus.handoff import act_of
+
+        assert act_of("IngestStage") == "act1"
+        assert act_of("CrossDupeStage") == "act2"
+        assert act_of("FinalizeStage") == "act3"
+
+    def test_an_unknown_stage_belongs_to_no_act(self) -> None:
+        """Returns None rather than guessing -- a stage outside the Acts
+        (a standalone tool, a renamed class) must not be filed under one."""
+        from musaeus.handoff import act_of
+
+        assert act_of("NotARealStage") is None
+
+    def test_act1_gets_its_own_document(self, tmp_path: Path) -> None:
+        from musaeus.handoff import write_act_handoff
+
+        ctx = _ctx(tmp_path, [_ok("IngestStage", files_changed=7)])
+        path = write_act_handoff(ctx, "act1")
+        assert path is not None and path.name.endswith("_act1.md")
+        text = path.read_text()
+        assert "IngestStage" in text
+        assert "## What this run did" in text
+
+    def test_an_act_report_holds_only_that_act(self, tmp_path: Path) -> None:
+        """The whole point: Act 1's document must not be contaminated by a
+        later Act's results, nor carry its failures."""
+        from musaeus.handoff import write_act_handoff
+
+        bad = StageResult(stage_name="CrossDupeStage", success=False, files_errored=2)
+        bad.errors.append("ERROR: act 2 blew up")
+        ctx = _ctx(tmp_path, [_ok("IngestStage", files_changed=7), bad])
+
+        text = write_act_handoff(ctx, "act1").read_text()
+        assert "IngestStage" in text
+        assert "CrossDupeStage" not in text
+        assert "act 2 blew up" not in text
+        assert "Nothing went wrong" in text
+
+    def test_the_failing_act_reports_its_own_failure(self, tmp_path: Path) -> None:
+        from musaeus.handoff import write_act_handoff
+
+        bad = StageResult(stage_name="CrossDupeStage", success=False, files_errored=2)
+        bad.errors.append("ERROR: act 2 blew up")
+        ctx = _ctx(tmp_path, [_ok("IngestStage"), bad])
+
+        text = write_act_handoff(ctx, "act2").read_text()
+        assert "act 2 blew up" in text
+        assert "Nothing went wrong" not in text
+
+    def test_an_act_that_never_ran_writes_nothing(self, tmp_path: Path) -> None:
+        """Absence of results is not a clean Act -- it is no Act, and an
+        empty document would read as though it had run and been fine."""
+        from musaeus.handoff import write_act_handoff
+
+        ctx = _ctx(tmp_path, [_ok("IngestStage")])
+        assert write_act_handoff(ctx, "act3") is None
+
+    def test_the_pipeline_actually_emits_per_act(self) -> None:
+        """A unit test on write_act_handoff alone cannot catch cli.py
+        forgetting to call it -- the same gap test_handoff already guards
+        for the run-level document."""
+        # inspect.getsource, not a cwd-relative open -- the repo has a guard
+        # test for exactly this and it caught the first version of this line.
+        source = inspect.getsource(cli_mod)
+        assert "write_act_handoff(ctx, this_act)" in source
+        # Shape, not one exact import line: this import has already gained
+        # names once and a literal match would fail for the wrong reason.
+        assert re.search(r"^from \.handoff import .*\bwrite_act_handoff\b", source, re.M)

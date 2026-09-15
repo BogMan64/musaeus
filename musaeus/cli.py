@@ -114,7 +114,7 @@ from . import __version__
 from .config import get_config
 from .context import RunContext, elision, head_with_remainder
 from .db import open_db, snapshot_db_before_wipe
-from .handoff import write_handoff_doc
+from .handoff import act_of, write_act_handoff, write_handoff_doc
 from .stages import (
     ARCHIVE_PIPELINE,
     DEFAULT_PIPELINE,
@@ -441,7 +441,7 @@ def _run_pipeline(
                 completed_names = list(resume_from)
 
     exit_code = 0
-    for cls in stages:
+    for idx, cls in enumerate(stages):
         stage_name = cls.__name__
         if stage_name in completed_names:
             print(f"  ⏭  {stage_name} (already done)")
@@ -496,6 +496,18 @@ def _run_pipeline(
         else:
             exit_code = 1
 
+        # An Act's report, written the moment that Act ends rather than at
+        # the end of the run. A run that dies in Act 2 otherwise hands Grey
+        # nothing at all -- including nothing about the Act 1 that finished
+        # perfectly well first, which is exactly when an account of what DID
+        # happen is worth most. (Grey, 2026-09-14.)
+        this_act = act_of(stage_name)
+        next_act = act_of(stages[idx + 1].__name__) if idx + 1 < len(stages) else None
+        if this_act and this_act != next_act:
+            act_path = write_act_handoff(ctx, this_act)
+            if act_path:
+                print(f"  {this_act} report: {act_path}")
+
     print()
     all_ok = all(r.success for r in ctx.stage_results)
     if all_ok:
@@ -504,9 +516,11 @@ def _run_pipeline(
     else:
         print(f"  Pipeline finished with errors.  run_id={ctx.run_id}", file=sys.stderr)
 
-    # One self-contained doc per run with anything worth a second look --
-    # see handoff.py. Written even on a clean run (it just writes
-    # nothing and returns None); the point is that NOTHING extra has to
+    # One self-contained doc per run -- see handoff.py. ALWAYS written now,
+    # including for a clean run: since 2026-09-14 it carries what the run DID
+    # as well as what went wrong, because a successful unattended run is
+    # exactly when there is no other window into it. (It used to return None
+    # and write nothing here.) The point is that NOTHING extra has to
     # be remembered to get this, it falls out of stage results and
     # FAILURES/ reports that already exist.
     #

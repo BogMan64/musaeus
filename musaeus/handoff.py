@@ -364,3 +364,62 @@ def write_tool_handoff(
     except Exception as exc:  # noqa: BLE001
         logger.warning("[handoff] could not write tool handoff for %s: %s", tool, exc)
         return None
+
+
+# ── Per-Act reports ──────────────────────────────────────────────────────────
+
+
+def act_of(stage_name: str) -> str | None:
+    """Which Act a stage belongs to, by its class name.
+
+    Derived from the stage tuples in musaeus.stages rather than a second
+    hand-kept list -- a stage moved between Acts must not need remembering
+    here as well. Imported lazily because musaeus.stages imports a great deal
+    and handoff.py is also used by standalone tools that need none of it.
+    """
+    from . import stages as _s
+
+    for label, group in (
+        ("act1", _s.ACT1_INTAKE_CORRECTION),
+        ("act2", _s.ACT2_DEDUP_STAGING),
+        ("act3", _s.ACT3_CANONICALIZE_FINALIZE),
+        ("enrichment", _s.ENRICHMENT),
+    ):
+        if any(cls.__name__ == stage_name for cls in group):
+            return label
+    return None
+
+
+def write_act_handoff(ctx: RunContext, act: str) -> Path | None:
+    """Write the report for one Act, as soon as that Act finishes.
+
+    Grey asked for this on 2026-09-14: the run-level handoff is written at
+    the very end, so a run that dies in Act 2 hands him nothing at all --
+    including nothing about the Act 1 that completed perfectly well before
+    it. A partial run is exactly when an account of what DID happen is worth
+    most.
+
+    Reads only ctx.stage_results, filtered to this Act. No new bookkeeping:
+    the same rule the rest of this module follows, because a second source of
+    truth is a second thing that can drift.
+    """
+    try:
+        mine = [r for r in ctx.stage_results if act_of(r.stage_name) == act]
+        if not mine:
+            return None
+        issues = _stage_issues(mine)
+        crashes = [
+            c for c in _crash_reports(ctx.runs_root, ctx.run_id)
+            if act_of(c.get("stage", "")) == act
+        ]
+        out_dir = ctx.runs_root / "HANDOFFS"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"ForClaudeHandoff_{ctx.run_id}_{act}.md"
+        path.write_text(
+            _render(f"{ctx.run_id} — {act}", issues, crashes, mine), encoding="utf-8"
+        )
+        return path
+    except Exception as exc:  # noqa: BLE001
+        # Never let a report cost a run. The run-level handoff still follows.
+        logger.warning("[handoff] could not write the %s report: %s", act, exc)
+        return None
