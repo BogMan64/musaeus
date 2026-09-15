@@ -590,6 +590,7 @@ def diagnose(cfg: MusicConfig) -> Report:
     #
     #      A single authority can be correct and the system still wrong.
     _authority_disagreements(cfg, rep)
+    _editions_come_from_masters(cfg, rep)
 
     conn.close()
     return rep
@@ -666,3 +667,65 @@ def _authority_disagreements(cfg: MusicConfig, rep: Report) -> None:
             rep.add("fail", "authorities agree", detail, len(problems))
     else:
         rep.add("ok", "authorities agree", "canon files are consistent with each other")
+
+
+def _editions_come_from_masters(cfg: MusicConfig, rep: Report) -> None:
+    """Is any edition being built from another edition?
+
+    The scope has always said "no edition is ever built from another", and
+    on 2026-09-14 three quarters of the car edition was being built from the
+    -18 LUFS lossless edition. Nothing noticed, because a baked row's
+    file_path follows the EDITION, and the code that staged those rows read
+    file_path while its own docstring said "master".
+
+    A rule that only a person can check is a rule that gets broken between
+    the times that person looks. This is that check, made mechanical.
+
+    Two questions, both answerable from the filesystem alone:
+
+      Does every catalogued row have a master behind it? A row whose master
+      is missing can only be built from its edition copy, which is the rule
+      being broken with no alternative.
+
+      Does CAR_Library hold more tracks than there are masters? It cannot,
+      honestly -- it would mean the edition contains something the masters
+      do not.
+    """
+    archive = getattr(cfg, "alac_archive", None)
+    library = getattr(cfg, "alac_library", None)
+    if not archive or not library:
+        rep.add("ok", "editions from masters", "no library paths configured -- skipped")
+        return
+    if not Path(archive).is_dir():
+        rep.add("warn", "editions from masters", f"masters tree not found: {archive}")
+        return
+
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            "SELECT file_path FROM archive WHERE status='CATALOGUED'"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    from .editions import master_path_for
+
+    no_master = 0
+    for (fp,) in rows:
+        if not master_path_for(fp, Path(library), Path(archive)).is_master:
+            no_master += 1
+
+    if no_master:
+        rep.add(
+            "warn",
+            "editions from masters",
+            f"{no_master:,} catalogued row(s) have no master on disk -- an edition "
+            f"built now would take those from the -18 library copy, which the scope forbids",
+            no_master,
+        )
+    else:
+        rep.add(
+            "ok",
+            "editions from masters",
+            f"all {len(rows):,} catalogued rows resolve to a master",
+        )
