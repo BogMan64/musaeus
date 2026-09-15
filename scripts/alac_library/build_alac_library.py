@@ -83,6 +83,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 from musaeus.config import get_config  # noqa: E402
 from musaeus.db import open_db  # noqa: E402
 from musaeus.deep_scan import ensure_columns as _deep_scan_ensure_columns  # noqa: E402
+from musaeus.handoff import write_tool_handoff  # noqa: E402
 from musaeus.idle_throttle import IdleThrottle  # noqa: E402
 from musaeus.sleep_inhibit import reexec_under_inhibitor  # noqa: E402
 from musaeus.stages.corrupt import ffmpeg_decode_check  # noqa: E402
@@ -700,6 +701,9 @@ def main() -> int:
     print(f"  library: {library_dir}\n")
 
     baked = skipped = errored = 0
+    # Kept individually, not just counted: "6 errored" tells you nothing
+    # about WHICH six, and the handoff is read by someone with no shell.
+    troubles: list[str] = []
     # Same reasoning as the Car build: hours of ffmpeg at load 9+ on 8 cores
     # is fine overnight and miserable at the keyboard. Pauses on input,
     # resumes after 40s quiet. MUSAEUS_NO_IDLE_THROTTLE=1 opts out.
@@ -715,12 +719,38 @@ def main() -> int:
                 baked += 1
             elif result.startswith("SKIP"):
                 skipped += 1
+                troubles.append(result)
             else:
                 errored += 1
+                troubles.append(result)
 
     conn.close()
     verb = "baked" if args.execute else "would bake"
     print(f"\n{baked} {verb}, {skipped} skipped, {errored} errored.")
+
+    # A morning-readable account. This run takes hours and happens while
+    # nobody watches; a scrolled terminal is otherwise the only record.
+    hand = write_tool_handoff(
+        cfg.runs_root,
+        "lufs_bake" if args.execute else "lufs_bake_dryrun",
+        summary={
+            "mode": "LIVE (--execute)" if args.execute else "dry run",
+            "LUFS target": f"{TARGET_I} LUFS, TP {TARGET_TP}, LRA {TARGET_LRA}",
+            "files baked": baked,
+            "skipped": skipped,
+            "errored": errored,
+            "masters read from": str(archive_dir),
+            "baked into": str(library_dir),
+        },
+        notes=[
+            "A master is never modified: the bake reads it and writes a new file "
+            "into the library tree. A skip means the master itself would not "
+            "decode, which is corruption worth chasing, not a bake failure.",
+        ],
+        problems=troubles,
+    )
+    if hand:
+        print(f"-> {hand}   (paste this into any AI session)")
     return 1 if errored else 0
 
 
