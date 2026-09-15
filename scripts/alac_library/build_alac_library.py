@@ -84,6 +84,7 @@ from musaeus.config import get_config  # noqa: E402
 from musaeus.db import open_db  # noqa: E402
 from musaeus.deep_scan import ensure_columns as _deep_scan_ensure_columns  # noqa: E402
 from musaeus.idle_throttle import IdleThrottle  # noqa: E402
+from musaeus.sleep_inhibit import reexec_under_inhibitor  # noqa: E402
 from musaeus.stages.corrupt import ffmpeg_decode_check  # noqa: E402
 
 FFMPEG = "ffmpeg"
@@ -647,6 +648,9 @@ def _process_one(conn, row: dict, archive_dir: Path, library_dir: Path, execute:
 
 
 def main() -> int:
+    # Keep the machine awake for the whole run without touching the X11
+    # idle counter the throttle reads. See musaeus/sleep_inhibit.py.
+    reexec_under_inhibitor("LUFS bake in progress")
     parser = argparse.ArgumentParser(
         description="MUSAEUS Phase 2A -- bake -18 LUFS from ALAC_Archive into ALAC-Library"
     )

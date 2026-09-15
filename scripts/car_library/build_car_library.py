@@ -80,6 +80,7 @@ from musaeus.config import get_config  # noqa: E402
 from musaeus.db import open_db  # noqa: E402
 from musaeus.hasher import audio_hash_safe  # noqa: E402
 from musaeus.idle_throttle import IdleThrottle  # noqa: E402
+from musaeus.sleep_inhibit import reexec_under_inhibitor  # noqa: E402
 
 VENDOR_DIR = Path(__file__).resolve().parent / "vendor"
 AUDIO_EXTENSIONS = {".m4a", ".flac", ".alac", ".wav", ".aiff"}
@@ -330,6 +331,9 @@ def stage_from_catalogue(
 
 
 def main() -> int:
+    # Keep the machine awake for the whole run without touching the X11
+    # idle counter the throttle reads. See musaeus/sleep_inhibit.py.
+    reexec_under_inhibitor("car/iPhone edition build in progress")
     parser = argparse.ArgumentParser(
         description="MUSAEUS Car-Library Export -- AAC encode + optional noise masking"
     )
