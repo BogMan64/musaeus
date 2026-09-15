@@ -78,6 +78,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from musaeus.config import get_config  # noqa: E402
 from musaeus.db import open_db  # noqa: E402
+from musaeus.handoff import write_tool_handoff  # noqa: E402
 from musaeus.hasher import audio_hash_safe  # noqa: E402
 from musaeus.idle_throttle import IdleThrottle  # noqa: E402
 from musaeus.sleep_inhibit import reexec_under_inhibitor  # noqa: E402
@@ -249,7 +250,7 @@ def _clean_up_on_termination() -> None:
 def stage_from_catalogue(
     conn, staging_dir: Path, limit: int | None = None,
     edition: str = "car", budget_bytes: int | None = None,
-) -> tuple[list[Path], list, dict[Path, object]]:
+) -> tuple[list[Path], list, dict[Path, object], int]:
     """Symlink the MASTER behind every CATALOGUED row into *staging_dir*.
 
     "Master" is meant literally, and did not used to be: this linked
@@ -327,7 +328,10 @@ def stage_from_catalogue(
         # ruling forbids -- the operator has to be told, not reassured.
         print(f"  ! {fell_back:,} track(s) have NO master on disk and were "
               f"sourced from their library copy instead (-18 LUFS, not a master).")
-    return staged, tracks, link_to_track
+    # fell_back is returned, not just printed: a track built from the -18
+    # library copy instead of its master is the scope rule being broken,
+    # and the handoff must be able to say so.
+    return staged, tracks, link_to_track, fell_back
 
 
 def main() -> int:
@@ -380,6 +384,14 @@ def main() -> int:
 
     input_dir.mkdir(parents=True, exist_ok=True)
 
+    # Defined before the branch, not inside it. The handoff at the end reads
+    # this unconditionally, and a run WITHOUT --from-catalogue (files dropped
+    # in by hand) would otherwise raise NameError after doing every minute of
+    # the encoding -- the worst possible moment to discover a typo.
+    # Hand-dropped files have no catalogue row and so no master to fall back
+    # from; zero is the honest value, not a placeholder.
+    fell_back_count = 0
+
     if args.from_catalogue:
         # Per-process staging. A shared "_staged" is not safe: this function
         # rmtree's it on entry and again after a dry run, so a preview run
@@ -408,7 +420,7 @@ def main() -> int:
         _clean_up_on_termination()
         conn_sel = open_db(cfg.db_path)
         try:
-            files, tracks, link_to_track = stage_from_catalogue(
+            files, tracks, link_to_track, fell_back_count = stage_from_catalogue(
                 conn_sel, staging_dir, args.limit,
                 edition=args.edition,
                 budget_bytes=int(args.budget_gb * 1_000_000_000) if args.budget_gb else None,
@@ -608,6 +620,39 @@ def main() -> int:
 
     print(f"\nOutput: {final_dir}")
     print("Run `musaeus playlist` to regenerate playlists including this export.")
+
+    # This build runs for tens of hours and will outlive any session watching
+    # it. Without this it finishes into a scrolled terminal and leaves no
+    # account of itself at all -- which is the whole reason the handoff
+    # documents exist.
+    problems = [f"{src.name}: {reason}" for src, reason in unmatched]
+    if fell_back_count:
+        problems.append(
+            f"{fell_back_count:,} track(s) had NO master on disk and were built from "
+            "their -18 LUFS library copy instead. An edition is supposed to come from "
+            "the masters; these did not."
+        )
+    hand = write_tool_handoff(
+        cfg.runs_root,
+        f"{args.edition}_build",
+        summary={
+            "edition": args.edition,
+            "masking": "applied" if noise_profile != "clean" else "none",
+            "tracks staged": len(files),
+            "recorded in the catalogue": updated,
+            "could not be matched": len(unmatched),
+            "published to": str(final_dir),
+        },
+        notes=[
+            "Built from the MASTERS in ALAC-Archival, never from another edition "
+            "(scope: no edition is ever built from another).",
+            "car_export_path and noise_profile are written per row, so "
+            "`musaeus playlist` can prefer this export.",
+        ],
+        problems=problems,
+    )
+    if hand:
+        print(f"-> {hand}   (paste this into any AI session)")
     return 0
 
 
