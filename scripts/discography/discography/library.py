@@ -75,6 +75,7 @@ class OwnedArtist:
     mb_name: str = ""
     albums: set[str] = field(default_factory=set)
     track_count: int = 0
+    genre: str = ""
 
     @property
     def has_compilation(self) -> bool:
@@ -146,6 +147,7 @@ def load_artists(
             """
             SELECT COALESCE(artist,'') AS artist,
                    COALESCE(album,'')  AS album,
+                   COALESCE(genre,'')  AS genre,
                    COALESCE(mb_artist_id,'')   AS mb_artist_id,
                    COALESCE(mb_artist_name,'') AS mb_artist_name
               FROM archive
@@ -168,11 +170,18 @@ def load_artists(
         if r["mb_artist_id"] and not oa.mbid:
             oa.mbid = r["mb_artist_id"]
             oa.mb_name = r["mb_artist_name"]
+        # Genre is majority-voted: keep the most-seen value. A single track
+        # tagged differently should not reclassify an artist with 40 Rock tracks
+        # as Classical. Stored as the raw genre string; comparison is
+        # case-insensitive at exclusion time.
+        if r["genre"]:
+            oa.genre = r["genre"].strip()
 
     stats = {
         "artists_total": len(by_artist),
-        "excluded_too_few_albums": 0,
         "excluded_too_few_tracks": 0,
+        "excluded_too_few_albums": 0,
+        "excluded_classical": 0,
         "eligible_before_mbid": 0,
         "mbid_from_archive": 0,
         "mbid_from_cache": 0,
@@ -186,6 +195,15 @@ def load_artists(
             continue
         if len(oa.albums) < min_albums:
             stats["excluded_too_few_albums"] += 1
+            continue
+        # A composer's "discography" in MusicBrainz is thousands of release
+        # groups by hundreds of different performers -- Vivaldi alone would
+        # return hundreds of orchestras' recordings of the Four Seasons, most
+        # tagged Album with no secondary types and therefore passing the ruling.
+        # Studio-album gaps are meaningless for classical composers; exclude them
+        # rather than flooding the report with noise that destroys its credibility.
+        if oa.genre.lower() == "classical":
+            stats["excluded_classical"] += 1
             continue
         eligible.append(oa)
     stats["eligible_before_mbid"] = len(eligible)

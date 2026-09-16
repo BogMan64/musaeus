@@ -249,22 +249,29 @@ class TestWhatCountsAsAnAlbum:
 def _fixture_db(tmp_path: Path) -> Path:
     db = tmp_path / "v.db"
     conn = sqlite3.connect(db)
+    # `genre` is here because the live archive table has it and load_artists
+    # reads it. The fixture omitted it, so the genre-aware load_artists -- the
+    # one with the classical exclusion -- raised "no such column: genre"
+    # against the fixture while working fine against the vault. A fixture
+    # looser than production hides exactly the code it is meant to cover; this
+    # is the second time that shape has bitten here (events.run_id was the
+    # first), so the column is spelled out rather than defaulted.
     conn.execute(
         "CREATE TABLE archive (artist TEXT, album TEXT, status TEXT, "
-        "mb_artist_id TEXT, mb_artist_name TEXT)"
+        "mb_artist_id TEXT, mb_artist_name TEXT, genre TEXT)"
     )
     rows = [
         # album-oriented: 3 albums, 6 tracks
-        *[("Big Artist", f"Album {i}", "CATALOGUED", "mbid-big", "Big Artist") for i in (1, 1, 2, 2, 3, 3)],
+        *[("Big Artist", f"Album {i}", "CATALOGUED", "mbid-big", "Big Artist", "Rock") for i in (1, 1, 2, 2, 3, 3)],
         # one-track artist: the 277-artist majority
-        ("Tiny Artist", "Some Album", "CATALOGUED", "", ""),
+        ("Tiny Artist", "Some Album", "CATALOGUED", "", "", "Rock"),
         # plenty of tracks but all on a playlist -- no real album
-        *[("Playlist Only", "My playlist B", "CATALOGUED", "", "") for _ in range(9)],
+        *[("Playlist Only", "My playlist B", "CATALOGUED", "", "", "Rock") for _ in range(9)],
         # not catalogued, must be ignored
-        ("Pending Artist", "A", "DUPE_REVIEW", "", ""),
-        ("Pending Artist", "B", "DUPE_REVIEW", "", ""),
+        ("Pending Artist", "A", "DUPE_REVIEW", "", "", "Rock"),
+        ("Pending Artist", "B", "DUPE_REVIEW", "", "", "Rock"),
     ]
-    conn.executemany("INSERT INTO archive VALUES (?,?,?,?,?)", rows)
+    conn.executemany("INSERT INTO archive VALUES (?,?,?,?,?,?)", rows)
     conn.commit()
     conn.close()
     return db
@@ -310,11 +317,14 @@ class TestEligibility:
         conn = sqlite3.connect(db)
         conn.execute(
             "CREATE TABLE archive (artist TEXT, album TEXT, status TEXT, "
-            "mb_artist_id TEXT, mb_artist_name TEXT)"
+            "mb_artist_id TEXT, mb_artist_name TEXT, genre TEXT)"
         )
         conn.executemany(
-            "INSERT INTO archive VALUES (?,?,?,?,?)",
-            [("Beatles, The", f"Album {i}", "CATALOGUED", "", "") for i in (1, 1, 2, 2, 3, 3)],
+            "INSERT INTO archive VALUES (?,?,?,?,?,?)",
+            # "The Beatles", and the cache key below moved with it: archive.artist
+            # migrated to natural form on 2026-09-16. Leaving the sort form here
+            # would have kept testing a shape the library no longer stores.
+            [("The Beatles", f"Album {i}", "CATALOGUED", "", "", "Rock") for i in (1, 1, 2, 2, 3, 3)],
         )
         conn.commit()
         conn.close()
@@ -327,7 +337,7 @@ class TestEligibility:
         )
         c2.execute(
             "INSERT INTO mb_artist VALUES (?,?,?,?)",
-            ("beatles, the", "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d", "The Beatles", 1),
+            ("the beatles", "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d", "The Beatles", 1),
         )
         c2.commit()
         c2.close()
@@ -343,11 +353,11 @@ class TestEligibility:
         conn = sqlite3.connect(db)
         conn.execute(
             "CREATE TABLE archive (artist TEXT, album TEXT, status TEXT, "
-            "mb_artist_id TEXT, mb_artist_name TEXT)"
+            "mb_artist_id TEXT, mb_artist_name TEXT, genre TEXT)"
         )
         conn.executemany(
-            "INSERT INTO archive VALUES (?,?,?,?,?)",
-            [("Obscure", f"Album {i}", "CATALOGUED", "", "") for i in (1, 1, 2, 2, 3, 3)],
+            "INSERT INTO archive VALUES (?,?,?,?,?,?)",
+            [("Obscure", f"Album {i}", "CATALOGUED", "", "", "Rock") for i in (1, 1, 2, 2, 3, 3)],
         )
         conn.commit()
         conn.close()

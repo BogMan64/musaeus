@@ -26,14 +26,96 @@ from __future__ import annotations
 
 import contextlib
 import json
+import sqlite3
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .scope import ReleaseGroup
+
+DEFAULT_CACHE = Path.home() / ".cache" / "discography-lab" / "mb_cache.db"
+
+
+class ReleaseGroupCache:
+    """SQLite cache for MusicBrainz release-group results.
+
+    Keyed by artist MBID. A cached result is the full list of release groups as
+    JSON; a failure record is kept separately so a transient 503 does not
+    permanently suppress an artist while a deliberate "not found" does.
+
+    ORPHEUS cached its discography results because the fetch was slow. This
+    is the same reason: 63 artists at 1.1s/request minimum, with paging, is
+    10-15 minutes per run. Without a cache every run re-fetches everything.
+
+    Commits per row (not per run) so a keyboard interrupt or timeout mid-run
+    still saves the work already done. The next run picks up where it left off.
+    """
+
+    def __init__(self, path: Path = DEFAULT_CACHE) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(path)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS release_groups (
+                artist_mbid  TEXT PRIMARY KEY,
+                fetched_at   TEXT DEFAULT (datetime('now')),
+                payload      TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS failures (
+                artist_mbid  TEXT PRIMARY KEY,
+                failed_at    TEXT DEFAULT (datetime('now')),
+                reason       TEXT NOT NULL
+            );
+            """
+        )
+        self._conn.commit()
+
+    def get(self, artist_mbid: str) -> list[dict] | None:
+        """Cached release groups or None if not cached."""
+        row = self._conn.execute(
+            "SELECT payload FROM release_groups WHERE artist_mbid = ?",
+            (artist_mbid,),
+        ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row["payload"])
+
+    def put(self, artist_mbid: str, groups: list[dict]) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO release_groups (artist_mbid, payload) VALUES (?, ?)",
+            (artist_mbid, json.dumps(groups)),
+        )
+        # Also clear any prior failure record -- if we got data now, a cached
+        # failure from a transient 503 should not suppress this artist next run.
+        self._conn.execute(
+            "DELETE FROM failures WHERE artist_mbid = ?", (artist_mbid,)
+        )
+        self._conn.commit()
+
+    def note_failure(self, artist_mbid: str, reason: str) -> None:
+        """Record a lookup failure. NOT used for transient errors (503, timeout).
+
+        Only permanent failures (404, artist genuinely not found) are cached.
+        A transient failure should retry on the next run, not be suppressed.
+        """
+        self._conn.execute(
+            "INSERT OR REPLACE INTO failures (artist_mbid, reason) VALUES (?, ?)",
+            (artist_mbid, reason),
+        )
+        self._conn.commit()
+
+    def stats(self) -> str:
+        n_ok = self._conn.execute("SELECT COUNT(*) FROM release_groups").fetchone()[0]
+        n_fail = self._conn.execute("SELECT COUNT(*) FROM failures").fetchone()[0]
+        return f"{n_ok} cached, {n_fail} failures"
+
+    def close(self) -> None:
+        self._conn.close()
 
 #: MusicBrainz asks for ≤1 request/second unauthenticated. 1.1 matches MUSAEUS.
 RATE_LIMIT_S = 1.1
@@ -113,29 +195,54 @@ def allow_network() -> Iterator[str]:
         )
 
 
+_RETRY_CODES = (503, 429)
+_MAX_RETRIES = 3
+_RETRY_WAIT_S = 5.0
+
+
 def _fallback_get(path: str, params: dict[str, str]) -> dict:
     url = f"https://musicbrainz.org/ws/2/{path}?" + urllib.parse.urlencode(
         {**params, "fmt": "json"}
     )
     req = urllib.request.Request(url, headers={"User-Agent": _FALLBACK_UA})
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
-            raise Unavailable(f"MusicBrainz refused the request ({exc.code})") from exc
-        raise Unavailable(f"MusicBrainz HTTP {exc.code}") from exc
-    except Exception as exc:
-        raise Unavailable(f"{type(exc).__name__}: {exc}") from exc
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                # Permanent auth failure -- no point retrying.
+                raise Unavailable(f"MusicBrainz refused the request ({exc.code})") from exc
+            if exc.code in _RETRY_CODES and attempt < _MAX_RETRIES - 1:
+                # Transient -- back off and retry.
+                time.sleep(_RETRY_WAIT_S * (attempt + 1))
+                last_exc = exc
+                continue
+            raise Unavailable(f"MusicBrainz HTTP {exc.code}") from exc
+        except Exception as exc:
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(_RETRY_WAIT_S * (attempt + 1))
+                last_exc = exc
+                continue
+            raise Unavailable(f"{type(exc).__name__}: {exc}") from exc
+    raise Unavailable(f"MusicBrainz unreachable after {_MAX_RETRIES} attempts: {last_exc}")
 
 
 @dataclass
 class MusicBrainz:
-    """Release groups for an artist, paged and throttled."""
+    """Release groups for an artist, paged, throttled, and cached.
+
+    Cache is keyed by artist MBID and persists across runs, so a 63-artist
+    run that times out at artist 40 resumes from artist 41 next time rather
+    than re-fetching the first 40. ORPHEUS cached for the same reason.
+    """
 
     sleep_s: float = RATE_LIMIT_S
+    cache: ReleaseGroupCache = field(default_factory=ReleaseGroupCache)
     _last: float = field(default=0.0, repr=False)
     calls: int = 0
+    cache_hits: int = 0
 
     def _throttle(self) -> None:
         gap = time.monotonic() - self._last
@@ -163,11 +270,29 @@ class MusicBrainz:
     def release_groups(self, artist_mbid: str) -> list[ReleaseGroup]:
         """Every release group credited to this artist, all types.
 
+        Checks the cache first. On a cache hit no network request is made and
+        the throttle is not invoked -- the point of caching is to avoid the
+        cost entirely, not just to avoid it once.
+
         Filtering to studio albums happens in scope.py, not here, so the
         excluded count stays visible. A client that pre-filtered would make the
         ruling impossible to check -- and the excluded count is the number that
         shows the ruling is working at all.
         """
+        cached = self.cache.get(artist_mbid)
+        if cached is not None:
+            self.cache_hits += 1
+            return [
+                ReleaseGroup(
+                    mbid=g.get("mbid") or "",
+                    title=g.get("title") or "",
+                    primary_type=g.get("primary_type") or "",
+                    secondary_types=tuple(g.get("secondary_types") or ()),
+                    first_release_date=g.get("first_release_date") or "",
+                )
+                for g in cached
+            ]
+
         out: list[ReleaseGroup] = []
         offset = 0
         for _ in range(MAX_PAGES):
@@ -197,4 +322,21 @@ class MusicBrainz:
             offset += PAGE_SIZE
             if not isinstance(total, int) or offset >= total:
                 break
+
+        # Cache the result as plain dicts -- ReleaseGroup is not JSON-serialisable
+        # directly, and storing the raw fields means the deserialiser above can
+        # reconstruct them without needing the scope module at read time.
+        self.cache.put(artist_mbid, [
+            {
+                "mbid": rg.mbid,
+                "title": rg.title,
+                "primary_type": rg.primary_type,
+                "secondary_types": list(rg.secondary_types),
+                "first_release_date": rg.first_release_date,
+            }
+            for rg in out
+        ])
         return out
+
+    def close(self) -> None:
+        self.cache.close()

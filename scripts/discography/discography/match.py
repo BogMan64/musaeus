@@ -19,10 +19,10 @@ which is in force -- a fallback nobody can see is one nobody can trust.
 from __future__ import annotations
 
 import re
-
-from musaeus.brackets import CLOSE, OPEN
 import unicodedata
 from dataclasses import dataclass
+
+from musaeus.brackets import CLOSE, OPEN
 
 from .scope import ReleaseGroup
 
@@ -63,12 +63,7 @@ _BRACKET_RE = re.compile(rf"[{OPEN}][^{CLOSE}]*[{CLOSE}]")
 #: to MUSAEUS. Adding these words to MUSAEUS's own list would be wrong: they
 #: describe a packaging of a record, not a version of a performance.
 _EDITION_WORDS = frozenset(
-    """
-    deluxe expanded anniversary special collector collectors legacy edition
-    editions remaster remastered remasters reissue bonus tracks track disc
-    cd super ultimate limited digipak mono stereo version versions
-    th st nd rd
-    """.split()
+    ["deluxe", "expanded", "anniversary", "special", "collector", "collectors", "legacy", "edition", "editions", "remaster", "remastered", "remasters", "reissue", "bonus", "tracks", "track", "disc", "cd", "super", "ultimate", "limited", "digipak", "mono", "stereo", "version", "versions", "th", "st", "nd", "rd"]
 )
 
 #: Bracket contents made ENTIRELY of edition words are removed; anything else is
