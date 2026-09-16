@@ -334,6 +334,53 @@ def stage_from_catalogue(
     return staged, tracks, link_to_track, fell_back
 
 
+def _sort_artist_folders(root: Path) -> int:
+    """Rename artist folders to sort form, merging onto an existing twin.
+
+    Best-effort: a failure here must not fail a nine-hour build, because the
+    edition is already published and correct apart from where it files. The
+    count is returned for the caller's log and problems are printed, not
+    raised.
+    """
+    try:
+        from musaeus.artist_form import sort_form
+    except Exception:
+        return 0
+    moved = 0
+    for d in sorted(p for p in root.iterdir() if p.is_dir()):
+        want = sort_form(d.name)
+        if not want or want == d.name:
+            continue
+        target = d.parent / want
+        try:
+            if target.exists():
+                for item in sorted(x for x in d.rglob("*") if x.is_file()):
+                    dest = target / item.relative_to(d)
+                    if dest.exists():
+                        # Same size is the same encode published twice; a
+                        # different size is two different files and is left
+                        # for a person.
+                        if dest.stat().st_size == item.stat().st_size:
+                            item.unlink()
+                        continue
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    item.rename(dest)
+                    moved += 1
+                for sub in sorted((x for x in d.rglob("*") if x.is_dir()), reverse=True):
+                    if not any(sub.iterdir()):
+                        sub.rmdir()
+                if not any(d.iterdir()):
+                    d.rmdir()
+            else:
+                d.rename(target)
+                moved += 1
+        except OSError as exc:
+            print(f"  artist folder {d.name!r} could not be filed as {want!r}: {exc}")
+    if moved:
+        print(f"  filed {moved} artist folder(s) under the sort form")
+    return moved
+
+
 def main() -> int:
     # Keep the machine awake for the whole run without touching the X11
     # idle counter the throttle reads. See musaeus/sleep_inhibit.py.
@@ -598,6 +645,18 @@ def main() -> int:
     # working directory that the next run overwrites.
     dest_root = cfg.iphone_library if args.edition == "iphone" else cfg.car_library
     final_dir = publish_edition(final_dir, dest_root)
+
+    # File the artist folders under the sort form, BEFORE the paths are
+    # recorded below -- otherwise car_export_path names a folder that is about
+    # to be renamed and every row becomes a phantom.
+    #
+    # The encoder derives its folder from the file's TAG, and the tag is
+    # natural form on purpose since the 2026-09-16 article migration. Natural
+    # in the tag and sorted on disk is the intended arrangement; this is the
+    # step that keeps the disk half of it. It has to run in MUSAEUS rather
+    # than in the vendored encoder, which must stay importable outside
+    # MUSAEUS and so never imports it.
+    _sort_artist_folders(final_dir)
 
     updated = 0
     unmatched: list[tuple[Path, str]] = []
