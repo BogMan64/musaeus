@@ -14,6 +14,7 @@ MUSAEUS_masterlaw_only_in_august's "MERGE FORWARD?" and ArtistsToReview's
 from __future__ import annotations
 
 import csv
+import os
 from pathlib import Path
 
 from .model import Proposal
@@ -60,7 +61,21 @@ def write(proposals: list[Proposal], path: Path) -> dict[str, int]:
         "no_date": 0,
     }
 
-    with path.open("w", newline="", encoding="utf-8") as fh:
+    # Write to .part and rename, never straight to the destination.
+    #
+    # `path.open("w")` truncates the destination the moment it is called and
+    # then streams rows into it. This report is reached from a menu that warns
+    # "expect hours on a full library", so a Ctrl-C, a SIGTERM or a crash
+    # partway leaves a syntactically valid CSV -- header, then a prefix of the
+    # rows -- that is indistinguishable from a finished one. It gets reviewed
+    # and applied, and the rows that never got written are invisible.
+    #
+    # CLAUDE.md states the rule outright: "Existence is not completeness. A
+    # half-written file looks finished and gets skipped for ever. Write to
+    # .part, verify, then rename." rename() within a directory is atomic, so
+    # the destination only ever exists complete.
+    part = path.with_suffix(path.suffix + ".part")
+    with part.open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(HEADER)
         for p in proposals:
@@ -112,4 +127,9 @@ def write(proposals: list[Proposal], path: Path) -> dict[str, int]:
                     _fmt_len(c.length_seconds),
                 ]
             )
+        fh.flush()
+        os.fsync(fh.fileno())
+
+    # Only now does the destination exist, and it exists complete.
+    part.replace(path)
     return counts
