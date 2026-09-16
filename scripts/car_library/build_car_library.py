@@ -534,6 +534,18 @@ def main() -> int:
     env = os.environ.copy()
     env["ORPHEUS_AAC_INPUT_DIR"] = str(input_dir)
     env["ORPHEUS_AAC_OUTPUT_DIR"] = str(encoded_dir)
+    # Where the FINISHED edition lives. The encoder's resume check asked only
+    # about the staging tree, which publish_edition empties -- so after a
+    # publish it either re-encoded the whole library or, worse, skipped 819
+    # tracks as "already encoded" against a directory about to be cleared and
+    # published a tree without them. Telling it the published root lets
+    # "already done?" be asked of the place the edition actually lives.
+    # Computed here rather than reusing dest_root, which is not assigned until
+    # after the encode step -- using it here was a NameError waiting for the
+    # next real run.
+    env["MUSAEUS_PUBLISHED_ROOT"] = str(
+        cfg.iphone_library if args.edition == "iphone" else cfg.car_library
+    )
     # Also needed by the encode step's copy_noise_tracks(), not just by the
     # masker below -- without it the vendor falls back to ORPHEUS's RUNS.
     env["ORPHEUS_NOISE_DIR"] = str(cfg.runs_root / "Noise")

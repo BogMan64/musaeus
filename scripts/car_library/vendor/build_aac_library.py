@@ -721,6 +721,46 @@ def _probe_duration(path: Path) -> float | None:
         return None
 
 
+def _published_twin(output_file: Path) -> Path | None:
+    """Where this staged output ends up once the edition is published.
+
+    THE BUG THIS FIXES, measured 2026-09-16 on the car build:
+
+    The resume check asked only whether the file existed in the STAGING tree.
+    But build_car_library.publish_edition MOVES the finished tree into
+    Libraries/CAR_Library and drops the BATCH_nnn layer, so staging is empty
+    after a successful publish. A later run therefore found no staged output
+    and re-encoded everything -- nine hours to reproduce files already correct
+    on disk, which is exactly the waste the resume check was added to prevent.
+
+    Worse in the other direction: a run that started while a PREVIOUS staging
+    tree still existed reported "SKIP DONE | already encoded" for 819 tracks,
+    then published a tree that did not contain them. The skip was true of a
+    directory that was about to be emptied. Those 819 ended with no CAR file
+    and no car_export_path, and nothing reported it as a failure.
+
+    So the question "is this already done?" has to be asked of the place the
+    edition actually LIVES, not the place it is built.
+
+        staging    <output_root>/<folder>/BATCH_nnn/<Artist>/<Album>/file
+        published  <MUSAEUS_PUBLISHED_ROOT>/<Artist>/<Album>/file
+
+    Returns None when no published root is configured, which keeps this
+    script standalone-runnable exactly as before.
+    """
+    root = os.environ.get("MUSAEUS_PUBLISHED_ROOT")
+    if not root:
+        return None
+    parts = output_file.parts
+    # Keep the tail from the BATCH layer onward, minus the BATCH layer itself.
+    for i, seg in enumerate(parts):
+        if seg.startswith("BATCH_"):
+            return Path(root).joinpath(*parts[i + 1:])
+    # No BATCH layer (a layout this script did not write): fall back to
+    # Artist/Album/file, which is the shape publish_edition produces.
+    return Path(root).joinpath(*parts[-3:]) if len(parts) >= 3 else None
+
+
 def convert_one(file_path: Path, profile_name: str) -> str:
     allowed, policy = should_make_aac(file_path)
     if not allowed:
@@ -769,6 +809,14 @@ def convert_one(file_path: Path, profile_name: str) -> str:
         # that has never existed, so following it produced an argparse error
         # while the control that works went unnamed (M-07). The history is in
         # git and the TODO -- a comment's job is to say what works.
+        # Where the FINISHED edition lives, if the caller published a
+        # previous build. See _published_twin below for why this matters.
+        published = _published_twin(output_file)
+
+        if not FORCE_REENCODE and published is not None and published.exists():
+            if _output_matches_source(file_path, published):
+                return f"SKIP DONE | {file_path.name} | already published"
+
         if output_file.exists() and not FORCE_REENCODE:
             if _output_matches_source(file_path, output_file):
                 return f"SKIP DONE | {file_path.name} | already encoded"
