@@ -250,6 +250,7 @@ def _clean_up_on_termination() -> None:
 def stage_from_catalogue(
     conn, staging_dir: Path, limit: int | None = None,
     edition: str = "car", budget_bytes: int | None = None,
+    only_missing: bool = False,
 ) -> tuple[list[Path], list, dict[Path, object], int]:
     """Symlink the MASTER behind every CATALOGUED row into *staging_dir*.
 
@@ -287,7 +288,28 @@ def stage_from_catalogue(
         print(f"  {len(sel.skipped_for_budget):,} track(s) do not fit the "
               f"{budget_bytes / 1_000_000_000:.0f} GB budget; lowest-priority "
               "genres are dropped first.")
-    tracks = sel.included[:limit] if limit else sel.included
+    tracks = sel.included
+
+    # --only-missing: the tracks the edition does not yet contain.
+    #
+    # The 2026-09-15 build reported success leaving 726 catalogued tracks with
+    # no car file, every one of which had a master. Encoding the whole library
+    # again to reach them is nine hours to reproduce 10,753 files that are
+    # already correct, and leaning on the resume check instead means ffprobing
+    # every one of them to find out. Asking the catalogue is one query.
+    if only_missing:
+        have = {
+            r[0] for r in conn.execute(
+                "SELECT file_path FROM archive WHERE status='CATALOGUED' "
+                "AND COALESCE(car_export_path,'') <> ''"
+            )
+        }
+        before = len(tracks)
+        tracks = [t for t in tracks if str(t.file_path) not in have]
+        print(f"  --only-missing: {len(tracks):,} of {before:,} track(s) have no "
+              f"{edition} file yet")
+
+    tracks = tracks[:limit] if limit else tracks
 
     # Every edition is built from the MASTERS, never from another edition
     # (Grey's ruling 2026-09-14). A baked row's file_path follows the
@@ -394,6 +416,9 @@ def main() -> int:
     parser.add_argument("--from-catalogue", action="store_true",
                         help="Build from every CATALOGUED master rather than from "
                              "files hand-dropped into the input folder")
+    parser.add_argument("--only-missing", action="store_true",
+                        help="Only tracks that have no file in this edition yet "
+                             "(fills the gap a previous build left)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Report the plan and encode nothing")
     parser.add_argument("--limit", type=int, metavar="N", default=None,
@@ -471,6 +496,7 @@ def main() -> int:
                 conn_sel, staging_dir, args.limit,
                 edition=args.edition,
                 budget_bytes=int(args.budget_gb * 1_000_000_000) if args.budget_gb else None,
+                only_missing=args.only_missing,
             )
         finally:
             conn_sel.close()
