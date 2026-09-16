@@ -116,7 +116,7 @@ class TestAMissingMasterIsSomebodyElsesProblem:
         _catalogued_tracks_reach_the_car(cfg, rep)
         f = _only(rep)
         assert f.level == "ok"
-        assert "no master to build from" in f.detail
+        assert "nothing left that a build could add" in f.detail
 
 
 class TestItDoesNotBreakTheCaller:
@@ -162,3 +162,81 @@ class TestItDoesNotBreakTheCaller:
         rep = Report()
         _catalogued_tracks_reach_the_car(cfg, rep)
         assert _only(rep).level in ("ok", "warn")
+
+
+class TestALossyMasterIsNotAGap:
+    """A lossy master cannot become a car file and never will.
+
+    should_make_aac refuses lossy -> AAC, and is right to: transcoding a 256k
+    AAC into another 256k AAC throws quality away for nothing. The 2026-09-16
+    targeted build measured it -- of 726 tracks with no car file, 412 were
+    refused for exactly this reason and 95 encoded.
+
+    Counting the refusals as a gap produces a number that can never reach
+    zero, and a warning that can never be satisfied is one people learn to
+    ignore. 444 became 34.
+    """
+
+    def _row_with_codec(self, cfg, name, codec, car=""):
+        """Declares the column up front rather than ALTERing it in.
+
+        tests/test_ensure_columns_is_shared.py fails any ALTER TABLE ... ADD
+        COLUMN outside db.py, and it is right to: nine hand-rolled copies of
+        that helper is the duplication CLAUDE.md opens with. A fixture is not
+        exempt -- it was the first thing the guard caught here.
+        """
+        p = Path(cfg.alac_library) / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\0")
+        m = Path(cfg.alac_archive) / name
+        m.parent.mkdir(parents=True, exist_ok=True)
+        m.write_bytes(b"\0")
+        conn = sqlite3.connect(cfg.db_path)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
+        if "codec" not in cols:
+            kept = conn.execute("SELECT file_path, status, car_export_path FROM archive").fetchall()
+            conn.execute("DROP TABLE archive")
+            conn.execute("CREATE TABLE archive (file_path TEXT, status TEXT, "
+                         "car_export_path TEXT, codec TEXT)")
+            conn.executemany("INSERT INTO archive (file_path, status, car_export_path) "
+                             "VALUES (?,?,?)", kept)
+        conn.execute("INSERT INTO archive (file_path, status, car_export_path, codec) "
+                     "VALUES (?, 'CATALOGUED', ?, ?)", (str(p), car, codec))
+        conn.commit()
+        conn.close()
+
+    def test_an_aac_master_with_no_car_file_is_not_counted(self, cfg):
+        self._row_with_codec(cfg, "A/Al/ok.m4a", "alac", car="/car/ok.m4a")
+        self._row_with_codec(cfg, "A/Al/lossy.m4a", "aac")
+        rep = Report()
+        _catalogued_tracks_reach_the_car(cfg, rep)
+        f = _only(rep)
+        assert f.level == "ok"
+        assert "1 more are lossy" in f.detail or "lossy" in f.detail
+
+    def test_a_lossless_master_still_counts(self, cfg):
+        self._row_with_codec(cfg, "A/Al/ok.m4a", "alac", car="/car/ok.m4a")
+        self._row_with_codec(cfg, "A/Al/gap.m4a", "alac")
+        self._row_with_codec(cfg, "A/Al/lossy.m4a", "aac")
+        rep = Report()
+        _catalogued_tracks_reach_the_car(cfg, rep)
+        f = _only(rep)
+        assert f.level == "warn"
+        assert f.count == 1, "the alac gap counts, the aac one does not"
+
+    def test_flac_and_wav_count_as_lossless(self, cfg):
+        self._row_with_codec(cfg, "A/Al/ok.m4a", "alac", car="/car/ok.m4a")
+        self._row_with_codec(cfg, "A/Al/a.flac", "flac")
+        self._row_with_codec(cfg, "A/Al/b.wav", "wav")
+        rep = Report()
+        _catalogued_tracks_reach_the_car(cfg, rep)
+        assert _only(rep).count == 2
+
+    def test_a_blank_codec_is_treated_as_buildable(self, cfg):
+        """Unknown is not the same as lossy. A row that never recorded its
+        codec must not be silently dropped from the count."""
+        self._row_with_codec(cfg, "A/Al/ok.m4a", "alac", car="/car/ok.m4a")
+        self._row_with_codec(cfg, "A/Al/unknown.m4a", "")
+        rep = Report()
+        _catalogued_tracks_reach_the_car(cfg, rep)
+        assert _only(rep).count == 1

@@ -703,8 +703,18 @@ def _catalogued_tracks_reach_the_car(cfg: MusicConfig, rep: Report) -> None:
         if cols and "car_export_path" not in cols:
             rep.add("ok", "car edition coverage", "no car_export_path column -- skipped")
             return
+        # codec, because a LOSSY master cannot become a car file and never
+        # will: should_make_aac refuses lossy -> AAC, and it is right to --
+        # transcoding a 256k AAC to another 256k AAC throws away quality for
+        # nothing. Measured on the 2026-09-16 targeted build: of 726 tracks
+        # with no car file, 412 were refused for exactly this reason. Counting
+        # them as a gap produced a number that can never reach zero, and a
+        # warning that can never be satisfied is a warning people learn to
+        # ignore.
+        has_codec = "codec" in cols
+        col = "COALESCE(codec,'')" if has_codec else "''"
         rows = conn.execute(
-            "SELECT file_path FROM archive WHERE status='CATALOGUED' "
+            f"SELECT file_path, {col} FROM archive WHERE status='CATALOGUED' "
             "AND COALESCE(car_export_path,'') = ''"
         ).fetchall()
         total = conn.execute(
@@ -724,8 +734,14 @@ def _catalogued_tracks_reach_the_car(cfg: MusicConfig, rep: Report) -> None:
 
     lib = Path(getattr(cfg, "alac_library", "") or "")
     arc = Path(getattr(cfg, "alac_archive", "") or "")
-    buildable = 0
-    for (fp,) in rows:
+    #: Codecs a car edition can be built FROM. Anything else is already
+    #: lossy and is left alone.
+    lossless = {"alac", "flac", "wav", "aiff", "ape", "wavpack", ""}
+    buildable = lossy = 0
+    for fp, codec in rows:
+        if (codec or "").strip().lower() not in lossless:
+            lossy += 1
+            continue
         try:
             # .is_master, NOT .path.is_file(). master_path_for FALLS BACK to
             # the row's own file_path when no master exists, so the path is
@@ -738,18 +754,19 @@ def _catalogued_tracks_reach_the_car(cfg: MusicConfig, rep: Report) -> None:
             continue
 
     pct = (total - len(rows)) * 100 // total
+    tail = f" ({lossy} more are lossy masters a build cannot improve on)" if lossy else ""
     if buildable == 0:
         rep.add(
             "ok",
             "car edition coverage",
-            f"{pct}% covered; the {len(rows)} without a car file have no master to build from",
+            f"{pct}% covered; nothing left that a build could add{tail}",
         )
         return
     rep.add(
         "warn",
         "car edition coverage",
-        f"{buildable} catalogued track(s) have no car file but DO have a master, "
-        f"so a build could produce them -- car edition is {pct}% complete",
+        f"{buildable} catalogued track(s) have a lossless master and no car file, "
+        f"so a build would produce them -- car edition is {pct}% complete{tail}",
         count=buildable,
     )
 
