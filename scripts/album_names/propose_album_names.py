@@ -603,12 +603,25 @@ def verdict(*answers: Answer | None) -> tuple[str, str, str, Answer]:
     # the original release. Only applied when at least two answers carry a
     # year -- an undated answer is not evidence of being early, and treating
     # a missing year as 0 would let a source win by saying nothing.
-    dated = [a for a in pool if (a.year or "").strip().isdigit()]
+    # .isdecimal(), not .isdigit(): "\u00b2".isdigit() is True but int("\u00b2") raises.
+    dated = [a for a in pool if (a.year or "").strip().isdecimal()]
+
+    # An answer is DEMOTED only if it is dated and demonstrably later than the
+    # earliest dated answer. An UNDATED answer is neither promoted nor demoted
+    # -- it is not evidence of being early, but it is not evidence of being a
+    # reissue either, so it keeps its place and competes on source priority.
+    #
+    # The first version of this dropped every undated answer from the ballot,
+    # which inverted Grey's source ruling: iTunes returning an album with no
+    # year lost to Deezer returning one with a year, purely for saying
+    # nothing. Removing an answer is a much stronger claim than "this other
+    # one looks more original", and the year is missing often enough that it
+    # was deciding real rows.
     if len(dated) >= 2:
         earliest = min(int(a.year) for a in dated)
-        contenders = [a for a in dated if int(a.year) == earliest]
-        if contenders:
-            pool = contenders
+        later = {id(a) for a in dated if int(a.year) > earliest}
+        if later and len(later) < len(pool):
+            pool = [a for a in pool if id(a) not in later]
 
     by_source = {a.source: a for a in pool}
     winner = next((by_source[s] for s in order if s in by_source), pool[0])
