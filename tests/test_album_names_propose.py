@@ -253,3 +253,60 @@ class TestFiveSourcesAndTheTieBreak:
         )
         assert album == "1979", "known limit: an unnamed compilation is invisible here"
         assert w.source == "itunes"
+
+
+class TestEarliestYearPrefersTheOriginal:
+    """Borrowed from beets' `original_date`, 2026-09-16.
+
+    Claude chat reviewed beets and found this the one direct hit on our
+    compilation problem: beets separates "which release matched" from "what
+    date should this carry", and can pin to the earliest. A compilation or
+    reissue is almost always LATER than the record a song first appeared on,
+    so among answers that are not named compilations, the earliest dated one
+    is the better guess at the original.
+
+    Applied after the named-compilation filter and before Grey's iTunes
+    ruling, because iTunes-first is a tie-break between EQUALS.
+    """
+
+    def test_an_older_answer_beats_a_reissue(self):
+        _c, album, _n, w = verdict(
+            Answer(album="Greatest Hits 2011", year="2011", source="itunes"),
+            Answer(album="Wovoka", year="1973", source="deezer"),
+        )
+        assert album == "Wovoka"
+        assert w.source == "deezer", "the ruling yields to an older original"
+
+    def test_an_undated_answer_cannot_win_by_saying_nothing(self):
+        """A missing year is not evidence of being early. Treating it as 0
+        would let the least informative source win every tie."""
+        _c, album, _n, w = verdict(
+            Answer(album="Rumours", year="1977", source="itunes"),
+            Answer(album="Some Bootleg", year="", source="deezer"),
+        )
+        assert album == "Rumours"
+        assert w.source == "itunes"
+
+    def test_with_only_one_dated_answer_the_itunes_ruling_stands(self):
+        _c, _album, _n, w = verdict(
+            Answer(album="A", year="1999", source="itunes"),
+            Answer(album="B", year="", source="deezer"),
+        )
+        assert w.source == "itunes"
+
+    def test_equal_years_fall_back_to_the_itunes_ruling(self):
+        _c, album, _n, w = verdict(
+            Answer(album="First", year="1980", source="itunes"),
+            Answer(album="Second", year="1980", source="deezer"),
+        )
+        assert w.source == "itunes"
+        assert album == "First"
+
+    def test_a_named_compilation_still_loses_even_when_older(self):
+        """Order matters: the compilation filter runs BEFORE the year test,
+        so an old compilation does not beat a newer original."""
+        _c, album, _n, _w = verdict(
+            Answer(album="Greatest Hits", year="1970", source="itunes"),
+            Answer(album="Wovoka", year="1973", source="deezer"),
+        )
+        assert album == "Wovoka"

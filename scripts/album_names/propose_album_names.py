@@ -597,6 +597,19 @@ def verdict(*answers: Answer | None) -> tuple[str, str, str, Answer]:
     originals = [a for a in valid if not a.is_compilation]
     pool = originals or valid
 
+    # Then the earliest year, borrowed from beets' `original_date`: a
+    # compilation or reissue is almost always LATER than the record a song
+    # first appeared on, so the earliest dated answer is the better guess at
+    # the original release. Only applied when at least two answers carry a
+    # year -- an undated answer is not evidence of being early, and treating
+    # a missing year as 0 would let a source win by saying nothing.
+    dated = [a for a in pool if (a.year or "").strip().isdigit()]
+    if len(dated) >= 2:
+        earliest = min(int(a.year) for a in dated)
+        contenders = [a for a in dated if int(a.year) == earliest]
+        if contenders:
+            pool = contenders
+
     by_source = {a.source: a for a in pool}
     winner = next((by_source[s] for s in order if s in by_source), pool[0])
     note = f"Disagreement. Selected {winner.source} proposal ({winner.album})."
