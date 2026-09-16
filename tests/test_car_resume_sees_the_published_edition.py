@@ -94,3 +94,90 @@ class TestTheWrapperTellsTheEncoderWhereToLook:
         assert "str(dest_root)" not in window, (
             "the environment must not read dest_root before it is assigned"
         )
+
+
+class TestItAgreesWithThePublisherAboutTheLayout:
+    """F8, 2026-09-16: two functions encoded one layout rule differently.
+
+    `publish_edition` writes `tail = rel[-3:]`. `_published_twin` kept
+    everything after the BATCH layer. On the flat layout derive_output_path
+    writes today those are the same three components, so nothing broke -- but
+    one level deeper they diverge, the twin is never found, and the track
+    re-encodes on every run for ever while the build reports success.
+
+    The rule is "the last three components", in both places.
+    """
+
+    def test_a_deeper_path_lands_where_the_publisher_puts_it(self, published_root):
+        """publish_edition would write <root>/Album/Disc 1/track.m4a -- the
+        last three -- so that is where the twin must look."""
+        staged = Path("/vault/RUNS/_output/encoded/BATCH_001/Artist/Album/Disc 1/track.m4a")
+        assert B._published_twin(staged) == published_root / "Album" / "Disc 1" / "track.m4a"
+
+    def test_the_batch_segment_is_matched_regardless_of_case(self, published_root):
+        """publish_edition uppercases before testing; this did not. A case
+        difference deciding whether nine hours of encoding is reused is not a
+        distinction anyone meant to make."""
+        for seg in ("BATCH_001", "batch_001", "Batch_001"):
+            staged = Path(f"/vault/_output/encoded/{seg}/Blur/Parklife/x.m4a")
+            assert B._published_twin(staged) == published_root / "Blur" / "Parklife" / "x.m4a", seg
+
+    def test_the_two_agree_on_a_real_staged_path(self):
+        """Asserted against publish_edition's actual source rather than a
+        restatement of it, so the two cannot drift apart again quietly."""
+        src = (Path(__file__).resolve().parents[1]
+               / "scripts" / "car_library" / "build_car_library.py").read_text()
+        assert "tail = rel[-3:]" in src, (
+            "publish_edition's rule changed -- _published_twin must change with it"
+        )
+
+    def test_a_path_too_short_to_have_artist_album_file_is_no_opinion(self, published_root):
+        assert B._published_twin(Path("/a/b.m4a")) is None
+
+
+class TestAMaskingRunDoesNotInheritThePreviousEdition:
+    """F4, 2026-09-16. The dangerous direction of the same skip.
+
+    `_output_matches_source` compares duration, sample rate and channel count.
+    The noise masker preserves all three on purpose -- `amix=...:duration=
+    first`, `-ar <src_rate>`, no `-ac` -- so a published MASKED file and a
+    published UNMASKED one are indistinguishable to it. Bitrate and target
+    LUFS are not checked either.
+
+    On a masking run that makes the skip a confident wrong answer: every
+    track returns "already published" before anything reaches encoded_dir,
+    the masker runs against an empty tree, publish moves nothing, and the DB
+    loop still matches every row through the published index and records
+    noise_profile='dual'. The edition stays unmasked, the catalogue says
+    otherwise, and the build reports success.
+
+    Re-encoding is expensive. Publishing a lie is worse.
+    """
+
+    def test_the_wrapper_withholds_the_published_root_when_masking(self):
+        src = (Path(__file__).resolve().parents[1]
+               / "scripts" / "car_library" / "build_car_library.py").read_text()
+        assert "if not apply_masking:" in src, (
+            "the published-twin skip must be conditional on masking"
+        )
+        guard = src.index("if not apply_masking:")
+        assign = src.index('env["MUSAEUS_PUBLISHED_ROOT"]')
+        assert guard < assign, "the guard must come before the assignment it guards"
+
+    def test_apply_masking_is_decided_before_the_environment_is_built(self):
+        """The dest_root lesson, applied to the variable this now depends on:
+        a name used before it is assigned is a NameError waiting for the next
+        real run, and a nine-hour job is a bad place to find one."""
+        src = (Path(__file__).resolve().parents[1]
+               / "scripts" / "car_library" / "build_car_library.py").read_text()
+        decided = min(src.index("apply_masking = True"), src.index("apply_masking = False"))
+        used = src.index("if not apply_masking:")
+        assert decided < used, "apply_masking must be decided before it is read"
+
+    def test_the_skip_is_explicitly_cleared_not_merely_left_unset(self):
+        """env is a copy of os.environ, so a stale MUSAEUS_PUBLISHED_ROOT in
+        the caller's shell would otherwise leak in and re-enable the very
+        skip this turns off."""
+        src = (Path(__file__).resolve().parents[1]
+               / "scripts" / "car_library" / "build_car_library.py").read_text()
+        assert 'env.pop("MUSAEUS_PUBLISHED_ROOT", None)' in src

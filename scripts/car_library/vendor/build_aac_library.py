@@ -751,14 +751,36 @@ def _published_twin(output_file: Path) -> Path | None:
     root = os.environ.get("MUSAEUS_PUBLISHED_ROOT")
     if not root:
         return None
+    # .parts includes the anchor ("/" on posix), so an absolute two-component
+    # path reports three and the anchor gets joined into the result -- a
+    # published path with a stray root segment in the middle of it. Count the
+    # real components.
     parts = output_file.parts
-    # Keep the tail from the BATCH layer onward, minus the BATCH layer itself.
-    for i, seg in enumerate(parts):
-        if seg.startswith("BATCH_"):
-            return Path(root).joinpath(*parts[i + 1:])
-    # No BATCH layer (a layout this script did not write): fall back to
-    # Artist/Album/file, which is the shape publish_edition produces.
-    return Path(root).joinpath(*parts[-3:]) if len(parts) >= 3 else None
+    if output_file.anchor:
+        parts = parts[1:]
+    if len(parts) < 3:
+        return None
+
+    # The LAST THREE components, always -- because that is exactly what
+    # publish_edition does (`tail = rel[-3:]`), and these two have to encode
+    # ONE layout rule or the resume check looks somewhere the publisher never
+    # writes.
+    #
+    # They did not agree. This kept everything after the BATCH layer, so a
+    # path one level deeper than BATCH/Artist/Album/file -- a disc subfolder,
+    # say -- produced <root>/Artist/Album/Disc 1/track while the publisher had
+    # written <root>/Album/Disc 1/track. The twin is never found, and the
+    # track re-encodes on every run, for ever, reporting success each time.
+    # Latent only because derive_output_path currently writes a flat layout;
+    # two functions disagreeing about one rule is the defect, not the symptom.
+    #
+    # The BATCH layer needs no special case once the rule is "last three":
+    # dropping it and keeping Artist/Album/file are the same operation on the
+    # layout derive_output_path writes. publish_edition tests
+    # `rel[0].upper().startswith("BATCH_")` only to decide what is PUBLISHABLE
+    # at all -- its own working assets live beside the batch -- and that is
+    # its business, not this function's.
+    return Path(root).joinpath(*parts[-3:])
 
 
 def convert_one(file_path: Path, profile_name: str) -> str:

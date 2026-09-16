@@ -590,9 +590,32 @@ def main() -> int:
     # Computed here rather than reusing dest_root, which is not assigned until
     # after the encode step -- using it here was a NameError waiting for the
     # next real run.
-    env["MUSAEUS_PUBLISHED_ROOT"] = str(
-        cfg.iphone_library if args.edition == "iphone" else cfg.car_library
-    )
+    # ...but ONLY when this run is not masking. The published-twin skip asks
+    # "is an acceptable file already published?", and _output_matches_source
+    # can answer that from duration, sample rate and channel count alone --
+    # none of which can tell a MASKED file from an unmasked one. The noise
+    # mix preserves all three by design (amix duration=first, -ar src_rate,
+    # no -ac).
+    #
+    # So on a masking run the skip is a confident wrong answer: every track
+    # returns "already published" before anything is written into
+    # encoded_dir, the masker then runs against an empty tree, publish moves
+    # nothing, and the DB loop still matches every row through the published
+    # output_index and records noise_profile='dual'. The edition stays
+    # entirely unmasked, the catalogue says it is masked, and the build
+    # reports success.
+    #
+    # Re-encoding is expensive; publishing a lie is worse. A masking run
+    # encodes fresh.
+    if not apply_masking:
+        env["MUSAEUS_PUBLISHED_ROOT"] = str(
+            cfg.iphone_library if args.edition == "iphone" else cfg.car_library
+        )
+    else:
+        env.pop("MUSAEUS_PUBLISHED_ROOT", None)
+        print("  masking requested -- the 'already published' skip is off for this run,")
+        print("  because a published file's duration, rate and channels cannot say")
+        print("  whether the noise bed is in it.")
     # Also needed by the encode step's copy_noise_tracks(), not just by the
     # masker below -- without it the vendor falls back to ORPHEUS's RUNS.
     env["ORPHEUS_NOISE_DIR"] = str(cfg.runs_root / "Noise")
