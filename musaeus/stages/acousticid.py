@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
 import subprocess
 import time
 import unicodedata
@@ -312,6 +313,93 @@ def _acousticid_lookup(
 # ── Stage ─────────────────────────────────────────────────────────────────────
 
 
+def _ledger_path(ctx) -> Path:
+    return Path(ctx.config.vault_root) / "_db_backups" / "hash_index.db"
+
+
+def _restore_from_ledger(ctx) -> int:
+    """Copy known fingerprints back into `archive`, and report how many.
+
+    This is what makes a rebuilt catalogue cheap instead of another 21
+    hours. Matching is on audio_hash, so it survives every rename and
+    re-filing the library has been through.
+
+    Best-effort by design: no ledger, an unreadable one, or a catalogue
+    without audio_hash all mean "nothing to restore", never a failed stage.
+    A cache that cannot be read is a missing optimisation, not an error.
+    """
+    from ..db import ensure_fingerprints
+
+    led_path = _ledger_path(ctx)
+    if not led_path.is_file():
+        return 0
+    try:
+        led = sqlite3.connect(led_path)
+        ensure_fingerprints(led)
+        known = {
+            r[0]: r
+            for r in led.execute(
+                "SELECT audio_hash, chromaprint, chromaprint_duration, "
+                "acousticid_recording, acousticid_score, checked_at FROM fingerprints"
+            )
+        }
+        led.close()
+    except sqlite3.Error:
+        return 0
+    if not known:
+        return 0
+
+    try:
+        rows = ctx.conn.execute(
+            "SELECT file_path, audio_hash FROM archive WHERE status='CATALOGUED' "
+            "AND acousticid_checked_at IS NULL AND COALESCE(audio_hash,'') <> ''"
+        ).fetchall()
+    except sqlite3.Error:
+        return 0
+
+    n = 0
+    for fp, h in rows:
+        hit = known.get(h)
+        if hit is None:
+            continue
+        _, cp, cpd, rec, score, checked = hit
+        ctx.conn.execute(
+            "UPDATE archive SET chromaprint=COALESCE(?, chromaprint), "
+            "chromaprint_duration=COALESCE(?, chromaprint_duration) WHERE file_path=?",
+            (cp, cpd, fp),
+        )
+        if checked:
+            ctx.conn.execute(
+                "UPDATE archive SET acousticid_recording=?, acousticid_score=?, "
+                "acousticid_checked_at=? WHERE file_path=?",
+                (rec, score, checked, fp),
+            )
+        n += 1
+    ctx.conn.commit()
+    return n
+
+
+def _remember_in_ledger(ctx, file_path: str, chromaprint, duration,
+                        recording, score, checked_at) -> None:
+    """Write one fingerprint to the ledger. Never fails the stage."""
+    from ..db import ensure_fingerprints, remember_fingerprint
+
+    try:
+        row = ctx.conn.execute(
+            "SELECT audio_hash FROM archive WHERE file_path=?", (file_path,)
+        ).fetchone()
+        if not row or not row[0]:
+            return
+        led = sqlite3.connect(_ledger_path(ctx))
+        ensure_fingerprints(led)
+        remember_fingerprint(led, row[0], chromaprint, duration,
+                             recording, score, checked_at)
+        led.commit()
+        led.close()
+    except sqlite3.Error:
+        return
+
+
 class AcousticIDStage(BaseStage):
     """
     AcousticID — fingerprint-based duplicate detection.
@@ -351,6 +439,12 @@ class AcousticIDStage(BaseStage):
 
         if not dry_run:
             _ensure_columns(ctx.conn)
+            restored = _restore_from_ledger(ctx)
+            if restored:
+                logger.info(
+                    "[acousticid] %d row(s) restored from the fingerprint ledger "
+                    "-- not re-fingerprinted", restored
+                )
 
         api_key = ctx.config.acousticid_api_key
 
@@ -509,6 +603,19 @@ class AcousticIDStage(BaseStage):
                         """,
                         (recording_id, score if score else None, now, fp),
                     )
+                # ...and to the LEDGER, which is the copy that survives.
+                # Everything above writes to `archive`, and `archive` gets
+                # rebuilt: the 2026-08-30 pass spent 21 hours fingerprinting
+                # 7,545 files and, measured on 2026-09-16, not one of those
+                # results was still in the database. Keyed on audio_hash
+                # because that is what a fingerprint is a property of -- it
+                # survives a rebuild, a re-file, and a path move.
+                _remember_in_ledger(
+                    ctx, fp, fingerprint, duration,
+                    recording_id if answered else None,
+                    score if answered and score else None,
+                    now if answered else None,
+                )
                 if recording_id:
                     ctx.log_event(
                         "ACOUSTIC_MATCHED",

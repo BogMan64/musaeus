@@ -35,6 +35,7 @@ still describe what is actually on the disk?
 from __future__ import annotations
 
 import re
+import shutil
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -593,6 +594,7 @@ def diagnose(cfg: MusicConfig) -> Report:
     _editions_come_from_masters(cfg, rep)
     _artist_tag_is_natural_form(cfg, rep)
     _catalogued_tracks_reach_the_car(cfg, rep)
+    _external_tools_present(cfg, rep)
 
     conn.close()
     return rep
@@ -769,6 +771,62 @@ def _catalogued_tracks_reach_the_car(cfg: MusicConfig, rep: Report) -> None:
         f"so a build would produce them -- car edition is {pct}% complete{tail}",
         count=buildable,
     )
+
+
+#: The command-line programs MUSAEUS shells out to, what breaks without each,
+#: and how to install it on Debian -- which is what this machine runs.
+#:
+#: (name, what it is for, apt package, required?)
+_EXTERNAL_TOOLS: tuple[tuple[str, str, str, bool], ...] = (
+    ("ffmpeg", "every encode, bake and mask", "ffmpeg", True),
+    ("ffprobe", "duration, sample rate and channel checks", "ffmpeg", True),
+    ("fpcalc", "AcoustID fingerprinting", "libchromaprint-tools", False),
+    ("idevice_id", "seeing an attached iPhone", "libimobiledevice-utils", False),
+    ("ifuse", "copying the iPhone edition onto the device", "ifuse", False),
+    ("rsync", "the backup tiers", "rsync", False),
+)
+
+
+def _external_tools_present(cfg: MusicConfig, rep: Report) -> None:
+    """Is every program MUSAEUS shells out to actually installed?
+
+    Absence is not the same for all of them, so this does not report one
+    number. Without ffmpeg nothing works at all. Without fpcalc the
+    AcoustID stage quietly does nothing -- it was installed here all along
+    and the stage still never produced a row, which is the kind of gap that
+    only turns up when somebody looks. Without ifuse the iPhone edition
+    builds perfectly and then has no way onto the phone, which is a bad
+    moment to find out.
+
+    A missing OPTIONAL tool is a note with the command to fix it, not a
+    failure: MUSAEUS runs fine without ifuse if you never use an iPhone.
+    """
+    missing_required: list[str] = []
+    missing_optional: list[str] = []
+    for name, why, pkg, required in _EXTERNAL_TOOLS:
+        if shutil.which(name):
+            continue
+        (missing_required if required else missing_optional).append(
+            f"{name} ({why}) -- sudo apt install {pkg}"
+        )
+
+    if missing_required:
+        rep.add(
+            "warn",
+            "external tools",
+            "MISSING, and nothing works without them: " + "; ".join(missing_required),
+            count=len(missing_required),
+        )
+        return
+    if missing_optional:
+        rep.add(
+            "warn",
+            "external tools",
+            f"{len(missing_optional)} optional tool(s) absent: " + "; ".join(missing_optional),
+            count=len(missing_optional),
+        )
+        return
+    rep.add("ok", "external tools", "every program MUSAEUS shells out to is installed")
 
 
 def _authority_disagreements(cfg: MusicConfig, rep: Report) -> None:

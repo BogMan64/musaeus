@@ -547,6 +547,89 @@ CREATE TABLE IF NOT EXISTS denied_hashes (
 """
 
 
+FINGERPRINTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS fingerprints (
+    audio_hash           TEXT PRIMARY KEY,
+    chromaprint          TEXT,
+    chromaprint_duration REAL,
+    acousticid_recording TEXT,
+    acousticid_score     REAL,
+    checked_at           TEXT DEFAULT (datetime('now'))
+);
+"""
+
+
+def ensure_fingerprints(conn: sqlite3.Connection) -> None:
+    """Create the fingerprint ledger if it isn't there yet.
+
+    In hash_index.db, beside the deny list, for the same reason and after
+    the same lesson.
+
+    A fingerprint pass over the library costs about 0.8 s per file. The
+    2026-08-30 run spent 21 hours and reached 7,545 of 10,656 files before
+    it was stopped for holding the write lock. Every one of those results
+    was written to `archive`, and `archive` was later rebuilt: measured
+    2026-09-16, acousticid_recording, acousticid_score and
+    acousticid_checked_at are non-null on ZERO rows. Twenty-one hours of
+    work, gone, with nothing to show it had ever happened.
+
+    Keyed on audio_hash rather than file_path because that is what a
+    fingerprint is a property OF. The audio does not change when the
+    catalogue is rebuilt, when the artist is re-filed, when the article
+    moves, or when an album folder is re-cased -- all of which happened to
+    this library in a single day.
+    """
+    conn.executescript(FINGERPRINTS_SCHEMA)
+    conn.commit()
+
+
+def remember_fingerprint(
+    conn: sqlite3.Connection,
+    audio_hash: str,
+    chromaprint: str | None,
+    chromaprint_duration: float | None,
+    recording: str | None,
+    score: float | None,
+    checked_at: str | None,
+) -> None:
+    """Record a fingerprint so a rebuild never has to pay for it again.
+
+    The local fingerprint and the AcousticID answer have different truth
+    conditions -- the first is computed here and true regardless of the
+    network, the second asserts that AcousticID replied -- so a row may
+    carry a chromaprint with no recording, and a later run can fill the
+    recording in without recomputing the fingerprint. COALESCE keeps
+    whichever half is already known.
+    """
+    conn.execute(
+        """
+        INSERT INTO fingerprints
+            (audio_hash, chromaprint, chromaprint_duration,
+             acousticid_recording, acousticid_score, checked_at)
+        VALUES (?,?,?,?,?,?)
+        ON CONFLICT(audio_hash) DO UPDATE SET
+            chromaprint          = COALESCE(excluded.chromaprint, chromaprint),
+            chromaprint_duration = COALESCE(excluded.chromaprint_duration,
+                                            chromaprint_duration),
+            acousticid_recording = COALESCE(excluded.acousticid_recording,
+                                            acousticid_recording),
+            acousticid_score     = COALESCE(excluded.acousticid_score,
+                                            acousticid_score),
+            checked_at           = COALESCE(excluded.checked_at, checked_at)
+        """,
+        (audio_hash, chromaprint, chromaprint_duration, recording, score, checked_at),
+    )
+
+
+def lookup_fingerprint(conn: sqlite3.Connection, audio_hash: str) -> sqlite3.Row | None:
+    """The stored fingerprint for this audio, or None."""
+    conn.row_factory = sqlite3.Row
+    row: sqlite3.Row | None = conn.execute(
+        "SELECT * FROM fingerprints WHERE audio_hash = ?", (audio_hash,)
+    ).fetchone()
+    return row
+
+
 def ensure_deny_list(conn: sqlite3.Connection) -> None:
     """Create the deny-list table if it isn't there yet.
 
