@@ -1018,7 +1018,7 @@ class Console:
              "scripts/album_names/apply_album_names.py",
              "Writes reviewed proposals into the catalogue. Never overwrites "
              "an album that is already set.",
-             "<your.csv>           # add --live when you mean it"),
+             "path/to/your.csv    # add --live when you mean it"),
             ("Live hunt",
              "scripts/live_hunt/live_hunt.py",
              "Live recordings with no studio version here. Produces a CSV and "
@@ -1034,7 +1034,10 @@ class Console:
              "--limit 20           # start small"),
         ]
         labels = [t[0] for t in tools] + ["Back"]
-        choice = _choose("Which tool", labels)
+        # default=Back, not _choose's "0". On EOF -- piped stdin exhausted, a
+        # non-interactive run -- "0" would SELECT the first tool rather than
+        # leave the menu. Matches the idiom already used by the reports menu.
+        choice = _choose("Which tool", labels, default=str(len(labels) - 1))
         try:
             idx = int(choice)
         except ValueError:

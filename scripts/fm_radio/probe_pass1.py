@@ -26,8 +26,6 @@ from __future__ import annotations
 
 import json
 import re
-
-from musaeus.brackets import CLOSE, OPEN
 import sqlite3
 import sys
 import time
@@ -35,6 +33,8 @@ import urllib.error
 import urllib.request
 from collections import Counter
 from pathlib import Path
+
+from musaeus.brackets import CLOSE, OPEN
 
 MB_CACHE = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/_db_backups/mb_cache.db")
 LB = "https://api.listenbrainz.org/1/popularity/top-recordings-for-artist/{}"

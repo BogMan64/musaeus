@@ -49,13 +49,13 @@ import ast
 import csv
 import os
 import re
-
-from musaeus.brackets import CLOSE, OPEN
 import sqlite3
 import sys
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from musaeus.brackets import CLOSE, OPEN
 
 VAULT_DB = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db")
 # Resolved from THIS file's location, not from a hardcoded checkout path.
