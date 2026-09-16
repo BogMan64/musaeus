@@ -80,7 +80,12 @@ ignore = [
 "tests/*" = ["S101"]  # allow assert in tests
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# The labs brought in from ~/Projects on 2026-09-16 keep their own tests
+# beside their code. Listed here so the DEFAULT suite runs them: a test that
+# only runs when someone remembers to point pytest at it is a test that stops
+# running, which is how live_hunt sat broken -- pointing at a checkout that
+# did not exist -- without a single red result.
+testpaths = ["tests", "scripts/fm_radio/tests", "scripts/discography/tests"]
 addopts = "-v --tb=short"
 
 [tool.coverage.run]

@@ -49,6 +49,8 @@ import ast
 import csv
 import os
 import re
+
+from musaeus.brackets import CLOSE, OPEN
 import sqlite3
 import sys
 import unicodedata
@@ -122,14 +124,14 @@ def build_live_re(markers: tuple[str, ...]) -> re.Pattern[str]:
 #: them occurs in an ordinary studio song title. "live at"/"in"/"from" plus a
 #: venue is the strongest signal there is.
 CERTAIN_RE = re.compile(
-    r"""
+    rf"""
       \blive \s* (?: at | in | from | on \s+ stage | version | recording | cut ) \b
     | \bconcert \s+ version\b                # The Band, "Rag Mama Rag (Concert Version)"
       # "live" or "concert" ANYWHERE inside a bracket, not just at the front.
       # Requiring it first missed "(Bonus Live Excerpt)" and "(Homecoming Live)",
       # both of which are live recordings, and dropped them into DOUBTFUL where
       # they would have been dismissed as false positives.
-    | [\(\[] [^)\]]* \b(?: live | concert ) \b [^)\]]* [\)\]]
+    | [{OPEN}] [^{CLOSE}]* \b(?: live | concert ) \b [^{CLOSE}]* [{CLOSE}]
     | \blive \s* [-–—] \s*                   # "Whipping Post - Live"
     | \bunplugged\b
     | \bin \s+ concert\b
@@ -172,7 +174,10 @@ class Track:
 # --------------------------------------------------------------------------
 # Matching a live track to its studio sibling
 # --------------------------------------------------------------------------
-_PAREN_RE = re.compile(r"[\(\[][^)\]]*[\)\]]")
+# Bracket classes from musaeus.brackets, not a private copy. Each of
+# these covered parens and squares but NOT braces -- the omission that
+# rule exists to catch, and invisible while this lived outside the repo.
+_PAREN_RE = re.compile(rf"[{OPEN}][^{CLOSE}]*[{CLOSE}]")
 _DASH_TAIL_RE = re.compile(r"\s+[-–—]\s+.*$")
 _PUNCT_RE = re.compile(r"[^\w\s]+")
 _WS_RE = re.compile(r"\s+")
