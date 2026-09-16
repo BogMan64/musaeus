@@ -988,6 +988,72 @@ class Console:
 
     # ── Workspace: worktrees & docs ───────────────────────────────────────────
 
+    def _misc_menu(self) -> None:
+        """The standalone reporting tools, and an honest warning about cost.
+
+        "screensaver" is in the menu label on Grey's instruction 2026-09-16:
+        every one of these walks the whole library and asks a rate-limited
+        service about each track, so a full run is measured in hours, not
+        minutes. A menu entry that looks like the others and then locks the
+        console until tomorrow is a trap.
+
+        So this NEVER runs anything itself. It prints the command, and the
+        operator runs it in a terminal they own -- where they can watch it,
+        stop it, or leave it overnight. The alternative, launching a
+        multi-hour job from a menu, hides exactly the thing that matters
+        about these tools.
+        """
+        _section("Misc. Options — screensaver jobs")
+        _warn("These walk the whole library against rate-limited services.")
+        _info("A full run is HOURS. None of them is started from here; you get")
+        _info("the command to run yourself, so you can watch or stop it.")
+
+        tools = [
+            ("Album names — propose",
+             "scripts/album_names/propose_album_names.py",
+             "Fills missing album names from iTunes, Deezer, MusicBrainz, "
+             "Last.fm and Discogs. Read-only; writes a CSV you review.",
+             "--dry-run            # size the job first"),
+            ("Album names — apply a reviewed CSV",
+             "scripts/album_names/apply_album_names.py",
+             "Writes reviewed proposals into the catalogue. Never overwrites "
+             "an album that is already set.",
+             "<your.csv>           # add --live when you mean it"),
+            ("Live hunt",
+             "scripts/live_hunt/live_hunt.py",
+             "Live recordings with no studio version here. Produces a CSV and "
+             "two m3u playlists. Read-only.",
+             ""),
+            ("Discography gaps",
+             "scripts/discography/discography_gaps.py",
+             "Studio albums you own NOTHING from. Read-only.",
+             ""),
+            ("FM radio identifier",
+             "scripts/fm_radio/fm_radio_identifier.py",
+             "Which pressing is the one you remember. Read-only.",
+             "--limit 20           # start small"),
+        ]
+        labels = [t[0] for t in tools] + ["Back"]
+        choice = _choose("Which tool", labels)
+        try:
+            idx = int(choice)
+        except ValueError:
+            return
+        if idx == len(tools):
+            return
+
+        name, script, what, hint = tools[idx]
+        repo = Path(__file__).resolve().parent.parent
+        _section(name)
+        _info(what)
+        print()
+        _info("Run it yourself:")
+        print(f"    cd {repo}")
+        print(f"    python3 {script} {hint}".rstrip())
+        print()
+        _warn("Expect hours on a full library. Start with a --limit if there is one.")
+        _prompt("Press Enter to go back")
+
     def _show_workspace(self) -> None:
         """Which checkout is running, what else is parked, and where the docs are.
 
@@ -1325,6 +1391,8 @@ class Console:
             ("Enter/Update API Keys", self._manage_api_keys),
             ("Reset / fresh start", self._reset_menu),
             ("Workspace — worktrees & docs", self._show_workspace),
+            ("Misc. Options…  (screensaver jobs — these can run for HOURS)",
+             self._misc_menu),
             ("Quit", self._quit),
         ]
 
