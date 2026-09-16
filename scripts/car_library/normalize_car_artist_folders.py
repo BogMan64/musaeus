@@ -46,10 +46,57 @@ from musaeus.artist_form import sort_form  # noqa: E402
 from musaeus.config import MusicConfig  # noqa: E402
 
 
-def folders_needing_a_move(root: Path) -> list[tuple[Path, Path]]:
-    """(current, wanted) for every artist folder not in sort form."""
+def folders_needing_a_move(root: Path, masters: Path | None = None) -> list[tuple[Path, Path]]:
+    """(current, wanted) for every artist folder that is filed wrongly.
+
+    Two rules, in order:
+
+      1. The MASTERS decide the spelling. If ALAC-Archival has a folder that
+         differs from this one only by case, that spelling wins outright --
+         the editions must agree about how an artist is filed, and the
+         masters are the authority. This is what catches "City Of Prague..."
+         against the archive's "City of Prague...", which sort_form alone
+         cannot see because both are already in sort form.
+
+      2. Otherwise, the article goes to the end.
+
+    Case matters here because ext4 is case-sensitive: "Asleep at the Wheel"
+    and "Asleep At The Wheel" are two artists on disk and two entries in the
+    car, and the encoder recreates whichever the tag happens to say on every
+    build. Folding them by article alone left them behind.
+    """
+    master_names = {}
+    if masters and masters.is_dir():
+        for d in masters.iterdir():
+            if d.is_dir():
+                master_names[d.name.casefold()] = d.name
+
+    # A COUNT per casefolded name, not a dict of paths. A dict keeps one
+    # entry per key, so the two folders this is meant to detect -- same name,
+    # different case -- collapse into a single entry and the duplicate
+    # disappears before it can be seen. (The first attempt also compared the
+    # survivor with `is not`, which is Path identity: iterdir builds a new
+    # object every time, so it was never the same object and the guard never
+    # fired.)
+    from collections import Counter
+    here = Counter(d.name.casefold() for d in root.iterdir() if d.is_dir())
     moves = []
     for d in sorted(p for p in root.iterdir() if p.is_dir()):
+        canonical = master_names.get(d.name.casefold())
+        # Only defer to the masters when doing so MERGES two folders that
+        # already exist here. That is the real fault -- one artist filed
+        # twice, which is two entries in the car -- and it is what "City Of
+        # Prague..." beside "City of Prague..." is.
+        #
+        # Deferring whenever the spellings merely differ propagates the
+        # master's mistakes: ALAC-Archival holds "K.d. Lang" and "Mgk" where
+        # CAR has the correct "k.d. lang" and "mgk", and a blanket
+        # masters-win rule would overwrite right with wrong. Those belong in
+        # PROTECTED_ARTIST_CASING, and fixing them there reaches CAR on the
+        # next run anyway.
+        if canonical and canonical != d.name and here[d.name.casefold()] > 1:
+            moves.append((d, d.parent / canonical))
+            continue
         wanted = sort_form(d.name)
         if wanted and wanted != d.name:
             moves.append((d, d.parent / wanted))
@@ -95,7 +142,8 @@ def main() -> int:
         print(f"no CAR_Library at {root}")
         return 1
 
-    moves = folders_needing_a_move(root)
+    masters = Path(cfg.vault_root) / "Libraries" / "ALAC-Archival"
+    moves = folders_needing_a_move(root, masters)
     if not moves:
         print(f"{root.name}: every artist folder is already in sort form.")
         return 0
