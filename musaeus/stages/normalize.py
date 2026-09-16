@@ -539,8 +539,29 @@ def _normalise_artist(artist: str) -> str | None:
     if _is_all_caps(fixed):
         fixed = _smart_title_case(fixed)
 
-    # Move article to suffix (ORPHEUS-style canonical form)
-    fixed = _move_article_to_suffix(fixed)
+    # Canonicalise the article, then put it back in FRONT.
+    #
+    # The suffix pass still runs, and has to: it is the step that cleans the
+    # junk spellings -- "Archies (the)", "Beatles, The (the)" -- into one
+    # shape, and the step that honours PROTECTED_ARTIST_NAMES, so "De La
+    # Soul" and "Los Lobos" come through it untouched rather than being
+    # split. Only the landing place changed.
+    #
+    # Before 2026-09-16 the suffix form was the result, and archive.artist
+    # held "Beatles, The". That is right for a folder and wrong for the one
+    # field every external service reads: 376 of 839 cached lookup misses
+    # were in `X, The` form and 0 of 2,158 hits were. The sort form still
+    # exists in the two places that want it -- the folder path
+    # (organize.py) and the `soar` tag (tagger.py) -- both of which derive
+    # it themselves and are unaffected by this.
+    #
+    # Leaving this line as it was would have undone the 1,914-row migration
+    # of 2026-09-16 on the next normalize run, one row at a time, which is
+    # the quiet kind of regression: doctor goes green, then drifts red with
+    # nobody having changed anything.
+    from ..artist_form import natural_form
+
+    fixed = natural_form(_move_article_to_suffix(fixed))
 
     return fixed if fixed != artist else None
 

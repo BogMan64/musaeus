@@ -591,9 +591,78 @@ def diagnose(cfg: MusicConfig) -> Report:
     #      A single authority can be correct and the system still wrong.
     _authority_disagreements(cfg, rep)
     _editions_come_from_masters(cfg, rep)
+    _artist_tag_is_natural_form(cfg, rep)
 
     conn.close()
     return rep
+
+
+def _artist_tag_is_natural_form(cfg: MusicConfig, rep: Report) -> None:
+    """Is any artist stored in SORT form, where the world cannot read it?
+
+    MUSAEUS stored "Beatles, The" in archive.artist. That is the right thing
+    for a folder-browsed library -- it files under B -- and the wrong thing
+    for the field every external service reads. artist_form.py measured it on
+    2026-08-29: 376 of 839 cached misses were in `X, The` form, and 0 of
+    2,158 hits were.
+
+    It went on to break five separate things, each found independently:
+
+      source lookups     1,072 proposal rows in X, The form; 1,071 returned
+                         nothing -- 99.9%
+      MusicBrainz        its quoted phrase search is exact, so the sort form
+                         finds 0 recordings
+      MasterLaw checks   ad-hoc membership tests miss; GenreLaw._key folds
+                         the article but hand-written code does not
+      CAR match-back     (artist, title) exact match failed for 2,359 tracks
+      playlist fallback  those rows then had no car_export_path
+
+    Five patches, one cause. The migration of 2026-09-16 moved the sort form
+    to the `soar` tag where it belongs and left `artist` natural.
+
+    This check exists so it stays that way. A cleanup with no standing guard
+    is a cleanup that has to be repeated.
+    """
+    from .artist_form import natural_form
+
+    if not Path(cfg.db_path).is_file():
+        rep.add("ok", "artist tag form", "no database -- skipped")
+        return
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            "SELECT artist, COUNT(*) FROM archive WHERE status='CATALOGUED' "
+            "AND COALESCE(artist,'') <> '' GROUP BY artist"
+        ).fetchall()
+    except sqlite3.Error as exc:
+        rep.add("warn", "artist tag form", f"could not read the catalogue: {exc}")
+        return
+    finally:
+        conn.close()
+
+    # NOT has_article(). That returns True for "The Beatles" as readily as for
+    # "Beatles, The" -- its job is "does this name carry an article at all",
+    # and its docstring says so. Used here it reported all 1,914 rows still in
+    # sort form immediately AFTER the migration had correctly converted them,
+    # which is a guard that can never go green. The sort-form test is whether
+    # converting to natural form CHANGES the string.
+    # .strip() on the left because natural_form strips on the right. Without
+    # it a whitespace-only artist -- or a padded " The Beatles " -- is
+    # reported as SORT form, which is both untrue and unactionable. Whitespace
+    # hygiene is a different check than article position.
+    offenders = [(a, n) for a, n in rows if a.strip() != natural_form(a)]
+    if not offenders:
+        rep.add("ok", "artist tag form", "every artist is in natural form")
+        return
+    tracks = sum(n for _a, n in offenders)
+    worst = ", ".join(f"{a} ({n})" for a, n in sorted(offenders, key=lambda x: -x[1])[:3])
+    rep.add(
+        "warn",
+        "artist tag form",
+        f"{len(offenders)} artist(s) across {tracks} track(s) are stored in SORT "
+        f"form, which no music service can read: {worst}",
+        count=tracks,
+    )
 
 
 def _authority_disagreements(cfg: MusicConfig, rep: Report) -> None:

@@ -87,9 +87,30 @@ def test_normalize_leaves_protected_names_alone():
     from musaeus.stages.normalize import NormalizeStage
 
     c = _db()
-    for a in ("AC/DC", "Beatles, The", "R.E.M."):
+    # "The Beatles", not "Beatles, The". This fixture held the sort form until
+    # 2026-09-16, when archive.artist migrated to natural form -- and it was
+    # this test that noticed, correctly: normalize now rewrites "Beatles, The"
+    # to "The Beatles", so the sort form is no longer a fixed point and
+    # verify_effect is right to say so. The names here are the ones normalize
+    # must leave ALONE, so the article-bearing one has to be in the form the
+    # library now stores.
+    for a in ("AC/DC", "The Beatles", "R.E.M."):
         c.execute("INSERT INTO archive VALUES ('/x.m4a',?,'A','T','Rock','CATALOGUED')", (a,))
     assert NormalizeStage().verify_effect(_ctx(c), _res(1)) == []
+
+
+def test_normalize_flags_the_old_sort_form_as_unstable():
+    """The other half: the pre-migration form must NOT be treated as settled.
+
+    If this ever passes silently, normalize has stopped converting the sort
+    form and the 1,914-row migration will rot back one ingest at a time.
+    """
+    from musaeus.stages.normalize import NormalizeStage
+
+    c = _db()
+    c.execute("INSERT INTO archive VALUES ('/x.m4a','Beatles, The','A','T','Rock','CATALOGUED')")
+    problems = NormalizeStage().verify_effect(_ctx(c), _res(1))
+    assert problems and "'Beatles, The'" in problems[0]
 
 
 class _RealLaw:
