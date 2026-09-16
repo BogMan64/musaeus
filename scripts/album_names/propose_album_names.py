@@ -206,7 +206,10 @@ class Throttle:
     """
 
     #: Gaps a source requires regardless of --rate.
-    MINIMUMS = {"musicbrainz": MB_MIN_GAP_S}
+    #: Gaps a source insists on regardless of --rate. Discogs documents 60
+    #: requests/minute for an authenticated client; Last.fm is unpublished but
+    #: throttles, so it gets the same courtesy as MusicBrainz.
+    MINIMUMS = {"musicbrainz": MB_MIN_GAP_S, "discogs": 1.1, "lastfm": 0.3}
 
     def __init__(self, gap: float = RATE_S):
         self.gap = gap
@@ -282,6 +285,35 @@ def _choose(candidates: list[tuple]) -> Answer:
     )
 
 
+def ask_with_fallbacks(fn, artist: str, title: str, throttle: Throttle) -> Answer:
+    """Article fallback, then title fallback. Both only fire on a miss.
+
+    The title half was measured 2026-09-15 and is the larger of the two:
+
+        "Rock Lobster (stereo)"        -> nothing
+        "Rock Lobster"                 -> Last.fm "The B-52's"
+        "Al Green Full of Fire"        -> nothing
+        "Full of Fire"                 -> "The Very Best of Al Green"
+
+    The script already strips this noise when MATCHING a result; it was
+    sending the raw title in the QUERY. Same shape of bug as the article
+    form: asking with a string the service has never heard of. Of 465
+    no-answer rows, 115 carry a noisy title, and a sampled retry recovered
+    5 of 12.
+
+    Order matters: the article retry is tried first because it is the
+    cheaper hypothesis, and each retry runs only when everything before it
+    returned nothing at all.
+    """
+    got = ask_with_article_fallback(fn, artist, title, throttle)
+    if got.album:
+        return got
+    clean = _TITLE_NOISE.sub("", title).strip()
+    if clean and clean != title:
+        return ask_with_article_fallback(fn, artist, clean, throttle)
+    return got
+
+
 def ask_with_article_fallback(fn, artist: str, title: str, throttle: Throttle) -> Answer:
     """Ask a source, and if it knows nothing, ask again without the article.
 
@@ -344,6 +376,62 @@ def ask_library(index: dict, artist: str, title: str) -> Answer:
     """Free, offline, and better than the sources when it answers."""
     album = index.get((comparison_key(artist or ""), song_key(artist, title)[1]))
     return Answer(album=album, source="library") if album else Answer()
+
+
+def ask_lastfm(artist: str, title: str, throttle: Throttle, **_kw) -> Answer:
+    """Last.fm track.getInfo. Free, and Grey already holds the key.
+
+    Measured 2026-09-15: answers well on a clean title and not at all on a
+    noisy one -- "Rock Lobster" returns "The B-52's" where "Rock Lobster
+    (stereo)" returns nothing. That is why ask_with_title_fallback exists.
+    """
+    key = os.environ.get("LASTFM_API_KEY", "")
+    if not key:
+        return Answer()
+    throttle.wait("lastfm")
+    url = (
+        "https://ws.audioscrobbler.com/2.0/?method=track.getInfo"
+        f"&api_key={urllib.parse.quote(key)}"
+        f"&artist={urllib.parse.quote(artist)}&track={urllib.parse.quote(title)}"
+        "&format=json&autocorrect=1"
+    )
+    data = _get_json(url) or {}
+    album = ((data.get("track") or {}).get("album") or {}).get("title") or ""
+    if not album:
+        return Answer()
+    # Last.fm gives no release date on this endpoint, and no release type --
+    # so it can name a compilation without saying so. It counts as one vote,
+    # never as the tie-break.
+    return Answer(album=SINGLE_RE.sub("", album).strip(), source="lastfm")
+
+
+def ask_discogs(artist: str, title: str, throttle: Throttle, **_kw) -> Answer:
+    """Discogs release search. Grey holds a consumer key/secret.
+
+    Discogs titles come back as "Artist - Album", so the artist half is
+    stripped; returning the raw string would file tracks under
+    "Richard Bargel, Klaus Major Heuser" as though that were a record.
+    """
+    key = os.environ.get("DISCOGS_CONSUMER_KEY", "")
+    secret = os.environ.get("DISCOGS_CONSUMER_SECRET", "")
+    if not (key and secret):
+        return Answer()
+    throttle.wait("discogs")
+    url = (
+        "https://api.discogs.com/database/search?type=release"
+        f"&artist={urllib.parse.quote(artist)}&track={urllib.parse.quote(title)}"
+        f"&per_page=5&key={urllib.parse.quote(key)}&secret={urllib.parse.quote(secret)}"
+    )
+    data = _get_json(url) or {}
+    results = data.get("results") or []
+    if not results:
+        return Answer()
+    raw = (results[0].get("title") or "").strip()
+    album = raw.split(" - ", 1)[1].strip() if " - " in raw else raw
+    if not album or comparison_key(album) == comparison_key(artist):
+        return Answer()          # the "album" was just the artist name again
+    year = str(results[0].get("year") or "")
+    return Answer(album=SINGLE_RE.sub("", album).strip(), year=year[:4], source="discogs")
 
 
 def ask_musicbrainz(artist: str, title: str, throttle: Throttle, **_kw) -> Answer:
@@ -457,14 +545,18 @@ def ask_deezer(artist: str, title: str, throttle: Throttle, **_kw) -> Answer:
     return _choose(candidates)
 
 
-def verdict(itunes: Answer, deezer: Answer, third: Answer | None = None) -> tuple[str, str, str, Answer]:
-    """Agreement between any two sources is the signal.
+def verdict(*answers: Answer | None) -> tuple[str, str, str, Answer]:
+    """Agreement between any TWO sources is the signal, however many ask.
 
-    `third` was Spotify and is now MusicBrainz; the tier names never
-    mentioned it, so nothing downstream changes.
+    Five sources now: iTunes, Deezer, MusicBrainz, Last.fm, Discogs. The bar
+    stays at two because that is what makes an answer trustworthy -- a third
+    and fourth source raise the CHANCE of reaching two, they do not lower
+    what two means. Grey's call 2026-09-15: "settle on two that match".
+
+    Variadic rather than five named parameters so a sixth source needs no
+    signature change and no caller edit.
     """
-    third = third or Answer()
-    valid = [a for a in (itunes, deezer, third) if a.album]
+    valid = [a for a in answers if a and a.album]
     if not valid:
         return ("4-NO ANSWER", "", "", Answer())
 
@@ -488,7 +580,25 @@ def verdict(itunes: Answer, deezer: Answer, third: Answer | None = None) -> tupl
         winner = valid[0]
         return (f"2-{winner.source.upper()} ONLY", winner.album, "", winner)
 
-    winner = itunes if itunes.album else (third if third.album else deezer)
+    # Nobody agrees. Grey's standing tie-break is iTunes (2026-09-15: "3.-
+    # whichever one iTunes chose"), then the rest in a fixed, documented
+    # order so the same inputs always give the same answer.
+    order = ("itunes", "musicbrainz", "deezer", "lastfm", "discogs")
+
+    # An original album beats a compilation before source order is consulted.
+    # Measured 2026-09-15 on "Rock Lobster (stereo)":
+    #     iTunes  '1979'          <- compilation, and first in the order
+    #     Deezer  'Time Capsule'  <- compilation
+    #     Last.fm "The B-52's"    <- the actual 1979 debut
+    # iTunes-first is Grey's ruling and it stands, but it is a tie-break
+    # between EQUALS. A compilation is not the equal of the record the song
+    # was released on, so that filter runs first and the ruling decides what
+    # is left. If every source offers a compilation, nothing is discarded.
+    originals = [a for a in valid if not a.is_compilation]
+    pool = originals or valid
+
+    by_source = {a.source: a for a in pool}
+    winner = next((by_source[s] for s in order if s in by_source), pool[0])
     note = f"Disagreement. Selected {winner.source} proposal ({winner.album})."
     return ("3-SOURCES DISAGREE", winner.album, note, winner)
 
@@ -600,7 +710,8 @@ def load_targets(
 
 COLUMNS = [
     "confidence", "artist", "title", "proposed_album", "year", "is_self_titled",
-    "itunes_says", "deezer_says", "musicbrainz_says", "sources_agree", "looks_like_compilation",
+    "itunes_says", "deezer_says", "musicbrainz_says", "lastfm_says", "discogs_says",
+    "sources_agree", "looks_like_compilation",
     "note", "archive_id", "file_path",
 ]
 
@@ -616,6 +727,8 @@ CONFIDENCE_ORDER = {
     "2-ITUNES ONLY": 1,
     "2-DEEZER ONLY": 1,
     "2-MUSICBRAINZ ONLY": 1,
+    "2-LASTFM ONLY": 1,
+    "2-DISCOGS ONLY": 1,
     "3-SOURCES DISAGREE": 2,
     "4-NO ANSWER": 3,
 }
@@ -670,7 +783,17 @@ def main(argv: list[str] | None = None) -> int:
         ("itunes", ask_itunes),
         ("deezer", ask_deezer),
         ("musicbrainz", ask_musicbrainz),
+        ("lastfm", ask_lastfm),
+        ("discogs", ask_discogs),
     ]
+    # A source with no key configured is dropped rather than asked and failed
+    # once per track -- 838 pointless requests is not a warning, it is a spend.
+    if not os.environ.get("LASTFM_API_KEY"):
+        active_sources = [s for s in active_sources if s[0] != "lastfm"]
+        print("  note: no LASTFM_API_KEY -- Last.fm not asked (console option 13 sets it)")
+    if not (os.environ.get("DISCOGS_CONSUMER_KEY") and os.environ.get("DISCOGS_CONSUMER_SECRET")):
+        active_sources = [s for s in active_sources if s[0] != "discogs"]
+        print("  note: no Discogs key/secret -- Discogs not asked")
 
     targets = load_targets(args.db, args.limit, args.path_prefix)
     if args.path_prefix:
@@ -735,6 +858,7 @@ def main(argv: list[str] | None = None) -> int:
                     "artist": artist, "title": title, "proposed_album": own.album,
                     "year": "", "is_self_titled": "",
                     "itunes_says": "", "deezer_says": "", "musicbrainz_says": "",
+                    "lastfm_says": "", "discogs_says": "",
                     "sources_agree": "", "looks_like_compilation": "",
                     "note": "already filed under this album elsewhere in your library",
                     "archive_id": archive_id, "file_path": file_path,
@@ -749,9 +873,7 @@ def main(argv: list[str] | None = None) -> int:
                 hit = cache_get(con, lookup_artist, title, source)
                 if hit is None and not args.offline:
                     try:
-                        hit = ask_with_article_fallback(
-                            fn, lookup_artist, title, throttle
-                        )
+                        hit = ask_with_fallbacks(fn, lookup_artist, title, throttle)
                     except FetchError as exc:
                         # A transport failure is NOT an answer. Caching it
                         # would record "this source has nothing for this
@@ -768,7 +890,11 @@ def main(argv: list[str] | None = None) -> int:
             deezer_ans = answers.get("deezer", Answer())
             mb_ans = answers.get("musicbrainz", Answer())
 
-            confidence, album, note, winning_ans = verdict(itunes_ans, deezer_ans, mb_ans)
+            lastfm_ans = answers.get("lastfm", Answer())
+            discogs_ans = answers.get("discogs", Answer())
+            confidence, album, note, winning_ans = verdict(
+                itunes_ans, deezer_ans, mb_ans, lastfm_ans, discogs_ans
+            )
             is_comp = Answer(album=album).is_compilation
 
             rows.append(
@@ -782,6 +908,8 @@ def main(argv: list[str] | None = None) -> int:
                     "itunes_says": itunes_ans.album,
                     "deezer_says": deezer_ans.album,
                     "musicbrainz_says": mb_ans.album,
+                    "lastfm_says": lastfm_ans.album,
+                    "discogs_says": discogs_ans.album,
                     "sources_agree": (
                         "yes" if confidence == "1-AGREED"
                         else "" if confidence == "4-NO ANSWER"

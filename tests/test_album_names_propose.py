@@ -185,3 +185,71 @@ class TestVerdictThreeSource:
         confidence, album, _note, winner = verdict(it, dz, sp)
         assert confidence == "3-SOURCES DISAGREE"
         assert album == "Album A"
+
+
+class TestFiveSourcesAndTheTieBreak:
+    """Five sources, agreement still at two, and originals beat compilations.
+
+    Grey's call 2026-09-15: add Last.fm and Discogs, "settle on two that
+    match". The bar stays at two -- more sources raise the CHANCE of reaching
+    two, they do not change what two means.
+    """
+
+    def test_two_agreeing_is_still_the_top_tier_with_five_asked(self):
+        got = verdict(
+            Answer(album="Rumours", source="itunes"),
+            Answer(album="", source="deezer"),
+            Answer(album="", source="musicbrainz"),
+            Answer(album="Rumours", source="lastfm"),
+            Answer(album="", source="discogs"),
+        )
+        assert got[0] == "1-AGREED"
+        assert got[1] == "Rumours"
+
+    def test_a_single_source_names_itself(self):
+        c, album, _n, _w = verdict(Answer(album="Men In Blues", source="discogs"))
+        assert c == "2-DISCOGS ONLY"
+        assert album == "Men In Blues"
+
+    def test_a_named_compilation_loses_to_an_original(self):
+        """Measured on Redbone: iTunes offered a mixtape, another source the
+        record. iTunes-first is a tie-break between EQUALS, and a compilation
+        is not the equal of the album a song was released on."""
+        _c, album, _n, w = verdict(
+            Answer(album="Greatest Hits", source="itunes"),
+            Answer(album="Wovoka", source="lastfm"),
+        )
+        assert album == "Wovoka"
+        assert w.source == "lastfm"
+
+    def test_when_every_answer_is_a_compilation_itunes_still_wins(self):
+        _c, album, _n, w = verdict(
+            Answer(album="Greatest Hits", source="itunes"),
+            Answer(album="Gold", source="deezer"),
+        )
+        assert w.source == "itunes"
+        assert album == "Greatest Hits"
+
+    def test_when_no_answer_is_a_compilation_itunes_still_wins(self):
+        _c, _album, _n, w = verdict(
+            Answer(album="Rumours", source="itunes"),
+            Answer(album="Tusk", source="deezer"),
+        )
+        assert w.source == "itunes"
+
+    def test_the_filter_only_sees_compilations_that_say_so(self):
+        """The documented limit, pinned so nobody assumes more than it does.
+
+        "Rock Lobster (stereo)" 2026-09-15: iTunes '1979', Deezer 'Time
+        Capsule', Last.fm "The B-52's" -- the last is the real album and the
+        first two are compilations whose NAMES do not say so. The tie-break
+        cannot see that, so iTunes wins and the answer is wrong. Fixing it
+        needs release-type metadata, not a better regex.
+        """
+        _c, album, _n, w = verdict(
+            Answer(album="1979", source="itunes"),
+            Answer(album="Time Capsule", source="deezer"),
+            Answer(album="The B-52's", source="lastfm"),
+        )
+        assert album == "1979", "known limit: an unnamed compilation is invisible here"
+        assert w.source == "itunes"

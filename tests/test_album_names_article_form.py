@@ -232,4 +232,6 @@ class TestTheArticleFallbackAppliesToEverySource:
 
         import propose_album_names as m
 
-        assert "ask_with_article_fallback(" in inspect.getsource(m.main)
+        assert "ask_with_fallbacks(" in inspect.getsource(m.main), (
+            "the loop must go through the wrapper that applies BOTH the article "
+            "and the title fallback, not the article one directly")
