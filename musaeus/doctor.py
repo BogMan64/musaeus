@@ -592,6 +592,7 @@ def diagnose(cfg: MusicConfig) -> Report:
     _authority_disagreements(cfg, rep)
     _editions_come_from_masters(cfg, rep)
     _artist_tag_is_natural_form(cfg, rep)
+    _catalogued_tracks_reach_the_car(cfg, rep)
 
     conn.close()
     return rep
@@ -662,6 +663,94 @@ def _artist_tag_is_natural_form(cfg: MusicConfig, rep: Report) -> None:
         f"{len(offenders)} artist(s) across {tracks} track(s) are stored in SORT "
         f"form, which no music service can read: {worst}",
         count=tracks,
+    )
+
+
+def _catalogued_tracks_reach_the_car(cfg: MusicConfig, rep: Report) -> None:
+    """How many catalogued tracks have no car edition, and could have one?
+
+    The 2026-09-15 build reported success with 726 catalogued tracks holding
+    no car_export_path. Every one of them has a master on disk, so every one
+    of them COULD have been encoded -- they were simply not, and nothing said
+    so. A build that half-finishes and calls it a success is the expensive
+    kind of quiet: the USB gets made, the tracks are not on it, and the first
+    report is somebody noticing in the car months later.
+
+    This does not encode anything and does not fail a build. It answers "is
+    the car edition actually complete?", which until now had no answer short
+    of counting by hand.
+
+    Rows whose master is GONE are counted separately and are not a car
+    problem -- nothing can be built from a missing master, and that is
+    _editions_come_from_masters' business.
+    """
+    if not Path(cfg.db_path).is_file():
+        rep.add("ok", "car edition coverage", "no database -- skipped")
+        return
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    try:
+        # A catalogue with no car_export_path column has no car edition to be
+        # incomplete -- that is a schema that predates the column, not a
+        # fault, and doctor runs against whatever config it is handed. Warning
+        # here turned a minimal fixture's clean report into a WARN and took
+        # two existing doctor tests with it; the same shape as the meta_dir
+        # assumption that once broke 28.
+        # `cols` is EMPTY for a table that does not exist -- PRAGMA answers
+        # with no rows rather than an error -- so "no columns" must fall
+        # through to the query and be reported, while "columns, but not this
+        # one" is the old-schema case that is genuinely not applicable.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
+        if cols and "car_export_path" not in cols:
+            rep.add("ok", "car edition coverage", "no car_export_path column -- skipped")
+            return
+        rows = conn.execute(
+            "SELECT file_path FROM archive WHERE status='CATALOGUED' "
+            "AND COALESCE(car_export_path,'') = ''"
+        ).fetchall()
+        total = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'"
+        ).fetchone()[0]
+    except sqlite3.Error as exc:
+        rep.add("warn", "car edition coverage", f"could not read the catalogue: {exc}")
+        return
+    finally:
+        conn.close()
+
+    if not rows or not total:
+        rep.add("ok", "car edition coverage", "every catalogued track has a car file")
+        return
+
+    from .editions import master_path_for
+
+    lib = Path(getattr(cfg, "alac_library", "") or "")
+    arc = Path(getattr(cfg, "alac_archive", "") or "")
+    buildable = 0
+    for (fp,) in rows:
+        try:
+            # .is_master, NOT .path.is_file(). master_path_for FALLS BACK to
+            # the row's own file_path when no master exists, so the path is
+            # readable either way and the boolean is the only thing that
+            # distinguishes "the master is there" from "there is no master".
+            res = master_path_for(Path(fp), lib, arc)
+            if res.is_master and res.path.is_file():
+                buildable += 1
+        except (OSError, ValueError):
+            continue
+
+    pct = (total - len(rows)) * 100 // total
+    if buildable == 0:
+        rep.add(
+            "ok",
+            "car edition coverage",
+            f"{pct}% covered; the {len(rows)} without a car file have no master to build from",
+        )
+        return
+    rep.add(
+        "warn",
+        "car edition coverage",
+        f"{buildable} catalogued track(s) have no car file but DO have a master, "
+        f"so a build could produce them -- car edition is {pct}% complete",
+        count=buildable,
     )
 
 
