@@ -53,6 +53,12 @@ from pathlib import Path
 VAULT_ROOT = Path(os.environ.get("MUSAEUS_VAULT_ROOT", "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT"))
 NOISE_DIR = Path(os.environ.get("ORPHEUS_NOISE_DIR", str(VAULT_ROOT / "RUNS" / "Noise")))
 AAC_CAR_SRC = VAULT_ROOT / "RUNS" / "AAC-Car"
+
+#: True-peak ceiling for the masked output, as a linear amplitude.
+#: 0.977 is -0.2 dBFS -- under full scale with enough margin that the AAC
+#: encoder's own overshoot does not put it back over.
+CEILING_LINEAR = 0.977
+
 AAC_CAR_OUT = VAULT_ROOT / "RUNS" / "AAC-Car-Masked"
 
 # 30-min files loop cleanly for any typical track
@@ -174,13 +180,31 @@ def mix_track(job: Job) -> tuple[bool, str]:
     pink = str(NOISE_FILES["pink"])
     white = str(NOISE_FILES["white"])
 
-    # Build filter: attenuate each noise colour, blend them, mix under music
+    # Build filter: attenuate each noise colour, blend them, mix under music,
+    # then catch whatever the sum pushed past full scale.
+    #
+    # THE LIMITER IS NOT OPTIONAL. amix with normalize=0 deliberately does not
+    # reduce gain -- that is what keeps the music at the level the encoder
+    # baked it to -- so the noise adds on top and the sum can exceed 0 dBFS,
+    # which is not "a bit loud", it is clipping: hard distortion on exactly
+    # the loudest moments.
+    #
+    # Measured 2026-09-16 on the live car edition: masking costs about 0.6 dB
+    # of headroom, and a 120-file sample found 19% of the edition peaking
+    # above -0.6 dBFS, with the loudest at exactly 0.0. Unlimited, masking
+    # would have distorted roughly 2,100 tracks.
+    #
+    # alimiter rather than a blanket attenuation: it acts ONLY on the peaks
+    # that would have clipped and leaves everything else at the level it was
+    # baked to. Pulling the whole track down instead would undo the -14 LUFS
+    # target on every file to protect a fifth of them.
     filt = (
         f"[1:a]volume={job.brown_db}dB[b];"
         f"[2:a]volume={job.pink_db}dB[p];"
         f"[3:a]volume={job.white_db}dB[w];"
         f"[b][p][w]amix=inputs=3:normalize=0[noise];"
-        f"[0:a][noise]amix=inputs=2:normalize=0:duration=first[out]"
+        f"[0:a][noise]amix=inputs=2:normalize=0:duration=first[mixed];"
+        f"[mixed]alimiter=limit={CEILING_LINEAR}:level=disabled[out]"
     )
 
     cmd = [

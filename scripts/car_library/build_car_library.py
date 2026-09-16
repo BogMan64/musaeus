@@ -403,6 +403,82 @@ def _sort_artist_folders(root: Path) -> int:
     return moved
 
 
+def _copy_edition_from_car(cfg, conn, dest_root: Path, budget_bytes: int | None,
+                           dry_run: bool) -> int:
+    """Build the iPhone edition by COPYING the car edition.
+
+    The two specs are byte-identical -- AAC, -14.0 LUFS, 256 kbps, 48 kHz cap
+    -- so re-encoding from the masters produces the same files a second time
+    at the cost of hours. The only thing that separates them is masking.
+
+    "No edition is ever built from another" exists to stop an edition being
+    BAKED from another: building the car from the -18 LUFS lossless applies
+    loudnorm twice and the result is measurably worse. A byte copy of an
+    identical spec is not a second bake and loses nothing.
+
+    THE GUARD. Masking is for road noise in the Sebring. On headphones it is
+    just noise mixed into the music, which is why the iPhone edition turns it
+    off. So a masked car edition must never be copied to the iPhone, and this
+    refuses rather than asking again later. Checked against the catalogue's
+    own noise_profile, not against a flag someone remembered to pass.
+    """
+    rows = conn.execute(
+        "SELECT car_export_path, COALESCE(noise_profile,''), COALESCE(genre,'') "
+        "FROM archive WHERE status='CATALOGUED' AND COALESCE(car_export_path,'') <> ''"
+    ).fetchall()
+
+    # Fill in GENRE PRIORITY order, not whatever order the catalogue returns.
+    # A budget that drops rows as it happens to reach them drops them at
+    # random; DEFAULT_GENRE_PRIORITY exists precisely to say which music goes
+    # first when there is not room for all of it, and select_edition already
+    # honours it on the encode path. A copy that ignored it would fill an
+    # iPhone with a different answer than an encode of the same size.
+    from musaeus.editions import DEFAULT_GENRE_PRIORITY
+
+    order = {g: i for i, g in enumerate(DEFAULT_GENRE_PRIORITY)}
+    rows.sort(key=lambda r: (order.get(r[2], len(order)), r[2], r[0]))
+    if not rows:
+        print("  the car edition is empty -- nothing to copy.")
+        return 0
+
+    masked = [r for r in rows if r[1] and r[1] != "clean"]
+    if masked:
+        print(f"  REFUSED: {len(masked):,} car track(s) are masked "
+              f"(noise_profile != 'clean').")
+        print("  Masking is for road noise; on headphones it is noise mixed into")
+        print("  the music. Re-encode the iPhone edition from the masters instead.")
+        return 1
+
+    budget_left = budget_bytes
+    copied = skipped = 0
+    for src_s, _profile, _genre in rows:
+        src = Path(src_s)
+        if not src.is_file():
+            continue
+        size = src.stat().st_size
+        if budget_left is not None and size > budget_left:
+            skipped += 1
+            continue
+        try:
+            rel = src.relative_to(Path(cfg.car_library))
+        except ValueError:
+            continue
+        dst = dest_root / rel
+        if dst.is_file() and dst.stat().st_size == size:
+            continue
+        if not dry_run:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+        if budget_left is not None:
+            budget_left -= size
+        copied += 1
+    verb = "would copy" if dry_run else "copied"
+    print(f"  {verb} {copied:,} track(s) from the car edition to {dest_root}")
+    if skipped:
+        print(f"  {skipped:,} did not fit the budget")
+    return 0
+
+
 def main() -> int:
     # Keep the machine awake for the whole run without touching the X11
     # idle counter the throttle reads. See musaeus/sleep_inhibit.py.
@@ -416,6 +492,9 @@ def main() -> int:
     parser.add_argument("--from-catalogue", action="store_true",
                         help="Build from every CATALOGUED master rather than from "
                              "files hand-dropped into the input folder")
+    parser.add_argument("--source", choices=("masters", "car"), default="masters",
+                        help="iphone only: 'car' copies the car edition instead of "
+                             "re-encoding (identical specs); refuses if it is masked")
     parser.add_argument("--only-missing", action="store_true",
                         help="Only tracks that have no file in this edition yet "
                              "(fills the gap a previous build left)")
@@ -439,9 +518,14 @@ def main() -> int:
     # `--limit 5` over hand-dropped files encoded all of them. Reject rather
     # than ignore -- a flag that is quietly dropped is worse than one that
     # errors, because the operator believes it took effect. (M-05.)
+    # --source car honours --budget-gb itself (it copies until the budget is
+    # spent), so it is not one of the cases where the flag would be ignored.
+    # --limit still is.
     if not args.from_catalogue:
         ignored = [n for n, v in (("--limit", args.limit),
-                                  ("--budget-gb", args.budget_gb)) if v is not None]
+                                  ("--budget-gb",
+                                   None if args.source == "car" else args.budget_gb))
+                   if v is not None]
         if ignored:
             parser.error(
                 f"{' and '.join(ignored)} only applies with --from-catalogue; "
@@ -463,6 +547,21 @@ def main() -> int:
     # Hand-dropped files have no catalogue row and so no master to fall back
     # from; zero is the honest value, not a placeholder.
     fell_back_count = 0
+
+    if args.source == "car":
+        if args.edition != "iphone":
+            print("--source car only applies to the iphone edition.")
+            return 2
+        dest = Path(cfg.iphone_library)
+        dest.mkdir(parents=True, exist_ok=True)
+        conn_c = open_db(cfg.db_path)
+        try:
+            return _copy_edition_from_car(
+                cfg, conn_c, dest,
+                int(args.budget_gb * 1_000_000_000) if args.budget_gb else None,
+                args.dry_run)
+        finally:
+            conn_c.close()
 
     if args.from_catalogue:
         # Per-process staging. A shared "_staged" is not safe: this function
