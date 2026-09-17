@@ -63,7 +63,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from musaeus.config import get_config  # noqa: E402
+from musaeus.config import MusicConfig, get_config  # noqa: E402
 
 QUARANTINE_SEGMENT = "DUPES_MOVED_FOR_REVIEW"
 
@@ -149,12 +149,69 @@ def _orphan_group_winners(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def _prune_stale_quarantine_rows(
+    conn: sqlite3.Connection, cfg: MusicConfig, *, apply: bool
+) -> tuple[int, int]:
+    """Drop DUPE_REVIEW rows whose file is gone and whose audio is safe.
+
+    Fallout from the restore itself, found by AuditStage on 2026-08-21.
+    Where a track existed both as a library row from an earlier batch and
+    as a quarantine row from a later one, restoring the audio left the
+    second row behind pointing at a path that no longer exists. Twelve of
+    them still carried finalized_at, so the audit correctly failed on
+    "DB says finalized but file missing on disk".
+
+    A row is only dropped when the SAME audio_hash is present on a
+    CATALOGUED row whose file genuinely exists -- proof the audio is held,
+    not an assumption that it is. Anything else is left alone and
+    reported, because a stale row is a bookkeeping problem and a missing
+    recording is not.
+    """
+    live: dict[str, str] = {}
+    for r in conn.execute(
+        "SELECT audio_hash, file_path FROM archive "
+        "WHERE status='CATALOGUED' AND audio_hash IS NOT NULL"
+    ):
+        if Path(r["file_path"]).exists():
+            live.setdefault(r["audio_hash"], r["file_path"])
+
+    dropped = kept = 0
+    for r in conn.execute(
+        "SELECT rowid AS rid, file_path, audio_hash, artist, title FROM archive "
+        "WHERE status='DUPE_REVIEW'"
+    ).fetchall():
+        if Path(r["file_path"]).exists():
+            continue
+        if r["audio_hash"] not in live:
+            kept += 1
+            print(f"  KEPT (audio not held anywhere): {r['artist']} - {r['title']}")
+            continue
+        dropped += 1
+        if apply:
+            conn.execute("DELETE FROM archive WHERE rowid = ?", (r["rid"],))
+            conn.execute("DELETE FROM duplicates WHERE file_path = ?", (r["file_path"],))
+            if cfg.hash_index_path.exists():
+                idx = sqlite3.connect(cfg.hash_index_path)
+                idx.execute("DELETE FROM finalized_hashes WHERE file_path = ?", (r["file_path"],))
+                idx.commit()
+                idx.close()
+    if apply:
+        conn.commit()
+    return dropped, kept
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--check", action="store_true", help="Report only, change nothing")
     g.add_argument("--apply", action="store_true", help="Perform the restore")
     ap.add_argument("--limit", type=int, default=0, help="Restore at most N files")
+    ap.add_argument(
+        "--prune-stale-rows",
+        action="store_true",
+        help="Drop DUPE_REVIEW rows whose file is gone and whose audio is "
+        "provably held on a CATALOGUED row. Bookkeeping only, never audio.",
+    )
     ap.add_argument(
         "--orphan-groups",
         action="store_true",
@@ -175,6 +232,13 @@ def main() -> int:
 
     conn = sqlite3.connect(cfg.db_path)
     conn.row_factory = sqlite3.Row
+
+    if args.prune_stale_rows:
+        dropped, kept = _prune_stale_quarantine_rows(conn, cfg, apply=args.apply)
+        verb = "would drop" if args.check else "dropped"
+        print(f"stale quarantine rows: {verb} {dropped}, kept {kept} (audio not held)")
+        conn.close()
+        return 0
 
     if args.orphan_groups:
         rows = _orphan_group_winners(conn)

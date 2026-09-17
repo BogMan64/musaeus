@@ -1,0 +1,50 @@
+# MUSAEUS — for testing on someone else's machine.
+#
+#   docker compose build
+#   docker compose run --rm musaeus preflight
+#   docker compose run --rm musaeus run --dry-run
+#
+# See docs/TESTING_ON_YOUR_OWN_FILES.md before the first real run.
+
+services:
+  musaeus:
+    build:
+      context: .
+      args:
+        # Files MUSAEUS writes into ./vault end up owned by these ids.
+        # Deliberately NOT named UID/GID: those are readonly in bash, so
+        # `UID=$(id -u) docker compose build` fails with "readonly variable"
+        # before docker is even reached.
+        #   MUSAEUS_UID=$(id -u) MUSAEUS_GID=$(id -g) docker compose build
+        UID: "${MUSAEUS_UID:-1000}"
+        GID: "${MUSAEUS_GID:-1000}"
+    image: musaeus:local
+    volumes:
+      # Your working vault. Drop COPIES of music into ./vault/INBOX.
+      # MUSAEUS moves files out of INBOX -- it does not copy them.
+      - ./vault:/vault
+
+      # The database lives on a named volume, NOT on this bind mount, and
+      # that is deliberate rather than tidiness. SQLite runs in WAL mode,
+      # which needs shared memory and byte-range locks. Docker Desktop's
+      # Windows and macOS bind mounts do not provide those reliably, and
+      # the failure is not a clean error -- it is "database is locked",
+      # "disk I/O error", or a corrupted DB. A named volume is real ext4
+      # inside the Docker VM, where WAL behaves.
+      - musaeus-state:/state
+    environment:
+      MUSAEUS_VAULT_ROOT: /vault
+      MUSAEUS_DB_PATH: /state/musaeus.db
+      MUSAEUS_RECOVERY: /state/recovery
+      # No X server in a container; without this the idle-throttle tries to
+      # open DISPLAY=:0 on every check.
+      MUSAEUS_NO_IDLE_THROTTLE: "1"
+      # Optional. Enrichment stages no-op without them, they do not fail.
+      LASTFM_API_KEY: "${LASTFM_API_KEY:-}"
+      ACOUSTICID_API_KEY: "${ACOUSTICID_API_KEY:-}"
+      GROQ_API_KEY: "${GROQ_API_KEY:-}"
+    stdin_open: true
+    tty: true
+
+volumes:
+  musaeus-state:

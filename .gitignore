@@ -53,3 +53,7 @@ nohup.out
 *.env
 credentials.env
 settings.env
+
+# docker-compose creates the test vault here (docs/TESTING_ON_YOUR_OWN_FILES.md).
+# It holds someone's actual music and their catalogue -- never commit it.
+/vault/

@@ -24,6 +24,79 @@ def _utc_now() -> str:
     return datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
 
 
+MAX_LISTED = 20
+#: Of MAX_LISTED, how many come from the END of the list.
+#:
+#: Truncating purely from the head threw away the wrong end. Stages append
+#: their SUMMARY last -- dupe_resolver adds "moved N file(s) to review",
+#: "manifest: <path>" and "restore script: <path>" after every per-file note
+#: -- so a run with 21+ notes dropped the only record of how to undo a batch
+#: of irreversible moves, from both the console and the ForClaudeHandoff doc,
+#: while still looking like it had reported successfully.
+#:
+#: Errors do not have this shape (they are one per file, no trailing
+#: summary), but the split costs nothing there and one rule is easier to
+#: trust than two.
+TAIL_LISTED = 5
+
+
+def elision(hidden: int, unit: str = "", suffix: str = "") -> str:
+    """The one place the `... and N more` wording lives.
+
+    Returns the bare phrase with no indent: callers own their own leading
+    whitespace, which differs between console output, markdown bullets and
+    stage notes.
+
+    head_with_remainder() centralised the ARITHMETIC in 2026-09-04 and the
+    rendering stayed copied -- seventeen f-strings across stages, cli and
+    console, each re-typing the same sentence. The review that caught this
+    (P3-1) counted seven; by the time it was acted on there were seventeen,
+    which is the argument for the guard test in
+    tests/test_elision_is_shared.py rather than for another round of tidying.
+
+    `unit` names what was elided ("genre(s)", "artist(s)"); `suffix` carries
+    a trailing clause such as "(full list in the run log)".
+    """
+    out = f"... and {hidden} more"
+    if unit:
+        out += f" {unit}"
+    if suffix:
+        out += f" {suffix}"
+    return out
+
+
+def head_with_remainder(
+    items: list[str], limit: int = MAX_LISTED, tail: int = TAIL_LISTED
+) -> tuple[list[str], list[str], int]:
+    """The first entries, the LAST few, and how many were dropped between.
+
+    Returns (head, tail, hidden). Callers must render the elision BETWEEN the
+    two lists -- printing it after them would imply the tail entries are the
+    ones immediately following the head, which is exactly the misreading that
+    makes a truncated log worse than a short one.
+
+    Beside StageResult because notes/errors/verify_notes are its fields and
+    every consumer needs the same answer. A stage's error list is one entry
+    per file -- scholar.py appends "Missing: <path>" for every row whose file
+    has gone -- so its length is bounded by the batch, not by anything a
+    reader can use. Clearing one 3,142-file directory out of INBOX on
+    2026-09-03 put 3,133 near-identical lines on the console and would have
+    put the same into the ForClaudeHandoff doc, whose whole purpose is to be
+    pasted into a session with no file access.
+
+    Returns the split rather than rendered lines because the callers format
+    differently -- handoff.py wants markdown bullets, cli.py wants indented
+    console lines across two streams. The `... and N more` wording is this
+    repo's existing idiom (ingest.py, scholar.py, sentinel.py,
+    tribute_quarantine.py, console.py); this is the one place the arithmetic
+    behind it lives.
+    """
+    if len(items) <= limit:
+        return list(items), [], 0
+    head = limit - tail
+    return list(items[:head]), list(items[-tail:]), len(items) - limit
+
+
 @dataclass
 class StageResult:
     """What a stage returns after execution."""
@@ -38,11 +111,30 @@ class StageResult:
     notes: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
+    # Effect verification (2026-08-22). None = the stage does not claim a
+    # verifiable effect, or nothing changed. True/False = its claim was
+    # checked against the filesystem or DB after the fact and held / did not.
+    #
+    # This exists because five separate components were found reporting
+    # success while doing nothing at all: rebuild-db dispatching on event
+    # names that did not exist, Forge writing to an unserialisable tag key,
+    # GenreCanon parsing a separator the file never used, PermissionsStage
+    # sweeping an empty directory, and an overnight helper silently dropping
+    # its arguments. Every one passed its tests, because the tests asserted
+    # the shape of the call rather than its effect on disk.
+    verified: bool | None = None
+    verify_notes: list[str] = field(default_factory=list)
+
     def summarise(self) -> str:
         mode = " [DRY RUN]" if self.dry_run else ""
         status = "OK" if self.success else "FAILED"
+        seal = ""
+        if self.verified is True:
+            seal = " ✓verified"
+        elif self.verified is False:
+            seal = " ✗UNVERIFIED"
         return (
-            f"{self.stage_name}{mode}: {status} | "
+            f"{self.stage_name}{mode}: {status}{seal} | "
             f"processed={self.files_processed} "
             f"changed={self.files_changed} "
             f"skipped={self.files_skipped} "
@@ -187,12 +279,25 @@ class RunContext:
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    def finish(self) -> None:
-        """Log RUN_END, commit, and close the DB connection."""
-        success = all(r.success for r in self.stage_results)
+    def finish(self, interrupted: bool = False) -> None:
+        """Log RUN_END, commit, and close the DB connection.
+
+        `interrupted` records that the run was cut short rather than
+        reaching the end of the pipeline. Without it a Ctrl-C left no
+        RUN_END at all, and an aborted run was indistinguishable from one
+        still in progress -- the resume markers make relaunching safe, but
+        nothing said which stages never ran. Measured 2026-08-26: a batch
+        stopped after 22 of 27 stages, and only reading the stage list
+        revealed that forge, tagger, audit, enrich and mb_enrich had been
+        skipped.
+        """
+        success = all(r.success for r in self.stage_results) and not interrupted
         self.log_event(
             "RUN_END",
-            note=f"success={success} stages={len(self.stage_results)}",
+            note=(
+                f"success={success} stages={len(self.stage_results)}"
+                + (" interrupted=True" if interrupted else "")
+            ),
         )
         self.conn.commit()
         self.conn.close()

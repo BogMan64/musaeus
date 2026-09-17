@@ -50,7 +50,6 @@ Safety:
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
 import sqlite3
 import sys
@@ -59,7 +58,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from musaeus.stages.organize import build_track_filename, sanitize_path_component, unique_path  # noqa: E402
+from musaeus.stages.organize import (  # noqa: E402
+    build_track_filename,
+    sanitize_path_component,
+    unique_path,
+)
 
 VAULT_ROOT = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT")
 DB_PATH = VAULT_ROOT / "musaeus.db"

@@ -47,10 +47,19 @@ from pathlib import Path
 # only ever covered AAC_CAR_SRC/AAC_CAR_OUT). Now reads ORPHEUS_NOISE_DIR
 # from the environment first; the old hardcoded path is only a fallback
 # default for the case where nothing else has set it, not a forced value.
-ORPHEUS_ROOT = Path("/mnt/FORGE2TB/ACTIVE_PROJECTS/ORPHEUS")
-NOISE_DIR = Path(os.environ.get("ORPHEUS_NOISE_DIR", str(ORPHEUS_ROOT / "RUNS" / "Noise")))
-AAC_CAR_SRC = ORPHEUS_ROOT / "RUNS" / "Music.Vault" / "AAC-Car"
-AAC_CAR_OUT = ORPHEUS_ROOT / "RUNS" / "Music.Vault" / "AAC-Car-Masked"
+# Repointed 2026-08-21 from /mnt/FORGE2TB/ACTIVE_PROJECTS/ORPHEUS, which is
+# being retired off FORGE2TB. See the note above: the override was already
+# doing the real work, because the old default directory did not exist.
+VAULT_ROOT = Path(os.environ.get("MUSAEUS_VAULT_ROOT", "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT"))
+NOISE_DIR = Path(os.environ.get("ORPHEUS_NOISE_DIR", str(VAULT_ROOT / "RUNS" / "Noise")))
+AAC_CAR_SRC = VAULT_ROOT / "RUNS" / "AAC-Car"
+
+#: True-peak ceiling for the masked output, as a linear amplitude.
+#: 0.977 is -0.2 dBFS -- under full scale with enough margin that the AAC
+#: encoder's own overshoot does not put it back over.
+CEILING_LINEAR = 0.977
+
+AAC_CAR_OUT = VAULT_ROOT / "RUNS" / "AAC-Car-Masked"
 
 # 30-min files loop cleanly for any typical track
 NOISE_FILES = {
@@ -60,6 +69,10 @@ NOISE_FILES = {
 }
 
 OUTPUT_BITRATE = "256k"
+
+# Container/codec rounding shifts reported duration slightly on a correct
+# encode; same value and rationale as the generator's.
+_DURATION_TOLERANCE_SEC = 2.0
 
 
 # ── Data ──────────────────────────────────────────────────────────────────────
@@ -75,6 +88,42 @@ class Job:
 
 
 # ── Core processing ───────────────────────────────────────────────────────────
+
+
+def _carry_cover_art(src: Path, dst: Path) -> None:
+    """Copy the embedded cover from *src* to *dst*.
+
+    Masking re-encodes the audio and writes a fresh container, so the cover
+    does not come along by itself. Measured mid-run on 2026-09-16: 12 of 12
+    sampled sources had art and 0 of 12 masked outputs did, and 5,103 files
+    had already been written that way. Every master and every -18 library
+    file carries art -- 11,408 and 11,389, both 100% -- so masking was the
+    single step that threw it away, and the car edition is the copy that
+    actually ships.
+
+    A tag copy rather than an ffmpeg stream map, because mapping the art
+    through the filter graph made the muxer finalise on the one-frame image
+    and produced a 0.09-second file.
+
+    Best-effort: a source with no art, or a container mutagen will not open,
+    leaves the output exactly as the encode produced it. Losing artwork is
+    not a reason to fail a track that is otherwise correct.
+    """
+    try:
+        from mutagen.mp4 import MP4
+    except ImportError:
+        return
+    try:
+        stags = MP4(src).tags
+        if not stags or "covr" not in stags or not stags["covr"]:
+            return
+        out = MP4(dst)
+        if out.tags is None:
+            out.add_tags()
+        out.tags["covr"] = stags["covr"]
+        out.save()
+    except Exception:
+        return
 
 
 def get_duration(path: Path) -> float | None:
@@ -98,14 +147,67 @@ def get_duration(path: Path) -> float | None:
         return None
 
 
+def get_sample_rate(path: Path) -> int | None:
+    """Sample rate of the first audio stream, or None when unreadable."""
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=sample_rate",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        return int(result.stdout.strip().rstrip(","))
+    except (ValueError, AttributeError):
+        return None
+
+
+def _output_is_complete(src: Path, dst: Path) -> bool:
+    """True when *dst* is a finished mask of *src*.
+
+    Existence alone is not enough: an interrupted run leaves a short file
+    that a later run would skip for ever. Duration against the source is the
+    cheap check that catches it, and the rate has to match too -- an output
+    written before the rate was pinned is wrong even at full length.
+    """
+    if not dst.is_file():
+        return False
+    src_dur, dst_dur = get_duration(src), get_duration(dst)
+    if src_dur is None or dst_dur is None:
+        return False
+    if abs(src_dur - dst_dur) > _DURATION_TOLERANCE_SEC:
+        return False
+    return get_sample_rate(dst) == get_sample_rate(src)
+
+
 def mix_track(job: Job) -> tuple[bool, str]:
     """Mix noise under one track. Returns (success, message)."""
-    if job.dst.exists():
-        return True, f"SKIP (exists): {job.dst.name}"
+    if _output_is_complete(job.src, job.dst):
+        return True, f"SKIP (done): {job.dst.name}"
 
     duration = get_duration(job.src)
     if duration is None:
         return False, f"FAIL (no duration): {job.src.name}"
+
+    # State the output rate explicitly instead of leaving it to filter-graph
+    # negotiation. Measured 2026-09-01: the graph does resolve to the music's
+    # rate today, including against the 96 kHz beds sitting in the live
+    # library -- so this is not repairing an active defect. But nothing in the
+    # command said so, and the rate the car library ships at should not depend
+    # on how amix happens to negotiate between four inputs. The encoder decides
+    # the rate; the masker's job is to not change it, in writing.
+    src_rate = get_sample_rate(job.src)
+    if src_rate is None:
+        return False, f"FAIL (no sample rate): {job.src.name}"
 
     job.dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = job.dst.with_suffix(".tmp.m4a")
@@ -114,13 +216,31 @@ def mix_track(job: Job) -> tuple[bool, str]:
     pink = str(NOISE_FILES["pink"])
     white = str(NOISE_FILES["white"])
 
-    # Build filter: attenuate each noise colour, blend them, mix under music
+    # Build filter: attenuate each noise colour, blend them, mix under music,
+    # then catch whatever the sum pushed past full scale.
+    #
+    # THE LIMITER IS NOT OPTIONAL. amix with normalize=0 deliberately does not
+    # reduce gain -- that is what keeps the music at the level the encoder
+    # baked it to -- so the noise adds on top and the sum can exceed 0 dBFS,
+    # which is not "a bit loud", it is clipping: hard distortion on exactly
+    # the loudest moments.
+    #
+    # Measured 2026-09-16 on the live car edition: masking costs about 0.6 dB
+    # of headroom, and a 120-file sample found 19% of the edition peaking
+    # above -0.6 dBFS, with the loudest at exactly 0.0. Unlimited, masking
+    # would have distorted roughly 2,100 tracks.
+    #
+    # alimiter rather than a blanket attenuation: it acts ONLY on the peaks
+    # that would have clipped and leaves everything else at the level it was
+    # baked to. Pulling the whole track down instead would undo the -14 LUFS
+    # target on every file to protect a fifth of them.
     filt = (
         f"[1:a]volume={job.brown_db}dB[b];"
         f"[2:a]volume={job.pink_db}dB[p];"
         f"[3:a]volume={job.white_db}dB[w];"
         f"[b][p][w]amix=inputs=3:normalize=0[noise];"
-        f"[0:a][noise]amix=inputs=2:normalize=0:duration=first[out]"
+        f"[0:a][noise]amix=inputs=2:normalize=0:duration=first[mixed];"
+        f"[mixed]alimiter=limit={CEILING_LINEAR}:level=disabled[out]"
     )
 
     cmd = [
@@ -148,12 +268,21 @@ def mix_track(job: Job) -> tuple[bool, str]:
         white,
         "-filter_complex",
         filt,
+        # Audio only. Carrying the cover through the FILTER GRAPH was tried
+        # and rejected: `-map 0:v? -c:v copy -disposition:v:0 attached_pic`
+        # produced a 0.09-second file, because the muxer finalised on the
+        # single-frame art stream instead of the audio. The masker's own
+        # verify step caught it, which is the whole reason that step exists.
+        # The art is restored from the source tag after the encode instead --
+        # see _carry_cover_art. Simpler, and it cannot affect duration.
         "-map",
         "[out]",
         "-c:a",
         "aac",
         "-b:a",
         OUTPUT_BITRATE,
+        "-ar",
+        str(src_rate),
         "-movflags",
         "+faststart",
         str(tmp),
@@ -165,6 +294,18 @@ def mix_track(job: Job) -> tuple[bool, str]:
             tmp.unlink()
         err = result.stderr[-200:].decode(errors="replace").strip()
         return False, f"FAIL: {job.src.name} — {err}"
+
+    # Verify before publishing. ffmpeg can exit 0 having written a file that
+    # is short or at the wrong rate; renaming it into place would make it
+    # indistinguishable from a good one on the next run.
+    if not _output_is_complete(job.src, tmp):
+        detail = f"duration={get_duration(tmp)}, rate={get_sample_rate(tmp)}"
+        tmp.unlink(missing_ok=True)
+        return False, f"FAIL (verify): {job.src.name} — {detail}"
+
+    # After the verify, so a file that failed its duration check is never
+    # touched, and before the rename, so what lands at job.dst is complete.
+    _carry_cover_art(job.src, tmp)
 
     tmp.rename(job.dst)
     return True, f"OK: {job.dst.name}"
@@ -196,9 +337,7 @@ def collect_jobs(
     for src in files:
         rel = src.relative_to(src_root)
         dst = dst_root / rel
-        jobs.append(
-            Job(src=src, dst=dst, brown_db=brown_db, pink_db=pink_db, white_db=white_db)
-        )
+        jobs.append(Job(src=src, dst=dst, brown_db=brown_db, pink_db=pink_db, white_db=white_db))
     return jobs
 
 
@@ -274,9 +413,7 @@ def main() -> None:
         sys.exit(1)
 
     print("   Scanning tracks...")
-    jobs = collect_jobs(
-        src_root, dst_root, args.brown_db, args.pink_db, args.white_db, args.limit
-    )
+    jobs = collect_jobs(src_root, dst_root, args.brown_db, args.pink_db, args.white_db, args.limit)
 
     already_done = sum(1 for j in jobs if j.dst.exists())
     to_process = len(jobs) - already_done
@@ -302,9 +439,7 @@ def main() -> None:
 
     if not args.yes:
         confirm = (
-            input(
-                f"   Process {to_process:,} tracks with {args.workers} workers? [y/N] "
-            )
+            input(f"   Process {to_process:,} tracks with {args.workers} workers? [y/N] ")
             .strip()
             .lower()
         )
