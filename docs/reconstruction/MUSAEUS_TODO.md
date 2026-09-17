@@ -94,12 +94,31 @@ Wings, The Beat / The English Beat).
 |---|---|---|---|
 | `ALAC-Archival` — the masters | 11,132 | 475.3 GiB | not baked, by rule |
 | `ALAC_Library` — the lossless edition | 11,113 | 492.6 GiB | −18 LUFS |
-| `CAR_Library` — AAC 256k, noise-masked | 10,654 | 78.5 GiB | −14 LUFS |
+| `CAR_Library` — AAC 256k, noise-masked | 10,630 | 78.3 GiB | −14 LUFS |
 | `iPHONE_Library` — AAC 256k | 5,693 | 41.9 GiB | −14 LUFS |
 
 `MUSAEUS_EDITIONS_VOCABULARY.md` predicted on 2026-08-31 that *"a third
 edition (phone, hi-res) would be another row in the Edition table, not a new
 scheme."* It was, and the prediction is now tested rather than asserted.
+
+**The car edition now carries its own browsing index.**
+`CAR_Library/Playlists/` — 57 M3U8 lists, per genre and per decade plus
+`All.m3u8` (10,487 entries) — written by `scripts/car_library/write_car_index.py`
+at publish time, so every car build has one.
+
+Grey asked (2026-09-17) whether an index could be written for the Android
+head unit. The honest answer is that **no index format stops a head unit
+scanning**: Android builds its own media database from a MediaStore scan on
+insert, and FAT32 has no directory index, so the scan is a linear walk of
+10,630 files however the stick is arranged. What M3U8 buys is a
+browse-by-genre view that does not depend on the unit's own database being
+correct, for about 4 MB.
+
+It lives *inside* the edition for one reason: the edition is what gets
+copied to the stick, so an index anywhere else is an index that does not
+travel. Paths are relative (`../Artist/Album/Track.m4a`), which resolves
+both in the vault and on the USB because the index sits one level below the
+edition root in both.
 
 Both AAC editions are built **from the masters**, never from each other or
 from `ALAC_Library` — `doctor` has a check that says so, added 2026-09-15.
@@ -127,7 +146,7 @@ hot — caught by measuring the artifact, not by reading the report.
 |---|---|
 | CATALOGUED rows with a `car_export_path` | 10,707 |
 | distinct car files those rows point at | **10,630** |
-| car files on disk | 10,654 |
+| car files on disk | **10,630** — reconciled today |
 | CATALOGUED rows with **no** car export | **410** |
 
 Three facts hide in that table and each is worth keeping:
@@ -138,13 +157,24 @@ Three facts hide in that table and each is worth keeping:
   first run it removed two car files that a *surviving* row still needed
   (Paul McCartney's "With a Little Luck", Rage Against the Machine's "Killing
   in the Name"). The guard and its test now prevent that.
-- **24 car files are referenced by no row at all.** Named today: they are
-  residue of the deletions — `Acoustic Covers`, `Angelic Acoustics`,
-  `Alan Peters Orchestra And Chorus` and friends, the tribute and karaoke
-  products whose catalogue rows went but whose car files stayed behind.
-  Harmless in the car, but they are exactly what Grey ruled should not be in
-  the library, so they should go before the next USB copy — **awaiting his
-  say-so, because deleting is his call, not mine.**
+- ~~**24 car files are referenced by no row at all.**~~ **DELETED
+  2026-09-17 on Grey's instruction, and the two numbers above now agree.**
+  They were first reported here as tribute and karaoke residue. **That was
+  wrong**, and the correction is worth keeping because the real cause is one
+  this project keeps meeting: only 4 were cover products. Nine were stale
+  copies stranded by the artist-folder merges — six of them Tom Petty files
+  left under `Tom Petty/` when the folder became
+  `Tom Petty & the Heartbreakers/`. The remaining eleven shared a title with
+  a live car file but not its duration, so they were different takes whose
+  rows had been deleted.
+
+  What made all 24 deletable was not the reason, it was the test: **no row
+  in `archive` referenced any of them, in any column, at any status.** The
+  list is kept at `~/Desktop/DELETED_orphan_car_files_2026-09-17.txt`. The
+  iPhone edition was checked and left alone — it has no export column of its
+  own, so the unreferenced test cannot classify that tree at all, and three
+  files that matched by basename turned out to be correctly filed under the
+  merged artist names.
 - **The 410 with no car export break down as follows**, classified today
   rather than inferred:
 
@@ -195,7 +225,7 @@ Three facts hide in that table and each is worth keeping:
    read what it says rather than guessing; if it encodes them, the gap was a
    resume-skip and the resume logic needs another look.
 
-6. **24 orphan car files** — deletion residue, listed above. Grey's call.
+6. ~~**24 orphan car files**~~ — **CLOSED 2026-09-17**, see above.
 
 ### What was closed since 2026-09-14
 
