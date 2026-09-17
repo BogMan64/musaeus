@@ -90,6 +90,42 @@ class Job:
 # ── Core processing ───────────────────────────────────────────────────────────
 
 
+def _carry_cover_art(src: Path, dst: Path) -> None:
+    """Copy the embedded cover from *src* to *dst*.
+
+    Masking re-encodes the audio and writes a fresh container, so the cover
+    does not come along by itself. Measured mid-run on 2026-09-16: 12 of 12
+    sampled sources had art and 0 of 12 masked outputs did, and 5,103 files
+    had already been written that way. Every master and every -18 library
+    file carries art -- 11,408 and 11,389, both 100% -- so masking was the
+    single step that threw it away, and the car edition is the copy that
+    actually ships.
+
+    A tag copy rather than an ffmpeg stream map, because mapping the art
+    through the filter graph made the muxer finalise on the one-frame image
+    and produced a 0.09-second file.
+
+    Best-effort: a source with no art, or a container mutagen will not open,
+    leaves the output exactly as the encode produced it. Losing artwork is
+    not a reason to fail a track that is otherwise correct.
+    """
+    try:
+        from mutagen.mp4 import MP4
+    except ImportError:
+        return
+    try:
+        stags = MP4(src).tags
+        if not stags or "covr" not in stags or not stags["covr"]:
+            return
+        out = MP4(dst)
+        if out.tags is None:
+            out.add_tags()
+        out.tags["covr"] = stags["covr"]
+        out.save()
+    except Exception:
+        return
+
+
 def get_duration(path: Path) -> float | None:
     result = subprocess.run(
         [
@@ -232,6 +268,13 @@ def mix_track(job: Job) -> tuple[bool, str]:
         white,
         "-filter_complex",
         filt,
+        # Audio only. Carrying the cover through the FILTER GRAPH was tried
+        # and rejected: `-map 0:v? -c:v copy -disposition:v:0 attached_pic`
+        # produced a 0.09-second file, because the muxer finalised on the
+        # single-frame art stream instead of the audio. The masker's own
+        # verify step caught it, which is the whole reason that step exists.
+        # The art is restored from the source tag after the encode instead --
+        # see _carry_cover_art. Simpler, and it cannot affect duration.
         "-map",
         "[out]",
         "-c:a",
@@ -259,6 +302,10 @@ def mix_track(job: Job) -> tuple[bool, str]:
         detail = f"duration={get_duration(tmp)}, rate={get_sample_rate(tmp)}"
         tmp.unlink(missing_ok=True)
         return False, f"FAIL (verify): {job.src.name} — {detail}"
+
+    # After the verify, so a file that failed its duration check is never
+    # touched, and before the rename, so what lands at job.dst is complete.
+    _carry_cover_art(job.src, tmp)
 
     tmp.rename(job.dst)
     return True, f"OK: {job.dst.name}"
