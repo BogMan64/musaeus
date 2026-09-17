@@ -1032,6 +1032,11 @@ class Console:
              "scripts/fm_radio/fm_radio_identifier.py",
              "Which pressing is the one you remember. Read-only.",
              "--limit 20           # start small"),
+            ("iPhone transfer — how to get the music onto the phone",
+             "scripts/iphone_transfer.py",
+             "Checks the cable, the pairing and the tools, then prints the "
+             "commands to paste. Touches nothing itself.",
+             "                     # add --wipe to clear the phone first"),
         ]
         labels = [t[0] for t in tools] + ["Back"]
         # default=Back, not _choose's "0". On EOF -- piped stdin exhausted, a
