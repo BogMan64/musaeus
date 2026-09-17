@@ -838,7 +838,35 @@ def main() -> int:
             print(f"  {src.name}: {reason}")
 
     print(f"\nOutput: {final_dir}")
-    print("Run `musaeus playlist` to regenerate playlists including this export.")
+
+    # The browsing index, written INSIDE the edition so it travels to the USB
+    # with it (Grey, 2026-09-17). An index that lives in the vault is an index
+    # the head unit never sees. Failures here are reported, never fatal: the
+    # audio is already published and correct, and a missing playlist is a
+    # worse reason to fail a 40-hour build than it is a problem.
+    index_notes: list[str] = []
+    index_problems: list[str] = []
+    try:
+        # This file's own directory, not _REPO_ROOT: write_car_index.py is a
+        # sibling script, and the module search path only carries the repo root.
+        _here = str(Path(__file__).resolve().parent)
+        if _here not in sys.path:
+            sys.path.insert(0, _here)
+        from write_car_index import write_index
+
+        index_notes, index_problems = write_index(cfg, final_dir, apply=True)
+        print("\nBrowsing index:")
+        for note in index_notes:
+            print(f"   {note}")
+        if index_problems:
+            print(f"   INDEX VERIFY FAILED ({len(index_problems)}):")
+            for prob in index_problems[:10]:
+                print(f"     {prob}")
+        else:
+            print("   verified: every entry resolves, none absolute")
+    except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+        index_problems = [f"index not written: {exc}"]
+        print(f"\nBrowsing index: FAILED — {exc}")
 
     # This build runs for tens of hours and will outlive any session watching
     # it. Without this it finishes into a scrolled terminal and leaves no
@@ -851,6 +879,7 @@ def main() -> int:
             "their -18 LUFS library copy instead. An edition is supposed to come from "
             "the masters; these did not."
         )
+    problems.extend(index_problems)
     hand = write_tool_handoff(
         cfg.runs_root,
         f"{args.edition}_build",
@@ -867,6 +896,10 @@ def main() -> int:
             "(scope: no edition is ever built from another).",
             "car_export_path and noise_profile are written per row, so "
             "`musaeus playlist` can prefer this export.",
+            f"A browsing index was written to {final_dir}/Playlists — per genre, "
+            "per decade, and All — with relative paths, so it works on the USB "
+            "as well as in the vault. There is no index format that stops an "
+            "Android head unit scanning; M3U8 is what is portable.",
         ],
         problems=problems,
     )

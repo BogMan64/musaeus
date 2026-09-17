@@ -60,6 +60,17 @@ Every one of these was hit for real. None is caught by any tool here.
 - **`ffmpeg` exits 0 on a truncated file.** It reports "Input buffer
   exhausted" and "partial file" on *stderr* and returns 0. Check
   `returncode == 0 AND not stderr`.
+- **`ffmpeg` reads stdin, and eats your loop's input.** Inside a
+  `while IFS= read -r f; do ... ffmpeg ... done < list`, ffmpeg consumes the
+  rest of the list. The next iteration reads a truncated path, so the check
+  runs against the wrong file or none — and reports confidently either way.
+  Every ffmpeg call inside a loop needs `-nostdin`.
+- **Single-pass `loudnorm` is not the two-pass bake.** `loudnorm=I=-14` in
+  one pass is a dynamic normalizer and lands where it lands; a hand repair
+  that way put one car file 1.5 LU hot while the peers sat at −13.9. The bake
+  measures first (`ffmpeg_measure_loudnorm`) and applies the measured values
+  (`build_second_pass_filter`). Repair through those, not through a command
+  that looks equivalent.
 - **Metadata cannot see truncation.** In MP4 the container and stream
   durations both live in the `moov` atom, written before the audio. A
   30-second file cut to a third still reports 30.0 both ways. Only a

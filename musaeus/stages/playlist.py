@@ -156,16 +156,33 @@ class PlaylistStage(BaseStage):
 
         written = 0
 
-        def _make_rel(source: str) -> str:
-            """Compute relative path from playlist_dir to source file."""
+        # A set, not a list: every source is offered to _make_rel once per
+        # genre pass, once per era pass and once for All, so a list would
+        # report roughly 2.5x the number of files actually skipped.
+        outside: set[str] = set()
+
+        def _make_rel(source: str) -> str | None:
+            """Relative path from playlist_dir to source, or None if outside.
+
+            Returning the absolute path for an outside source -- which this
+            did until 2026-09-17 -- defeats the entire point of the file.
+            The docstring says these playlists work "regardless of where the
+            USB drive mounts"; one absolute line pointing into the vault is
+            a dead entry the moment the playlist is read anywhere else, and
+            it reads as a working line to every player that opens it.
+
+            It matters most for an edition index. Pointed at
+            CAR_Library/Playlists, a row with no car_export_path falls back
+            to its ALAC_Library path, which is outside that tree -- so every
+            un-exported track would have shipped to the car USB as an
+            absolute /mnt/FORGE2TB/... line. Skipped and counted instead.
+            """
             try:
-                src_path = Path(source)
-                # Try to make relative from playlist_dir
-                rel = src_path.relative_to(playlist_dir.parent)
-                return str(Path("..") / rel)
+                rel = Path(source).relative_to(playlist_dir.parent)
             except ValueError:
-                # source is outside vault — use absolute as fallback
-                return source
+                outside.add(source)
+                return None
+            return str(Path("..") / rel)
 
         # Per-genre playlists
         for genre, tracks in sorted(genre_tracks.items()):
@@ -173,8 +190,11 @@ class PlaylistStage(BaseStage):
             out = playlist_dir / f"{safe}.m3u8"
             lines = ["#EXTM3U"]
             for source, artist, title in sorted(tracks, key=lambda t: t[0]):
+                rel = _make_rel(source)
+                if rel is None:
+                    continue
                 lines.append(_extinf_line(artist, title, source))
-                lines.append(_make_rel(source))
+                lines.append(rel)
             content = "\n".join(lines) + "\n"
 
             if dry_run:
@@ -200,8 +220,11 @@ class PlaylistStage(BaseStage):
             out = playlist_dir / f"Era_{decade}.m3u8"
             lines = ["#EXTM3U"]
             for source, artist, title in sorted(tracks, key=lambda t: t[0]):
+                rel = _make_rel(source)
+                if rel is None:
+                    continue
                 lines.append(_extinf_line(artist, title, source))
-                lines.append(_make_rel(source))
+                lines.append(rel)
             content = "\n".join(lines) + "\n"
 
             if dry_run:
@@ -221,14 +244,20 @@ class PlaylistStage(BaseStage):
         if all_sources:
             out_all = playlist_dir / "All.m3u8"
             all_lines = ["#EXTM3U"]
+            n_all = 0
             for source in sorted(all_sources):
+                rel = _make_rel(source)
+                if rel is None:
+                    continue
                 artist, title = all_sources[source]
                 all_lines.append(_extinf_line(artist, title, source))
-                all_lines.append(_make_rel(source))
+                all_lines.append(rel)
+                n_all += 1
             all_content = "\n".join(all_lines) + "\n"
-            n_all = len(all_sources)
 
-            if dry_run:
+            if not n_all:
+                pass
+            elif dry_run:
                 result.notes.append(f"  [DRY] All.m3u8  ({n_all} tracks)")
             else:
                 out_all.write_text(all_content, encoding="utf-8")
@@ -241,6 +270,11 @@ class PlaylistStage(BaseStage):
                 result.notes.append(f"  All.m3u8  ({n_all} tracks)")
                 written += 1
 
+        if outside:
+            result.notes.append(
+                f"skipped (path outside {playlist_dir.parent}, would need an "
+                f"absolute line): {len(outside)}"
+            )
         if not dry_run:
             result.notes.append(f"playlists written: {written}")
 
