@@ -64,6 +64,55 @@ def merge_tree(src: Path, dst: Path, execute: bool) -> tuple[list[tuple[Path, Pa
     return moves, clashes
 
 
+def _write_canon_entry(canon: Path, old: str, new: str) -> int:
+    """Add old -> new, and re-point anything that would now chain through it.
+
+    resolve_exact does NOT follow a chain. So if some existing row already
+    says `X -> old`, adding `old -> new` leaves X landing on `old` and
+    stopping there -- half-way, at a name nothing else uses. doctor's
+    "authorities agree" check calls that a FAIL, and it is right to.
+
+    It happened the first time this script ran. Merging ELO into Electric
+    Light Orchestra turned a pre-existing "Jeff Lynne's ELO" -> "ELO" into a
+    chain, and doctor went red on the next run. Nothing was mis-filed --
+    both names had zero tracks -- but the ruling file was inconsistent and
+    the next artist to arrive under that name would have landed wrong.
+
+    Returns how many existing entries had to be re-pointed.
+    """
+    text = canon.read_text(encoding="utf-8")
+    lines = text.splitlines()
+
+    repointed = 0
+    for i, ln in enumerate(lines):
+        parts = ln.split("\t", 1)
+        if len(parts) == 2 and parts[1].strip() == old:
+            lines[i] = f"{parts[0]}\t{new}"
+            repointed += 1
+
+    # And never write a row whose canonical is itself a key -- the same
+    # chain, created in the other direction.
+    keys = {ln.split("\t", 1)[0].strip().lower()
+            for ln in lines if "\t" in ln and not ln.startswith("#")}
+    if new.lower() in keys:
+        dest = next(ln.split("\t", 1)[1].strip() for ln in lines
+                    if "\t" in ln and ln.split("\t", 1)[0].strip().lower() == new.lower())
+        print(f"  note: {new!r} is itself a canon key pointing at {dest!r}; "
+              f"writing {old!r} -> {dest!r} instead")
+        new = dest
+
+    # Whole-key comparison, not `f"{old}\t" in text`. That substring test
+    # reports a match when `old` is merely the TAIL of another key:
+    # "Jeff Lynne's ELO\tELO" contains "ELO\t", so adding ELO was silently
+    # skipped and the merge left no canon entry at all.
+    if old.lower() not in keys:
+        lines.append(f"{old}\t{new}")
+        print(f"  artist_canon.tsv: added {old!r} -> {new!r}")
+
+    canon.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return repointed
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -109,13 +158,10 @@ def main() -> int:
         # The canon is what stops the split coming back on the next ingest.
         canon = Path(cfg.meta_dir) / "artist_canon.tsv"
         if canon.is_file():
-            text = canon.read_text(encoding="utf-8")
-            if f"{args.old}\t" not in text:
-                with canon.open("a", encoding="utf-8") as fh:
-                    if not text.endswith("\n"):
-                        fh.write("\n")
-                    fh.write(f"{args.old}\t{args.new}\n")
-                print(f"  artist_canon.tsv: added {args.old!r} -> {args.new!r}")
+            n_chain = _write_canon_entry(canon, args.old, args.new)
+            if n_chain:
+                print(f"  artist_canon.tsv: re-pointed {n_chain} entry(ies) that would "
+                      f"otherwise chain through {args.old!r}")
 
     print(f"\n{'DONE' if args.execute else 'DRY RUN'}: {len(all_moves)} file(s), "
           f"{n_art} artist row(s), {n_fp} file_path, {n_car} car_export_path updated")
