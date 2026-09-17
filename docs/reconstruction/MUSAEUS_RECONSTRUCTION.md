@@ -25,8 +25,53 @@ the storage topology (§ Editions — `ALAC_Archive` left the vault, and a third
 tree now exists that MUSAEUS must never see), and an artist's filing name
 becoming a separate authority from an artist's tag (§3). **Every file count in
 this document is a 2026-09-07 measurement**; for current numbers read "State
-on 2026-09-14" at the top of `MUSAEUS_TODO.md` rather than trusting a figure
+on 2026-09-17" at the top of `MUSAEUS_TODO.md` rather than trusting a figure
 here.
+
+**Reviewed again 2026-09-17.** Still no ruling in this document has been
+overturned. Three things have changed underneath it, and all three *confirm*
+rather than contradict what is written here — which is the useful kind of
+review to record:
+
+1. **§3, the authorities — the article rule is now enforced in all three
+   places it belongs.** This document already said the stored form
+   (`Beatles, The`) is a filing decision, not a name. What was missing was
+   that `archive.artist` held the filing form too, so no external service had
+   ever been asked about an article artist. The three fields now have three
+   jobs: the `artist` tag is the **natural form** (`The Beatles`) because
+   that is what MusicBrainz, iTunes and Deezer have heard of; the `soar` tag
+   is the **sort form**; the **folder** is the sort form, so a head unit
+   browsing by directory still sorts under B. `NormalizeStage` was quietly
+   rewriting the tag back to the sort form on every run and would have undone
+   the migration within a day; it now enforces the natural form via
+   `artist_form.natural_form()`. MusicBrainz hits on article artists: 0 → 491.
+
+2. **§ Editions — the third edition exists, and it did not need a new
+   scheme.** `iPHONE_Library` (AAC 256k, −14 LUFS, 5,693 files) was added
+   on 2026-09-16 exactly as `MUSAEUS_EDITIONS_VOCABULARY.md` predicted it
+   could be. The rule that no edition is ever built from another now has a
+   `doctor` check behind it rather than only a docstring.
+
+3. **§5, the failure catalogue — three new entries earned their place**, all
+   of the same shape this document was written to warn about, which is that a
+   report can be true and the artifact still wrong:
+   - **The masker threw away every album cover.** An ffmpeg stream map that
+     looked correct produced 0.09-second files; the run was caught at 5,103
+     files. The fix carries `covr` across with mutagen after the verify and
+     before the rename. *Measure the artifact, not the report.*
+   - **`ffmpeg` consumes stdin.** Inside a `while read` loop it eats the
+     loop's own input, so the next iteration reads a truncated path and the
+     check silently tests the wrong file — or no file. Every `ffmpeg`
+     invocation in a loop needs `-nostdin`. Recorded in `CLAUDE.md`.
+   - **Single-pass `loudnorm` is not the bake.** Repairing two car files by
+     hand with `loudnorm=I=-14` landed one of them 1.5 LU hot. The real bake
+     is two-pass — measure, then apply the measured values — and hand repairs
+     must go through `build_aac_library.py`'s own functions, not an
+     ffmpeg command that looks equivalent.
+
+For what the library actually contains today, read "State on 2026-09-17" in
+`MUSAEUS_TODO.md`. This document holds the reasoning; that one holds the
+counts.
 
 > **The working copy of this document is
 > `docs/reconstruction/MUSAEUS_RECONSTRUCTION.md`, in the repository. Edit that

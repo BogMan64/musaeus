@@ -10,7 +10,8 @@ bug found this week. One file now. MUSAEUS_OPEN_ITEMS.md is archived.
 
 Counts in the body below were verified against the live vault on
 **2026-09-07** and have NOT been re-verified since. Where a number matters,
-read "State on 2026-09-14" immediately below — it supersedes them.
+read "State on 2026-09-17" immediately below — it supersedes them,
+and every count in "State on 2026-09-14" below that.
 
 ~~**Claude Opus 5 access ends 2026-09-08. Kiro runs ~30 days after.**~~
 **Superseded 2026-09-14:** the subscription was renewed and the September
@@ -28,6 +29,200 @@ as still correct.
 line is: a TODO item has a cost if left undone — something is unprotected or
 a check is lying. A wishlist item has none; the library is correct without
 it. Given limited time, take the TODO.
+
+---
+
+## State on 2026-09-17
+
+Measured against the live vault today, read-only. These numbers supersede
+every count elsewhere in this file, including "State on 2026-09-14" below.
+
+| | |
+|---|---|
+| CATALOGUED | **11,117** |
+| QUARANTINED | 18 |
+| GHOST | 2 |
+| total rows | 11,137 |
+| distinct artists | **2,925** |
+| CATALOGUED with no genre | **149** |
+| CATALOGUED with no album name | **101** |
+| duplicate rows / groups staged | 5,422 / 2,830 |
+| `MasterLaw.csv` artists | 3,502 |
+| `artist_canon.tsv` rules | **266** |
+| `artist_filing.tsv` rules | **0** |
+| `Composer_Canon.tsv` entries | **48** |
+| `Genre_Allowed.txt` vocabulary | 49 |
+| INBOX / INBOX_QUEUE | empty, empty |
+
+**Those authority counts are rules, not lines** — comments and blanks
+excluded, which is why three of them move against 2026-09-14 without anything
+having been deleted. `artist_filing.tsv` holding **16 rules** on 2026-09-14
+was a line count minus a header; the file has always been **all header**. It
+contains no rules at all, and the right reading is that every artist in the
+library files under their own tag, which the file's own comment says is
+correct for about 95% of them. `artist_canon.tsv` really did grow — 187 rules
+in August, 266 today.
+
+
+**The bake backlog is closed.** On 2026-09-14 this document said *"that 2,821
+is the open work, and it is the number to watch."*
+
+| | | |
+|---|---|---|
+| `Libraries/ALAC_Library` (the baked library) | **11,113** | finalized |
+| `Libraries/ALAC-Archival` (the masters) | **4** | not yet baked |
+
+2,821 → 4. Four rows is not a backlog; it is the tail of a working day.
+
+**The catalogue shrank on purpose.** It is **438 rows smaller** than on
+2026-09-14 — that is the net change between two totals, not a count of
+delete operations, and it is written that way deliberately. Deletions ran in
+seven reviewed batches across 2026-09-16/17, every row reviewed by Grey from
+a CSV before it went:
+tribute and karaoke products, covers by acts that never released them, live
+takes with a studio sibling already in the library, truncated fragments,
+`*NSYNC`, and a handful of artists Grey does not want. Deleted means deleted
+— all three tiers plus the hash denied in the LEDGER, so a re-ingest cannot
+bring them back. Distinct artists fell 3,025 → 2,925 for the same reason,
+plus five acts that were filed under two names each and are now one
+(Electric Light Orchestra / ELO, John Mellencamp, Bob Seger, Paul McCartney /
+Wings, The Beat / The English Beat).
+
+### All four editions now exist
+
+| edition | files | size | target |
+|---|---|---|---|
+| `ALAC-Archival` — the masters | 11,132 | 475.3 GiB | not baked, by rule |
+| `ALAC_Library` — the lossless edition | 11,113 | 492.6 GiB | −18 LUFS |
+| `CAR_Library` — AAC 256k, noise-masked | 10,654 | 78.5 GiB | −14 LUFS |
+| `iPHONE_Library` — AAC 256k | 5,693 | 41.9 GiB | −14 LUFS |
+
+`MUSAEUS_EDITIONS_VOCABULARY.md` predicted on 2026-08-31 that *"a third
+edition (phone, hi-res) would be another row in the Edition table, not a new
+scheme."* It was, and the prediction is now tested rather than asserted.
+
+Both AAC editions are built **from the masters**, never from each other or
+from `ALAC_Library` — `doctor` has a check that says so, added 2026-09-15.
+
+**Masking is done and clip-safe, and that is measured.** All **10,654** car
+files differ in size from their pre-mask copy in
+`~/Desktop/CAR_Library_premask_20260917` — **0 are unmasked**. That check
+matters because `noise_profile` is set on 10,707 rows, which is *more* than
+there are files: it records the colour the build intended, not that the mix
+ran. Every car file carries a brown/pink/white noise bed under it (−12/−15/−18 dB), with a true-peak ceiling at 0.977 linear
+and an `alimiter` after the mix. Without the ceiling, 19% of the edition
+would have clipped. Measured after masking, the edition sits at −13.8 to
+−13.9 LUFS against a −14.0 bake, which is the expected cost of adding a bed.
+
+Two files ffmpeg refused to mask were investigated on 2026-09-17 rather than
+deleted. Their **masters were clean**; only the CAR copies had damaged AAC
+frames (`Input buffer exhausted before END element found`). Both were re-baked
+from the masters through the project's own two-pass loudnorm and re-masked.
+The first attempt used single-pass `loudnorm` and landed The Supremes 1.5 LU
+hot — caught by measuring the artifact, not by reading the report.
+
+### Where the car edition does and does not reach
+
+| | |
+|---|---|
+| CATALOGUED rows with a `car_export_path` | 10,707 |
+| distinct car files those rows point at | **10,630** |
+| car files on disk | 10,654 |
+| CATALOGUED rows with **no** car export | **410** |
+
+Three facts hide in that table and each is worth keeping:
+
+- **77 car files are pointed at by more than one catalogued row.** These are
+  near-duplicate recordings that legitimately share one car file. It is also
+  the reason `scripts/delete_reviewed_tracks.py` has a keep-guard: on its
+  first run it removed two car files that a *surviving* row still needed
+  (Paul McCartney's "With a Little Luck", Rage Against the Machine's "Killing
+  in the Name"). The guard and its test now prevent that.
+- **24 car files are referenced by no row at all.** Named today: they are
+  residue of the deletions — `Acoustic Covers`, `Angelic Acoustics`,
+  `Alan Peters Orchestra And Chorus` and friends, the tribute and karaoke
+  products whose catalogue rows went but whose car files stayed behind.
+  Harmless in the car, but they are exactly what Grey ruled should not be in
+  the library, so they should go before the next USB copy — **awaiting his
+  say-so, because deleting is his call, not mine.**
+- **The 410 with no car export break down as follows**, classified today
+  rather than inferred:
+
+  | | |
+  |---|---|
+  | lossy source (AAC) — the car profile skips these by design | **383** |
+  | ALAC, cause not established | **24** |
+  | near-duplicate whose sibling already holds the car file | **3** |
+
+  So 386 of the 410 are accounted for and correct. **24 are not**, and they
+  are ordinary ALAC rows that should have baked — Hall & Oates' "Maneater"
+  and "Rich Girl" among them. That is a real gap and it is open. The earlier
+  note in this session that "the 31 unexplained skips were all near-duplicates"
+  was about a different, smaller sample and does **not** cover these.
+
+### Open, and measured today
+
+1. **Bit-rot protection is at zero.** `archive_tier_hashes` holds **0**
+   baselines against 11,132 masters. On 2026-09-08 it held 1,385. The
+   database was reset on 2026-09-10 and the baselines went with it. The stage
+   works; it simply has nothing to compare against, and will report every
+   file as fine because it has never seen any of them. **This is the same
+   failure class as the AcoustID fingerprints below and should be fixed the
+   same way** — the baselines belong in the LEDGER
+   (`_db_backups/hash_index.db`), which survives a rebuild, not in
+   `musaeus.db`, which does not.
+
+2. **AcoustID fingerprints are at zero too.** `chromaprint` and
+   `acousticid_recording` are both empty for all 11,117 rows. The durability
+   fix landed on 2026-09-16 — `musaeus/db.py` gained a `fingerprints` table
+   in the LEDGER keyed on `audio_hash`, and `acousticid.py` reads from and
+   writes to it — but the stage has not been run since, so the LEDGER's
+   `fingerprints` table does not exist yet. The LEDGER currently holds
+   453 `denied_hashes` and 61,176 `finalized_hashes`. Running AcousticID once
+   will populate it and, from then on, a rebuild costs nothing.
+
+3. **149 tracks have no genre.** Listed on the Desktop as
+   `missing_genres_2026-09-17.csv`. None is protected by `genre_ruled_at`
+   (220 rows are), so MasterLaw can fill any of them once an artist is ruled.
+
+4. **101 tracks have no album name.** Down from 4,913 on 2026-09-14. What
+   remains is the residue five sources could not agree on; it needs a human.
+
+5. **24 ALAC tracks never reached the car edition and nobody knows why.**
+   See the breakdown above. They are not lossy, not near-duplicates, and not
+   deliberately skipped — Hall & Oates' "Maneater" and "Rich Girl" are two of
+   them. Re-run `build_car_library.py --only-missing` against just these and
+   read what it says rather than guessing; if it encodes them, the gap was a
+   resume-skip and the resume logic needs another look.
+
+6. **24 orphan car files** — deletion residue, listed above. Grey's call.
+
+### What was closed since 2026-09-14
+
+- **P2.5 — 51 `DUPE_REVIEW` rows.** Now **0**.
+- **P2.8 — Huey Lewis split.** Now one artist, `Huey Lewis and the News`,
+  26 rows. `Anne Murray` 8, and `Tony Burrows` is still 2 + 1 under a
+  parenthesised variant — that one remains open.
+- **P2.9 — `Dean` → `Jan & Dean`.** Now **0** under `Dean`, 35 under
+  `Jan & Dean`.
+- **P2.7 — the `& His Orchestra` ampersand split.** 17 rows across 8 artists
+  → **1 row** left.
+- **The article migration.** `archive.artist` now holds the natural form
+  (`The Beatles`), `soar` holds the sort form, and the folder is the sort
+  form — three fields, three jobs. `NormalizeStage` was putting the sort form
+  back on every run, which would have silently undone the migration; it now
+  enforces natural form. MusicBrainz went from 0 hits on article artists to
+  491.
+- **Album-folder capitalisation.** Grey's ruling is lower-case minor words
+  ("at", not "At"). 80 case-duplicate album folders merged across the tiers.
+- **The canon chain.** `artist_canon.tsv` briefly held
+  `Jeff Lynne's ELO → ELO → Electric Light Orchestra`, which resolves to
+  nothing. A guard now refuses to write an entry that chains, and the test
+  for it found a second bug in the fix.
+- **The iPhone edition and its transfer.** `scripts/iphone_transfer.py`
+  prints the `ifuse` commands and never runs them, because the failure mode
+  of running them blind is files in VLC's sandbox that the Music app can
+  never see.
 
 ---
 

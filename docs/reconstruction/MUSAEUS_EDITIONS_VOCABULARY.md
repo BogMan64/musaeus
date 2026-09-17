@@ -18,6 +18,11 @@ before any code, because the naming is the part that has to survive.
 > and the lossless edition is `Libraries/ALAC_Library` (underscore). The
 > names changed; the vocabulary did not.
 
+> **Reviewed 2026-09-17.** Three editions now exist and the four words
+> have not needed amending once. Current counts live in "State on 2026-09-17"
+> at the top of `MUSAEUS_TODO.md`; this document holds the vocabulary, not
+> the numbers.
+
 ## Why this document exists
 
 Two unrelated "Act 1/2/3" schemes had grown up side by side: the
@@ -188,8 +193,18 @@ name, its CLI verb and the prefix on `car_export_path` -- fix the
 - `car_export_path` and `noise_profile` are Curator's columns, named
   before this distinction existed. Left alone; renaming is a migration
   for no functional gain.
-- A third edition (phone, hi-res) would be another row in the Edition
-  table, not a new scheme. The vocabulary is chosen so that holds.
+- ~~A third edition (phone, hi-res) would be another row in the Edition
+  table, not a new scheme. The vocabulary is chosen so that holds.~~
+  **Tested and held, 2026-09-16.** `iPHONE_Library` was added — AAC 256k,
+  −14 LUFS, 5,693 files — and needed no new vocabulary, no new table and no
+  change to this document. It is an Edition; the iPhone is a Delivery; the
+  files it carries are not masters and nothing downstream treats them as
+  such. The one thing the phone did add is a *delivery* constraint this
+  document did not anticipate: iOS sandboxes each app, so a file placed in
+  VLC's container can never be seen by the Music app. That is a property of
+  the Delivery, not of the Edition, and it is recorded where it belongs — in
+  `scripts/iphone_transfer.py`, which prints the `ifuse` commands for the
+  operator and runs none of them.
 
 
 ---

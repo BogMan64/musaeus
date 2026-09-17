@@ -34,7 +34,13 @@ Two rules learned on its first live run and now enforced:
 
 ---
 
-## 2. FM-radio version identification
+## 2. FM-radio version identification — **IN THE REPOSITORY 2026-09-16**
+
+**Status 2026-09-17.** `scripts/fm_radio/` is in the repository with its
+tests in the suite. It proposes into a CSV and decides nothing, which was
+the condition below. It has not yet been run against the whole library —
+that is a decision for Grey, not a gap in the tool. Original entry follows.
+
 
 **What it does.** For a song held in several versions, work out which one is
 *the version you remember from the radio* — first pressing, right year,
@@ -56,7 +62,16 @@ the same shape as every other review artefact.
 
 ---
 
-## 3. Discography gap detection
+## 3. Discography gap detection — **IN THE REPOSITORY 2026-09-16, and it
+found its own bug on arrival**
+
+**Status 2026-09-17.** `scripts/discography/` is in the repository with its
+tests in the suite. Bringing it in immediately proved the point of bringing
+it in: the copy that had been sitting on the Desktop could not import, so
+the lab had been dead on arrival and nobody knew. The scope ruling the
+entry below asks for is still owed — live albums, compilations and reissues
+make raw output noisy. Original entry follows.
+
 
 **What it does.** Compare the library against MusicBrainz canonical
 discographies and report albums you own *nothing* from. Not "you are missing
@@ -73,7 +88,20 @@ you it was slow.
 
 ---
 
-## 4. Deliberately excluded from this list
+## 4. Wanted, added 2026-09-17
+
+**Move the bit-rot baselines into the LEDGER.** Strictly this is a TODO and
+not a wish — it protects something that exists — and it is filed in
+`MUSAEUS_TODO.md` accordingly. It is named here only because the *general*
+version of it is a wish worth stating: **anything expensive to compute and
+cheap to lose belongs in `_db_backups/hash_index.db`, not `musaeus.db`.**
+Fingerprints went that way on 2026-09-16 after being lost once. Baselines
+are the next. BPM, musical key, energy and danceability are the ones after
+that, and none of them has been lost yet, which is the moment to move them.
+
+---
+
+## 5. Deliberately excluded from this list
 
 **Prowlarr / Lidarr acquisition search** — dropped on Grey's instruction,
 2026-09-07.
