@@ -561,7 +561,7 @@ class OrganizeStage(BaseStage):
 
         rows = ctx.conn.execute(
             """
-            SELECT id, file_path, artist, album, title
+            SELECT id, file_path, artist, album, title, genre
             FROM archive
             WHERE status = 'CATALOGUED'
               AND artist IS NOT NULL
@@ -639,11 +639,25 @@ class OrganizeStage(BaseStage):
             ext = current_path.suffix
             new_filename = build_track_filename(path_artist, title, ext)
 
-            # Build target path: <root>/Artist/Album/filename
+            # Build target path: <root>/Genre/Artist/Album/filename
+            #
+            # The genre level MUST match FinalizeStage. On 2026-09-18 it did
+            # not: finalize was changed to file under Genre/Artist/Album and
+            # this was left alone, so every file finalize placed correctly was
+            # moved straight back out by organize on the same run --
+            #
+            #     [organize] move  Unsorted/38 Special/Rock & Roll Strategy/...
+            #
+            # Two stages owning one decision and disagreeing is the same shape
+            # as the car encoder filing by album-artist while the catalogue
+            # filed by artist. Both call genre_folder() now, so there is one
+            # rule rather than two that happen to agree.
+            from .finalize import genre_folder
+
             artist_safe = sanitize_path_component(path_artist)
             album_safe = sanitize_path_component(album)
 
-            target_dir = dest_root / artist_safe / album_safe
+            target_dir = dest_root / genre_folder(row["genre"]) / artist_safe / album_safe
             candidate_path = target_dir / new_filename
 
             # unique_path() checks disk existence to avoid collisions, but

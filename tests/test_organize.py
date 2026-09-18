@@ -128,7 +128,7 @@ class TestOrganizeRunLive:
         assert result.success is True
         assert result.files_changed == 1
 
-        expected = ctx.inbox / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
+        expected = ctx.inbox / "Unsorted" / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
         assert expected.exists()
         assert not track.exists()
 
@@ -149,14 +149,14 @@ class TestOrganizeRunLive:
 
         assert result.success is True
         assert result.files_changed == 2
-        assert (ctx.inbox / "Artist A" / "Album A" / "Artist A - Title A.m4a").exists()
-        assert (ctx.inbox / "Artist B" / "Album B" / "Artist B - Title B.m4a").exists()
+        assert (ctx.inbox / "Unsorted" / "Artist A" / "Album A" / "Artist A - Title A.m4a").exists()
+        assert (ctx.inbox / "Unsorted" / "Artist B" / "Album B" / "Artist B - Title B.m4a").exists()
 
     def test_rename_only_same_directory(self, ctx):
         """When the target dir already matches, this is a pure rename
         (current_path.parent == target_path.parent branch), not a move --
         exercises the other _apply_rename call site."""
-        target_dir = ctx.inbox / "Test Artist" / "Test Album"
+        target_dir = ctx.inbox / "Unsorted" / "Test Artist" / "Test Album"
         target_dir.mkdir(parents=True)
         path = target_dir / "wrong_name.m4a"
         path.write_bytes(b"DATA")
@@ -182,7 +182,7 @@ class TestOrganizeRunLive:
     def test_already_organized_file_skipped(self, ctx):
         """A file already at its correct final path is a no-op, not an
         error and not a redundant move."""
-        target_dir = ctx.inbox / "Test Artist" / "Test Album"
+        target_dir = ctx.inbox / "Unsorted" / "Test Artist" / "Test Album"
         target_dir.mkdir(parents=True)
         path = target_dir / "Test Artist - Already Right.m4a"
         path.write_bytes(b"DATA")
@@ -239,7 +239,7 @@ class TestOrganizeDryRun:
         assert result.files_changed == 1
         # Nothing should have actually moved.
         assert track.exists()
-        expected = ctx_dry.inbox / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
+        expected = ctx_dry.inbox / "Unsorted" / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
         assert not expected.exists()
 
         row = ctx_dry.conn.execute(
@@ -284,7 +284,7 @@ class TestDestinationRoot:
     def test_picks_the_root_the_file_is_under(self, tmp_path):
         lib, inbox = tmp_path / "ALAC-Library", tmp_path / "INBOX"
         assert destination_root(lib / "a" / "b.m4a", [lib, inbox]) == lib
-        assert destination_root(inbox / "a" / "b.m4a", [lib, inbox]) == inbox
+        assert destination_root(inbox / "Unsorted" / "a" / "b.m4a", [lib, inbox]) == inbox
 
     def test_a_file_under_no_root_gets_none(self, tmp_path):
         lib, inbox = tmp_path / "ALAC-Library", tmp_path / "INBOX"
@@ -313,7 +313,7 @@ class TestOrganizeStaysInsideItsRoot:
 
         OrganizeStage().run(ctx)
 
-        expected = ctx.alac_library / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
+        expected = ctx.alac_library / "Unsorted" / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
         assert expected.exists(), "file left the library"
         assert not src.exists()
 
@@ -336,7 +336,7 @@ class TestOrganizeStaysInsideItsRoot:
         src = _make_track(ctx, "flat.m4a", "Test Artist", "Test Album", "Song One")
         OrganizeStage().run(ctx)
 
-        expected = ctx.inbox / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
+        expected = ctx.inbox / "Unsorted" / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
         assert expected.exists()
         assert not src.exists()
         assert list(ctx.alac_library.rglob("*.m4a")) == []
@@ -395,10 +395,10 @@ class TestPathsUseTheSortForm:
         OrganizeStage().run(ctx)
 
         expected = (
-            ctx.inbox / "Stooges, The" / "Fun House" / "Stooges, The - Down on the Street.m4a"
+            ctx.inbox / "Unsorted" / "Stooges, The" / "Fun House" / "Stooges, The - Down on the Street.m4a"
         )
         assert expected.exists(), "path must not follow the natural form"
-        assert not (ctx.inbox / "The Stooges").exists()
+        assert not (ctx.inbox / "Unsorted" / "The Stooges").exists()
 
     def test_both_artist_forms_land_on_the_same_path(self, ctx):
         """A library mid-migration holds both; they must not split in two."""
@@ -406,24 +406,24 @@ class TestPathsUseTheSortForm:
         _make_track(ctx, "b.m4a", "The Stooges", "Fun House", "Dirt")
         OrganizeStage().run(ctx)
 
-        folder = ctx.inbox / "Stooges, The" / "Fun House"
+        folder = ctx.inbox / "Unsorted" / "Stooges, The" / "Fun House"
         assert sorted(f.name for f in folder.glob("*.m4a")) == [
             "Stooges, The - Dirt.m4a",
             "Stooges, The - Loose.m4a",
         ]
-        assert not (ctx.inbox / "The Stooges").exists()
+        assert not (ctx.inbox / "Unsorted" / "The Stooges").exists()
 
     def test_a_stylized_name_is_not_rearranged_into_a_folder(self, ctx):
         """ "De La Soul" -> "La Soul, De" was live corruption, 2026-08-16."""
         _make_track(ctx, "c.m4a", "De La Soul", "3 Feet High", "Me Myself and I")
         OrganizeStage().run(ctx)
-        assert (ctx.inbox / "De La Soul" / "3 Feet High").is_dir()
-        assert not (ctx.inbox / "La Soul, De").exists()
+        assert (ctx.inbox / "Unsorted" / "De La Soul" / "3 Feet High").is_dir()
+        assert not (ctx.inbox / "Unsorted" / "La Soul, De").exists()
 
     def test_a_name_with_no_article_is_unaffected(self, ctx):
         _make_track(ctx, "d.m4a", "Dusty Springfield", "Dusty in Memphis", "Son of a Preacher Man")
         OrganizeStage().run(ctx)
-        assert (ctx.inbox / "Dusty Springfield" / "Dusty in Memphis").is_dir()
+        assert (ctx.inbox / "Unsorted" / "Dusty Springfield" / "Dusty in Memphis").is_dir()
 
 
 # ── smart-quote normalisation, which was silently a no-op ────────────────────
@@ -507,7 +507,7 @@ class TestSmartQuoteNormalisation:
 
 class TestBatchTierIsPreserved:
     def _finalized(self, ctx, batch, artist, album, title):
-        path = ctx.alac_library / batch / artist / album / f"{artist} - {title}.m4a"
+        path = ctx.alac_library / batch / "Unsorted" / artist / album / f"{artist} - {title}.m4a"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"FAKE AUDIO DATA")
         upsert_archive(
@@ -530,7 +530,7 @@ class TestBatchTierIsPreserved:
         OrganizeStage().run(ctx)
 
         assert src.exists(), "the batch directory was flattened"
-        assert not (ctx.alac_library / "Cranberries, The").exists()
+        assert not (ctx.alac_library / "Unsorted" / "Cranberries, The").exists()
 
     def test_a_messy_file_is_tidied_inside_its_own_batch(self, ctx):
         ctx.alac_library.mkdir(parents=True, exist_ok=True)
@@ -552,8 +552,8 @@ class TestBatchTierIsPreserved:
 
         OrganizeStage().run(ctx)
 
-        assert (batch / "Weezer" / "Blue Album" / "Weezer - Buddy Holly.m4a").exists()
-        assert not (ctx.alac_library / "Weezer").exists(), "escaped its batch"
+        assert (batch / "Unsorted" / "Weezer" / "Blue Album" / "Weezer - Buddy Holly.m4a").exists()
+        assert not (ctx.alac_library / "Unsorted" / "Weezer").exists(), "escaped its batch"
 
     def test_two_batches_do_not_merge(self, ctx):
         """Each batch organizes independently; neither absorbs the other."""
@@ -564,7 +564,7 @@ class TestBatchTierIsPreserved:
         OrganizeStage().run(ctx)
 
         assert a.exists() and b.exists()
-        assert not (ctx.alac_library / "Weezer").exists()
+        assert not (ctx.alac_library / "Unsorted" / "Weezer").exists()
 
     def test_an_artist_directory_is_not_mistaken_for_a_batch(self, ctx):
         """A library shaped ALAC-Library/<artist>/<album>/ must still work.
@@ -575,7 +575,7 @@ class TestBatchTierIsPreserved:
         YYYY-MM-DD[suffix] shape instead.
         """
         ctx.alac_library.mkdir(parents=True, exist_ok=True)
-        path = ctx.alac_library / "Weezer" / "Blue Album" / "Weezer - Undone.m4a"
+        path = ctx.alac_library / "Unsorted" / "Weezer" / "Blue Album" / "Weezer - Undone.m4a"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"FAKE AUDIO DATA")
         upsert_archive(
@@ -593,7 +593,7 @@ class TestBatchTierIsPreserved:
         OrganizeStage().run(ctx)
 
         assert path.exists(), "already correct; should not have moved"
-        assert not (ctx.alac_library / "Weezer" / "Weezer").exists(), "nested artist"
+        assert not (ctx.alac_library / "Unsorted" / "Weezer" / "Weezer").exists(), "nested artist"
 
     def test_review_folders_beside_the_batches_are_not_roots(self, ctx):
         """DUPES_MOVED_FOR_REVIEW sits next to the batches and is not one."""
@@ -642,7 +642,7 @@ class TestSetAsideFoldersAreLeftAlone:
         OrganizeStage().run(ctx)
 
         assert src.exists(), f"a file in {folder} was moved"
-        assert not (ctx.alac_library / "Weezer").exists(), "re-merged into the library"
+        assert not (ctx.alac_library / "Unsorted" / "Weezer").exists(), "re-merged into the library"
 
     def test_a_real_batch_file_is_still_organized(self, ctx):
         """The guard must not stop Organize doing its job."""
@@ -664,7 +664,7 @@ class TestSetAsideFoldersAreLeftAlone:
         ctx.conn.commit()
 
         OrganizeStage().run(ctx)
-        assert (batch / "Weezer" / "Blue Album" / "Weezer - Undone.m4a").exists()
+        assert (batch / "Unsorted" / "Weezer" / "Blue Album" / "Weezer - Undone.m4a").exists()
 
 
 def test_a_path_component_never_exceeds_the_filesystem_byte_limit() -> None:
