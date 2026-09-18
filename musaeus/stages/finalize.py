@@ -209,6 +209,33 @@ def _cleanup_empty_dirs(root: Path) -> int:
     return removed
 
 
+def genre_folder(genre: str | None) -> str:
+    """The top folder an artist files under. Grey's ruling, 2026-09-18.
+
+    Measured before the change, against 9,049 catalogued tracks:
+
+        artists whose tracks span more than one genre : 0
+        albums that would be split across genres      : 0
+        genre folders created                         : 42
+
+    Zero, because MasterLaw rules genre per ARTIST, not per track -- so an
+    artist lands in exactly one genre folder and no album is torn in half.
+    That is the property that makes this layout safe; if genre ever becomes a
+    per-track field, this function is where it stops being safe.
+
+    A track with no genre goes to "Unsorted", never to a folder named after
+    whatever `str(None)` produces. Today that case is empty, but a fresh
+    ingest arrives before MasterLaw has ruled on the artist, so it is the
+    normal state for new material rather than an error.
+
+    Only the first genre is used when a row carries several, matching the
+    playlist stage's `_primary_genre` -- one file cannot live in two folders,
+    and picking the first is the same choice made in the same order there.
+    """
+    first = (genre or "").split(",")[0].strip()
+    return sanitize_path_component(first) if first else "Unsorted"
+
+
 class FinalizeStage(BaseStage):
     """
     Finalize — move canonicalized files from INBOX into ALAC-Library,
@@ -350,7 +377,7 @@ class FinalizeStage(BaseStage):
 
         batch = self._batch_date(ctx)
         base = ctx.alac_library / batch if batch else ctx.alac_library
-        target_dir = base / artist_safe / album_safe
+        target_dir = base / genre_folder(row.get("genre")) / artist_safe / album_safe
         candidate = target_dir / new_filename
 
         # Same self-is-not-a-collision guard organize.py needed: if the

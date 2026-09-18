@@ -143,7 +143,7 @@ class TestFinalizeFromStaging:
         assert result.files_changed == 1
         assert not staged.exists()
 
-        expected = ctx.alac_library / _TEST_BATCH_DATE / "Artist" / "Album" / "Artist - Title.m4a"
+        expected = ctx.alac_library / _TEST_BATCH_DATE / "Unsorted" / "Artist" / "Album" / "Artist - Title.m4a"
         assert expected.exists()
         assert expected.read_bytes() == b"FAKE STAGED CANONICAL AUDIO DATA"
 
@@ -156,7 +156,7 @@ class TestFinalizeFromStaging:
         must delete the just-created ALAC-Library copy and leave the
         STAGING source completely untouched -- never lose track of it."""
         staged = _make_staged_track(ctx, "1_source.m4a", "Artist", "Album", "Title")
-        expected = ctx.alac_library / _TEST_BATCH_DATE / "Artist" / "Album" / "Artist - Title.m4a"
+        expected = ctx.alac_library / _TEST_BATCH_DATE / "Unsorted" / "Artist" / "Album" / "Artist - Title.m4a"
 
         # A decoy row that already occupies the exact ALAC-Library path
         # this row's finalize would try to record.
@@ -201,6 +201,7 @@ class TestFinalizeRunLive:
         expected = (
             ctx.alac_library
             / _TEST_BATCH_DATE
+            / "Unsorted"
             / "Test Artist"
             / "Test Album"
             / "Test Artist - Song One.m4a"
@@ -222,10 +223,10 @@ class TestFinalizeRunLive:
 
         assert result.files_changed == 2
         assert (
-            ctx.alac_library / _TEST_BATCH_DATE / "Artist A" / "Album A" / "Artist A - Title A.m4a"
+            ctx.alac_library / _TEST_BATCH_DATE / "Unsorted" / "Artist A" / "Album A" / "Artist A - Title A.m4a"
         ).exists()
         assert (
-            ctx.alac_library / _TEST_BATCH_DATE / "Artist B" / "Album B" / "Artist B - Title B.m4a"
+            ctx.alac_library / _TEST_BATCH_DATE / "Unsorted" / "Artist B" / "Album B" / "Artist B - Title B.m4a"
         ).exists()
 
     def test_empty_inbox_dirs_cleaned_up(self, ctx):
@@ -251,7 +252,7 @@ class TestFinalizeRunLive:
         hash_conn.close()
 
         assert len(rows) == 1
-        expected = ctx.alac_library / _TEST_BATCH_DATE / "Artist" / "Album" / "Artist - Title.m4a"
+        expected = ctx.alac_library / _TEST_BATCH_DATE / "Unsorted" / "Artist" / "Album" / "Artist - Title.m4a"
         assert rows[0]["file_path"] == str(expected)
 
     def test_hash_index_survives_after_vault_db_would_be_wiped(self, ctx):
@@ -395,7 +396,7 @@ class TestFinalizeIdempotency:
         second = FinalizeStage().execute(ctx)
 
         assert second.files_errored == 0
-        matches = list((ctx.alac_library / _TEST_BATCH_DATE / "Artist" / "Album").glob("*.m4a"))
+        matches = list((ctx.alac_library / _TEST_BATCH_DATE / "Unsorted" / "Artist" / "Album").glob("*.m4a"))
         assert len(matches) == 1  # no " (2)" sibling created
 
 
@@ -411,7 +412,7 @@ class TestFinalizeBatchDate:
 
         FinalizeStage().execute(ctx)
 
-        expected = ctx.alac_library / _TEST_BATCH_DATE / "Artist" / "Album" / "Artist - Title.m4a"
+        expected = ctx.alac_library / _TEST_BATCH_DATE / "Unsorted" / "Artist" / "Album" / "Artist - Title.m4a"
         assert expected.exists()
         # And the date folder is a DIRECT child of alac_library, not nested
         # any deeper or shallower.
@@ -440,7 +441,7 @@ class TestFinalizeBatchDate:
         FinalizeStage().execute(real_ctx)
 
         today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
-        expected = real_ctx.alac_library / today / "Artist" / "Album" / "Artist - Title.m4a"
+        expected = real_ctx.alac_library / today / "Unsorted" / "Artist" / "Album" / "Artist - Title.m4a"
         assert expected.exists()
 
     def test_with_the_flag_off_a_finalized_file_lands_flat(self, cfg, monkeypatch):
@@ -455,7 +456,7 @@ class TestFinalizeBatchDate:
         _make_canonicalized_track(real_ctx, "track.m4a", "Artist", "Album", "Title")
         FinalizeStage().execute(real_ctx)
 
-        expected = real_ctx.alac_library / "Artist" / "Album" / "Artist - Title.m4a"
+        expected = real_ctx.alac_library / "Unsorted" / "Artist" / "Album" / "Artist - Title.m4a"
         assert expected.exists(), "expected the artist directly under the library"
 
     def test_all_files_in_one_run_share_the_same_batch_date(self, ctx):
@@ -467,8 +468,8 @@ class TestFinalizeBatchDate:
 
         FinalizeStage().execute(ctx)
 
-        a = ctx.alac_library / _TEST_BATCH_DATE / "Artist A" / "Album" / "Artist A - Title A.m4a"
-        b = ctx.alac_library / _TEST_BATCH_DATE / "Artist B" / "Album" / "Artist B - Title B.m4a"
+        a = ctx.alac_library / _TEST_BATCH_DATE / "Unsorted" / "Artist A" / "Album" / "Artist A - Title A.m4a"
+        b = ctx.alac_library / _TEST_BATCH_DATE / "Unsorted" / "Artist B" / "Album" / "Artist B - Title B.m4a"
         assert a.exists()
         assert b.exists()
 
@@ -482,7 +483,7 @@ class TestFinalizeDryRun:
         assert result.dry_run is True
         assert track.exists()
         expected = (
-            ctx_dry.alac_library / _TEST_BATCH_DATE / "Artist" / "Album" / "Artist - Title.m4a"
+            ctx_dry.alac_library / _TEST_BATCH_DATE / "Unsorted" / "Artist" / "Album" / "Artist - Title.m4a"
         )
         assert not expected.exists()
 

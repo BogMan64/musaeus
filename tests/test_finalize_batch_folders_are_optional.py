@@ -80,24 +80,31 @@ ROW = {"artist": "Tom Petty", "album": "Damn the Torpedoes", "title": "Even the 
 
 class TestTargetPath:
     def test_flat_by_default(self, tmp_path):
+        """Genre / Artist / Album, with no dated folder. The fixture row has no
+        genre, so the genre level is "Unsorted" -- the normal state for freshly
+        ingested material, before MasterLaw has ruled on the artist."""
         ctx = _Ctx(tmp_path / "ALAC-Library")
         target = FinalizeStage()._target_path(ctx, ROW, Path("/src/x.m4a"))
         rel = target.relative_to(ctx.alac_library)
-        assert rel.parts[0] == "Tom Petty", (
-            f"expected the artist directly under the library, got {rel.parts[0]!r}"
-        )
-        assert rel.parts[1] == "Damn the Torpedoes"
+        assert rel.parts[0] == "Unsorted", f"expected the genre first, got {rel.parts[0]!r}"
+        assert rel.parts[1] == "Tom Petty", f"expected the artist second, got {rel.parts[1]!r}"
+        assert rel.parts[2] == "Damn the Torpedoes"
 
     def test_no_empty_directory_component_is_created(self, tmp_path):
         """The bug this guards: `lib / "" / artist` is easy to write and
         yields a path that LOOKS right, so only checking the parts catches
-        a stray empty component."""
+        a stray empty component. The genre level added on 2026-09-18 is a
+        fresh chance to make exactly that mistake -- an empty genre must
+        become "Unsorted", never "".
+        """
         ctx = _Ctx(tmp_path / "ALAC-Library")
         target = FinalizeStage()._target_path(ctx, ROW, Path("/src/x.m4a"))
         assert "" not in target.parts
         assert "//" not in str(target)
 
     def test_the_flag_restores_the_dated_folder(self, tmp_path, monkeypatch):
+        """Date / Genre / Artist / Album -- the genre sits between the batch
+        folder and the artist, so the date must still be first."""
         monkeypatch.setenv("MUSAEUS_BATCH_FOLDERS", "1")
         ctx = _Ctx(tmp_path / "ALAC-Library")
         target = FinalizeStage()._target_path(ctx, ROW, Path("/src/x.m4a"))
@@ -105,7 +112,8 @@ class TestTargetPath:
         assert len(rel.parts[0]) == 10 and rel.parts[0][4] == "-", (
             f"expected a YYYY-MM-DD batch folder, got {rel.parts[0]!r}"
         )
-        assert rel.parts[1] == "Tom Petty"
+        assert rel.parts[1] == "Unsorted"
+        assert rel.parts[2] == "Tom Petty"
 
     def test_an_explicit_override_still_wins_with_the_flag_off(self, tmp_path):
         """Tests and one-off runs pin the stamp through the context. That
@@ -117,9 +125,24 @@ class TestTargetPath:
         assert target.relative_to(ctx.alac_library).parts[0] == "2026-01-01"
 
     def test_two_artists_land_in_two_folders_not_one(self, tmp_path):
+        """Both rows carry no genre, so they now SHARE the "Unsorted" genre
+        folder. Comparing parts[0] would therefore pass trivially for any two
+        artists and stop testing anything -- the claim is about the artist
+        level, so that is what is compared."""
         ctx = _Ctx(tmp_path / "ALAC-Library")
         a = FinalizeStage()._target_path(ctx, ROW, Path("/src/x.m4a"))
         b = FinalizeStage()._target_path(
             ctx, {**ROW, "artist": "Elvis Presley"}, Path("/src/y.m4a")
         )
-        assert a.relative_to(ctx.alac_library).parts[0] != b.relative_to(ctx.alac_library).parts[0]
+        ra = a.relative_to(ctx.alac_library).parts
+        rb = b.relative_to(ctx.alac_library).parts
+        assert ra[0] == rb[0] == "Unsorted"
+        assert ra[1] != rb[1], f"two artists collapsed into one folder: {ra[1]!r}"
+
+    def test_two_genres_land_in_two_folders(self, tmp_path):
+        """The point of the change: the genre actually partitions the tree."""
+        ctx = _Ctx(tmp_path / "ALAC-Library")
+        rock = FinalizeStage()._target_path(ctx, {**ROW, "genre": "Rock"}, Path("/src/x.m4a"))
+        jazz = FinalizeStage()._target_path(ctx, {**ROW, "genre": "Jazz"}, Path("/src/y.m4a"))
+        assert rock.relative_to(ctx.alac_library).parts[0] == "Rock"
+        assert jazz.relative_to(ctx.alac_library).parts[0] == "Jazz"
