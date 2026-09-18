@@ -32,6 +32,8 @@ import argparse
 import shutil
 import sqlite3
 import sys
+
+import mutagen.mp4
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -113,6 +115,65 @@ def _write_canon_entry(canon: Path, old: str, new: str) -> int:
     return repointed
 
 
+def move_car_files_by_db(cfg, old: str, new: str, execute: bool) -> list[tuple[Path, Path]]:
+    """Relocate the CAR tier by asking the database, not by guessing the folder.
+
+    The other two tiers file an artist under sort_form(artist_tag), so walking
+    `Libraries/<tier>/<sort_form(old)>` finds them. **The car tier does not.**
+    It files under the ALBUM-ARTIST tag, which is frequently a different
+    string: merging "Daryl Hall & John Oates" into "Hall & Oates" on
+    2026-09-17 found 16 files in each ALAC tier and none in the car, because
+    the car folder was called "Daryl Hall".
+
+    The tier loop skips a directory that does not exist, so this failed
+    silently and reported `0 car_export_path updated` -- which reads exactly
+    like "there were none". Every artist merge before that date may have left
+    the same residue.
+
+    So the car tier is resolved by `car_export_path` on the rows being
+    renamed, which is the only authority that knows where those files
+    actually are.
+    """
+    conn = sqlite3.connect(cfg.db_path)
+    conn.execute("PRAGMA busy_timeout = 60000")
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT id, car_export_path FROM archive "
+        "WHERE artist = ? AND car_export_path IS NOT NULL AND TRIM(car_export_path) != ''",
+        (old,),
+    ).fetchall()
+    car_root = Path(cfg.vault_root) / "Libraries" / "CAR_Library"
+    folder = sort_form(new)
+    moves: list[tuple[Path, Path]] = []
+    for row in rows:
+        src = Path(row["car_export_path"])
+        if not src.is_file():
+            continue
+        if src.parent.parent == car_root / folder:
+            continue  # already filed correctly
+        stem = src.name
+        renamed = f"{folder} - {stem.split(' - ', 1)[1]}" if " - " in stem else stem
+        dst = car_root / folder / src.parent.name / renamed
+        if dst.exists():
+            continue  # a clash is the caller's problem, not this function's
+        moves.append((src, dst))
+        if execute:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+            tags = mutagen.mp4.MP4(dst)
+            if tags.tags is None:
+                tags.add_tags()
+            tags.tags["aART"] = [new]
+            tags.save()
+            conn.execute(
+                "UPDATE archive SET car_export_path = ? WHERE id = ?", (str(dst), row["id"])
+            )
+    if execute:
+        conn.commit()
+    conn.close()
+    return moves
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -140,6 +201,11 @@ def main() -> int:
               + (f", {len(clashes)} CLASH" if clashes else ""))
         if args.execute and not clashes:
             shutil.rmtree(src, ignore_errors=True)
+
+    # The car tier, resolved from the database rather than from a folder name.
+    # Runs BEFORE the artist rename below, because it selects on the OLD name.
+    car_moves = move_car_files_by_db(cfg, args.old, args.new, args.execute)
+    print(f"  CAR_Library (by car_export_path): {len(car_moves)} file(s) moved")
 
     n_art = n_fp = n_car = 0
     if args.execute:

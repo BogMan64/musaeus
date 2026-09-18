@@ -37,6 +37,7 @@ import argparse
 import dataclasses
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -95,6 +96,7 @@ def write_index(cfg: MusicConfig, edition_root: Path, apply: bool) -> tuple[list
     already runs on.
     """
     index_dir = index_dir_for(edition_root)
+    started = time.time() - 1   # -1s of slack for filesystem timestamp granularity
     # dataclasses.replace, not mutation: the stage reads cfg.playlists and
     # nothing else should see this override.
     cfg = dataclasses.replace(cfg, playlists=index_dir)
@@ -110,6 +112,27 @@ def write_index(cfg: MusicConfig, edition_root: Path, apply: bool) -> tuple[list
     finally:
         ctx.finish()
         conn.close()
+
+    if apply:
+        # Sweep playlists this run did not write.
+        #
+        # PlaylistStage writes one file per genre that still HAS tracks. A
+        # genre whose last track is deleted is simply not written -- and the
+        # previous run's file is left sitting there, listing a track that no
+        # longer exists. Found 2026-09-17: "Holiday.m3u8" held one track,
+        # Bobby Goldsboro's "Honey"; he was deleted, the genre emptied, and
+        # the stale playlist survived pointing at a missing file.
+        #
+        # An index that lists what is gone is worse than no index: in the car
+        # it is a dead entry, and here it looked exactly like a build failure.
+        fresh = {
+            f for f in index_dir.glob("*.m3u8")
+            if f.stat().st_mtime >= started
+        }
+        for f in sorted(index_dir.glob("*.m3u8")):
+            if f not in fresh:
+                f.unlink()
+                notes.append(f"removed stale playlist (genre is now empty): {f.name}")
 
     problems = verify_index(index_dir) if apply else []
     return notes, problems
