@@ -257,6 +257,34 @@ def _clear_resume() -> None:
         _RESUME_FILE.unlink(missing_ok=True)
 
 
+def _resume_would_skip_new_work(completed: list[str], inbox: Path) -> bool:
+    """True when resuming would silently ignore files waiting in the INBOX.
+
+    The marker survives a FAILED run, not just an interrupted one. On
+    2026-09-20 a run ended `sentinel: FAILED` on a single undecodable file,
+    leaving "28 stages done" behind. The next run found it, saw no TTY,
+    auto-resumed, printed
+
+        ⏭  IngestStage (already done)
+
+    and walked past **2,061 freshly staged files**. It reported success and
+    did nothing. Nothing errored, nothing was lost, and nothing was ingested;
+    the only symptom was a library that did not grow.
+
+    Auto-resume is right for its purpose -- an interrupted overnight run
+    should not restart from zero. It is wrong the moment new work has arrived
+    since, and INBOX holding audio is exactly that signal: the inbox exists
+    to be drained by IngestStage, so a resume that skips ingest while the
+    inbox is occupied cannot be what anyone meant.
+    """
+    if "IngestStage" not in completed:
+        return False
+    try:
+        return any(inbox.rglob("*.m4a"))
+    except OSError:
+        return False
+
+
 # ── Pipeline runner ───────────────────────────────────────────────────────────
 
 # P0-02 (musaeus-consumer-readiness spec): temporary, blunt, fail-closed
@@ -420,6 +448,13 @@ def _run_pipeline(
 
     # Check for resume
     resume_from = _load_resume(stage_names)
+    if resume_from and _resume_would_skip_new_work(resume_from, cfg.inbox):
+        n = sum(1 for _ in cfg.inbox.rglob("*.m4a"))
+        print(f"  ⚠  Incomplete run detected, but {n:,} file(s) are waiting in the INBOX.")
+        print("     Resuming would skip IngestStage and leave them unprocessed.")
+        print("     Starting a fresh run instead.")
+        _clear_resume()
+        resume_from = None
     if resume_from:
         print(f"  ⚠  Incomplete run detected — {len(resume_from)} stage(s) done.")
         if not sys.stdin.isatty():
