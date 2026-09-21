@@ -83,6 +83,12 @@ Every one of these was hit for real. None is caught by any tool here.
   constants will flag prose that merely discusses the thing.
 - **Existence is not completeness.** A half-written file looks finished
   and gets skipped for ever. Write to `.part`, verify, then rename.
+- **`pgrep -f` matches the shell that is asking.** A wrapper running
+  `pgrep -f "python3 -m musaeus"` has that pattern in its own cmdline, so
+  pgrep matches itself and reports a pipeline that is not there. This has
+  produced a false "pipeline: RUNNING" status twice. Ask with
+  `scripts/musaeus_running.sh`, which matches the process *name* — never
+  with a bare `pgrep -f`.
 
 ## Verification
 
