@@ -60,4 +60,3 @@ settings.env
 
 # Added 2026-09-21
 *.bak-*    # timestamped editor/script backups; git history is the record
-.claude/    # local Claude Code session config, not project state
