@@ -32,6 +32,52 @@ it. Given limited time, take the TODO.
 
 ---
 
+## State on 2026-09-21 — rebuild complete, tiers not yet built
+
+All 13,699 raw files are ingested. The library is 10,856 CATALOGUED.
+
+### Closed since 2026-09-19
+
+1. **The review areas moved out of `Libraries/`** to `VAULT/REVIEW/`. Moving
+   the folders was the easy part; four places had encoded the old location and
+   each failed differently — audit reported all 198 held rows as misplaced and
+   FAILED, rebuild_from_disk would have missed every held file and relabelled
+   the rest CATALOGUED, doctor excluded them by folder name, and the tribute
+   script pointed at a root that no longer exists.
+2. **`DUPE_REVIEW` resolved in one pass** under Grey's like-for-like rule:
+   3,722 -> 738. 2,880 surplus copies deleted, 79 restored to the library, 26
+   library files replaced by a genuinely better copy. 958 were blocked from
+   displacing a library file because they only won on 24-bit or 96/192 kHz
+   inflation — without that rule nearly a thousand good files would have been
+   swapped out for format-inflated ones.
+3. **Decode audit swept the library** — 9,394 clean, 5 damaged. All five were
+   right-sized and reported full duration; only a decode found them. Two were
+   replaced from clean USB1 copies, three went on the wanted list.
+4. **A decode gate now runs on arrivals** before Finalize can catalogue them.
+   It caught a real damaged file on its first run.
+5. **Albums filled from AcoustID fingerprints** — 2,192 albumless tracks ->
+   688. 1,482 recovered, 1,110 of them from a single unambiguous candidate.
+6. **Artist tags carry the natural form**, folders the sort form. 292 rows.
+
+### Open
+
+1. **`CAR_Library` and `iPHONE_Library` still do not exist.** Both empty.
+   Build from ALAC-Archival, never from the -18 library: baking a bake is
+   double normalisation.
+2. **`ALAC-Archival` is empty.** The masters tier has to be populated before
+   anything else, because the bake consumes what is currently the only copy.
+3. **Bit-rot baselines cannot be taken yet.** `bitrot` targets ALAC-Archival,
+   which has 0 files, so `--rebaseline` is owed AFTER the snapshot, not before.
+4. **688 tracks still have no album.** AcoustID declined rather than guessed:
+   358 had no plain Album among candidates, 285 no release groups at all.
+5. **839 files remain in an `Unsorted/` album folder.**
+6. **178 held dupes have an ambiguous twin** — more than one library track
+   shares the title. Title matching cannot settle these; fingerprinting can.
+7. **`DUPE_REVIEW` is 738**, mostly files with no counterpart left on disk to
+   compare against.
+8. **Neither USB can hold a library copy.** ALAC_Library is 463 GB against
+   433 GB free on USB2 and 325 GB on USB1. The NUC (1.7 TB free) fits.
+
 ## State on 2026-09-19 — mid-rebuild
 
 **The library was wiped and is being rebuilt from source.** These numbers are
