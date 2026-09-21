@@ -726,5 +726,100 @@ class CorruptStage(BaseStage):
                 problems.append(f"{p.name}: marked QUARANTINED but still outside {qroot}")
         return problems
 
+    #: Statuses a row holds after Ingest but before Finalize. These are THIS
+    #: run's arrivals -- the only files that have never had a chance to be
+    #: decode-checked, because _scan() only ever looks at CATALOGUED rows.
+    ARRIVAL_STATUSES = ("PENDING", "HASHED")
+
+    def _gate_new_arrivals(self, ctx: RunContext, result: StageResult, dry_run: bool) -> None:
+        """Decode every file arriving this run, before Finalize can catalogue it.
+
+        Why this exists
+        ---------------
+        `ffmpeg_decode_check` was called from exactly one place: the
+        `_scan()` sweep, whose query is `WHERE status = 'CATALOGUED'`. A new
+        arrival is PENDING/HASHED until FinalizeStage promotes it, and
+        CorruptStage runs BEFORE Finalize -- so on the run that ingests a
+        file, nothing ever decoded it. It became eligible only on the NEXT
+        run, and then only if the size-ratio heuristic flagged it or it won
+        one of NEW_ARRIVAL_DECODE_BUDGET slots.
+
+        That is how five truncated files reached the library as masters on
+        2026-09-21 (Billy Joel, Billy Ocean, Chic, The Who, Tower of Power).
+        All five were right-sized, so the shape heuristic could not see them,
+        and metadata cannot see truncation at all: in MP4 both durations live
+        in the `moov` atom, written before the audio, so a file cut short
+        still reports its full length. Only a decode knows.
+
+        No budget here, deliberately. `_scan()` is bounded because it re-reads
+        a library that only grows; this gate reads one batch, so its cost is
+        proportional to what arrived (~1.7 files/sec measured over 9,414 files
+        on 2026-09-21) rather than to the library size. A damaged master that
+        reaches ALAC-Archival propagates into every tier built from it, and no
+        later stage can tell it was ever wrong.
+        """
+        conn = ctx.conn
+        placeholders = ",".join("?" for _ in self.ARRIVAL_STATUSES)
+        rows = conn.execute(
+            f"SELECT file_path, artist, title FROM archive "
+            f"WHERE status IN ({placeholders}) AND file_path IS NOT NULL",
+            self.ARRIVAL_STATUSES,
+        ).fetchall()
+        if not rows:
+            return
+        logger.info("[%s] decode-gating %d new arrival(s)", self.NAME, len(rows))
+
+        quarantine_dir = ctx.vault_root / "QUARANTINE" / "corrupted"
+        gated = 0
+        for row in rows:
+            file_path = Path(row["file_path"])
+            if not file_path.is_file():
+                continue
+            decoded_ok, decode_err = ffmpeg_decode_check(file_path, seconds=0)
+            if not dry_run:
+                conn.execute(
+                    "UPDATE archive SET decode_checked_at = datetime('now'), "
+                    "decode_ok = ?, decode_errors = ? WHERE file_path = ?",
+                    (1 if decoded_ok else 0, 0 if decoded_ok else 1, str(file_path)),
+                )
+            if decoded_ok:
+                continue
+
+            logger.warning(
+                "[%s] arrival does NOT decode, refusing to catalogue: %s — %s",
+                self.NAME, file_path.name, (decode_err or "")[:120],
+            )
+            gated += 1
+            result.files_errored += 1
+            if dry_run:
+                continue
+
+            quarantine_dir.mkdir(parents=True, exist_ok=True)
+            dest = quarantine_dir / file_path.name
+            counter = 1
+            while dest.exists():
+                dest = quarantine_dir / f"{file_path.stem}_{counter}{file_path.suffix}"
+                counter += 1
+            try:
+                import shutil
+
+                shutil.move(str(file_path), str(dest))
+                conn.execute(
+                    "UPDATE archive SET status='QUARANTINED', file_path=? WHERE file_path=?",
+                    (str(dest), str(file_path)),
+                )
+                logger.info("[%s] → quarantined arrival: %s", self.NAME, dest.name)
+            except (OSError, sqlite3.IntegrityError) as exc:
+                # Leave the row where it is rather than let disk and database
+                # disagree; _scan's own quarantine path documents this trap.
+                logger.error("[%s] could not quarantine %s: %s", self.NAME, file_path.name, exc)
+        if gated:
+            logger.warning(
+                "[%s] %d arrival(s) refused: damaged before they reached the library",
+                self.NAME, gated,
+            )
+
     def run(self, ctx: RunContext) -> StageResult:
-        return self._scan(ctx, dry_run=False)
+        result = self._scan(ctx, dry_run=False)
+        self._gate_new_arrivals(ctx, result, dry_run=False)
+        return result
