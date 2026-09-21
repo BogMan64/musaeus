@@ -88,6 +88,24 @@ you it was slow.
 
 ---
 
+## 4. Wanted, added 2026-09-19
+
+**A pre-wipe rehearsal.** The 2026-09-18 rebuild was safe because four checks
+were run by hand first — coverage, soundness, a verified backup, and a rulings
+export. Every one of them was assembled ad hoc, and the coverage check is the
+only reason 1,586 tracks still exist. That sequence should be a command, not a
+memory: `musaeus prepare-rebuild` reporting what a wipe would destroy, what
+cannot be regenerated, and refusing outright if a backup is stale or a raw
+source does not cover the catalogue.
+
+**A "what lives where" audit.** `TuneMyMusic.csv` was lost to the wipe because
+nobody asked which files inside `Libraries/` were irreplaceable. A check that
+lists every non-audio file in a rebuildable tree, and every table column that
+exists in no file anywhere, would have found it in a second. `doctor` is the
+natural home.
+
+---
+
 ## 4. Wanted, added 2026-09-17
 
 **Move the bit-rot baselines into the LEDGER.** Strictly this is a TODO and
@@ -101,7 +119,7 @@ that, and none of them has been lost yet, which is the moment to move them.
 
 ---
 
-## 5. Deliberately excluded from this list
+## 6. Deliberately excluded from this list
 
 **Prowlarr / Lidarr acquisition search** — dropped on Grey's instruction,
 2026-09-07.

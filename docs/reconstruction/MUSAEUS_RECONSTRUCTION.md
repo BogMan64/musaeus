@@ -25,8 +25,56 @@ the storage topology (§ Editions — `ALAC_Archive` left the vault, and a third
 tree now exists that MUSAEUS must never see), and an artist's filing name
 becoming a separate authority from an artist's tag (§3). **Every file count in
 this document is a 2026-09-07 measurement**; for current numbers read "State
-on 2026-09-17" at the top of `MUSAEUS_TODO.md` rather than trusting a figure
+on 2026-09-19" at the top of `MUSAEUS_TODO.md` rather than trusting a figure
 here.
+
+**Reviewed again 2026-09-19 — the library was wiped and rebuilt, and this
+document's reasoning is what made that survivable.** Nothing in it was
+overturned. Three things are now proven rather than asserted:
+
+1. **§ Editions — "no edition is ever built from another" earned its keep.**
+   `Libraries/` was deleted on 2026-09-18 and rebuilt from
+   `Curated.RAW.Files`. That was only safe because the masters were never
+   derived from the library copies: the raw files are the origin, and a
+   PCM-identity check proved it — 23 of 40 sampled raw files matched a live
+   catalogue row exactly, 13 matched a *denied* hash.
+
+2. **§3, the authorities — the LEDGER is the durable one, and now it is
+   measured.** `musaeus.db` was reset to nothing. `_db_backups/hash_index.db`
+   survived with **2,521 denied hashes**, and on the first rebuild batch it
+   refused 17 of 50 files unaided. Every ruling that lives in a FILE
+   (MasterLaw 3,502, canon 268, filing 17, composer 48) came through
+   untouched. Every ruling that lived only in a database ROW would have been
+   lost — 8,962 album names and 194 `genre_ruled_at` markers had to be
+   exported to a CSV first, keyed on `audio_hash`, because nothing else would
+   have carried them.
+
+3. **§5, the failure catalogue — one new entry, and it is the same shape as
+   the others.** `FinalizeStage` was changed to file under
+   `Genre/Artist/Album`; `OrganizeStage` was not. On the first rebuild run
+   every file finalize placed correctly was moved straight back out by
+   organize, minutes later, in the same run. **Both stages reported
+   `changed=32` and a green tick.** Nothing errored. Only looking at the
+   finished tree showed it.
+
+   That is the third instance in three days of *two authorities for one
+   decision, disagreeing quietly*: the car encoder filing by album-artist
+   while the catalogue filed by artist; NormalizeStage rewriting the artist
+   tag back to sort form after the article migration; and this. The guard is
+   never "remember to update both" — it is one function, and a test that
+   fails if either module grows a private copy of the rule.
+
+**A fourth thing this document did not warn about, and now does.**
+`TuneMyMusic.csv` — Grey's wanted list, 311 rows of human decisions — lived
+inside `Libraries/ALAC-Archival/` and the wipe took it. It was recovered from
+the NUC backup by luck, not design. The rule that follows:
+
+> **Anything MUSAEUS can rebuild lives in `Libraries/`. Anything it cannot
+> lives outside it.**
+
+Rulings, the deny list, the wanted list, and files awaiting a human belong in
+`MetaData/`, `_db_backups/` or `REVIEW/` — never in the tree whose whole
+virtue is that it can be thrown away.
 
 **Reviewed again 2026-09-17.** Still no ruling in this document has been
 overturned. Three things have changed underneath it, and all three *confirm*

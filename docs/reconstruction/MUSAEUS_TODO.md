@@ -10,7 +10,7 @@ bug found this week. One file now. MUSAEUS_OPEN_ITEMS.md is archived.
 
 Counts in the body below were verified against the live vault on
 **2026-09-07** and have NOT been re-verified since. Where a number matters,
-read "State on 2026-09-17" immediately below — it supersedes them,
+read "State on 2026-09-19" immediately below — it supersedes them,
 and every count in "State on 2026-09-14" below that.
 
 ~~**Claude Opus 5 access ends 2026-09-08. Kiro runs ~30 days after.**~~
@@ -29,6 +29,124 @@ as still correct.
 line is: a TODO item has a cost if left undone — something is unprotected or
 a check is lying. A wishlist item has none; the library is correct without
 it. Given limited time, take the TODO.
+
+---
+
+## State on 2026-09-19 — mid-rebuild
+
+**The library was wiped and is being rebuilt from source.** These numbers are
+a snapshot taken while a batch was still running, so they will be wrong by the
+time you read them. What matters is the shape, not the totals.
+
+| | |
+|---|---|
+| CATALOGUED | **3,954** |
+| HASHED / PENDING (mid-run) | 949 / 941 |
+| DUPE_REVIEW | **361** |
+| QUARANTINED | 18 |
+| TRIBUTE_REVIEW | 6 |
+| distinct artists | 1,491 |
+| CATALOGUED with no genre | 96 |
+| CATALOGUED with no album name | **0** |
+
+| edition | files |
+|---|---|
+| `ALAC_Library` | 3,954 |
+| `ALAC-Archival` | 367 (only the review holding areas — see below) |
+| `CAR_Library` | 0 — not yet rebuilt |
+| `iPHONE_Library` | 0 — not yet rebuilt |
+
+**Source of truth: `/media/grey/USB1/2.- Curated.RAW.Files`, 13,701 files.**
+Roughly a third ingested.
+
+### What happened, and why
+
+On 2026-09-18 the database was reset and `Libraries/` deleted, then rebuilt
+from the raw folder. That was Grey's call and it was made safe by four things
+measured first, in this order:
+
+1. **Coverage.** A PCM-identity check found **1,586 catalogued tracks (18%)
+   with no counterpart in the raw folder.** A wipe would have destroyed them
+   permanently. They were recovered from the masters and merged into the raw
+   folder, which now covers 100% of the catalogue. *This check is the reason
+   the rebuild was not a disaster.*
+2. **Soundness.** Every one of the 12,286 raw files was decoded — not probed,
+   decoded, because `ffmpeg` exits 0 on a truncated file. 12,265 clean, 12
+   genuinely damaged, 11 of which had never been ingested. The gate had been
+   doing its job for months.
+3. **A full backup.** `Libraries/` (929 GB, all four tiers) copied to the NUC
+   and verified file-for-file, plus `musaeus.db`, the LEDGER and `MetaData/`.
+4. **The rulings exported** — 8,962 album names and 194 `genre_ruled_at`
+   markers, keyed on `audio_hash`, restore-tested from the backup copy.
+
+### The LEDGER carried the deletions across the rebuild
+
+**2,521 denied hashes** survived the database reset because the LEDGER lives
+at `_db_backups/hash_index.db`, outside `Libraries/`. On the first rebuild
+batch it refused **17 of 50 files** without a human looking at one of them —
+tracks deleted on 09-16/17 correctly declining to come back.
+
+That is the durability design paying for itself. Had the deny list lived in
+`musaeus.db` it would have died with the reset, and 2,506 deletions would have
+needed re-reviewing by hand.
+
+Grey has since **suspended it for the rebuild** (`--skip deny-list`), so
+everything returns and is re-reviewed against the new genre layout. The
+denials are preserved, not discarded.
+
+### The archive now files under Genre/Artist/Album
+
+Grey's ruling, 2026-09-18. Measured before the change: **0 artists spanned
+more than one genre, 0 albums would be split**, because MasterLaw rules genre
+per ARTIST, not per track. That property is what makes the layout safe, and
+there is a guard test for it.
+
+**43 genre folders**, `Unsorted` holds 97 of 3,954 (2.5%) — artists MasterLaw
+has not yet ruled on, which is the normal state for new material.
+
+### The raw folder was in worse shape than anyone believed
+
+Four problems found by measuring it, all fixed:
+
+- **Three article conventions at once.** 1,033 files as `Artist (the)`, 906 as
+  `Artist, The`, 602 as `The Artist`. `Beatles (the)` is a string MusicBrainz
+  has never heard of, so a tenth of the Picard work was doomed before it
+  started. Now one convention: **2,514 natural form, 0 broken.**
+- **438 filename collisions that were NOT duplicates.** Renaming to the
+  correct form would have overwritten 438 recordings with *different*
+  recordings of the same song — 14 of 15 sampled pairs had different audio.
+  They carry an `[alt N]` tail now and both copies survive.
+- **171 karaoke and tribute products** removed at source rather than
+  quarantined after ingest.
+- **One 0-byte file** (`Journey - Keep on Runnin'`) that had been sitting there
+  reporting a valid duration.
+
+### Open
+
+1. **`DUPE_REVIEW` is 361 and grows every batch.** The largest item needing a
+   human. 398 groups staged; the resolver settled 266 on its own and left
+   **132 pending**. Many are the `[alt N]` pairs deliberately preserved.
+2. **`CAR_Library` and `iPHONE_Library` do not exist yet.** Both are rebuilt
+   from the masters once the library is complete.
+3. **Bit-rot baselines are stale.** 11,008 rows recorded on 09-17 against a
+   library that has since been wiped and is being rebuilt. A `--rebaseline`
+   is owed at the end.
+4. **The review holding areas live inside `Libraries/`** —
+   `DUPES_MOVED_FOR_REVIEW` and `TRIBUTE_REMOVED_FOR_REVIEW` hold 367 audio
+   files and their restore scripts inside the tree that gets wiped. Agreed
+   2026-09-19 to move them to `VAULT/REVIEW/`. Plan in
+   `MetaData/PLAN_move_review_out_of_libraries.md`.
+
+### The lesson of the day, twice over
+
+**`TuneMyMusic.csv` lived inside `Libraries/` and the wipe took it.** 305 rows
+of Grey's wanted list were recovered from the NUC backup by luck rather than
+design. It now also lives in `MetaData/`.
+
+The rule that came out of it, and which the `REVIEW/` move completes:
+
+> **Anything MUSAEUS can rebuild lives in `Libraries/`. Anything it cannot
+> lives outside it.**
 
 ---
 

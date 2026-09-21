@@ -18,6 +18,21 @@ before any code, because the naming is the part that has to survive.
 > and the lossless edition is `Libraries/ALAC_Library` (underscore). The
 > names changed; the vocabulary did not.
 
+> **Reviewed 2026-09-19 — the vocabulary survived a full rebuild.** On
+> 2026-09-18 `Libraries/` was deleted and the catalogue reset to nothing, then
+> rebuilt from the masters' own source. Not one of the four words needed
+> amending, and the rule they exist to express — *no edition is ever built
+> from another* — is what made the wipe recoverable at all: the editions are
+> derivable, so destroying them costs time rather than music.
+>
+> Two consequences worth recording. **The Edition tier gained a level**:
+> `ALAC_Library` now files under `Genre/Artist/Album` rather than
+> `Artist/Album` (Grey, 2026-09-18), which the vocabulary accommodates without
+> change because filing is a property of an Edition, not of the Catalogue.
+> And **`CAR_Library` and `iPHONE_Library` are currently empty** — both are
+> rebuilt from the masters once the library is complete, which is the
+> vocabulary working exactly as written.
+
 > **Reviewed 2026-09-17.** Three editions now exist and the four words
 > have not needed amending once. Current counts live in "State on 2026-09-17"
 > at the top of `MUSAEUS_TODO.md`; this document holds the vocabulary, not

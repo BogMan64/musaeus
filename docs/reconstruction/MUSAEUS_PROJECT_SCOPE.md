@@ -19,7 +19,7 @@ things stand right now"; this covers "what this project actually is, and
 what its standing rules are." Grey to review, correct, and extend —
 anything missing here is fair game to add.
 
-*Last folded in: 2026-09-17 (Claude Code) — see §9. Before that,
+*Last folded in: 2026-09-19 (Claude Code) — see §9. Before that,
 2026-09-04 (Claude Code) — SOPs §4.27-4.30
 (verify the claim not a constant; 255 BYTES per path component;
 a wanted-list entry must clear already_owned), the ForClaudeHandoff
@@ -1374,6 +1374,48 @@ folded into §4 or §5 directly, not left here.
   Cross-check disk state directly per §4.1.
 
 ## 9. Update log
+
+- **2026-09-18/19 sessions (Claude Code), the library wiped and rebuilt from
+  source, and one rule that came out of it:**
+
+  **The rebuild.** `musaeus.db` was reset and `Libraries/` (929 GB, 9,064
+  masters) deleted, then rebuilt from `USB1/2.- Curated.RAW.Files`. Grey's
+  call. It was made survivable by measuring four things first, in order:
+  coverage (a PCM-identity check found **1,586 catalogued tracks — 18% — with
+  no counterpart in the raw folder**, which a wipe would have destroyed);
+  soundness (every one of 12,286 raw files decoded, not probed — 12 damaged,
+  11 never ingested); a verified 929 GB backup on the NUC; and the rulings
+  exported to CSV keyed on `audio_hash`.
+
+  **The LEDGER is the thing that made the reset affordable.** 2,521 denied
+  hashes survived at `_db_backups/hash_index.db`, outside `Libraries/`. On the
+  first rebuild batch it refused 17 of 50 files unaided — deletions declining
+  to come back without a human re-reviewing one of them.
+
+  **The archive files under `Genre/Artist/Album`** (Grey, 2026-09-18). Safe
+  because MasterLaw rules genre per ARTIST: measured before the change, 0
+  artists spanned more than one genre and 0 albums would be split.
+
+  **A new standing rule, learned the expensive way:**
+
+  > Anything MUSAEUS can rebuild lives in `Libraries/`.
+  > Anything it cannot lives outside it.
+
+  `TuneMyMusic.csv` — 311 rows of Grey's wanted list, pure human judgement —
+  was stored in `Libraries/ALAC-Archival/` and the wipe took it. Recovered
+  from the NUC backup by luck rather than design. The same defect still
+  applies to `DUPES_MOVED_FOR_REVIEW` and `TRIBUTE_REMOVED_FOR_REVIEW`, which
+  hold 367 audio files awaiting Grey's decision *inside* the wipeable tree;
+  agreed 2026-09-19 to move both to `VAULT/REVIEW/`.
+
+  **The source folder was not the origin anyone believed it was.** Beyond the
+  18% coverage gap: three article conventions in one folder (1,033 files as
+  `Artist (the)`, which MusicBrainz has never heard of, so a tenth of the
+  Picard work was failing before it began); 438 filename collisions that were
+  *different recordings* rather than duplicates, which a naive rename would
+  have overwritten; 171 karaoke and tribute products; and one 0-byte file
+  reporting a valid duration. All fixed at source.
+
 
 - **2026-09-14 → 2026-09-17 sessions (Claude Code), the three editions
   finished and four standing rules changed:**
