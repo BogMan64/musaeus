@@ -47,12 +47,30 @@ _EMPTY_STREAM_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b
 
 
 def _get_pending(conn) -> list[dict]:  # type: ignore[type-arg]
-    """Return archive rows that need hashing."""
+    """Return archive rows that need hashing.
+
+    `audio_hash IS NULL` is not by itself a request to hash. A file that was
+    quarantined for failing to decode has a NULL audio_hash *because* it could
+    not be hashed -- so selecting it re-attempts the decode that already
+    failed, fails again, and reports errors=1. Sentinel then FAILS on every
+    future run, permanently, over a file the pipeline already dealt with
+    correctly. Observed 2026-09-21 on a truncated arrival the new CorruptStage
+    decode gate had just quarantined.
+
+    GHOST is deliberately NOT excluded. A GHOST is a row whose file went
+    missing, and re-scanning it is exactly how a returning file recovers --
+    see the status transition below, which promotes PENDING and GHOST alike.
+    Excluding it here broke that recovery (caught by
+    TestReHashingDoesNotDemote::test_a_ghost_whose_file_returns_recovers).
+
+    QUARANTINED and DELETED are different: those files were removed from
+    circulation on purpose, and nothing should be re-derived from them.
+    """
     rows = conn.execute(
         """
         SELECT file_path, audio_hash, status FROM archive
-        WHERE status = 'PENDING'
-           OR audio_hash IS NULL
+        WHERE (status = 'PENDING' OR audio_hash IS NULL)
+          AND status NOT IN ('QUARANTINED', 'DELETED')
         ORDER BY file_path
         """
     ).fetchall()
