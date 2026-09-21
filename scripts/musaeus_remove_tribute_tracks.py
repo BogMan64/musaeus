@@ -39,11 +39,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, "/mnt/FORGE2TB/Projects/MUSAEUS")
+from musaeus.config import MusicConfig
 from musaeus.stages.organize import build_track_filename, sanitize_path_component, unique_path
 
-DB_PATH = "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db"
-ALAC_LIBRARY = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/ALAC-Library")
-REVIEW_ROOT = ALAC_LIBRARY / "TRIBUTE_REMOVED_FOR_REVIEW"
+CFG = MusicConfig.from_env()
+DB_PATH = str(CFG.db_path)
+ALAC_LIBRARY = CFG.alac_library
+# REVIEW/ lives outside Libraries/ since 2026-09-20 -- take it from config,
+# never from a literal folder name, so it follows if it moves again.
+REVIEW_ROOT = CFG.tribute_review_dir
 TUNEMYMUSIC_CSV = ALAC_LIBRARY / "TuneMyMusic_Tribute_Replacements.csv"
 BATCH_DATE = "2026-08-12"
 

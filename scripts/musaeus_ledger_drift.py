@@ -87,7 +87,13 @@ _DATE_DIR = re.compile(r"/(\d{4}-\d{2}-\d{2})/")
 # Directories a file is moved INTO after it has already been finalized.
 # A dead twin whose candidate now sits in one of these is drift the
 # pipeline generated during this very batch, not a historical relocation.
-_HOLDING = ("DUPES_MOVED_FOR_REVIEW", "TRIBUTE_REMOVED_FOR_REVIEW", "QUARANTINE")
+_HOLDING = (
+    "DUPES_MOVED",
+    "TRIBUTE_REMOVED",
+    "DUPES_MOVED_FOR_REVIEW",  # pre-2026-09-20 names, still in historical paths
+    "TRIBUTE_REMOVED_FOR_REVIEW",
+    "QUARANTINE",
+)
 
 
 def _open_ro(path: Path) -> sqlite3.Connection:

@@ -65,7 +65,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from musaeus.config import MusicConfig, get_config  # noqa: E402
 
-QUARANTINE_SEGMENT = "DUPES_MOVED_FOR_REVIEW"
+QUARANTINE_SEGMENT = "DUPES_MOVED"  # pre-2026-09-20: DUPES_MOVED_FOR_REVIEW
 
 
 def _target_for(path: Path, library: Path) -> Path | None:

@@ -222,8 +222,12 @@ class MusicConfig:
     @property
     def dupes_review_dir(self) -> Path:
         """Losing duplicates land here, never deleted. ORPHEUS
-        LESSER_DUPES_MOVED_FOR_REVIEW convention."""
-        return self.alac_archive / "DUPES_MOVED_FOR_REVIEW"
+        LESSER_DUPES_MOVED_FOR_REVIEW convention.
+
+        Lives OUTSIDE Libraries/: a review queue is work awaiting Grey's
+        judgement and cannot be rebuilt from Curated.RAW.Files, so a wipe
+        of Libraries/ must not be able to reach it."""
+        return self.vault_root / "REVIEW" / "DUPES_MOVED"
 
     @property
     def tribute_review_dir(self) -> Path:
@@ -233,7 +237,7 @@ class MusicConfig:
         script already used (TRIBUTE_REMOVED_FOR_REVIEW), for consistency
         with that precedent rather than introducing a second name for the
         same concept."""
-        return self.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW"
+        return self.vault_root / "REVIEW" / "TRIBUTE_REMOVED"
 
     @property
     def hash_index_path(self) -> Path:

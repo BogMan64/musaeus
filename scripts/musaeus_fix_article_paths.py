@@ -66,7 +66,7 @@ if APPLY:
     lib = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/ALAC-Library")
     for d in sorted((p for p in lib.rglob("*") if p.is_dir() and "(the)" in p.name.lower()),
                     key=lambda p: len(p.parts), reverse=True):
-        if "DUPES_MOVED_FOR_REVIEW" in d.parts:
+        if {"DUPES_MOVED", "DUPES_MOVED_FOR_REVIEW"} & set(d.parts):
             continue
         try:
             next(d.rglob("*"))

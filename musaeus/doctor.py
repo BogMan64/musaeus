@@ -57,6 +57,29 @@ _NOISE_RE = re.compile(r"[^a-z0-9]")
 _AUDIO_SUFFIXES = frozenset({".m4a", ".flac", ".mp3", ".wav", ".aac", ".ogg"})
 
 
+def _under_any(path: Path, cfg) -> bool:
+    """Is `path` inside either review queue?
+
+    Derived from config, not a literal folder name -- the review dirs moved
+    out of Libraries/ once already (2026-09-20), and a name-based exclusion
+    silently stops matching when that happens.
+
+    Reached via getattr for the same reason the stranded-review check below
+    does: tests pass a stand-in config carrying only the keys they need.
+    """
+    for parent in (
+        getattr(cfg, "dupes_review_dir", None),
+        getattr(cfg, "tribute_review_dir", None),
+    ):
+        if parent is None:
+            continue
+        try:
+            path.relative_to(parent)
+            return True
+        except ValueError:
+            continue
+    return False
+
 def song_key(artist: str | None, title: str | None) -> tuple[str, str]:
     """Identity of a RECORDING, ignoring edition and punctuation.
 
@@ -141,8 +164,7 @@ def diagnose(cfg: MusicConfig) -> Report:
     orphans = [
         p
         for p in cfg.alac_library.rglob("*.m4a")
-        if "DUPES_MOVED_FOR_REVIEW" not in p.parts
-        and "TRIBUTE_REMOVED_FOR_REVIEW" not in p.parts
+        if not _under_any(p, cfg)
         and "_history" not in p.parts
         and str(p) not in known
     ]

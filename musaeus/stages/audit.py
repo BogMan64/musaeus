@@ -62,7 +62,17 @@ from .base import BaseStage
 
 logger = logging.getLogger(__name__)
 
-_EXCLUDED_SUBDIRS = frozenset({"_history", "DUPES_MOVED_FOR_REVIEW", "TRIBUTE_REMOVED_FOR_REVIEW"})
+_EXCLUDED_SUBDIRS = frozenset(
+    {
+        "_history",
+        # Current names; the review queues moved outside Libraries/ 2026-09-20.
+        "DUPES_MOVED",
+        "TRIBUTE_REMOVED",
+        # Pre-move names, kept so historical trees still exclude correctly.
+        "DUPES_MOVED_FOR_REVIEW",
+        "TRIBUTE_REMOVED_FOR_REVIEW",
+    }
+)
 
 
 def _scan_alac_library_files(alac_library: Path) -> set[Path]:
@@ -162,8 +172,20 @@ class AuditStage(BaseStage):
         # It was this expectation that was stale, not that refusal. A gate
         # that fails 10,423 times for correct state is the crying-wolf half
         # of SOP 4.27, and it blocks the DB-wipe workflow it exists to guard.
+        # The review queues are a legitimate final home too. Until 2026-09-20
+        # they sat INSIDE ALAC-Archival and passed this check for free; moving
+        # them to vault_root/REVIEW made every held row look misplaced (198
+        # errors on the first run after the move). They are listed explicitly
+        # rather than by folder name so they follow if they move again.
         final_roots = [
-            r.resolve() for r in (ctx.alac_library, ctx.config.alac_archive) if r.exists()
+            r.resolve()
+            for r in (
+                ctx.alac_library,
+                ctx.config.alac_archive,
+                ctx.config.dupes_review_dir,
+                ctx.config.tribute_review_dir,
+            )
+            if r.exists()
         ]
         db_side_paths: set[Path] = set()
 

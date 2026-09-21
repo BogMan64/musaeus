@@ -114,7 +114,7 @@ class TestIsJunkDetection:
 
 
 class TestTributeQuarantineRun:
-    def test_matched_file_moved_and_status_updated(self, ctx):
+    def test_matched_file_moved_and_status_updated(self, ctx, cfg):
         path = _make_row(ctx, "Karaoke Channel/Unsorted/song.m4a", "Karaoke Channel, The")
 
         result = TributeQuarantineStage().run(ctx)
@@ -128,7 +128,10 @@ class TestTributeQuarantineRun:
             ("Karaoke Channel, The",),
         ).fetchone()
         assert row["status"] == "TRIBUTE_REVIEW"
-        assert "TRIBUTE_REMOVED_FOR_REVIEW" in row["file_path"]
+        # Assert against the CONFIGURED review dir, not a literal folder name.
+        # The queue moved out of Libraries/ on 2026-09-20 and a name-based
+        # assertion silently stops describing where files actually go.
+        assert str(cfg.tribute_review_dir) in row["file_path"]
         assert Path(row["file_path"]).exists()
 
     def test_clean_file_untouched(self, ctx):
@@ -247,7 +250,7 @@ class TestWantedListExport:
         result = TributeQuarantineStage().run(ctx)
 
         wanted_files = list(
-            (cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+            (cfg.tribute_review_dir / _TEST_BATCH_DATE).glob(
                 "tunemymusic_*.csv"
             )
         )
@@ -268,7 +271,7 @@ class TestWantedListExport:
         TributeQuarantineStage().run(ctx)
 
         wanted_files = list(
-            (cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+            (cfg.tribute_review_dir / _TEST_BATCH_DATE).glob(
                 "tunemymusic_*.csv"
             )
         )
@@ -279,7 +282,7 @@ class TestWantedListExport:
         result = TributeQuarantineStage().run(ctx)
 
         wanted_files = list(
-            (cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+            (cfg.tribute_review_dir / _TEST_BATCH_DATE).glob(
                 "tunemymusic_*.csv"
             )
         )
@@ -301,7 +304,7 @@ class TestWantedListExport:
 
         assert not result.errors
         manifest_files = list(
-            (cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+            (cfg.tribute_review_dir / _TEST_BATCH_DATE).glob(
                 "tribute_manifest_*.csv"
             )
         )
@@ -325,7 +328,7 @@ class TestWantedListExport:
         TributeQuarantineStage().run(ctx)
 
         wanted_files = list(
-            (cfg.alac_archive / "TRIBUTE_REMOVED_FOR_REVIEW" / _TEST_BATCH_DATE).glob(
+            (cfg.tribute_review_dir / _TEST_BATCH_DATE).glob(
                 "tunemymusic_*.csv"
             )
         )

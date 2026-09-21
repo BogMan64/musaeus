@@ -69,6 +69,10 @@ _COMMIT_EVERY = 50
 # Directory names under ALAC-Library that carry a status other than the
 # ordinary "this is live library content" meaning.
 _STATUS_BY_DIR = {
+    # Current names (REVIEW/ lives outside Libraries/ since 2026-09-20).
+    "DUPES_MOVED": "DUPE_REVIEW",
+    "TRIBUTE_REMOVED": "TRIBUTE_REVIEW",
+    # Pre-move names, still present in historical paths and manifests.
     "DUPES_MOVED_FOR_REVIEW": "DUPE_REVIEW",
     "TRIBUTE_REMOVED_FOR_REVIEW": "TRIBUTE_REVIEW",
 }
@@ -222,14 +226,29 @@ def _archive_twin(path: Path, cfg: MusicConfig) -> Path | None:
     return twin if twin.exists() else None
 
 
-def _status_for(path: Path, alac_library: Path) -> str:
+def _status_for(path: Path, alac_library: Path, cfg: MusicConfig | None = None) -> str:
     """Infer status from where the file actually sits.
 
     Location is the honest signal: DupeResolver physically relocates a loser
-    into DUPES_MOVED_FOR_REVIEW, TributeQuarantine into
-    TRIBUTE_REMOVED_FOR_REVIEW. Anything else under the library is live
-    content, which by definition reached Finalize.
+    into the dupes review queue, TributeQuarantine into the tribute one.
+    Anything else under the library is live content, which by definition
+    reached Finalize.
+
+    Since 2026-09-20 those queues live OUTSIDE Libraries/, so they are checked
+    against the configured review directories FIRST. Without that, a review
+    file falls through `relative_to(alac_library)` -> ValueError and would be
+    reported CATALOGUED -- a wrong answer in the dangerous direction.
     """
+    if cfg is not None:
+        for review_dir, status in (
+            (cfg.dupes_review_dir, "DUPE_REVIEW"),
+            (cfg.tribute_review_dir, "TRIBUTE_REVIEW"),
+        ):
+            try:
+                path.relative_to(review_dir)
+                return status
+            except ValueError:
+                pass
     try:
         parts = path.relative_to(alac_library).parts
     except ValueError:
@@ -300,9 +319,21 @@ def scan_and_rebuild(
         summary["errors"].append(f"library not found: {lib}")
         return summary
 
+    # The review queues moved outside Libraries/ on 2026-09-20. Walk them
+    # explicitly, or a rebuild-from-disk silently loses every file awaiting
+    # Grey's judgement -- 1,831 of them at the time of the move.
+    scan_roots = [lib]
+    for review_dir in (cfg.dupes_review_dir, cfg.tribute_review_dir):
+        try:
+            review_dir.relative_to(lib)
+        except ValueError:
+            if review_dir.exists():
+                scan_roots.append(review_dir)
+
     files = sorted(
         p
-        for p in lib.rglob("*")
+        for root in scan_roots
+        for p in root.rglob("*")
         if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS and "_history" not in p.parts
     )
     if limit:
@@ -326,7 +357,7 @@ def scan_and_rebuild(
                 last_modified=datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(
                     timespec="seconds"
                 ),
-                status=_status_for(path, lib),
+                status=_status_for(path, lib, cfg),
                 date_added=now,
                 last_seen=now,
             )

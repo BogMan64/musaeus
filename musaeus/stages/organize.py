@@ -125,7 +125,15 @@ _BATCH_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[A-Za-z0-9_-]*$")
 # live library. A console soft reset (which resets every row to PENDING) is
 # all it takes to walk the whole review folder back in.
 _NON_LIBRARY_DIRS: frozenset[str] = frozenset(
-    {"DUPES_MOVED_FOR_REVIEW", "TRIBUTE_REMOVED_FOR_REVIEW", "QUARANTINE"}
+    {
+        # Current names; the review queues moved outside Libraries/ 2026-09-20.
+        "DUPES_MOVED",
+        "TRIBUTE_REMOVED",
+        # Pre-move names, kept so historical trees still exclude correctly.
+        "DUPES_MOVED_FOR_REVIEW",
+        "TRIBUTE_REMOVED_FOR_REVIEW",
+        "QUARANTINE",
+    }
 )
 
 
