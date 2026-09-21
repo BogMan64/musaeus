@@ -55,10 +55,20 @@ _CREDENTIALS_FILE = _USER_CONFIG_DIR / "credentials.env"
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
-    """Parse a simple KEY=VALUE env file. Strips quotes. Ignores comments."""
+    """Parse a simple KEY=VALUE env file. Strips quotes. Ignores comments.
+
+    Read as utf-8-sig, not utf-8. An editor that writes a UTF-8 byte-order
+    mark puts it before the FIRST key, so that key parses as
+    '\ufeffACOUSTICID_API_KEY' and never matches the name anything looks up.
+    The credential is present, readable, and correct -- and silently absent as
+    far as the pipeline is concerned, with `console` reporting "not set".
+    Cost 2026-09-21: the AcousticID key had been invisible for as long as the
+    file had a BOM. Only the first key in a file is affected, which is why it
+    looks like one broken credential rather than a parsing bug.
+    """
     result: dict[str, str] = {}
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8-sig") as fh:
             for line in fh:
                 line = line.strip()
                 if not line or line.startswith("#") or "=" not in line:
