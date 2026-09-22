@@ -33,6 +33,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 sys.path.insert(0, "/mnt/FORGE2TB/Projects/MUSAEUS")
+from musaeus.brackets import strip_bracketed
 from musaeus.config import MusicConfig
 
 SEARCH = "https://api.discogs.com/database/search"
@@ -44,7 +45,7 @@ PROGRESS = "album_fill_discogs.csv"
 
 def norm(s: str | None) -> str:
     s = unicodedata.normalize("NFKD", s or "").lower()
-    s = re.sub(r"\(.*?\)|\[.*?\]", " ", s)
+    s = strip_bracketed(s)
     s = re.sub(r"[^a-z0-9 ]", " ", s)
     return re.sub(r"\s+", " ", s).strip()
 
