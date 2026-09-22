@@ -176,3 +176,59 @@ def tag_values(stored_artist: str) -> dict[str, str]:
     if not n:
         return {}
     return {"artist": natural_form(n), "sort_artist": sort_form(n)}
+
+#: Markers that always mean "this credit names more than one act". Unlike a
+#: bare "&", these are never part of a band's own name.
+_COLLAB = re.compile(r"\s*\b(?:feat\.?|featuring|ft\.?|with)\s+", re.I)
+
+#: A band name, not a second artist: "& The Blue Notes", "& His Orchestra".
+_BAND_TAIL = re.compile(r"^(the|his|her|their|los|las)\b", re.I)
+
+
+def folder_artist(name: str, mb_artist_name: str | None = None) -> str:
+    """The artist a track FILES under, which is not always its full credit.
+
+    A duet creates a one-track folder that belongs under the primary artist:
+    "Johnny Mathis & Deniece Williams" files under Johnny Mathis, while the
+    TAG keeps the full credit. Three fields, three jobs -- the tag names who
+    performed, the folder decides where it sits.
+
+    The difficulty is that "&" joins two artists AND appears inside band
+    names. Splitting on it blindly turns Simon & Garfunkel into Simon.
+
+    Evidence, strongest first:
+
+    1. MusicBrainz resolved the WHOLE string to one artist -> never split.
+       Measured 2026-09-22: this correctly protected Simon & Garfunkel,
+       Sam & Dave, Ike & Tina Turner, Jr. Walker & The All Stars and
+       Harold Melvin & The Blue Notes.
+    2. feat./featuring/ft./with -> always split. These never name a band.
+    3. "& The ...", "& His ..." -> a band's own name, never split.
+    4. Otherwise split on "&" ONLY when the tail is a full personal name
+       (two or more words). "& Deniece Williams" splits; "& Oates" does not,
+       which is what keeps Hall & Oates intact while MusicBrainz has no entry
+       for it.
+
+    Anything uncertain keeps the full credit, because a wrong folder is
+    harder to notice than a duplicated one.
+    """
+    if not name:
+        return name
+    head = _COLLAB.split(name, maxsplit=1)[0].strip()
+    if head != name.strip():
+        return head or name
+
+    if mb_artist_name and mb_artist_name.strip().lower() == name.strip().lower():
+        return name
+
+    if "&" not in name:
+        return name
+    left, _, right = name.partition("&")
+    left, right = left.strip(), right.strip()
+    if not left or not right:
+        return name
+    if _BAND_TAIL.match(right):
+        return name
+    if len(right.split()) < 2:
+        return name
+    return left

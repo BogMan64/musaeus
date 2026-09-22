@@ -83,7 +83,7 @@ import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
 
-from ..artist_form import sort_form
+from ..artist_form import folder_artist, sort_form
 from ..canon.protected_artists import PROTECTED_ARTIST_NAMES
 from ..context import RunContext, StageResult
 from .base import BaseStage
@@ -567,9 +567,19 @@ class OrganizeStage(BaseStage):
         """Organize files: strip track numbers, rename, move to Artist/Album/."""
         result = self._make_result(dry_run=dry_run)
 
+        # mb_artist_name is owned by mb_enrich and added lazily, so on a
+        # database where that stage has never run the column does not exist.
+        # Selecting it unconditionally raises "no such column" and takes the
+        # whole stage down. Same guard CorruptStage uses for its decode
+        # columns; NULL stands in, which is exactly what "not enriched" means.
+        _has_mb = "mb_artist_name" in {
+            r[1] for r in ctx.conn.execute("PRAGMA table_info(archive)").fetchall()
+        }
+        _mb_sql = "mb_artist_name" if _has_mb else "NULL AS mb_artist_name"
+
         rows = ctx.conn.execute(
-            """
-            SELECT id, file_path, artist, album, title, genre
+            f"""
+            SELECT id, file_path, artist, album, title, genre, {_mb_sql}
             FROM archive
             WHERE status = 'CATALOGUED'
               AND artist IS NOT NULL
@@ -641,7 +651,13 @@ class OrganizeStage(BaseStage):
             # identical before and after the tag migration, so no file moves
             # because of it. Both directions are idempotent, so this is also
             # correct for a library holding a mix of the two forms.
-            path_artist = sort_form(artist)
+            # A duet files under its PRIMARY artist while the tag keeps the
+            # full credit -- "Johnny Mathis & Deniece Williams" made a
+            # one-track folder of its own. folder_artist() refuses to take a
+            # band apart: MusicBrainz agreement, then feat./with, then
+            # "& The ...", then a two-word personal-name tail. Simon &
+            # Garfunkel stays whole.
+            path_artist = sort_form(folder_artist(artist, row["mb_artist_name"]))
 
             # Build new filename
             ext = current_path.suffix
