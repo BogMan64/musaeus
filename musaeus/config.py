@@ -284,11 +284,19 @@ class MusicConfig:
 
     @property
     def tunemymusic_csv_path(self) -> Path:
-        """Cross-platform track-list CSV for sub-lossless sources that
-        Canonicalize transcoded rather than archived losslessly. Appended
-        across batches, lives at the top of ALAC-Library so it survives a
-        DB wipe."""
-        return self.alac_archive / "TuneMyMusic.csv"
+        """The wanted list: tracks to find or replace, in the Title,Artist,Album
+        form TuneMyMusic imports. Appended across batches by canonicalize,
+        sentinel and bpm, and by hand.
+
+        It lives in MetaData, NOT in Libraries/. It used to sit in
+        Libraries/ALAC-Archival "so it survives a DB wipe" -- and on
+        2026-09-18 the wipe was of Libraries/ itself, and it went with it;
+        305 rows came back off a NUC backup by luck, not design. By
+        2026-09-23 three copies had drifted apart (363, 520 and 60 rows,
+        each holding songs the others did not). Libraries/ is for what
+        MUSAEUS can rebuild; this list is Grey's, and cannot be rebuilt.
+        tests/test_tunemymusic_has_one_home.py keeps it that way."""
+        return self.meta_dir / "TuneMyMusic.csv"
 
     def ensure_dirs(self) -> None:
         """Create all required directories if they don't exist."""
