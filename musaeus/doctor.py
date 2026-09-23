@@ -543,6 +543,28 @@ def diagnose(cfg: MusicConfig) -> Report:
         for r in rows
         if _removed_as_knockoff(r) and r["audio_hash"] and r["audio_hash"] not in rejected_hashes
     }
+    #      THE DENY LIST IS AN AUTHORITY TOO. Everything above reads removals
+    #      from the catalogue, and a catalogue can be reset. On 2026-09-23,
+    #      after a rebuild, no DELETED row survived to say what Grey had
+    #      removed, and this check reported "none (4 removal(s) on record)"
+    #      while 1,359 catalogued tracks carried audio the deny list says he
+    #      ruled out -- let back in by runs made with --skip deny-list. The
+    #      ledger outlives a reset by design, so this has to read it for the
+    #      same reason. Refused-conversion hashes are excluded here exactly as
+    #      above. A ledger with no deny table simply has nothing to add.
+    denied_reason: dict[str, str] = {}
+    if cfg.hash_index_path.exists():
+        try:
+            led = sqlite3.connect(f"file:{cfg.hash_index_path}?mode=ro", uri=True)
+            try:
+                for h, reason in led.execute("SELECT audio_hash, reason FROM denied_hashes"):
+                    if h and h not in rejected_hashes:
+                        denied_reason[h] = reason or ""
+            finally:
+                led.close()
+        except sqlite3.Error:
+            pass
+    removed_hashes = removed_knockoff_hashes | set(denied_reason)
     knockoff_paths = {r["file_path"] for r in rows if _removed_as_knockoff(r)}
     #      The knockoff_paths test is belt-and-braces, NOT the load-bearing
     #      guard its twin above is. `lib` is CATALOGUED only and a knock-off
@@ -554,7 +576,7 @@ def diagnose(cfg: MusicConfig) -> Report:
     survivors = [
         r
         for r in lib
-        if r["audio_hash"] in removed_knockoff_hashes
+        if r["audio_hash"] in removed_hashes
         and r["file_path"] not in knockoff_paths
         and r["file_path"] in on_disk
     ]
@@ -590,9 +612,14 @@ def diagnose(cfg: MusicConfig) -> Report:
 
     if survivors:
         by_hash = {r["audio_hash"]: r for r in rows if _removed_as_knockoff(r)}
+
+        def _why(h: str) -> str:
+            if h in by_hash:
+                return _removal_reason(by_hash[h])
+            return f"deny list: {denied_reason.get(h, '')[:60]}"
+
         detail = "; ".join(
-            f"{Path(r['file_path']).name[:38]} [{_removal_reason(by_hash[r['audio_hash']])}]"
-            for r in survivors[:3]
+            f"{Path(r['file_path']).name[:38]} [{_why(r['audio_hash'])}]" for r in survivors[:3]
         )
         rep.add(
             "fail",
@@ -600,11 +627,11 @@ def diagnose(cfg: MusicConfig) -> Report:
             f"{len(survivors)} catalogued row(s) share audio with a removed copy: {detail}",
             len(survivors),
         )
-    elif removed_knockoff_hashes:
+    elif removed_hashes:
         rep.add(
             "ok",
             "removed audio still held",
-            f"none ({len(removed_knockoff_hashes)} removal(s) on record)",
+            f"none ({len(removed_hashes)} removal(s) on record)",
         )
     else:
         rep.add("ok", "removed audio still held", "no removals on record")
