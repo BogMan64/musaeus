@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+"""
+The two forms of an artist name, and which field each one belongs in.
+
+The problem
+-----------
+MUSAEUS has stored the article as a suffix -- "Stooges, The" -- since it
+inherited the convention from ORPHEUS. The reason is real: "The Stooges"
+sorts under T, and a library browsed by folder needs it under S.
+
+But that string was also being written into the `artist` TAG, which is the
+field every external service reads. MusicBrainz has never heard of
+"Stooges, The". Measured 2026-08-29 on the live cache: 376 of 839 cached
+misses were in `X, The` form, and 0 of 2,158 hits were -- not one
+article-suffix lookup had ever succeeded.
+
+The fix at query time was to flip the form before asking. This module is the
+fix at rest: three fields, three jobs.
+
+    artist (\xa9ART)   "The Stooges"    natural form -- what MusicBrainz,
+                                      Plex and every player expect
+    soar            "Stooges, The"   sort form -- what players sort by;
+                                      this is exactly what the tag is for
+    folder          "Stooges, The"   sorted browsing on disk, unchanged
+
+The sort form does not disappear, it moves to the field that means it.
+
+One home for the rule
+---------------------
+Both directions already existed, in different modules and under names that
+did not say what they did. They are re-exported here rather than
+reimplemented: this rule has regressed three times (the "(the)" parenthetical
+form, the "Beatles, The (the)" double spelling, and De La Soul being split
+into "La Soul, De"), and a fourth implementation would be a fourth chance.
+
+    sort_form     <- normalize._move_article_to_suffix
+    natural_form  <- enrich._clean_artist_for_lookup
+
+Both are article-aware and both respect PROTECTED_ARTIST_NAMES, so
+"De La Soul" and "Los Lobos" survive in either direction.
+"""
+
+from __future__ import annotations
+
+import re
+import unicodedata
+
+# The two implementations live in stage modules, and stages import THIS
+# module (organize builds its paths from sort_form, tagger writes both
+# forms). Importing them at module scope closes that loop and Python raises
+# a partially-initialized-module error on `musaeus.stages`.
+#
+# Imported inside the functions instead. The module cache makes the cost a
+# dict lookup after the first call, and it keeps the well-tested originals
+# where their tests already exercise them -- moving them would be a bigger
+# change to a rule that has regressed three times.
+
+
+def _to_natural(name: str) -> str:
+    from .stages.enrich import _clean_artist_for_lookup
+
+    return _clean_artist_for_lookup(name)
+
+
+def _to_sort(name: str) -> str:
+    from .stages.normalize import _move_article_to_suffix
+
+    return _move_article_to_suffix(name)
+
+
+# MP4 atoms. `soar`/`soaa` are the standard sort fields -- iTunes, Apple
+# Music, Plex and mp3tag all honour them, and MUSAEUS has never written one.
+SORT_ARTIST_ATOM = "soar"
+SORT_ALBUMARTIST_ATOM = "soaa"
+
+
+def natural_form(name: str) -> str:
+    """The form the outside world uses. "Stooges, The" -> "The Stooges"."""
+    return _to_natural((name or "").strip())
+
+
+def sort_form(name: str) -> str:
+    """The form that sorts. "The Stooges" -> "Stooges, The"."""
+    return _to_sort((name or "").strip())
+
+
+def has_article(name: str) -> bool:
+    """True when the two forms differ -- i.e. the name carries an article.
+
+    The honest test is that the transforms disagree, not a regex of our own:
+    a name is article-bearing exactly when converting it changes it. That
+    keeps this in step with the protected-name guards for free.
+    """
+    n = (name or "").strip()
+    if not n:
+        return False
+    return natural_form(n) != sort_form(n)
+
+
+#: Leading articles in the languages this library actually contains. English
+#: first; the rest are here because the library holds French, Spanish, Dutch
+#: and German titles and a comparison that ignored them would call two
+#: spellings of one record different.
+_FUZZY_ARTICLE_RE = re.compile(
+    r"^(the|a|an|le|la|les|el|los|de|het|een|die|das|ein|eine)\s+",
+    re.IGNORECASE,
+)
+_FUZZY_PUNCT_RE = re.compile(r"[^\w\s]")
+
+
+def fuzzy_key(text: str) -> str:
+    """A loose key for comparing a TITLE or an artist across spellings.
+
+    Deliberately broader than comparison_key(), and the difference matters:
+
+        comparison_key   English article forms, for matching a NAME against
+                         a hand-written list where the article may be either
+                         side. Nothing else is touched.
+        fuzzy_key        accent-folded, punctuation-stripped, articles in
+                         nine languages removed. For deciding whether two
+                         free-text strings are probably the same record.
+
+    Moved here from scripts/musaeus_upgrade_check.py on 2026-09-08 (M-16),
+    where it was a private `_norm` that the semgrep article rule could not
+    see -- that rule hardcoded `re.sub(` and lowercase "the", so a compiled
+    constant was invisible to it. Fixing the rule surfaced this copy; moving
+    it here means the next copy is caught rather than joining it.
+
+    NOT a replacement for comparison_key. Substituting one for the other in
+    either direction changes what compares equal, which is why they are two
+    named functions rather than one with a flag.
+    """
+    if not text:
+        return ""
+    t = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    t = t.lower().strip()
+    t = _FUZZY_ARTICLE_RE.sub("", t)
+    t = _FUZZY_PUNCT_RE.sub("", t)
+    return " ".join(t.split())
+
+
+def comparison_key(name: str) -> str:
+    r"""A key under which every form of one name compares equal.
+
+    "The Pretenders", "Pretenders, The" and "Pretenders" all key to
+    "pretenders". For matching a name against a hand-written list where
+    nobody can be sure which form the entry used.
+
+    Built from this module's own transforms rather than a fresh regex.
+    tribute_quarantine grew its own `re.sub(r"^the\s+|,\s*the$", ...)` on
+    2026-09-01 and it stripped only the artist, never the list entries, so
+    a band called "Healing, The" reduced to "healing", missed the protected
+    entry "the healing", and was quarantined as junk. Deriving the key the
+    same way on both sides is what makes that impossible.
+
+    has_article() guards the split, so a name with a comma that is NOT an
+    article -- "Peter, Paul and Mary" -- is left alone rather than becoming
+    "Peter".
+    """
+    n = (name or "").strip()
+    if not n:
+        return ""
+    if has_article(n):
+        return sort_form(n).rsplit(",", 1)[0].strip().lower()
+    return n.lower()
+
+
+def tag_values(stored_artist: str) -> dict[str, str]:
+    """What the artist and sort-artist tags should hold for a stored name.
+
+    Accepts either form -- a library mid-migration has both -- and returns
+    the pair. For a name with no article both values are the same string,
+    and the caller can skip writing a redundant sort tag.
+    """
+    n = (stored_artist or "").strip()
+    if not n:
+        return {}
+    return {"artist": natural_form(n), "sort_artist": sort_form(n)}
+
+
+#: Markers that always mean "this credit names more than one act". Unlike a
+#: bare "&", these are never part of a band's own name.
+_COLLAB = re.compile(r"\s*\b(?:feat\.?|featuring|ft\.?|with)\s+", re.I)
+
+#: A band name, not a second artist: "& The Blue Notes", "& His Orchestra".
+_BAND_TAIL = re.compile(r"^(the|his|her|their|los|las)\b", re.I)
+
+
+_ARTICLE_TAIL = re.compile(r"^(the|a|an)$", re.I)
+_NAME_SUFFIX = re.compile(r"^(jr|sr|jnr|snr|ii|iii|iv)\.?$", re.I)
+
+
+def _performing_head(name: str, mb_artist_name: str | None = None) -> str:
+    """The artist a track FILES under, which is not always its full credit.
+
+    A duet creates a one-track folder that belongs under the primary artist:
+    "Johnny Mathis & Deniece Williams" files under Johnny Mathis, while the
+    TAG keeps the full credit. Three fields, three jobs -- the tag names who
+    performed, the folder decides where it sits.
+
+    The difficulty is that "&" joins two artists AND appears inside band
+    names. Splitting on it blindly turns Simon & Garfunkel into Simon.
+
+    Evidence, strongest first:
+
+    1. MusicBrainz resolved the WHOLE string to one artist -> never split.
+       Measured 2026-09-22: this correctly protected Simon & Garfunkel,
+       Sam & Dave, Ike & Tina Turner, Jr. Walker & The All Stars and
+       Harold Melvin & The Blue Notes.
+    2. feat./featuring/ft./with -> always split. These never name a band.
+    3. "& The ...", "& His ..." -> a band's own name, never split.
+    4. Otherwise split on "&" ONLY when the tail is a full personal name
+       (two or more words). "& Deniece Williams" splits; "& Oates" does not,
+       which is what keeps Hall & Oates intact while MusicBrainz has no entry
+       for it.
+
+    Anything uncertain keeps the full credit, because a wrong folder is
+    harder to notice than a duplicated one.
+    """
+    if not name:
+        return name
+    head = _COLLAB.split(name, maxsplit=1)[0].strip()
+    if head != name.strip():
+        return head or name
+
+    if mb_artist_name and mb_artist_name.strip().lower() == name.strip().lower():
+        return name
+
+    if "&" not in name:
+        return name
+    left, _, right = name.partition("&")
+    left, right = left.strip(), right.strip()
+    if not left or not right:
+        return name
+    if _BAND_TAIL.match(right):
+        return name
+    if len(right.split()) < 2:
+        return name
+    return left
+
+
+def _credit_head(name: str) -> str:
+    """The lead artist of a comma-separated credit list, or the name unchanged.
+
+    "Billie Holiday, Sy Oliver & His Orchestra" is not a band called that. It
+    is Billie Holiday, backed. Browsing by artist folder, every Billie Holiday
+    recording should sit under Billie Holiday -- the TAG keeps the full credit,
+    the FOLDER only says where it lives. Three fields, three jobs.
+
+    A comma is the signal, but it has three other uses that must survive:
+
+    1. sort form -- "Rolling Stones, The", "Healing, The". Tail is an article.
+    2. a name suffix -- "Larry Mullen, Jr". Tail is Jr/Sr/II/III/IV.
+    3. a band whose own name contains commas -- "Earth, Wind & Fire",
+       "Crosby, Stills & Nash", "Blood, Sweat & Tears". In every one of those
+       the head is a SINGLE word, because the comma separates members rather
+       than crediting a backing act. Requiring two or more words in the head
+       is what keeps them whole.
+
+    Measured 2026-09-23 over all 2,678 distinct artists in the catalogue: 78
+    contain a comma and 57 are credit lists that move. Every case above stays.
+    """
+    head, sep, tail = name.partition(",")
+    if not sep:
+        return name
+    head, tail = head.strip(), tail.strip()
+    if not head or not tail:
+        return name
+    if _ARTICLE_TAIL.match(tail) or _NAME_SUFFIX.match(tail):
+        return name
+    if len(head.split()) < 2:
+        return name
+    return head
+
+
+def folder_artist(name: str, mb_artist_name: str | None = None) -> str:
+    """The artist a track FILES under. See _performing_head and _credit_head.
+
+    Two questions, asked in order, because they can both apply to one string.
+    "Gorillaz feat. Asha Puthli, Bobby Womack" needs the feat. rule first --
+    answering the comma first would file it under "Gorillaz feat. Asha Puthli",
+    a folder that should never exist.
+    """
+    if not name:
+        return name
+    return _credit_head(_performing_head(name, mb_artist_name))
