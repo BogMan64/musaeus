@@ -160,7 +160,7 @@ class TestAcoustIDStageCanActuallyRun:
 
 class TestDuplicateContract:
     def test_the_table_has_exactly_the_declared_columns(self, migrated):
-        columns = [r[1] for r in migrated.execute("PRAGMA table_info(duplicates)")]
+        columns = [r[1] for r in migrated.execute("PRAGMA table_info(duplicate_candidates)")]
         assert columns[0] == "id", "id must be first and database-generated"
         for column in INSERTION_COLUMNS:
             assert column in columns, f"DR-07 requires {column}"
@@ -210,7 +210,7 @@ class TestDuplicateContract:
         which it does, inside "run_id,". Substring arithmetic on SQL is
         how you write an assertion that is right for the wrong reason."""
         source = inspect.getsource(duplicates_mod)
-        statement = source[source.index("INSERT OR IGNORE INTO duplicates") :]
+        statement = source[source.index("INSERT OR IGNORE INTO duplicate_candidates") :]
         column_list = statement[statement.index("(") + 1 : statement.index(")")]
         named = [c.strip() for c in column_list.replace("\n", " ").split(",") if c.strip()]
 
@@ -326,28 +326,79 @@ class TestP0CreatesPendingOnly:
 # ── Migration behaviour ───────────────────────────────────────────────────────
 
 
-class TestMigrationPreservesLegacyRows:
-    def test_legacy_rows_are_kept_not_discarded(self, migrated):
-        legacy = migrated.execute("SELECT COUNT(*) FROM duplicates_legacy").fetchone()[0]
-        assert legacy == 2, "the legacy table is renamed, never dropped"
+class TestMigrationLeavesTheLiveTableAlone:
+    """The typed contract lives at `duplicate_candidates` (renamed 2026-09-09).
 
-    def test_legacy_values_survive_in_a_compatibility_payload(self, migrated):
-        import json
+    These tests replace an earlier set that asserted the migration renamed
+    `duplicates` to `duplicates_legacy` and backfilled every row into a
+    compatibility payload. That behaviour was careful and lost no data, but it
+    existed only because two unrelated tables had collided on one name -- the
+    live one recording RESOLVED DUPLICATE SETS (`group_id` plus one row per
+    member, 118,395 rows in the real vault) and DR-07's recording DETECTOR
+    MATCH CANDIDATES (an ordered pair, a fingerprint, a score).
+
+    Asserting the live table is untouched is a stronger contract than
+    asserting its rows were carried across, because it does not depend on the
+    fidelity of a mapping that had no lossless form.
+    """
+
+    def test_the_live_duplicates_table_is_untouched(self, migrated):
+        """Same columns, same rows, same values as db.open_db() left them."""
+        columns = [r[1] for r in migrated.execute("PRAGMA table_info(duplicates)")]
+        assert "group_id" in columns, "the live table lost its own schema"
+        assert "file_path" in columns
+        assert "status" in columns
+        assert "candidate_item_id" not in columns, (
+            "the typed contract has been created over the live table again"
+        )
 
         rows = migrated.execute(
-            "SELECT evidence_json FROM duplicates WHERE detector LIKE 'legacy_%'"
+            "SELECT group_id, file_path, duplicate_type, status, staged_at "
+            "FROM duplicates ORDER BY file_path"
         ).fetchall()
-        assert len(rows) == 2
-        payload = json.loads(rows[0]["evidence_json"])
-        assert payload["provider"] == "musaeus_legacy_duplicates"
-        compat = payload["compatibility"]
-        assert compat["group_id"] == "grp-1"
-        assert compat["duplicate_type"] == "EXACT"
-        assert compat["staged_at"] == "2026-08-01T00:00:00Z"
+        assert len(rows) == 2, "the migration disturbed the live rows"
+        assert [r["file_path"] for r in rows] == ["/x/a.m4a", "/x/b.m4a"]
+        assert rows[0]["group_id"] == "grp-1"
+        assert rows[0]["duplicate_type"] == "EXACT"
+        assert rows[0]["status"] == "pending"
+        assert rows[0]["staged_at"] == "2026-08-01T00:00:00Z"
+
+    def test_nothing_is_renamed_so_there_is_no_legacy_table(self, migrated):
+        """`duplicates_legacy` was an artefact of the collision, not a goal."""
+        tables = {
+            r[0] for r in migrated.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert "duplicates_legacy" not in tables
+        assert "duplicates" in tables
+        assert "duplicate_candidates" in tables
+
+    def test_the_live_dedupe_queries_still_work_after_migrating(self, migrated):
+        """The failure the rename prevents, asserted directly.
+
+        Under the previous migration these four queries -- the shapes used by
+        dedupe.py, stages/dupe_resolver.py, stages/cross_dupe.py and cli.py --
+        raised `no such column` after migrating, because their columns had
+        moved to `duplicates_legacy` while `duplicates` became the typed
+        table. Data intact, resolver blind. This asserts they survive.
+        """
+        for sql in (
+            "SELECT group_id, file_path, status FROM duplicates",
+            "SELECT DISTINCT group_id FROM duplicates WHERE status = 'pending'",
+            "SELECT COUNT(*) FROM duplicates WHERE duplicate_type = 'EXACT'",
+            "SELECT file_path FROM duplicates WHERE group_id = 'grp-1'",
+        ):
+            migrated.execute(sql).fetchall()  # must not raise
+
+    def test_the_typed_table_is_created_with_its_contract(self, migrated):
+        columns = [r[1] for r in migrated.execute("PRAGMA table_info(duplicate_candidates)")]
+        for expected in INSERTION_COLUMNS:
+            assert expected in columns, f"{expected} missing from duplicate_candidates"
+        assert "evidence_identity" in columns
 
     def test_a_fresh_database_converges_on_the_same_shape(self, tmp_path):
         """A migration whose result depends on which kind of database it
-        met is a migration with two outcomes to reason about."""
+        met is a migration with two outcomes to reason about. With nothing
+        renamed there is only one outcome, which is the point."""
         recovery = tmp_path / "recovery2"
         recovery.mkdir()
         fresh = tmp_path / "fresh.db"
@@ -359,10 +410,11 @@ class TestMigrationPreservesLegacyRows:
             tables = {
                 r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
             }
-            columns = [r[1] for r in conn.execute("PRAGMA table_info(duplicates)")]
+            columns = [r[1] for r in conn.execute("PRAGMA table_info(duplicate_candidates)")]
         finally:
             conn.close()
-        assert "duplicates_legacy" in tables
+        assert "duplicate_candidates" in tables
+        assert "duplicates_legacy" not in tables
         assert "candidate_item_id" in columns
 
 
