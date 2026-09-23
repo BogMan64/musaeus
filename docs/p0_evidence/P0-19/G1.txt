@@ -1,0 +1,109 @@
+# G1 — No external network in default preview
+
+source task        : P0-05
+MCR                : MCR-001
+VERDICT            : PASS (asserted and held)
+REACHABILITY       : cli
+reachability detail: musaeus dry-run / musaeus run --dry-run -> cli.main -> cli._run_pipeline(dry_run=True) -> planner.build_plan(RunMode.PREVIEW). Driven both in-process (so the session TransportDenialHarness can record attempts) and as a real child process (so the CLI entry point itself is what ran).
+minimum viable cov.: at least 15 stages driven, at least 1 of them network-capable, and the transport harness consulted (0 attempts is only meaningful once a network-capable stage was in scope)
+
+## Coverage (what was actually examined)
+  stages_driven = 30
+  network_capable_stages_in_scope = 2
+  network_capable_stage_names = ['EnrichStage', 'MBEnrichStage']
+  connection_attempts_recorded = 0
+  in_process_exit_code = 0
+  child_cli_exit_code = 0
+
+## Findings
+  - 2 network-capable stage(s) were in the previewed pipeline (EnrichStage, MBEnrichStage), so the zero-attempt result is a measurement rather than a vacuous truth.
+  - The preview path never instantiates a stage — build_plan() asks each stage CLASS for plan_candidates() — so network suppression here is structural, not a flag the stages have to honour.
+
+## Raw captured output
+
+----- child resolved-config assertion -----
+$ /usr/bin/python3 -c 
+import json, os, sys
+_FIXTURE_ROOT = os.path.abspath(os.environ["P0_19_FIXTURE_ROOT"])
+import musaeus
+print("CHILD_MUSAEUS_PACKAGE " + os.path.dirname(os.path.abspath(musaeus.__file__)))
+from musaeus.config import MusicConfig
+_cfg = MusicConfig.from_env()
+_fields = {
+    "vault_root": str(_cfg.vault_root),
+    "db_path": str(_cfg.db_path),
+    "alac_library": str(_cfg.alac_library),
+    "runs_root": str(_cfg.runs_root),
+}
+print("CHILD_RESOLVED_CONFIG " + json.dumps(_fields, sort_keys=True))
+_bad = {
+    k: v for k, v in _fields.items()
+    if not (os.path.abspath(v) == _FIXTURE_ROOT
+            or os.path.abspath(v).startswith(_FIXTURE_ROOT + os.sep))
+}
+if _bad:
+    print("CHILD_PRECONDITION_ABORT " + json.dumps(_bad, sort_keys=True), file=sys.stderr)
+    raise SystemExit(97)
+print("CHILD_PRECONDITION_OK fixture_root=" + _FIXTURE_ROOT)
+
+
+import sys
+from musaeus.cli import main
+sys.argv = ["musaeus", "dry-run"]
+main()
+
+[exit 0]
+--- stdout ---
+CHILD_MUSAEUS_PACKAGE /mnt/FORGE2TB/Projects/MUSAEUS-kiro/musaeus
+CHILD_RESOLVED_CONFIG {"alac_library": "/tmp/pytest-of-grey/pytest-327/test_g1_no_external_network_in0/vault/Libraries/ALAC-Library", "db_path": "/tmp/pytest-of-grey/pytest-327/test_g1_no_external_network_in0/vault/musaeus.db", "runs_root": "/tmp/pytest-of-grey/pytest-327/test_g1_no_external_network_in0/vault/RUNS", "vault_root": "/tmp/pytest-of-grey/pytest-327/test_g1_no_external_network_in0/vault"}
+CHILD_PRECONDITION_OK fixture_root=/tmp/pytest-of-grey/pytest-327/test_g1_no_external_network_in0/vault
+
+  MUSAEUS — plan (--dry-run)
+
+  mode: preview
+  vault: /tmp/pytest-of-grey/pytest-327/test_g1_no_external_network_in0/vault
+
+  preflight                   —  no preview available for this stage
+  ingest                      2  new files in INBOX
+  permissions                 —  no preview available for this stage
+  sentinel                    —  no preview available for this stage
+  deny-list                   —  no preview available for this stage
+  scholar                     —  no preview available for this stage
+  health                      —  no preview available for this stage
+  corrupt                     5  CATALOGUED tracks to scan; at most 200 never-checked files are decoded per run
+  albumart                    —  no preview available for this stage
+  normalize                   5  rows whose artist/title would be normalised
+  spellcheck                  2  artists compared for misspellings
+  sanitize                    5  rows inspected for unsafe metadata
+  artist-consolidate          —  no preview available for this stage
+  various-artists-fix         —  no preview available for this stage
+  tribute-quarantine          —  no preview available for this stage
+  genre-validate              5  files with no genre that the law could fill
+  cross-dupe                  —  no preview available for this stage
+  neardupe                    —  no preview available for this stage
+  dupe-resolver               0  duplicate groups awaiting resolution
+  classical-composer          —  no preview available for this stage
+  canonicalize                —  no preview available for this stage
+  finalize                    —  no preview available for this stage
+  bpm                         5  files needing BPM analysis
+  forge                       5  files needing loudness measurement
+  tagger                      5  catalogued files whose tags would be checked
+  organize                    —  no preview available for this stage
+  audit                       0  finalized rows to verify on disk
+  enrich                      —  no preview available for this stage
+  mb_enrich                   —  no preview available for this stage
+  identity-tag                —  no preview available for this stage
+
+  ! 19 stage(s) cannot be previewed and are shown as '—', not as zero: preflight, permissions, sentinel, deny-list, scholar, health…
+
+  PREVIEW ONLY — nothing was changed. No files were written, moved or deleted, no database or event was created or modified, no directory was made, and no network lookup was performed.
+
+
+--- stderr ---
+
+----- in-process preview exit code -----
+0
+
+----- transport harness attempts during preview -----
+[]
+

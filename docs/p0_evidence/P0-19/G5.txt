@@ -1,0 +1,76 @@
+# G5 — Failed stage is not recorded complete / not skipped on resume
+
+source task        : P0-08
+MCR                : MCR-005
+VERDICT            : PASS (asserted and held) for cli.py's resume; state/run_state.py NOT EXERCISED and unreachable
+REACHABILITY       : cli
+reachability detail: TESTED: cli.py's own resume_state.json handling — cli._save_resume / _load_resume / _clear_resume and the `if result.success:` branch at cli.py:489, driven through cli._run_pipeline, which is what every `musaeus run` invocation executes. NOT TESTED: musaeus/state/run_state.py. That module has ZERO importers anywhere in musaeus/ — verified by grep — so testing it and reporting on resume behaviour would reproduce exactly the failure this brief was written about. Its MCR-005 logic (REASON_RUN_CANCELLED, the 'once cancellation is requested, no new stage starts' rule at run_state.py:286) is unreachable from the CLI.
+minimum viable cov.: at least 3 stages run, exactly 1 forced to fail, and resume state read before and after both runs (a resume gate that never reads the file has measured nothing)
+
+## Coverage (what was actually examined)
+  stages_run_first_pass = 3
+  stage_forced_to_fail = P019StageTwo
+  resume_state_before_first_run = (absent)
+  resume_state_after_first_run = {
+  "completed": [
+    "P019StageOne",
+    "P019StageThree"
+  ],
+  "all_stages": [
+    "P019StageOne",
+    "P019StageTwo",
+    "P019StageThree"
+  ]
+}
+  resume_completed_list = ['P019StageOne', 'P019StageThree']
+  failed_stage_in_completed_list = False
+  stages_actually_run_on_resume = ['P019StageTwo']
+  resume_state_after_second_run = {
+  "completed": [
+    "P019StageOne",
+    "P019StageThree"
+  ],
+  "all_stages": [
+    "P019StageOne",
+    "P019StageTwo",
+    "P019StageThree"
+  ]
+}
+  first_run_exit_code = 1
+  second_run_exit_code = 1
+
+## Findings
+  - The gate distinguishes 'retried' from 'never resumed': it asserts the FAILED stage re-ran AND the SUCCEEDED stage did not. Asserting only the first would pass on a build where resume was broken outright.
+  - The resume file the CLI uses is Path.home()-frozen at import (cli.py:228), so it is redirected here by monkeypatching the module global. A HOME change after import would not have moved it.
+
+## Raw captured output
+
+----- resume_state.json after failing run -----
+{
+  "completed": [
+    "P019StageOne",
+    "P019StageThree"
+  ],
+  "all_stages": [
+    "P019StageOne",
+    "P019StageTwo",
+    "P019StageThree"
+  ]
+}
+
+----- stages executed on the resumed run -----
+['P019StageTwo']
+
+----- resume_state.json after resumed run -----
+{
+  "completed": [
+    "P019StageOne",
+    "P019StageThree"
+  ],
+  "all_stages": [
+    "P019StageOne",
+    "P019StageTwo",
+    "P019StageThree"
+  ]
+}
+

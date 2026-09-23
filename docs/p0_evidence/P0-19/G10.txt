@@ -1,0 +1,50 @@
+# G10 — Scheduled run is preview / review-only
+
+source task        : P0-17
+MCR                : MCR-001 / MCR-005
+VERDICT            : BLOCKED — could not exercise the preview branch (scheduling conflict, not a safety breach)
+REACHABILITY       : cli/wrapper for musaeus_overnight.sh; UNREACHABLE for musaeus/scheduling.py
+reachability detail: Two different things carry this name, and only one of them runs. TESTED: musaeus_overnight.sh, the script the crontab invokes. NOT REACHED: musaeus/scheduling.py's run_scheduled(), which implements preview/review-only-by-default, scheduled_response() returning None, and defer-on-conflict. `grep -rn scheduling musaeus/` returns NOTHING outside scheduling.py itself — the module has zero importers. musaeus/reporting.py is imported only by scheduling.py, so it is unreachable for the same reason (see I4).
+minimum viable cov.: the wrapper's resolved VAULT_ROOT captured, the branch it took named, and zero mutation confirmed under the fixture root — plus, if the preview branch was not reached, the reason stated
+
+## Coverage (what was actually examined)
+  wrapper_resolved_vault_root = /home/grey/.cache/musaeus_p0_19_wrapper_cwq6he8e
+  wrapper_free_gb_at_run = 1409
+  wrapper_exit_code = 0
+  branch_taken = concurrency guard (OVERNIGHT_SKIPPED_LOCK_COLLISION)
+  live_musaeus_processes_at_run = ['1676041 python3 -m musaeus bitrot', '1731386 /usr/bin/python3 /home/grey/.local/bin/musaeus']
+  wrapper_default_mode_is_preview = False
+  entries_created_under_fixture_root = 3
+  network_notification_attempted = False
+  scheduling_py_importers_in_musaeus = 0
+
+## Findings
+  - The brief's §7.3 predicted exactly this and it happened. musaeus_overnight.sh:169 runs `pgrep -af "(bin/musaeus\b|python3 -m musaeus\b)"` and exits 0 on any match. Live at rehearsal time: ['1676041 python3 -m musaeus bitrot', '1731386 /usr/bin/python3 /home/grey/.local/bin/musaeus']. The wrapper therefore took its already-running branch and no stage ran. Reporting this gate green would be failure 3 from the brief's §1 — a check that could not fire, recorded as a check that passed.
+  - §7 of the brief requires all vault jobs clear before dispatch. The five PIDs it names are gone, but new ones (bitrot.sh verify / python3 -m musaeus bitrot) were running when this rehearsal was dispatched. G10 needs a re-run on a quiet disk.
+  - SEPARATE, UNCONDITIONAL FINDING, independent of the block above: the wrapper's DEFAULT is not preview. musaeus_overnight.sh:79-87 sets DRY_FLAG only when --dry-run is passed, and the documented crontab line passes no flags. So the scheduled run's default is full execution of the 21-stage canonical chain. The module that implements preview-by-default (musaeus/scheduling.py) has no importer. This CONTRADICTS P0-17's [x] mark: the behaviour is implemented and tested in a module the scheduler does not use.
+  - Also unconditional: the wrapper's own VAULT_ROOT default is fail-open in the same shape as the Python side — line 67, `VAULT_ROOT="${MUSAEUS_VAULT_ROOT:-/mnt/FORGE2TB/Projects/MUSAEUS_VAULT}"`. Unset the variable and the scheduler points at the live vault.
+
+## Raw captured output
+
+----- wrapper output -----
+═══════════════════════════════════════════════════════════════
+  MUSAEUS Overnight Pipeline v3 — 2026-09-08 20:54:54
+  Mode: FULL
+  Log: /home/grey/.cache/musaeus_p0_19_wrapper_cwq6he8e/RUNS/LOGS/overnight_20260908T205454.log
+═══════════════════════════════════════════════════════════════
+
+  Disk free: 1313 GB on /home/grey/.cache/musaeus_p0_19_wrapper_cwq6he8e
+
+OVERNIGHT_SKIPPED_LOCK_COLLISION 2026-09-08T20:54:54 -- another musaeus process is already running, refusing to start (would hit 'database is locked'):
+    1676041 python3 -m musaeus bitrot
+    1731386 /usr/bin/python3 /home/grey/.local/bin/musaeus
+
+----- live musaeus processes (pgrep, as the wrapper sees them) -----
+1676041 python3 -m musaeus bitrot
+1731386 /usr/bin/python3 /home/grey/.local/bin/musaeus
+
+----- entries created under the fixture VAULT_ROOT -----
+RUNS
+RUNS/LOGS
+RUNS/LOGS/overnight_20260908T205454.log
+

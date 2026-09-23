@@ -1,0 +1,35 @@
+# G6 — Rebuild parity between live and rebuilt projections
+
+source task        : P0-07
+MCR                : MCR-004
+VERDICT            : PARITY PASS (asserted and held) — but UNREACHABLE
+REACHABILITY       : UNREACHABLE (import only, no CLI path)
+reachability detail: `append_event`, `project`, `rebuild_projection`, `write_projection` and `ensure_state_tables` have zero callers outside musaeus/state/. `db.open_db()` — the only DB constructor any CLI command uses — never calls ensure_state_tables() or migrate(), so canonical_events, state_metadata and schema_migrations do not exist in a database the running system produced. Confirmed empirically above: a fresh db.open_db() database contains 7 tables and 0 of the three P0 state tables.
+minimum viable cov.: at least 5 events appended and projected, at least 1 run and 1 stage row compared between original and rebuilt state, and the live-schema check performed
+
+## Coverage (what was actually examined)
+  migrations_applied_to_create_canonical_events = 3
+  events_appended = 6
+  events_projected = 6
+  runs_compared = 1
+  stage_rows_compared = 2
+  parity_differences = 0
+  legacy_db_table_count = 7
+  p0_state_tables_in_legacy_db = []
+  legacy_db_tables = ['archive', 'archive_tier_hashes', 'duplicates', 'events', 'metadata_cache', 'sqlite_sequence', 'validation_issues']
+
+## Findings
+  - Parity holds — over an event store that no MUSAEUS run ever writes to. The projector is correct and unreached.
+  - CONTRADICTS a hedged mark: P0-07 is marked [x]. state/schema.py:16-27 says the wiring 'happens in P0-11'; P0-11 is also marked [x] and delivered preflight.py and cli_gate.py but not that wiring. So a live database is an unversioned legacy database with none of the P0 state tables in it, and rebuild parity is a property of a store that does not exist in production.
+
+## Raw captured output
+
+----- parity differences -----
+[]
+
+----- tables in a db.open_db() database -----
+archive, archive_tier_hashes, duplicates, events, metadata_cache, sqlite_sequence, validation_issues
+
+----- P0 state tables present in a db.open_db() database -----
+[]
+

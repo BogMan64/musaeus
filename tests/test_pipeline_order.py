@@ -16,28 +16,36 @@ VariousArtistsFix at the end of Act 1 right after ArtistConsolidate.
 from __future__ import annotations
 
 from musaeus.stages import DEFAULT_PIPELINE
+from musaeus.stages.acousticid import AcousticIDStage
 from musaeus.stages.albumart import AlbumArtStage
 from musaeus.stages.artist_consolidate import ArtistConsolidateStage
 from musaeus.stages.audit import AuditStage
 from musaeus.stages.bpm import BPMStage
 from musaeus.stages.canonicalize import CanonicalizeStage
+from musaeus.stages.classical_composer import ClassicalComposerStage
 from musaeus.stages.corrupt import CorruptStage
 from musaeus.stages.cross_dupe import CrossDupeStage
+from musaeus.stages.deny_list import DenyListStage
 from musaeus.stages.dupe_resolver import DupeResolverStage
 from musaeus.stages.enrich import EnrichStage
 from musaeus.stages.finalize import FinalizeStage
 from musaeus.stages.forge import ForgeStage
+from musaeus.stages.genre_validate import GenreValidateStage
 from musaeus.stages.health import HealthStage
+from musaeus.stages.identity_tag import IdentityTagStage
 from musaeus.stages.ingest import IngestStage
 from musaeus.stages.mb_enrich import MBEnrichStage
 from musaeus.stages.neardupe import NearDupeStage
 from musaeus.stages.normalize import NormalizeStage
+from musaeus.stages.organize import OrganizeStage
 from musaeus.stages.permissions import PermissionsStage
 from musaeus.stages.preflight import PreflightStage
 from musaeus.stages.sanitize import SanitizeStage
 from musaeus.stages.scholar import ScholarStage
 from musaeus.stages.sentinel import SentinelStage
+from musaeus.stages.spellcheck import SpellCheckStage
 from musaeus.stages.tagger import TaggerStage
+from musaeus.stages.tribute_quarantine import TributeQuarantineStage
 from musaeus.stages.various_artists_fix import VariousArtistsFixStage
 
 
@@ -88,9 +96,26 @@ def test_enrichment_is_default_on_and_positioned_last():
     2026-08-18 Canonicalize revert."""
     assert EnrichStage in DEFAULT_PIPELINE
     assert MBEnrichStage in DEFAULT_PIPELINE
-    last_two = DEFAULT_PIPELINE[-2:]
-    assert last_two == [EnrichStage, MBEnrichStage]
+
+    # Enrichment grew on 2026-08-30 (AcousticID, IdentityTag), so this
+    # asserts the PROPERTY Grey's call was about -- the whole enrichment
+    # block is contiguous and strictly last, isolated from the
+    # file-safety-critical stages -- rather than a fixed pair.
+    from musaeus.stages import ENRICHMENT
+
+    assert DEFAULT_PIPELINE[-len(ENRICHMENT) :] == ENRICHMENT
     assert _index(AuditStage) < _index(EnrichStage)
+
+    # Within the block, order is a dependency chain, not a preference.
+    assert AcousticIDStage not in DEFAULT_PIPELINE, (
+        "AcoustID is deferred: its first run is a full-library fingerprint "
+        "migration that held the write lock for 21 hours. Re-wire it only "
+        "once the backlog is fingerprinted."
+    )
+    assert _index(MBEnrichStage) < _index(IdentityTagStage), (
+        "identity is written to the files last, after everything that "
+        "resolves it -- otherwise it writes what the run is about to learn"
+    )
 
 
 def test_full_default_pipeline_order_matches_current_design():
@@ -99,24 +124,60 @@ def test_full_default_pipeline_order_matches_current_design():
         IngestStage,
         PermissionsStage,
         SentinelStage,
+        # Immediately after Sentinel: that is the first point an audio_hash
+        # exists, and it is before any stage invests work in a file that is
+        # about to be refused. Added 2026-08-24.
+        DenyListStage,
         ScholarStage,
         HealthStage,
         CorruptStage,
         AlbumArtStage,
         NormalizeStage,
+        # Report-only, added 2026-08-22. Sits after Normalize so it compares
+        # names in canonical article form, and before Sanitize/dedupe so a
+        # flagged misspelling is visible before anything groups on it.
+        SpellCheckStage,
         SanitizeStage,
         ArtistConsolidateStage,
         VariousArtistsFixStage,
+        # Wired in 2026-09-01, having been standalone since the ORPHEUS
+        # port. It is the only stage that REMOVES work rather than doing
+        # it, so everything after it -- the genre law, dedup, the encoder
+        # -- is cost it can avoid paying. After ArtistConsolidate and
+        # VariousArtistsFix so it matches the settled artist name rather
+        # than the raw tag; before GenreValidate so junk artists never
+        # reach the genre law. Measured at 27 of 10,446 rows before
+        # wiring.
+        TributeQuarantineStage,
+        # Genre is settled at the end of intake, once the artist is
+        # canonical: the law is keyed on artist. Added 2026-08-24 -- it had
+        # only ever run on demand, so a new file's genre came from its own
+        # tags and nothing checked it against MasterLaw.
+        GenreValidateStage,
         CrossDupeStage,
         NearDupeStage,
         DupeResolverStage,
+        # Composer attribution AFTER dedup. Filing classical under the
+        # composer collapses performers into a few artists, and NearDupe
+        # compares titles within an artist -- which quarantined 15 distinct
+        # recordings as near-duplicates on 2026-08-25, including two
+        # different movements of the same Handel suite at 89%.
+        ClassicalComposerStage,
         CanonicalizeStage,
         FinalizeStage,
         BPMStage,
         ForgeStage,
         TaggerStage,
+        # Organize BEFORE Audit: Audit is the documented gate, and with
+        # Organize after it every audit result described a layout Organize
+        # then rewrote.
+        OrganizeStage,
         AuditStage,
         EnrichStage,
         MBEnrichStage,
+        # AcousticIDStage deferred out 2026-08-31 -- its first run is a
+        # full-library fingerprint migration, not a per-run cost. See
+        # stages/__init__.py.
+        IdentityTagStage,
     ]
     assert expected == DEFAULT_PIPELINE

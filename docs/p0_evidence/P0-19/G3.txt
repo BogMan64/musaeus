@@ -1,0 +1,85 @@
+# G3 — Fixed 100 GB recovery cap and safely-usable-space blocking
+
+source task        : P0-12
+MCR                : MCR-002
+VERDICT            : PASS for the primitive (asserted and held); the CLI-driven form is INERT
+REACHABILITY       : cli (opt-in) + import
+reachability detail: There IS a CLI path — cli.py:389 `_run_pipeline` imports and calls `cli_gate.enforce_execution_gate`, which calls `run_preflight`. This corrects the brief's expectation that P0-12 would be import-only. But the path is inert for this gate in two ways: (1) the gate is off unless --safety-gate or MUSAEUS_P0_SAFETY_GATE=1 (cli_gate.gate_enabled has no third branch); and (2) `enforce_execution_gate(cfg, dry_run=...)` passes no request_kwargs, so estimated_checkpoint_bytes, estimated_quarantine_bytes and estimated_items are all 0 — confirmed by the child output above. The required figure therefore reduces to the database file size, and the 100 GB cap block cannot fire from the CLI unless musaeus.db itself exceeds 100 GB. The blocks were exercised by constructing a PreflightRequest directly (import).
+minimum viable cov.: the cap value read as an exact integer, both blocks observed to fire (cap and capacity), the recovery root confirmed not created, and /home/grey/Projects/MUSAEUS_RECOVERY confirmed still absent
+
+## Coverage (what was actually examined)
+  cap_value_bytes_read = 100000000000
+  cap_label_read = 100 GB
+  cap_block_fired = True
+  cap_block_reason_code = recovery_capacity_exceeded
+  cap_measured = 100000090113
+  cap_required = 100000000000
+  capacity_block_fired = True
+  capacity_block_reason_code = recovery_capacity_exceeded
+  capacity_measured_usable_bytes = 1017924608
+  capacity_required_bytes = 4018014720
+  future_recovery_root_created = False
+  cli_supplied_estimates = {'CLI_REQUEST_checkpoint_bytes': '0', 'CLI_REQUEST_quarantine_bytes': '0', 'CLI_REQUEST_items': '0', 'CLI_REQUEST_recovery_root': '/tmp/pytest-of-grey/pytest-327/test_g3_recovery_cap_and_space0/vault/RUNS/recovery'}
+  preflight_checks_evaluated = 10
+
+## Findings
+  - The cap is 100 * 10**9 (decimal GB), not GiB. A GiB reading would be 7.4% more headroom than the figure that was approved, in the permissive direction.
+  - CONTRADICTS a hedged mark: P0-12 is marked [x], and the primitives do block correctly when asked. But the only CLI caller asks with all estimates at zero, so from `musaeus run --safety-gate` the cap check reports PASS having measured only the database file size. The block is implemented and reachable; the *estimate that would trip it* is never computed. Recorded as a finding for Grey, not silently resolved.
+
+## Raw captured output
+
+----- child resolved-config assertion -----
+$ /usr/bin/python3 -c 
+import json, os, sys
+_FIXTURE_ROOT = os.path.abspath(os.environ["P0_19_FIXTURE_ROOT"])
+import musaeus
+print("CHILD_MUSAEUS_PACKAGE " + os.path.dirname(os.path.abspath(musaeus.__file__)))
+from musaeus.config import MusicConfig
+_cfg = MusicConfig.from_env()
+_fields = {
+    "vault_root": str(_cfg.vault_root),
+    "db_path": str(_cfg.db_path),
+    "alac_library": str(_cfg.alac_library),
+    "runs_root": str(_cfg.runs_root),
+}
+print("CHILD_RESOLVED_CONFIG " + json.dumps(_fields, sort_keys=True))
+_bad = {
+    k: v for k, v in _fields.items()
+    if not (os.path.abspath(v) == _FIXTURE_ROOT
+            or os.path.abspath(v).startswith(_FIXTURE_ROOT + os.sep))
+}
+if _bad:
+    print("CHILD_PRECONDITION_ABORT " + json.dumps(_bad, sort_keys=True), file=sys.stderr)
+    raise SystemExit(97)
+print("CHILD_PRECONDITION_OK fixture_root=" + _FIXTURE_ROOT)
+
+
+from musaeus.config import MusicConfig
+from musaeus.cli_gate import build_request, gate_enabled
+cfg = MusicConfig.from_env()
+req = build_request(cfg)
+print("CLI_GATE_ENABLED_BY_DEFAULT", gate_enabled(argv=[], env={}))
+print("CLI_REQUEST_checkpoint_bytes", req.estimated_checkpoint_bytes)
+print("CLI_REQUEST_quarantine_bytes", req.estimated_quarantine_bytes)
+print("CLI_REQUEST_items", req.estimated_items)
+print("CLI_REQUEST_recovery_root", req.recovery_root)
+
+[exit 0]
+--- stdout ---
+CHILD_MUSAEUS_PACKAGE /mnt/FORGE2TB/Projects/MUSAEUS-kiro/musaeus
+CHILD_RESOLVED_CONFIG {"alac_library": "/tmp/pytest-of-grey/pytest-327/test_g3_recovery_cap_and_space0/vault/Libraries/ALAC-Library", "db_path": "/tmp/pytest-of-grey/pytest-327/test_g3_recovery_cap_and_space0/vault/musaeus.db", "runs_root": "/tmp/pytest-of-grey/pytest-327/test_g3_recovery_cap_and_space0/vault/RUNS", "vault_root": "/tmp/pytest-of-grey/pytest-327/test_g3_recovery_cap_and_space0/vault"}
+CHILD_PRECONDITION_OK fixture_root=/tmp/pytest-of-grey/pytest-327/test_g3_recovery_cap_and_space0/vault
+CLI_GATE_ENABLED_BY_DEFAULT False
+CLI_REQUEST_checkpoint_bytes 0
+CLI_REQUEST_quarantine_bytes 0
+CLI_REQUEST_items 0
+CLI_REQUEST_recovery_root /tmp/pytest-of-grey/pytest-327/test_g3_recovery_cap_and_space0/vault/RUNS/recovery
+
+--- stderr ---
+
+----- over-cap preflight report -----
+{'outcome': 'block', 'checks': [{'name': 'scope_classification', 'outcome': 'pass', 'reason_code': None, 'measured': 'fixture', 'required': ['fixture'], 'remediation': None}, {'name': 'source_readable', 'outcome': 'pass', 'reason_code': None, 'measured': 'readable', 'required': 'readable directory', 'remediation': None}, {'name': 'destination_writable', 'outcome': 'pass', 'reason_code': None, 'measured': 'writable', 'required': 'writable directory', 'remediation': None}, {'name': 'recovery_target', 'outcome': 'pass', 'reason_code': None, 'measured': '/tmp/pytest-of-grey/pytest-327/test_g3_recovery_cap_and_space0/fixture_recovery', 'required': 'an existing, writable, disposable recovery root', 'remediation': None}, {'name': 'recovery_cap', 'outcome': 'block', 'reason_code': 'recovery_capacity_exceeded', 'measured': 100000090113, 'required': 100000000000, 'remediation': 'the estimated checkpoint/quarantine requirement exceeds the fixed 100 GB cap; reduce the scope of this run'}, {'name': 'recovery_capacity', 'outcome': 'block', 'reason_code': 'recovery_capacity_exceeded', 'measured': 1017924608, 'required': 100000090113, 'remediation': 'the recovery target has 1017924608 safely usable bytes and this run needs 100000090113; free space or reduce the scope'}, {'name': 'schema_compatible', 'outcome': 'pass', 'reason_code': None, 'measured': 0, 'required': 'a supported schema version', 'remediation': None}, {'name': 'configuration_valid', 'outcome': 'pass', 'reason_code': None, 'measured': [], 'required': [], 'remediation': None}, {'name': 'provider_consent', 'outcome': 'pass', 'reason_code': None, 'measured': [], 'required': [], 'remediation': None}, {'name': 'lock_observation', 'outcome': 'pass', 'reason_code': None, 'measured': 'free', 'required': 'no conflicting run', 'remediation': None}], 'database_version': 0, 'recovery_target': '/tmp/pytest-of-grey/pytest-327/test_g3_recovery_cap_and_space0/fixture_recovery', 'lock_observation': {'held': False, 'owner': None}}
+
+----- over-space preflight report -----
+{'outcome': 'block', 'checks': [{'name': 'scope_classification', 'outcome': 'pass', 'reason_code': None, 'measured': 'fixture', 'required': ['fixture'], 'remediation': None}, {'name': 'source_readable', 'outcome': 'pass', 'reason_code': None, 'measured': 'readable', 'required': 'readable directory', 'remediation': None}, {'name': 'destination_writable', 'outcome': 'pass', 'reason_code': None, 'measured': 'writable', 'required': 'writable directory', 'remediation': None}, {'name': 'recovery_target', 'outcome': 'pass', 'reason_code': None, 'measured': '/tmp/pytest-of-grey/pytest-327/test_g3_recovery_cap_and_space0/fixture_recovery', 'required': 'an existing, writable, disposable recovery root', 'remediation': None}, {'name': 'recovery_cap', 'outcome': 'pass', 'reason_code': None, 'measured': 4018014720, 'required': 100000000000, 'remediation': None}, {'name': 'recovery_capacity', 'outcome': 'block', 'reason_code': 'recovery_capacity_exceeded', 'measured': 1017924608, 'required': 4018014720, 'remediation': 'the recovery target has 1017924608 safely usable bytes and this run needs 4018014720; free space or reduce the scope'}, {'name': 'schema_compatible', 'outcome': 'pass', 'reason_code': None, 'measured': 0, 'required': 'a supported schema version', 'remediation': None}, {'name': 'configuration_valid', 'outcome': 'pass', 'reason_code': None, 'measured': [], 'required': [], 'remediation': None}, {'name': 'provider_consent', 'outcome': 'pass', 'reason_code': None, 'measured': [], 'required': [], 'remediation': None}, {'name': 'lock_observation', 'outcome': 'pass', 'reason_code': None, 'measured': 'free', 'required': 'no conflicting run', 'remediation': None}], 'database_version': 0, 'recovery_target': '/tmp/pytest-of-grey/pytest-327/test_g3_recovery_cap_and_space0/fixture_recovery', 'lock_observation': {'held': False, 'owner': None}}
+

@@ -6,14 +6,12 @@ Purpose: Shared SQLite helpers: write_with_retry (lock-safe writes), ensure_nami
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-
-
-import logging
 
 _LOG = logging.getLogger(__name__)
 

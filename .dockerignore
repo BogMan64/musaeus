@@ -1,0 +1,26 @@
+# Keep the build context small and free of anything personal. The vault,
+# the database and the run logs are Grey's library, not the program.
+.git
+.git*
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+*.egg-info/
+build/
+dist/
+# Never ship data: databases, logs, run artefacts, exported libraries.
+*.db
+*.db-wal
+*.db-shm
+*.csv
+*.log
+RUNS/
+VAULT/
+MUSAEUS_VAULT/
+.venv/
+venv/

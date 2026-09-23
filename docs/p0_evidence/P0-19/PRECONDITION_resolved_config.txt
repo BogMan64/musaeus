@@ -1,0 +1,37 @@
+# P0-19 §2 resolved-config precondition
+
+Runs before every gate. Asserts the RESOLVED MusicConfig, not the
+environment variable, because the variable does not fail closed.
+
+## MUSAEUS_VAULT_ROOT unset; HOME contains a settings.env naming a vault (the shape of Grey's real ~/.config/musaeus/settings.env)
+  HOME = /tmp/p0_19_precondition_s4ds2v01/home_with_settings
+  exit 0
+  stdout: PROBE_RESOLVED_WITHOUT_ENV /tmp/p0_19_precondition_s4ds2v01/DECOY_VAULT_STANDING_IN_FOR_THE_LIVE_ONE
+
+## MUSAEUS_VAULT_ROOT unset; HOME contains no settings.env at all
+  HOME = /tmp/p0_19_precondition_s4ds2v01/home_without_settings
+  exit 0
+  stdout: PROBE_RAISED_VALUEERROR MUSAEUS_VAULT_ROOT is not set.
+
+## Interpretation
+  Case 1: with a settings.env present, unsetting MUSAEUS_VAULT_ROOT does
+  NOT raise. It resolves to whatever that file names, because
+  config.py's _load_env() reads it at MODULE IMPORT TIME via
+  os.environ.setdefault(). Here that is a decoy path under a temp
+  directory. On Grey's machine the same file names
+  /mnt/FORGE2TB/Projects/MUSAEUS_VAULT (per the dispatch brief's §2.1
+  reproduction), so the same code path yields the LIVE MUSIC LIBRARY.
+  Case 2: the documented ValueError is reachable only when HOME has no
+  settings file -- i.e. only in the situation nobody is actually in.
+
+  Therefore: asserting that MUSAEUS_VAULT_ROOT is set is NOT sufficient,
+  and asserting that it is UNSET is actively dangerous. Every gate
+  asserts the RESOLVED MusicConfig fields instead, and every subprocess
+  re-runs that assertion inside the child.
+
+  NOTE: this rehearsal did not read the real ~/.config/musaeus/
+  settings.env. The mechanism is reproduced with a decoy file under a
+  disposable HOME, which demonstrates the same fail-open shape while
+  keeping the live configuration untouched.
+
+## Guarded fields: vault_root, db_path, alac_library, runs_root

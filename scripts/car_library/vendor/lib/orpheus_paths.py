@@ -42,12 +42,8 @@ _load_user_config()
 # ORPHEUS_ROOT may be set by the user's settings.env or by the caller.
 # Fall back to the directory containing this file's parent (the repo root).
 
-_SCRIPT_PARENT = (
-    Path(__file__).resolve().parent.parent
-)  # SCRIPTS/lib → SCRIPTS → repo root
-DEFAULT_PROJECT_ROOT = (
-    _SCRIPT_PARENT.parent if _SCRIPT_PARENT.name == "SCRIPTS" else _SCRIPT_PARENT
-)
+_SCRIPT_PARENT = Path(__file__).resolve().parent.parent  # SCRIPTS/lib → SCRIPTS → repo root
+DEFAULT_PROJECT_ROOT = _SCRIPT_PARENT.parent if _SCRIPT_PARENT.name == "SCRIPTS" else _SCRIPT_PARENT
 PROJECT_ROOT = Path(os.environ.get("ORPHEUS_ROOT", str(DEFAULT_PROJECT_ROOT))).resolve()
 
 # ── Major directories ─────────────────────────────────────────────────────────
@@ -57,14 +53,10 @@ METADATA_ROOT = PROJECT_ROOT / "METADATA"
 EXPORTS_ROOT = PROJECT_ROOT / "EXPORTS"
 
 # RUNS_ROOT: configurable via ORPHEUS_RUNS_ROOT (set by orpheus_setup.py)
-RUNS_ROOT = Path(
-    os.environ.get("ORPHEUS_RUNS_ROOT", str(PROJECT_ROOT / "RUNS"))
-).resolve()
+RUNS_ROOT = Path(os.environ.get("ORPHEUS_RUNS_ROOT", str(PROJECT_ROOT / "RUNS"))).resolve()
 
 # CONVERSION_INBOX: configurable via ORPHEUS_INBOX
-CONVERSION_INBOX = Path(
-    os.environ.get("ORPHEUS_INBOX", str(PROJECT_ROOT / "CONVERSION_INBOX"))
-)
+CONVERSION_INBOX = Path(os.environ.get("ORPHEUS_INBOX", str(PROJECT_ROOT / "CONVERSION_INBOX")))
 
 # Inbox layout
 INBOX_ROOT = CONVERSION_INBOX
@@ -100,9 +92,7 @@ MUSIC_SOURCE: Path | None = Path(_music_source) if _music_source else None
 
 # ── Per-run output structure ──────────────────────────────────────────────────
 
-RUN_STAMP = os.environ.get("ORPHEUS_RUN_STAMP") or datetime.now().strftime(
-    "%Y-%m-%d_%H%M%S"
-)
+RUN_STAMP = os.environ.get("ORPHEUS_RUN_STAMP") or datetime.now().strftime("%Y-%m-%d_%H%M%S")
 
 RUN_PARENT = RUNS_ROOT / RUN_STAMP
 REPORTS_ROOT = RUN_PARENT / "Reports"
@@ -122,9 +112,7 @@ FINAL_ROOT = RUN_PARENT / "Final"
 CAR_LIBRARY_TARGET = None  # resolved dynamically
 
 # Music.Vault — final deliverable output root: configurable via ORPHEUS_VAULT_ROOT
-MUSIC_VAULT_ROOT = Path(
-    os.environ.get("ORPHEUS_VAULT_ROOT", str(RUNS_ROOT / "Music.Vault"))
-)
+MUSIC_VAULT_ROOT = Path(os.environ.get("ORPHEUS_VAULT_ROOT", str(RUNS_ROOT / "Music.Vault")))
 MUSIC_VAULT_ALAC = MUSIC_VAULT_ROOT / "ALAC"  # [17] Build ALAC output
 MUSIC_VAULT_CAR = MUSIC_VAULT_ROOT / "AAC-Car"  # [18] AAC car (256k)
 MUSIC_VAULT_PORT = MUSIC_VAULT_ROOT / "AAC-Port"  # [19] AAC portable (192k)

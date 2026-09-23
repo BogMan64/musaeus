@@ -1,0 +1,54 @@
+# I1-I5 — Fresh install/legacy migration/restore, cancellation, preflight, report+redaction, documentation consistency
+
+source task        : P0-06 / P0-09 / P0-11 / P0-16 / P0-18
+MCR                : MCR-004 / MCR-005 / MCR-002 / MCR-006 / MCR-008
+VERDICT            : REPORTED — I3 reachable (opt-in); I1, I2 and I4 UNREACHABLE; I5 not re-audited
+REACHABILITY       : mixed — see per-area breakdown
+reachability detail: I1 fresh install / legacy migration / restore (P0-06): UNREACHABLE. migrate() callers outside musaeus/state/: 0. db.open_db() is the only DB constructor the CLI uses and it calls neither migrate() nor ensure_state_tables(). A live database is therefore an unversioned legacy database. Restore likewise has no CLI entry point.
+I2 cancellation (P0-09): UNREACHABLE. CancellationGate's only cross-module use is MutationBoundary's optional `gate=` parameter, and no stage passes it (grep for 'gate=' in musaeus/stages/ and musaeus/safety/ returns nothing). Other callers: 0. The CLI's actual cancellation behaviour is cli.py's KeyboardInterrupt handler, which saves resume state — a different mechanism with none of MCR-005's guarantees.
+I3 preflight (P0-11): cli, OPT-IN ONLY. Chain: cli._run_pipeline -> cli_gate.enforce_execution_gate -> preflight.run_preflight. Off unless --safety-gate or MUSAEUS_P0_SAFETY_GATE=1. This is the one area of the five with a genuine CLI path.
+I4 report generation and redaction (P0-16): UNREACHABLE. musaeus.reporting importers outside itself: ['musaeus/scheduling.py:46:from musaeus.reporting import MODE_PREVIEW, ActionCounts, RunReport'] — only musaeus/scheduling.py, which itself has 0 importers. Nothing in the CLI produces a RunReport, so no run emits one and no redaction is ever applied to real output.
+I5 documentation consistency (P0-18): import. The inventory lives in test_p0_18_cli_inventory.py, an audit over CLI help text rather than a runtime path. Reachability is not the right question for it; whether the inventory is complete is, and that was not re-audited here.
+minimum viable cov.: each of the five areas assigned a reachability value with the caller chain named or its absence stated; at least one concrete measurement per area
+
+## Coverage (what was actually examined)
+  i1_migrate_callers_outside_state = 0
+  i1_fresh_state_db_tables = ['schema_migrations', 'state_metadata']
+  i1_legacy_open_db_tables = 7
+  i1_p0_tables_in_legacy = []
+  i2_cancellation_observed = True
+  i2_mutation_refused_after_cancellation = MutationAfterCancellationError
+  i2_stages_passing_a_cancellation_gate = 0
+  i3_preflight_cli_path = cli._run_pipeline -> cli_gate.enforce_execution_gate -> run_preflight
+  i3_enabled_by_default = False
+  i4_reporting_importers = ['musaeus/scheduling.py:46:from musaeus.reporting import MODE_PREVIEW, ActionCounts, RunReport']
+  i4_scheduling_importers = 0
+  i4_shareable_report_rendered_bytes = 714
+  i4_shareable_drops_path_map = True
+  i4_real_path_absent_from_shareable_output = True
+  i5_inventory_test_present = True
+  i5_inventory_reaudited = False
+
+## Findings
+  - Four of the five areas rest on marks that are provisional for a stronger reason than the spec's own hedge: P0-06, P0-09 and P0-16 are marked [x] over code the running system does not reach, and P0-18's inventory was not re-audited by this rehearsal.
+
+## Raw captured output
+
+----- migrate() callers outside musaeus/state/ -----
+(none)
+
+----- musaeus.reporting importers -----
+musaeus/scheduling.py:46:from musaeus.reporting import MODE_PREVIEW, ActionCounts, RunReport
+
+----- musaeus.scheduling importers -----
+(none)
+
+----- tables in a fresh ensure_state_tables() DB -----
+schema_migrations, state_metadata
+
+----- tables in a fresh db.open_db() DB (count) -----
+7
+
+----- shareable report -----
+{"authority": null, "config_digest": null, "exit_code": null, "lock_observation": null, "mode": "preview", "network_use": [], "next_actions": ["inspect item:95a0924fbdee05ee for residue"], "reason_code": null, "recovery": {"checkpoint_id": null, "manifest_digest": null, "quarantine_refs": [], "recovery_cap": "100 GB", "recovery_target": null, "rollback_status": null}, "run_id": "run-A", "safety_blocks": [], "scope": {"classification": "fixture", "root": "item:95a0924fbdee05ee"}, "stages": [], "status": "completed", "timestamps": {"finished_at": "2026-09-09T00:00:00Z", "started_at": "2026-09-09T00:00:00Z"}, "totals": {"applied": 0, "cancelled": 0, "failed": 0, "planned": 0, "rolled_back": 0, "skipped": 0}}
+

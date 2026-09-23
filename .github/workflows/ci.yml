@@ -20,6 +20,14 @@ jobs:
         run: ruff check musaeus/ tests/
       - name: Ruff format check
         run: ruff format --check musaeus/ tests/
+      # The rules, .semgrepignore and a test asserting they scan the tree they
+      # claim to have existed since 2026-09-08 -- and nothing invoked the
+      # scanner. The guard proved the rules were well-formed; nothing proved
+      # they had ever run. Fixed 2026-09-09.
+      - name: Install semgrep
+        run: pip install semgrep
+      - name: Semgrep
+        run: semgrep --config .semgrep/rules.yml musaeus/ scripts/ tests/ --error --quiet
 
   typecheck:
     runs-on: ubuntu-latest
@@ -43,7 +51,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      # ffmpeg is a TEST DEPENDENCY here, not a convenience.
+      #
+      # Without it ~275 tests skip, and the ones that skip are the ones that
+      # exercise conversion, verification and quarantine -- the only code in
+      # this project that can destroy an irreplaceable file. Measured
+      # 2026-09-09: canonicalize.py sat at 20% coverage while the repository
+      # carried 2,500 passing tests, and `_verify_conversion` -- the function
+      # that decides whether it is safe to delete a lossless original -- was
+      # in the uncovered range on every run CI had ever done.
+      #
+      # A green suite that has never executed the file-deleting path is the
+      # same failure this project catalogues everywhere else: a check that
+      # finds nothing is not a check that found nothing wrong.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Install dependencies
         run: pip install -e ".[dev,fuzzy]"
       - name: Run tests
         run: pytest --tb=short -q
+      # The count is the point. If this number climbs, coverage of the
+      # dangerous paths is silently draining away again.
+      - name: Report skipped tests
+        if: always()
+        run: |
+          pytest -q --collect-only >/dev/null 2>&1 || true
+          pytest -q 2>&1 | tail -1
