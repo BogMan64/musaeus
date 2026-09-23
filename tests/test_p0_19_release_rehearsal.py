@@ -37,6 +37,7 @@ enabled throughout; no gate here disables, narrows, or skips either one.
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import pathlib
@@ -85,6 +86,14 @@ _REGENERATE = os.environ.get("MUSAEUS_WRITE_EVIDENCE", "").strip().lower() in {
 EVIDENCE_OUT = (
     EVIDENCE_DIR if _REGENERATE else Path(tempfile.mkdtemp(prefix="musaeus_p0_19_evidence_"))
 )
+if not _REGENERATE:
+    # Removed when the test process exits, as this file already does for its
+    # other two scratch directories (the precondition probe and the G10
+    # wrapper). Without it every pytest run left one of these in /tmp -- four
+    # had piled up by the time the 2026-09-23 review noticed. A failed gate
+    # still shows its evidence in the assertion message; to keep the files,
+    # set MUSAEUS_WRITE_EVIDENCE=1.
+    atexit.register(shutil.rmtree, EVIDENCE_OUT, ignore_errors=True)
 
 #: The four resolved MusicConfig fields the brief names in §2.2. Not the
 #: env var — the resolved value, which is the only thing that fails closed.

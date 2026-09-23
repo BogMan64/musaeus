@@ -45,32 +45,99 @@ def test_the_rehearsal_writes_outside_the_repo_by_default():
     )
 
 
-def test_no_test_module_writes_into_a_protected_directory():
-    """A literal path into a tracked docs directory, passed to a write call.
+_WRITERS = {"write_text", "write_bytes", "mkdir", "touch", "makedirs", "open"}
 
-    String constants are checked, not prose: a docstring that merely mentions
-    the path is an ast.Constant too, so only constants that reach a write are
-    considered -- `write_text`, `open(..., "w")`, `mkdir` and friends.
+
+def _path_text(node: ast.AST) -> str | None:
+    """A path expression as text, so a protected path is visible however built.
+
+    "docs/p0_evidence" stays itself; `REPO_ROOT / "docs" / "p0_evidence"`
+    becomes "*/docs/p0_evidence". The first version of this guard matched only
+    single string constants, and the bug it was written for built its path
+    the second way -- so when the old behaviour was reinstated on purpose,
+    this check PASSED. The 2026-09-23 review found it; the test run had shown
+    it ("1 failed, 1 passed") and nobody read the second number.
     """
-    writers = {"write_text", "write_bytes", "mkdir", "touch", "open", "makedirs"}
-    offenders: list[str] = []
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return f"{_path_text(node.left) or '*'}/{_path_text(node.right) or '*'}"
+    return None
 
-    for path in sorted(TESTS_DIR.glob("test_*.py")):
-        if path.name == Path(__file__).name:
+
+def _is_write(call: ast.Call) -> bool:
+    func = call.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+    if name not in _WRITERS:
+        return False
+    if name != "open":
+        return True
+    # open() reads by default; only a write mode counts.
+    mode = call.args[1] if len(call.args) > 1 else None
+    for kw in call.keywords:
+        if kw.arg == "mode":
+            mode = kw.value
+    return (
+        isinstance(mode, ast.Constant)
+        and isinstance(mode.value, str)
+        and any(c in mode.value for c in "wax+")
+    )
+
+
+def _offenders_in(source: str, filename: str) -> list[str]:
+    found: list[str] = []
+    for node in ast.walk(ast.parse(source, filename=filename)):
+        if not isinstance(node, ast.Call) or not _is_write(node):
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            if name not in writers:
-                continue
-            for const in [n for n in ast.walk(node) if isinstance(n, ast.Constant)]:
-                if isinstance(const.value, str) and any(p in const.value for p in PROTECTED):
-                    offenders.append(f"{path.name}:{node.lineno} writes to {const.value!r}")
+        for sub in ast.walk(node):
+            text = _path_text(sub)
+            if text and any(p in text for p in PROTECTED):
+                found.append(f"{filename}:{node.lineno} writes to {text!r}")
+                break
+    return found
+
+
+def test_no_test_module_writes_into_a_protected_directory():
+    """Every .py under tests/ -- conftest.py and helpers included.
+
+    The first version scanned only tests/test_*.py, non-recursively, which
+    skipped conftest.py, disposable_vault.py and transport_denial.py: all of
+    them run in every session.
+
+    What this CANNOT see is a path stored in a variable and written later
+    (`EVIDENCE_DIR.mkdir()`). That needs data flow, not a syntax walk. The CI
+    step "Tests left the working tree as they found it" covers it by
+    measuring the tree itself, which no amount of source-reading can match.
+    """
+    offenders: list[str] = []
+    for path in sorted(TESTS_DIR.rglob("*.py")):
+        if "__pycache__" in path.parts or path.resolve() == Path(__file__).resolve():
+            continue
+        offenders += _offenders_in(path.read_text(encoding="utf-8"), path.name)
 
     assert not offenders, (
         "a test writes directly into a tracked directory; route it through an "
         "opt-in output path instead:\n  " + "\n  ".join(offenders)
     )
+
+
+def test_the_scanner_sees_a_path_built_with_slashes():
+    # The exact idiom that fooled the first version of this guard.
+    src = (
+        "from pathlib import Path\n"
+        'ROOT = Path("r")\n'
+        '(ROOT / "docs" / "p0_evidence" / "P0-19" / "G1.txt").write_text("x")\n'
+    )
+    assert _offenders_in(src, "synthetic.py")
+
+
+def test_the_scanner_ignores_reads_and_prose():
+    # A docstring is an ast.Constant too; prose about the path must not trip it,
+    # and neither may reading the committed record, which G11 has to do.
+    src = (
+        '"""Writes to docs/p0_evidence are forbidden."""\n'
+        "from pathlib import Path\n"
+        'open("docs/p0_evidence/P0-19/G11_baseline_start.txt").read()\n'
+        '(Path("r") / "docs" / "p0_evidence" / "G11.txt").read_text()\n'
+    )
+    assert not _offenders_in(src, "synthetic.py")
