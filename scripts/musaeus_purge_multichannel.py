@@ -194,7 +194,7 @@ def main() -> int:
     if not rows:
         return 0
 
-    csv_path = cfg.alac_library / "TuneMyMusic.csv"
+    csv_path = cfg.tunemymusic_csv_path
     known = set()
     if csv_path.exists():
         known = {r["path"] for r in csv.DictReader(csv_path.open())}
