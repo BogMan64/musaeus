@@ -70,6 +70,20 @@ jobs:
         run: pip install -e ".[dev,fuzzy]"
       - name: Run tests
         run: pytest --tb=short -q
+      # A test run must leave the repository as it found it. Measured, not
+      # inferred: tests/test_tests_do_not_write_tracked_files.py reads source
+      # and cannot follow a path stored in a variable, so this is the check
+      # that cannot be fooled by how a path is spelled. On 2026-09-23 every
+      # pytest dirtied 11 tracked evidence files and blocked a checkout
+      # mid-merge; nothing in CI noticed, because nothing looked.
+      - name: Tests left the working tree as they found it
+        run: |
+          dirty="$(git status --porcelain)"
+          if [ -n "$dirty" ]; then
+            echo "pytest changed the repository:"
+            echo "$dirty"
+            exit 1
+          fi
       # The count is the point. If this number climbs, coverage of the
       # dangerous paths is silently draining away again.
       - name: Report skipped tests
