@@ -47,6 +47,10 @@ import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from musaeus.brackets import CLOSE, OPEN  # noqa: E402
+
 TRASH = Path("/mnt/FORGE2TB/.Trash-1000/files/TRIBUTE_REMOVED_FOR_REVIEW")
 VAULT_DB = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db")
 
@@ -94,7 +98,9 @@ def provenance() -> str:
 # stating the source; "tribute" in a trailing clause is weaker inference.
 #: Brackets come in three flavours in this set, including curly:
 #:   [In the Style of -Steely Dan-] {Karaoke Demonstration Version With Lead Vocal}
-_OB, _CB = r"\(\[\{", r"\)\]\}"
+#: The alphabet is musaeus.brackets' -- one definition for the whole codebase,
+#: because three hand-written copies each once missed a bracket style.
+_OB, _CB = OPEN, CLOSE
 
 ATTRIBUTION = [
     ("originally performed", re.compile(
