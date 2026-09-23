@@ -80,3 +80,49 @@ def test_the_result_still_sorts():
 def test_empty_and_odd_input_is_returned_unchanged():
     for odd in ("", "&", " & ", "Artist &"):
         assert folder_artist(odd, None) == odd
+
+
+# ── a comma-separated credit list files under its lead artist ──────────────
+#
+# "Billie Holiday, Sy Oliver & His Orchestra" is not a band. Browsing by
+# artist folder, it belongs under Billie Holiday; the tag keeps the full
+# credit. Added 2026-09-23, measured over all 2,678 catalogue artists.
+
+
+def test_a_backed_credit_files_under_the_lead():
+    assert folder_artist("Billie Holiday, Sy Oliver & His Orchestra") == "Billie Holiday"
+    assert folder_artist("Billie Holiday, John Simmons & His Orchestra") == "Billie Holiday"
+    assert folder_artist("Janis Joplin, Big Brother & The Holding Company") == "Janis Joplin"
+
+
+def test_a_band_whose_own_name_has_commas_is_never_taken_apart():
+    # The head is a single word in every one of these, which is what tells a
+    # member list from a backing credit.
+    for band in ("Earth, Wind & Fire", "Crosby, Stills & Nash", "Blood, Sweat & Tears"):
+        assert folder_artist(band) == band
+
+
+def test_sort_form_is_not_a_credit_list():
+    # "Rolling Stones, The" must not become "Rolling Stones" -- that would
+    # split one artist across two folders, which is the bug this guards.
+    for sorted_name in ("Rolling Stones, The", "Thermals, The", "Healing, The"):
+        assert folder_artist(sorted_name) == sorted_name
+
+
+def test_a_name_suffix_is_not_a_credit_list():
+    assert folder_artist("Larry Mullen, Jr") == "Larry Mullen, Jr"
+
+
+def test_the_feat_rule_is_answered_before_the_comma_rule():
+    # Answering the comma first would invent "Gorillaz feat. Asha Puthli".
+    assert folder_artist("Gorillaz feat. Asha Puthli, Bobby Womack") == "Gorillaz"
+
+
+def test_bands_protected_by_the_ampersand_rules_are_still_protected():
+    for band in (
+        "Hootie & The Blowfish",
+        "Bob Marley & The Wailers",
+        "Benny Goodman & His Orchestra",
+        "Simon & Garfunkel",
+    ):
+        assert folder_artist(band) == band

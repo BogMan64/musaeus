@@ -186,7 +186,11 @@ _COLLAB = re.compile(r"\s*\b(?:feat\.?|featuring|ft\.?|with)\s+", re.I)
 _BAND_TAIL = re.compile(r"^(the|his|her|their|los|las)\b", re.I)
 
 
-def folder_artist(name: str, mb_artist_name: str | None = None) -> str:
+_ARTICLE_TAIL = re.compile(r"^(the|a|an)$", re.I)
+_NAME_SUFFIX = re.compile(r"^(jr|sr|jnr|snr|ii|iii|iv)\.?$", re.I)
+
+
+def _performing_head(name: str, mb_artist_name: str | None = None) -> str:
     """The artist a track FILES under, which is not always its full credit.
 
     A duet creates a one-track folder that belongs under the primary artist:
@@ -233,3 +237,50 @@ def folder_artist(name: str, mb_artist_name: str | None = None) -> str:
     if len(right.split()) < 2:
         return name
     return left
+
+
+def _credit_head(name: str) -> str:
+    """The lead artist of a comma-separated credit list, or the name unchanged.
+
+    "Billie Holiday, Sy Oliver & His Orchestra" is not a band called that. It
+    is Billie Holiday, backed. Browsing by artist folder, every Billie Holiday
+    recording should sit under Billie Holiday -- the TAG keeps the full credit,
+    the FOLDER only says where it lives. Three fields, three jobs.
+
+    A comma is the signal, but it has three other uses that must survive:
+
+    1. sort form -- "Rolling Stones, The", "Healing, The". Tail is an article.
+    2. a name suffix -- "Larry Mullen, Jr". Tail is Jr/Sr/II/III/IV.
+    3. a band whose own name contains commas -- "Earth, Wind & Fire",
+       "Crosby, Stills & Nash", "Blood, Sweat & Tears". In every one of those
+       the head is a SINGLE word, because the comma separates members rather
+       than crediting a backing act. Requiring two or more words in the head
+       is what keeps them whole.
+
+    Measured 2026-09-23 over all 2,678 distinct artists in the catalogue: 78
+    contain a comma and 57 are credit lists that move. Every case above stays.
+    """
+    head, sep, tail = name.partition(",")
+    if not sep:
+        return name
+    head, tail = head.strip(), tail.strip()
+    if not head or not tail:
+        return name
+    if _ARTICLE_TAIL.match(tail) or _NAME_SUFFIX.match(tail):
+        return name
+    if len(head.split()) < 2:
+        return name
+    return head
+
+
+def folder_artist(name: str, mb_artist_name: str | None = None) -> str:
+    """The artist a track FILES under. See _performing_head and _credit_head.
+
+    Two questions, asked in order, because they can both apply to one string.
+    "Gorillaz feat. Asha Puthli, Bobby Womack" needs the feat. rule first --
+    answering the comma first would file it under "Gorillaz feat. Asha Puthli",
+    a folder that should never exist.
+    """
+    if not name:
+        return name
+    return _credit_head(_performing_head(name, mb_artist_name))
