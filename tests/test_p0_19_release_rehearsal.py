@@ -901,7 +901,7 @@ def test_g4_acoustid_columns_and_insertion_contract(disposable_vault, tmp_path):
         # (a) The contract, on a database built the way state/ expects.
         #
         # ensure_state_tables() alone is NOT enough: it creates only
-        # state_metadata and schema_migrations. The `duplicates` table this
+        # state_metadata and schema_migrations. The `duplicate_candidates` table this
         # contract inserts into is created by the MIGRATION CHAIN, so
         # migrate() is the only thing that can produce a database this
         # contract can be satisfied against — and migrate() has no caller.
@@ -913,7 +913,7 @@ def test_g4_acoustid_columns_and_insertion_contract(disposable_vault, tmp_path):
         conn.row_factory = sqlite3.Row
         ensure_state_tables(conn)
         actual = [
-            r["name"] for r in conn.execute("PRAGMA table_info(duplicates)") if r["name"] != "id"
+            r["name"] for r in conn.execute("PRAGMA table_info(duplicate_candidates)") if r["name"] != "id"
         ]
         repo = DuplicateRepository(conn)
         repo.insert_acoustid_candidate(
@@ -1019,7 +1019,7 @@ def test_g4_acoustid_columns_and_insertion_contract(disposable_vault, tmp_path):
             legacy_db_columns_after_ensure_state_tables=legacy_cols_after,
             legacy_insert_error=legacy_insert_error,
         )
-        gate.capture("state-only DB PRAGMA table_info(duplicates)", ", ".join(actual))
+        gate.capture("state-only DB PRAGMA table_info(duplicate_candidates)", ", ".join(actual))
         gate.capture("legacy (db.open_db) columns BEFORE", ", ".join(legacy_cols_before))
         gate.capture("legacy columns AFTER ensure_state_tables()", ", ".join(legacy_cols_after))
         gate.capture("insert against legacy schema", legacy_insert_error or "(no error)")
