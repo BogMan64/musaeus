@@ -21,28 +21,7 @@ _CONFIG_DIR = Path.home() / ".config" / "musaeus"
 _SETTINGS_FILE = _CONFIG_DIR / "settings.env"
 _CREDENTIALS_FILE = _CONFIG_DIR / "credentials.env"
 
-# API keys the system can use, with registration URLs.
-#
-# Removed 2026-09-14 as housekeeping, both verified unused before removal:
-#
-#   MUSICBRAINZ_API_KEY -- MusicBrainz requires no key. mb_enrich talks to
-#       musicbrainz.org with a User-Agent header and nothing else, per MB's
-#       own guidelines, so this only ever prompted for a credential that
-#       does not exist.
-#   GROQ_API_KEY -- the "AI metadata reviewer (reviewer stage)" it named has
-#       no implementation. ReviewerStage appears in one module docstring and
-#       one test comment; there is no such stage and nothing ever read the
-#       key.
-#   SPOTIFY_CLIENT_ID / _SECRET -- Spotify issues a token and then answers
-#       /v1/search with 403 "Active premium subscription required for the
-#       owner of the app". A token is not permission to search and no code
-#       change fixes an account requirement, so the album-name tool uses
-#       MusicBrainz instead (free, keyless). Nothing in MUSAEUS reads these.
-#   OPENROUTER_API_KEY -- Grey's ruling 2026-09-14: not to be used again.
-#       "Quality beats cost saving." Only ever appeared in config; no caller.
-#
-# A menu that asks for credentials nothing consumes teaches the operator
-# that the menu is not to be believed.
+# API keys the system can use, with registration URLs
 API_KEYS = {
     # Core (used by default pipeline stages)
     "LASTFM_API_KEY": {
@@ -51,6 +30,12 @@ API_KEYS = {
         "required": False,
         "used_by": "Genre enrichment (enrich stage)",
     },
+    "GROQ_API_KEY": {
+        "label": "Groq",
+        "url": "https://console.groq.com/keys",
+        "required": False,
+        "used_by": "AI metadata reviewer (reviewer stage)",
+    },
     "ACOUSTICID_API_KEY": {
         "label": "AcousticID",
         "url": "https://acoustid.org/api-key",
@@ -58,17 +43,35 @@ API_KEYS = {
         "used_by": "Acoustic fingerprint dedup (acousticid stage)",
     },
     # Extended (used by optional stages)
-    "DISCOGS_CONSUMER_KEY": {
-        "label": "Discogs Consumer Key",
-        "url": "https://www.discogs.com/settings/developers",
+    "MUSICBRAINZ_API_KEY": {
+        "label": "MusicBrainz",
+        "url": "https://musicbrainz.org/doc/MusicBrainz_API",
         "required": False,
-        "used_by": "Artist identity fallback (mb-enrich stage, when MusicBrainz has no match)",
+        "used_by": "Artist/release enrichment (mb-enrich stage)",
     },
-    "DISCOGS_CONSUMER_SECRET": {
-        "label": "Discogs Consumer Secret",
+    "DISCOGS_API_KEY": {
+        "label": "Discogs",
         "url": "https://www.discogs.com/settings/developers",
         "required": False,
-        "used_by": "Artist identity fallback (mb-enrich stage, paired with the consumer key)",
+        "used_by": "Genre classification (5-source voting)",
+    },
+    "SPOTIFY_CLIENT_ID": {
+        "label": "Spotify Client ID",
+        "url": "https://developer.spotify.com/dashboard/applications",
+        "required": False,
+        "used_by": "Genre classification (5-source voting)",
+    },
+    "SPOTIFY_CLIENT_SECRET": {
+        "label": "Spotify Client Secret",
+        "url": "https://developer.spotify.com/dashboard/applications",
+        "required": False,
+        "used_by": "Genre classification (5-source voting)",
+    },
+    "OPENROUTER_API_KEY": {
+        "label": "OpenRouter",
+        "url": "https://openrouter.ai/keys",
+        "required": False,
+        "used_by": "AI code review / overnight self-heal",
     },
 }
 
@@ -96,23 +99,7 @@ def _save_env(path: Path, env: dict[str, str]) -> None:
 
 
 def needs_setup() -> bool:
-    """Return True if the setup wizard should run (no vault configured).
-
-    Consults the environment first. Without that check this asked only whether
-    ``~/.config/musaeus/settings.env`` exists, so exporting ``MUSAEUS_VAULT_ROOT``
-    was not enough to configure MUSAEUS: every command dropped into the
-    interactive wizard, which then aborts because nothing can answer it. That
-    blocks every non-interactive use — containers, cron, systemd — and the
-    Docker image had to work around it by seeding the file, which left the
-    image and a bare ``pip install`` diverging.
-
-    ``MusicConfig.from_env()`` already treats the variable as sufficient. This
-    function disagreeing with it was the same fact living in two places.
-
-    Found 2026-09-05 by running the container, not by reading the code.
-    """
-    if os.environ.get("MUSAEUS_VAULT_ROOT"):
-        return False  # the environment already answers the question
+    """Return True if the setup wizard should run (no vault configured)."""
     if not _SETTINGS_FILE.exists():
         return True
     env = _load_env(_SETTINGS_FILE)
@@ -227,22 +214,11 @@ def run_wizard(force: bool = False) -> bool:
 
 # ── API key manager (console 'Enter/Update API Keys' menu) ─────────────────────
 
-# EVERY key MUSAEUS can use, on Grey's instruction 2026-09-14: option 13
-# should ask about all of them.
-#
-# This used to be exactly the four that MusicConfig.from_env() reads, on the
-# reasoning that a key the config object never surfaces is a key nothing
-# consumes. That reasoning was wrong: a key can be read straight from
-# os.environ by a script the config object knows nothing about, which is
-# exactly what the album-name tool did with Spotify -- genuinely required to
-# run, invisible to the only menu that offers to set it, leaving the operator
-# exporting it by hand with nothing saying that was needed.
-#
-# Reading through MusicConfig is an implementation detail. Needing the key to
-# run the system is the thing the operator cares about, so that is the line
-# this list draws. Derived from API_KEYS so a key added there is never again
-# unreachable from the menu.
-MANAGED_KEYS = list(API_KEYS)
+# Exactly the four keys MusicConfig.from_env() actually reads (config.py) --
+# a subset of the broader API_KEYS dict above, which also lists keys no
+# stage currently consumes through the config object (MusicBrainz, Discogs,
+# Spotify client id/secret).
+MANAGED_KEYS = ["GROQ_API_KEY", "LASTFM_API_KEY", "OPENROUTER_API_KEY", "ACOUSTICID_API_KEY"]
 
 
 def _confirm(prompt: str, default: bool = False) -> bool:
@@ -275,11 +251,10 @@ def _read_secret(prompt: str) -> str:
 
 def run_api_key_manager() -> None:
     """
-    Interactive 'Enter/Update API Keys' menu: walk every key MUSAEUS can
-    use (MANAGED_KEYS -- see the note there on why this is no longer just
-    the four MusicConfig reads), show current status with the same
-    checkmark convention as MusicConfig.describe(), and let Grey update
-    any of them one at a time. Always writes to
+    Interactive 'Enter/Update API Keys' menu: walk the four keys
+    MusicConfig actually reads (config.py's from_env()), show current
+    status with the same checkmark convention as MusicConfig.describe(),
+    and let Grey update any of them one at a time. Always writes to
     credentials.env specifically -- never settings.env, which is reserved
     for paths -- since credentials.env is the file already gitignored for
     secrets (see module docstring / config.py's loading-priority list).

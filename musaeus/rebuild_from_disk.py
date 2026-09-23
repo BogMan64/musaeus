@@ -55,30 +55,23 @@ from typing import Any
 
 from .config import AUDIO_EXTENSIONS, MusicConfig
 from .hasher import audio_hash_safe, file_hash
-from .identity_tags import read_identity
 from .stages.bpm import read_existing_tags as _read_bpm_tags
 from .stages.forge import read_existing_rg_tags as _read_rg_tags
 from .stages.scholar import _extract_meta, _probe
 
 logger = logging.getLogger(__name__)
 
-_ARCHIVE = "archive"
-
 _COMMIT_EVERY = 50
 
 # Directory names under ALAC-Library that carry a status other than the
 # ordinary "this is live library content" meaning.
 _STATUS_BY_DIR = {
-    # Current names (REVIEW/ lives outside Libraries/ since 2026-09-20).
-    "DUPES_MOVED": "DUPE_REVIEW",
-    "TRIBUTE_REMOVED": "TRIBUTE_REVIEW",
-    # Pre-move names, still present in historical paths and manifests.
     "DUPES_MOVED_FOR_REVIEW": "DUPE_REVIEW",
     "TRIBUTE_REMOVED_FOR_REVIEW": "TRIBUTE_REVIEW",
 }
 
 
-def _read_all_tags(path: Path, known_duration: float | str | None = None) -> dict[str, Any]:
+def _read_all_tags(path: Path) -> dict[str, Any]:
     """Read every tag-derived field MUSAEUS knows how to recover.
 
     Reuses the exact readers the pipeline stages use, rather than a second
@@ -128,81 +121,6 @@ def _read_all_tags(path: Path, known_duration: float | str | None = None) -> dic
     except Exception as exc:
         logger.debug("rg tag read failed for %s: %s", path, exc)
 
-    # Recording identity -- MusicBrainz and AcoustID. IdentityTagStage
-    # writes these precisely so a rebuild never has to re-acquire them: an
-    # MBID costs a rate-limited second and a fingerprint ~0.8 s of fpcalc,
-    # so 10,000 files is hours either way. Without this read half the write
-    # half was pointless for rebuild, which is the shape of a round trip
-    # only half built.
-    try:
-        ident = read_identity(path)
-        for col in ("mb_artist_id", "mb_release_id", "acousticid_recording"):
-            if ident.get(col):
-                out[col] = ident[col]
-
-        # The fingerprint is trusted only when its recorded duration still
-        # matches the audio. A fingerprint describes the PCM: canonicalize's
-        # FLAC->ALAC is lossless so it survives, but a transcode to a lossy
-        # codec changes the samples. chromaprint tolerates that well -- which
-        # is a property to depend on deliberately, not by accident. A
-        # mismatch means the tag outlived the audio it described.
-        fp = ident.get("chromaprint")
-        recorded = ident.get("chromaprint_duration")
-        if fp:
-            # Probe only if the duration is not already known. scan_and_rebuild
-            # has already run _probe on this file before calling us, so an
-            # unconditional second probe costs ~50-100ms per fingerprinted
-            # file -- 10-15 minutes across a 10,000-file rebuild, against a
-            # commit whose entire purpose is saving rebuild time. _probe
-            # RAISES on failure rather than returning falsy, so it is guarded
-            # rather than `or {}`-ed.
-            actual = known_duration
-            if not actual:
-                # Only probe when the caller could not tell us. scan_and_rebuild
-                # has already run _probe on this file, so probing again cost
-                # ~50-100ms per fingerprinted file -- 10-15 minutes across a
-                # 10,000-file rebuild, against a commit whose whole purpose is
-                # saving rebuild time. _probe RAISES rather than returning
-                # falsy, so it is guarded rather than `or {}`-ed.
-                try:
-                    probed = _probe(path)
-                except Exception:
-                    probed = {}
-                actual = (probed.get("format", {}) or {}).get("duration")
-
-            # Trust the fingerprint ONLY on positive evidence that it still
-            # describes this audio.
-            #
-            # The earlier form said `if recorded and actual and mismatch:
-            # distrust / else: trust`, which trusts whenever there is nothing
-            # to compare -- a file tagged before chromaprint_duration existed
-            # carries a fingerprint and no duration, so it fell straight into
-            # the trusting branch. That is the same check-that-cannot-fire
-            # this guard was written to remove, one step along.
-            #
-            # The costs are not symmetric: refusing to trust costs ~0.8s of
-            # fpcalc, while wrongly trusting yields an AcoustID recording ID
-            # for audio the file no longer holds.
-            if not (recorded and actual):
-                logger.debug(
-                    "chromaprint for %s cannot be checked (recorded=%r actual=%r) -- not trusted",
-                    path,
-                    recorded,
-                    actual,
-                )
-            elif abs(float(recorded) - float(actual)) > 2.0:
-                logger.debug(
-                    "chromaprint for %s describes %.1fs but the audio is %.1fs -- not trusted",
-                    path,
-                    float(recorded),
-                    float(actual),
-                )
-            else:
-                out["chromaprint"] = fp
-                out["chromaprint_duration"] = float(recorded)
-    except Exception as exc:
-        logger.debug("identity tag read failed for %s: %s", path, exc)
-
     return out
 
 
@@ -215,7 +133,7 @@ def _archive_twin(path: Path, cfg: MusicConfig) -> Path | None:
     docstring explains why: a second path column would drift out of sync with
     real filesystem state.
     """
-    archive_root = cfg.alac_archive
+    archive_root = cfg.vault_root / "ALAC_Archive"
     if not archive_root.exists():
         return None
     try:
@@ -226,29 +144,14 @@ def _archive_twin(path: Path, cfg: MusicConfig) -> Path | None:
     return twin if twin.exists() else None
 
 
-def _status_for(path: Path, alac_library: Path, cfg: MusicConfig | None = None) -> str:
+def _status_for(path: Path, alac_library: Path) -> str:
     """Infer status from where the file actually sits.
 
     Location is the honest signal: DupeResolver physically relocates a loser
-    into the dupes review queue, TributeQuarantine into the tribute one.
-    Anything else under the library is live content, which by definition
-    reached Finalize.
-
-    Since 2026-09-20 those queues live OUTSIDE Libraries/, so they are checked
-    against the configured review directories FIRST. Without that, a review
-    file falls through `relative_to(alac_library)` -> ValueError and would be
-    reported CATALOGUED -- a wrong answer in the dangerous direction.
+    into DUPES_MOVED_FOR_REVIEW, TributeQuarantine into
+    TRIBUTE_REMOVED_FOR_REVIEW. Anything else under the library is live
+    content, which by definition reached Finalize.
     """
-    if cfg is not None:
-        for review_dir, status in (
-            (cfg.dupes_review_dir, "DUPE_REVIEW"),
-            (cfg.tribute_review_dir, "TRIBUTE_REVIEW"),
-        ):
-            try:
-                path.relative_to(review_dir)
-                return status
-            except ValueError:
-                pass
     try:
         parts = path.relative_to(alac_library).parts
     except ValueError:
@@ -258,39 +161,6 @@ def _status_for(path: Path, alac_library: Path, cfg: MusicConfig | None = None) 
         if mapped:
             return mapped
     return "CATALOGUED"
-
-
-def create_rebuild_table(conn: sqlite3.Connection, table: str) -> None:
-    # Mirror archive's shape so the result is directly comparable, and so a
-    # later --replace is a rename rather than a schema translation.
-    #
-    # NOT `CREATE TABLE ... AS SELECT`. That copies column names and types
-    # and NOTHING else -- no PRIMARY KEY, no AUTOINCREMENT, no
-    # UNIQUE(file_path), no NOT NULL, no DEFAULTs. promote() then renames
-    # that constraint-less table over `archive`, after which every
-    # upsert_archive() dies on "ON CONFLICT clause does not match any PRIMARY
-    # KEY or UNIQUE constraint", rows insert with id=NULL and status=NULL,
-    # and duplicate file_paths become possible. Observed on the live vault
-    # 2026-08-30: ingest and sentinel both failed on their first row.
-    #
-    # The real DDL is taken from sqlite_master and re-pointed at the new
-    # name, so the rebuild is the same table in every respect but its name.
-    ddl_row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='archive'"
-    ).fetchone()
-    if ddl_row is None or not ddl_row[0]:
-        raise RuntimeError("cannot read archive's schema; refusing to rebuild")
-    ddl = ddl_row[0]
-    # `CREATE TABLE archive(` or `CREATE TABLE "archive"(`
-    for pattern in (f'CREATE TABLE "{_ARCHIVE}"', f"CREATE TABLE {_ARCHIVE}"):
-        if ddl.startswith(pattern):
-            ddl = f'CREATE TABLE "{table}"' + ddl[len(pattern) :]
-            break
-    else:
-        raise RuntimeError(f"unrecognised archive DDL, refusing to rebuild: {ddl[:60]}")
-
-    conn.execute(f"DROP TABLE IF EXISTS {table}")
-    conn.execute(ddl)
 
 
 def scan_and_rebuild(
@@ -319,28 +189,19 @@ def scan_and_rebuild(
         summary["errors"].append(f"library not found: {lib}")
         return summary
 
-    # The review queues moved outside Libraries/ on 2026-09-20. Walk them
-    # explicitly, or a rebuild-from-disk silently loses every file awaiting
-    # Grey's judgement -- 1,831 of them at the time of the move.
-    scan_roots = [lib]
-    for review_dir in (cfg.dupes_review_dir, cfg.tribute_review_dir):
-        try:
-            review_dir.relative_to(lib)
-        except ValueError:
-            if review_dir.exists():
-                scan_roots.append(review_dir)
-
     files = sorted(
         p
-        for root in scan_roots
-        for p in root.rglob("*")
+        for p in lib.rglob("*")
         if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS and "_history" not in p.parts
     )
     if limit:
         files = files[:limit]
     summary["scanned"] = len(files)
 
-    create_rebuild_table(conn, table)
+    # Mirror archive's shape so the result is directly comparable, and so a
+    # later --replace is a rename rather than a schema translation.
+    conn.execute(f"DROP TABLE IF EXISTS {table}")
+    conn.execute(f"CREATE TABLE {table} AS SELECT * FROM archive WHERE 0")
 
     cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
     now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
@@ -357,7 +218,7 @@ def scan_and_rebuild(
                 last_modified=datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(
                     timespec="seconds"
                 ),
-                status=_status_for(path, lib, cfg),
+                status=_status_for(path, lib),
                 date_added=now,
                 last_seen=now,
             )
@@ -367,7 +228,7 @@ def scan_and_rebuild(
             except Exception as exc:
                 summary["errors"].append(f"{path.name}: probe failed: {exc}")
 
-            row.update(_read_all_tags(path, row.get("duration")))
+            row.update(_read_all_tags(path))
 
             if compute_hashes:
                 # Hash the PRISTINE archive copy when one exists, not the
@@ -448,37 +309,7 @@ def promote(conn: sqlite3.Connection, *, table: str = "archive_rebuilt") -> str:
     """
     stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup = f"archive_pre_rebuild_{stamp}"
-
-    # SQLite carries a table's INDEXES along with an ALTER TABLE RENAME, so
-    # `idx_archive_hash/artist/status` follow the old table to the backup
-    # name and the promoted table has none. Worse, the names are then TAKEN,
-    # so db.py's `CREATE INDEX IF NOT EXISTS` on the next open finds them and
-    # silently no-ops -- the live archive is left permanently unindexed.
-    # Observed on the vault 2026-08-30: 1 index on archive, 4 on the backup.
-    #
-    # So capture the index DDL first, drop the indexes off the old table
-    # before renaming, and recreate them on the promoted one.
-    index_ddl = [
-        row[0]
-        for row in conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='archive' "
-            "AND sql IS NOT NULL"
-        )
-    ]
-    index_names = [
-        row[0]
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='archive' "
-            "AND sql IS NOT NULL"
-        )
-    ]
-    for name in index_names:
-        conn.execute(f"DROP INDEX IF EXISTS {name}")
-
     conn.execute(f"ALTER TABLE archive RENAME TO {backup}")
     conn.execute(f"ALTER TABLE {table} RENAME TO archive")
-    for ddl in index_ddl:
-        conn.execute(ddl)
     conn.commit()
-    logger.info("promoted; restored %d index(es)", len(index_ddl))
     return backup
