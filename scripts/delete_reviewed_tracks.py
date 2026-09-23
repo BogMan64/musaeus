@@ -23,6 +23,18 @@ WHAT "PERMANENTLY" REQUIRES
   the row         Removed, with one DELETED_BY_REVIEW event per file so the
                   event log says what happened and to what.
 
+SHARED AUDIO. An exact duplicate carries the same audio fingerprint as the
+copy that was kept. Denying the duplicate's fingerprint would deny the kept
+track as well, and it would be refused on the next rebuild. So a fingerprint
+is denied only when no SURVIVING row carries it -- the same rule the file
+guard below applies to paths. Found 2026-09-23 clearing a review queue that
+had been deleted by hand: 252 of its 1,136 rows shared audio with tracks
+still in the library.
+
+ROWS WITH NO FILE. Every removed row leaves an event, including one whose
+files were already gone. Events used to be written per deleted file, so such
+a row -- once its audio is rightly not denied -- vanished from every record.
+
 ORDER MATTERS. Files first, then the database, per file. A crash leaves a row
 whose files are gone -- visible and re-runnable -- rather than a catalogue
 that has forgotten tracks still on disk.
@@ -123,8 +135,19 @@ def main() -> int:
         except sqlite3.Error:
             continue
 
+    # Which AUDIO do surviving rows still carry? Same idea as keep_paths, one
+    # level down: a deletion may not deny the fingerprint of a track it is
+    # not deleting.
+    keep_hashes: set[str] = set()
+    try:
+        for rid, h in conn.execute("SELECT id, audio_hash FROM archive WHERE COALESCE(audio_hash,'') <> ''"):
+            if rid not in doomed:
+                keep_hashes.add(h)
+    except sqlite3.Error:
+        pass
+
     run_id = f"delete_reviewed_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}_{uuid.uuid4().hex[:6]}"
-    n_files = n_rows = n_denied = n_absent = n_shared = 0
+    n_files = n_rows = n_denied = n_absent = n_shared = n_kept_audio = 0
 
     for i in ids:
         row = conn.execute("SELECT * FROM archive WHERE id=?", (i,)).fetchone()
@@ -132,6 +155,7 @@ def main() -> int:
             n_absent += 1
             continue
         print(f"\n  id={i}  {row['artist']} - {row['title']}")
+        files_for_row = 0
         for p in copies(row, libs):
             if not p.is_file():
                 continue
@@ -148,12 +172,25 @@ def main() -> int:
                     (run_id, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                      "DELETED_BY_REVIEW", str(p), str(p), "", args.reason))
             n_files += 1
+            files_for_row += 1
         h = row["audio_hash"] if "audio_hash" in set(row.keys()) else None
-        if h and led is not None:
+        audio_kept = bool(h) and h in keep_hashes
+        if audio_kept:
+            print(f"     NOT DENIED (another row still carries this audio): {h[:12]}")
+            n_kept_audio += 1
+        elif h and led is not None:
             if args.execute:
                 deny_hash(led, h, args.reason, row["file_path"])
             n_denied += 1
         if args.execute:
+            if files_for_row == 0:
+                note = args.reason + " [row only: no file was on disk"
+                note += "; audio not denied, another row still carries it]" if audio_kept else "]"
+                conn.execute(
+                    "INSERT INTO events (run_id, ts, event_type, file_path, old_value, "
+                    "new_value, note) VALUES (?,?,?,?,?,?,?)",
+                    (run_id, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                     "DELETED_BY_REVIEW", row["file_path"], row["file_path"], "", note))
             conn.execute("DELETE FROM archive WHERE id=?", (i,))
         n_rows += 1
 
@@ -168,7 +205,9 @@ def main() -> int:
     print(f"\n{'DELETED' if args.execute else 'DRY RUN'}: {n_files} file(s), "
           f"{n_rows} row(s), {n_denied} hash(es) denied"
           + (f", {n_absent} id(s) already gone" if n_absent else "")
-          + (f", {n_shared} file(s) kept because a surviving row needs them" if n_shared else ""))
+          + (f", {n_shared} file(s) kept because a surviving row needs them" if n_shared else "")
+          + (f", {n_kept_audio} hash(es) NOT denied because a surviving row carries the same audio"
+             if n_kept_audio else ""))
     return 0
 
 

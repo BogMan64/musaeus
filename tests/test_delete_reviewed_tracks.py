@@ -177,3 +177,70 @@ class TestItDoesNotTakeASurvivingRowsFile:
         assert not (libs / "CAR_Library" / "B" / "Bl" / "gone.m4a").exists()
         assert not (libs / "ALAC-Archival" / "B" / "Bl" / "gone.m4a").exists()
         assert (libs / "CAR_Library" / "A" / "Al" / "keep.m4a").is_file()
+
+
+def _add_row_only(vault, rid, artist, title, file_path, h):
+    """A row whose files are already gone: deleted by hand, outside MUSAEUS."""
+    conn = sqlite3.connect(vault / "musaeus.db")
+    conn.execute(
+        "INSERT INTO archive (id, artist, title, status, audio_hash, file_path) "
+        "VALUES (?,?,?,'DUPE_REVIEW',?,?)",
+        (rid, artist, title, h, str(file_path)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _denied(vault, h):
+    lc = sqlite3.connect(vault / "_db_backups" / "hash_index.db")
+    n = lc.execute("SELECT COUNT(*) FROM denied_hashes WHERE audio_hash=?", (h,)).fetchone()[0]
+    lc.close()
+    return n == 1
+
+
+class TestItDoesNotDenyASurvivingRowsAudio:
+    """The 2026-09-23 defect, stated as a test.
+
+    An exact duplicate shares its audio fingerprint with the copy that was
+    kept. Denying the duplicate's fingerprint denies the kept track too: it is
+    refused on the next rebuild. The file guard above stops a deletion taking
+    a surviving row's FILE; this stops it taking a surviving row's AUDIO. Found
+    while clearing a hand-deleted review queue: 252 of its 1,136 rows shared
+    audio with tracks still in the library.
+    """
+
+    def test_audio_a_surviving_row_carries_is_not_denied(self, vault):
+        _add(vault, 1, "ABC", "Poison Arrow", "ABC/Lexicon/x.m4a", h="shared")
+        _add_row_only(vault, 2, "ABC", "Poison Arrow", vault / "REVIEW/gone.m4a", h="shared")
+        r = _run(vault, [2])
+        assert r.returncode == 0, r.stderr
+        conn = sqlite3.connect(vault / "musaeus.db")
+        assert conn.execute("SELECT COUNT(*) FROM archive WHERE id=2").fetchone()[0] == 0
+        conn.close()
+        assert not _denied(vault, "shared"), "the kept track's audio was denied"
+        assert "NOT DENIED" in r.stdout
+
+    def test_audio_only_doomed_rows_carry_is_still_denied(self, vault):
+        """The guard must not become an excuse to deny nothing."""
+        _add_row_only(vault, 1, "A", "X", vault / "REVIEW/a.m4a", h="solo")
+        _add_row_only(vault, 2, "A", "X", vault / "REVIEW/b.m4a", h="solo")
+        _run(vault, [1, 2])
+        assert _denied(vault, "solo"), "every copy was deleted, so the audio must be denied"
+
+
+class TestARowWithNoFileIsStillRecorded:
+    """Events were written per deleted FILE. A row whose files were already
+    gone left no event at all -- and once its audio is (rightly) not denied,
+    no ledger entry either. It would vanish from every record."""
+
+    def test_the_removal_leaves_an_event(self, vault):
+        gone = vault / "REVIEW" / "gone.m4a"
+        _add_row_only(vault, 1, "A", "X", gone, h="h1")
+        _run(vault, [1])
+        conn = sqlite3.connect(vault / "musaeus.db")
+        n = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type='DELETED_BY_REVIEW' AND file_path=?",
+            (str(gone),),
+        ).fetchone()[0]
+        conn.close()
+        assert n == 1, "a row was removed from the catalogue with nothing recorded"
