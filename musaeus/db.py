@@ -653,6 +653,32 @@ def deny_hash(
     )
 
 
+def undeny_hash(conn: sqlite3.Connection, audio_hash: str) -> dict[str, object] | None:
+    """Lift a deny-list entry, returning what it said -- or None if there was none.
+
+    For when a ruling is reversed and a denied track is kept after all. A
+    kept track whose audio stays denied is refused on the next normal
+    rebuild, and doctor reports it as removed audio still held.
+
+    The ledger keeps no history of its own, so the lifted entry is RETURNED:
+    the caller must record it (scripts/undeny_hashes.py writes it into the
+    event log). A lift that records nothing erases the reason the audio was
+    denied in the first place.
+
+    Returns a plain dict and leaves conn.row_factory alone, so it behaves the
+    same on a connection from open_hash_index (sqlite3.Row) and on a plain
+    sqlite3.connect() one -- a helper should not change the row type of a
+    connection it was handed.
+    """
+    cur = conn.execute("SELECT * FROM denied_hashes WHERE audio_hash = ?", (audio_hash,))
+    found = cur.fetchone()
+    if found is None:
+        return None
+    lifted = dict(zip([d[0] for d in cur.description], found, strict=True))
+    conn.execute("DELETE FROM denied_hashes WHERE audio_hash = ?", (audio_hash,))
+    return lifted
+
+
 def lookup_denied_hash(conn: sqlite3.Connection, audio_hash: str) -> sqlite3.Row | None:
     """Return the deny-list entry for *audio_hash*, or None.
 
