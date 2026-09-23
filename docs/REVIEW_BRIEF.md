@@ -109,13 +109,15 @@ error path that cannot reach it.
   verdict, so a missing `ifuse` reported `library integrity: WARN`;
   `musaeus_notify.py` never consulting `musaeus.network_policy` before
   dialling ntfy.sh.
-- **Tests that mutate tracked files — fix in PR #17, not yet on `main`.**
-  P0-19 writes its evidence into tracked `docs/p0_evidence/`, so on `main`
-  every `pytest` still dirties 11 committed files; it once blocked a
-  `git checkout` mid-merge. PR #17 makes writing opt-in via
-  `MUSAEUS_WRITE_EVIDENCE` (reads stay on the committed record, because G11
-  needs the baseline) and adds `tests/test_tests_do_not_write_tracked_files.py`.
-  Do not re-report this one. Finding OTHER instances is still in scope.
+- **Tests that mutate tracked files — fixed 2026-09-23 (PR #17).** P0-19
+  wrote its evidence into tracked `docs/p0_evidence/`, so every `pytest`
+  dirtied 11 committed files; it once blocked a `git checkout` mid-merge.
+  Writing is now opt-in via `MUSAEUS_WRITE_EVIDENCE` (reads stay on the
+  committed record, because G11 needs the baseline). Guarded twice:
+  `tests/test_tests_do_not_write_tracked_files.py` reads source, and a CI step
+  fails if `pytest` leaves the working tree changed. That second check
+  measures the tree itself, so any OTHER instance now fails CI on its own.
+  Do not re-report this one.
 - **6 of 11 P0 gates have no CLI path** (P0-19's own finding). More than half
   the P0 safety layer is not wired to the program a user runs. Known. Worth
   confirming the count, not worth rediscovering.
@@ -165,7 +167,6 @@ tool result. Nine unverified guesses are worse than two measured facts.
 
 Test command: `python3 -m pytest -q` (the suite sets `MUSAEUS_NO_IDLE_THROTTLE=1`;
 without it the idle throttle SIGSTOPs ffmpeg children and tests fail by timing
-out, which reads exactly like a slow disk). Baseline on `main` at `a173e06`:
-**3139 passed, 1 skipped** locally; CI runs 3.10, 3.11 and 3.12 and is green
-on all three. PR #17 adds two guard tests, so 3141 once it lands. Read the
-summary line, not the shell exit code.
+out, which reads exactly like a slow disk). Baseline on `main` at `73bf027`:
+**3143 passed, 1 skipped** locally; CI runs 3.10, 3.11 and 3.12 and is green
+on all three. Read the summary line, not the shell exit code.
