@@ -1851,7 +1851,14 @@ def test_g10_scheduled_run_is_preview_or_review_only(fixture_home):
         )
         out = proc.stdout + proc.stderr
         skipped_on_collision = "OVERNIGHT_SKIPPED_LOCK_COLLISION" in out
-        notified = "[notify]" in out or "notification" in out
+        # This gate reads TEXT, not sockets: the wrapper is a subprocess, so the
+        # in-process transport harness cannot see it. That means a refusal has
+        # to be recognised explicitly -- musaeus_notify.py announces a policy
+        # suppression on the same "[notify]" prefix it uses to report a send,
+        # and without this the gate called a refusal an attempt and failed the
+        # rehearsal for doing exactly what the rehearsal demands.
+        suppressed = "SUPPRESSED by network policy" in out
+        notified = (not suppressed) and ("[notify]" in out or "notification" in out)
         created = sorted(str(p.relative_to(wrapper_root)) for p in wrapper_root.rglob("*"))
 
         default_is_preview = "DRY RUN" in out

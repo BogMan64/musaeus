@@ -172,6 +172,23 @@ def main() -> int:
     args = parser.parse_args()
 
     tags = [t.strip() for t in args.tags.split(",") if t.strip()]
+
+    # A suppression is not a failure, and must not be reported as one: the
+    # wrapper prints "Failure notification could not be sent" on a non-zero
+    # exit, which would be untrue and would send somebody looking for a
+    # broken notifier that is working exactly as configured.
+    if _policy_from_env() is network_policy.NetworkPolicy.LOCAL_ONLY:
+        print(
+            "  [notify] SUPPRESSED by network policy (MUSAEUS_NETWORK): "
+            "no request was made to ntfy.sh",
+            file=sys.stderr,
+        )
+        print(
+            f"  [notify] the alert would have read: {args.title} -- {args.message}",
+            file=sys.stderr,
+        )
+        return 0
+
     if send(args.title, args.message, tags=tags):
         print(f"  [notify] Alert sent to ntfy.sh/{NTFY_TOPIC}")
         return 0
