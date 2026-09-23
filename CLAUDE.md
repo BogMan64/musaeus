@@ -109,3 +109,10 @@ Run `python3 -m pytest -q`. Read the summary line, not the shell exit code
 The suite sets `MUSAEUS_NO_IDLE_THROTTLE=1`. Without it the idle throttle
 `SIGSTOP`s ffmpeg children whenever someone touches the keyboard, and
 tests fail by timing out — which reads exactly like a slow disk.
+
+## Reviewing this codebase
+
+Before reviewing, read `docs/REVIEW_BRIEF.md`. It says what to look for (two
+things that must agree, quietly ceasing to), what is already known and must
+not be re-reported, and how to report: two locations, a concrete failure,
+and whether it was verified by running something or only read.
