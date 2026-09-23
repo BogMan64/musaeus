@@ -3,11 +3,18 @@ MUSAEUS — Sanitize Stage
 
 Filesystem-safe metadata normalization for Windows/ExFAT/Android compatibility.
 
-Fixes:
-  - Forbidden characters: < > : " / \ | ? *
+Fixes, in the METADATA only:
+  - Control characters
   - Trailing dots and spaces (Windows issue)
   - Smart quotes → straight quotes
-  - Preserves readability while ensuring cross-platform compatibility
+  - Collapsed whitespace
+
+Does NOT touch path-forbidden characters (< > : " / \ | ? *). Those are
+unsafe in a PATH, not in a tag, and organize.sanitize_path_component()
+already handles them wherever a path is built. Applying them here instead
+corrupted the stored names -- "AC/DC" became "Ac-dc", "R&B/Funk/Soul"
+became "R&B-Funk-Soul" -- while protecting nothing that was not already
+protected. Narrowed 2026-08-22.
 
 Based on ORPHEUS sanitize_component() function.
 """
@@ -26,7 +33,26 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Windows/ExFAT forbidden characters in filenames
+# Characters that are unsafe in METADATA itself: control characters only.
+#
+# Narrowed 2026-08-22 (Grey's call: match MusicBrainz exactly, sanitize only
+# for the path). This stage used to apply Windows/ExFAT PATH rules to
+# archive.artist/album/title -- but those are tags, and every path-building
+# site already sanitizes independently (organize.build_track_filename,
+# organize.sanitize_path_component, tribute_quarantine). So the path was
+# never at risk; the only effect was corrupting the stored name.
+#
+# It cost us twice: "AC/DC" became the stored artist "Ac-dc" on 92 files
+# (Normalize then title-cased what it no longer recognised), and
+# "R&B/Funk/Soul" became "R&B-Funk-Soul" on 916, inventing a genre that
+# matches no canon and generating ~1,000 phantom MasterLaw conflicts.
+#
+# MusicBrainz has no single house rule -- it records each artist's own
+# styling ("Simon & Garfunkel", "Peter, Paul and Mary", "AC/DC"). Inheriting
+# that is only possible if this stage stops overwriting it.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+# Kept for callers that genuinely build a path from a raw string.
 FORBIDDEN_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 # Smart quotes and special dashes
@@ -46,29 +72,26 @@ def sanitize_value(value: str | None) -> str | None:
     Make metadata filesystem-safe while preserving readability.
 
     Rules (from ORPHEUS):
-      - / → - (forward slash to hyphen)
-      - \\ → - (backslash to hyphen)
-      - : → " - " (colon to space-hyphen-space for readability)
-      - Remove: ? * " < > |
+      - Strip control characters
       - Smart quotes → straight quotes
       - Strip trailing dots and spaces
       - Collapse multiple spaces
+
+    Deliberately does NOT touch / \\ : ? * " < > | -- those are unsafe in a
+    PATH, not in a tag, and every path is built through
+    organize.sanitize_path_component(). See the note on _CONTROL_CHARS_RE.
     """
     if not value or not isinstance(value, str):
         return value
 
-    v = value.strip()
+    v = _CONTROL_CHARS_RE.sub("", value).strip()
     if not v:
         return None
 
-    # Replace slashes with hyphens
-    v = v.replace("/", "-").replace("\\", "-")
-
-    # Replace colon with space-hyphen-space (more readable)
-    v = v.replace(":", " - ")
-
-    # Remove forbidden characters
-    v = re.sub(r'[?*"<>|]', "", v)
+    # Path-forbidden characters (/ \\ : ? * " < > |) are deliberately left
+    # alone here -- see _CONTROL_CHARS_RE. organize.sanitize_path_component()
+    # handles them at the moment a path is actually built, which is the only
+    # moment they matter.
 
     # Convert smart quotes/dashes to ASCII equivalents
     for smart, plain in SMART_QUOTE_MAP.items():
@@ -88,8 +111,9 @@ def needs_sanitization(value: str | None) -> bool:
     if not value:
         return False
 
-    # Check for forbidden chars
-    if FORBIDDEN_CHARS_RE.search(value):
+    # Control characters are unsafe in metadata itself. Path-forbidden
+    # characters are not this stage's business -- see _CONTROL_CHARS_RE.
+    if _CONTROL_CHARS_RE.search(value):
         return True
 
     # Check for smart quotes/dashes
@@ -103,7 +127,40 @@ def needs_sanitization(value: str | None) -> bool:
 class SanitizeStage(BaseStage):
     """Normalize metadata for cross-platform filesystem compatibility."""
 
+    @classmethod
+    def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
+        """Rows this stage would act on. Read-only; see planner.py."""
+        n = conn.execute("SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'").fetchone()[0]
+        return int(n), "rows inspected for unsafe metadata"
+
     NAME = "sanitize"
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """Assert the post-condition: no CATALOGUED row still needs sanitising.
+
+        This is a stronger claim than "the UPDATE ran". A stage can execute
+        its writes and still leave the condition it exists to fix in place --
+        that is precisely how GenreCanon passed its tests while parsing a
+        separator its file never used. Re-running the predicate over the
+        table is cheap (no file I/O, one query) and cannot be satisfied by
+        a no-op.
+        """
+        rows = ctx.conn.execute(
+            "SELECT file_path, artist, album, title FROM archive WHERE status='CATALOGUED'"
+        ).fetchall()
+        still = [
+            r["file_path"]
+            for r in rows
+            if any(needs_sanitization(r[f]) for f in ("artist", "album", "title"))
+        ]
+        if still:
+            from pathlib import Path
+
+            return [
+                f"{len(still)} row(s) still hold unsafe metadata after sanitize "
+                f"claimed {result.files_changed} fix(es), e.g. {Path(still[0]).name}"
+            ]
+        return []
 
     def validate(self, ctx: RunContext) -> None:
         count = ctx.conn.execute(
@@ -141,8 +198,19 @@ class SanitizeStage(BaseStage):
             file_path = row["file_path"]
             changes = {}
 
-            # Check each field
-            for field in ("artist", "album", "title", "genre"):
+            # genre is deliberately NOT sanitised (removed 2026-08-21).
+            #
+            # These rules exist to make a string safe as a Windows/ExFAT PATH
+            # COMPONENT, and artist/album/title genuinely become folder and
+            # file names. Genre never does -- it is only ever a tag, and
+            # playlist.py sanitises its own .m3u8 filenames separately via
+            # _safe_genre(). Running path rules over it stripped the "/" out
+            # of Apple's canonical genre names, turning "R&B/Funk/Soul" into
+            # "R&B-Funk-Soul" on 904 files and "Disco/Electronic" into
+            # "Disco-Electronic" -- silently inventing genre names that
+            # match no canon, and generating ~1,000 phantom conflicts
+            # against MasterLaw. Grey's preference is the "/" form.
+            for field in ("artist", "album", "title"):
                 original = row[field]
                 if not original:
                     continue
