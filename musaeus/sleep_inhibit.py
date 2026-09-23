@@ -43,6 +43,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import subprocess
 import sys
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ def reexec_under_inhibitor(why: str) -> None:
       - the guard env var is set, so we are already the inhibited child
       - MUSAEUS_NO_SLEEP_INHIBIT is set
       - systemd-inhibit is not on PATH
+      - systemd-inhibit is present but refuses to take an inhibitor
       - the exec itself fails
 
     In every one of those cases the tool still runs. An inhibitor is a
@@ -79,6 +81,30 @@ def reexec_under_inhibitor(why: str) -> None:
     exe = shutil.which("systemd-inhibit")
     if not exe:
         logger.info("[sleep] systemd-inhibit not available -- the machine may sleep mid-run")
+        return
+
+    # execve SUCCEEDS even when systemd-inhibit will go on to refuse. The
+    # process is replaced, systemd-inhibit prints "Failed to inhibit: Access
+    # denied" and exits non-zero, and the work never runs -- the OSError guard
+    # below cannot fire, because by then this process is gone. That happens
+    # wherever the binary exists without a usable session bus: CI containers,
+    # some SSH sessions, restricted users. It contradicted this function's own
+    # contract, so probe first.
+    try:
+        probe = subprocess.run(
+            [exe, "--what=sleep:idle", "--who=MUSAEUS", "--why=probe", "--mode=block", "true"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        # TimeoutExpired inherits SubprocessError, NOT OSError; catching only
+        # OSError here is the P1-K defect, already shipped twice.
+        logger.info("[sleep] systemd-inhibit could not be probed (%s) -- continuing", exc)
+        return
+    if probe.returncode != 0:
+        detail = probe.stderr.decode("utf-8", "replace").strip() or f"exit {probe.returncode}"
+        logger.info("[sleep] systemd-inhibit refused (%s) -- continuing uninhibited", detail)
         return
 
     argv = [
