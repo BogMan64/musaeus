@@ -728,3 +728,43 @@ class TestTruncatedFragments:
         _add(vault, "gone_full.m4a", artist="Band", title="Tune", duration=200.0)
         _add(vault, "gone_clip.m4a", artist="Band", title="Tune", duration=20.0, on_disk=False)
         assert _finding(diagnose(vault), "truncated fragments").level == "ok"
+
+
+class TestTheDenyListIsAnAuthorityToo:
+    """2026-09-23. The rebuild reset the catalogue, so no DELETED row survived
+    to tell this check what Grey had removed -- and it reported "none (4
+    removal(s) on record)" while 1,359 catalogued tracks carried audio the
+    deny list says he ruled out, let back in by runs made with
+    --skip deny-list. The ledger outlives a catalogue reset by design; the
+    check has to read it for exactly that reason."""
+
+    def _deny(self, vault, h, reason):
+        ic = sqlite3.connect(vault.hash_index_path)
+        ic.execute(
+            "CREATE TABLE IF NOT EXISTS denied_hashes (audio_hash TEXT PRIMARY KEY, reason TEXT, "
+            "source_path TEXT, denied_at TEXT)"
+        )
+        ic.execute("INSERT INTO denied_hashes (audio_hash, reason) VALUES (?, ?)", (h, reason))
+        ic.commit()
+        ic.close()
+
+    def _hash_of(self, vault, p):
+        conn = sqlite3.connect(vault.db_path)
+        h = conn.execute("SELECT audio_hash FROM archive WHERE file_path=?", (str(p),)).fetchone()[
+            0
+        ]
+        conn.close()
+        return h
+
+    def test_a_catalogued_track_on_the_deny_list_is_caught_with_no_deleted_row(self, vault):
+        back = _add(vault, "back.m4a", artist="Bobby Goldsboro", title="Honey")
+        self._deny(vault, self._hash_of(vault, back), "ToBeDeleted folder, ruled by Grey")
+        f = _finding(diagnose(vault), "removed audio still held")
+        assert f.level == "fail" and f.count == 1
+        assert "back.m4a" in f.detail
+        assert "ToBeDeleted" in f.detail, "the finding should say why the audio was denied"
+
+    def test_a_deny_entry_for_audio_nobody_holds_is_fine(self, vault):
+        _add(vault, "keep.m4a", artist="Queen", title="Bicycle Race")
+        self._deny(vault, "h_something_long_gone", "removed by review")
+        assert _finding(diagnose(vault), "removed audio still held").level == "ok"
