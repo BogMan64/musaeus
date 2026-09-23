@@ -63,6 +63,29 @@ from tests.disposable_vault import (
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EVIDENCE_DIR = REPO_ROOT / "docs" / "p0_evidence" / "P0-19"
 
+#: Where this run WRITES its evidence, which is not where it READS the
+#: committed record from.
+#:
+#: These gates used to write straight into EVIDENCE_DIR, so every `pytest`
+#: rewrote 11 tracked files. The working tree went dirty after every run, and
+#: on 2026-09-23 that blocked a `git checkout main` outright -- git refused
+#: rather than discard changes nobody had asked for. Worse, the files are a
+#: RECORD of the 2026-09-08 rehearsal, so a later run silently overwrote the
+#: very history they exist to preserve.
+#:
+#: Reads still come from EVIDENCE_DIR: G11 needs the committed baseline.
+#: Regenerating the record is now a deliberate act, not a side effect of
+#: running the tests.
+_REGENERATE = os.environ.get("MUSAEUS_WRITE_EVIDENCE", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+EVIDENCE_OUT = (
+    EVIDENCE_DIR if _REGENERATE else Path(tempfile.mkdtemp(prefix="musaeus_p0_19_evidence_"))
+)
+
 #: The four resolved MusicConfig fields the brief names in §2.2. Not the
 #: env var — the resolved value, which is the only thing that fails closed.
 GUARDED_CONFIG_FIELDS = ("vault_root", "db_path", "alac_library", "runs_root")
@@ -135,8 +158,8 @@ class Gate:
     def emit(self) -> None:
         if self.verdict == "NOT RUN" or not self.coverage or self.reachability == "unrecorded":
             self.verdict = f"INCOMPLETE ({self.verdict})"
-        EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
-        (EVIDENCE_DIR / f"{self.gate_id}.txt").write_text(self.render(), encoding="utf-8")
+        EVIDENCE_OUT.mkdir(parents=True, exist_ok=True)
+        (EVIDENCE_OUT / f"{self.gate_id}.txt").write_text(self.render(), encoding="utf-8")
 
 
 # ── §2 resolved-config precondition ───────────────────────────────────────────
@@ -318,7 +341,7 @@ def _p0_19_precondition() -> None:
     stage, a DB open, a mkdir or a lock: the probe runs in a child that is
     given a nonexistent HOME, and only its stdout is inspected.
     """
-    EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+    EVIDENCE_OUT.mkdir(parents=True, exist_ok=True)
     lines: list[str] = [
         "# P0-19 §2 resolved-config precondition",
         "",
@@ -420,7 +443,7 @@ def _p0_19_precondition() -> None:
         f"{outcomes[0]}"
     )
     assert "PROBE_RAISED_VALUEERROR" in outcomes[1]
-    (EVIDENCE_DIR / "PRECONDITION_resolved_config.txt").write_text(
+    (EVIDENCE_OUT / "PRECONDITION_resolved_config.txt").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
     )
 
