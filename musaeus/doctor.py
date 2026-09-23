@@ -98,29 +98,46 @@ class Finding:
     check: str
     detail: str
     count: int = 0
+    #: "library" -- something about the catalogue or the files it points at.
+    #: "host" -- something about this machine. A host finding is real and is
+    #: still printed, but it must not decide the LIBRARY verdict: a missing
+    #: ifuse says nothing about whether the library is intact.
+    scope: str = "library"
 
 
 @dataclass
 class Report:
     findings: list[Finding] = field(default_factory=list)
 
-    def add(self, level: str, check: str, detail: str, count: int = 0) -> None:
-        self.findings.append(Finding(level, check, detail, count))
+    def add(
+        self, level: str, check: str, detail: str, count: int = 0, scope: str = "library"
+    ) -> None:
+        self.findings.append(Finding(level, check, detail, count, scope))
 
     @property
     def failed(self) -> bool:
         return any(f.level == "fail" for f in self.findings)
 
+    @staticmethod
+    def _verdict(findings: list[Finding]) -> str:
+        if any(f.level == "fail" for f in findings):
+            return "FAIL"
+        return "WARN" if any(f.level == "warn" for f in findings) else "OK"
+
     def render(self) -> str:
         icon = {"ok": "✓", "warn": "!", "fail": "✗"}
         lines = [f"  {icon[f.level]}  {f.check:<34} {f.detail}" for f in self.findings]
-        worst = (
-            "FAIL"
-            if self.failed
-            else ("WARN" if any(f.level == "warn" for f in self.findings) else "OK")
-        )
         lines.append("")
-        lines.append(f"  library integrity: {worst}")
+        # The library verdict answers one question: is the catalogue, and are
+        # the files it points at, intact? Host findings are printed above and
+        # get their own line. Folding them in meant a machine without ifuse
+        # reported "library integrity: WARN", which is a sentence about the
+        # library that was not true.
+        lib = [f for f in self.findings if f.scope != "host"]
+        host = [f for f in self.findings if f.scope == "host"]
+        lines.append(f"  library integrity: {self._verdict(lib)}")
+        if host:
+            lines.append(f"  this machine:      {self._verdict(host)}")
         return "\n".join(lines)
 
 
@@ -835,6 +852,7 @@ def _external_tools_present(cfg: MusicConfig, rep: Report) -> None:
             "external tools",
             "MISSING, and nothing works without them: " + "; ".join(missing_required),
             count=len(missing_required),
+            scope="host",
         )
         return
     if missing_optional:
@@ -843,9 +861,15 @@ def _external_tools_present(cfg: MusicConfig, rep: Report) -> None:
             "external tools",
             f"{len(missing_optional)} optional tool(s) absent: " + "; ".join(missing_optional),
             count=len(missing_optional),
+            scope="host",
         )
         return
-    rep.add("ok", "external tools", "every program MUSAEUS shells out to is installed")
+    rep.add(
+        "ok",
+        "external tools",
+        "every program MUSAEUS shells out to is installed",
+        scope="host",
+    )
 
 
 def _authority_disagreements(cfg: MusicConfig, rep: Report) -> None:
