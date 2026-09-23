@@ -28,10 +28,16 @@ Environment variables (optional):
 
 from __future__ import annotations
 
+import pathlib
+
 import argparse
 import os
 import subprocess
 import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+
+from musaeus import network_policy  # noqa: E402
 
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "orpheus-alerts")
 NTFY_URL = f"https://ntfy.sh/{NTFY_TOPIC}"
@@ -112,8 +118,44 @@ def notify_via_gotify(title: str, message: str, priority: int = 8) -> bool:
         return False
 
 
+def _policy_from_env() -> network_policy.NetworkPolicy:
+    """Notifying is ALLOWED unless something explicitly says otherwise.
+
+    The default matters more than it looks. network_policy's own default is
+    LOCAL_ONLY, which is right for a preview that must not phone home -- but
+    wrong here: this script exists to say "the overnight run failed", and a
+    failure nobody hears about is worse than the run failing. So the default
+    is inverted at this one call site, deliberately, and MUSAEUS_NETWORK is
+    how a caller that must stay offline says so.
+
+    P0-19's rehearsal is exactly such a caller. It aborted on the disk guard,
+    the wrapper called this script, and an outbound attempt was made from
+    inside a rehearsal whose whole contract is that nothing reaches the
+    network. That is what this reads.
+    """
+    raw = os.environ.get("MUSAEUS_NETWORK", "").strip().lower()
+    if raw in {"local-only", "local_only", "offline", "off", "none", "deny", "0"}:
+        return network_policy.NetworkPolicy.LOCAL_ONLY
+    return network_policy.NetworkPolicy.ALLOWED
+
+
 def send(title: str, message: str, tags: list[str] | None = None) -> bool:
     """Try ntfy.sh first, fall back to Gotify. Returns True if either succeeded."""
+    with network_policy.policy(_policy_from_env()):
+        try:
+            network_policy.check(NTFY_URL)
+        except network_policy.NetworkDenied:
+            # Loudly, and to the run log -- a suppressed alert must never be a
+            # silent one. The topic is not echoed; the host is enough to say
+            # what was refused.
+            print(
+                "  [notify] SUPPRESSED by network policy (MUSAEUS_NETWORK): "
+                "no request was made to ntfy.sh",
+                file=sys.stderr,
+            )
+            print(f"  [notify] the alert would have read: {title} -- {message}", file=sys.stderr)
+            return False
+
     sent = notify_via_ntfy(title, message, tags=tags)
     if not sent:
         sent = notify_via_gotify(title, message)

@@ -228,6 +228,10 @@ def build_child_env(fixture_root: Path, home: Path) -> dict[str, str]:
         "XDG_CACHE_HOME": str(home / ".cache"),
         "XDG_STATE_HOME": str(home / ".local" / "state"),
         "MUSAEUS_VAULT_ROOT": str(fixture_root),
+        # The rehearsal says so itself rather than relying on a default:
+        # musaeus_notify.py must reach ntfy.sh on a real overnight failure,
+        # so ALLOWED is its default. This is the caller that must not.
+        "MUSAEUS_NETWORK": "local-only",
         "MUSAEUS_NO_IDLE_THROTTLE": "1",
         "MUSAEUS_BUSY_TIMEOUT_MS": "5000",
         "P0_19_FIXTURE_ROOT": str(fixture_root),
