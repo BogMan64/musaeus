@@ -26,31 +26,37 @@ import pytest
 from musaeus.artist_form import folder_artist, sort_form
 
 
-@pytest.mark.parametrize("credit,mb,expected", [
-    # duets -> file under the primary artist
-    ("Johnny Mathis & Deniece Williams", None, "Johnny Mathis"),
-    ("Brook Benton & Dinah Washington", None, "Brook Benton"),
-    # explicit collaboration markers
-    ("Calvin Harris feat. Future", None, "Calvin Harris"),
-    ("DJ Khaled featuring Justin Bieber", None, "DJ Khaled"),
-    ("Elton John with Dua Lipa", None, "Elton John"),
-    ("Drake ft. Rihanna", None, "Drake"),
-])
+@pytest.mark.parametrize(
+    "credit,mb,expected",
+    [
+        # duets -> file under the primary artist
+        ("Johnny Mathis & Deniece Williams", None, "Johnny Mathis"),
+        ("Brook Benton & Dinah Washington", None, "Brook Benton"),
+        # explicit collaboration markers
+        ("Calvin Harris feat. Future", None, "Calvin Harris"),
+        ("DJ Khaled featuring Justin Bieber", None, "DJ Khaled"),
+        ("Elton John with Dua Lipa", None, "Elton John"),
+        ("Drake ft. Rihanna", None, "Drake"),
+    ],
+)
 def test_a_collaboration_files_under_the_primary_artist(credit, mb, expected):
     assert folder_artist(credit, mb) == expected
 
 
-@pytest.mark.parametrize("band,mb", [
-    ("Harold Melvin & The Blue Notes", "Harold Melvin & The Blue Notes"),
-    ("Jr. Walker & The All Stars", "Jr. Walker & The All Stars"),
-    ("Sly & The Family Stone", None),
-    ("Lucky Millinder & His Orchestra", None),
-    ("Simon & Garfunkel", "Simon & Garfunkel"),
-    ("Sam & Dave", "Sam & Dave"),
-    ("Ike & Tina Turner", "Ike & Tina Turner"),
-    ("Hall & Oates", None),
-    ("The Beatles", None),
-])
+@pytest.mark.parametrize(
+    "band,mb",
+    [
+        ("Harold Melvin & The Blue Notes", "Harold Melvin & The Blue Notes"),
+        ("Jr. Walker & The All Stars", "Jr. Walker & The All Stars"),
+        ("Sly & The Family Stone", None),
+        ("Lucky Millinder & His Orchestra", None),
+        ("Simon & Garfunkel", "Simon & Garfunkel"),
+        ("Sam & Dave", "Sam & Dave"),
+        ("Ike & Tina Turner", "Ike & Tina Turner"),
+        ("Hall & Oates", None),
+        ("The Beatles", None),
+    ],
+)
 def test_a_band_is_never_taken_apart(band, mb):
     assert folder_artist(band, mb) == band
 
@@ -65,7 +71,7 @@ def test_a_single_word_tail_is_never_split():
     assert folder_artist("Hall & Oates", None) == "Hall & Oates"
 
 
-def test_the_result_still_sorts(): 
+def test_the_result_still_sorts():
     """Whatever comes out is still fed through sort_form for the path."""
     assert sort_form(folder_artist("Johnny Mathis & Deniece Williams", None)) == "Johnny Mathis"
     assert sort_form(folder_artist("The Beatles", None)) == "Beatles, The"

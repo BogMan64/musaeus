@@ -221,9 +221,7 @@ class TestTheArticleFallbackAppliesToEverySource:
     def test_both_misses_return_an_empty_answer_not_a_crash(self):
         from propose_album_names import Answer, Throttle, ask_with_article_fallback
 
-        got = ask_with_article_fallback(
-            lambda a, t, th: Answer(), "The Nobodies", "x", Throttle(0)
-        )
+        got = ask_with_article_fallback(lambda a, t, th: Answer(), "The Nobodies", "x", Throttle(0))
         assert got.album == ""
 
     def test_the_loop_actually_uses_the_wrapper(self):
@@ -234,4 +232,5 @@ class TestTheArticleFallbackAppliesToEverySource:
 
         assert "ask_with_fallbacks(" in inspect.getsource(m.main), (
             "the loop must go through the wrapper that applies BOTH the article "
-            "and the title fallback, not the article one directly")
+            "and the title fallback, not the article one directly"
+        )

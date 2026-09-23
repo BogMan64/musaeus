@@ -38,7 +38,7 @@ class TestGenreFolder:
         assert genre_folder(genre) == "Unsorted"
 
     def test_a_slash_in_a_genre_does_not_become_a_directory(self):
-        """"R&B/Funk/Soul" is ONE genre. Left unsanitised it would build three
+        """ "R&B/Funk/Soul" is ONE genre. Left unsanitised it would build three
         nested directories and file the artist under "Soul"."""
         assert "/" not in genre_folder("R&B/Funk/Soul")
         assert genre_folder("R&B/Funk/Soul") == "R&B-Funk-Soul"
@@ -54,5 +54,6 @@ class TestGenreFolder:
         from musaeus.stages.playlist import _primary_genre, _safe_genre
 
         for g in ("Jazz, Blues", "R&B/Funk/Soul", "Rock"):
-            assert genre_folder(g) == _safe_genre(_primary_genre(g)) or \
-                   genre_folder(g).replace("-", "") == _safe_genre(_primary_genre(g)).replace("-", "").replace("_", "")
+            assert genre_folder(g) == _safe_genre(_primary_genre(g)) or genre_folder(g).replace(
+                "-", ""
+            ) == _safe_genre(_primary_genre(g)).replace("-", "").replace("_", "")

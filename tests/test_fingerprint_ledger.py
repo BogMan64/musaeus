@@ -88,11 +88,15 @@ class TestRestoringARebuiltCatalogue:
         (tmp_path / "_db_backups").mkdir()
         db = tmp_path / "musaeus.db"
         c = sqlite3.connect(db)
-        c.execute("CREATE TABLE archive (file_path TEXT, audio_hash TEXT, status TEXT, "
-                  "chromaprint TEXT, chromaprint_duration REAL, acousticid_recording TEXT, "
-                  "acousticid_score REAL, acousticid_checked_at TEXT)")
-        c.execute("INSERT INTO archive (file_path,audio_hash,status) "
-                  "VALUES ('/a.m4a','HASH1','CATALOGUED')")
+        c.execute(
+            "CREATE TABLE archive (file_path TEXT, audio_hash TEXT, status TEXT, "
+            "chromaprint TEXT, chromaprint_duration REAL, acousticid_recording TEXT, "
+            "acousticid_score REAL, acousticid_checked_at TEXT)"
+        )
+        c.execute(
+            "INSERT INTO archive (file_path,audio_hash,status) "
+            "VALUES ('/a.m4a','HASH1','CATALOGUED')"
+        )
         c.commit()
 
         lp = tmp_path / "_db_backups" / "hash_index.db"
@@ -102,11 +106,11 @@ class TestRestoringARebuiltCatalogue:
         lc.commit()
         lc.close()
 
-        ctx = type("Ctx", (), {"conn": c,
-                               "config": type("C", (), {"vault_root": tmp_path})()})()
+        ctx = type("Ctx", (), {"conn": c, "config": type("C", (), {"vault_root": tmp_path})()})()
         assert A._restore_from_ledger(ctx) == 1
-        row = c.execute("SELECT chromaprint, acousticid_recording, acousticid_checked_at "
-                        "FROM archive").fetchone()
+        row = c.execute(
+            "SELECT chromaprint, acousticid_recording, acousticid_checked_at FROM archive"
+        ).fetchone()
         assert row == ("FPDATA", "rec-uuid", "2026-08-30")
 
     def test_a_missing_ledger_is_not_an_error(self, tmp_path):
@@ -116,11 +120,12 @@ class TestRestoringARebuiltCatalogue:
 
         db = tmp_path / "musaeus.db"
         c = sqlite3.connect(db)
-        c.execute("CREATE TABLE archive (file_path TEXT, audio_hash TEXT, status TEXT, "
-                  "acousticid_checked_at TEXT)")
+        c.execute(
+            "CREATE TABLE archive (file_path TEXT, audio_hash TEXT, status TEXT, "
+            "acousticid_checked_at TEXT)"
+        )
         c.commit()
-        ctx = type("Ctx", (), {"conn": c,
-                               "config": type("C", (), {"vault_root": tmp_path})()})()
+        ctx = type("Ctx", (), {"conn": c, "config": type("C", (), {"vault_root": tmp_path})()})()
         assert A._restore_from_ledger(ctx) == 0
 
     def test_a_catalogue_without_audio_hash_is_skipped_quietly(self, tmp_path):
@@ -135,8 +140,7 @@ class TestRestoringARebuiltCatalogue:
         c = sqlite3.connect(tmp_path / "musaeus.db")
         c.execute("CREATE TABLE archive (file_path TEXT, status TEXT)")
         c.commit()
-        ctx = type("Ctx", (), {"conn": c,
-                               "config": type("C", (), {"vault_root": tmp_path})()})()
+        ctx = type("Ctx", (), {"conn": c, "config": type("C", (), {"vault_root": tmp_path})()})()
         assert A._restore_from_ledger(ctx) == 0
 
 
@@ -146,11 +150,14 @@ class TestTheStageActuallyUsesIt:
         nothing noticed because the failure only happens at RUN time -- which
         here means hours into a fingerprint pass."""
         import musaeus.stages.acousticid as A
+
         assert hasattr(A, "sqlite3")
 
     def test_results_are_written_to_the_ledger_not_only_to_archive(self):
         from pathlib import Path
-        src = (Path(__file__).resolve().parents[1] / "musaeus" / "stages"
-               / "acousticid.py").read_text()
+
+        src = (
+            Path(__file__).resolve().parents[1] / "musaeus" / "stages" / "acousticid.py"
+        ).read_text()
         assert "_remember_in_ledger(" in src
         assert "_restore_from_ledger(" in src

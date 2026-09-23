@@ -77,10 +77,7 @@ class TestIsSingleRelease:
         assert _is_single_release("Candy Shop", "") is False
 
     def test_a_much_longer_collection_starting_with_the_track_is_not_a_single(self):
-        assert (
-            _is_single_release("Rock", "Rock and Roll Over: The Complete Sessions")
-            is False
-        )
+        assert _is_single_release("Rock", "Rock and Roll Over: The Complete Sessions") is False
 
 
 class TestSelfTitledFallback:

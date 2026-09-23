@@ -43,9 +43,14 @@ def cfg(tmp_path) -> MusicConfig:
     conn.commit()
     conn.close()
     return MusicConfig(
-        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-        quarantine=tmp_path / "Q", runs_root=tmp_path / "RUNS",
-        meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "L", db_path=db,
+        vault_root=tmp_path,
+        inbox=tmp_path / "INBOX",
+        staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "Q",
+        runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "L",
+        db_path=db,
     )
 
 
@@ -163,15 +168,15 @@ class TestThePredicateItself:
         assert has_article("The Beatles") is True
 
     def test_natural_form_comparison_can(self):
-        assert "Beatles, The" != natural_form("Beatles, The")
-        assert "The Beatles" == natural_form("The Beatles")
+        assert natural_form("Beatles, The") != "Beatles, The"
+        assert natural_form("The Beatles") == "The Beatles"
 
     def test_the_guard_does_not_import_has_article(self):
         """A reviewer swapping the predicate back would pass every data test
         above only if they also reproduced the bug -- but the import is the
         cheap, unambiguous tell, and it fails loudly."""
         src = (Path(__file__).resolve().parents[1] / "musaeus" / "doctor.py").read_text()
-        body = src[src.index("def _artist_tag_is_natural_form"):]
+        body = src[src.index("def _artist_tag_is_natural_form") :]
         body = body[: body.index("\ndef _")]
         assert "has_article" not in body.replace("has_article()", ""), (
             "the sort-form guard must compare against natural_form, not ask "

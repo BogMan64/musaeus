@@ -52,7 +52,11 @@ class TestItFilesUnderTheSortForm:
 
     @pytest.mark.parametrize(
         "given,wanted",
-        [("The Who", "Who, The"), ("Los Bravos", "Bravos, Los"), ("El Gran Combo", "Gran Combo, El")],
+        [
+            ("The Who", "Who, The"),
+            ("Los Bravos", "Bravos, Los"),
+            ("El Gran Combo", "Gran Combo, El"),
+        ],
     )
     def test_non_english_articles_move_too(self, tmp_path, given, wanted):
         """The library holds Spanish, French, Dutch and German names and the
@@ -124,8 +128,9 @@ class TestItRunsBeforeThePathsAreRecorded:
         """Ordering, asserted on the source: recording car_export_path first
         would name folders that the rename then moves, turning every row into
         a phantom."""
-        src = (Path(__file__).resolve().parents[1]
-               / "scripts" / "car_library" / "build_car_library.py").read_text()
+        src = (
+            Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
+        ).read_text()
         call = src.index("_sort_artist_folders(final_dir)")
         index = src.index("output_index = _index_output_by_tags(final_dir)")
         assert call < index, "the folders must be filed before their paths are recorded"

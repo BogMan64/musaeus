@@ -40,9 +40,14 @@ def cfg(tmp_path) -> MusicConfig:
     conn.commit()
     conn.close()
     return MusicConfig(
-        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-        quarantine=tmp_path / "Q", runs_root=tmp_path / "RUNS",
-        meta_dir=tmp_path / "MetaData", alac_library=lib, db_path=db,
+        vault_root=tmp_path,
+        inbox=tmp_path / "INBOX",
+        staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "Q",
+        runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData",
+        alac_library=lib,
+        db_path=db,
         alac_archive=arc,
     )
 
@@ -196,12 +201,18 @@ class TestALossyMasterIsNotAGap:
         if "codec" not in cols:
             kept = conn.execute("SELECT file_path, status, car_export_path FROM archive").fetchall()
             conn.execute("DROP TABLE archive")
-            conn.execute("CREATE TABLE archive (file_path TEXT, status TEXT, "
-                         "car_export_path TEXT, codec TEXT)")
-            conn.executemany("INSERT INTO archive (file_path, status, car_export_path) "
-                             "VALUES (?,?,?)", kept)
-        conn.execute("INSERT INTO archive (file_path, status, car_export_path, codec) "
-                     "VALUES (?, 'CATALOGUED', ?, ?)", (str(p), car, codec))
+            conn.execute(
+                "CREATE TABLE archive (file_path TEXT, status TEXT, "
+                "car_export_path TEXT, codec TEXT)"
+            )
+            conn.executemany(
+                "INSERT INTO archive (file_path, status, car_export_path) VALUES (?,?,?)", kept
+            )
+        conn.execute(
+            "INSERT INTO archive (file_path, status, car_export_path, codec) "
+            "VALUES (?, 'CATALOGUED', ?, ?)",
+            (str(p), car, codec),
+        )
         conn.commit()
         conn.close()
 

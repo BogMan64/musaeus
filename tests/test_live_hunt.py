@@ -47,9 +47,7 @@ class TestItBorrowsTheRuleRatherThanCopyingIt:
         """The whole point: one rule, one home."""
         from musaeus.stages.dupe_resolver import _LIVE_MARKERS
 
-        assert live_hunt.load_musaeus_live_markers(live_hunt.MUSAEUS_SRC) == tuple(
-            _LIVE_MARKERS
-        )
+        assert live_hunt.load_musaeus_live_markers(live_hunt.MUSAEUS_SRC) == tuple(_LIVE_MARKERS)
 
     def test_a_missing_source_raises_rather_than_falling_back(self, tmp_path):
         """A silent private copy is how one rule becomes two that disagree."""
@@ -83,11 +81,14 @@ class TestTheRebuiltRegex:
     def test_it_matches_musaeus_for_the_same_input(self):
         from musaeus.stages.dupe_resolver import _LIVE_RE
 
-        mine = live_hunt.build_live_re(
-            live_hunt.load_musaeus_live_markers(live_hunt.MUSAEUS_SRC)
-        )
-        for t in ("Layla (Live at MTV Unplugged)", "Hotel California - live",
-                  "Rumours", "Live and Let Die", "Baba O'Riley in concert"):
+        mine = live_hunt.build_live_re(live_hunt.load_musaeus_live_markers(live_hunt.MUSAEUS_SRC))
+        for t in (
+            "Layla (Live at MTV Unplugged)",
+            "Hotel California - live",
+            "Rumours",
+            "Live and Let Die",
+            "Baba O'Riley in concert",
+        ):
             assert bool(mine.search(t)) == bool(_LIVE_RE.search(t)), t
 
     def test_it_is_word_bounded(self):

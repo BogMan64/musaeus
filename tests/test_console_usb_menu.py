@@ -65,7 +65,7 @@ class TestUSBMenu:
         con = _console(cfg)
         rec = _Recorder()
         monkeypatch.setattr("subprocess.run", rec)
-        responses = iter(["1", "/dev/sdz", "no"])   # 1 = ALAC
+        responses = iter(["1", "/dev/sdz", "no"])  # 1 = ALAC
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
         con._usb_menu()
         assert len(rec.calls) == 1
@@ -125,7 +125,7 @@ class TestUSBMenu:
         con = _console(cfg)
         rec = _Recorder()
         monkeypatch.setattr("subprocess.run", rec)
-        responses = iter(["1", "", "no"])   # 1 = ALAC
+        responses = iter(["1", "", "no"])  # 1 = ALAC
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
         con._usb_menu()
         assert "--device" not in rec.calls[0]

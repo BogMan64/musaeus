@@ -128,7 +128,9 @@ class TestOrganizeRunLive:
         assert result.success is True
         assert result.files_changed == 1
 
-        expected = ctx.inbox / "Unsorted" / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
+        expected = (
+            ctx.inbox / "Unsorted" / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
+        )
         assert expected.exists()
         assert not track.exists()
 
@@ -239,7 +241,9 @@ class TestOrganizeDryRun:
         assert result.files_changed == 1
         # Nothing should have actually moved.
         assert track.exists()
-        expected = ctx_dry.inbox / "Unsorted" / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
+        expected = (
+            ctx_dry.inbox / "Unsorted" / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
+        )
         assert not expected.exists()
 
         row = ctx_dry.conn.execute(
@@ -313,7 +317,13 @@ class TestOrganizeStaysInsideItsRoot:
 
         OrganizeStage().run(ctx)
 
-        expected = ctx.alac_library / "Unsorted" / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
+        expected = (
+            ctx.alac_library
+            / "Unsorted"
+            / "Test Artist"
+            / "Test Album"
+            / "Test Artist - Song One.m4a"
+        )
         assert expected.exists(), "file left the library"
         assert not src.exists()
 
@@ -336,7 +346,9 @@ class TestOrganizeStaysInsideItsRoot:
         src = _make_track(ctx, "flat.m4a", "Test Artist", "Test Album", "Song One")
         OrganizeStage().run(ctx)
 
-        expected = ctx.inbox / "Unsorted" / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
+        expected = (
+            ctx.inbox / "Unsorted" / "Test Artist" / "Test Album" / "Test Artist - Song One.m4a"
+        )
         assert expected.exists()
         assert not src.exists()
         assert list(ctx.alac_library.rglob("*.m4a")) == []
@@ -395,7 +407,11 @@ class TestPathsUseTheSortForm:
         OrganizeStage().run(ctx)
 
         expected = (
-            ctx.inbox / "Unsorted" / "Stooges, The" / "Fun House" / "Stooges, The - Down on the Street.m4a"
+            ctx.inbox
+            / "Unsorted"
+            / "Stooges, The"
+            / "Fun House"
+            / "Stooges, The - Down on the Street.m4a"
         )
         assert expected.exists(), "path must not follow the natural form"
         assert not (ctx.inbox / "Unsorted" / "The Stooges").exists()

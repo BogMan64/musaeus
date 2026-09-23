@@ -787,7 +787,9 @@ class CorruptStage(BaseStage):
 
             logger.warning(
                 "[%s] arrival does NOT decode, refusing to catalogue: %s — %s",
-                self.NAME, file_path.name, (decode_err or "")[:120],
+                self.NAME,
+                file_path.name,
+                (decode_err or "")[:120],
             )
             gated += 1
             result.files_errored += 1
@@ -816,7 +818,8 @@ class CorruptStage(BaseStage):
         if gated:
             logger.warning(
                 "[%s] %d arrival(s) refused: damaged before they reached the library",
-                self.NAME, gated,
+                self.NAME,
+                gated,
             )
 
     def run(self, ctx: RunContext) -> StageResult:

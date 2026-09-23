@@ -46,13 +46,14 @@ class TestTheEndsAlwaysKeepTheirCapital:
         assert album_title_case("the wall") == "The Wall"
 
     def test_a_minor_word_last_is_capitalised(self):
-        """"The Best Of" must not end on a lowercase "of"."""
+        """ "The Best Of" must not end on a lowercase "of"."""
         assert album_title_case("The Best Of") == "The Best Of"
 
     def test_a_minor_word_after_a_dash_starts_a_new_phrase(self):
-        assert album_title_case(
-            "Live 1964 - Concert At Philharmonic Hall"
-        ) == "Live 1964 - Concert at Philharmonic Hall"
+        assert (
+            album_title_case("Live 1964 - Concert At Philharmonic Hall")
+            == "Live 1964 - Concert at Philharmonic Hall"
+        )
 
 
 class TestWhatItMustNotTouch:
@@ -79,7 +80,7 @@ class TestWhatItMustNotTouch:
         assert album_title_case(name) == name
 
     def test_so_keeps_its_capital(self):
-        """"so" is a conjunction in "and so to bed" and an adverb in "She's So
+        """ "so" is a conjunction in "and so to bed" and an adverb in "She's So
         Unusual", and nothing here can tell them apart. It is deliberately not
         a minor word, which is right for the album the library holds."""
         assert "so" not in MINOR_WORDS

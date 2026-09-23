@@ -253,7 +253,6 @@ class Console:
         else:
             _warn("ffprobe   : NOT FOUND — Scholar stage will fail")
 
-
         # Ensure directories exist
         try:
             cfg.ensure_dirs()
@@ -1009,34 +1008,46 @@ class Console:
         _info("the command to run yourself, so you can watch or stop it.")
 
         tools = [
-            ("Album names — propose",
-             "scripts/album_names/propose_album_names.py",
-             "Fills missing album names from iTunes, Deezer, MusicBrainz, "
-             "Last.fm and Discogs. Read-only; writes a CSV you review.",
-             "--dry-run            # size the job first"),
-            ("Album names — apply a reviewed CSV",
-             "scripts/album_names/apply_album_names.py",
-             "Writes reviewed proposals into the catalogue. Never overwrites "
-             "an album that is already set.",
-             "path/to/your.csv    # add --live when you mean it"),
-            ("Live hunt",
-             "scripts/live_hunt/live_hunt.py",
-             "Live recordings with no studio version here. Produces a CSV and "
-             "two m3u playlists. Read-only.",
-             ""),
-            ("Discography gaps",
-             "scripts/discography/discography_gaps.py",
-             "Studio albums you own NOTHING from. Read-only.",
-             ""),
-            ("FM radio identifier",
-             "scripts/fm_radio/fm_radio_identifier.py",
-             "Which pressing is the one you remember. Read-only.",
-             "--limit 20           # start small"),
-            ("iPhone transfer — how to get the music onto the phone",
-             "scripts/iphone_transfer.py",
-             "Checks the cable, the pairing and the tools, then prints the "
-             "commands to paste. Touches nothing itself.",
-             "                     # add --wipe to clear the phone first"),
+            (
+                "Album names — propose",
+                "scripts/album_names/propose_album_names.py",
+                "Fills missing album names from iTunes, Deezer, MusicBrainz, "
+                "Last.fm and Discogs. Read-only; writes a CSV you review.",
+                "--dry-run            # size the job first",
+            ),
+            (
+                "Album names — apply a reviewed CSV",
+                "scripts/album_names/apply_album_names.py",
+                "Writes reviewed proposals into the catalogue. Never overwrites "
+                "an album that is already set.",
+                "path/to/your.csv    # add --live when you mean it",
+            ),
+            (
+                "Live hunt",
+                "scripts/live_hunt/live_hunt.py",
+                "Live recordings with no studio version here. Produces a CSV and "
+                "two m3u playlists. Read-only.",
+                "",
+            ),
+            (
+                "Discography gaps",
+                "scripts/discography/discography_gaps.py",
+                "Studio albums you own NOTHING from. Read-only.",
+                "",
+            ),
+            (
+                "FM radio identifier",
+                "scripts/fm_radio/fm_radio_identifier.py",
+                "Which pressing is the one you remember. Read-only.",
+                "--limit 20           # start small",
+            ),
+            (
+                "iPhone transfer — how to get the music onto the phone",
+                "scripts/iphone_transfer.py",
+                "Checks the cable, the pairing and the tools, then prints the "
+                "commands to paste. Touches nothing itself.",
+                "                     # add --wipe to clear the phone first",
+            ),
         ]
         labels = [t[0] for t in tools] + ["Back"]
         # default=Back, not _choose's "0". On EOF -- piped stdin exhausted, a
@@ -1399,8 +1410,7 @@ class Console:
             ("Enter/Update API Keys", self._manage_api_keys),
             ("Reset / fresh start", self._reset_menu),
             ("Workspace — worktrees & docs", self._show_workspace),
-            ("Misc. Options…  (screensaver jobs — these can run for HOURS)",
-             self._misc_menu),
+            ("Misc. Options…  (screensaver jobs — these can run for HOURS)", self._misc_menu),
             ("Quit", self._quit),
         ]
 

@@ -128,17 +128,20 @@ class TestItDoesNotOverreach:
         """
         _track(ctx, "Barenaked Ladies", "Rock")
         ensure_columns(ctx.conn, (("genre_ruled_at", "TEXT"),))
-        assert ctx.conn.execute(
-            "SELECT COUNT(*) FROM archive WHERE genre_ruled_at IS NOT NULL"
-        ).fetchone()[0] == 0, "a fresh row must carry no ruling"
+        assert (
+            ctx.conn.execute(
+                "SELECT COUNT(*) FROM archive WHERE genre_ruled_at IS NOT NULL"
+            ).fetchone()[0]
+            == 0
+        ), "a fresh row must carry no ruling"
 
         result = GenreValidateStage().run(ctx)
         assert _genre(ctx) == "Alternative", "MasterLaw wins over an unreviewed source tag"
         assert result.files_changed == 1
         # and the correction records itself, so the row is not re-corrected later
-        assert ctx.conn.execute(
-            "SELECT genre_ruled_at FROM archive"
-        ).fetchone()[0], "the correction must stamp a ruling"
+        assert ctx.conn.execute("SELECT genre_ruled_at FROM archive").fetchone()[0], (
+            "the correction must stamp a ruling"
+        )
 
     def test_dry_run_changes_nothing(self, ctx):
         _track(ctx, "Barenaked Ladies", "Pop, Rock")

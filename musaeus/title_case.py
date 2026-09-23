@@ -94,7 +94,7 @@ def _cap(word: str) -> str:
     """Capitalise the first letter, leaving the rest of the word alone."""
     for i, ch in enumerate(word):
         if ch.isalpha():
-            return word[:i] + ch.upper() + word[i + 1:]
+            return word[:i] + ch.upper() + word[i + 1 :]
     return word
 
 
@@ -126,7 +126,7 @@ def album_title_case(text: str) -> str:
             if _PHRASE_BREAK.search(prev.strip()):
                 opening = True
             # a hyphen between them also starts a phrase: "Live 1964 - At ..."
-            between = "".join(parts[word_idx[pos - 1] + 1:i])
+            between = "".join(parts[word_idx[pos - 1] + 1 : i])
             if "-" in between:
                 opening = True
         stripped = w.strip("(){}[]\"'‘’“”")

@@ -70,8 +70,9 @@ class TestAChainFromTheTargetSide:
         n = _write_canon_entry(canon, "ELO", "Electric Light Orchestra")
         r = rows(canon)
         assert n == 1
-        assert r["Jeff Lynne's ELO"] == "Electric Light Orchestra", \
+        assert r["Jeff Lynne's ELO"] == "Electric Light Orchestra", (
             "it would land on 'ELO' and stop"
+        )
         assert r["ELO"] == "Electric Light Orchestra"
 
     def test_several_are_repointed(self, canon):
@@ -86,8 +87,9 @@ class TestAChainFromTheTargetSide:
         canon.write_text("Jeff Lynne's ELO\tELO\n", encoding="utf-8")
         _write_canon_entry(canon, "ELO", "Electric Light Orchestra")
         r = rows(canon)
-        assert not (set(r.values()) & set(r.keys()) - {"Electric Light Orchestra"}) or \
-            all(r.get(v, v) == v for v in r.values()), "a canonical is still a key"
+        assert not (set(r.values()) & set(r.keys()) - {"Electric Light Orchestra"}) or all(
+            r.get(v, v) == v for v in r.values()
+        ), "a canonical is still a key"
 
 
 class TestAChainFromTheSourceSide:
@@ -97,8 +99,9 @@ class TestAChainFromTheSourceSide:
         canon.write_text("ELO\tElectric Light Orchestra\n", encoding="utf-8")
         _write_canon_entry(canon, "Jeff Lynne's ELO", "ELO")
         r = rows(canon)
-        assert r["Jeff Lynne's ELO"] == "Electric Light Orchestra", \
+        assert r["Jeff Lynne's ELO"] == "Electric Light Orchestra", (
             "writing -> 'ELO' would have created the chain"
+        )
 
     def test_the_intermediate_entry_is_left_alone(self, canon):
         canon.write_text("ELO\tElectric Light Orchestra\n", encoding="utf-8")
@@ -110,7 +113,7 @@ class TestTheFileStaysReadable:
     def test_it_ends_with_a_newline(self, canon):
         """Appending to a file with no trailing newline is how two ids became
         one on 2026-09-16 -- 13516 and 8377 became 135168377."""
-        canon.write_text("A\tB", encoding="utf-8")       # no trailing newline
+        canon.write_text("A\tB", encoding="utf-8")  # no trailing newline
         _write_canon_entry(canon, "C", "D")
         text = canon.read_text(encoding="utf-8")
         assert text.endswith("\n")

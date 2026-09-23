@@ -47,8 +47,21 @@ def _m4a(path: Path, art: bytes | None = None) -> Path:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-v", "quiet", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-         "-t", "1", "-c:a", "aac", str(path)],
+        [
+            "ffmpeg",
+            "-v",
+            "quiet",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=stereo",
+            "-t",
+            "1",
+            "-c:a",
+            "aac",
+            str(path),
+        ],
         check=True,
     )
     if art is not None:
@@ -62,7 +75,7 @@ def _m4a(path: Path, art: bytes | None = None) -> Path:
 
 class TestTheArtIsCarried:
     def test_cover_bytes_arrive_unchanged(self, tmp_path):
-        art = b"\xff\xd8\xff" + b"J" * 500        # a JPEG-looking blob
+        art = b"\xff\xd8\xff" + b"J" * 500  # a JPEG-looking blob
         src = _m4a(tmp_path / "src.m4a", art)
         dst = _m4a(tmp_path / "dst.m4a", None)
         M._carry_cover_art(src, dst)
@@ -83,19 +96,19 @@ class TestItNeverCostsATrack:
     def test_a_source_with_no_art_leaves_the_output_alone(self, tmp_path):
         src = _m4a(tmp_path / "src.m4a", None)
         dst = _m4a(tmp_path / "dst.m4a", None)
-        M._carry_cover_art(src, dst)          # must not raise
+        M._carry_cover_art(src, dst)  # must not raise
         assert dst.is_file()
 
     def test_an_unreadable_source_is_not_an_error(self, tmp_path):
         bad = tmp_path / "bad.m4a"
         bad.write_bytes(b"not an mp4 at all")
         dst = _m4a(tmp_path / "dst.m4a", None)
-        M._carry_cover_art(bad, dst)          # must not raise
+        M._carry_cover_art(bad, dst)  # must not raise
         assert dst.is_file()
 
     def test_a_missing_destination_is_not_an_error(self, tmp_path):
         src = _m4a(tmp_path / "src.m4a", b"\xff\xd8\xff" + b"x" * 100)
-        M._carry_cover_art(src, tmp_path / "gone.m4a")   # must not raise
+        M._carry_cover_art(src, tmp_path / "gone.m4a")  # must not raise
 
 
 class TestTheOrderingItRunsIn:
@@ -103,8 +116,13 @@ class TestTheOrderingItRunsIn:
         """After verify, so a file that failed its duration check is never
         touched. Before the rename, so what lands at the destination is
         complete -- 'existence is not completeness'."""
-        src = (Path(__file__).resolve().parents[1] / "scripts" / "car_library"
-               / "vendor" / "orpheus_noise_masker.py").read_text()
+        src = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "car_library"
+            / "vendor"
+            / "orpheus_noise_masker.py"
+        ).read_text()
         verify = src.index("if not _output_is_complete(")
         carry = src.index("_carry_cover_art(job.src, tmp)")
         rename = src.index("tmp.rename(job.dst)")
@@ -114,15 +132,19 @@ class TestTheOrderingItRunsIn:
         """`-map 0:v? -c:v copy -disposition:v:0 attached_pic` made the muxer
         finalise on the one-frame image and wrote a 0.09-second file. If this
         ever comes back, the duration goes with it."""
-        src = (Path(__file__).resolve().parents[1] / "scripts" / "car_library"
-               / "vendor" / "orpheus_noise_masker.py").read_text()
+        src = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "car_library"
+            / "vendor"
+            / "orpheus_noise_masker.py"
+        ).read_text()
         start = src.index("cmd = [")
-        block = src[start:src.index("]", src.index("str(tmp)", start))]
+        block = src[start : src.index("]", src.index("str(tmp)", start))]
         # Strip comment lines. The block explains WHY the stream map was
         # rejected, so the rejected flags appear in the prose -- and an
         # earlier version of this test compared two pieces of documentation
         # and failed. Assert on the code.
-        cmd = "\n".join(ln for ln in block.splitlines()
-                        if not ln.strip().startswith("#"))
+        cmd = "\n".join(ln for ln in block.splitlines() if not ln.strip().startswith("#"))
         assert '"0:v?"' not in cmd, "mapping the art through the graph breaks the duration"
         assert "attached_pic" not in cmd

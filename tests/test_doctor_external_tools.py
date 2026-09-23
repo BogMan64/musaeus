@@ -26,9 +26,13 @@ from musaeus.doctor import _EXTERNAL_TOOLS, Report, _external_tools_present
 @pytest.fixture
 def cfg(tmp_path) -> MusicConfig:
     return MusicConfig(
-        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "S",
-        quarantine=tmp_path / "Q", runs_root=tmp_path / "RUNS",
-        meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "L",
+        vault_root=tmp_path,
+        inbox=tmp_path / "INBOX",
+        staging=tmp_path / "S",
+        quarantine=tmp_path / "Q",
+        runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "L",
         db_path=tmp_path / "musaeus.db",
     )
 
@@ -49,8 +53,9 @@ class TestWhenEverythingIsInstalled:
 
 class TestAMissingOptionalToolIsANote:
     def test_absent_ifuse_warns_and_says_how_to_fix_it(self, cfg, monkeypatch):
-        monkeypatch.setattr("musaeus.doctor.shutil.which",
-                            lambda n: None if n == "ifuse" else f"/usr/bin/{n}")
+        monkeypatch.setattr(
+            "musaeus.doctor.shutil.which", lambda n: None if n == "ifuse" else f"/usr/bin/{n}"
+        )
         rep = Report()
         _external_tools_present(cfg, rep)
         f = _only(rep)
@@ -61,16 +66,18 @@ class TestAMissingOptionalToolIsANote:
     def test_absent_fpcalc_names_the_right_package(self, cfg, monkeypatch):
         """fpcalc does not come from a package called fpcalc, which is exactly
         why the command belongs in the message."""
-        monkeypatch.setattr("musaeus.doctor.shutil.which",
-                            lambda n: None if n == "fpcalc" else f"/usr/bin/{n}")
+        monkeypatch.setattr(
+            "musaeus.doctor.shutil.which", lambda n: None if n == "fpcalc" else f"/usr/bin/{n}"
+        )
         rep = Report()
         _external_tools_present(cfg, rep)
         assert "libchromaprint-tools" in _only(rep).detail
 
     def test_it_counts_them(self, cfg, monkeypatch):
         absent = {"ifuse", "fpcalc", "rsync"}
-        monkeypatch.setattr("musaeus.doctor.shutil.which",
-                            lambda n: None if n in absent else f"/usr/bin/{n}")
+        monkeypatch.setattr(
+            "musaeus.doctor.shutil.which", lambda n: None if n in absent else f"/usr/bin/{n}"
+        )
         rep = Report()
         _external_tools_present(cfg, rep)
         assert _only(rep).count == 3
@@ -78,10 +85,12 @@ class TestAMissingOptionalToolIsANote:
 
 class TestAMissingRequiredToolIsLouder:
     def test_absent_ffmpeg_is_reported_separately(self, cfg, monkeypatch):
-        """"nothing works without them" must not be buried in a list that also
+        """ "nothing works without them" must not be buried in a list that also
         mentions an iPhone utility."""
-        monkeypatch.setattr("musaeus.doctor.shutil.which",
-                            lambda n: None if n in ("ffmpeg", "ifuse") else f"/usr/bin/{n}")
+        monkeypatch.setattr(
+            "musaeus.doctor.shutil.which",
+            lambda n: None if n in ("ffmpeg", "ifuse") else f"/usr/bin/{n}",
+        )
         rep = Report()
         _external_tools_present(cfg, rep)
         f = _only(rep)

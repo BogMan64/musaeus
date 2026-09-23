@@ -51,10 +51,10 @@ def conn() -> sqlite3.Connection:
         [
             ("Eric Clapton", "Layla", "Unplugged", "CATALOGUED"),
             ("Temptations, The", "All I Need", "With a Lot o' Soul", "CATALOGUED"),
-            ("Blur", "Song 2", "", "CATALOGUED"),                 # blank: not an answer
-            ("Blur", "Beetlebum", "My playlist 3", "CATALOGUED"), # placeholder: not an answer
-            ("Blur", "Coffee", "Unknown Album", "CATALOGUED"),    # placeholder: not an answer
-            ("Gone", "Vanished", "Some Record", "QUARANTINED"),   # not catalogued
+            ("Blur", "Song 2", "", "CATALOGUED"),  # blank: not an answer
+            ("Blur", "Beetlebum", "My playlist 3", "CATALOGUED"),  # placeholder: not an answer
+            ("Blur", "Coffee", "Unknown Album", "CATALOGUED"),  # placeholder: not an answer
+            ("Gone", "Vanished", "Some Record", "QUARANTINED"),  # not catalogued
         ],
     )
     c.commit()
@@ -98,8 +98,12 @@ class TestItRefusesToGuess:
         c.executemany(
             "INSERT INTO archive (artist,title,album,status) VALUES (?,?,?,?)",
             [
-                ("Huey Lewis and the News", "The Power of Love",
-                 "Back to the Future: Music From the Motion Picture Soundtrack", "CATALOGUED"),
+                (
+                    "Huey Lewis and the News",
+                    "The Power of Love",
+                    "Back to the Future: Music From the Motion Picture Soundtrack",
+                    "CATALOGUED",
+                ),
                 ("Huey Lewis and the News", "The Power of Love", "Greatest Hits", "CATALOGUED"),
             ],
         )
@@ -107,8 +111,9 @@ class TestItRefusesToGuess:
         idx = build_library_index(c)
         assert ask_library(idx, "Huey Lewis and the News", "The Power of Love").album == ""
 
-    @pytest.mark.parametrize("artist,title", [("Blur", "Song 2"), ("Blur", "Beetlebum"),
-                                              ("Blur", "Coffee")])
+    @pytest.mark.parametrize(
+        "artist,title", [("Blur", "Song 2"), ("Blur", "Beetlebum"), ("Blur", "Coffee")]
+    )
     def test_a_blank_or_placeholder_album_is_not_an_answer(self, conn, artist, title):
         idx = build_library_index(conn)
         assert ask_library(idx, artist, title).album == ""
@@ -125,8 +130,7 @@ class TestItRefusesToGuess:
 
 class TestItOutranksEverySource:
     def test_the_library_tier_sorts_above_agreement(self):
-        assert (CONFIDENCE_ORDER["0-ALREADY IN YOUR LIBRARY"]
-                < CONFIDENCE_ORDER["1-AGREED"])
+        assert CONFIDENCE_ORDER["0-ALREADY IN YOUR LIBRARY"] < CONFIDENCE_ORDER["1-AGREED"]
 
     def test_every_source_tier_ranks_below_it(self):
         top = CONFIDENCE_ORDER["0-ALREADY IN YOUR LIBRARY"]

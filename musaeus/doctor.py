@@ -80,6 +80,7 @@ def _under_any(path: Path, cfg) -> bool:
             continue
     return False
 
+
 def song_key(artist: str | None, title: str | None) -> tuple[str, str]:
     """Identity of a RECORDING, ignoring edition and punctuation.
 
@@ -164,9 +165,7 @@ def diagnose(cfg: MusicConfig) -> Report:
     orphans = [
         p
         for p in cfg.alac_library.rglob("*.m4a")
-        if not _under_any(p, cfg)
-        and "_history" not in p.parts
-        and str(p) not in known
+        if not _under_any(p, cfg) and "_history" not in p.parts and str(p) not in known
     ]
     rep.add(
         "warn" if orphans else "ok",
@@ -741,9 +740,7 @@ def _catalogued_tracks_reach_the_car(cfg: MusicConfig, rep: Report) -> None:
             f"SELECT file_path, {col} FROM archive WHERE status='CATALOGUED' "
             "AND COALESCE(car_export_path,'') = ''"
         ).fetchall()
-        total = conn.execute(
-            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'"
-        ).fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'").fetchone()[0]
     except sqlite3.Error as exc:
         rep.add("warn", "car edition coverage", f"could not read the catalogue: {exc}")
         return
@@ -957,9 +954,7 @@ def _editions_come_from_masters(cfg: MusicConfig, rep: Report) -> None:
 
     conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
     try:
-        rows = conn.execute(
-            "SELECT file_path FROM archive WHERE status='CATALOGUED'"
-        ).fetchall()
+        rows = conn.execute("SELECT file_path FROM archive WHERE status='CATALOGUED'").fetchall()
     finally:
         conn.close()
 

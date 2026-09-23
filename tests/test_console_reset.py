@@ -46,7 +46,7 @@ class TestHardResetSnapshots:
         conn.close()
 
         con = _console_with_config(cfg)
-        responses = iter(["3", "DELETE", "DELETE"])      # 3 = Hard reset
+        responses = iter(["3", "DELETE", "DELETE"])  # 3 = Hard reset
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
 
         con._reset_menu()

@@ -55,9 +55,7 @@ def test_no_single_pass_loudnorm_writes_an_output(path: Path) -> None:
     src = path.read_text()
     for lit in re.findall(r'f?"loudnorm=[^"]*"', src):
         if "measured_I" in lit:
-            continue                     # the real bake
+            continue  # the real bake
         if "print_format=json" in lit or "print_format=summary" in lit:
-            continue                     # measurement / reporting
-        assert "I=" not in lit, (
-            f"single-pass loudnorm with a target in {path.name}: {lit[:80]}"
-        )
+            continue  # measurement / reporting
+        assert "I=" not in lit, f"single-pass loudnorm with a target in {path.name}: {lit[:80]}"

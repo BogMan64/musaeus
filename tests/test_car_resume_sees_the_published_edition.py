@@ -1,4 +1,4 @@
-""""Already encoded?" must be asked of where the edition LIVES.
+""" "Already encoded?" must be asked of where the edition LIVES.
 
 Measured on the 2026-09-15 car build, and it went wrong in both directions.
 
@@ -25,7 +25,6 @@ The second is the dangerous one: a confident wrong answer with no error.
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -77,20 +76,22 @@ class TestTheWrapperTellsTheEncoderWhereToLook:
     def test_the_wrapper_sets_the_variable(self):
         """A unit test on _published_twin cannot catch the wrapper failing to
         pass the root -- which is the half that actually broke the build."""
-        src = (Path(__file__).resolve().parents[1]
-               / "scripts" / "car_library" / "build_car_library.py").read_text()
+        src = (
+            Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
+        ).read_text()
         assert 'env["MUSAEUS_PUBLISHED_ROOT"]' in src
 
     def test_the_wrapper_does_not_use_dest_root_before_it_exists(self):
         """dest_root is assigned AFTER the encode step. Referencing it where
         the environment is built was a NameError waiting for the next run;
         caught before it fired, and pinned so it cannot come back."""
-        src = (Path(__file__).resolve().parents[1]
-               / "scripts" / "car_library" / "build_car_library.py").read_text()
+        src = (
+            Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
+        ).read_text()
         env_line = src.index('env["MUSAEUS_PUBLISHED_ROOT"]')
         assign = src.index("dest_root = cfg.iphone_library")
         assert env_line < assign, "test premise: the env line comes first"
-        window = src[env_line:env_line + 400]
+        window = src[env_line : env_line + 400]
         assert "str(dest_root)" not in window, (
             "the environment must not read dest_root before it is assigned"
         )
@@ -125,8 +126,9 @@ class TestItAgreesWithThePublisherAboutTheLayout:
     def test_the_two_agree_on_a_real_staged_path(self):
         """Asserted against publish_edition's actual source rather than a
         restatement of it, so the two cannot drift apart again quietly."""
-        src = (Path(__file__).resolve().parents[1]
-               / "scripts" / "car_library" / "build_car_library.py").read_text()
+        src = (
+            Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
+        ).read_text()
         assert "tail = rel[-3:]" in src, (
             "publish_edition's rule changed -- _published_twin must change with it"
         )
@@ -155,8 +157,9 @@ class TestAMaskingRunDoesNotInheritThePreviousEdition:
     """
 
     def test_the_wrapper_withholds_the_published_root_when_masking(self):
-        src = (Path(__file__).resolve().parents[1]
-               / "scripts" / "car_library" / "build_car_library.py").read_text()
+        src = (
+            Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
+        ).read_text()
         assert "if not apply_masking:" in src, (
             "the published-twin skip must be conditional on masking"
         )
@@ -168,8 +171,9 @@ class TestAMaskingRunDoesNotInheritThePreviousEdition:
         """The dest_root lesson, applied to the variable this now depends on:
         a name used before it is assigned is a NameError waiting for the next
         real run, and a nine-hour job is a bad place to find one."""
-        src = (Path(__file__).resolve().parents[1]
-               / "scripts" / "car_library" / "build_car_library.py").read_text()
+        src = (
+            Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
+        ).read_text()
         decided = min(src.index("apply_masking = True"), src.index("apply_masking = False"))
         used = src.index("if not apply_masking:")
         assert decided < used, "apply_masking must be decided before it is read"
@@ -178,6 +182,7 @@ class TestAMaskingRunDoesNotInheritThePreviousEdition:
         """env is a copy of os.environ, so a stale MUSAEUS_PUBLISHED_ROOT in
         the caller's shell would otherwise leak in and re-enable the very
         skip this turns off."""
-        src = (Path(__file__).resolve().parents[1]
-               / "scripts" / "car_library" / "build_car_library.py").read_text()
+        src = (
+            Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
+        ).read_text()
         assert 'env.pop("MUSAEUS_PUBLISHED_ROOT", None)' in src

@@ -249,11 +249,7 @@ class TestWantedListExport:
         )
         result = TributeQuarantineStage().run(ctx)
 
-        wanted_files = list(
-            (cfg.tribute_review_dir / _TEST_BATCH_DATE).glob(
-                "tunemymusic_*.csv"
-            )
-        )
+        wanted_files = list((cfg.tribute_review_dir / _TEST_BATCH_DATE).glob("tunemymusic_*.csv"))
         assert len(wanted_files) == 1
         assert wanted_files[0].read_text().strip() == "Steely Dan - Midnight Cruiser"
         assert any("wanted list" in n for n in result.notes)
@@ -270,22 +266,14 @@ class TestWantedListExport:
         )
         TributeQuarantineStage().run(ctx)
 
-        wanted_files = list(
-            (cfg.tribute_review_dir / _TEST_BATCH_DATE).glob(
-                "tunemymusic_*.csv"
-            )
-        )
+        wanted_files = list((cfg.tribute_review_dir / _TEST_BATCH_DATE).glob("tunemymusic_*.csv"))
         assert wanted_files == []
 
     def test_an_uncredited_knockoff_writes_no_wanted_list(self, ctx, cfg) -> None:
         _make_row(ctx, "Fake/song.m4a", artist="Karaoke Channel, The", title="What's Up")
         result = TributeQuarantineStage().run(ctx)
 
-        wanted_files = list(
-            (cfg.tribute_review_dir / _TEST_BATCH_DATE).glob(
-                "tunemymusic_*.csv"
-            )
-        )
+        wanted_files = list((cfg.tribute_review_dir / _TEST_BATCH_DATE).glob("tunemymusic_*.csv"))
         assert wanted_files == []
         assert not any("wanted list" in n for n in result.notes)
 
@@ -304,9 +292,7 @@ class TestWantedListExport:
 
         assert not result.errors
         manifest_files = list(
-            (cfg.tribute_review_dir / _TEST_BATCH_DATE).glob(
-                "tribute_manifest_*.csv"
-            )
+            (cfg.tribute_review_dir / _TEST_BATCH_DATE).glob("tribute_manifest_*.csv")
         )
         assert len(manifest_files) == 1
         header = manifest_files[0].read_text().splitlines()[0]
@@ -327,11 +313,7 @@ class TestWantedListExport:
         )
         TributeQuarantineStage().run(ctx)
 
-        wanted_files = list(
-            (cfg.tribute_review_dir / _TEST_BATCH_DATE).glob(
-                "tunemymusic_*.csv"
-            )
-        )
+        wanted_files = list((cfg.tribute_review_dir / _TEST_BATCH_DATE).glob("tunemymusic_*.csv"))
         lines = wanted_files[0].read_text().strip().splitlines()
         assert set(lines) == {"Artist One - Song A", "Artist Two - Song B"}
 

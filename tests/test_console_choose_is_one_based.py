@@ -38,9 +38,7 @@ class TestChooseIsOneBased:
         out = capsys.readouterr().out
         assert f"{typed}  {LABELS[int(got)]}" in out
 
-    def test_every_label_is_displayed_with_a_reachable_number(
-        self, monkeypatch, capsys
-    ) -> None:
+    def test_every_label_is_displayed_with_a_reachable_number(self, monkeypatch, capsys) -> None:
         """No label may be shown as 0, and none may be unreachable."""
         monkeypatch.setattr("builtins.input", lambda *a, **k: "1")
         _choose("Which edition", LABELS)

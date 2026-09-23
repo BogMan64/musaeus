@@ -50,10 +50,10 @@ def vault_with_one_inside_and_one_outside(tmp_path):
 
     cfg = dataclasses.replace(dv.cfg, playlists=edition / "Playlists")
     conn = open_db(cfg.db_path)
-    _add(conn, file_path=inside, artist="The Beatles", title="Taxman",
-         genre="Rock", year="1966")
-    _add(conn, file_path=outside, artist="Someone Else", title="Elsewhere",
-         genre="Rock", year="1966")
+    _add(conn, file_path=inside, artist="The Beatles", title="Taxman", genre="Rock", year="1966")
+    _add(
+        conn, file_path=outside, artist="Someone Else", title="Elsewhere", genre="Rock", year="1966"
+    )
     conn.commit()
     yield dv, cfg, conn, edition
     conn.close()
@@ -84,9 +84,7 @@ class TestNoEntryIsEverAbsolute:
             for entry in _entries(pl):
                 assert not Path(entry).is_absolute(), f"{pl.name} wrote an absolute path: {entry}"
 
-    def test_the_placeable_track_still_gets_in(
-        self, vault_with_one_inside_and_one_outside
-    ):
+    def test_the_placeable_track_still_gets_in(self, vault_with_one_inside_and_one_outside):
         """The drop must be surgical -- refusing the outside source must not
         cost the inside one, or the guard has traded one silent failure for
         another."""
@@ -102,9 +100,7 @@ class TestNoEntryIsEverAbsolute:
         entries = _entries(rock)
         assert entries == ["../The Beatles/Revolver/Taxman.m4a"], entries
 
-    def test_every_entry_resolves_to_a_real_file(
-        self, vault_with_one_inside_and_one_outside
-    ):
+    def test_every_entry_resolves_to_a_real_file(self, vault_with_one_inside_and_one_outside):
         """Relative is not the same as correct. `..` from the playlist folder
         has to land on the edition root in the vault AND on the USB, which is
         only true while the index sits one level below it."""
@@ -119,9 +115,7 @@ class TestNoEntryIsEverAbsolute:
             for entry in _entries(pl):
                 assert (pl.parent / entry).resolve().is_file(), f"{pl.name}: {entry}"
 
-    def test_the_skip_is_reported_and_counted_once(
-        self, vault_with_one_inside_and_one_outside
-    ):
+    def test_the_skip_is_reported_and_counted_once(self, vault_with_one_inside_and_one_outside):
         """A silent drop is the failure this guard exists to prevent. The count
         must also be per FILE, not per pass -- each source is offered to the
         path builder once per genre list, once per era list and once for All."""

@@ -177,6 +177,7 @@ def tag_values(stored_artist: str) -> dict[str, str]:
         return {}
     return {"artist": natural_form(n), "sort_artist": sort_form(n)}
 
+
 #: Markers that always mean "this credit names more than one act". Unlike a
 #: bare "&", these are never part of a band's own name.
 _COLLAB = re.compile(r"\s*\b(?:feat\.?|featuring|ft\.?|with)\s+", re.I)

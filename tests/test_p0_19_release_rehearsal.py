@@ -913,7 +913,9 @@ def test_g4_acoustid_columns_and_insertion_contract(disposable_vault, tmp_path):
         conn.row_factory = sqlite3.Row
         ensure_state_tables(conn)
         actual = [
-            r["name"] for r in conn.execute("PRAGMA table_info(duplicate_candidates)") if r["name"] != "id"
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(duplicate_candidates)")
+            if r["name"] != "id"
         ]
         repo = DuplicateRepository(conn)
         repo.insert_acoustid_candidate(

@@ -6,6 +6,7 @@ _status_for() returned "CATALOGUED" for anything it could not make relative
 to that library -- so a review file would have been rebuilt as live content,
 which is wrong in the dangerous direction.
 """
+
 from pathlib import Path
 
 import pytest
@@ -50,7 +51,6 @@ def test_without_cfg_the_old_in_library_layout_still_works(cfg):
 
 
 def test_scan_walks_the_review_queues_when_they_sit_outside_the_library():
-    src = (Path(__file__).resolve().parent.parent
-           / "musaeus" / "rebuild_from_disk.py").read_text()
+    src = (Path(__file__).resolve().parent.parent / "musaeus" / "rebuild_from_disk.py").read_text()
     assert "scan_roots" in src, "scan no longer walks extra roots"
     assert "dupes_review_dir" in src and "tribute_review_dir" in src

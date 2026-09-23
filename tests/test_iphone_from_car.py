@@ -39,19 +39,20 @@ def setup(tmp_path):
     car.mkdir()
     iph.mkdir()
     conn = sqlite3.connect(":memory:")
-    conn.execute("CREATE TABLE archive (status TEXT, car_export_path TEXT, "
-                 "noise_profile TEXT, genre TEXT)")
+    conn.execute(
+        "CREATE TABLE archive (status TEXT, car_export_path TEXT, noise_profile TEXT, genre TEXT)"
+    )
     cfg = type("C", (), {"car_library": car, "iphone_library": iph})()
     return cfg, conn, car, iph
 
 
-def _track(conn, car: Path, name: str, size: int = 1000,
-           profile: str = "clean", genre: str = "Rock") -> Path:
+def _track(
+    conn, car: Path, name: str, size: int = 1000, profile: str = "clean", genre: str = "Rock"
+) -> Path:
     p = car / name
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(b"\0" * size)
-    conn.execute("INSERT INTO archive VALUES ('CATALOGUED', ?, ?, ?)",
-                 (str(p), profile, genre))
+    conn.execute("INSERT INTO archive VALUES ('CATALOGUED', ?, ?, ?)", (str(p), profile, genre))
     conn.commit()
     return p
 
@@ -135,21 +136,29 @@ class TestTheMaskerCannotClip:
         ~0.6 dB, and 19% of a 120-file sample peaked above -0.6 dBFS, the
         loudest at exactly 0.0. Unlimited, masking would distort ~2,100
         tracks."""
-        src = (Path(__file__).resolve().parents[1] / "scripts" / "car_library"
-               / "vendor" / "orpheus_noise_masker.py").read_text()
+        src = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "car_library"
+            / "vendor"
+            / "orpheus_noise_masker.py"
+        ).read_text()
         assert "CEILING_LINEAR" in src
         # The FILTER STRING, not the prose around it. The first draft of this
         # test used src.index("alimiter"), which found the explanatory comment
         # above the filter and compared two pieces of documentation.
         start = src.index("filt = (")
-        filt = src[start:src.index(")", src.index("[out]", start))]
+        filt = src[start : src.index(")", src.index("[out]", start))]
         assert "alimiter" in filt, "the masked output has no peak ceiling"
-        assert filt.index("amix=inputs=2") < filt.index("alimiter"), \
+        assert filt.index("amix=inputs=2") < filt.index("alimiter"), (
             "the limiter must come after the mix, not before"
+        )
         assert "[mixed]" in filt, "the mix must be named so the limiter can take it"
 
     def test_the_ceiling_is_below_full_scale(self):
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"
-                              / "car_library" / "vendor"))
+        sys.path.insert(
+            0, str(Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "vendor")
+        )
         import orpheus_noise_masker as M
+
         assert 0 < M.CEILING_LINEAR < 1.0

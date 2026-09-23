@@ -3,6 +3,7 @@
 `pgrep -f "python3 -m musaeus"` matches its own wrapper process and has twice
 reported a running pipeline when nothing was running.
 """
+
 import subprocess
 from pathlib import Path
 
@@ -24,15 +25,14 @@ def test_does_not_match_the_shell_that_is_asking(tmp_path):
     """
     pidfile = tmp_path / "asker.pid"
     r = subprocess.run(
-        ["bash", "-c",
-         f'echo $$ > {pidfile}; echo "python3 -m musaeus run" >/dev/null; {SCRIPT}'],
-        capture_output=True, text=True,
+        ["bash", "-c", f'echo $$ > {pidfile}; echo "python3 -m musaeus run" >/dev/null; {SCRIPT}'],
+        capture_output=True,
+        text=True,
     )
     asker = pidfile.read_text().strip()
     reported = set(r.stdout.split())
     assert asker not in reported, (
-        f"reported the asking shell itself (pid {asker}); "
-        f"this is the pgrep -f self-match trap"
+        f"reported the asking shell itself (pid {asker}); this is the pgrep -f self-match trap"
     )
 
 
@@ -40,6 +40,7 @@ def test_naive_pgrep_would_have_false_positived():
     # Guard the guard: prove the trap is real, so this test keeps its meaning.
     r = subprocess.run(
         ["bash", "-c", 'pgrep -f "python3 -m musaeus" >/dev/null && echo MATCHED'],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     assert "MATCHED" in r.stdout, "trap no longer reproduces; revisit this guard"

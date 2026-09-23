@@ -21,11 +21,11 @@ their master present at the mirrored path, none missing.
 
 from __future__ import annotations
 
+import sys as _sys
 from pathlib import Path
 
 import pytest
 
-import sys as _sys
 _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "car_library"))
 
 from musaeus.editions import master_path_for

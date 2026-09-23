@@ -113,9 +113,7 @@ class TestGenreValidateStage:
         assert genres["/c.m4a"] == "Disco-Electronic"  # separator, untouched
         assert genres["/d.m4a"] == "Polka"  # law has no opinion
 
-    def test_with_no_vocabulary_loaded_every_conflict_stays_report_only(
-        self, tmp_path, law_csv
-    ):
+    def test_with_no_vocabulary_loaded_every_conflict_stays_report_only(self, tmp_path, law_csv):
         """The fail-safe, and what this fixture actually exercises.
 
         _ctx builds a bare in-memory DB with no Genre_Allowed.txt, so
@@ -132,8 +130,9 @@ class TestGenreValidateStage:
         """
         ctx = _ctx(tmp_path, law_csv, [("/b.m4a", "CATALOGUED", "AC/DC", "Al", 1, "Rock")])
         result = GenreValidateStage().run(ctx)  # type: ignore[arg-type]
-        assert any("CONFLICTS (report only" in n and "1 file(s) across 1 artist" in n
-                   for n in result.notes)
+        assert any(
+            "CONFLICTS (report only" in n and "1 file(s) across 1 artist" in n for n in result.notes
+        )
         assert any("Hard Rock" in n for n in result.notes)
         assert result.files_changed == 0
         assert ctx.conn.execute("SELECT genre FROM archive").fetchone()[0] == "Rock"

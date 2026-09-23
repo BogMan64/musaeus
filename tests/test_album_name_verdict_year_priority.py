@@ -91,9 +91,7 @@ class TestTheEarliestYearStillWins:
     def test_demotion_never_empties_the_ballot(self):
         """If every answer is 'later' the filter must not leave nothing to
         pick from -- there is always exactly one earliest."""
-        _, album, _, win = verdict(
-            A("A", "1990", "itunes"), A("B", "1991", "deezer")
-        )
+        _, album, _, win = verdict(A("A", "1990", "itunes"), A("B", "1991", "deezer"))
         assert album in ("A", "B") and win is not None
 
 

@@ -51,8 +51,10 @@ def vault(tmp_path, monkeypatch):
     conn.close()
     led = tmp_path / "_db_backups" / "hash_index.db"
     lc = sqlite3.connect(led)
-    lc.execute("CREATE TABLE denied_hashes (audio_hash TEXT PRIMARY KEY, reason TEXT, "
-               "source_path TEXT, denied_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+    lc.execute(
+        "CREATE TABLE denied_hashes (audio_hash TEXT PRIMARY KEY, reason TEXT, "
+        "source_path TEXT, denied_at TEXT DEFAULT CURRENT_TIMESTAMP)"
+    )
     lc.commit()
     lc.close()
     monkeypatch.setenv("MUSAEUS_VAULT_ROOT", str(tmp_path))
@@ -74,8 +76,15 @@ def _add(vault, rid, artist, title, rel, car=None, h=None):
     conn.execute(
         "INSERT INTO archive (id, artist, title, status, audio_hash, file_path, car_export_path) "
         "VALUES (?,?,?,'CATALOGUED',?,?,?)",
-        (rid, artist, title, h or f"h{rid}", str(libs / "ALAC_Library" / rel),
-         str(libs / "CAR_Library" / car) if car else None))
+        (
+            rid,
+            artist,
+            title,
+            h or f"h{rid}",
+            str(libs / "ALAC_Library" / rel),
+            str(libs / "CAR_Library" / car) if car else None,
+        ),
+    )
     conn.commit()
     conn.close()
 
@@ -86,8 +95,9 @@ def _run(vault, ids, execute=True):
     cmd = [sys.executable, str(SCRIPT), str(f), "--reason", "test"]
     if execute:
         cmd.append("--execute")
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=120,
-                          cwd=str(SCRIPT.parents[1]))
+    return subprocess.run(
+        cmd, capture_output=True, text=True, timeout=120, cwd=str(SCRIPT.parents[1])
+    )
 
 
 class TestItDeletesEveryCopy:
@@ -106,7 +116,10 @@ class TestItDeletesEveryCopy:
         assert conn.execute("SELECT COUNT(*) FROM archive WHERE id=1").fetchone()[0] == 0
         conn.close()
         lc = sqlite3.connect(vault / "_db_backups" / "hash_index.db")
-        assert lc.execute("SELECT COUNT(*) FROM denied_hashes WHERE audio_hash='h1'").fetchone()[0] == 1
+        assert (
+            lc.execute("SELECT COUNT(*) FROM denied_hashes WHERE audio_hash='h1'").fetchone()[0]
+            == 1
+        )
         lc.close()
 
     def test_a_dry_run_changes_nothing(self, vault):
@@ -123,11 +136,23 @@ class TestItDoesNotTakeASurvivingRowsFile:
 
     def test_a_car_file_two_rows_share_is_kept(self, vault):
         shared = "Paul McCartney/Wings Greatest/luck.m4a"
-        _add(vault, 1, "Paul McCartney", "With a Little Luck",
-             "Paul McCartney/Wings Greatest/luck.m4a", car=shared)
-        _add(vault, 2, "Paul McCartney", "With A Little Luck",
-             "Paul McCartney/My playlist W/luck.m4a", car=shared)
-        r = _run(vault, [2])          # delete only the playlist duplicate
+        _add(
+            vault,
+            1,
+            "Paul McCartney",
+            "With a Little Luck",
+            "Paul McCartney/Wings Greatest/luck.m4a",
+            car=shared,
+        )
+        _add(
+            vault,
+            2,
+            "Paul McCartney",
+            "With A Little Luck",
+            "Paul McCartney/My playlist W/luck.m4a",
+            car=shared,
+        )
+        r = _run(vault, [2])  # delete only the playlist duplicate
         assert r.returncode == 0, r.stderr
         kept = vault / "Libraries" / "CAR_Library" / shared
         assert kept.is_file(), "the surviving row's car file was deleted"

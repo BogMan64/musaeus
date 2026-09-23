@@ -57,14 +57,20 @@ class TestBothStagesUseOneRule:
         for f in (_ORGANIZE, _FINALIZE):
             tree = ast.parse(f.read_text())
             defs += sum(
-                1 for n in ast.walk(tree)
+                1
+                for n in ast.walk(tree)
                 if isinstance(n, ast.FunctionDef) and n.name == "genre_folder"
             )
         assert defs == 1, f"genre_folder is defined {defs} times; it must be defined once"
 
     @pytest.mark.parametrize(
         ("genre", "expected"),
-        [("Rock", "Rock"), ("R&B/Funk/Soul", "R&B-Funk-Soul"), (None, "Unsorted"), ("", "Unsorted")],
+        [
+            ("Rock", "Rock"),
+            ("R&B/Funk/Soul", "R&B-Funk-Soul"),
+            (None, "Unsorted"),
+            ("", "Unsorted"),
+        ],
     )
     def test_the_shared_rule_still_behaves(self, genre, expected):
         assert genre_folder(genre) == expected

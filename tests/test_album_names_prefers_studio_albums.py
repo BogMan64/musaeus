@@ -24,8 +24,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "album_names"))
 
 from propose_album_names import _choose, _is_compilation  # noqa: E402
@@ -78,8 +76,8 @@ class TestRanking:
 
     def test_mixed_tuple_widths_rank_together(self):
         """One source knows the type, another does not -- both in one pool."""
-        itunes_comp = ("t", "Ultimate Hits", "1975", "itunes")          # regex says compilation
-        mb_studio = ("t", "Vol. 3", "1990", "musicbrainz", False)       # metadata says album
+        itunes_comp = ("t", "Ultimate Hits", "1975", "itunes")  # regex says compilation
+        mb_studio = ("t", "Vol. 3", "1990", "musicbrainz", False)  # metadata says album
         assert _choose([itunes_comp, mb_studio]).album == "Vol. 3"
 
 

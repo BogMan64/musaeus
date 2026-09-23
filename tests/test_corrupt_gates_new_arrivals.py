@@ -55,10 +55,23 @@ def ctx(cfg: MusicConfig) -> RunContext:
 def _tone(path: Path, seconds: int = 5) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
-         f"sine=frequency=440:duration={seconds}", "-c:a", "alac",
-         "-movflags", "+faststart", str(path), "-y"],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration={seconds}",
+            "-c:a",
+            "alac",
+            "-movflags",
+            "+faststart",
+            str(path),
+            "-y",
+        ],
+        check=True,
+        capture_output=True,
     )
     return path
 
@@ -77,16 +90,20 @@ def _truncate(path: Path, keep: float = 0.55) -> Path:
 def _arrival(ctx: RunContext, path: Path, status: str = "HASHED") -> None:
     upsert_archive(
         ctx.conn,
-        {"file_path": str(path), "status": status, "codec": "alac",
-         "duration": 5.0, "title": path.stem, "artist": "Test"},
+        {
+            "file_path": str(path),
+            "status": status,
+            "codec": "alac",
+            "duration": 5.0,
+            "title": path.stem,
+            "artist": "Test",
+        },
     )
     ctx.conn.commit()
 
 
 def _status(ctx: RunContext, title: str) -> str | None:
-    row = ctx.conn.execute(
-        "SELECT status FROM archive WHERE title = ?", (title,)
-    ).fetchone()
+    row = ctx.conn.execute("SELECT status FROM archive WHERE title = ?", (title,)).fetchone()
     return row["status"] if row else None
 
 

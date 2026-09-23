@@ -379,8 +379,9 @@ def _restore_from_ledger(ctx) -> int:
     return n
 
 
-def _remember_in_ledger(ctx, file_path: str, chromaprint, duration,
-                        recording, score, checked_at) -> None:
+def _remember_in_ledger(
+    ctx, file_path: str, chromaprint, duration, recording, score, checked_at
+) -> None:
     """Write one fingerprint to the ledger. Never fails the stage."""
     from ..db import ensure_fingerprints, remember_fingerprint
 
@@ -392,8 +393,7 @@ def _remember_in_ledger(ctx, file_path: str, chromaprint, duration,
             return
         led = sqlite3.connect(_ledger_path(ctx))
         ensure_fingerprints(led)
-        remember_fingerprint(led, row[0], chromaprint, duration,
-                             recording, score, checked_at)
+        remember_fingerprint(led, row[0], chromaprint, duration, recording, score, checked_at)
         led.commit()
         led.close()
     except sqlite3.Error:
@@ -443,7 +443,8 @@ class AcousticIDStage(BaseStage):
             if restored:
                 logger.info(
                     "[acousticid] %d row(s) restored from the fingerprint ledger "
-                    "-- not re-fingerprinted", restored
+                    "-- not re-fingerprinted",
+                    restored,
                 )
 
         api_key = ctx.config.acousticid_api_key
@@ -611,7 +612,10 @@ class AcousticIDStage(BaseStage):
                 # because that is what a fingerprint is a property of -- it
                 # survives a rebuild, a re-file, and a path move.
                 _remember_in_ledger(
-                    ctx, fp, fingerprint, duration,
+                    ctx,
+                    fp,
+                    fingerprint,
+                    duration,
                     recording_id if answered else None,
                     score if answered and score else None,
                     now if answered else None,

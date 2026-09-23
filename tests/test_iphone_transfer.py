@@ -41,14 +41,21 @@ def vault(tmp_path_factory):
 
 def run(*args, vault=None, env=None):
     import os
+
     e = dict(os.environ)
     e["MUSAEUS_NO_IDLE_THROTTLE"] = "1"
     if vault is not None:
         e["MUSAEUS_VAULT_ROOT"] = str(vault)
     if env:
         e.update(env)
-    return subprocess.run([sys.executable, str(SCRIPT), *args],
-                          capture_output=True, text=True, timeout=120, cwd=str(SRC), env=e)
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(SRC),
+        env=e,
+    )
 
 
 class TestItIsReadOnly:
@@ -56,17 +63,22 @@ class TestItIsReadOnly:
         """The whole contract. It prints an rm for the operator to run
         deliberately; it must never run one itself."""
         src = SCRIPT.read_text()
-        for bad in ("shutil.rmtree", "os.remove", "Path.unlink", ".unlink()",
-                    'subprocess.run(["rm'):
+        for bad in (
+            "shutil.rmtree",
+            "os.remove",
+            "Path.unlink",
+            ".unlink()",
+            'subprocess.run(["rm',
+        ):
             assert bad not in src, f"the guide must not {bad}"
 
     def test_it_never_invokes_ifuse_or_rsync(self):
         """Mounting and copying are the operator's to run. The only commands
         this may execute are the read-only probes."""
         src = SCRIPT.read_text()
-        body = src[src.index("def main("):]
+        body = src[src.index("def main(") :]
         for cmd in ('"ifuse"', '"rsync"', '"fusermount"'):
-            assert f'_run([{cmd}' not in body, f"must not execute {cmd}"
+            assert f"_run([{cmd}" not in body, f"must not execute {cmd}"
 
     def test_the_only_commands_it_runs_are_probes(self):
         """String scan, not a regex. A pattern containing an escaped bracket
@@ -76,12 +88,12 @@ class TestItIsReadOnly:
         right to be blunt about it."""
         src = SCRIPT.read_text()
         calls = set()
-        needle = '_run(['
+        needle = "_run(["
         i = src.find(needle)
         while i != -1:
-            rest = src[i + len(needle):]
+            rest = src[i + len(needle) :]
             if rest.startswith('"'):
-                calls.add(rest[1:rest.index('"', 1)])
+                calls.add(rest[1 : rest.index('"', 1)])
             i = src.find(needle, i + 1)
         assert calls <= {"idevice_id", "idevicepair"}, f"unexpected: {calls}"
 
@@ -96,8 +108,13 @@ class TestItPrintsUsableSteps:
         """A guide whose commands do not parse is worse than no guide -- the
         console menu already shipped one hint that was a bash syntax error."""
         out = run(vault=vault).stdout
-        block = [ln.strip() for ln in out.splitlines()
-                 if ln.strip().startswith(("idevicepair", "mkdir", "ifuse", "rsync", "fusermount", "rm -rf"))]
+        block = [
+            ln.strip()
+            for ln in out.splitlines()
+            if ln.strip().startswith(
+                ("idevicepair", "mkdir", "ifuse", "rsync", "fusermount", "rm -rf")
+            )
+        ]
         assert block, "no commands found to check"
         script = tmp_path / "paste.sh"
         script.write_text("\n".join(block) + "\n")
@@ -117,8 +134,9 @@ class TestItPrintsUsableSteps:
     def test_wipe_adds_the_clear_line_when_asked(self, vault):
         out = run("--wipe", vault=vault).stdout
         assert "rm -rf" in out
-        assert out.index("ifuse --documents") < out.index("rm -rf") < out.index("rsync -a"), \
+        assert out.index("ifuse --documents") < out.index("rm -rf") < out.index("rsync -a"), (
             "the clear must happen after the mount and before the copy"
+        )
 
 
 class TestItExplainsTheTwoSurprises:

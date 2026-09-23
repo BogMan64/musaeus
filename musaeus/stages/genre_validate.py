@@ -241,8 +241,7 @@ class GenreValidateStage(BaseStage):
             ensure_columns(ctx.conn, (("genre_ruled_at", "TEXT"),))
 
         has_ruled_at = any(
-            r[1] == "genre_ruled_at"
-            for r in ctx.conn.execute("PRAGMA table_info(archive)")
+            r[1] == "genre_ruled_at" for r in ctx.conn.execute("PRAGMA table_info(archive)")
         )
         ruled_col = "genre_ruled_at" if has_ruled_at else "NULL AS genre_ruled_at"
 
@@ -430,8 +429,7 @@ class GenreValidateStage(BaseStage):
         if law_wins:
             verb3 = "would correct" if dry_run else "corrected"
             result.notes.append(
-                f"  {verb3} to law (no ruling recorded): {law_wins}"
-                "  (source tag, not a decision)"
+                f"  {verb3} to law (no ruling recorded): {law_wins}  (source tag, not a decision)"
             )
         if illegal_stuck:
             result.notes.append("  OUTSIDE THE VOCABULARY and unresolvable -- these need a ruling:")

@@ -107,9 +107,7 @@ class TestTierSelection:
 class TestItLeavesAnAuditTrail:
     def test_a_write_is_recorded_as_an_event(self, conn):
         apply_rows(conn, [_row(1, "Revolver")], ("1-AGREED",), live=True)
-        ev = conn.execute(
-            "SELECT event_type, old_value, new_value FROM events"
-        ).fetchone()
+        ev = conn.execute("SELECT event_type, old_value, new_value FROM events").fetchone()
         assert ev == ("ALBUM_NAME_APPLIED", "", "Revolver")
 
     def test_every_event_carries_a_run_id(self, conn):

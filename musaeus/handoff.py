@@ -149,8 +149,7 @@ def _what_happened(stage_results: list[StageResult]) -> list[str]:
         lines += ["No stages ran.", ""]
         return lines
 
-    lines += ["| stage | processed | changed | errored | verified |",
-              "|---|---:|---:|---:|---|"]
+    lines += ["| stage | processed | changed | errored | verified |", "|---|---:|---:|---:|---|"]
     for r in stage_results:
         verdict = {True: "yes", False: "**NO**", None: "-- (no claim)"}[r.verified]
         lines.append(
@@ -174,8 +173,12 @@ def _what_happened(stage_results: list[StageResult]) -> list[str]:
     return lines
 
 
-def _render(run_id: str, issues: list[dict[str, Any]], crashes: list[dict[str, Any]],
-            stage_results: list[StageResult] | None = None) -> str:
+def _render(
+    run_id: str,
+    issues: list[dict[str, Any]],
+    crashes: list[dict[str, Any]],
+    stage_results: list[StageResult] | None = None,
+) -> str:
     now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
     lines = [
         f"# MUSAEUS ForClaudeHandoff — {run_id}",
@@ -198,10 +201,15 @@ def _render(run_id: str, issues: list[dict[str, Any]], crashes: list[dict[str, A
     ]
 
     if not crashes and not issues:
-        lines += ["## Nothing went wrong", "",
-                  "No stage crashed, no stage reported failure, and every check",
-                  "that made a claim held. The run summary below is the whole story.",
-                  "", "---", ""]
+        lines += [
+            "## Nothing went wrong",
+            "",
+            "No stage crashed, no stage reported failure, and every check",
+            "that made a claim held. The run summary below is the whole story.",
+            "",
+            "---",
+            "",
+        ]
 
     if stage_results is not None:
         lines.extend(_what_happened(stage_results))
@@ -271,9 +279,7 @@ def write_handoff_doc(ctx: RunContext) -> Path | None:
     out_dir = ctx.runs_root / "HANDOFFS"
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"ForClaudeHandoff_{ctx.run_id}.md"
-    path.write_text(
-        _render(ctx.run_id, issues, crashes, ctx.stage_results), encoding="utf-8"
-    )
+    path.write_text(_render(ctx.run_id, issues, crashes, ctx.stage_results), encoding="utf-8")
     return path
 
 
@@ -352,9 +358,14 @@ def write_tool_handoff(
             lines.extend(_capped(list(problems)))
             lines.append("")
         else:
-            lines += ["---", "", "## Nothing went wrong", "",
-                      "The tool reported no problems. The summary above is the whole story.",
-                      ""]
+            lines += [
+                "---",
+                "",
+                "## Nothing went wrong",
+                "",
+                "The tool reported no problems. The summary above is the whole story.",
+                "",
+            ]
 
         if log_path:
             lines += [f"Full log: `{log_path}`", ""]
@@ -409,15 +420,14 @@ def write_act_handoff(ctx: RunContext, act: str) -> Path | None:
             return None
         issues = _stage_issues(mine)
         crashes = [
-            c for c in _crash_reports(ctx.runs_root, ctx.run_id)
+            c
+            for c in _crash_reports(ctx.runs_root, ctx.run_id)
             if act_of(c.get("stage", "")) == act
         ]
         out_dir = ctx.runs_root / "HANDOFFS"
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"ForClaudeHandoff_{ctx.run_id}_{act}.md"
-        path.write_text(
-            _render(f"{ctx.run_id} — {act}", issues, crashes, mine), encoding="utf-8"
-        )
+        path.write_text(_render(f"{ctx.run_id} — {act}", issues, crashes, mine), encoding="utf-8")
         return path
     except Exception as exc:  # noqa: BLE001
         # Never let a report cost a run. The run-level handoff still follows.

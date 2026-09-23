@@ -34,9 +34,14 @@ def cfg(tmp_path) -> MusicConfig:
     conn.commit()
     conn.close()
     return MusicConfig(
-        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-        quarantine=tmp_path / "Q", runs_root=tmp_path / "RUNS",
-        meta_dir=tmp_path / "MetaData", alac_library=lib, db_path=db,
+        vault_root=tmp_path,
+        inbox=tmp_path / "INBOX",
+        staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "Q",
+        runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData",
+        alac_library=lib,
+        db_path=db,
         alac_archive=arc,
     )
 
