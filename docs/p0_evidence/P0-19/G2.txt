@@ -1,0 +1,124 @@
+# G2 — Before/after DB, file and directory equality across a default preview
+
+source task        : P0-05
+MCR                : MCR-001
+VERDICT            : FAIL (asserted and failed) on strict before/after identity — the preview creates musaeus.db-shm and musaeus.db-wal. PASS on every content, DB-logical-state and row-count comparison.
+REACHABILITY       : cli
+reachability detail: Same path as G1: musaeus dry-run -> cli._run_pipeline(dry_run=True). The snapshot is taken around the real CLI preview, not around a reimplementation of it.
+minimum viable cov.: at least 5 files hashed, at least 5 DB tables and at least 5 rows compared, at least 15 directory entries walked
+
+## Coverage (what was actually examined)
+  files_hashed = 10
+  directory_entries_walked = 24
+  db_tables_compared = 6
+  db_rows_compared = 5
+  db_event_rows_before = 0
+  db_event_rows_after = 0
+  db_archive_rows_before = 5
+  db_archive_rows_after = 5
+  db_content_checksum_unchanged = True
+  pre_existing_files_with_changed_bytes = []
+  files_removed = []
+  files_created_by_the_preview = ['musaeus.db-shm', 'musaeus.db-wal']
+  differences_found = 3
+  previews_run = 2
+
+## Findings
+  - Equality was asserted over 10 hashed files, 6 tables / 5 rows and 24 directory entries — the numbers are in the coverage block precisely so this cannot be a green tick over an empty tree.
+  - HELD: no existing file's bytes changed, no file was removed, the DB's logical content checksum is identical, the table and row counts are identical, and zero event rows were written. The P0-01 baseline defect — dry-run committing RUN_START/STAGE_COMPLETE/RUN_END and calling ensure_dirs() — is genuinely fixed: the preview routes to planner.build_plan and never constructs a stage or a RunContext.
+  - FAILED, and this is a new finding: the preview CREATED 2 file(s) inside the vault root — ['musaeus.db-shm', 'musaeus.db-wal']. planner.py opens the database with mode=ro, but the database is in WAL journal mode, and SQLite creates the -wal and -shm sidecars for a WAL database even on a read-only connection. Attributed independently outside pytest: after open_db()+close() the vault root holds only musaeus.db; after one `musaeus dry-run` it holds musaeus.db, musaeus.db-shm and musaeus.db-wal. Meanwhile planner.SAFETY_STATEMENT — printed by that same invocation — reads 'No files were written, moved or deleted, ... and no directory was made.' That sentence is false as printed. MCR-001's acceptance criterion is a before/after comparison that is IDENTICAL, so this gate fails on the letter of the criterion even though nothing of substance changed.
+
+## Raw captured output
+
+----- child resolved-config assertion -----
+$ /usr/bin/python3 -c 
+import json, os, sys
+_FIXTURE_ROOT = os.path.abspath(os.environ["P0_19_FIXTURE_ROOT"])
+import musaeus
+print("CHILD_MUSAEUS_PACKAGE " + os.path.dirname(os.path.abspath(musaeus.__file__)))
+from musaeus.config import MusicConfig
+_cfg = MusicConfig.from_env()
+_fields = {
+    "vault_root": str(_cfg.vault_root),
+    "db_path": str(_cfg.db_path),
+    "alac_library": str(_cfg.alac_library),
+    "runs_root": str(_cfg.runs_root),
+}
+print("CHILD_RESOLVED_CONFIG " + json.dumps(_fields, sort_keys=True))
+_bad = {
+    k: v for k, v in _fields.items()
+    if not (os.path.abspath(v) == _FIXTURE_ROOT
+            or os.path.abspath(v).startswith(_FIXTURE_ROOT + os.sep))
+}
+if _bad:
+    print("CHILD_PRECONDITION_ABORT " + json.dumps(_bad, sort_keys=True), file=sys.stderr)
+    raise SystemExit(97)
+print("CHILD_PRECONDITION_OK fixture_root=" + _FIXTURE_ROOT)
+
+
+import sys
+from musaeus.cli import main
+sys.argv = ["musaeus", "dry-run"]
+main()
+
+[exit 0]
+--- stdout ---
+CHILD_MUSAEUS_PACKAGE /mnt/FORGE2TB/Projects/MUSAEUS-kiro/musaeus
+CHILD_RESOLVED_CONFIG {"alac_library": "/tmp/pytest-of-grey/pytest-327/test_g2_before_after_equality0/vault/Libraries/ALAC-Library", "db_path": "/tmp/pytest-of-grey/pytest-327/test_g2_before_after_equality0/vault/musaeus.db", "runs_root": "/tmp/pytest-of-grey/pytest-327/test_g2_before_after_equality0/vault/RUNS", "vault_root": "/tmp/pytest-of-grey/pytest-327/test_g2_before_after_equality0/vault"}
+CHILD_PRECONDITION_OK fixture_root=/tmp/pytest-of-grey/pytest-327/test_g2_before_after_equality0/vault
+
+  MUSAEUS — plan (--dry-run)
+
+  mode: preview
+  vault: /tmp/pytest-of-grey/pytest-327/test_g2_before_after_equality0/vault
+
+  preflight                   —  no preview available for this stage
+  ingest                      2  new files in INBOX
+  permissions                 —  no preview available for this stage
+  sentinel                    —  no preview available for this stage
+  deny-list                   —  no preview available for this stage
+  scholar                     —  no preview available for this stage
+  health                      —  no preview available for this stage
+  corrupt                     5  CATALOGUED tracks to scan; at most 200 never-checked files are decoded per run
+  albumart                    —  no preview available for this stage
+  normalize                   5  rows whose artist/title would be normalised
+  spellcheck                  2  artists compared for misspellings
+  sanitize                    5  rows inspected for unsafe metadata
+  artist-consolidate          —  no preview available for this stage
+  various-artists-fix         —  no preview available for this stage
+  tribute-quarantine          —  no preview available for this stage
+  genre-validate              5  files with no genre that the law could fill
+  cross-dupe                  —  no preview available for this stage
+  neardupe                    —  no preview available for this stage
+  dupe-resolver               0  duplicate groups awaiting resolution
+  classical-composer          —  no preview available for this stage
+  canonicalize                —  no preview available for this stage
+  finalize                    —  no preview available for this stage
+  bpm                         5  files needing BPM analysis
+  forge                       5  files needing loudness measurement
+  tagger                      5  catalogued files whose tags would be checked
+  organize                    —  no preview available for this stage
+  audit                       0  finalized rows to verify on disk
+  enrich                      —  no preview available for this stage
+  mb_enrich                   —  no preview available for this stage
+  identity-tag                —  no preview available for this stage
+
+  ! 19 stage(s) cannot be previewed and are shown as '—', not as zero: preflight, permissions, sentinel, deny-list, scholar, health…
+
+  PREVIEW ONLY — nothing was changed. No files were written, moved or deleted, no database or event was created or modified, no directory was made, and no network lookup was performed.
+
+
+--- stderr ---
+
+----- snapshot diff -----
+["directories/files added: ['musaeus.db-shm', 'musaeus.db-wal']", 'file content hashes changed', 'file tags changed']
+
+----- db shape -----
+tables 6 -> 6; rows 5 -> 5
+
+----- files created by the preview -----
+['musaeus.db-shm', 'musaeus.db-wal']
+
+----- in-process preview exit code -----
+0
+

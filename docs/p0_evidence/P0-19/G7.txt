@@ -1,0 +1,123 @@
+# G7 — Lock conflict — a second holder is refused, not delayed
+
+source task        : P0-10
+MCR                : MCR-005
+VERDICT            : FAIL (asserted and failed) — identical-scope refusal holds, ancestor/descendant refusal does NOT; and acquisition is UNREACHABLE from the CLI in any case
+REACHABILITY       : UNREACHABLE for acquisition (import only); observation is cli (opt-in)
+reachability detail: `safety.lock.acquire()` has NO caller anywhere in musaeus/ — verified by grep. The only cross-module use of this file is `preflight.py:446 holder = observe(request.scope, request.lock_dir)`, which READS an existing lock and never takes one, and is itself behind the opt-in --safety-gate. So `musaeus run` takes no scope lock. The protection against the 2026-08-15 concurrent-collision incident that this module was written for is not in the running path; what is in the running path is musaeus_overnight.sh's `pgrep -af` guard, which only covers the scheduled wrapper and not two interactive runs.
+minimum viable cov.: at least 2 concurrent holders attempted including one from a real second process, the refusal observed to be immediate (bounded wall-clock), and the owner identified in the refusal
+
+## Coverage (what was actually examined)
+  concurrent_holders_attempted = 4
+  in_process_second_holder_refused = True
+  refusal_wall_clock_seconds = 0.0003
+  separate_process_refused = True
+  scopes_conflict_predicate_says_they_conflict = True
+  descendant_scope_refused_by_acquire = False
+  owner_visible_in_observation = run run-A (pid 1886719 on debian), acquired 2026-09-09T00:00:00Z, heartbeat 2026-09-09T00:00:00Z
+
+## Findings
+  - Refusal, not delay, for an IDENTICAL scope: measured at 0.0003s wall clock, from a second process, and the refusal names run-A as owner.
+  - FAILED, and this is a new defect rather than an unreachability finding: `acquire()` GRANTED a lock on /tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault/ALAC-Library while run-A held /tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault, in the same domain. `scopes_conflict(a, b)` correctly returns True for that pair — the containment rule is implemented — but `acquire()` never consults it. It flocks `lock_dir/{scope.scope_id}.lock`, and scope_id is a hash of root+domain, so a descendant hashes to a DIFFERENT lock file and is granted unconditionally. lock.py's own docstring names this as one of the two decisions that 'carry most of the weight', written directly out of the 2026-08-15 incident: 'Comparing paths for equality would let two runs safely hold non-equal scopes that are the same files, which is precisely how two processes end up rewriting each other's work.' That is what the acquisition path does. tests/test_p0_10_scope_lock.py proves the containment rule as a PREDICATE (test_descendant_conflicts_with_ancestor) and proves refusal only for IDENTICAL scopes — so its green result never covered this. Same shape as the brief's failure 3: the check exists and cannot fire.
+  - CONTRADICTS a hedged mark: P0-10 is marked [x]. The flock mechanics and the no-timestamp-staleness rule are sound. The containment rule is not enforced at acquisition, and nothing calls acquire() anyway. Two interactive `musaeus run` invocations today collide at SQLite's busy_timeout, not at this lock.
+
+## Raw captured output
+
+----- child resolved-config assertion -----
+$ /usr/bin/python3 -c 
+import json, os, sys
+_FIXTURE_ROOT = os.path.abspath(os.environ["P0_19_FIXTURE_ROOT"])
+import musaeus
+print("CHILD_MUSAEUS_PACKAGE " + os.path.dirname(os.path.abspath(musaeus.__file__)))
+from musaeus.config import MusicConfig
+_cfg = MusicConfig.from_env()
+_fields = {
+    "vault_root": str(_cfg.vault_root),
+    "db_path": str(_cfg.db_path),
+    "alac_library": str(_cfg.alac_library),
+    "runs_root": str(_cfg.runs_root),
+}
+print("CHILD_RESOLVED_CONFIG " + json.dumps(_fields, sort_keys=True))
+_bad = {
+    k: v for k, v in _fields.items()
+    if not (os.path.abspath(v) == _FIXTURE_ROOT
+            or os.path.abspath(v).startswith(_FIXTURE_ROOT + os.sep))
+}
+if _bad:
+    print("CHILD_PRECONDITION_ABORT " + json.dumps(_bad, sort_keys=True), file=sys.stderr)
+    raise SystemExit(97)
+print("CHILD_PRECONDITION_OK fixture_root=" + _FIXTURE_ROOT)
+
+
+from pathlib import Path
+from musaeus.safety.lock import LockConflictError, Scope, acquire
+scope = Scope.build(Path('/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault'), "library-mutation")
+try:
+    acquire(scope, Path('/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/locks'), run_id="run-C")
+except LockConflictError as exc:
+    print("CHILD_REFUSED " + str(exc).splitlines()[0])
+    raise SystemExit(0)
+print("CHILD_ACQUIRED -- the lock did not hold across processes")
+raise SystemExit(1)
+
+[exit 0]
+--- stdout ---
+CHILD_MUSAEUS_PACKAGE /mnt/FORGE2TB/Projects/MUSAEUS-kiro/musaeus
+CHILD_RESOLVED_CONFIG {"alac_library": "/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault/Libraries/ALAC-Library", "db_path": "/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault/musaeus.db", "runs_root": "/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault/RUNS", "vault_root": "/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault"}
+CHILD_PRECONDITION_OK fixture_root=/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault
+CHILD_REFUSED scope '/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault' (domain 'library-mutation') is held by run run-A (pid 1886719 on debian), acquired 2026-09-09T00:00:00Z, heartbeat 2026-09-09T00:00:00Z
+
+--- stderr ---
+
+----- in-process refusal -----
+scope '/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault' (domain 'library-mutation') is held by run run-A (pid 1886719 on debian), acquired 2026-09-09T00:00:00Z, heartbeat 2026-09-09T00:00:00Z
+
+----- separate-process attempt -----
+$ /usr/bin/python3 -c 
+import json, os, sys
+_FIXTURE_ROOT = os.path.abspath(os.environ["P0_19_FIXTURE_ROOT"])
+import musaeus
+print("CHILD_MUSAEUS_PACKAGE " + os.path.dirname(os.path.abspath(musaeus.__file__)))
+from musaeus.config import MusicConfig
+_cfg = MusicConfig.from_env()
+_fields = {
+    "vault_root": str(_cfg.vault_root),
+    "db_path": str(_cfg.db_path),
+    "alac_library": str(_cfg.alac_library),
+    "runs_root": str(_cfg.runs_root),
+}
+print("CHILD_RESOLVED_CONFIG " + json.dumps(_fields, sort_keys=True))
+_bad = {
+    k: v for k, v in _fields.items()
+    if not (os.path.abspath(v) == _FIXTURE_ROOT
+            or os.path.abspath(v).startswith(_FIXTURE_ROOT + os.sep))
+}
+if _bad:
+    print("CHILD_PRECONDITION_ABORT " + json.dumps(_bad, sort_keys=True), file=sys.stderr)
+    raise SystemExit(97)
+print("CHILD_PRECONDITION_OK fixture_root=" + _FIXTURE_ROOT)
+
+
+from pathlib import Path
+from musaeus.safety.lock import LockConflictError, Scope, acquire
+scope = Scope.build(Path('/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault'), "library-mutation")
+try:
+    acquire(scope, Path('/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/locks'), run_id="run-C")
+except LockConflictError as exc:
+    print("CHILD_REFUSED " + str(exc).splitlines()[0])
+    raise SystemExit(0)
+print("CHILD_ACQUIRED -- the lock did not hold across processes")
+raise SystemExit(1)
+
+[exit 0]
+--- stdout ---
+CHILD_MUSAEUS_PACKAGE /mnt/FORGE2TB/Projects/MUSAEUS-kiro/musaeus
+CHILD_RESOLVED_CONFIG {"alac_library": "/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault/Libraries/ALAC-Library", "db_path": "/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault/musaeus.db", "runs_root": "/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault/RUNS", "vault_root": "/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault"}
+CHILD_PRECONDITION_OK fixture_root=/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault
+CHILD_REFUSED scope '/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault' (domain 'library-mutation') is held by run run-A (pid 1886719 on debian), acquired 2026-09-09T00:00:00Z, heartbeat 2026-09-09T00:00:00Z
+
+--- stderr ---
+
+----- observed owner -----
+run run-A (pid 1886719 on debian), acquired 2026-09-09T00:00:00Z, heartbeat 2026-09-09T00:00:00Z
+
