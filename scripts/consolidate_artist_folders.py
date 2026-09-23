@@ -29,6 +29,7 @@ how the two conventions drift apart.
 from __future__ import annotations
 
 import argparse
+import filecmp
 import shutil
 import sqlite3
 import sys
@@ -51,9 +52,11 @@ def merge_tree(src: Path, dst: Path, execute: bool) -> tuple[list[tuple[Path, Pa
     for f in sorted(p for p in src.rglob("*") if p.is_file()):
         target = dst / f.relative_to(src)
         if target.exists():
-            # Same size is the same file filed twice; anything else is two
-            # different recordings claiming one name and is left for a person.
-            if target.stat().st_size == f.stat().st_size:
+            # The same file filed twice goes; anything else is two different
+            # recordings claiming one name and is left for a person. Size alone
+            # used to decide that; a byte comparison settles it, because the
+            # rare wrong answer deletes a recording that exists nowhere else.
+            if target.stat().st_size == f.stat().st_size and filecmp.cmp(target, f, shallow=False):
                 if execute:
                     f.unlink()
                 continue

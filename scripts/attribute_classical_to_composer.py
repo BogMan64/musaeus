@@ -139,7 +139,6 @@ def main() -> int:
              "manual", "classical filed under composer per owner ruling 2026-08-24"),
         )
         conn.commit()
-        conn.commit()
         moved += 1
         for d in (album_dir, artist_dir):
             try:
