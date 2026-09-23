@@ -39,6 +39,8 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
+import pwd
 import shutil
 import sqlite3
 import subprocess
@@ -1809,9 +1811,29 @@ def test_g10_scheduled_run_is_preview_or_review_only(fixture_home):
         # A fixture VAULT_ROOT on a filesystem with headroom: the wrapper's own
         # disk guard aborts below 50 GB free AND sends an ntfy.sh push on abort,
         # which would be an external network attempt. /tmp has ~3 GB.
-        wrapper_root = Path(
-            tempfile.mkdtemp(prefix="musaeus_p0_19_wrapper_", dir="/home/grey/.cache")
-        )
+        # This used to hardcode /home/grey/.cache, which is why this gate had
+        # never once run anywhere but one laptop. Ask for headroom instead of
+        # naming a person: the first directory with 50 GB wins, and if none has
+        # it the gate skips rather than reporting a failure it cannot tell apart
+        # from a real one.
+        candidates = [
+            os.environ.get("MUSAEUS_TEST_SCRATCH"),
+            # NOT Path.home(): this rehearsal deliberately sandboxes HOME to a
+            # fixture dir, so Path.home() would report the fixture's tmpfs and
+            # this gate would skip on the one machine it can actually run on.
+            # The passwd database is not monkeypatched.
+            str(pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir) / ".cache"),
+            tempfile.gettempdir(),
+        ]
+        wrapper_root = None
+        for cand in candidates:
+            if not cand or not os.path.isdir(cand):
+                continue
+            if shutil.disk_usage(cand).free // 10**9 >= 50:
+                wrapper_root = Path(tempfile.mkdtemp(prefix="musaeus_p0_19_wrapper_", dir=cand))
+                break
+        if wrapper_root is None:
+            pytest.skip("no scratch dir with 50 GB free; the wrapper's disk guard would abort")
         free_gb = shutil.disk_usage(str(wrapper_root)).free // 10**9
 
         env = build_child_env(wrapper_root, fixture_home)
