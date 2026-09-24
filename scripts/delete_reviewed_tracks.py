@@ -55,8 +55,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from musaeus.config import MusicConfig  # noqa: E402
 from musaeus.db import deny_hash  # noqa: E402
+from musaeus.editions import master_path_for  # noqa: E402
 
 TIERS = ("ALAC-Archival", "ALAC_Library", "CAR_Library")
+
+# Only the master mirrors the library copy's path (editions.master_path_for).
+# The car tier is filed Artist/Album with no genre level, so a mirrored guess
+# there never named the car copy -- it is found from car_export_path, the one
+# record of where it actually is.
 
 
 def copies(row: sqlite3.Row, libs: Path) -> list[Path]:
@@ -78,13 +84,28 @@ def copies(row: sqlite3.Row, libs: Path) -> list[Path]:
     add(fp)
     car = row["car_export_path"] if "car_export_path" in cols else None
     add(Path(car) if car else None)
-    try:
-        rel = fp.relative_to(libs / "ALAC_Library")
-    except ValueError:
-        return out
-    for tier in TIERS:
-        add(libs / tier / rel)
+    master = master_path_for(fp, libs / "ALAC_Library", libs / "ALAC-Archival")
+    if master.is_master:
+        add(master.path)
     return out
+
+
+def remove_emptied_folders(folders: set[Path], libs: Path) -> int:
+    """rmdir each folder a deletion emptied, and its parents while they are
+    empty, stopping at the tier roots. Never rmtree: art, a .part or a stray
+    the catalogue does not know keeps its folder for a person to look at.
+    (Before this, 224 removals on 2026-09-23 left ~3,600 empty folders.)"""
+    roots = {libs, *(libs / t for t in TIERS)}
+    removed = 0
+    for d in sorted(folders, key=lambda p: len(p.parts), reverse=True):
+        while d not in roots and d != d.parent and libs in d.parents:
+            try:
+                d.rmdir()
+            except OSError:
+                break
+            removed += 1
+            d = d.parent
+    return removed
 
 
 def main() -> int:
@@ -148,6 +169,7 @@ def main() -> int:
 
     run_id = f"delete_reviewed_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}_{uuid.uuid4().hex[:6]}"
     n_files = n_rows = n_denied = n_absent = n_shared = n_kept_audio = 0
+    emptied: set[Path] = set()
 
     for i in ids:
         row = conn.execute("SELECT * FROM archive WHERE id=?", (i,)).fetchone()
@@ -166,6 +188,7 @@ def main() -> int:
             print(f"     {'DELETE ' if args.execute else 'would delete '}{p}")
             if args.execute:
                 p.unlink()
+                emptied.add(p.parent)
                 conn.execute(
                     "INSERT INTO events (run_id, ts, event_type, file_path, old_value, "
                     "new_value, note) VALUES (?,?,?,?,?,?,?)",
@@ -194,16 +217,19 @@ def main() -> int:
             conn.execute("DELETE FROM archive WHERE id=?", (i,))
         n_rows += 1
 
+    n_dirs = 0
     if args.execute:
         conn.commit()
         if led is not None:
             led.commit()
+        n_dirs = remove_emptied_folders(emptied, libs)
     conn.close()
     if led is not None:
         led.close()
 
     print(f"\n{'DELETED' if args.execute else 'DRY RUN'}: {n_files} file(s), "
           f"{n_rows} row(s), {n_denied} hash(es) denied"
+          + (f", {n_dirs} emptied folder(s) removed" if n_dirs else "")
           + (f", {n_absent} id(s) already gone" if n_absent else "")
           + (f", {n_shared} file(s) kept because a surviving row needs them" if n_shared else "")
           + (f", {n_kept_audio} hash(es) NOT denied because a surviving row carries the same audio"
