@@ -11,6 +11,7 @@ WHY THIS IS NOT JUST `mv`
 
     archive.artist          what every lookup and every report reads
     archive.genre           the top folder; a merge can cross genres
+    archive.mb_artist_*     the target's MusicBrainz identity; folder_artist reads it
     archive.file_path       absolute; a move orphans it
     archive.car_export_path absolute; same
     artist_canon.tsv        what stops the split reappearing on the next ingest
@@ -96,6 +97,7 @@ class RowPlan:
     moves: list[tuple[Path, Path]] = field(default_factory=list)  # (src, dst), every tier
     file_path: str | None = None  # new value, or None to leave
     car_export_path: str | None = None  # new value, or None to leave
+    identity: tuple[str | None, str | None] | None = None  # (mb_artist_name, mb_artist_id) to adopt
 
 
 @dataclass
@@ -139,17 +141,47 @@ def target_genre(conn: sqlite3.Connection, old: str, new: str, override: str | N
     return found.most_common(1)[0][0], notes
 
 
+def target_identity(conn: sqlite3.Connection, old: str, new: str) -> tuple[str | None, str | None] | None:
+    """The MusicBrainz identity a merged row takes on: the target's own.
+
+    folder_artist() reads mb_artist_name to decide whether a credit is one act
+    or a duet to split. A merged row still carries the name MusicBrainz gave
+    its OLD credit, so it can file apart from the artist it just joined --
+    measured 2026-09-24: "England Dan Seals" (no MB name) merged into
+    "England Dan & John Ford Coley" split off into "England Dan", while the
+    duo's own rows, whose MB name agrees, stayed whole. Organize reads the
+    same field, so it would have kept them apart on every pass.
+
+    None when there is nothing to adopt: a refile in place, or a target with
+    no rows yet (its name is new, so no stale identity can disagree with it).
+    """
+    if old == new:
+        return None
+    found = collections.Counter(
+        conn.execute(
+            "SELECT mb_artist_name, mb_artist_id FROM archive WHERE artist = ? AND status = 'CATALOGUED'",
+            (new,),
+        ).fetchall()
+    )
+    if not found:
+        return None
+    name, mbid = found.most_common(1)[0][0]
+    return name, mbid
+
+
 def plan_merge(cfg, conn: sqlite3.Connection, old: str, new: str, genre: str | None = None) -> MergePlan:
     """Everything an --execute would do, computed without touching anything."""
     lib, arch = Path(cfg.alac_library), Path(cfg.alac_archive)
     car_root = Path(cfg.vault_root) / "Libraries" / "CAR_Library"
     g, notes = target_genre(conn, old, new, genre)
+    ident = target_identity(conn, old, new)
     plan = MergePlan(old, new, g, notes=notes)
 
     claimed: dict[Path, int] = {}  # dst -> row id, so two rows cannot land on one path
     car_moved: dict[Path, Path] = {}  # a car file two rows share moves once
     for row in conn.execute("SELECT * FROM archive WHERE artist = ? ORDER BY id", (old,)).fetchall():
-        rp = RowPlan(row["id"])
+        rp = RowPlan(row["id"], identity=ident)
+        mb_name = ident[0] if ident else row["mb_artist_name"]
         fp = Path(row["file_path"]) if row["file_path"] else None
         try:
             rel_now = fp.relative_to(lib) if fp else None
@@ -160,7 +192,7 @@ def plan_merge(cfg, conn: sqlite3.Connection, old: str, new: str, genre: str | N
             plan.rows.append(rp)
             continue
 
-        rel = library_relpath(new, row["mb_artist_name"], g or row["genre"], row["album"], row["title"], fp.suffix)
+        rel = library_relpath(new, mb_name, g or row["genre"], row["album"], row["title"], fp.suffix)
         plan.dest_folders[str(Path(*rel.parts[:2]))] += 1
         if rel != rel_now:
             rp.moves.append((fp, lib / rel))
@@ -256,6 +288,9 @@ def execute_plan(cfg, conn: sqlite3.Connection, plan: MergePlan) -> dict[str, in
         if rp.file_path is not None:
             sets.append("file_path = ?")
             args.append(rp.file_path)
+        if rp.identity is not None:
+            sets += ["mb_artist_name = ?", "mb_artist_id = ?"]
+            args += list(rp.identity)
         conn.execute(f"UPDATE archive SET {', '.join(sets)} WHERE id = ?", (*args, rp.id))
         counts["rows"] += 1
         for src, dst in rp.moves:

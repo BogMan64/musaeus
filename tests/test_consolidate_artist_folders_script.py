@@ -50,7 +50,7 @@ def vault(tmp_path, monkeypatch):
     conn.row_factory = sqlite3.Row
     conn.execute(
         "CREATE TABLE archive (id INTEGER PRIMARY KEY, artist TEXT, genre TEXT, album TEXT, "
-        "title TEXT, file_path TEXT, car_export_path TEXT, mb_artist_name TEXT, status TEXT)"
+        "title TEXT, file_path TEXT, car_export_path TEXT, mb_artist_name TEXT, mb_artist_id TEXT, status TEXT)"
     )
     conn.execute(
         "CREATE TABLE events (id INTEGER PRIMARY KEY, run_id TEXT, ts TEXT, event_type TEXT, "
@@ -60,8 +60,10 @@ def vault(tmp_path, monkeypatch):
     retagged: list[Path] = []
     monkeypatch.setattr(mod, "_retag_car", lambda p, a: retagged.append(p))
 
-    def add(artist, genre, album, title, *, car=True, master=True, data=b"audio"):
-        rel = library_relpath(artist, None, genre, album, title, ".m4a")
+    def add(
+        artist, genre, album, title, *, car=True, master=True, data=b"audio", mb=None, mbid=None
+    ):
+        rel = library_relpath(artist, mb, genre, album, title, ".m4a")
         lib = cfg.alac_library / rel
         lib.parent.mkdir(parents=True, exist_ok=True)
         lib.write_bytes(data)
@@ -75,9 +77,9 @@ def vault(tmp_path, monkeypatch):
             car_path.parent.mkdir(parents=True, exist_ok=True)
             car_path.write_bytes(data)
         cur = conn.execute(
-            "INSERT INTO archive (artist, genre, album, title, file_path, car_export_path, status) "
-            "VALUES (?,?,?,?,?,?, 'CATALOGUED')",
-            (artist, genre, album, title, str(lib), str(car_path) if car_path else None),
+            "INSERT INTO archive (artist, genre, album, title, file_path, car_export_path, "
+            "mb_artist_name, mb_artist_id, status) VALUES (?,?,?,?,?,?,?,?, 'CATALOGUED')",
+            (artist, genre, album, title, str(lib), str(car_path) if car_path else None, mb, mbid),
         )
         conn.commit()
         return cur.lastrowid
@@ -231,3 +233,32 @@ def test_every_move_is_recorded_as_an_event(vault):
         "SELECT COUNT(*) FROM events WHERE event_type='ARTIST_CONSOLIDATED'"
     ).fetchone()[0]
     assert n == 3
+
+
+def test_a_merged_row_takes_the_targets_identity_and_files_with_it(vault):
+    """England Dan Seals, no MusicBrainz name, merged into the duo whose rows
+    carry theirs: without adopting it, folder_artist split the merged row off
+    into "England Dan" while the duo stayed whole -- and organize, reading the
+    same field, would have kept them apart on every pass."""
+    duo = "England Dan & John Ford Coley"
+    kept = vault.add(
+        duo, "Rock N'Roll", "Nights Are Forever", "Nights Are Forever", mb=duo, mbid="2bca31d7"
+    )
+    rid = vault.add(
+        "England Dan Seals",
+        "Rock N'Roll",
+        "Nights Are Forever",
+        "I'd Really Love to See You Tonight",
+    )
+    vault.mod.execute_plan(
+        vault.cfg, vault.conn, vault.mod.plan_merge(vault.cfg, vault.conn, "England Dan Seals", duo)
+    )
+    row, other = _row(vault, rid), _row(vault, kept)
+    assert (row["mb_artist_name"], row["mb_artist_id"]) == (duo, "2bca31d7")
+    assert Path(row["file_path"]).parent == Path(other["file_path"]).parent, (
+        "merged row filed apart from its artist"
+    )
+    rel = library_relpath(
+        row["artist"], row["mb_artist_name"], row["genre"], row["album"], row["title"], ".m4a"
+    )
+    assert Path(row["file_path"]) == vault.cfg.alac_library / rel
