@@ -262,3 +262,45 @@ def test_a_merged_row_takes_the_targets_identity_and_files_with_it(vault):
         row["artist"], row["mb_artist_name"], row["genre"], row["album"], row["title"], ".m4a"
     )
     assert Path(row["file_path"]) == vault.cfg.alac_library / rel
+
+
+def test_an_identity_that_names_someone_else_is_not_adopted(vault):
+    """In a batch, "Run-D.M.C. & Aerosmith" merged first gives "Run-D.M.C." its
+    first row -- carrying the collab's MB identity. The next merge into
+    "Run-D.M.C." must not hand that identity to a plain Run-D.M.C. track."""
+    vault.add(
+        "Run-D.M.C.",
+        "Hip Hop",
+        "Walk This Way",
+        "Walk This Way",
+        mb="Run-D.M.C. & Aerosmith",
+        mbid="collab",
+    )
+    rid = vault.add(
+        "Run-DMC", "Hip Hop", "Raising Hell", "Peter Piper", mb="Run-DMC", mbid="rundmc"
+    )
+    vault.mod.execute_plan(
+        vault.cfg, vault.conn, vault.mod.plan_merge(vault.cfg, vault.conn, "Run-DMC", "Run-D.M.C.")
+    )
+    row = _row(vault, rid)
+    assert (row["mb_artist_name"], row["mb_artist_id"]) == ("Run-DMC", "rundmc")
+
+
+def test_and_versus_ampersand_is_still_the_same_identity(vault):
+    vault.add(
+        "KC & The Sunshine Band",
+        "Disco",
+        "KC",
+        "Get Down Tonight",
+        mb="KC and the Sunshine Band",
+        mbid="kc",
+    )
+    rid = vault.add("KC (the Sunshine Band)", "Disco", "KC", "That's the Way")
+    vault.mod.execute_plan(
+        vault.cfg,
+        vault.conn,
+        vault.mod.plan_merge(
+            vault.cfg, vault.conn, "KC (the Sunshine Band)", "KC & The Sunshine Band"
+        ),
+    )
+    assert _row(vault, rid)["mb_artist_id"] == "kc"

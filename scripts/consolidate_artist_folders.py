@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import re
 import sqlite3
 import sys
 from dataclasses import dataclass, field
@@ -82,7 +83,7 @@ import mutagen.mp4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from musaeus.artist_form import sort_form  # noqa: E402
+from musaeus.artist_form import comparison_key, sort_form  # noqa: E402
 from musaeus.config import MusicConfig  # noqa: E402
 from musaeus.editions import master_path_for  # noqa: E402
 from musaeus.filing import load as filing_load  # noqa: E402
@@ -166,7 +167,21 @@ def target_identity(conn: sqlite3.Connection, old: str, new: str) -> tuple[str |
     if not found:
         return None
     name, mbid = found.most_common(1)[0][0]
+    # Adopt it only when it IS the target's identity. In a batch, a new name
+    # built from several credits gets its first rows from the first merge,
+    # which keep their own MB identity -- "Run-D.M.C. & Aerosmith" arriving
+    # first under "Run-D.M.C." would otherwise hand the collab's id to every
+    # Run-D.M.C. row that follows.
+    if name is None or _name_key(name) != _name_key(new):
+        return None
     return name, mbid
+
+
+def _name_key(name: str) -> str:
+    """comparison_key, also blind to '&' vs 'and' and to curly apostrophes --
+    MusicBrainz writes "KC and the Sunshine Band" and "Booker T. & the MG’s"."""
+    k = comparison_key(name.replace("\u2019", "'"))
+    return re.sub(r"\s+and\s+", " & ", k)
 
 
 def plan_merge(cfg, conn: sqlite3.Connection, old: str, new: str, genre: str | None = None) -> MergePlan:
