@@ -158,6 +158,14 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # while comparing nothing. audio_hash survives both a move and a
     # re-tag, so it is what lets verify tell those apart from rot.
     ("archive_tier_hashes", "audio_hash", "TEXT"),
+    # What a duplicates row was ABOUT, recorded when the group is found.
+    # The row names a file by path, and a path is not an identity: files are
+    # renamed between detection and resolution (organize runs at the end of
+    # every default run), and the resolver used to move whatever sat at the
+    # stored path -- a different, unique recording, more than once (bug 1:
+    # ABC "Poison Arrow", Eddie Rabbitt; 17 songs restored 2026-09-24).
+    # dupe_resolver refuses to move a member whose file no longer matches.
+    ("duplicates", "audio_hash", "TEXT"),
     ("archive", "lufs", "REAL"),
     ("archive", "lufs_tp", "REAL"),
     ("archive", "rg_gain", "REAL"),

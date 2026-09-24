@@ -298,6 +298,7 @@ def _get_group_members(conn, group_id: str) -> list[dict]:
     rows = conn.execute(
         """
         SELECT d.file_path, d.duplicate_type, d.confidence, d.status AS dup_status,
+               d.audio_hash AS recorded_hash, a.audio_hash AS current_hash, a.id AS current_row,
                a.artist, a.album, a.title, a.ext, a.codec, a.bitrate, a.size_bytes
           FROM duplicates d
           LEFT JOIN archive a USING (file_path)
@@ -789,6 +790,49 @@ class DupeResolverStage(BaseStage):
                     seen_paths.add(m["file_path"])
                     members.append(m)
             if not members:
+                continue
+
+            # Bug 1. A member is recorded by PATH, and by now that path may
+            # hold a different recording -- renamed files free paths and other
+            # files take them. The recording the group was about is
+            # duplicates.audio_hash, captured when the group was found; the
+            # file there now is archive.audio_hash at that path. Unless every
+            # member still matches, nothing in the component moves: a wrong
+            # keeper is as bad as a wrong loser. Unverifiable -- no identity
+            # recorded (rows from before 2026-09-24), or a catalogue row there
+            # with no audio_hash -- counts as not matching, because that is
+            # precisely the population the bug came from.
+            #
+            # A path with NO catalogue row is different: the file was moved
+            # away by another stage, nothing can be moved wrongly from there,
+            # and _move_losers already skips such a member (see its
+            # relocation handling). It is left to that.
+            def _mismatch(m: dict) -> bool:
+                if not m.get("recorded_hash"):
+                    return True
+                if m.get("current_row") is None:
+                    return False
+                return m.get("current_hash") != m.get("recorded_hash")
+
+            stale = [m for m in members if _mismatch(m)]
+            if stale:
+                for m in stale:
+                    why = (
+                        "no recording identity was stored with the group"
+                        if not m.get("recorded_hash")
+                        else "the file at that path is now a different recording"
+                        if m.get("current_hash")
+                        else "the catalogue row at that path has no audio fingerprint"
+                    )
+                    result.errors.append(
+                        f"duplicate group {group_id}: nothing moved -- {m['file_path']}: {why}"
+                    )
+                result.files_skipped += len(members)
+                if not dry_run:
+                    ctx.conn.executemany(
+                        "UPDATE duplicates SET status = 'stale' WHERE group_id = ? AND status = 'pending'",
+                        [(gid,) for gid in component],
+                    )
                 continue
             # One keeper for the whole component, so a file kept by one of
             # its groups can no longer be moved as another's loser.

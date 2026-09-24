@@ -311,10 +311,11 @@ class NearDupeStage(BaseStage):
                                     """
                                     INSERT OR IGNORE INTO duplicates
                                         (group_id, file_path, duplicate_type,
-                                         confidence, run_id)
-                                    VALUES (?, ?, 'NEAR', ?, ?)
+                                         confidence, run_id, audio_hash)
+                                    VALUES (?, ?, 'NEAR', ?, ?,
+                                            (SELECT audio_hash FROM archive WHERE file_path = ?))
                                     """,
-                                    (gid, fp, confidence, ctx.run_id),
+                                    (gid, fp, confidence, ctx.run_id, fp),
                                 )
                                 ctx.log_event(
                                     "NEAR_DUPLICATE_FOUND",
