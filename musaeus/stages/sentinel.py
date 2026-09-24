@@ -530,10 +530,11 @@ class SentinelStage(BaseStage):
                         ctx.conn.execute(
                             """
                             INSERT OR IGNORE INTO duplicates
-                                (group_id, file_path, duplicate_type, confidence, run_id)
-                            VALUES (?, ?, 'EXACT', 1.0, ?)
+                                (group_id, file_path, duplicate_type, confidence, run_id, audio_hash)
+                            VALUES (?, ?, 'EXACT', 1.0, ?,
+                                    (SELECT audio_hash FROM archive WHERE file_path = ?))
                             """,
-                            (group_id, fp, ctx.run_id),
+                            (group_id, fp, ctx.run_id, fp),
                         )
                     ctx.log_event(
                         "DUPLICATE_FOUND",
