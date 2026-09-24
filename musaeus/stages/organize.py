@@ -351,6 +351,66 @@ def build_track_filename(artist: str, title: str, ext: str) -> str:
     return f"{stem}{ext}"
 
 
+def library_relpath(
+    artist: str | None,
+    mb_artist_name: str | None,
+    genre: str | None,
+    album: str | None,
+    title: str | None,
+    ext: str,
+) -> Path:
+    """Where a track belongs, relative to a library root: Genre/Artist/Album/file.
+
+    The one rule for it. OrganizeStage files by this, and so does
+    scripts/consolidate_artist_folders.py -- a merge that filed by anything
+    else would be moved straight back out by the next organize pass, the
+    same two-owners shape as the 2026-09-18 genre-folder disagreement below.
+
+    Measured 2026-09-24 against the live vault: reproduces 8,968 of 8,998
+    catalogued paths. The 30 that differ are unique_path " (2)" bumps and
+    comma credits filed before folder_artist learned the comma rule.
+    """
+    from .finalize import genre_folder
+
+    # Paths use the SORT form, always, whichever form the tag holds.
+    #
+    # The `artist` tag is moving to the natural form ("The Stooges")
+    # because that is what MusicBrainz and every player expect. The
+    # filesystem wants the other one: "Stooges, The" sorts under S,
+    # which is the whole reason the convention exists.
+    #
+    # Deriving the path from sort_form rather than from the tag keeps
+    # the two decisions independent -- the on-disk layout is byte
+    # identical before and after the tag migration, so no file moves
+    # because of it. Both directions are idempotent, so this is also
+    # correct for a library holding a mix of the two forms.
+    # A duet files under its PRIMARY artist while the tag keeps the
+    # full credit -- "Johnny Mathis & Deniece Williams" made a
+    # one-track folder of its own. folder_artist() refuses to take a
+    # band apart: MusicBrainz agreement, then feat./with, then
+    # "& The ...", then a two-word personal-name tail. Simon &
+    # Garfunkel stays whole.
+    path_artist = sort_form(folder_artist(artist or "Unknown Artist", mb_artist_name))
+
+    # The genre level MUST match FinalizeStage. On 2026-09-18 it did
+    # not: finalize was changed to file under Genre/Artist/Album and
+    # organize was left alone, so every file finalize placed correctly was
+    # moved straight back out by organize on the same run --
+    #
+    #     [organize] move  Unsorted/38 Special/Rock & Roll Strategy/...
+    #
+    # Two stages owning one decision and disagreeing is the same shape
+    # as the car encoder filing by album-artist while the catalogue
+    # filed by artist. Both call genre_folder() now, so there is one
+    # rule rather than two that happen to agree.
+    return (
+        Path(genre_folder(genre))
+        / sanitize_path_component(path_artist)
+        / sanitize_path_component(album or "Unsorted")
+        / build_track_filename(path_artist, title or "Unknown Title", ext)
+    )
+
+
 def destination_root(current_path: Path, roots: Iterable[Path]) -> Path | None:
     """The root *current_path* already lives under, or None if it lives under none.
 
@@ -635,54 +695,18 @@ class OrganizeStage(BaseStage):
                 result.errors.append(f"{current_path}: outside every known root, skipped")
                 continue
 
-            artist = row["artist"] or "Unknown Artist"
-            album = row["album"] or "Unsorted"
-            title = row["title"] or "Unknown Title"
-
-            # Paths use the SORT form, always, whichever form the tag holds.
-            #
-            # The `artist` tag is moving to the natural form ("The Stooges")
-            # because that is what MusicBrainz and every player expect. The
-            # filesystem wants the other one: "Stooges, The" sorts under S,
-            # which is the whole reason the convention exists.
-            #
-            # Deriving the path from sort_form rather than from the tag keeps
-            # the two decisions independent -- the on-disk layout is byte
-            # identical before and after the tag migration, so no file moves
-            # because of it. Both directions are idempotent, so this is also
-            # correct for a library holding a mix of the two forms.
-            # A duet files under its PRIMARY artist while the tag keeps the
-            # full credit -- "Johnny Mathis & Deniece Williams" made a
-            # one-track folder of its own. folder_artist() refuses to take a
-            # band apart: MusicBrainz agreement, then feat./with, then
-            # "& The ...", then a two-word personal-name tail. Simon &
-            # Garfunkel stays whole.
-            path_artist = sort_form(folder_artist(artist, row["mb_artist_name"]))
-
-            # Build new filename
-            ext = current_path.suffix
-            new_filename = build_track_filename(path_artist, title, ext)
-
-            # Build target path: <root>/Genre/Artist/Album/filename
-            #
-            # The genre level MUST match FinalizeStage. On 2026-09-18 it did
-            # not: finalize was changed to file under Genre/Artist/Album and
-            # this was left alone, so every file finalize placed correctly was
-            # moved straight back out by organize on the same run --
-            #
-            #     [organize] move  Unsorted/38 Special/Rock & Roll Strategy/...
-            #
-            # Two stages owning one decision and disagreeing is the same shape
-            # as the car encoder filing by album-artist while the catalogue
-            # filed by artist. Both call genre_folder() now, so there is one
-            # rule rather than two that happen to agree.
-            from .finalize import genre_folder
-
-            artist_safe = sanitize_path_component(path_artist)
-            album_safe = sanitize_path_component(album)
-
-            target_dir = dest_root / genre_folder(row["genre"]) / artist_safe / album_safe
-            candidate_path = target_dir / new_filename
+            # Genre/Artist/Album/"Artist - Title" -- one rule, shared with
+            # scripts/consolidate_artist_folders.py; see library_relpath().
+            rel = library_relpath(
+                row["artist"],
+                row["mb_artist_name"],
+                row["genre"],
+                row["album"],
+                row["title"],
+                current_path.suffix,
+            )
+            candidate_path = dest_root / rel
+            target_dir = candidate_path.parent
 
             # unique_path() checks disk existence to avoid collisions, but
             # the file being organized right now already exists at its
