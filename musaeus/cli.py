@@ -103,6 +103,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import atexit
 import contextlib
 import json
 import logging
@@ -115,6 +116,9 @@ from .config import get_config
 from .context import RunContext, elision, head_with_remainder
 from .db import open_db, snapshot_db_before_wipe
 from .handoff import act_of, write_act_handoff, write_handoff_doc
+from .run_records import RunLog, added_to_library
+from .run_records import prune_all as prune_run_records
+from .run_records import publish as publish_run_records
 from .stages import (
     ARCHIVE_PIPELINE,
     DEFAULT_PIPELINE,
@@ -426,6 +430,12 @@ def _run_pipeline(
 
     conn = open_db(cfg.db_path)
     ctx = RunContext.new(cfg, conn, dry_run=dry_run)
+    # The run keeps its own log from here on (RUNS/LOGS/run_<run_id>.log) --
+    # see run_records.py. Not a finally around the rest of the run: this
+    # function has several returns, and each closes it; atexit is the net
+    # for an exception, whose log is exactly the one worth keeping.
+    run_log = RunLog(cfg.runs_root, ctx.run_id)
+    atexit.register(run_log.close)
     if stash:
         for k, v in stash.items():
             ctx.set(k, v)
@@ -469,6 +479,7 @@ def _run_pipeline(
                 answer = input("  Resume from next stage? [Y/n]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 print()
+                run_log.close()
                 return 0
             if answer == "n":
                 _clear_resume()
@@ -489,6 +500,7 @@ def _run_pipeline(
             print(f"\n\n  ⚠  Interrupted during {stage_name}.")
             print("  Progress saved — run 'musaeus run' again to resume.\n")
             _save_resume(completed_names, stage_names)
+            run_log.close()
             return 1
 
         status = "✓" if result.success else "✗"
@@ -590,7 +602,28 @@ def _run_pipeline(
     if handoff_path is not None:
         print(f"  ForClaudeHandoff doc (needs attention): {handoff_path}", file=sys.stderr)
 
+    # Grey, 2026-09-24: a run that adds tracks to ALAC_Library keeps a copy of
+    # its log and reports BESIDE the library; and 10 of each kind are kept.
+    # Bookkeeping, so it may not sink the run -- but it may not fail quietly.
+    try:
+        added = added_to_library(ctx.stage_results)
+        if added:
+            dest = publish_run_records(
+                cfg.libraries, cfg.runs_root, ctx.run_id, [run_log.path, handoff_path]
+            )
+            print(f"  Run records ({added} track(s) added to the library): {dest}")
+        pruned = prune_run_records(cfg.runs_root, cfg.libraries, cfg.meta_dir)
+        if pruned:
+            print(f"  Kept the newest 10 of each kind of run record; removed {pruned} older.")
+    except Exception as exc:  # noqa: BLE001 - see comment above
+        exit_code = 1
+        print(
+            f"  WARNING: run records not published/pruned: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
     ctx.finish()
+    run_log.close()
     return exit_code
 
 
