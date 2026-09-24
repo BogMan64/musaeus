@@ -78,6 +78,21 @@ def _stage_issues(stage_results: list[StageResult]) -> list[dict[str, Any]]:
                     "notes": list(r.notes),
                 }
             )
+        elif r.errors or r.files_errored:
+            # Finished, but not cleanly: "file missing on disk", a duplicate
+            # group refused as stale, a path it could not build. success=True
+            # used to keep these out of every report -- the file said "Nothing
+            # went wrong" over them -- so a batch could hide its problems in
+            # the one document meant to surface them. Grey, 2026-09-24: an
+            # error list between acts.
+            issues.append(
+                {
+                    "kind": "finished_with_problems",
+                    "stage": r.stage_name,
+                    "files_errored": r.files_errored,
+                    "errors": list(r.errors),
+                }
+            )
         if r.verified is False:
             issues.append(
                 {
@@ -258,6 +273,19 @@ def _render(
             lines.extend(_capped(i["notes"]))
             lines.append("")
 
+    finished = [i for i in issues if i["kind"] == "finished_with_problems"]
+    if finished:
+        lines.append(f"## Problems in stages that still finished ({len(finished)})")
+        lines.append("")
+        lines.append("Each of these stages completed, but not for every file. The full,")
+        lines.append("uncapped list for the run is RUNS/LOGS/run_<run_id>_problems.tsv.")
+        lines.append("")
+        for i in finished:
+            lines.append(f"### {i['stage']}  ({len(i['errors'])} problem(s))")
+            lines.append("")
+            lines.extend(_capped(i["errors"], "PROBLEM: "))
+            lines.append("")
+
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -381,7 +409,7 @@ def write_tool_handoff(
 
 
 def act_of(stage_name: str) -> str | None:
-    """Which Act a stage belongs to, by its class name.
+    """Which Act a stage belongs to, by its class name or its NAME.
 
     Derived from the stage tuples in musaeus.stages rather than a second
     hand-kept list -- a stage moved between Acts must not need remembering
@@ -396,7 +424,12 @@ def act_of(stage_name: str) -> str | None:
         ("act3", _s.ACT3_CANONICALIZE_FINALIZE),
         ("enrichment", _s.ENRICHMENT),
     ):
-        if any(cls.__name__ == stage_name for cls in group):
+        # Either name. StageResult.stage_name and the FAILURES reports carry
+        # the stage's NAME ("dupe-resolver"); the CLI loop has the class name.
+        # Matching the class name only meant every per-Act report found no
+        # stages and was never written -- 0 act reports in RUNS/HANDOFFS as of
+        # 2026-09-24, the error list between acts Grey was relying on.
+        if any(stage_name in (cls.__name__, getattr(cls, "NAME", None)) for cls in group):
             return label
     return None
 

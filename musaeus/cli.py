@@ -103,6 +103,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import atexit
 import contextlib
 import json
 import logging
@@ -115,6 +116,9 @@ from .config import get_config
 from .context import RunContext, elision, head_with_remainder
 from .db import open_db, snapshot_db_before_wipe
 from .handoff import act_of, write_act_handoff, write_handoff_doc
+from .run_records import RunLog, added_to_library, count_problems, write_problems_tsv
+from .run_records import prune_all as prune_run_records
+from .run_records import publish as publish_run_records
 from .stages import (
     ARCHIVE_PIPELINE,
     DEFAULT_PIPELINE,
@@ -426,6 +430,12 @@ def _run_pipeline(
 
     conn = open_db(cfg.db_path)
     ctx = RunContext.new(cfg, conn, dry_run=dry_run)
+    # The run keeps its own log from here on (RUNS/LOGS/run_<run_id>.log) --
+    # see run_records.py. Not a finally around the rest of the run: this
+    # function has several returns, and each closes it; atexit is the net
+    # for an exception, whose log is exactly the one worth keeping.
+    run_log = RunLog(cfg.runs_root, ctx.run_id)
+    atexit.register(run_log.close)
     if stash:
         for k, v in stash.items():
             ctx.set(k, v)
@@ -469,6 +479,7 @@ def _run_pipeline(
                 answer = input("  Resume from next stage? [Y/n]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 print()
+                run_log.close()
                 return 0
             if answer == "n":
                 _clear_resume()
@@ -489,6 +500,7 @@ def _run_pipeline(
             print(f"\n\n  ⚠  Interrupted during {stage_name}.")
             print("  Progress saved — run 'musaeus run' again to resume.\n")
             _save_resume(completed_names, stage_names)
+            run_log.close()
             return 1
 
         status = "✓" if result.success else "✗"
@@ -540,8 +552,16 @@ def _run_pipeline(
         next_act = act_of(stages[idx + 1].__name__) if idx + 1 < len(stages) else None
         if this_act and this_act != next_act:
             act_path = write_act_handoff(ctx, this_act)
-            if act_path:
-                print(f"  {this_act} report: {act_path}")
+            mine = [r for r in ctx.stage_results if act_of(r.stage_name) == this_act]
+            n_problems = count_problems(mine)
+            problems_path = write_problems_tsv(ctx)
+            print(
+                f"  {this_act} finished — "
+                + (f"{n_problems} problem(s) to look at" if n_problems else "no problems")
+                + (f".  Report: {act_path}" if act_path else "")
+            )
+            if n_problems and problems_path:
+                print(f"  Full problem list (spreadsheet): {problems_path}")
 
     print()
     all_ok = all(r.success for r in ctx.stage_results)
@@ -590,7 +610,32 @@ def _run_pipeline(
     if handoff_path is not None:
         print(f"  ForClaudeHandoff doc (needs attention): {handoff_path}", file=sys.stderr)
 
+    # Grey, 2026-09-24: a run that adds tracks to ALAC_Library keeps a copy of
+    # its log and reports BESIDE the library; and 10 of each kind are kept.
+    # Bookkeeping, so it may not sink the run -- but it may not fail quietly.
+    try:
+        problems_path = write_problems_tsv(ctx)
+        added = added_to_library(ctx.stage_results)
+        if added:
+            dest = publish_run_records(
+                cfg.libraries,
+                cfg.runs_root,
+                ctx.run_id,
+                [run_log.path, handoff_path, problems_path],
+            )
+            print(f"  Run records ({added} track(s) added to the library): {dest}")
+        pruned = prune_run_records(cfg.runs_root, cfg.libraries, cfg.meta_dir)
+        if pruned:
+            print(f"  Kept the newest 10 of each kind of run record; removed {pruned} older.")
+    except Exception as exc:  # noqa: BLE001 - see comment above
+        exit_code = 1
+        print(
+            f"  WARNING: run records not published/pruned: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
     ctx.finish()
+    run_log.close()
     return exit_code
 
 
@@ -1142,6 +1187,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Drop named stages from the run, by stage NAME (e.g. 'dupe-resolver'). "
         "Intended for unattended runs that should stage decisions but not act on them.",
     )
+    run_p.add_argument(
+        "--act",
+        choices=["1", "2", "3", "enrichment"],
+        help="Run only this Act of the pipeline, then stop -- to check each Act's "
+        "problem list before the next (1 intake, 2 duplicates, 3 library, enrichment)",
+    )
     run_p.add_argument("--full", action="store_true", help="Also run Forge + Tagger stages")
     run_p.add_argument(
         "--archive",
@@ -1667,6 +1718,65 @@ def _build_parser() -> argparse.ArgumentParser:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
+def _pipeline_for_run(args) -> tuple[list, dict]:
+    """The stages `musaeus run` will execute, and the stash to preload.
+
+    Pulled out of main() so the selection -- --maintain/--full/--archive/
+    --enrich, then --skip, then --act -- can be tested without starting a run.
+    """
+    if getattr(args, "maintain", False):
+        pipeline = MAINTAIN_PIPELINE
+    elif getattr(args, "full", False):
+        pipeline = FULL_PIPELINE
+    elif getattr(args, "archive", False):
+        pipeline = ARCHIVE_PIPELINE
+    elif getattr(args, "enrich", False):
+        pipeline = ENRICH_PIPELINE
+    else:
+        pipeline = DEFAULT_PIPELINE
+    # VariousArtistsFixStage is wired into DEFAULT_PIPELINE
+    # (2026-08-19); force MB lookups off here so a network
+    # hiccup early in Act 1 can't stall an otherwise
+    # file-safety-critical automatic run. `musaeus
+    # various-artists-fix` run standalone still defaults to MB
+    # lookups on.
+    run_stash = {"various_artists_no_mb": True} if pipeline is DEFAULT_PIPELINE else {}
+
+    # --skip removes named stages from whichever pipeline was chosen.
+    #
+    # Added 2026-08-22 for the overnight cron. DupeResolver had
+    # physically relocated 6,480 files in a single unattended run,
+    # resolving 7,679 near-duplicate groups that were staged FOR
+    # REVIEW -- the documented rule is that near-duplicates are never
+    # auto-resolved, and it held for every interactive path while the
+    # scheduled one quietly did the opposite. Staging and resolving
+    # are different decisions and a cron should only ever do the
+    # first.
+    skip = {s.strip().lower() for s in (getattr(args, "skip", "") or "").split(",") if s.strip()}
+    if skip:
+        names: dict[str, str] = {
+            str(getattr(st, "NAME", st.__name__)): str(getattr(st, "NAME", st.__name__)).lower()
+            for st in pipeline
+        }
+        kept = [st for st in pipeline if names[str(getattr(st, "NAME", st.__name__))] not in skip]
+        dropped = sorted(n for n, low in names.items() if low in skip)
+        unknown = skip - set(names.values())
+        if unknown:
+            print(f"  ! --skip: no such stage in this pipeline: {', '.join(sorted(unknown))}")
+        if dropped:
+            print(f"  ↷ skipping stage(s): {', '.join(dropped)}")
+        pipeline = kept
+
+    # --act: one Act, then stop (Grey, 2026-09-24: small batches run
+    # act by act, each Act's problem list read before the next).
+    act = getattr(args, "act", None)
+    if act:
+        label = act if act == "enrichment" else f"act{act}"
+        pipeline = [st for st in pipeline if act_of(st.__name__) == label]
+        print(f"  ▸ {label} only: {len(pipeline)} stage(s)")
+    return pipeline, run_stash
+
+
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
@@ -1726,59 +1836,7 @@ def main() -> None:
             if getattr(args, "reset", False):
                 _clear_resume()
                 print("  ✓ Resume state cleared.")
-            if getattr(args, "maintain", False):
-                pipeline = MAINTAIN_PIPELINE
-            elif getattr(args, "full", False):
-                pipeline = FULL_PIPELINE
-            elif getattr(args, "archive", False):
-                pipeline = ARCHIVE_PIPELINE
-            elif getattr(args, "enrich", False):
-                pipeline = ENRICH_PIPELINE
-            else:
-                pipeline = DEFAULT_PIPELINE
-            # VariousArtistsFixStage is wired into DEFAULT_PIPELINE
-            # (2026-08-19); force MB lookups off here so a network
-            # hiccup early in Act 1 can't stall an otherwise
-            # file-safety-critical automatic run. `musaeus
-            # various-artists-fix` run standalone still defaults to MB
-            # lookups on.
-            run_stash = {"various_artists_no_mb": True} if pipeline is DEFAULT_PIPELINE else {}
-
-            # --skip removes named stages from whichever pipeline was chosen.
-            #
-            # Added 2026-08-22 for the overnight cron. DupeResolver had
-            # physically relocated 6,480 files in a single unattended run,
-            # resolving 7,679 near-duplicate groups that were staged FOR
-            # REVIEW -- the documented rule is that near-duplicates are never
-            # auto-resolved, and it held for every interactive path while the
-            # scheduled one quietly did the opposite. Staging and resolving
-            # are different decisions and a cron should only ever do the
-            # first.
-            skip = {
-                s.strip().lower() for s in (getattr(args, "skip", "") or "").split(",") if s.strip()
-            }
-            if skip:
-                names: dict[str, str] = {
-                    str(getattr(st, "NAME", st.__name__)): str(
-                        getattr(st, "NAME", st.__name__)
-                    ).lower()
-                    for st in pipeline
-                }
-                kept = [
-                    st
-                    for st in pipeline
-                    if names[str(getattr(st, "NAME", st.__name__))] not in skip
-                ]
-                dropped = sorted(n for n, low in names.items() if low in skip)
-                unknown = skip - set(names.values())
-                if unknown:
-                    print(
-                        f"  ! --skip: no such stage in this pipeline: {', '.join(sorted(unknown))}"
-                    )
-                if dropped:
-                    print(f"  ↷ skipping stage(s): {', '.join(dropped)}")
-                pipeline = kept
-
+            pipeline, run_stash = _pipeline_for_run(args)
             sys.exit(_run_pipeline(pipeline, dry_run=dry_run, stash=run_stash))
 
         elif command == "dry-run":

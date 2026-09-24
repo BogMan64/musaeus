@@ -716,10 +716,11 @@ class AcousticIDStage(BaseStage):
                                     """
                                     INSERT OR IGNORE INTO duplicates
                                         (group_id, file_path, duplicate_type,
-                                         confidence, status, run_id, staged_at)
-                                    VALUES (?, ?, 'ACOUSTIC', ?, 'pending', ?, ?)
+                                         confidence, status, run_id, staged_at, audio_hash)
+                                    VALUES (?, ?, 'ACOUSTIC', ?, 'pending', ?, ?,
+                                            (SELECT audio_hash FROM archive WHERE file_path = ?))
                                     """,
-                                    (group_id, member, score, ctx.run_id, now),
+                                    (group_id, member, score, ctx.run_id, now, member),
                                 )
                             ctx.log_event(
                                 "ACOUSTIC_DUPE_FOUND",

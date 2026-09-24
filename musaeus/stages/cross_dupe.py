@@ -168,10 +168,11 @@ class CrossDupeStage(BaseStage):
                     ctx.conn.execute(
                         """
                         INSERT OR IGNORE INTO duplicates
-                            (group_id, file_path, duplicate_type, confidence, run_id)
-                        VALUES (?, ?, 'CROSS_BATCH', 1.0, ?)
+                            (group_id, file_path, duplicate_type, confidence, run_id, audio_hash)
+                        VALUES (?, ?, 'CROSS_BATCH', 1.0, ?,
+                                (SELECT audio_hash FROM archive WHERE file_path = ?))
                         """,
-                        (group_id, path_str, ctx.run_id),
+                        (group_id, path_str, ctx.run_id, path_str),
                     )
                     ctx.log_event(
                         "CROSS_BATCH_DUPLICATE_FOUND",

@@ -66,6 +66,7 @@ def _make_archive_row(
     title: str,
     bitrate: int,
     size_bytes: int,
+    audio_hash: str | None = None,
 ) -> Path:
     path = ctx.inbox / relpath
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -82,6 +83,9 @@ def _make_archive_row(
             "title": title,
             "bitrate": bitrate,
             "size_bytes": size_bytes,
+            # Every catalogued row carries its PCM identity (Sentinel sets it
+            # before any duplicate is recorded); the resolver now checks it.
+            "audio_hash": audio_hash or f"pcm:{relpath}",
         },
     )
     ctx.conn.commit()
@@ -93,9 +97,9 @@ def _stage_duplicate_pair(
 ) -> None:
     for fp in (str(path_high), str(path_low)):
         ctx.conn.execute(
-            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id) "
-            "VALUES (?, ?, ?, 1.0, ?)",
-            (group_id, fp, dtype, ctx.run_id),
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, audio_hash) "
+            "VALUES (?, ?, ?, 1.0, ?, (SELECT audio_hash FROM archive WHERE file_path = ?))",
+            (group_id, fp, dtype, ctx.run_id, fp),
         )
     ctx.conn.commit()
 
@@ -290,6 +294,7 @@ class TestDupeResolverCodecPriority:
             ctx.conn,
             {
                 "file_path": str(lossy),
+                "audio_hash": "pcm:" + str(lossy),
                 "status": "CATALOGUED",
                 "artist": "Artist",
                 "album": "Album",
@@ -306,6 +311,7 @@ class TestDupeResolverCodecPriority:
             ctx.conn,
             {
                 "file_path": str(lossless),
+                "audio_hash": "pcm:" + str(lossless),
                 "status": "CATALOGUED",
                 "artist": "Artist",
                 "album": "Album",
@@ -386,9 +392,9 @@ class TestDupeResolverCrossBatchGroup:
             size_bytes=300,
         )
         ctx.conn.execute(
-            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id) "
-            "VALUES (?, ?, 'CROSS_BATCH', 1.0, ?)",
-            ("crossdupe_abc", str(incoming), ctx.run_id),
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, audio_hash) "
+            "VALUES (?, ?, 'CROSS_BATCH', 1.0, ?, (SELECT audio_hash FROM archive WHERE file_path = ?))",
+            ("crossdupe_abc", str(incoming), ctx.run_id, str(incoming)),
         )
         ctx.conn.commit()
 
@@ -436,6 +442,7 @@ class TestDupeResolverErrorHandling:
             ctx.conn,
             {
                 "file_path": str(low_path),
+                "audio_hash": "pcm:" + str(low_path),
                 "status": "CATALOGUED",
                 "artist": "Artist",
                 "album": "Album",
@@ -483,6 +490,7 @@ class TestDupeResolverErrorHandling:
             ctx.conn,
             {
                 "file_path": str(already_moved_source),
+                "audio_hash": "pcm:" + str(already_moved_source),
                 "status": "CATALOGUED",
                 "artist": "Artist",
                 "album": "Album",
@@ -522,6 +530,7 @@ class TestDupeResolverManifestEnrichment:
             ctx.conn,
             {
                 "file_path": str(keep),
+                "audio_hash": "pcm:" + str(keep),
                 "status": "CATALOGUED",
                 "artist": "Artist",
                 "album": "Album",
@@ -537,6 +546,7 @@ class TestDupeResolverManifestEnrichment:
             ctx.conn,
             {
                 "file_path": str(lose),
+                "audio_hash": "pcm:" + str(lose),
                 "status": "CATALOGUED",
                 "artist": "Artist",
                 "album": "Album",
@@ -781,9 +791,9 @@ class TestDupeResolverOverlappingGroups:
         # shape of a file independently flagged by two detectors.
         _stage_duplicate_pair(ctx, "dup_group_a", high, low)
         ctx.conn.execute(
-            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id) "
-            "VALUES (?, ?, ?, 1.0, ?)",
-            ("dup_group_b", str(low), "CROSS_BATCH", ctx.run_id),
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, audio_hash) "
+            "VALUES (?, ?, ?, 1.0, ?, (SELECT audio_hash FROM archive WHERE file_path = ?))",
+            ("dup_group_b", str(low), "CROSS_BATCH", ctx.run_id, str(low)),
         )
         ctx.conn.commit()
 
@@ -1043,9 +1053,9 @@ class TestNoFileAppearsInTwoComponents:
     def _stage(self, ctx, group_id, *paths):
         for p in paths:
             ctx.conn.execute(
-                "INSERT INTO duplicates (group_id, file_path, duplicate_type, status) "
-                "VALUES (?,?,?,'pending')",
-                (group_id, str(p), "NEAR"),
+                "INSERT INTO duplicates (group_id, file_path, duplicate_type, status, audio_hash) "
+                "VALUES (?,?,?,'pending', (SELECT audio_hash FROM archive WHERE file_path = ?))",
+                (group_id, str(p), "NEAR", str(p)),
             )
         ctx.conn.commit()
 
@@ -1153,3 +1163,78 @@ def test_a_missing_dup_status_is_treated_as_live() -> None:
 
     m = {"codec": "flac", "bitrate": 900, "size_bytes": 40_000_000, "title": "x", "album": "y"}
     assert _keeper_sort_key(m)[0] == 0
+
+
+class TestBug1AStoredPathIsNotAnIdentity:
+    """Bug 1 (proven on ABC "Poison Arrow" and Eddie Rabbitt; 17 songs restored
+    2026-09-24). A duplicate group names its members by PATH. Between finding
+    the group and resolving it, files get renamed -- organize runs at the end
+    of every default run -- and a different recording can take a freed path.
+    The resolver used to move whatever sat there."""
+
+    def _group_then_path_reused(self, ctx):
+        high = _make_archive_row(
+            ctx, "a.flac", "ABC", "Lexicon", "Poison Arrow", bitrate=900_000, size_bytes=500
+        )
+        low = _make_archive_row(
+            ctx, "b.m4a", "ABC", "Lexicon", "Poison Arrow", bitrate=128_000, size_bytes=200
+        )
+        _stage_duplicate_pair(ctx, "dup_bug1", high, low)
+        # b.m4a is renamed away; an unrelated recording then lands on its old path
+        moved_to = ctx.inbox / "b renamed.m4a"
+        low.rename(moved_to)
+        ctx.conn.execute(
+            "UPDATE archive SET file_path = ? WHERE file_path = ?", (str(moved_to), str(low))
+        )
+        stranger = _make_archive_row(
+            ctx,
+            "b.m4a",
+            "Eddie Rabbitt",
+            "Hits",
+            "Drivin' My Life Away",
+            bitrate=64_000,
+            size_bytes=150,
+            audio_hash="pcm:eddie-rabbitt",  # a different recording
+        )
+        return high, stranger, moved_to
+
+    def test_a_different_recording_at_a_stored_path_is_never_moved(self, ctx):
+        high, stranger, moved_to = self._group_then_path_reused(ctx)
+        result = DupeResolverStage().execute(ctx)
+        assert stranger.exists(), "a unique recording was moved as someone else's duplicate"
+        assert high.exists() and moved_to.exists()
+        assert any("different recording" in e for e in result.errors)
+        status = {
+            r[0]
+            for r in ctx.conn.execute("SELECT status FROM duplicates WHERE group_id='dup_bug1'")
+        }
+        assert status == {"stale"}, "a group that cannot be trusted must not stay pending forever"
+
+    def test_a_group_recorded_before_identities_were_stored_moves_nothing(self, ctx):
+        high = _make_archive_row(ctx, "a.flac", "A", "B", "C", bitrate=900_000, size_bytes=500)
+        low = _make_archive_row(ctx, "b.m4a", "A", "B", "C", bitrate=128_000, size_bytes=200)
+        for fp in (high, low):
+            ctx.conn.execute(
+                "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id) VALUES ('legacy', ?, 'EXACT', 1.0, 'old')",
+                (str(fp),),
+            )
+        ctx.conn.commit()
+        result = DupeResolverStage().execute(ctx)
+        assert high.exists() and low.exists()
+        assert any("no recording identity" in e for e in result.errors)
+
+
+def test_every_place_that_records_a_duplicate_stores_its_identity():
+    """The resolver's check is only as good as what detection recorded. Any
+    INSERT INTO duplicates under musaeus/ must write audio_hash."""
+    import re
+
+    root = Path(__file__).resolve().parents[1] / "musaeus"
+    offenders = []
+    for f in root.rglob("*.py"):
+        for m in re.finditer(
+            r"INSERT(?: OR \w+)? INTO duplicates\s*\(([^)]*)\)", f.read_text(encoding="utf-8")
+        ):
+            if "audio_hash" not in m.group(1):
+                offenders.append(f"{f.relative_to(root.parent)}: {m.group(0)[:60]}")
+    assert not offenders, offenders

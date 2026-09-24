@@ -244,3 +244,39 @@ class TestARowWithNoFileIsStillRecorded:
         ).fetchone()[0]
         conn.close()
         assert n == 1, "a row was removed from the catalogue with nothing recorded"
+
+
+class TestItTidiesUpAfterItself:
+    """224 removals on 2026-09-23 left ~3,600 empty folders across the tiers."""
+
+    def test_the_folders_a_deletion_empties_go_and_the_tier_roots_stay(self, vault):
+        _add(vault, 1, "Blur", "Song 2", "Rock/Blur/Parklife/x.m4a", car="Blur/Parklife/x.m4a")
+        r = _run(vault, [1])
+        assert r.returncode == 0, r.stderr
+        libs = vault / "Libraries"
+        for tier, gone in (
+            ("ALAC_Library", "Rock"),
+            ("ALAC-Archival", "Rock"),
+            ("CAR_Library", "Blur"),
+        ):
+            assert not (libs / tier / gone).exists(), f"{tier}/{gone} left behind empty"
+            assert (libs / tier).is_dir(), f"the {tier} root itself must stay"
+
+    def test_a_folder_still_holding_anything_stays(self, vault):
+        _add(vault, 1, "Blur", "Song 2", "Rock/Blur/Parklife/x.m4a")
+        _add(vault, 2, "Blur", "Girls & Boys", "Rock/Blur/Parklife/y.m4a")
+        art = vault / "Libraries" / "ALAC-Archival" / "Rock" / "Blur" / "Parklife" / "cover.jpg"
+        art.write_bytes(b"jpg")
+        _run(vault, [1])
+        assert (
+            vault / "Libraries" / "ALAC_Library" / "Rock" / "Blur" / "Parklife" / "y.m4a"
+        ).exists()
+        assert art.exists(), "a file the catalogue does not know keeps its folder"
+
+    def test_the_car_copy_is_found_from_the_catalogue_not_a_mirrored_guess(self, vault):
+        _add(vault, 1, "Blur", "Song 2", "Rock/Blur/Parklife/x.m4a")  # no car_export_path
+        stray = vault / "Libraries" / "CAR_Library" / "Rock" / "Blur" / "Parklife" / "x.m4a"
+        stray.parent.mkdir(parents=True)
+        stray.write_bytes(b"\0")
+        _run(vault, [1])
+        assert stray.exists(), "the car tier has no genre level; a mirrored path is never its copy"
