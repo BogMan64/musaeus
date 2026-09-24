@@ -264,12 +264,61 @@ def _retag_car(path: Path, album_artist: str) -> None:
     tags.save()
 
 
+# Tables that name a file by its absolute path. A move that leaves them behind
+# orphans them: bit-rot baselines for masters that "vanished" while new ones
+# sit unbaselined, and duplicate-group members pointing at a freed path --
+# the shape duplicate-resolver bug 1 acts on. Measured before the 2026-09-24
+# batch: 197 baselines, 76 duplicate rows and 109 validation rows named files
+# it would move.
+_PATH_COLUMNS = (
+    ("archive_tier_hashes", "path"),
+    ("duplicates", "file_path"),
+    ("validation_issues", "file_path"),
+    ("metadata_cache", "file_path"),
+)
+
+
+def _record_row(conn, rp, plan, car_root, path_tables, run_id, now, note, counts) -> None:
+    """The catalogue half of one row's move. Raises; the caller rolls back."""
+    sets, args = ["artist = ?"], [plan.new]
+    if plan.genre and rp.file_path is not None:
+        sets.append("genre = ?")
+        args.append(plan.genre)
+    if rp.file_path is not None:
+        sets.append("file_path = ?")
+        args.append(rp.file_path)
+    if rp.identity is not None:
+        sets += ["mb_artist_name = ?", "mb_artist_id = ?"]
+        args += list(rp.identity)
+    conn.execute(f"UPDATE archive SET {', '.join(sets)} WHERE id = ?", (*args, rp.id))
+    counts["rows"] += 1
+    for src, dst in rp.moves:
+        if dst.is_relative_to(car_root):
+            # Every row naming this car file follows it, not only this one.
+            counts["car_paths"] += conn.execute(
+                "UPDATE archive SET car_export_path = ? WHERE car_export_path = ?", (str(dst), str(src))
+            ).rowcount
+        for table, col in path_tables:
+            # OR REPLACE: a stale row already naming dst describes a file
+            # that is not there (the clash check proved dst empty).
+            counts["other_paths"] += conn.execute(
+                f"UPDATE OR REPLACE {table} SET {col} = ? WHERE {col} = ?", (str(dst), str(src))
+            ).rowcount
+        conn.execute(
+            "INSERT INTO events (run_id, ts, event_type, file_path, old_value, new_value, stage, note) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (run_id, now, "ARTIST_CONSOLIDATED", str(dst), str(src), str(dst), "consolidate", note),
+        )
+        counts["files"] += 1
+
+
 def execute_plan(cfg, conn: sqlite3.Connection, plan: MergePlan) -> dict[str, int]:
     """Apply a clash-free plan one row at a time.
 
-    Each row's files move, then its catalogue row changes, then it commits --
-    so an interruption leaves at most one row half-done, and that row's moves
-    are put back before the error propagates.
+    Each row's files move, then its catalogue row and every table naming those
+    paths change, then it commits. If anything in that fails, the row's
+    database changes roll back and its files are moved back before the error
+    propagates -- so no row is ever left pointing at a file that moved.
     """
     if plan.clashes:
         raise RuntimeError("refusing to execute a plan with clashes")
@@ -281,6 +330,10 @@ def execute_plan(cfg, conn: sqlite3.Connection, plan: MergePlan) -> dict[str, in
     counts = collections.Counter()
     emptied: set[Path] = set()
 
+    path_tables = [
+        (t, c) for t, c in _PATH_COLUMNS
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone()
+    ]
     for rp in plan.rows:
         done: list[tuple[Path, Path]] = []
         try:
@@ -291,36 +344,15 @@ def execute_plan(cfg, conn: sqlite3.Connection, plan: MergePlan) -> dict[str, in
                 emptied.add(src.parent)
                 if dst.is_relative_to(car_root):
                     _retag_car(dst, plan.new)
+            _record_row(conn, rp, plan, car_root, path_tables, run_id, now, note, counts)
+            conn.commit()
         except Exception:
+            # Files and row go back together. A car file already retagged
+            # keeps its new album-artist tag; the audio is untouched.
+            conn.rollback()
             for src, dst in reversed(done):
                 dst.rename(src)
             raise
-
-        sets, args = ["artist = ?"], [plan.new]
-        if plan.genre and rp.file_path is not None:
-            sets.append("genre = ?")
-            args.append(plan.genre)
-        if rp.file_path is not None:
-            sets.append("file_path = ?")
-            args.append(rp.file_path)
-        if rp.identity is not None:
-            sets += ["mb_artist_name = ?", "mb_artist_id = ?"]
-            args += list(rp.identity)
-        conn.execute(f"UPDATE archive SET {', '.join(sets)} WHERE id = ?", (*args, rp.id))
-        counts["rows"] += 1
-        for src, dst in rp.moves:
-            if dst.is_relative_to(car_root):
-                # Every row naming this car file follows it, not only this one.
-                counts["car_paths"] += conn.execute(
-                    "UPDATE archive SET car_export_path = ? WHERE car_export_path = ?", (str(dst), str(src))
-                ).rowcount
-            conn.execute(
-                "INSERT INTO events (run_id, ts, event_type, file_path, old_value, new_value, stage, note) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (run_id, now, "ARTIST_CONSOLIDATED", str(dst), str(src), str(dst), "consolidate", note),
-            )
-            counts["files"] += 1
-        conn.commit()
 
     for d in emptied:
         counts["dirs_removed"] += _remove_empty_parents(d, {lib, arch, car_root})
@@ -424,7 +456,8 @@ def main() -> int:
                 print(f"  artist_canon.tsv: re-pointed {n_chain} entry(ies) that would "
                       f"otherwise chain through {args.old!r}")
     print(f"\nDONE: {counts.get('files', 0)} file(s), {counts.get('rows', 0)} row(s), "
-          f"{counts.get('car_paths', 0)} car_export_path, {counts.get('dirs_removed', 0)} empty folder(s) removed")
+          f"{counts.get('car_paths', 0)} car_export_path, {counts.get('other_paths', 0)} other table path(s), "
+          f"{counts.get('dirs_removed', 0)} empty folder(s) removed")
     return 0
 
 

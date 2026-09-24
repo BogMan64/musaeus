@@ -52,6 +52,10 @@ def vault(tmp_path, monkeypatch):
         "CREATE TABLE archive (id INTEGER PRIMARY KEY, artist TEXT, genre TEXT, album TEXT, "
         "title TEXT, file_path TEXT, car_export_path TEXT, mb_artist_name TEXT, mb_artist_id TEXT, status TEXT)"
     )
+    conn.execute("CREATE TABLE archive_tier_hashes (path TEXT PRIMARY KEY, sha256 TEXT)")
+    conn.execute(
+        "CREATE TABLE duplicates (id INTEGER PRIMARY KEY, group_id INTEGER, file_path TEXT, status TEXT)"
+    )
     conn.execute(
         "CREATE TABLE events (id INTEGER PRIMARY KEY, run_id TEXT, ts TEXT, event_type TEXT, "
         "file_path TEXT, old_value TEXT, new_value TEXT, stage TEXT, note TEXT)"
@@ -304,3 +308,43 @@ def test_and_versus_ampersand_is_still_the_same_identity(vault):
         ),
     )
     assert _row(vault, rid)["mb_artist_id"] == "kc"
+
+
+def test_other_tables_naming_a_moved_file_follow_it(vault):
+    rid = vault.add("Simon", "Folk", "Bookends", "America")
+    lib = Path(_row(vault, rid)["file_path"])
+    master = vault.cfg.alac_archive / lib.relative_to(vault.cfg.alac_library)
+    vault.conn.execute("INSERT INTO archive_tier_hashes VALUES (?, 'abc')", (str(master),))
+    vault.conn.execute(
+        "INSERT INTO duplicates (group_id, file_path, status) VALUES (7, ?, 'keep')", (str(lib),)
+    )
+    vault.conn.commit()
+    vault.mod.execute_plan(
+        vault.cfg,
+        vault.conn,
+        vault.mod.plan_merge(vault.cfg, vault.conn, "Simon", "Simon & Garfunkel"),
+    )
+    new_lib = Path(_row(vault, rid)["file_path"])
+    new_master = vault.cfg.alac_archive / new_lib.relative_to(vault.cfg.alac_library)
+    assert vault.conn.execute("SELECT path FROM archive_tier_hashes").fetchone()[0] == str(
+        new_master
+    )
+    assert vault.conn.execute("SELECT file_path FROM duplicates").fetchone()[0] == str(new_lib)
+
+
+def test_a_database_failure_puts_the_files_back(vault, monkeypatch):
+    rid = vault.add("Simon", "Folk", "Bookends", "America")
+    before = {p for p in vault.libs.rglob("*") if p.is_file()}
+
+    def boom(*a, **k):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(vault.mod, "_record_row", boom)
+    with pytest.raises(sqlite3.OperationalError):
+        vault.mod.execute_plan(
+            vault.cfg,
+            vault.conn,
+            vault.mod.plan_merge(vault.cfg, vault.conn, "Simon", "Simon & Garfunkel"),
+        )
+    assert {p for p in vault.libs.rglob("*") if p.is_file()} == before
+    assert _row(vault, rid)["artist"] == "Simon"
