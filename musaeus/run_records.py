@@ -24,6 +24,15 @@ import shutil
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+from .context import StageResult
+from .handoff import _crash_reports, act_of
+
+if TYPE_CHECKING:
+    from .context import RunContext
+
+logger = logging.getLogger(__name__)
 
 KEEP = 10
 RUN_LOGS_DIRNAME = "ALAC_Library_Run_Logs"
@@ -185,3 +194,58 @@ def prune_all(runs_root: Path, libraries: Path, meta_dir: Path, keep: int = KEEP
     n += len(prune(Path(libraries) / RUN_LOGS_DIRNAME, keep))
     n += len(prune_backups(meta_dir, keep))
     return n
+
+
+def count_problems(stage_results: list[StageResult]) -> int:
+    """How many things in these results want a look: one per error line, plus
+    one per failed stage or failed self-check that left no error line."""
+    n = 0
+    for r in stage_results:
+        n += len(r.errors) or (0 if r.success else 1)
+        if r.verified is False:
+            n += max(1, len(r.verify_notes))
+    return n
+
+
+def write_problems_tsv(ctx: RunContext) -> Path | None:
+    """Every problem the run has hit so far, one row each, uncapped.
+
+    The reports cap each list so they can be pasted into a chat; a 2,000-file
+    run can have hundreds of lines, and reviewing "there was this, and this,
+    and this" afterwards needs all of them (Grey, 2026-09-24). Rewritten after
+    every act, so an interrupted run still leaves the list up to that point.
+    Opens in a spreadsheet.
+    """
+    try:
+        out = ctx.runs_root / "LOGS" / f"run_{ctx.run_id}_problems.tsv"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        rows = []
+        for r in ctx.stage_results:
+            act = act_of(r.stage_name) or ""
+            if not r.success and not r.errors:
+                rows.append((act, r.stage_name, "stage failed", "; ".join(r.notes)[:500]))
+            for e in r.errors:
+                rows.append((act, r.stage_name, "error" if not r.success else "problem", e))
+            if r.verified is False:
+                for v in r.verify_notes or ["self-check failed"]:
+                    rows.append((act, r.stage_name, "self-check failed", v))
+        for c in _crash_reports(ctx.runs_root, ctx.run_id):
+            stage = c.get("stage", "")
+            where = f" (while on: {c['last_item']})" if c.get("last_item") else ""
+            rows.append(
+                (
+                    act_of(stage) or "",
+                    stage,
+                    "crash",
+                    f"{c.get('exception_type', '?')}: {c.get('exception_message', '')}{where}",
+                )
+            )
+        clean = [tuple(str(x).replace("\t", " ").replace("\n", " ") for x in row) for row in rows]
+        out.write_text(
+            "act\tstage\tkind\tmessage\n" + "".join("\t".join(row) + "\n" for row in clean),
+            encoding="utf-8",
+        )
+        return out
+    except Exception as exc:  # noqa: BLE001 -- a report may never cost a run
+        logger.warning("[handoff] could not write the problems list: %s", exc)
+        return None

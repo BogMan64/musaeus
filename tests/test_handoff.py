@@ -441,3 +441,90 @@ class TestPerActReports:
         # Shape, not one exact import line: this import has already gained
         # names once and a literal match would fail for the wrong reason.
         assert re.search(r"^from \.handoff import .*\bwrite_act_handoff\b", source, re.M)
+
+
+class TestTheErrorListBetweenActs:
+    """Grey, 2026-09-24: running small batches act by act, he reads each Act's
+    problem list before starting the next. Two things stood in the way."""
+
+    def test_an_act_report_is_written_for_results_named_the_way_stages_name_them(
+        self, tmp_path: Path
+    ) -> None:
+        """StageResult.stage_name is the stage's NAME ("ingest"), not its class
+        name. act_of matched class names only, so every per-Act report found
+        no stages and none was ever written: 0 in RUNS/HANDOFFS on 2026-09-24.
+        The tests above pass class names, which is how it hid."""
+        from musaeus.handoff import act_of, write_act_handoff
+        from musaeus.stages import DupeResolverStage, FinalizeStage, IngestStage
+
+        assert act_of(IngestStage.NAME) == "act1"
+        assert act_of(DupeResolverStage.NAME) == "act2"
+        assert act_of(FinalizeStage.NAME) == "act3"
+        ctx = _ctx(tmp_path, [_ok(IngestStage.NAME, files_changed=50)])
+        assert write_act_handoff(ctx, "act1") is not None
+
+    def test_a_stage_that_finished_with_problems_is_listed_not_hidden(self, tmp_path: Path) -> None:
+        """success=True with per-file errors used to be headed "Nothing went wrong"."""
+        from musaeus.handoff import write_act_handoff
+        from musaeus.stages import DupeResolverStage
+
+        r = _ok(DupeResolverStage.NAME, files_skipped=2)
+        r.errors.append(
+            "duplicate group g1: nothing moved -- /x/b.m4a: the file at that path is now a different recording"
+        )
+        text = write_act_handoff(_ctx(tmp_path, [r]), "act2").read_text()
+        assert "Nothing went wrong" not in text
+        assert "Problems in stages that still finished" in text
+        assert "now a different recording" in text
+
+    def test_the_problems_file_holds_every_problem_uncapped(self, tmp_path: Path) -> None:
+        from musaeus.run_records import count_problems, write_problems_tsv
+        from musaeus.stages import IngestStage, ScholarStage
+
+        many = _ok(ScholarStage.NAME)
+        many.errors.extend(f"Missing: /inbox/{i}.m4a" for i in range(60))
+        failed = StageResult(stage_name=IngestStage.NAME, success=False)
+        ctx = _ctx(tmp_path, [many, failed])
+        fails = ctx.runs_root / "FAILURES"
+        fails.mkdir(parents=True)
+        (fails / "sentinel_run_test_x.json").write_text(
+            json.dumps(
+                {
+                    "stage": "sentinel",
+                    "run_id": "run_test",
+                    "exception_type": "OSError",
+                    "exception_message": "disk full",
+                    "last_item": "/inbox/7.m4a",
+                }
+            )
+        )
+        path = write_problems_tsv(ctx)
+        rows = path.read_text().splitlines()
+        assert rows[0] == "act\tstage\tkind\tmessage"
+        assert sum("Missing:" in r for r in rows) == 60, (
+            "the report caps its lists; this file must not"
+        )
+        assert any(r.startswith("act1\tingest\tstage failed") for r in rows)
+        assert any("crash" in r and "disk full" in r and "/inbox/7.m4a" in r for r in rows)
+        assert count_problems([many, failed]) == 61
+
+
+def test_run_act_selects_exactly_that_acts_stages() -> None:
+    from musaeus import stages as s
+
+    for act, group in (
+        ("1", s.ACT1_INTAKE_CORRECTION),
+        ("2", s.ACT2_DEDUP_STAGING),
+        ("3", s.ACT3_CANONICALIZE_FINALIZE),
+    ):
+        args = SimpleNamespace(
+            act=act, skip="", maintain=False, full=False, archive=False, enrich=False
+        )
+        pipeline, _ = cli_mod._pipeline_for_run(args)
+        assert [c.__name__ for c in pipeline] == [
+            c.__name__ for c in s.DEFAULT_PIPELINE if c in group
+        ]
+    whole, _ = cli_mod._pipeline_for_run(
+        SimpleNamespace(act=None, skip="", maintain=False, full=False, archive=False, enrich=False)
+    )
+    assert whole == list(s.DEFAULT_PIPELINE), "no --act: the whole default pipeline, as before"
