@@ -348,3 +348,32 @@ def test_a_database_failure_puts_the_files_back(vault, monkeypatch):
         )
     assert {p for p in vault.libs.rglob("*") if p.is_file()} == before
     assert _row(vault, rid)["artist"] == "Simon"
+
+
+def test_keep_both_files_a_clash_as_n_in_every_tier_and_touches_nothing_else(vault):
+    kept = vault.add("Steve Miller Band", "Rock", "Born 2B Blue", "Ya Ya", data=b"band")
+    rid = vault.add("Steve Miller", "Rock", "Born 2B Blue", "Ya Ya", data=b"solo")
+    kept_path = Path(_row(vault, kept)["file_path"])
+
+    plan = vault.mod.plan_merge(
+        vault.cfg, vault.conn, "Steve Miller", "Steve Miller Band", keep_both=True
+    )
+    assert not plan.clashes
+    vault.mod.execute_plan(vault.cfg, vault.conn, plan)
+
+    name = "Steve Miller Band - Ya Ya (2).m4a"
+    row = _row(vault, rid)
+    assert Path(row["file_path"]).name == name
+    rel = Path(row["file_path"]).relative_to(vault.cfg.alac_library)
+    assert (vault.cfg.alac_archive / rel).read_bytes() == b"solo", (
+        "master must mirror its library copy"
+    )
+    assert Path(row["car_export_path"]).name == name
+    assert kept_path.read_bytes() == b"band", "the copy already there must be untouched"
+
+
+def test_keep_both_still_refuses_a_missing_source(vault):
+    rid = vault.add("Simon", "Folk", "Bookends", "America")
+    Path(_row(vault, rid)["file_path"]).unlink()
+    plan = vault.mod.plan_merge(vault.cfg, vault.conn, "Simon", "Simon & Garfunkel", keep_both=True)
+    assert any("source missing" in c for c in plan.clashes)

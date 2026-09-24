@@ -87,7 +87,7 @@ from musaeus.artist_form import comparison_key, sort_form  # noqa: E402
 from musaeus.config import MusicConfig  # noqa: E402
 from musaeus.editions import master_path_for  # noqa: E402
 from musaeus.filing import load as filing_load  # noqa: E402
-from musaeus.stages.organize import library_relpath  # noqa: E402
+from musaeus.stages.organize import _MAX_COMPONENT_BYTES, library_relpath, truncate_to_bytes  # noqa: E402
 
 EXIT_CLASH = 3
 
@@ -111,6 +111,7 @@ class MergePlan:
     clashes: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     dest_folders: collections.Counter = field(default_factory=collections.Counter)
+    kept_both: list[str] = field(default_factory=list)  # library paths given a " (N)"
 
     @property
     def moves(self) -> list[tuple[Path, Path]]:
@@ -184,8 +185,33 @@ def _name_key(name: str) -> str:
     return re.sub(r"\s+and\s+", " & ", k)
 
 
-def plan_merge(cfg, conn: sqlite3.Connection, old: str, new: str, genre: str | None = None) -> MergePlan:
-    """Everything an --execute would do, computed without touching anything."""
+def _free_name(rel: Path, taken) -> Path:
+    """rel itself if free, else the first free "stem (N)" -- unique_path()'s
+    naming, tested against every place the file will land rather than one."""
+    if not taken(rel):
+        return rel
+    n = 2
+    while True:
+        tag = f" ({n})"
+        budget = _MAX_COMPONENT_BYTES - len((tag + rel.suffix).encode("utf-8"))
+        cand = rel.with_name(f"{truncate_to_bytes(rel.stem, budget)}{tag}{rel.suffix}")
+        if not taken(cand):
+            return cand
+        n += 1
+
+
+def plan_merge(
+    cfg, conn: sqlite3.Connection, old: str, new: str, genre: str | None = None, keep_both: bool = False
+) -> MergePlan:
+    """Everything an --execute would do, computed without touching anything.
+
+    keep_both: a destination already taken by a DIFFERENT recording gets the
+    first free " (N)" instead of refusing the merge -- the name unique_path()
+    gives a collision everywhere else in the pipeline. Library and master
+    take the same N, so the master still mirrors its library copy. Grey,
+    2026-09-24: "keep both"; which copy stays is a duplicate decision for
+    later, not a naming one.
+    """
     lib, arch = Path(cfg.alac_library), Path(cfg.alac_archive)
     car_root = Path(cfg.vault_root) / "Libraries" / "CAR_Library"
     g, notes = target_genre(conn, old, new, genre)
@@ -209,6 +235,11 @@ def plan_merge(cfg, conn: sqlite3.Connection, old: str, new: str, genre: str | N
 
         rel = library_relpath(new, mb_name, g or row["genre"], row["album"], row["title"], fp.suffix)
         plan.dest_folders[str(Path(*rel.parts[:2]))] += 1
+        if keep_both and rel != rel_now:
+            free = _free_name(rel, lambda r: (lib / r).exists() or (arch / r).exists() or lib / r in claimed or arch / r in claimed)
+            if free != rel:
+                plan.kept_both.append(str(lib / free))
+                rel = free
         if rel != rel_now:
             rp.moves.append((fp, lib / rel))
             rp.file_path = str(lib / rel)
@@ -221,6 +252,8 @@ def plan_merge(cfg, conn: sqlite3.Connection, old: str, new: str, genre: str | N
             stem = car.name
             renamed = f"{sort_form(new)} - {stem.split(' - ', 1)[1]}" if " - " in stem else stem
             car_dst = car_root / sort_form(new) / car.parent.name / renamed
+            if keep_both and car_dst != car:
+                car_dst = car_root / _free_name(car_dst.relative_to(car_root), lambda r: (car_root / r).exists() or car_root / r in claimed)
             if car_dst != car:
                 if car not in car_moved:
                     car_moved[car] = car_dst
@@ -414,6 +447,8 @@ def main() -> int:
     ap.add_argument("old", help="the artist name to retire (tag form)")
     ap.add_argument("new", help="the artist name to keep (tag form)")
     ap.add_argument("--genre", help="file the moved rows under this genre")
+    ap.add_argument("--keep-both", action="store_true",
+                    help='a destination taken by a different recording gets " (N)" instead of refusing')
     ap.add_argument("--execute", action="store_true")
     args = ap.parse_args()
     if args.old == args.new and not args.genre:
@@ -424,7 +459,7 @@ def main() -> int:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 60000")
 
-    plan = plan_merge(cfg, conn, args.old, args.new, args.genre)
+    plan = plan_merge(cfg, conn, args.old, args.new, args.genre, keep_both=args.keep_both)
     n_lib = sum(1 for r in plan.rows if r.file_path is not None)
     print(f"  {args.old!r} -> {args.new!r}" + (f"  [genre: {plan.genre}]" if plan.genre else ""))
     print(f"  rows: {len(plan.rows)}  ({n_lib} to move, {plan.relabel_only} outside the library, relabel only)")
@@ -432,6 +467,8 @@ def main() -> int:
         print(f"  into {folder}/  ({n})")
     for n in plan.notes:
         print(f"  note: {n}")
+    for k in plan.kept_both:
+        print(f"  keep both: {k}")
     filing = filing_load(Path(cfg.meta_dir))
     if args.old in filing:
         print(f"  note: artist_filing.tsv files {args.old!r} under {filing[args.old]!r}; that line is now stale")
