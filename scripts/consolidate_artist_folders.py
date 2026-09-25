@@ -87,7 +87,11 @@ from musaeus.artist_form import comparison_key, sort_form  # noqa: E402
 from musaeus.config import MusicConfig  # noqa: E402
 from musaeus.editions import master_path_for  # noqa: E402
 from musaeus.filing import load as filing_load  # noqa: E402
-from musaeus.stages.organize import _MAX_COMPONENT_BYTES, library_relpath, truncate_to_bytes  # noqa: E402
+from musaeus.stages.organize import (  # noqa: E402
+    _MAX_COMPONENT_BYTES,
+    library_relpath,
+    truncate_to_bytes,
+)
 
 EXIT_CLASH = 3
 
@@ -218,6 +222,9 @@ def plan_merge(
     ident = target_identity(conn, old, new)
     plan = MergePlan(old, new, g, notes=notes)
 
+    # Grey's filing rulings: the same map finalize and organize file by.
+    meta = getattr(cfg, "meta_dir", None)
+    filing = filing_load(Path(meta)) if meta and Path(meta).is_dir() else {}
     claimed: dict[Path, int] = {}  # dst -> row id, so two rows cannot land on one path
     car_moved: dict[Path, Path] = {}  # a car file two rows share moves once
     for row in conn.execute("SELECT * FROM archive WHERE artist = ? ORDER BY id", (old,)).fetchall():
@@ -233,7 +240,7 @@ def plan_merge(
             plan.rows.append(rp)
             continue
 
-        rel = library_relpath(new, mb_name, g or row["genre"], row["album"], row["title"], fp.suffix)
+        rel = library_relpath(new, mb_name, g or row["genre"], row["album"], row["title"], fp.suffix, filing)
         plan.dest_folders[str(Path(*rel.parts[:2]))] += 1
         if keep_both and rel != rel_now:
             free = _free_name(rel, lambda r: (lib / r).exists() or (arch / r).exists() or lib / r in claimed or arch / r in claimed)
