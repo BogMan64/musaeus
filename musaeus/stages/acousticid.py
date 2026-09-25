@@ -48,7 +48,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
-from ..context import RunContext, StageResult
+from ..context import RunContext, StageResult, elision
 from ..db import ensure_columns
 from ..network_policy import check as _network_check
 from .base import BaseStage, StageError
@@ -580,6 +580,7 @@ class AcousticIDStage(BaseStage):
         unavailable = 0
         reused = 0
         dupes_found = 0
+        pairs: list[tuple[str, str]] = []
 
         from datetime import datetime, timezone
 
@@ -764,6 +765,7 @@ class AcousticIDStage(BaseStage):
                             )
                             continue
                         dupes_found += 1
+                        pairs.append((Path(other_fp).name, Path(fp).name))
                         group_id = f"acoustic_{uuid.uuid4().hex[:8]}"
                         logger.info(
                             "[acousticid] DUPE  %s  ==  %s  (recording=%s)",
@@ -792,7 +794,7 @@ class AcousticIDStage(BaseStage):
                                     INSERT OR IGNORE INTO duplicates
                                         (group_id, file_path, duplicate_type,
                                          confidence, status, run_id, staged_at, audio_hash)
-                                    VALUES (?, ?, 'ACOUSTIC', ?, 'pending', ?, ?,
+                                    VALUES (?, ?, 'ACOUSTIC', ?, 'review', ?, ?,
                                             (SELECT audio_hash FROM archive WHERE file_path = ?))
                                     """,
                                     (group_id, member, score, ctx.run_id, now, member),
@@ -836,7 +838,20 @@ class AcousticIDStage(BaseStage):
                 "later run with a key still asks about them."
             )
         if dupes_found:
-            result.notes.append(f"{dupes_found} acoustic duplicate(s) staged → `musaeus dedupe`")
+            # Status 'review', not 'pending': DupeResolver acts on every pending
+            # group, and these are Grey's to decide (2026-09-25, choice (b)). A
+            # radio edit or an extended mix can be the same recording to
+            # AcoustID and still a different track to keep. So they are listed
+            # here, by name, and nothing moves them.
+            result.notes.append(
+                f"{dupes_found} same-recording pair(s) for you to decide -- nothing moved:"
+            )
+            for a, b in pairs[:10]:
+                result.notes.append(f"    {a}  ==  {b}")
+            if len(pairs) > 10:
+                result.notes.append(
+                    "    " + elision(len(pairs) - 10, suffix="(duplicates table, status 'review')")
+                )
 
         ctx.record_stage(result)
         return result
