@@ -21,22 +21,15 @@ line and starting over with no idea which file did it.
 
 from __future__ import annotations
 
-import importlib.util as ilu
 import subprocess
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-_SCRIPT = (
-    Path(__file__).resolve().parent.parent / "scripts" / "alac_library" / "build_alac_library.py"
-)
-_spec = ilu.spec_from_file_location("build_alac_library_timeouts", _SCRIPT)
-assert _spec and _spec.loader
-bal = ilu.module_from_spec(_spec)
-sys.modules["build_alac_library_timeouts"] = bal
-_spec.loader.exec_module(bal)
+# The bake lives in musaeus/library_bake.py since 2026-09-25 (the pipeline's
+# LibraryBakeStage uses it); the script is a thin entry point now.
+import musaeus.library_bake as bal  # noqa: E402
 
 
 def _probe(duration=None, rate=None):

@@ -167,7 +167,7 @@ def test_the_standalone_scripts_agree_on_the_value() -> None:
 
     root = Path(__file__).resolve().parent.parent
     for rel in (
-        "scripts/alac_library/build_alac_library.py",
+        "musaeus/library_bake.py",
         "scripts/car_library/vendor/build_aac_library.py",
         "scripts/car_library/vendor/orpheus_noise_generator.py",
         "scripts/car_library/vendor/orpheus_noise_masker.py",

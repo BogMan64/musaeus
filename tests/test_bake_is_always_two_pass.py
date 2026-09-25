@@ -23,7 +23,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILDERS = [
-    ROOT / "scripts" / "alac_library" / "build_alac_library.py",
+    ROOT / "musaeus" / "library_bake.py",
     ROOT / "scripts" / "car_library" / "vendor" / "build_aac_library.py",
 ]
 

@@ -103,7 +103,7 @@ class TestBothScriptsAgree:
         "path",
         [
             "scripts/musaeus_migrate_to_archive.py",
-            "scripts/alac_library/build_alac_library.py",
+            "musaeus/library_bake.py",
         ],
     )
     def test_the_baked_exclusion_is_present(self, path):

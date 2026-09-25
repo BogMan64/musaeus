@@ -25,13 +25,11 @@ than assuming.
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "alac_library"))
-from build_alac_library import build_bake_command, source_sample_fmt  # noqa: E402
+from musaeus.library_bake import build_bake_command, source_sample_fmt  # noqa: E402
 
 needs_ffmpeg = pytest.mark.skipif(
     not __import__("shutil").which("ffmpeg"), reason="requires ffmpeg"
