@@ -179,9 +179,14 @@ def diagnose(cfg: MusicConfig) -> Report:
 
     # 2. Files on disk that nothing in the database knows about.
     known = {r["file_path"] for r in rows}
+    # Both tiers. Since 2026-09-25 finalize files MASTERS into alac_archive and
+    # the row points there; scanning only alac_library meant a master left
+    # with no row (a failed revert, a row-only change) was never reported.
     orphans = [
         p
-        for p in cfg.alac_library.rglob("*.m4a")
+        for tier in (cfg.alac_library, getattr(cfg, "alac_archive", None))
+        if tier is not None and Path(tier).exists()
+        for p in Path(tier).rglob("*.m4a")
         if not _under_any(p, cfg) and "_history" not in p.parts and str(p) not in known
     ]
     rep.add(

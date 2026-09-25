@@ -648,7 +648,25 @@ def _process_one(conn, row: dict, archive_dir: Path, library_dir: Path, execute:
 # ── main ───────────────────────────────────────────────────────────────────────
 
 
+RETIRED_MESSAGE = """\
+build_alac_library.py is retired (2026-09-25).
+
+It bakes a -18 LUFS copy and then POINTS THE CATALOGUE ROW AT THE COPY.
+Grey chose one file per track: the row points at its master in
+ALAC-Archival for good, and the -18 LUFS ALAC_Library is an edition built
+from the masters without touching any row. Running this would break that
+for every row it baked (two reviews, 2026-09-25, found the drift it causes).
+
+The Lossless edition that replaces it is a follow-up. Nothing was changed.
+"""
+
+
 def main() -> int:
+    print(RETIRED_MESSAGE, file=sys.stderr)
+    return 2
+
+
+def _main_legacy() -> int:  # the old entry point, kept for the edition rework
     # Keep the machine awake for the whole run without touching the X11
     # idle counter the throttle reads. See musaeus/sleep_inhibit.py.
     reexec_under_inhibitor("LUFS bake in progress")

@@ -147,6 +147,9 @@ def _run_script(
     )
 
 
+@pytest.mark.skip(
+    reason="script retired 2026-09-25 (one file per track): it repointed rows at the baked copy; the Lossless edition replaces it"
+)
 class TestPhase2ABake:
     def test_dry_run_makes_no_changes(self, cfg: MusicConfig) -> None:
         archive_dir = cfg.alac_archive
@@ -272,6 +275,9 @@ class TestPhase2ABake:
         assert "0 row(s)" in second.stdout or "0 baked" in second.stdout
 
 
+@pytest.mark.skip(
+    reason="script retired 2026-09-25 (one file per track): it repointed rows at the baked copy; the Lossless edition replaces it"
+)
 class TestUnmigratedWarning:
     """FinalizeStage doesn't write to ALAC_Archive yet (2026-08-18) --
     only migrate_to_archive.py moves content there, and only when someone
@@ -403,3 +409,16 @@ class TestBakeVerifiesLoudness:
         )
         with pytest.raises(RuntimeError, match="no audio stream"):
             _bal.verify_bake(src, out, achieved=None)
+
+
+def test_the_retired_script_refuses_and_changes_nothing(tmp_path):
+    """Under one file per track the row stays on its master; this script would
+    repoint every row it baked. It now refuses outright."""
+    import subprocess
+    import sys
+
+    r = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--execute"], capture_output=True, text=True, timeout=60
+    )
+    assert r.returncode == 2
+    assert "retired" in r.stderr and "one file per track" in r.stderr

@@ -73,9 +73,10 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from ..context import RunContext, StageResult
+from ..filing import load as filing_load
 from .base import BaseStage
 from .normalize import _move_article_to_suffix
-from .organize import build_track_filename, sanitize_path_component, unique_path
+from .organize import _is_collision_name_for, library_relpath, unique_path
 
 logger = logging.getLogger(__name__)
 
@@ -271,24 +272,9 @@ class VariousArtistsFixStage(BaseStage):
 
     def _get_candidates(self, ctx: RunContext) -> list[dict]:
         rows = ctx.conn.execute(
-            "SELECT id, file_path, artist, title, album FROM archive WHERE status='CATALOGUED'"
+            "SELECT id, file_path, artist, title, album, genre FROM archive WHERE status='CATALOGUED'"
         ).fetchall()
         return [dict(r) for r in rows if is_placeholder_credit(r["artist"])]
-
-    def _batch_date_for(self, ctx: RunContext, source: Path) -> str:
-        """Reuse the row's own existing batch-date folder
-        (ALAC-Library/<date>/...) rather than stamping a new one --
-        this is a correction to an already-finalized row, not a new
-        finalize event."""
-        try:
-            rel = source.relative_to(ctx.alac_library)
-            if rel.parts:
-                return rel.parts[0]
-        except ValueError:
-            pass
-        from datetime import datetime, timezone
-
-        return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
 
     def _genre_from_library(self, ctx: RunContext, real_artist: str) -> str | None:
         """The genre this artist already carries elsewhere in the library.
@@ -316,16 +302,37 @@ class VariousArtistsFixStage(BaseStage):
         ).fetchone()
         return row["genre"] if row else None
 
-    def _target_path(self, ctx: RunContext, row: dict, source: Path, real_artist: str) -> Path:
-        album = row.get("album") or "Unsorted"
-        title = row.get("title") or "Unknown Title"
+    def _target_path(
+        self, ctx: RunContext, row: dict, source: Path, real_artist: str, genre: str | None
+    ) -> Path:
+        """Where the corrected row's file belongs -- in the tier it already lives in.
 
-        new_filename = build_track_filename(real_artist, title, source.suffix)
-        artist_safe = sanitize_path_component(real_artist)
-        album_safe = sanitize_path_component(album)
+        This used to build `ALAC-Library/<date>/<artist>/<album>/` for EVERY
+        row: the layout from before genre folders, a date folder even with
+        batch folders off, and the library tier regardless of where the file
+        was. On 2026-09-25 that moved a master out of ALAC-Archival (the whole
+        masters tier emptied), and a new arrival still in INBOX would have been
+        moved into the library before Finalize ever saw it.
 
-        target_dir = ctx.alac_library / self._batch_date_for(ctx, source) / artist_safe / album_safe
-        return unique_path(target_dir / new_filename)
+        Now: a file already filed (masters tier, or a legacy library row) is
+        refiled inside that same tier by organize.library_relpath(), the one
+        path rule. A file not yet filed does not move at all -- the row is
+        corrected, and Finalize files it from the corrected row, the same
+        thing ClassicalComposerStage does.
+        """
+        cfg = ctx.config
+        filing = filing_load(cfg.meta_dir) if getattr(cfg, "meta_dir", None) else {}
+        for root in (getattr(cfg, "alac_archive", None), ctx.alac_library):
+            if root is None or not source.is_relative_to(root):
+                continue
+            rel = library_relpath(
+                real_artist, None, genre, row.get("album"), row.get("title"), source.suffix, filing
+            )
+            candidate = Path(root) / rel
+            if candidate == source or _is_collision_name_for(source, candidate):
+                return source
+            return unique_path(candidate)
+        return source
 
     def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
         """A row this stage fixed must no longer say "Various Artists",
@@ -393,7 +400,13 @@ class VariousArtistsFixStage(BaseStage):
             real_artist = _move_article_to_suffix(real_artist.strip())
             clean_title = strip_leading_credit(row.get("title") or "", real_artist)
             new_genre = self._genre_from_library(ctx, real_artist)
-            target = self._target_path(ctx, {**row, "title": clean_title}, source, real_artist)
+            target = self._target_path(
+                ctx,
+                {**row, "title": clean_title},
+                source,
+                real_artist,
+                new_genre or row.get("genre"),
+            )
             # Database first, then the move, then commit -- so the two cannot
             # disagree. A move is not transactional and cannot be rolled back;
             # a DB write can. Doing it the other way round means a failed
@@ -417,8 +430,9 @@ class VariousArtistsFixStage(BaseStage):
                     (real_artist, clean_title, str(target), row["id"]),
                 )
             try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(source), str(target))
+                if target != source:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(source), str(target))
             except OSError as exc:
                 # Undo the row we just wrote, so neither half lands.
                 ctx.conn.rollback()

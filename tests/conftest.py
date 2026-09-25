@@ -28,6 +28,7 @@ an empty, disposable settings.env location instead (nothing to set).
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -67,15 +68,27 @@ os.environ["MUSAEUS_NO_IDLE_THROTTLE"] = "1"
 # set in the ambient shell environment pytest was launched from (config.py
 # uses setdefault(), so these would otherwise survive the HOME redirect
 # above if already present before pytest started).
+#
+# Every MUSAEUS_ variable config.py READS -- taken from config.py itself, not
+# a hand-kept list. The list named 8 of the 14 paths config reads;
+# MUSAEUS_ALAC_ARCHIVE, _LIBRARIES, _CAR_LIBRARY, _IPHONE_LIBRARY, _PLAYLISTS
+# and _CURATOR_EXPORT_ROOT survived it, so a shell that exported one would have
+# pointed tests at a REAL tier -- and since 2026-09-25 finalize writes masters
+# into ALAC_ARCHIVE. Only those: the tests' own opt-in switches
+# (MUSAEUS_WRITE_EVIDENCE, MUSAEUS_COVERAGE_SUBPROCESS) are not config and must
+# reach the tests -- clearing every MUSAEUS_ name broke them.
+_CLEARED_MUSAEUS = sorted(
+    set(
+        re.findall(
+            r'"(MUSAEUS_[A-Z_]+)"',
+            (Path(__file__).resolve().parents[1] / "musaeus" / "config.py").read_text(),
+        )
+    )
+)
+for _env_key in _CLEARED_MUSAEUS:
+    os.environ.pop(_env_key, None)
+
 for _env_key in (
-    "MUSAEUS_VAULT_ROOT",
-    "MUSAEUS_DB_PATH",
-    "MUSAEUS_INBOX",
-    "MUSAEUS_RUNS_ROOT",
-    "MUSAEUS_STAGING",
-    "MUSAEUS_QUARANTINE",
-    "MUSAEUS_META_DIR",
-    "MUSAEUS_ALAC_LIBRARY",
     "GROQ_API_KEY",
     "LASTFM_API_KEY",
     "OPENROUTER_API_KEY",

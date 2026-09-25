@@ -50,8 +50,9 @@ class TestTheFlag:
 
 
 class _Cfg:
-    def __init__(self, meta_dir: Path) -> None:
+    def __init__(self, meta_dir: Path, alac_archive: Path) -> None:
         self.meta_dir = meta_dir
+        self.alac_archive = alac_archive
 
 
 class _Ctx:
@@ -65,7 +66,8 @@ class _Ctx:
 
     def __init__(self, lib: Path) -> None:
         self.alac_library = lib
-        self.config = _Cfg(lib.parent / "MetaData")
+        # Finalize files MASTERS since 2026-09-25; the root under test is the masters tier.
+        self.config = _Cfg(lib.parent / "MetaData", alac_archive=lib)
         self._d: dict = {}
 
     def get(self, key, default=None):
