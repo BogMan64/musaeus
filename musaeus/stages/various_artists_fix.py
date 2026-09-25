@@ -72,6 +72,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from ..artist_form import natural_form
 from ..context import RunContext, StageResult
 from ..filing import load as filing_load
 from ..title_case import every_word_capitalised
@@ -402,7 +403,7 @@ class VariousArtistsFixStage(BaseStage):
             clean_title = strip_leading_credit(row.get("title") or "", real_artist)
             # Every word capitalised, as Normalize writes them (Grey,
             # 2026-09-25) -- otherwise the next Normalize renames the track.
-            real_artist = every_word_capitalised(real_artist)
+            real_artist = every_word_capitalised(natural_form(real_artist))
             clean_title = every_word_capitalised(clean_title)
             new_genre = self._genre_from_library(ctx, real_artist)
             target = self._target_path(

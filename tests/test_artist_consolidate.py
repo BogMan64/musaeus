@@ -148,8 +148,10 @@ class TestArtistConsolidateStageLive:
         ).fetchall()
         artists = {row["artist"] for row in rows}
 
-        assert artists == {"Beatles, The"}, (
-            f"expected consolidation to suffix form only, got {artists!r} -- "
+        # Stored in the natural form Normalize has written since 2026-09-16;
+        # "Beatles, The" here was changed back by the next Normalize (2026-09-25).
+        assert artists == {"The Beatles"}, (
+            f"expected the natural form only, got {artists!r} -- "
             "if this is failing with '(The)' anywhere in it, the "
             "NormalizeStage/ArtistConsolidateStage format regression is back"
         )
@@ -169,7 +171,7 @@ class TestArtistConsolidateStageLive:
             "SELECT DISTINCT artist FROM archive WHERE status = 'CATALOGUED'"
         ).fetchall()
         artists = {row["artist"] for row in rows}
-        assert artists == {"Chieftains, The"}
+        assert artists == {"The Chieftains"}
 
 
 # ── ArtistCanon is actually applied now ──────────────────────────────────────

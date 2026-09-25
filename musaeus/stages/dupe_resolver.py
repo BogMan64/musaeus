@@ -92,7 +92,12 @@ from pathlib import Path
 from ..config import LOSSLESS_CODECS
 from ..context import RunContext, StageResult
 from .base import BaseStage
-from .organize import build_track_filename, sanitize_path_component, unique_path
+from .organize import (
+    _remove_emptied_dirs,
+    build_track_filename,
+    sanitize_path_component,
+    unique_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -431,6 +436,13 @@ class DupeResolverStage(BaseStage):
         count = len(_get_pending_groups(ctx.conn))
         logger.info("[dupe-resolver] %d pending duplicate group(s)", count)
 
+    @staticmethod
+    def _roots(ctx: RunContext) -> list[Path]:
+        """Where a loser can be moved FROM, for the emptied-folder cleanup."""
+        archive = getattr(getattr(ctx, "config", None), "alac_archive", None)
+        tiers = [ctx.alac_library] + ([Path(archive)] if archive is not None else [])
+        return [*tiers, ctx.inbox, ctx.staging]
+
     def _target_path(self, ctx: RunContext, member: dict, source: Path, batch_date: str) -> Path:
         artist = member.get("artist") or "Unknown Artist"
         album = member.get("album") or "Unsorted"
@@ -717,6 +729,15 @@ class DupeResolverStage(BaseStage):
                 result.errors.append(f"{source}: {exc}")
                 logger.warning("[dupe-resolver] move failed %s: %s", source, exc)
                 continue
+
+            # The folder the file left may now be empty -- an album folder in
+            # ALAC-Archival is a phantom album in a folder-browsed library
+            # (2026-09-25: four of them from one Act 2). Up to, never including,
+            # the root the file lived under.
+            for root in self._roots(ctx):
+                if source.is_relative_to(root):
+                    _remove_emptied_dirs(source.parent, root)
+                    break
 
             if update_duplicates_table:
                 ctx.conn.execute(
