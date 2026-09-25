@@ -89,7 +89,6 @@ from pathlib import Path
 
 from ..context import RunContext, StageResult, elision
 from ..db import open_hash_index, record_finalized_hash
-from ..filing import folder_for
 from ..filing import load as filing_load
 from ..safety.mutation import MutationBoundary, PreconditionError, UnmanagedPathError
 from ..safety.recovery import (
@@ -99,7 +98,7 @@ from ..safety.recovery import (
     create_checkpoint,
 )
 from .base import BaseStage
-from .organize import build_track_filename, sanitize_path_component, unique_path
+from .organize import library_relpath, sanitize_path_component, unique_path
 
 logger = logging.getLogger(__name__)
 
@@ -292,10 +291,18 @@ class FinalizeStage(BaseStage):
         )
 
     def _get_pending(self, ctx: RunContext, force: bool) -> list[dict]:
+        # mb_artist_name is added by mb_enrich, lazily -- a database that has
+        # never been enriched (every fresh vault before its first enrichment)
+        # has no such column, and selecting it would take the stage down.
+        # Same guard OrganizeStage uses; NULL is exactly "not enriched".
+        has_mb = "mb_artist_name" in {
+            r[1] for r in ctx.conn.execute("PRAGMA table_info(archive)").fetchall()
+        }
+        mb = "mb_artist_name" if has_mb else "NULL AS mb_artist_name"
         if force:
             rows = ctx.conn.execute(
-                """
-                SELECT id, file_path, artist, album, title, audio_hash
+                f"""
+                SELECT id, file_path, artist, album, title, audio_hash, genre, {mb}
                   FROM archive
                  WHERE status='CATALOGUED' AND canonicalized_at IS NOT NULL
                  ORDER BY file_path
@@ -303,8 +310,8 @@ class FinalizeStage(BaseStage):
             ).fetchall()
         else:
             rows = ctx.conn.execute(
-                """
-                SELECT id, file_path, artist, album, title, audio_hash
+                f"""
+                SELECT id, file_path, artist, album, title, audio_hash, genre, {mb}
                   FROM archive
                  WHERE status='CATALOGUED'
                    AND canonicalized_at IS NOT NULL
@@ -363,22 +370,28 @@ class FinalizeStage(BaseStage):
         return dict(cached)
 
     def _target_path(self, ctx: RunContext, row: dict, source: Path) -> Path:
-        artist = row.get("artist") or "Unknown Artist"
-        album = row.get("album") or "Unsorted"
-        title = row.get("title") or "Unknown Title"
-
-        # The FILENAME keeps the full credit; only the FOLDER is filed under
-        # the shorter name. Grey looks for the artist by folder and reads the
-        # credit on the track, so collapsing both would lose information the
-        # tag is carrying on purpose.
-        new_filename = build_track_filename(artist, title, source.suffix)
-        artist_safe = sanitize_path_component(folder_for(artist, self._filing(ctx)))
-        album_safe = sanitize_path_component(album)
-
+        # One rule with OrganizeStage: organize.library_relpath(), which also
+        # honours MetaData/artist_filing.tsv. Finalize used to build its own
+        # path -- a folder from the filing map, the full credit in the file
+        # name, and a genre it never SELECTed -- so every track landed under
+        # "Unsorted/" and organize moved all of them on the same run (389 of
+        # 389 on 2026-09-24). Filed once, where organize would put it.
+        #
+        # The file name now uses the folder's artist, as organize, the old
+        # library and consolidate_artist_folders all do; the full credit is
+        # still in the tag.
+        rel = library_relpath(
+            row.get("artist"),
+            row.get("mb_artist_name"),
+            row.get("genre"),
+            row.get("album"),
+            row.get("title"),
+            source.suffix,
+            self._filing(ctx),
+        )
         batch = self._batch_date(ctx)
         base = ctx.alac_library / batch if batch else ctx.alac_library
-        target_dir = base / genre_folder(row.get("genre")) / artist_safe / album_safe
-        candidate = target_dir / new_filename
+        candidate = base / rel
 
         # Same self-is-not-a-collision guard organize.py needed: if the
         # file is already exactly where it belongs (e.g. --force on an

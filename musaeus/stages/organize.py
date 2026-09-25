@@ -86,6 +86,7 @@ from pathlib import Path
 from ..artist_form import folder_artist, sort_form
 from ..canon.protected_artists import PROTECTED_ARTIST_NAMES
 from ..context import RunContext, StageResult
+from ..filing import load as filing_load
 from .base import BaseStage
 from .sanitize import SMART_QUOTE_MAP
 
@@ -358,6 +359,7 @@ def library_relpath(
     album: str | None,
     title: str | None,
     ext: str,
+    filing: dict[str, str] | None = None,
 ) -> Path:
     """Where a track belongs, relative to a library root: Genre/Artist/Album/file.
 
@@ -369,6 +371,10 @@ def library_relpath(
     Measured 2026-09-24 against the live vault: reproduces 8,968 of 8,998
     catalogued paths. The 30 that differ are unique_path " (2)" bumps and
     comma credits filed before folder_artist learned the comma rule.
+
+    FinalizeStage files by it too (it had its own rule until 2026-09-25 --
+    see the filing note below), so a track is placed once, where organize
+    would put it, and organize has nothing left to move.
     """
     from .finalize import genre_folder
 
@@ -390,7 +396,17 @@ def library_relpath(
     # band apart: MusicBrainz agreement, then feat./with, then
     # "& The ...", then a two-word personal-name tail. Simon &
     # Garfunkel stays whole.
-    path_artist = sort_form(folder_artist(artist or "Unknown Artist", mb_artist_name))
+    #
+    # MetaData/artist_filing.tsv comes first: it is Grey's explicit ruling on
+    # which folder a credit files under ("Benny Goodman & His Orchestra" ->
+    # "Benny Goodman"), and a ruling beats a heuristic. It used to be read by
+    # FinalizeStage alone, so finalize and organize filed the same credit in
+    # different folders and organize moved every such file straight back out
+    # -- R2, measured 2026-09-24: all 389 files of the first fresh batch.
+    if filing and artist and artist in filing:
+        path_artist = sort_form(filing[artist])
+    else:
+        path_artist = sort_form(folder_artist(artist or "Unknown Artist", mb_artist_name))
 
     # The genre level MUST match FinalizeStage. On 2026-09-18 it did
     # not: finalize was changed to file under Genre/Artist/Album and
@@ -655,6 +671,12 @@ class OrganizeStage(BaseStage):
         # The only roots created during a run are batch directories Finalize
         # makes before Organize starts, so one snapshot is equivalent.
         roots = self._roots(ctx)
+        # Grey's filing rulings, read once -- the same map FinalizeStage files
+        # by, so the two stages cannot place one credit in two folders.
+        cfg = getattr(ctx, "config", None)
+        filing = (
+            filing_load(cfg.meta_dir) if cfg is not None and getattr(cfg, "meta_dir", None) else {}
+        )
 
         renamed = 0
         moved = 0
@@ -704,6 +726,7 @@ class OrganizeStage(BaseStage):
                 row["album"],
                 row["title"],
                 current_path.suffix,
+                filing,
             )
             candidate_path = dest_root / rel
             target_dir = candidate_path.parent
