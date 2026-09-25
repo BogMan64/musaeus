@@ -88,14 +88,28 @@ def _scholar(ctx: RunContext, monkeypatch, filename: str, probe=_NO_TAGS) -> tup
             "Phil Collins, Marilyn Martin",
             "Separate Lives (2016 Remaster)",
         ),
-        # A number with no dot IS the name. All of these are in the library,
-        # and the last two are how 10,000 Maniacs and 98 Degrees actually
-        # arrive (see artist_canon.tsv).
+        # A number at the front is a track number, the same rule organize
+        # uses (strip_track_number_prefix) -- the cloud review of #37 found
+        # "03 - Yesterday" catalogued under an artist called "03". That costs
+        # the few artists whose name IS a number: an untagged file from one of
+        # them is left UNNAMED for a human (and flagged by Scholar's own
+        # check), never given a wrong name. 50 Cent keeps its name: a number
+        # followed by a word is not a track number.
         ("50 Cent - In da Club.m4a", "50 Cent", "In da Club"),
-        ("311 - Amber.m4a", "311", "Amber"),
         ("10,000 Maniacs - Because the Night.m4a", "10,000 Maniacs", "Because the Night"),
-        ("10 - Candy Everybody Wants.m4a", "10", "Candy Everybody Wants"),
-        ("98 - True to Your Heart.m4a", "98", "True to Your Heart"),
+        ("03 - Yesterday.m4a", None, None),
+        ("311 - Amber.m4a", None, None),
+        ("10 - Candy Everybody Wants.m4a", None, None),
+        ("98 - True to Your Heart.m4a", None, None),
+        ("54-40 - Baby Ran.m4a", None, None),
+        ("Disc 1 - 05 - Song.m4a", None, None),
+        ("01 Backstreet Boys - Larger Than Life.m4a", "Backstreet Boys", "Larger Than Life"),
+        ("05.Queen - Bohemian Rhapsody.m4a", "Queen", "Bohemian Rhapsody"),
+        ("5. Dion - The Wanderer.m4a", "Dion", "The Wanderer"),
+        # The pipeline's own placeholders are never read back as names.
+        ("Queen - Unknown Title.m4a", None, None),
+        # A number in brackets that is part of the song stays.
+        ("Prince - Party Like (1999).m4a", "Prince", "Party Like (1999)"),
         # Split on the FIRST " - " only: the rest belongs to the title.
         ("Dion - Runaround Sue - Live.m4a", "Dion", "Runaround Sue - Live"),
         # A collision suffix is the pipeline's, not the song's.

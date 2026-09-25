@@ -179,8 +179,19 @@ def tag_values(stored_artist: str) -> dict[str, str]:
 
 
 #: Markers that always mean "this credit names more than one act". Unlike a
-#: bare "&", these are never part of a band's own name.
-_COLLAB = re.compile(r"\s*\b(?:feat\.?|featuring|ft\.?|with)\s+", re.I)
+#: bare "&", these are never part of a band's own name. "feat." needs its dot:
+#: a bare "feat" split Little Feat into "Little" (cloud review of #39,
+#: 2026-09-25) -- the same incident the old consolidation key had recorded.
+#: The list is the one that key stripped, now that the tag keeps the credit
+#: and only the folder uses the lead artist.
+_COLLAB = re.compile(
+    r"\s+\(?(?:duet\s+with|feat\.|featuring|ft\.|with|vs\.?|versus"
+    r"|special\s+guest|and\s+friends)(?=\s|\)|$)",
+    re.I,
+)
+
+#: "&" or "and" joining names: in a comma list, the sign of a band's own name.
+_JOINED = re.compile(r"&|\band\b", re.I)
 
 #: A band name, not a second artist: "& The Blue Notes", "& His Orchestra".
 _BAND_TAIL = re.compile(r"^(the|his|her|their|los|las)\b", re.I)
@@ -252,10 +263,12 @@ def _credit_head(name: str) -> str:
     1. sort form -- "Rolling Stones, The", "Healing, The". Tail is an article.
     2. a name suffix -- "Larry Mullen, Jr". Tail is Jr/Sr/II/III/IV.
     3. a band whose own name contains commas -- "Earth, Wind & Fire",
-       "Crosby, Stills & Nash", "Blood, Sweat & Tears". In every one of those
-       the head is a SINGLE word, because the comma separates members rather
-       than crediting a backing act. Requiring two or more words in the head
-       is what keeps them whole.
+       "Crosby, Stills & Nash", "Peter, Paul and Mary". In every one of those
+       the head is a SINGLE word AND the names are joined by "&" or "and". A
+       one-word lead with no join is a credit: "Eminem, Dido", "Aerosmith,
+       Yungblud" (cloud review of #39, 2026-09-25 -- they had folders of
+       their own once the tag stopped being shortened to the lead).
+    4. a number -- "10,000 Maniacs". A comma between digits is not a list.
 
     Measured 2026-09-23 over all 2,678 distinct artists in the catalogue: 78
     contain a comma and 57 are credit lists that move. Every case above stays.
@@ -263,12 +276,14 @@ def _credit_head(name: str) -> str:
     head, sep, tail = name.partition(",")
     if not sep:
         return name
+    if head[-1:].isdigit() and tail[:1].isdigit():
+        return name
     head, tail = head.strip(), tail.strip()
     if not head or not tail:
         return name
     if _ARTICLE_TAIL.match(tail) or _NAME_SUFFIX.match(tail):
         return name
-    if len(head.split()) < 2:
+    if len(head.split()) < 2 and _JOINED.search(name):
         return name
     return head
 

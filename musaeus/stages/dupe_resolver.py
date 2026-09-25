@@ -91,10 +91,12 @@ from pathlib import Path
 
 from ..config import LOSSLESS_CODECS
 from ..context import RunContext, StageResult
+from ..db import SET_ASIDE_STATUSES
 from .base import BaseStage
 from .organize import (
     _remove_emptied_dirs,
     build_track_filename,
+    destination_root,
     sanitize_path_component,
     unique_path,
 )
@@ -304,6 +306,7 @@ def _get_group_members(conn, group_id: str) -> list[dict]:
         """
         SELECT d.file_path, d.duplicate_type, d.confidence, d.status AS dup_status,
                d.audio_hash AS recorded_hash, a.audio_hash AS current_hash, a.id AS current_row,
+               a.status AS current_status,
                a.artist, a.album, a.title, a.ext, a.codec, a.bitrate, a.size_bytes
           FROM duplicates d
           LEFT JOIN archive a USING (file_path)
@@ -734,10 +737,12 @@ class DupeResolverStage(BaseStage):
             # ALAC-Archival is a phantom album in a folder-browsed library
             # (2026-09-25: four of them from one Act 2). Up to, never including,
             # the root the file lived under.
-            for root in self._roots(ctx):
-                if source.is_relative_to(root):
-                    _remove_emptied_dirs(source.parent, root)
-                    break
+            # The MOST SPECIFIC root, as organize decides it: a tier nested in
+            # another (MUSAEUS_ALAC_ARCHIVE inside ALAC_Library) must stop the
+            # climb, or the tier itself is removed (cloud review of #39).
+            root = destination_root(source, self._roots(ctx))
+            if root is not None:
+                _remove_emptied_dirs(source.parent, root)
 
             if update_duplicates_table:
                 ctx.conn.execute(
@@ -870,6 +875,28 @@ class DupeResolverStage(BaseStage):
                         [(gid,) for gid in component],
                     )
                 continue
+            # A member already set aside is not a candidate at all -- neither
+            # to move nor to KEEP. As a keeper it was the worse failure: a
+            # review copy that outranked the library master kept its place,
+            # and the master was moved out as the loser, leaving the library
+            # with no copy (cloud review of #37, 2026-09-25). If that leaves
+            # one member, it is the only live copy: nothing to resolve.
+            aside = [m for m in members if m.get("current_status") in SET_ASIDE_STATUSES]
+            if aside:
+                members = [m for m in members if m not in aside]
+                result.notes.append(
+                    f"group {group_id}: {len(aside)} member(s) already set aside, left alone"
+                )
+                if len(members) < 2:
+                    result.files_skipped += len(members) + len(aside)
+                    if not dry_run:
+                        ctx.conn.executemany(
+                            "UPDATE duplicates SET status = 'archive' "
+                            "WHERE group_id = ? AND status = 'pending'",
+                            [(gid,) for gid in component],
+                        )
+                    continue
+
             # One keeper for the whole component, so a file kept by one of
             # its groups can no longer be moved as another's loser.
             members.sort(key=_keeper_sort_key)

@@ -32,6 +32,7 @@ from typing import Any
 from ..context import RunContext, StageResult, elision
 from ..db import upsert_archive
 from .base import BaseStage
+from .organize import strip_track_number_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -156,15 +157,21 @@ def _extract_meta(probe_data: dict[str, Any]) -> dict[str, Any]:
 
 # ── Names from the file name ──────────────────────────────────────────────────
 
-# "90. " / "573. " -- a playlist position. The dot is what makes it one:
-# "10 - Candy Everybody Wants" and "98 - True to Your Heart" are how
-# 10,000 Maniacs and 98 Degrees arrive, and 50 Cent and 311 are names too.
+# "5. " / "90. " / "573. " -- a playlist position, dotted. organize's own
+# strip_track_number_prefix handles every other track-number shape ("03 - ",
+# "01 ", "05.", "Disc 1 - 05 - ") and is used below rather than copied: the
+# first version kept its own rule and read "03 - Yesterday" as an artist
+# called "03" (cloud review of #37, 2026-09-25). The price is the few artists
+# whose name IS a number -- 311, and 10,000 Maniacs / 98 Degrees as they arrive
+# cut short. An untagged file from one of them is left UNNAMED for a human,
+# which Scholar's own check reports, rather than given a wrong name.
 _POSITION_RE = re.compile(r"^\d+\.\s+")
-# " (2)" -- a collision suffix unique_path added, not part of the song.
-_COLLISION_RE = re.compile(r" \((?:[2-9]|[1-9]\d+)\)$")
-# What organize/dupe_resolver write for a row with no name. Reading it back
-# as a name would turn the pipeline's own placeholder into an artist.
-_PLACEHOLDER_ARTIST = "unknown artist"
+# " (2)" -- a collision suffix unique_path added, not part of the song. Two
+# digits at most: "(1999)" is the song's.
+_COLLISION_RE = re.compile(r" \((?:[2-9]|[1-9]\d)\)$")
+# What organize, dupe_resolver and tribute_quarantine write for a row with no
+# name. Reading one back as a name would make the placeholder real.
+_PLACEHOLDERS = frozenset({"unknown artist", "unknown title", "unknown"})
 
 
 def _name_from_file(path: Path) -> tuple[str | None, str | None]:
@@ -175,10 +182,13 @@ def _name_from_file(path: Path) -> tuple[str | None, str | None]:
     though their names said exactly what they were). Splits on the FIRST
     " - " only, so "Dion - Runaround Sue - Live" keeps " - Live" in the title.
     """
-    stem = _COLLISION_RE.sub("", _POSITION_RE.sub("", path.stem)).strip()
+    stem = strip_track_number_prefix(_POSITION_RE.sub("", path.stem))
+    stem = _COLLISION_RE.sub("", stem).strip()
     artist, sep, title = stem.partition(" - ")
     artist, title = artist.strip(), title.strip()
-    if not sep or not artist or not title or artist.lower() == _PLACEHOLDER_ARTIST:
+    if not sep or not artist or not title:
+        return None, None
+    if artist.casefold() in _PLACEHOLDERS or title.casefold() in _PLACEHOLDERS:
         return None, None
     return artist, title
 

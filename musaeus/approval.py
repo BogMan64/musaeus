@@ -152,7 +152,12 @@ def generate_artist_review(
         if norm_key in seen:
             continue
 
-        resolved = canon.resolve(raw_artist)
+        # In the form Normalize stores, or every canon target with a small
+        # word is proposed for "correction" back to lower case, and applying
+        # that is undone by the next Normalize (cloud review of #38).
+        from .stages.normalize import stored_artist
+
+        resolved = stored_artist(canon.resolve(raw_artist))
         # Only flag if canon resolved differently (and it's not just returning raw)
         if resolved != raw_artist and resolved != raw_artist.strip():
             entries.append(

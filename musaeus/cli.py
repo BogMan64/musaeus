@@ -116,7 +116,7 @@ from .config import get_config
 from .context import RunContext, elision, head_with_remainder
 from .db import open_db, snapshot_db_before_wipe
 from .handoff import act_of, write_act_handoff, write_handoff_doc
-from .run_records import RunLog, added_to_library, count_problems, write_problems_tsv
+from .run_records import RunLog, count_problems, filed_this_run, write_problems_tsv
 from .run_records import prune_all as prune_run_records
 from .run_records import publish as publish_run_records
 from .stages import (
@@ -506,8 +506,12 @@ def _run_pipeline(
             # in Forge after filing 178 tracks, and the run that finished the
             # job filed none itself, so neither was kept (Grey's rule of
             # 2026-09-24). Bookkeeping: it may not change the exit code.
+            #
+            # A second Ctrl-C while this copies is caught too: it must not
+            # leave the log open and the run unfinished. The keep-10 rule
+            # applies to interrupted runs as to any other.
             try:
-                added = added_to_library(ctx.stage_results)
+                added = filed_this_run(ctx)
                 if added:
                     run_log.close()
                     dest = publish_run_records(
@@ -517,7 +521,8 @@ def _run_pipeline(
                         [run_log.path, write_problems_tsv(ctx)],
                     )
                     print(f"  Run records ({added} track(s) added to the library): {dest}")
-            except Exception as exc:  # noqa: BLE001 - see comment above
+                    prune_run_records(cfg.runs_root, cfg.libraries, cfg.meta_dir)
+            except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001 - see comment above
                 print(
                     f"  WARNING: run records not published: {type(exc).__name__}: {exc}",
                     file=sys.stderr,
@@ -648,7 +653,7 @@ def _run_pipeline(
     # Bookkeeping, so it may not sink the run -- but it may not fail quietly.
     try:
         problems_path = write_problems_tsv(ctx)
-        added = added_to_library(ctx.stage_results)
+        added = filed_this_run(ctx)
         if added:
             dest = publish_run_records(
                 cfg.libraries,

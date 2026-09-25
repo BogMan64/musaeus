@@ -12,10 +12,15 @@ What it does:
   3. Updates database artist field to use canonical name
   4. Logs changes for review
 
-Examples of consolidation:
-  - "Andrews Sisters" + "Andrews Sisters (The)" → "Andrews Sisters, The"
+Examples of consolidation (stored as Normalize stores them, via
+normalize.stored_artist -- natural article form, every word capitalised):
+  - "Andrews Sisters" + "Andrews Sisters (The)" → "The Andrews Sisters"
   - "Earth Wind and Fire" + "Earth, Wind & Fire" → "Earth, Wind & Fire"
-  - "AC/DC" + "Ac/dc" + "AC-DC" → "AC-DC"
+  - "AC/DC" + "Ac/dc" + "AC-DC" → "AC/DC"
+
+Guest credits are NOT merged into the lead artist ("50 Cent, Nate Dogg"
+stays): the tag keeps the full credit, and only the folder uses the lead
+(artist_form.folder_artist). Grey, 2026-09-25.
 
 Based on ORPHEUS fix_artist_folder_variants.py
 """
@@ -27,11 +32,10 @@ import re
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from ..artist_form import natural_form
 from ..canon import ArtistCanon
 from ..context import StageResult, elision
-from ..title_case import every_word_capitalised
 from .base import BaseStage
+from .normalize import stored_artist
 
 if TYPE_CHECKING:
     from ..context import RunContext
@@ -213,6 +217,9 @@ def _preferred_name(names_with_counts: list[tuple[str, int]]) -> str:
        had different track counts and the less-common spelling happened
        to be longer.
     4. Apply smart title casing.
+
+    The result is a CANDIDATE, still in the older suffix form ("Band, The").
+    The stage writes stored_artist(result), never this value as-is.
     """
     cleaned = [(_join_with_ampersand(n), c) for n, c in names_with_counts if n and n.strip()]
     cleaned = [(n, c) for n, c in cleaned if n]
@@ -248,18 +255,6 @@ def _preferred_name(names_with_counts: list[tuple[str, int]]) -> str:
 
     # Return known canon or smart-titled version
     return CANON_ARTIST_DISPLAY.get(best_key, _smart_title(best_name))
-
-
-def _stored_form(name: str) -> str:
-    """A name exactly as Normalize stores it, so neither step undoes the other.
-
-    Natural article form ("The Band", not "Band, The") since 2026-09-16, and
-    every word capitalised since 2026-09-25. _preferred_name and the canon
-    speak the older suffix form; writing that as-is was changed back by
-    Normalize on the next run, renaming every such artist twice. The sort
-    form lives only in the folder path (organize).
-    """
-    return every_word_capitalised(natural_form(name))
 
 
 class ArtistConsolidateStage(BaseStage):
@@ -334,7 +329,7 @@ class ArtistConsolidateStage(BaseStage):
                 raw = row["artist"]
                 canonical = artist_canon.resolve_exact(raw)
                 if canonical:
-                    canonical = _stored_form(canonical)
+                    canonical = stored_artist(canonical)
                 if canonical and canonical != raw:
                     canon_changes[raw] = canonical
 
@@ -355,7 +350,7 @@ class ArtistConsolidateStage(BaseStage):
 
             # Pick canonical name (variants is already list[(name, track_count)]),
             # in the every-word form for the same reason as the canon above.
-            canonical = _stored_form(_preferred_name(variants))
+            canonical = stored_artist(_preferred_name(variants))
 
             # Map all non-canonical variants to canonical
             for variant_name, track_count in variants:
@@ -441,7 +436,7 @@ class ArtistConsolidateStage(BaseStage):
             raw = r["artist"]
             mapped = canon.resolve_exact(raw)
             if mapped:
-                mapped = _stored_form(mapped)
+                mapped = stored_artist(mapped)
             if mapped and mapped != raw:
                 stale.append(f"{raw!r} should be {mapped!r}")
         if not stale:

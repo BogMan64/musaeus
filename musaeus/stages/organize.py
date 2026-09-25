@@ -87,7 +87,9 @@ from ..artist_form import folder_artist, sort_form
 from ..canon.protected_artists import PROTECTED_ARTIST_NAMES
 from ..context import RunContext, StageResult
 from ..filing import load as filing_load
+from ..filing import ruling_for
 from .base import BaseStage
+from .normalize import stored_artist
 from .sanitize import SMART_QUOTE_MAP
 
 logger = logging.getLogger(__name__)
@@ -352,25 +354,6 @@ def build_track_filename(artist: str, title: str, ext: str) -> str:
     return f"{stem}{ext}"
 
 
-def _filing_ruling(filing: dict[str, str] | None, artist: str | None) -> str | None:
-    """Grey's filing ruling for *artist*, found whatever its capitals.
-
-    Names are written with every word capitalised since 2026-09-25, while
-    artist_filing.tsv keeps the spelling each ruling was made under
-    ("Glenn Miller and His Orchestra"). An exact-case lookup would quietly
-    stop applying those rulings the day the capitals changed.
-    """
-    if not filing or not artist:
-        return None
-    if artist in filing:
-        return filing[artist]
-    folded = artist.casefold()
-    for tag, folder in filing.items():
-        if tag.casefold() == folded:
-            return folder
-    return None
-
-
 def _remove_emptied_dirs(start: Path, stop: Path) -> None:
     """Remove *start* and each parent while it is empty, never *stop* or above.
 
@@ -379,7 +362,9 @@ def _remove_emptied_dirs(start: Path, stop: Path) -> None:
     artist folder in a folder-browsed library is a phantom artist. rmdir()
     is the emptiness check: it refuses a folder that still holds anything.
     """
-    d = start
+    # Resolved, as destination_root compares: a symlinked or relative root
+    # would otherwise match nothing and the cleanup silently do nothing.
+    d, stop = start.resolve(), stop.resolve()
     while d != stop and d.is_relative_to(stop):
         try:
             d.rmdir()
@@ -439,9 +424,12 @@ def library_relpath(
     # FinalizeStage alone, so finalize and organize filed the same credit in
     # different folders and organize moved every such file straight back out
     # -- R2, measured 2026-09-24: all 389 files of the first fresh batch.
-    ruled = _filing_ruling(filing, artist)
+    ruled = ruling_for(filing, artist)
     if ruled:
-        path_artist = sort_form(ruled)
+        # The ruled folder in the stored form, so it and the artist's other
+        # tracks land in ONE folder (cloud review of #38: "Hootie & the
+        # Blowfish" beside "Hootie & The Blowfish").
+        path_artist = sort_form(stored_artist(ruled))
     else:
         path_artist = sort_form(folder_artist(artist or "Unknown Artist", mb_artist_name))
 
@@ -851,10 +839,11 @@ class OrganizeStage(BaseStage):
                 # raises ValueError for anything outside the INBOX -- which is
                 # every catalogued file -- and logger arguments are evaluated
                 # eagerly, so this crashed before the move rather than after.
+                root_r = dest_root.resolve()
                 logger.info(
                     "[organize] move    %s\n                    → %s",
-                    current_path.relative_to(dest_root),
-                    target_path.relative_to(dest_root),
+                    current_path.resolve().relative_to(root_r),
+                    target_path.resolve().relative_to(root_r),
                 )
 
                 if not dry_run:

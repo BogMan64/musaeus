@@ -46,7 +46,7 @@ import logging
 from pathlib import Path
 
 from ..context import RunContext, StageResult
-from ..db import lookup_finalized_hash, open_hash_index
+from ..db import SET_ASIDE_STATUSES, lookup_finalized_hash, open_hash_index
 from .base import BaseStage
 
 logger = logging.getLogger(__name__)
@@ -54,14 +54,11 @@ logger = logging.getLogger(__name__)
 _COMMIT_EVERY = 100
 
 
-# Rows already set aside -- in review, quarantined, held as a tribute, or
-# recorded as gone. None is in the batch or the library, so none can be a
-# cross-batch duplicate of it. 2026-09-25: two Badfinger copies already in
-# REVIEW/DUPES_MOVED were flagged against the masters they had lost to, and
-# DupeResolver "moved" each onto itself, adding " (2)". The NOT EXISTS guard
-# below matches on file_path, which that move changed, so every Act 2 would
-# have renamed them again.
-SET_ASIDE_STATUSES = ("DUPE_REVIEW", "QUARANTINED", "TRIBUTE_REVIEW", "GHOST")
+# Set-aside rows (db.SET_ASIDE_STATUSES) are neither in the batch nor the
+# library. 2026-09-25: two Badfinger copies already in REVIEW/DUPES_MOVED were
+# flagged against the masters they had lost to, and DupeResolver "moved" each
+# onto itself, adding " (2)" -- on every Act 2, since the NOT EXISTS guard
+# below matches on a file_path that move changed.
 
 
 def _get_candidates(conn) -> list[dict]:  # type: ignore[type-arg]

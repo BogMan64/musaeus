@@ -53,8 +53,8 @@ import shutil
 from pathlib import Path
 
 from ..context import RunContext, StageResult
-from ..title_case import every_word_capitalised
 from .base import BaseStage
+from .normalize import stored_artist
 from .organize import build_track_filename, sanitize_path_component, unique_path
 
 logger = logging.getLogger(__name__)
@@ -169,7 +169,7 @@ class ClassicalComposerStage(BaseStage):
             # canon says "Ludwig van Beethoven"; comparing that with the
             # stored "Ludwig Van Beethoven" refiled every classical track on
             # every run, and Normalize changed each one straight back.
-            comp = every_word_capitalised(comp)
+            comp = stored_artist(comp)
             if comp != (row["artist"] or "").strip():
                 plan.append((row, comp, how))
         return plan, unresolved

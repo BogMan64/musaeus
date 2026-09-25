@@ -83,8 +83,9 @@ def load(meta_dir: Path) -> dict[str, str]:
     """
     path = Path(meta_dir) / FILENAME
     if not path.exists():
-        return {}
+        return FilingMap({})
     out: dict[str, str] = {}
+    folded: dict[str, str] = {}
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -113,15 +114,61 @@ def load(meta_dir: Path) -> dict[str, str]:
                 f"{out[tag]!r}; a second answer of {folder!r} makes the file "
                 f"ambiguous rather than overriding it."
             )
+        # Rulings are found whatever their capitals (ruling_for), so two tags
+        # that differ only in capitals ARE the same tag -- and two answers for
+        # it are the same ambiguity as above (cloud review of #38).
+        twin = folded.get(tag.casefold())
+        if twin is not None and out[twin] != folder:
+            raise FilingError(
+                f"{FILENAME} line {lineno}: {tag!r} and {twin!r} differ only in capitals "
+                f"but file under {folder!r} and {out[twin]!r}; that makes the file "
+                f"ambiguous."
+            )
+        folded.setdefault(tag.casefold(), tag)
         out[tag] = folder
-    return out
+    return FilingMap(out)
+
+
+def ruling_for(filing: dict[str, str] | None, artist: str | None) -> str | None:
+    """Grey's filing ruling for *artist*, found whatever its capitals, or None.
+
+    Names are written with every word capitalised since 2026-09-25 while the
+    file keeps the spelling each ruling was made under ("Glenn Miller and His
+    Orchestra"); an exact-case lookup quietly stopped applying them. The ONE
+    lookup: organize (the ALAC tiers) and folder_for (the car tree) both use
+    it, so the two trees cannot file a credit in different folders.
+    """
+    if not filing or not artist:
+        return None
+    if artist in filing:
+        return filing[artist]
+    index = getattr(filing, "folded", None)
+    if index is None:  # a plain dict (tests, callers building their own)
+        index = {tag.casefold(): tag for tag in filing}
+    tag = index.get(artist.casefold())
+    return filing[tag] if tag is not None else None
+
+
+class FilingMap(dict[str, str]):
+    """tag -> folder, with a casefolded index built once rather than per track."""
+
+    def __init__(self, entries: dict[str, str]) -> None:
+        super().__init__(entries)
+        self.folded = {tag.casefold(): tag for tag in entries}
 
 
 def folder_for(artist: str | None, filing: dict[str, str]) -> str:
-    """The folder name for a tag. Absent from the map means: use the tag."""
+    """The folder name for a tag. No ruling means: use the tag."""
     if not artist:
         return "Unknown Artist"
-    return filing.get(artist, artist)
+    ruled = ruling_for(filing, artist)
+    if ruled is None:
+        return artist
+    # In the stored form, as the library files it, so a ruled credit and the
+    # artist's other tracks share one folder (organize.library_relpath).
+    from .stages.normalize import stored_artist
+
+    return stored_artist(ruled)
 
 
 def check(filing: dict[str, str], canon: dict[str, str] | None = None) -> list[str]:
