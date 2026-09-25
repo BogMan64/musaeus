@@ -12,10 +12,15 @@ What it does:
   3. Updates database artist field to use canonical name
   4. Logs changes for review
 
-Examples of consolidation:
-  - "Andrews Sisters" + "Andrews Sisters (The)" → "Andrews Sisters, The"
+Examples of consolidation (stored as Normalize stores them, via
+normalize.stored_artist -- natural article form, every word capitalised):
+  - "Andrews Sisters" + "Andrews Sisters (The)" → "The Andrews Sisters"
   - "Earth Wind and Fire" + "Earth, Wind & Fire" → "Earth, Wind & Fire"
-  - "AC/DC" + "Ac/dc" + "AC-DC" → "AC-DC"
+  - "AC/DC" + "Ac/dc" + "AC-DC" → "AC/DC"
+
+Guest credits are NOT merged into the lead artist ("50 Cent, Nate Dogg"
+stays): the tag keeps the full credit, and only the folder uses the lead
+(artist_form.folder_artist). Grey, 2026-09-25.
 
 Based on ORPHEUS fix_artist_folder_variants.py
 """
@@ -212,6 +217,9 @@ def _preferred_name(names_with_counts: list[tuple[str, int]]) -> str:
        had different track counts and the less-common spelling happened
        to be longer.
     4. Apply smart title casing.
+
+    The result is a CANDIDATE, still in the older suffix form ("Band, The").
+    The stage writes stored_artist(result), never this value as-is.
     """
     cleaned = [(_join_with_ampersand(n), c) for n, c in names_with_counts if n and n.strip()]
     cleaned = [(n, c) for n, c in cleaned if n]

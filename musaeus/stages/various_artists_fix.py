@@ -75,7 +75,7 @@ from urllib.request import Request, urlopen
 from ..context import RunContext, StageResult
 from ..filing import load as filing_load
 from .base import BaseStage
-from .normalize import _move_article_to_suffix, stored_artist, stored_title
+from .normalize import stored_artist, stored_title
 from .organize import _is_collision_name_for, library_relpath, unique_path
 
 logger = logging.getLogger(__name__)
@@ -286,7 +286,11 @@ class VariousArtistsFixStage(BaseStage):
         artist is new to the library, leaving the genre untouched for a
         later stage rather than guessing.
         """
-        norm = _move_article_to_suffix(real_artist.strip())
+        # In the stored form. The suffix form ("Revels, The") never matched a
+        # library that has stored "The Revels" since 2026-09-16, so every
+        # artist with an article fell back to the placeholder's genre
+        # (cloud review of #39).
+        norm = stored_artist(real_artist.strip())
         row = ctx.conn.execute(
             """
             SELECT genre, COUNT(*) AS cnt

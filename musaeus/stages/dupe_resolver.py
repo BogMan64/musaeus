@@ -96,6 +96,7 @@ from .base import BaseStage
 from .organize import (
     _remove_emptied_dirs,
     build_track_filename,
+    destination_root,
     sanitize_path_component,
     unique_path,
 )
@@ -736,10 +737,12 @@ class DupeResolverStage(BaseStage):
             # ALAC-Archival is a phantom album in a folder-browsed library
             # (2026-09-25: four of them from one Act 2). Up to, never including,
             # the root the file lived under.
-            for root in self._roots(ctx):
-                if source.resolve().is_relative_to(root.resolve()):
-                    _remove_emptied_dirs(source.parent, root)
-                    break
+            # The MOST SPECIFIC root, as organize decides it: a tier nested in
+            # another (MUSAEUS_ALAC_ARCHIVE inside ALAC_Library) must stop the
+            # climb, or the tier itself is removed (cloud review of #39).
+            root = destination_root(source, self._roots(ctx))
+            if root is not None:
+                _remove_emptied_dirs(source.parent, root)
 
             if update_duplicates_table:
                 ctx.conn.execute(
