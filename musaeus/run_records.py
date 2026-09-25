@@ -24,7 +24,7 @@ import shutil
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .context import StageResult
 from .handoff import _crash_reports, act_of
@@ -106,6 +106,25 @@ def added_to_library(stage_results) -> int:
         for r in stage_results
         if getattr(r, "stage_name", "") == "finalize" and not getattr(r, "dry_run", False)
     )
+
+
+def filed_this_run(ctx: Any) -> int:
+    """How many tracks this run filed, counting a Finalize that never finished.
+
+    added_to_library reads Finalize's StageResult, which a Ctrl-C during
+    Finalize, or a crash part-way, never records -- though files were moved.
+    Finalize logs one FINALIZE_MOVE per file as it goes, so the event log
+    knows what the results do not (cloud review of #37, 2026-09-25).
+    """
+    counted = added_to_library(ctx.stage_results)
+    try:
+        logged = ctx.conn.execute(
+            "SELECT COUNT(*) FROM events WHERE run_id = ? AND event_type = 'FINALIZE_MOVE'",
+            (ctx.run_id,),
+        ).fetchone()[0]
+    except Exception:  # noqa: BLE001 - bookkeeping must not sink a run
+        logged = 0
+    return max(int(counted), int(logged))
 
 
 def publish(libraries: Path, runs_root: Path, run_id: str, extra: list[Path | None]) -> Path:
@@ -201,7 +220,10 @@ def count_problems(stage_results: list[StageResult]) -> int:
     one per failed stage or failed self-check that left no error line."""
     n = 0
     for r in stage_results:
-        n += len(r.errors) or (0 if r.success else 1)
+        # A stage can report success and still have files that errored with no
+        # error line -- the handoff doc counts that as a problem, so this must
+        # too, or the console says "no problems" beside a doc that lists one.
+        n += len(r.errors) or (0 if r.success and not r.files_errored else 1)
         if r.verified is False:
             n += max(1, len(r.verify_notes))
     return n

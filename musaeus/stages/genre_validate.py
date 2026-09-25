@@ -323,9 +323,13 @@ class GenreValidateStage(BaseStage):
                 else:
                     filled += 1
                 if not dry_run:
+                    # A genre borrowed from the lead artist is NOT a ruling on
+                    # this credit, so it is not marked as one: a MasterLaw
+                    # entry for the exact credit, added later, must still win
+                    # (cloud review of #37, 2026-09-25).
+                    ruled = "NULL" if via else "datetime('now')"
                     ctx.conn.execute(
-                        "UPDATE archive SET genre = ?, genre_ruled_at = datetime('now') "
-                        "WHERE rowid = ?",
+                        f"UPDATE archive SET genre = ?, genre_ruled_at = {ruled} WHERE rowid = ?",
                         (law_genre, row["rid"]),
                     )
                     ctx.log_event(

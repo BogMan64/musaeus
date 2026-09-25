@@ -91,6 +91,7 @@ from pathlib import Path
 
 from ..config import LOSSLESS_CODECS
 from ..context import RunContext, StageResult
+from ..db import SET_ASIDE_STATUSES
 from .base import BaseStage
 from .organize import (
     _remove_emptied_dirs,
@@ -304,6 +305,7 @@ def _get_group_members(conn, group_id: str) -> list[dict]:
         """
         SELECT d.file_path, d.duplicate_type, d.confidence, d.status AS dup_status,
                d.audio_hash AS recorded_hash, a.audio_hash AS current_hash, a.id AS current_row,
+               a.status AS current_status,
                a.artist, a.album, a.title, a.ext, a.codec, a.bitrate, a.size_bytes
           FROM duplicates d
           LEFT JOIN archive a USING (file_path)
@@ -870,6 +872,28 @@ class DupeResolverStage(BaseStage):
                         [(gid,) for gid in component],
                     )
                 continue
+            # A member already set aside is not a candidate at all -- neither
+            # to move nor to KEEP. As a keeper it was the worse failure: a
+            # review copy that outranked the library master kept its place,
+            # and the master was moved out as the loser, leaving the library
+            # with no copy (cloud review of #37, 2026-09-25). If that leaves
+            # one member, it is the only live copy: nothing to resolve.
+            aside = [m for m in members if m.get("current_status") in SET_ASIDE_STATUSES]
+            if aside:
+                members = [m for m in members if m not in aside]
+                result.notes.append(
+                    f"group {group_id}: {len(aside)} member(s) already set aside, left alone"
+                )
+                if len(members) < 2:
+                    result.files_skipped += len(members) + len(aside)
+                    if not dry_run:
+                        ctx.conn.executemany(
+                            "UPDATE duplicates SET status = 'archive' "
+                            "WHERE group_id = ? AND status = 'pending'",
+                            [(gid,) for gid in component],
+                        )
+                    continue
+
             # One keeper for the whole component, so a file kept by one of
             # its groups can no longer be moved as another's loser.
             members.sort(key=_keeper_sort_key)

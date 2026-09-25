@@ -651,6 +651,20 @@ def ensure_deny_list(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+#: Rows already set aside: in review, quarantined, held as a tribute, recorded
+#: as gone, or deleted. None is in the batch or the library, so none may be
+#: flagged as a duplicate of it, and none may be picked to keep in its place.
+#: One list, because each place that kept its own copy missed a status the
+#: others knew (cloud review of #37, 2026-09-25: DELETED).
+SET_ASIDE_STATUSES: tuple[str, ...] = (
+    "DUPE_REVIEW",
+    "QUARANTINED",
+    "TRIBUTE_REVIEW",
+    "GHOST",
+    "DELETED",
+)
+
+
 def deny_hash(
     conn: sqlite3.Connection, audio_hash: str, reason: str, source_path: str | None = None
 ) -> None:
