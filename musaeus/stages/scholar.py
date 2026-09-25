@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -153,6 +154,35 @@ def _extract_meta(probe_data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ── Names from the file name ──────────────────────────────────────────────────
+
+# "90. " / "573. " -- a playlist position. The dot is what makes it one:
+# "10 - Candy Everybody Wants" and "98 - True to Your Heart" are how
+# 10,000 Maniacs and 98 Degrees arrive, and 50 Cent and 311 are names too.
+_POSITION_RE = re.compile(r"^\d+\.\s+")
+# " (2)" -- a collision suffix unique_path added, not part of the song.
+_COLLISION_RE = re.compile(r" \((?:[2-9]|[1-9]\d+)\)$")
+# What organize/dupe_resolver write for a row with no name. Reading it back
+# as a name would turn the pipeline's own placeholder into an artist.
+_PLACEHOLDER_ARTIST = "unknown artist"
+
+
+def _name_from_file(path: Path) -> tuple[str | None, str | None]:
+    """(artist, title) from an "Artist - Title" file name, or (None, None).
+
+    Only for a file with NO artist tag and NO title tag (2026-09-25: two
+    Backstreet Boys files arrived like that and were catalogued blank,
+    though their names said exactly what they were). Splits on the FIRST
+    " - " only, so "Dion - Runaround Sue - Live" keeps " - Live" in the title.
+    """
+    stem = _COLLISION_RE.sub("", _POSITION_RE.sub("", path.stem)).strip()
+    artist, sep, title = stem.partition(" - ")
+    artist, title = artist.strip(), title.strip()
+    if not sep or not artist or not title or artist.lower() == _PLACEHOLDER_ARTIST:
+        return None, None
+    return artist, title
+
+
 # ── Stage ─────────────────────────────────────────────────────────────────────
 
 
@@ -231,6 +261,7 @@ class ScholarStage(BaseStage):
         pending = _get_hashed(ctx.conn)
 
         _COMMIT_EVERY = 50  # commit progress incrementally
+        named_from_file = 0
 
         for row in pending:
             path_str = row["file_path"]
@@ -254,8 +285,20 @@ class ScholarStage(BaseStage):
             meta = _extract_meta(probe_data)
             raw_json = json.dumps(probe_data, ensure_ascii=False)
 
+            # The archive row gets the file name's artist/title when the file
+            # has neither tag. metadata_cache below keeps what the tags said,
+            # because it is the record of the file itself.
+            named = dict(meta)
+            from_file = False
+            if not meta.get("artist") and not meta.get("title"):
+                artist, title = _name_from_file(path)
+                if artist:
+                    named.update(artist=artist, title=title)
+                    from_file = True
+                    named_from_file += 1
+
             # Update archive
-            archive_row = {"file_path": path_str, "status": "CATALOGUED", **meta}
+            archive_row = {"file_path": path_str, "status": "CATALOGUED", **named}
             upsert_archive(ctx.conn, archive_row)
 
             # Update metadata_cache with raw JSON for full audit trail
@@ -296,17 +339,18 @@ class ScholarStage(BaseStage):
                 file_path=path_str,
                 stage=self.NAME,
                 note=(
-                    f"artist={meta.get('artist')!r} "
-                    f"title={meta.get('title')!r} "
+                    f"artist={named.get('artist')!r} "
+                    f"title={named.get('title')!r} "
                     f"bitrate={meta.get('bitrate')}"
+                    + ("  (no tags; artist and title from the file name)" if from_file else "")
                 ),
             )
             result.files_changed += 1
             logger.info(
                 "catalogued: %s — %s / %s",
                 path.name,
-                meta.get("artist", "?"),
-                meta.get("title", "?"),
+                named.get("artist", "?"),
+                named.get("title", "?"),
             )
 
             # Periodic commit so progress survives a crash
@@ -317,6 +361,11 @@ class ScholarStage(BaseStage):
                     result.files_processed,
                     len(pending),
                 )
+
+        if named_from_file:
+            result.notes.append(
+                f"{named_from_file} file(s) had no tags; artist and title taken from the file name"
+            )
 
         if result.files_errored > 0:
             result.success = False

@@ -641,6 +641,21 @@ class DupeResolverStage(BaseStage):
                 result.errors.append(f"{source}: file missing on disk")
                 continue
 
+            # Already set aside. Its target is its own path, which unique_path
+            # turns into " (2)" -- a rename of a file nobody asked to move,
+            # repeated on every run (2026-09-25, two Badfinger review copies).
+            # Close the group so it is not retried.
+            if source.is_relative_to(ctx.config.dupes_review_dir):
+                result.files_skipped += 1
+                result.notes.append(f"[{dtype}] left {source.name}: already in the review folder")
+                if update_duplicates_table and not dry_run:
+                    ctx.conn.execute(
+                        "UPDATE duplicates SET status = 'archive' "
+                        "WHERE group_id = ? AND file_path = ?",
+                        (group_id, source_key),
+                    )
+                continue
+
             # Inside the guard, not above it. The move below has isolated
             # per-item OSErrors since it was written, but _target_path was
             # one line outside that guard -- and it does filesystem work
