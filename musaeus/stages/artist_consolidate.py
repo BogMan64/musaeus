@@ -27,6 +27,7 @@ import re
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from ..artist_form import natural_form
 from ..canon import ArtistCanon
 from ..context import StageResult, elision
 from ..title_case import every_word_capitalised
@@ -43,7 +44,10 @@ logger = logging.getLogger(__name__)
 CANON_ARTIST_DISPLAY = {
     "98": "98°",
     "abba": "ABBA",
-    "ac dc": "AC-DC",
+    # "AC/DC", not "AC-DC": Grey's 2026-08-22 rule is to match MusicBrainz
+    # exactly. The folder is still "AC-DC" -- organize makes any "/" safe
+    # for a path -- but the tag is the band's own name (2026-09-25).
+    "ac dc": "AC/DC",
     "a ha": "a-ha",
     "crosby stills and nash": "Crosby, Stills & Nash",
     "crosby stills nash and young": "Crosby, Stills, Nash & Young",
@@ -74,22 +78,6 @@ def _collapse_spaces(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
-# Guest-clause markers: keyword + everything after it, to end of string.
-# Matched via a trailing lookahead of (whitespace|end-of-string) instead of
-# a required trailing \s+ delimiter, so a guest-clause phrase sitting at
-# the very end of the string (e.g. "Artist and Friends", with nothing
-# after "Friends") still gets stripped -- not just mid-string cases.
-#
-# Deliberately "feat\." (period required) or "featuring", never bare
-# "feat" -- a bare word-boundary "feat" false-matched the real band name
-# "Little Feat" (confirmed incident). Requiring the period disambiguates
-# "feat." the collaborator abbreviation from "Feat" as part of a proper
-# name.
-_GUEST_CLAUSE_RE = re.compile(
-    r"(?i)\s+(?:feat\.|featuring|ft\.?|with|duet with|vs\.?|versus"
-    r"|special guest|and friends)(?=\s|$).*$"
-)
-
 # "the"-article, in any of the three real on-disk spellings this project
 # actually uses: leading "The X", trailing "X, The" (comma-suffix -- the
 # confirmed, dominant real convention), and parenthetical "X (The)" (an
@@ -112,45 +100,18 @@ def _has_the_article(name: str) -> bool:
     )
 
 
-def _strip_collaborator_tail(text: str) -> str:
-    """
-    Remove a guest-clause tail (feat./featuring/with/special guest/and
-    Friends/etc. + everything after it), then normalize any remaining
-    literal "and" join to "&" (e.g. "Simon and Garfunkel" -> "Simon &
-    Garfunkel"), matching CANON_ARTIST_DISPLAY's existing convention.
-    Order matters: guest-clause stripping must happen before the and->&
-    conversion, so a stripped-off guest name's own "and" (if any) never
-    gets a chance to be converted.
+def _join_with_ampersand(text: str) -> str:
+    """ "Simon and Garfunkel" -> "Simon & Garfunkel": "&" joins artist names.
+
+    This used to strip guest credits as well ("feat. X", ", X", "with X"),
+    which made "50 Cent, Nate Dogg" the same artist as "50 Cent" and rewrote
+    the tag to the lead name. The tag keeps the full credit; only the FOLDER
+    uses the lead artist, via artist_form.folder_artist (Grey, 2026-09-25).
     """
     raw = (text or "").strip()
-    if not raw:
+    if not raw or raw.lower() in PROTECTED_FULL_ARTIST_NAMES:
         return raw
-
-    if raw.lower() in PROTECTED_FULL_ARTIST_NAMES:
-        return raw
-
-    raw = _GUEST_CLAUSE_RE.sub("", raw).strip()
-
-    if raw.lower() in PROTECTED_FULL_ARTIST_NAMES:
-        return raw
-
-    # Comma-tail: only a real collaborator credit if the text after the
-    # first comma isn't an article (the/a/an, case-insensitive) --
-    # "Beatles, The" is the confirmed real on-disk canonical suffix form
-    # (341 real folders use it), not a collaborator credit, and must
-    # survive this step untouched. Only "Artist, SomeoneElse"-shaped
-    # comma tails get stripped.
-    if "," in raw and "&" not in raw:
-        head, _, tail = raw.partition(",")
-        if tail.strip().lower() not in ("the", "a", "an"):
-            raw = head.strip()
-
-    if raw.lower() in PROTECTED_FULL_ARTIST_NAMES:
-        return raw
-
-    raw = re.sub(r"(?i)\band\b", "&", raw)
-
-    return raw
+    return re.sub(r"(?i)\band\b", "&", raw)
 
 
 def _normalize_key(text: str) -> str:
@@ -168,7 +129,7 @@ def _normalize_key(text: str) -> str:
     separately by _preferred_name()'s own _has_the_article() check on
     the un-stripped cleaned names, not by this key.
     """
-    text = _strip_collaborator_tail(text or "")
+    text = text or ""
     text = text.replace("°", "")
     text = text.replace("&", " and ")
     text = text.replace("'", "'").replace("`", "'")
@@ -253,7 +214,7 @@ def _preferred_name(names_with_counts: list[tuple[str, int]]) -> str:
        to be longer.
     4. Apply smart title casing.
     """
-    cleaned = [(_strip_collaborator_tail(n), c) for n, c in names_with_counts if n and n.strip()]
+    cleaned = [(_join_with_ampersand(n), c) for n, c in names_with_counts if n and n.strip()]
     cleaned = [(n, c) for n, c in cleaned if n]
     if not cleaned:
         return "Unknown Artist"
@@ -287,6 +248,18 @@ def _preferred_name(names_with_counts: list[tuple[str, int]]) -> str:
 
     # Return known canon or smart-titled version
     return CANON_ARTIST_DISPLAY.get(best_key, _smart_title(best_name))
+
+
+def _stored_form(name: str) -> str:
+    """A name exactly as Normalize stores it, so neither step undoes the other.
+
+    Natural article form ("The Band", not "Band, The") since 2026-09-16, and
+    every word capitalised since 2026-09-25. _preferred_name and the canon
+    speak the older suffix form; writing that as-is was changed back by
+    Normalize on the next run, renaming every such artist twice. The sort
+    form lives only in the folder path (organize).
+    """
+    return every_word_capitalised(natural_form(name))
 
 
 class ArtistConsolidateStage(BaseStage):
@@ -361,7 +334,7 @@ class ArtistConsolidateStage(BaseStage):
                 raw = row["artist"]
                 canonical = artist_canon.resolve_exact(raw)
                 if canonical:
-                    canonical = every_word_capitalised(canonical)
+                    canonical = _stored_form(canonical)
                 if canonical and canonical != raw:
                     canon_changes[raw] = canonical
 
@@ -382,7 +355,7 @@ class ArtistConsolidateStage(BaseStage):
 
             # Pick canonical name (variants is already list[(name, track_count)]),
             # in the every-word form for the same reason as the canon above.
-            canonical = every_word_capitalised(_preferred_name(variants))
+            canonical = _stored_form(_preferred_name(variants))
 
             # Map all non-canonical variants to canonical
             for variant_name, track_count in variants:
@@ -468,7 +441,7 @@ class ArtistConsolidateStage(BaseStage):
             raw = r["artist"]
             mapped = canon.resolve_exact(raw)
             if mapped:
-                mapped = every_word_capitalised(mapped)
+                mapped = _stored_form(mapped)
             if mapped and mapped != raw:
                 stale.append(f"{raw!r} should be {mapped!r}")
         if not stale:
