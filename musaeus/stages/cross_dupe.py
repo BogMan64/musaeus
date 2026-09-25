@@ -54,23 +54,37 @@ logger = logging.getLogger(__name__)
 _COMMIT_EVERY = 100
 
 
+# Rows already set aside -- in review, quarantined, held as a tribute, or
+# recorded as gone. None is in the batch or the library, so none can be a
+# cross-batch duplicate of it. 2026-09-25: two Badfinger copies already in
+# REVIEW/DUPES_MOVED were flagged against the masters they had lost to, and
+# DupeResolver "moved" each onto itself, adding " (2)". The NOT EXISTS guard
+# below matches on file_path, which that move changed, so every Act 2 would
+# have renamed them again.
+SET_ASIDE_STATUSES = ("DUPE_REVIEW", "QUARANTINED", "TRIBUTE_REVIEW", "GHOST")
+
+
 def _get_candidates(conn) -> list[dict]:  # type: ignore[type-arg]
     """
     Archive rows with a hash to check, that haven't already been flagged
-    as a CROSS_BATCH duplicate this batch (idempotent re-run guard).
+    as a CROSS_BATCH duplicate this batch (idempotent re-run guard), and
+    that are not already set aside (SET_ASIDE_STATUSES).
     """
+    marks = ",".join("?" for _ in SET_ASIDE_STATUSES)
     rows = conn.execute(
-        """
+        f"""
         SELECT a.file_path, a.audio_hash
           FROM archive a
          WHERE a.audio_hash IS NOT NULL
+           AND a.status NOT IN ({marks})
            AND NOT EXISTS (
                  SELECT 1 FROM duplicates d
                   WHERE d.file_path = a.file_path
                     AND d.duplicate_type = 'CROSS_BATCH'
                )
          ORDER BY a.file_path
-        """
+        """,
+        SET_ASIDE_STATUSES,
     ).fetchall()
     return [dict(r) for r in rows]
 

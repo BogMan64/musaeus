@@ -500,6 +500,28 @@ def _run_pipeline(
             print(f"\n\n  ⚠  Interrupted during {stage_name}.")
             print("  Progress saved — run 'musaeus run' again to resume.\n")
             _save_resume(completed_names, stage_names)
+            # A run cut short after Finalize has still added tracks, and its
+            # records are copied beside the library at the END of a run --
+            # which this one never reaches. 2026-09-25: Act 3 was interrupted
+            # in Forge after filing 178 tracks, and the run that finished the
+            # job filed none itself, so neither was kept (Grey's rule of
+            # 2026-09-24). Bookkeeping: it may not change the exit code.
+            try:
+                added = added_to_library(ctx.stage_results)
+                if added:
+                    run_log.close()
+                    dest = publish_run_records(
+                        cfg.libraries,
+                        cfg.runs_root,
+                        ctx.run_id,
+                        [run_log.path, write_problems_tsv(ctx)],
+                    )
+                    print(f"  Run records ({added} track(s) added to the library): {dest}")
+            except Exception as exc:  # noqa: BLE001 - see comment above
+                print(
+                    f"  WARNING: run records not published: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
             run_log.close()
             return 1
 
@@ -608,7 +630,18 @@ def _run_pipeline(
         )
         traceback.print_exc()
     if handoff_path is not None:
-        print(f"  ForClaudeHandoff doc (needs attention): {handoff_path}", file=sys.stderr)
+        # "needs attention" only when something does: it was printed after
+        # every run, clean ones included, and a warning that always shows is
+        # one nobody reads (Grey, 2026-09-25).
+        n_problems = count_problems(ctx.stage_results)
+        if n_problems:
+            print(
+                f"  ForClaudeHandoff doc (needs attention, {n_problems} problem(s)): "
+                f"{handoff_path}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"  ForClaudeHandoff doc: {handoff_path}")
 
     # Grey, 2026-09-24: a run that adds tracks to ALAC_Library keeps a copy of
     # its log and reports BESIDE the library; and 10 of each kind are kept.

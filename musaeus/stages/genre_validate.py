@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import logging
 
+from ..artist_form import folder_artist
 from ..canon.genre_law import GenreLaw
 from ..context import RunContext, StageResult, elision
 from ..db import ensure_columns
@@ -244,14 +245,22 @@ class GenreValidateStage(BaseStage):
             r[1] == "genre_ruled_at" for r in ctx.conn.execute("PRAGMA table_info(archive)")
         )
         ruled_col = "genre_ruled_at" if has_ruled_at else "NULL AS genre_ruled_at"
+        # mb_artist_name is added by enrichment, so a vault that never ran it
+        # has no such column. folder_artist uses it to keep a credit that
+        # MusicBrainz knows as ONE artist whole.
+        has_mb = any(
+            r[1] == "mb_artist_name" for r in ctx.conn.execute("PRAGMA table_info(archive)")
+        )
+        mb_col = "mb_artist_name" if has_mb else "NULL AS mb_artist_name"
 
         rows = ctx.conn.execute(
-            f"SELECT rowid AS rid, file_path, artist, genre, {ruled_col} FROM archive "
+            f"SELECT rowid AS rid, file_path, artist, genre, {ruled_col}, {mb_col} FROM archive "
             "WHERE status='CATALOGUED' ORDER BY artist, album, track"
         ).fetchall()
         result.files_processed = len(rows)
 
         filled = conflicts = unknown = agreed = illegal_fixed = law_wins = 0
+        filled_lead = 0
         blank_unknown = 0
         illegal_stuck: dict[str, int] = {}
         allowed = self._allowed_vocabulary(ctx)
@@ -289,13 +298,30 @@ class GenreValidateStage(BaseStage):
             #
             # A missing genre is missing. It is not an illegal value.
             if not genre:
+                # A credit with no ruling of its own -- "Phil Collins, Marilyn
+                # Martin", "Gorillaz feat. Bobby Womack" -- takes its lead
+                # artist's (Grey, 2026-09-25). The lead is the artist the track
+                # FILES under, so the genre and the folder agree about whose
+                # track it is; and folder_artist is what keeps a band like
+                # Earth, Wind & Fire whole rather than reading it as Earth.
+                # Only an EMPTY genre is filled this way, and only when the
+                # full credit has no ruling: the exact credit always wins.
+                via = None
+                if law_genre is None:
+                    lead = folder_artist(artist, row["mb_artist_name"])
+                    if lead and lead != artist:
+                        law_genre = law.genre_for(lead)
+                        via = lead if law_genre else None
                 if law_genre is None:
                     # No genre AND no law entry. This needs a ruling from the
                     # owner and is not the same finding as a retired genre
                     # walking back in, so it is counted separately.
                     blank_unknown += 1
                     continue
-                filled += 1
+                if via:
+                    filled_lead += 1
+                else:
+                    filled += 1
                 if not dry_run:
                     ctx.conn.execute(
                         "UPDATE archive SET genre = ?, genre_ruled_at = datetime('now') "
@@ -307,7 +333,11 @@ class GenreValidateStage(BaseStage):
                         file_path=row["file_path"],
                         stage=self.NAME,
                         new_value=law_genre,
-                        note=f"empty genre filled from MasterLaw ({artist})",
+                        note=(
+                            f"empty genre filled from MasterLaw via the lead artist ({via} of {artist})"
+                            if via
+                            else f"empty genre filled from MasterLaw ({artist})"
+                        ),
                     )
                 continue
 
@@ -414,11 +444,16 @@ class GenreValidateStage(BaseStage):
 
         # All three write branches count toward files_changed so verify_effect
         # quotes back a number that reflects what actually happened on disk.
-        result.files_changed = filled + illegal_fixed + law_wins
+        result.files_changed = filled + filled_lead + illegal_fixed + law_wins
         verb = "would fill" if dry_run else "filled"
         result.notes.append(f"MasterLaw artists: {len(law)}")
         result.notes.append(f"  genre agrees:            {agreed}")
         result.notes.append(f"  {verb} empty genre:       {filled}")
+        if filled_lead:
+            result.notes.append(
+                f"  {verb} from the lead artist: {filled_lead}  "
+                "(duets and credits with no ruling of their own)"
+            )
         result.notes.append(f"  artist unknown to law:   {unknown}")
         if blank_unknown:
             result.notes.append(
