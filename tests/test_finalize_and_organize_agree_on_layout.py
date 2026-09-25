@@ -98,6 +98,7 @@ def _vault(tmp_path):
         runs_root=tmp_path / "RUNS",
         meta_dir=tmp_path / "MetaData",
         alac_library=tmp_path / "ALAC-Library",
+        alac_archive=tmp_path / "ALAC-Archival",
         db_path=tmp_path / "musaeus.db",
     )
     cfg.ensure_dirs()
@@ -162,7 +163,7 @@ def test_finalize_files_under_the_genre_and_honours_the_filing_rulings(tmp_path)
     ctx = _vault(tmp_path)
     _stage_awkward_rows(ctx)
     FinalizeStage().execute(ctx)
-    lib = ctx.config.alac_library
+    lib = ctx.config.alac_archive  # finalize files masters
     rel = {
         r[0]: str(Path(r[1]).relative_to(lib))
         for r in ctx.conn.execute("SELECT artist, file_path FROM archive")

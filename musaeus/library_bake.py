@@ -563,7 +563,15 @@ def _decode_gate(conn, row_id: int, source: Path, execute: bool) -> str:
     return ""
 
 
-def _process_one(conn, row: dict, archive_dir: Path, library_dir: Path, execute: bool) -> str:
+def _process_one(
+    conn,
+    row: dict,
+    archive_dir: Path,
+    library_dir: Path,
+    execute: bool,
+    run_id: str | None = None,
+    stage: str = "build_alac_library",
+) -> str:
     source = Path(row["file_path"])
 
     current = conn.execute(
@@ -650,12 +658,13 @@ def _process_one(conn, row: dict, archive_dir: Path, library_dir: Path, execute:
         )
         conn.execute(
             "INSERT INTO events (run_id, event_type, file_path, old_value, new_value, stage, note) "
-            "VALUES (?, 'LUFS_BAKE', ?, ?, ?, 'build_alac_library', ?)",
+            "VALUES (?, 'LUFS_BAKE', ?, ?, ?, ?, ?)",
             (
-                f"lufs_bake_{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
+                run_id or f"lufs_bake_{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
                 str(target),
                 str(source),
                 str(target),
+                stage,
                 f"baked to {TARGET_I} LUFS (ALAC_Archive -> ALAC-Library)",
             ),
         )

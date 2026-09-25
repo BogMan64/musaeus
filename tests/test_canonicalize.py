@@ -412,7 +412,9 @@ class TestStagingFlow:
         assert row["finalized_at"] is not None
         final_path = Path(row["file_path"])
         assert final_path.exists()
-        assert final_path.is_relative_to(ctx.alac_library)  # landed under ALAC-Library
+        # Finalize files the MASTER in ALAC-Archival since 2026-09-25; the -18 LUFS
+        # ALAC_Library copy is LibraryBakeStage's, which this test does not run.
+        assert final_path.is_relative_to(ctx.config.alac_archive)  # landed as a master
 
 
 # ── Dry run ───────────────────────────────────────────────────────────────────

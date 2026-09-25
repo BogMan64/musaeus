@@ -34,6 +34,7 @@ from musaeus.stages.genre_validate import GenreValidateStage
 from musaeus.stages.health import HealthStage
 from musaeus.stages.identity_tag import IdentityTagStage
 from musaeus.stages.ingest import IngestStage
+from musaeus.stages.library_bake import LibraryBakeStage
 from musaeus.stages.mb_enrich import MBEnrichStage
 from musaeus.stages.neardupe import NearDupeStage
 from musaeus.stages.normalize import NormalizeStage
@@ -165,6 +166,10 @@ def test_full_default_pipeline_order_matches_current_design():
         ClassicalComposerStage,
         CanonicalizeStage,
         FinalizeStage,
+        # Straight after Finalize (2026-09-25): Finalize files the MASTER in
+        # ALAC-Archival; LibraryBake builds the -18 LUFS ALAC_Library copy and
+        # points the row at it, so every stage after works on the listening copy.
+        LibraryBakeStage,
         BPMStage,
         ForgeStage,
         TaggerStage,

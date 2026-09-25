@@ -159,6 +159,7 @@ from .health import HealthStage
 from .identity_tag import IdentityTagStage
 from .ingest import IngestStage
 from .integrity import IntegrityStage
+from .library_bake import LibraryBakeStage
 from .mb_enrich import MBEnrichStage
 from .neardupe import NearDupeStage
 from .normalize import NormalizeStage
@@ -190,6 +191,7 @@ __all__ = [
     "CanonicalizeStage",
     "ClassicalComposerStage",
     "FinalizeStage",
+    "LibraryBakeStage",
     "AuditStage",
     "ForgeStage",
     "TaggerStage",
@@ -354,6 +356,10 @@ ACT2_DEDUP_STAGING: list[type] = [
 ACT3_CANONICALIZE_FINALIZE: list[type] = [
     CanonicalizeStage,
     FinalizeStage,
+    # Straight after Finalize: builds the -18 LUFS ALAC_Library copy from
+    # each new master and points the row at it, so everything after works
+    # on the listening copy and the master is never touched again.
+    LibraryBakeStage,
     BPMStage,
     ForgeStage,
     TaggerStage,

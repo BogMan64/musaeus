@@ -2,13 +2,17 @@
 """
 MUSAEUS — Finalize Stage (Act 3)
 
-The last step before a file is considered done: physically moves a
-canonicalized (ALAC-in-.m4a or AAC-in-.m4a) file from the mutable INBOX
-into the canonical, trusted vault_root/ALAC-Library — Artist/Album/
-structure, matching organize.py's naming rules exactly (same
-build_track_filename/sanitize_path_component/unique_path helpers,
-imported directly rather than reimplemented, so Finalize and Organize
-can never silently disagree about what a "correct" path looks like).
+Physically moves a canonicalized (ALAC-in-.m4a or AAC-in-.m4a) file from
+the mutable INBOX into the MASTERS tier, ALAC-Archival, at
+Genre/Artist/Album/"Artist - Title" -- the path organize.library_relpath()
+gives, the one rule Organize files by too.
+
+That sentence used to say ALAC-Library and "matching organize.py's naming
+rules exactly", and neither was true: finalize built its own path from a
+genre it never selected, and filed the library copy rather than a master,
+although Grey decided on 2026-08-18 that new work lands in the pristine
+tier. Since 2026-09-25 it files the master, and LibraryBakeStage (next in
+Act 3) builds the -18 LUFS ALAC_Library copy from it.
 
 Why this matters (Grey's explicit design decision, 2026-08-09/10
 session): INBOX is working state, expected to trend toward empty.
@@ -390,7 +394,10 @@ class FinalizeStage(BaseStage):
             self._filing(ctx),
         )
         batch = self._batch_date(ctx)
-        base = ctx.alac_library / batch if batch else ctx.alac_library
+        # Masters, in ALAC-Archival (Grey, 2026-08-18: new work lands in the
+        # pristine tier). LibraryBakeStage builds the ALAC_Library copy next.
+        root = ctx.config.alac_archive
+        base = root / batch if batch else root
         candidate = base / rel
 
         # Same self-is-not-a-collision guard organize.py needed: if the

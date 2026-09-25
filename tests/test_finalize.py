@@ -1,6 +1,7 @@
 """
 Tests for FinalizeStage — move canonicalized files from INBOX into the
-canonical vault_root/ALAC-Library.
+masters tier, ALAC-Archival (the -18 LUFS ALAC_Library copy is
+LibraryBakeStage's job since 2026-09-25; it used to be finalize's destination).
 
 Uses real files on disk (not mocked): this stage's whole purpose is a
 real filesystem move plus a real persistent hash-index write, and a
@@ -32,6 +33,7 @@ def cfg(tmp_path: Path) -> MusicConfig:
         runs_root=tmp_path / "RUNS",
         meta_dir=tmp_path / "MetaData",
         alac_library=tmp_path / "ALAC-Library",
+        alac_archive=tmp_path / "ALAC-Archival",
         db_path=tmp_path / "musaeus.db",
     )
 
@@ -144,7 +146,7 @@ class TestFinalizeFromStaging:
         assert not staged.exists()
 
         expected = (
-            ctx.alac_library
+            ctx.config.alac_archive
             / _TEST_BATCH_DATE
             / "Unsorted"
             / "Artist"
@@ -164,7 +166,7 @@ class TestFinalizeFromStaging:
         STAGING source completely untouched -- never lose track of it."""
         staged = _make_staged_track(ctx, "1_source.m4a", "Artist", "Album", "Title")
         expected = (
-            ctx.alac_library
+            ctx.config.alac_archive
             / _TEST_BATCH_DATE
             / "Unsorted"
             / "Artist"
@@ -213,7 +215,7 @@ class TestFinalizeRunLive:
         assert not track.exists()
 
         expected = (
-            ctx.alac_library
+            ctx.config.alac_archive
             / _TEST_BATCH_DATE
             / "Unsorted"
             / "Test Artist"
@@ -237,7 +239,7 @@ class TestFinalizeRunLive:
 
         assert result.files_changed == 2
         assert (
-            ctx.alac_library
+            ctx.config.alac_archive
             / _TEST_BATCH_DATE
             / "Unsorted"
             / "Artist A"
@@ -245,7 +247,7 @@ class TestFinalizeRunLive:
             / "Artist A - Title A.m4a"
         ).exists()
         assert (
-            ctx.alac_library
+            ctx.config.alac_archive
             / _TEST_BATCH_DATE
             / "Unsorted"
             / "Artist B"
@@ -277,7 +279,7 @@ class TestFinalizeRunLive:
 
         assert len(rows) == 1
         expected = (
-            ctx.alac_library
+            ctx.config.alac_archive
             / _TEST_BATCH_DATE
             / "Unsorted"
             / "Artist"
@@ -428,7 +430,9 @@ class TestFinalizeIdempotency:
 
         assert second.files_errored == 0
         matches = list(
-            (ctx.alac_library / _TEST_BATCH_DATE / "Unsorted" / "Artist" / "Album").glob("*.m4a")
+            (ctx.config.alac_archive / _TEST_BATCH_DATE / "Unsorted" / "Artist" / "Album").glob(
+                "*.m4a"
+            )
         )
         assert len(matches) == 1  # no " (2)" sibling created
 
@@ -446,7 +450,7 @@ class TestFinalizeBatchDate:
         FinalizeStage().execute(ctx)
 
         expected = (
-            ctx.alac_library
+            ctx.config.alac_archive
             / _TEST_BATCH_DATE
             / "Unsorted"
             / "Artist"
@@ -456,7 +460,7 @@ class TestFinalizeBatchDate:
         assert expected.exists()
         # And the date folder is a DIRECT child of alac_library, not nested
         # any deeper or shallower.
-        assert expected.relative_to(ctx.alac_library).parts[0] == _TEST_BATCH_DATE
+        assert expected.relative_to(ctx.config.alac_archive).parts[0] == _TEST_BATCH_DATE
 
     def test_default_batch_date_is_todays_utc_date(self, cfg, monkeypatch):
         """With batch folders ENABLED and no explicit override, the stamp is
@@ -482,7 +486,12 @@ class TestFinalizeBatchDate:
 
         today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
         expected = (
-            real_ctx.alac_library / today / "Unsorted" / "Artist" / "Album" / "Artist - Title.m4a"
+            real_ctx.config.alac_archive
+            / today
+            / "Unsorted"
+            / "Artist"
+            / "Album"
+            / "Artist - Title.m4a"
         )
         assert expected.exists()
 
@@ -498,7 +507,9 @@ class TestFinalizeBatchDate:
         _make_canonicalized_track(real_ctx, "track.m4a", "Artist", "Album", "Title")
         FinalizeStage().execute(real_ctx)
 
-        expected = real_ctx.alac_library / "Unsorted" / "Artist" / "Album" / "Artist - Title.m4a"
+        expected = (
+            real_ctx.config.alac_archive / "Unsorted" / "Artist" / "Album" / "Artist - Title.m4a"
+        )
         assert expected.exists(), "expected the artist directly under the library"
 
     def test_all_files_in_one_run_share_the_same_batch_date(self, ctx):
@@ -511,7 +522,7 @@ class TestFinalizeBatchDate:
         FinalizeStage().execute(ctx)
 
         a = (
-            ctx.alac_library
+            ctx.config.alac_archive
             / _TEST_BATCH_DATE
             / "Unsorted"
             / "Artist A"
@@ -519,7 +530,7 @@ class TestFinalizeBatchDate:
             / "Artist A - Title A.m4a"
         )
         b = (
-            ctx.alac_library
+            ctx.config.alac_archive
             / _TEST_BATCH_DATE
             / "Unsorted"
             / "Artist B"
@@ -539,7 +550,7 @@ class TestFinalizeDryRun:
         assert result.dry_run is True
         assert track.exists()
         expected = (
-            ctx_dry.alac_library
+            ctx_dry.config.alac_archive
             / _TEST_BATCH_DATE
             / "Unsorted"
             / "Artist"
@@ -582,7 +593,7 @@ class TestFinalizeRecoveryBoundary:
         moves = [e for e in entries if e.detail.get("moved_to")]
         assert len(moves) == 1, "the move must be on the record"
         assert "STAGING" in moves[0].detail["relative_path"]
-        assert "ALAC-Library" in moves[0].detail["moved_to"]
+        assert "ALAC-Archival" in moves[0].detail["moved_to"]
         assert moves[0].result_digest, "the destination must be digested"
 
     def test_source_release_is_recorded_separately(self, ctx):
@@ -623,7 +634,7 @@ class TestFinalizeRecoveryBoundary:
         original = src.read_bytes()
         FinalizeStage().run(ctx)
 
-        landed = list(ctx.config.alac_library.rglob("*.m4a"))
+        landed = list(ctx.config.alac_archive.rglob("*.m4a"))
         assert len(landed) == 1 and not src.exists()
 
         root = ctx.config.runs_root / "recovery" / f"finalize_{ctx.run_id}"
@@ -647,7 +658,7 @@ class TestFinalizeRecoveryBoundary:
 
         assert src.exists(), "the staged source must come back"
         assert src.read_bytes() == original
-        assert list(ctx.config.alac_library.rglob("*.m4a")) == []
+        assert list(ctx.config.alac_archive.rglob("*.m4a")) == []
 
     def test_disabling_the_boundary_is_announced_not_silent(self, ctx, monkeypatch):
         """A run with no boundary must not look identical to one that has
@@ -718,7 +729,7 @@ class TestFinalizeRecoveryBoundary:
         result = FinalizeStage().run(ctx)
 
         # The four good ones landed and their sources are gone.
-        landed = list(ctx.config.alac_library.rglob("*.m4a"))
+        landed = list(ctx.config.alac_archive.rglob("*.m4a"))
         assert len(landed) == 4, f"expected 4 finalized, got {[p.name for p in landed]}"
         assert not any(p.exists() for p in good)
 

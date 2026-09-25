@@ -68,9 +68,16 @@ def _gen_audio(path: Path, freq: int = 440) -> None:
 def _make_finalized_row(ctx: RunContext, relpath: str, audio_hash_val: str = "hash123") -> Path:
     """Create a real file directly at its ALAC-Library location, with a
     matching finalized archive row AND a matching persistent hash-index
-    entry -- the fully-consistent state Audit should approve."""
+    entry -- the fully-consistent state Audit should approve.
+
+    Since 2026-09-25 "fully consistent" includes the master: a library copy
+    has its master at the same relative path under ALAC-Archival, the
+    convention every edition builds from."""
     path = ctx.alac_library / relpath
     _gen_audio(path)
+    master = ctx.config.alac_archive / relpath
+    master.parent.mkdir(parents=True, exist_ok=True)
+    master.write_bytes(path.read_bytes())
     upsert_archive(
         ctx.conn,
         {
@@ -277,3 +284,14 @@ class TestAuditReadOnly:
 
         assert dry_result.success == run_result.success
         assert dry_result.files_errored == run_result.files_errored
+
+
+class TestAuditMasters:
+    def test_a_library_copy_without_its_master_is_a_problem(self, ctx):
+        """The old library ended with 390 library copies whose master had
+        been left behind by a move; nothing flagged them. Audit now does."""
+        path = _make_finalized_row(ctx, "Artist/Album/Track.m4a")
+        (ctx.config.alac_archive / path.relative_to(ctx.alac_library)).unlink()
+        result = AuditStage().execute(ctx)
+        assert result.success is False
+        assert any("has no master" in e for e in result.errors)

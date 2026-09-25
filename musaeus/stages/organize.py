@@ -488,6 +488,24 @@ def unique_path(target: Path) -> Path:
         counter += 1
 
 
+def _is_collision_name_for(current: Path, candidate: Path) -> bool:
+    """True when `current` is "<candidate stem> (N)<ext>" beside `candidate`,
+    and `candidate` itself is taken -- i.e. unique_path() already gave this
+    file its name. Without this, organize asked unique_path again, which saw
+    both the taken name AND the file's own " (2)" as taken and answered
+    " (3)"; next run " (2)" was free again. Every collision-named file flipped
+    between the two on every run (R2), and each flip freed a path.
+
+    Plain string checks: bracket regexes belong to musaeus.brackets only.
+    """
+    if current.parent != candidate.parent or current.suffix != candidate.suffix:
+        return False
+    stem, base = current.stem, candidate.stem
+    if not (stem.startswith(base + " (") and stem.endswith(")")):
+        return False
+    return stem[len(base) + 2 : -1].isdigit() and candidate.exists()
+
+
 # ── Stage ──────────────────────────────────────────────────────────────────────
 
 
@@ -580,6 +598,37 @@ class OrganizeStage(BaseStage):
             )
         return roots
 
+    @staticmethod
+    def _master_move(
+        ctx: RunContext, current: Path, target: Path
+    ) -> tuple[Path | None, Path | None]:
+        """(master now, master after) for a library copy that is moving, or
+        (None, None) when the file has no master at its mirrored path."""
+        cfg = getattr(ctx, "config", None)
+        lib = getattr(cfg, "alac_library", None) if cfg is not None else None
+        arch = getattr(cfg, "alac_archive", None) if cfg is not None else None
+        if lib is None or arch is None:
+            return None, None
+        try:
+            rel_now, rel_after = current.relative_to(lib), target.relative_to(lib)
+        except ValueError:
+            return None, None
+        master = Path(arch) / rel_now
+        if not master.is_file():
+            return None, None
+        return master, Path(arch) / rel_after
+
+    @staticmethod
+    def _follow_master_path(ctx: RunContext, old: Path, new: Path) -> None:
+        """The master's bit-rot baseline is keyed by path; it follows the file."""
+        if ctx.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='archive_tier_hashes'"
+        ).fetchone():
+            ctx.conn.execute(
+                "UPDATE OR REPLACE archive_tier_hashes SET path = ? WHERE path = ?",
+                (str(new), str(old)),
+            )
+
     def _apply_rename(
         self,
         ctx: RunContext,
@@ -593,13 +642,35 @@ class OrganizeStage(BaseStage):
         (e.g. a stale row already holds the target path), the filesystem
         rename is reverted so disk and DB never drift out of sync. Returns
         False so the caller can skip this row and keep processing the rest.
+
+        A library copy's MASTER moves with it. Every edition finds its master
+        at the same relative path under ALAC-Archival (master_path_for), so a
+        library file moved alone orphans its master -- which is how the old
+        library came to hold 390 rows with no master. The master's content is
+        never touched; only its path follows its copy's.
         """
+        master_from, master_to = self._master_move(ctx, current_path, target_path)
+        if master_to is not None and master_to.exists():
+            logger.error("[organize] master already at %s; not moving %s", master_to, current_path)
+            return False
         current_path.rename(target_path)
+        if master_from is not None:
+            try:
+                master_to.parent.mkdir(parents=True, exist_ok=True)
+                master_from.rename(master_to)
+            except OSError as exc:
+                logger.error(
+                    "[organize] could not move master %s (%s); reverting", master_from, exc
+                )
+                target_path.rename(current_path)
+                return False
         try:
             ctx.conn.execute(
                 "UPDATE archive SET file_path = ? WHERE rowid = ?",
                 (str(target_path), row_id),
             )
+            if master_from is not None:
+                self._follow_master_path(ctx, master_from, master_to)
         except sqlite3.IntegrityError as exc:
             logger.error(
                 "[organize] DB collision for %s -> %s (%s); reverting move",
@@ -609,6 +680,8 @@ class OrganizeStage(BaseStage):
             )
             try:
                 target_path.rename(current_path)
+                if master_from is not None:
+                    master_to.rename(master_from)
             except OSError as revert_exc:
                 logger.error(
                     "[organize] COULD NOT REVERT %s -- disk/DB now out of "
@@ -738,8 +811,10 @@ class OrganizeStage(BaseStage):
             # would wrongly see that as "taken" and bump to " (2)".  Only
             # run collision-avoidance when the file is actually moving
             # somewhere new.
-            if candidate_path == current_path:
-                target_path = candidate_path
+            if candidate_path == current_path or _is_collision_name_for(
+                current_path, candidate_path
+            ):
+                target_path = current_path
             else:
                 target_path = unique_path(candidate_path)
 

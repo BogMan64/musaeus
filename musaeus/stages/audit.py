@@ -223,6 +223,34 @@ class AuditStage(BaseStage):
                 f"all {len(disk_files)} file(s) in ALAC-Library have a matching finalized row"
             )
 
+        # ── Check 2b: every baked library copy has its master
+        #
+        # The convention every edition relies on: archive.file_path is the
+        # ALAC_Library copy and its master sits at the same relative path
+        # under ALAC-Archival (editions.master_path_for). A library copy moved
+        # without its master leaves an edition nothing lossless to build from
+        # -- the old library ended with 390 such rows, and nothing reported
+        # them until doctor's editions check existed. Since 2026-09-25 a run
+        # creates masters itself (Finalize -> LibraryBake), so a missing one
+        # is a fault of this run or a later move, and the gate says so.
+        lib_root, arch_root = ctx.alac_library, ctx.config.alac_archive
+        orphaned = []
+        for row in finalized_rows:
+            fp = Path(row["file_path"])
+            try:
+                rel = fp.relative_to(lib_root)
+            except ValueError:
+                continue  # a master (bake pending/failed) or a review folder
+            if fp.exists() and not (arch_root / rel).is_file():
+                orphaned.append(str(fp))
+        for fp in orphaned:
+            problems.append(
+                f"library copy has no master at its mirrored path in ALAC-Archival: {fp}"
+            )
+        in_library = sum(1 for r in finalized_rows if _is_within(Path(r["file_path"]), lib_root))
+        if in_library and not orphaned:
+            ok.append(f"all {in_library} library copies have their master in ALAC-Archival")
+
         # ── Check 3: every finalized row's hash must be in the persistent index
         #
         # Matches on audio_hash alone, not (audio_hash, file_path) -- mirroring
