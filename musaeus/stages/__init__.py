@@ -136,6 +136,7 @@ and before GenreValidate.
 """
 
 from .acousticid import AcousticIDStage
+from .acoustid_name import AcoustIDNameStage
 from .albumart import AlbumArtStage
 from .artist_consolidate import ArtistConsolidateStage
 from .audit import AuditStage
@@ -208,6 +209,7 @@ __all__ = [
     "NearDupeStage",
     "AcousticIDStage",
     "IdentityTagStage",
+    "AcoustIDNameStage",
     "TranscodeStage",
     "IntegrityStage",
     "AlbumArtStage",
@@ -286,6 +288,7 @@ ACT1_INTAKE_CORRECTION: list[type] = [
     SentinelStage,
     DenyListStage,
     ScholarStage,
+    AcoustIDNameStage,
     HealthStage,
     CorruptStage,
     AlbumArtStage,
@@ -381,6 +384,7 @@ ACT3_CANONICALIZE_FINALIZE: list[type] = [
 ENRICHMENT: list[type] = [
     EnrichStage,
     MBEnrichStage,
+    AcousticIDStage,
     # Wired 2026-08-30 at Grey's instruction; his earlier ruling was "after
     # the campaign, as a deliberate change", and the campaign is over.
     #
@@ -403,6 +407,11 @@ ENRICHMENT: list[type] = [
     # Run it deliberately -- `musaeus acousticid`, or the console's Act
     # menu -- until the remaining ~3,100 are done, then wire it back here
     # so new arrivals are fingerprinted as they land.
+    #
+    # WIRED BACK 2026-09-25 (Grey). The vault was wiped on 09-24; the library
+    # is ~630 tracks and the fingerprint ledger restores most of them, so the
+    # first pass is minutes, not hours. It stages ACOUSTIC duplicate groups
+    # (same recording, different audio), which the NEXT Act 2 resolves.
     #
     # It found 319 acoustic duplicates in that first pass: files with
     # DIFFERENT audio hashes that are the same recording, which PCM
