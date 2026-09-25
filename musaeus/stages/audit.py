@@ -167,9 +167,8 @@ class AuditStage(BaseStage):
         # masters sitting exactly where the design says they belong, and the
         # 5 real ones were buried under them.
         #
-        # OrganizeStage is right to refuse those files (organize.py's roots
-        # deliberately exclude the archive, so masters are never reshuffled).
-        # It was this expectation that was stale, not that refusal. A gate
+        # (Organize now tidies the archive too: since 2026-09-25 the row points
+        # at its master, so a genre correction must be able to refile it.) A gate
         # that fails 10,423 times for correct state is the crying-wolf half
         # of SOP 4.27, and it blocks the DB-wipe workflow it exists to guard.
         # The review queues are a legitimate final home too. Until 2026-09-20

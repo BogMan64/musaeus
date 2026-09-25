@@ -67,15 +67,19 @@ os.environ["MUSAEUS_NO_IDLE_THROTTLE"] = "1"
 # set in the ambient shell environment pytest was launched from (config.py
 # uses setdefault(), so these would otherwise survive the HOME redirect
 # above if already present before pytest started).
+#
+# EVERY MUSAEUS_ variable, not a hand-kept list. The list named 8 of the 14
+# paths config.py reads; MUSAEUS_ALAC_ARCHIVE, MUSAEUS_LIBRARIES, _CAR_LIBRARY,
+# _IPHONE_LIBRARY, _PLAYLISTS and _CURATOR_EXPORT_ROOT survived it, so a shell
+# that exported one would have pointed tests at a REAL tier -- and since
+# 2026-09-25 the pipeline writes masters into ALAC_ARCHIVE. MUSAEUS_NO_IDLE_THROTTLE
+# is this file's own setting, made just above.
+for _env_key in [
+    k for k in os.environ if k.startswith("MUSAEUS_") and k != "MUSAEUS_NO_IDLE_THROTTLE"
+]:
+    os.environ.pop(_env_key, None)
+
 for _env_key in (
-    "MUSAEUS_VAULT_ROOT",
-    "MUSAEUS_DB_PATH",
-    "MUSAEUS_INBOX",
-    "MUSAEUS_RUNS_ROOT",
-    "MUSAEUS_STAGING",
-    "MUSAEUS_QUARANTINE",
-    "MUSAEUS_META_DIR",
-    "MUSAEUS_ALAC_LIBRARY",
     "GROQ_API_KEY",
     "LASTFM_API_KEY",
     "OPENROUTER_API_KEY",

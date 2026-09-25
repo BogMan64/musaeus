@@ -488,6 +488,24 @@ def unique_path(target: Path) -> Path:
         counter += 1
 
 
+def _is_collision_name_for(current: Path, candidate: Path) -> bool:
+    """True when `current` is "<candidate stem> (N)<ext>" beside `candidate`,
+    and `candidate` itself is taken -- i.e. unique_path() already gave this
+    file its name. Without this, organize asked unique_path again, which saw
+    both the taken name AND the file's own " (2)" as taken and answered
+    " (3)"; next run " (2)" was free again. Every collision-named file flipped
+    between the two on every run (R2).
+
+    Plain string checks: bracket regexes belong to musaeus.brackets only.
+    """
+    if current.parent != candidate.parent or current.suffix != candidate.suffix:
+        return False
+    stem, base = current.stem, candidate.stem
+    if not (stem.startswith(base + " (") and stem.endswith(")")):
+        return False
+    return stem[len(base) + 2 : -1].isdigit() and candidate.exists()
+
+
 # ── Stage ──────────────────────────────────────────────────────────────────────
 
 
@@ -572,12 +590,20 @@ class OrganizeStage(BaseStage):
         `destination_root` prefers the most specific, so a finalized file
         organizes inside its own batch and stays there.
         """
-        roots = [ctx.alac_library, ctx.inbox, ctx.staging]
+        # ALAC-Archival too, since 2026-09-25: a run ends with the MASTER and
+        # the catalogue row points at it (the -18 LUFS library is an edition,
+        # built from the masters and disposable). A genre correction must be
+        # able to refile a master; excluding the archive, as this used to,
+        # would leave every master where it was first filed.
+        archive = getattr(getattr(ctx, "config", None), "alac_archive", None)
+        tiers = [ctx.alac_library] + ([Path(archive)] if archive is not None else [])
+        roots = [*tiers, ctx.inbox, ctx.staging]
         # No library yet, or unreadable: the bare roots still answer.
-        with contextlib.suppress(OSError):
-            roots.extend(
-                d for d in ctx.alac_library.iterdir() if d.is_dir() and _BATCH_DIR_RE.match(d.name)
-            )
+        for tier in tiers:
+            with contextlib.suppress(OSError):
+                roots.extend(
+                    d for d in tier.iterdir() if d.is_dir() and _BATCH_DIR_RE.match(d.name)
+                )
         return roots
 
     def _apply_rename(
@@ -738,8 +764,10 @@ class OrganizeStage(BaseStage):
             # would wrongly see that as "taken" and bump to " (2)".  Only
             # run collision-avoidance when the file is actually moving
             # somewhere new.
-            if candidate_path == current_path:
-                target_path = candidate_path
+            if candidate_path == current_path or _is_collision_name_for(
+                current_path, candidate_path
+            ):
+                target_path = current_path
             else:
                 target_path = unique_path(candidate_path)
 

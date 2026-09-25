@@ -2,13 +2,17 @@
 """
 MUSAEUS — Finalize Stage (Act 3)
 
-The last step before a file is considered done: physically moves a
-canonicalized (ALAC-in-.m4a or AAC-in-.m4a) file from the mutable INBOX
-into the canonical, trusted vault_root/ALAC-Library — Artist/Album/
-structure, matching organize.py's naming rules exactly (same
-build_track_filename/sanitize_path_component/unique_path helpers,
-imported directly rather than reimplemented, so Finalize and Organize
-can never silently disagree about what a "correct" path looks like).
+Physically moves a canonicalized (ALAC-in-.m4a or AAC-in-.m4a) file from
+the mutable INBOX into the MASTERS tier, ALAC-Archival, at
+Genre/Artist/Album/"Artist - Title" -- organize.library_relpath(), the one
+rule Organize files by too. The catalogue row points at the master from then
+on; the -18 LUFS ALAC_Library is an edition built from the masters.
+
+(This used to say ALAC-Library and "matching organize.py's naming rules
+exactly"; neither held. Grey decided 2026-08-18 that new work lands in the
+masters tier, and on 2026-09-25 that the row stays on its master -- one file
+per track -- after a review of the two-file design found five ways the pair
+drifted apart.)
 
 Why this matters (Grey's explicit design decision, 2026-08-09/10
 session): INBOX is working state, expected to trend toward empty.
@@ -390,7 +394,11 @@ class FinalizeStage(BaseStage):
             self._filing(ctx),
         )
         batch = self._batch_date(ctx)
-        base = ctx.alac_library / batch if batch else ctx.alac_library
+        # The MASTER, in ALAC-Archival (Grey 2026-08-18, confirmed 2026-09-25);
+        # the row points at it for good. The -18 LUFS ALAC_Library is an
+        # edition built from the masters, not a second file this row tracks.
+        root = ctx.config.alac_archive
+        base = root / batch if batch else root
         candidate = base / rel
 
         # Same self-is-not-a-collision guard organize.py needed: if the
