@@ -136,3 +136,48 @@ def album_title_case(text: str) -> str:
             out[i] = _cap(w)
 
     return "".join(out)
+
+
+# ── Artist names and song titles: every word capitalised ─────────────────────
+#
+# Grey, 2026-09-25, after finding "Dead Or Alive" and "Dead or Alive" as two
+# folders: "the simpler solution ... every word with a few exceptions
+# capitalised" -- for artist names and song titles. He was told that album
+# names follow album_title_case above ("i like at", 2026-09-16) and chose this
+# for artists and titles anyway, so albums are deliberately not covered here.
+#
+# It only ever RAISES a first letter. Nothing is lowercased, so every spelling
+# someone chose on purpose survives: ABBA, AC/DC, McCartney, eBay (_is_fixed).
+# The agreed exceptions:
+#
+#   after an apostrophe   "Don't", never "Don'T"; and a word that STARTS with
+#                         one ('n', 'til, 'em) is left alone entirely
+#   feat. and vs.         join two credits; not words of either name
+
+#: Left exactly as written: they join two credits rather than belong to one.
+KEEP_AS_WRITTEN = frozenset({"feat.", "feat", "ft.", "ft", "vs.", "vs"})
+
+_WHITESPACE = re.compile(r"(\s+)")
+
+
+def _every_word_cap(word: str) -> str:
+    core = word.lstrip('([{"“')
+    if not core or core[0] in "'‘’`":
+        return word
+    if core.lower().rstrip(",)]}") in KEEP_AS_WRITTEN:
+        return word
+    if _is_fixed(word):
+        return word
+    return _cap(word)
+
+
+def every_word_capitalised(text: str) -> str:
+    """Return *text* with every word starting in a capital. Idempotent.
+
+    For artist names and song titles only (see the note above). Splits on
+    whitespace, so "Bachman-Turner" and "Rock 'n' Roll" keep their inner
+    spelling, and the original spacing is reproduced exactly.
+    """
+    if not text or not text.strip():
+        return text
+    return "".join(p if not p.strip() else _every_word_cap(p) for p in _WHITESPACE.split(text))

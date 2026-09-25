@@ -352,6 +352,42 @@ def build_track_filename(artist: str, title: str, ext: str) -> str:
     return f"{stem}{ext}"
 
 
+def _filing_ruling(filing: dict[str, str] | None, artist: str | None) -> str | None:
+    """Grey's filing ruling for *artist*, found whatever its capitals.
+
+    Names are written with every word capitalised since 2026-09-25, while
+    artist_filing.tsv keeps the spelling each ruling was made under
+    ("Glenn Miller and His Orchestra"). An exact-case lookup would quietly
+    stop applying those rulings the day the capitals changed.
+    """
+    if not filing or not artist:
+        return None
+    if artist in filing:
+        return filing[artist]
+    folded = artist.casefold()
+    for tag, folder in filing.items():
+        if tag.casefold() == folded:
+            return folder
+    return None
+
+
+def _remove_emptied_dirs(start: Path, stop: Path) -> None:
+    """Remove *start* and each parent while it is empty, never *stop* or above.
+
+    A file moved to a folder whose name differs only in capitals ("Dead or
+    Alive" -> "Dead Or Alive") leaves the old folder empty, and an empty
+    artist folder in a folder-browsed library is a phantom artist. rmdir()
+    is the emptiness check: it refuses a folder that still holds anything.
+    """
+    d = start
+    while d != stop and d.is_relative_to(stop):
+        try:
+            d.rmdir()
+        except OSError:
+            return
+        d = d.parent
+
+
 def library_relpath(
     artist: str | None,
     mb_artist_name: str | None,
@@ -403,8 +439,9 @@ def library_relpath(
     # FinalizeStage alone, so finalize and organize filed the same credit in
     # different folders and organize moved every such file straight back out
     # -- R2, measured 2026-09-24: all 389 files of the first fresh batch.
-    if filing and artist and artist in filing:
-        path_artist = sort_form(filing[artist])
+    ruled = _filing_ruling(filing, artist)
+    if ruled:
+        path_artist = sort_form(ruled)
     else:
         path_artist = sort_form(folder_artist(artist or "Unknown Artist", mb_artist_name))
 
@@ -828,6 +865,7 @@ class OrganizeStage(BaseStage):
                         result.files_errored += 1
                         result.errors.append(f"{current_path.name}: DB collision, skipped")
                         continue
+                    _remove_emptied_dirs(current_path.parent, dest_root)
 
                 moved += 1
                 result.files_changed += 1

@@ -57,6 +57,7 @@ import re
 import unicodedata
 
 from ..context import RunContext, StageResult
+from ..title_case import every_word_capitalised
 from .base import BaseStage
 
 logger = logging.getLogger(__name__)
@@ -563,7 +564,21 @@ def _normalise_artist(artist: str) -> str | None:
 
     fixed = natural_form(_move_article_to_suffix(fixed))
 
+    # Every word capitalised, LAST, so nothing above can undo it (Grey,
+    # 2026-09-25; see title_case.every_word_capitalised).
+    fixed = every_word_capitalised(fixed)
+
     return fixed if fixed != artist else None
+
+
+def _normalise_title(value: str) -> str | None:
+    """A song title: the ALL-CAPS repair, then every word capitalised.
+
+    Albums keep _normalise_text_field -- their own rule, 2026-09-16.
+    """
+    fixed = _smart_title_case(value) if _is_all_caps(value) else value
+    fixed = every_word_capitalised(fixed)
+    return fixed if fixed != value else None
 
 
 def _normalise_text_field(value: str) -> str | None:
@@ -664,7 +679,7 @@ class NormalizeStage(BaseStage):
             album = row["album"] or ""
 
             new_artist = _normalise_artist(artist) if artist else None
-            new_title = _normalise_text_field(title) if title else None
+            new_title = _normalise_title(title) if title else None
             new_album = _normalise_text_field(album) if album else None
 
             if new_artist:
