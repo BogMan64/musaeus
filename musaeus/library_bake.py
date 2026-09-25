@@ -590,6 +590,23 @@ def _process_one(
 
     target = _library_path_for(source, archive_dir, library_dir)
 
+    # Never bake over a file that is already there. The final rename below
+    # replaces silently, and the DB update after it then fails on the unique
+    # file_path -- leaving ANOTHER row pointing at this master's audio.
+    # Found before it happened (2026-09-25): the fresh vault's ALAC_Library
+    # already held 389 copies with no masters, and a new master of the same
+    # song, named by the same rule, would have baked straight over one.
+    if target.exists():
+        owner = conn.execute(
+            "SELECT id FROM archive WHERE file_path = ?", (str(target),)
+        ).fetchone()
+        why = (
+            f"it is row {owner['id'] if hasattr(owner, 'keys') else owner[0]}'s library copy"
+            if owner
+            else "no row claims it (an earlier bake whose DB update failed, or a stray)"
+        )
+        return f"ERROR {source.name}: library path already taken -- {why}; not baked, master left in place: {target}"
+
     if not execute:
         return f"WOULD BAKE  {source.name} -> {target}"
 

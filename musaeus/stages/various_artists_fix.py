@@ -65,7 +65,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import shutil
 import time
 import urllib.error
 from pathlib import Path
@@ -73,6 +72,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from ..context import RunContext, StageResult
+from ..tiers import move_with_master
 from .base import BaseStage
 from .normalize import _move_article_to_suffix
 from .organize import build_track_filename, sanitize_path_component, unique_path
@@ -417,8 +417,8 @@ class VariousArtistsFixStage(BaseStage):
                     (real_artist, clean_title, str(target), row["id"]),
                 )
             try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(source), str(target))
+                # The master follows its copy (musaeus/tiers.py).
+                move_with_master(ctx.conn, ctx.config, source, target)
             except OSError as exc:
                 # Undo the row we just wrote, so neither half lands.
                 ctx.conn.rollback()

@@ -195,7 +195,8 @@ class TestTheMoveAndTheRowStayInStep:
             raise OSError("disk full")
 
         monkeypatch.setattr(_shutil, "move", boom)
-        monkeypatch.setattr("musaeus.stages.various_artists_fix.shutil.move", boom, raising=False)
+        # The stage moves through musaeus.tiers.move_with_master since 2026-09-25.
+        monkeypatch.setattr("musaeus.tiers.shutil.move", boom)
 
         VariousArtistsFixStage().run(ctx)
 

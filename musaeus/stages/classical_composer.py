@@ -49,10 +49,10 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
-import shutil
 from pathlib import Path
 
 from ..context import RunContext, StageResult
+from ..tiers import move_with_master
 from .base import BaseStage
 from .organize import build_track_filename, sanitize_path_component, unique_path
 
@@ -233,7 +233,8 @@ class ClassicalComposerStage(BaseStage):
             )
             if dst != src:
                 try:
-                    shutil.move(str(src), str(dst))
+                    # The master follows its copy (musaeus/tiers.py).
+                    move_with_master(ctx.conn, ctx.config, src, dst)
                 except OSError as exc:
                     ctx.conn.rollback()
                     result.files_errored += 1

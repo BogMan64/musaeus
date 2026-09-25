@@ -102,7 +102,12 @@ from ..safety.recovery import (
     create_checkpoint,
 )
 from .base import BaseStage
-from .organize import library_relpath, sanitize_path_component, unique_path
+from .organize import (
+    _MAX_COMPONENT_BYTES,
+    library_relpath,
+    sanitize_path_component,
+    truncate_to_bytes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +242,38 @@ def genre_folder(genre: str | None) -> str:
     """
     first = (genre or "").split(",")[0].strip()
     return sanitize_path_component(first) if first else "Unsorted"
+
+
+def _free_in_both_tiers(candidate: Path, archive_root: Path, library_root: Path) -> Path:
+    """`candidate` if neither the master nor its library copy's path is taken,
+    else the first free " (N)" -- unique_path()'s naming, checked in BOTH tiers.
+
+    A master and its -18 LUFS copy share one relative path; LibraryBakeStage
+    writes the copy to the mirror of wherever the master lands. Checking only
+    the archive would let a new master land where the library already holds a
+    different file (the fresh vault started with 389 master-less copies), and
+    the copy would then have nowhere to go.
+    """
+
+    def taken(p: Path) -> bool:
+        try:
+            mirror = library_root / p.relative_to(archive_root)
+        except ValueError:
+            mirror = None
+        return p.exists() or (mirror is not None and mirror.exists())
+
+    if not taken(candidate):
+        return candidate
+    n = 2
+    while True:
+        tag = f" ({n})"
+        budget = _MAX_COMPONENT_BYTES - len((tag + candidate.suffix).encode("utf-8"))
+        cand = candidate.with_name(
+            f"{truncate_to_bytes(candidate.stem, budget)}{tag}{candidate.suffix}"
+        )
+        if not taken(cand):
+            return cand
+        n += 1
 
 
 class FinalizeStage(BaseStage):
@@ -407,7 +444,7 @@ class FinalizeStage(BaseStage):
         # and wrongly bump it to " (2)".
         if candidate == source:
             return candidate
-        return unique_path(candidate)
+        return _free_in_both_tiers(candidate, root, ctx.alac_library)
 
     def _index_hash_before_finalizing(
         self, hash_conn: sqlite3.Connection, row: dict, target: Path

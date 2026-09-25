@@ -175,3 +175,105 @@ def test_a_collision_named_pair_does_not_flip_on_every_run(ctx):
         assert OrganizeStage().execute(ctx).files_changed == 0
     assert _paths(ctx) == before
     _assert_every_copy_has_its_master(ctx)
+
+
+def test_a_file_already_in_the_library_is_never_baked_over(ctx):
+    """The fresh vault began with 389 library copies and no masters. A new
+    master of the same song, named by the same rule, would have baked straight
+    over one: the bake's final rename replaces silently. Finalize now picks a
+    name free in BOTH tiers, so the new track becomes " (2)" in each."""
+    existing = (
+        ctx.config.alac_library
+        / "Hip Hop"
+        / "Black Eyed Peas, The"
+        / "Album"
+        / "Black Eyed Peas, The - Hey Mama.m4a"
+    )
+    _tone(existing, 330)
+    before = _sha(existing)
+    _arrive(ctx, "a.m4a", "The Black Eyed Peas", "Hey Mama", "Hip Hop", 440)
+    _act3_filing(ctx)
+    assert _sha(existing) == before, "an existing library file was overwritten"
+    (fp,) = ctx.conn.execute("SELECT file_path FROM archive").fetchone()
+    assert Path(fp).name == "Black Eyed Peas, The - Hey Mama (2).m4a"
+    _assert_every_copy_has_its_master(ctx)
+
+
+def test_the_bake_refuses_a_taken_path_and_leaves_both_files(ctx):
+    """Belt and braces: if something does already sit at the copy's path, the
+    bake reports it and touches neither file; the row keeps its master."""
+    _arrive(ctx, "a.m4a", "Dion", "Runaround Sue", "Rock", 440)
+    assert FinalizeStage().execute(ctx).success
+    (master,) = ctx.conn.execute("SELECT file_path FROM archive").fetchone()
+    stray = ctx.config.alac_library / Path(master).relative_to(ctx.config.alac_archive)
+    _tone(stray, 330)
+    before = (_sha(Path(master)), _sha(stray))
+    result = LibraryBakeStage().execute(ctx)
+    assert result.files_errored == 1 and any("already taken" in e for e in result.errors)
+    assert (_sha(Path(master)), _sha(stray)) == before
+    assert ctx.conn.execute("SELECT file_path FROM archive").fetchone()[0] == master
+
+
+class TestMoveWithMaster:
+    """classical_composer and various_artists_fix refile library copies; the
+    master must follow, or the copy is left with nothing lossless behind it."""
+
+    def _pair(self, ctx, rel="Jazz/A/Album/A - T.m4a"):
+        lib = ctx.config.alac_library / rel
+        arch = ctx.config.alac_archive / rel
+        for p, b in ((lib, b"copy"), (arch, b"master")):
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b)
+        return lib, arch
+
+    def test_the_master_follows_a_move_within_the_library(self, ctx):
+        from musaeus.tiers import move_with_master
+
+        lib, arch = self._pair(ctx)
+        ctx.conn.execute(
+            "INSERT INTO archive_tier_hashes (path, sha256) VALUES (?, 'x')", (str(arch),)
+        )
+        dst = ctx.config.alac_library / "Classical/Bach/Album/Bach - T.m4a"
+        move_with_master(ctx.conn, ctx.config, lib, dst)
+        new_master = ctx.config.alac_archive / "Classical/Bach/Album/Bach - T.m4a"
+        assert (
+            dst.read_bytes() == b"copy"
+            and new_master.read_bytes() == b"master"
+            and not arch.exists()
+        )
+        assert ctx.conn.execute("SELECT path FROM archive_tier_hashes").fetchone()[0] == str(
+            new_master
+        )
+
+    def test_leaving_the_library_leaves_the_master(self, ctx):
+        from musaeus.tiers import move_with_master
+
+        lib, arch = self._pair(ctx)
+        dst = ctx.config.vault_root / "REVIEW" / "A - T.m4a"
+        move_with_master(ctx.conn, ctx.config, lib, dst)
+        assert dst.is_file() and arch.is_file()
+
+    def test_a_taken_master_path_moves_nothing(self, ctx):
+        from musaeus.tiers import move_with_master
+
+        lib, arch = self._pair(ctx)
+        blocker = ctx.config.alac_archive / "Classical/Bach/Album/Bach - T.m4a"
+        blocker.parent.mkdir(parents=True, exist_ok=True)
+        blocker.write_bytes(b"someone else")
+        with pytest.raises(OSError):
+            move_with_master(
+                ctx.conn,
+                ctx.config,
+                lib,
+                ctx.config.alac_library / "Classical/Bach/Album/Bach - T.m4a",
+            )
+        assert lib.read_bytes() == b"copy" and arch.read_bytes() == b"master"
+        assert blocker.read_bytes() == b"someone else"
+
+
+def test_the_stages_that_refile_library_copies_move_their_masters():
+    root = Path(__file__).resolve().parents[1] / "musaeus" / "stages"
+    for name in ("classical_composer.py", "various_artists_fix.py"):
+        assert "move_with_master(" in (root / name).read_text(), (
+            f"{name} refiles copies without their masters"
+        )
