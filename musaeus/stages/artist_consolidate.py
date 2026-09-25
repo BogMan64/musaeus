@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from ..canon import ArtistCanon
 from ..context import StageResult, elision
+from ..title_case import every_word_capitalised
 from .base import BaseStage
 
 if TYPE_CHECKING:
@@ -351,10 +352,16 @@ class ArtistConsolidateStage(BaseStage):
             logger.warning("[%s] artist canon unavailable: %s", self.NAME, exc)
             artist_canon = None  # type: ignore[assignment]
 
+        # Written in the every-word form (Grey, 2026-09-25). Normalize puts
+        # every name in that form first; a canon spelling written as-is
+        # ("Peter, Paul and Mary") would be changed by Normalize on the next
+        # run and changed back here, renaming the tracks on every Act 3.
         if artist_canon is not None:
             for row in rows:
                 raw = row["artist"]
                 canonical = artist_canon.resolve_exact(raw)
+                if canonical:
+                    canonical = every_word_capitalised(canonical)
                 if canonical and canonical != raw:
                     canon_changes[raw] = canonical
 
@@ -373,8 +380,9 @@ class ArtistConsolidateStage(BaseStage):
             if len(variants) == 1:
                 continue  # No consolidation needed
 
-            # Pick canonical name (variants is already list[(name, track_count)])
-            canonical = _preferred_name(variants)
+            # Pick canonical name (variants is already list[(name, track_count)]),
+            # in the every-word form for the same reason as the canon above.
+            canonical = every_word_capitalised(_preferred_name(variants))
 
             # Map all non-canonical variants to canonical
             for variant_name, track_count in variants:
@@ -459,6 +467,8 @@ class ArtistConsolidateStage(BaseStage):
         for r in rows:
             raw = r["artist"]
             mapped = canon.resolve_exact(raw)
+            if mapped:
+                mapped = every_word_capitalised(mapped)
             if mapped and mapped != raw:
                 stale.append(f"{raw!r} should be {mapped!r}")
         if not stale:
