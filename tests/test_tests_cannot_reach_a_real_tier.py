@@ -21,3 +21,25 @@ def test_no_setting_config_reads_is_inherited_by_the_tests():
     assert len(read) >= 10, f"found only {sorted(read)} -- is the scan still reading config.py?"
     leaked = sorted(k for k in read if k in os.environ and k != "MUSAEUS_NO_IDLE_THROTTLE")
     assert not leaked, f"these reach the tests from the environment: {leaked}"
+
+
+def test_the_tests_own_switches_are_not_cleared():
+    """Clearing every MUSAEUS_ name also cleared MUSAEUS_WRITE_EVIDENCE and
+    MUSAEUS_COVERAGE_SUBPROCESS, the opt-ins REVIEW_BRIEF and pyproject.toml
+    document. conftest clears exactly what config.py reads."""
+    import sys
+
+    (conftest,) = [
+        m
+        for m in list(sys.modules.values())
+        if str(getattr(m, "__file__", "")).endswith("tests/conftest.py")
+    ]
+    assert "MUSAEUS_ALAC_ARCHIVE" in conftest._CLEARED_MUSAEUS
+    for switch in (
+        "MUSAEUS_WRITE_EVIDENCE",
+        "MUSAEUS_COVERAGE_SUBPROCESS",
+        "MUSAEUS_NO_IDLE_THROTTLE",
+    ):
+        assert switch not in conftest._CLEARED_MUSAEUS, (
+            f"{switch} would be wiped before any test reads it"
+        )

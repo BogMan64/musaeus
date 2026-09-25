@@ -28,6 +28,7 @@ an empty, disposable settings.env location instead (nothing to set).
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -68,15 +69,23 @@ os.environ["MUSAEUS_NO_IDLE_THROTTLE"] = "1"
 # uses setdefault(), so these would otherwise survive the HOME redirect
 # above if already present before pytest started).
 #
-# EVERY MUSAEUS_ variable, not a hand-kept list. The list named 8 of the 14
-# paths config.py reads; MUSAEUS_ALAC_ARCHIVE, MUSAEUS_LIBRARIES, _CAR_LIBRARY,
-# _IPHONE_LIBRARY, _PLAYLISTS and _CURATOR_EXPORT_ROOT survived it, so a shell
-# that exported one would have pointed tests at a REAL tier -- and since
-# 2026-09-25 the pipeline writes masters into ALAC_ARCHIVE. MUSAEUS_NO_IDLE_THROTTLE
-# is this file's own setting, made just above.
-for _env_key in [
-    k for k in os.environ if k.startswith("MUSAEUS_") and k != "MUSAEUS_NO_IDLE_THROTTLE"
-]:
+# Every MUSAEUS_ variable config.py READS -- taken from config.py itself, not
+# a hand-kept list. The list named 8 of the 14 paths config reads;
+# MUSAEUS_ALAC_ARCHIVE, _LIBRARIES, _CAR_LIBRARY, _IPHONE_LIBRARY, _PLAYLISTS
+# and _CURATOR_EXPORT_ROOT survived it, so a shell that exported one would have
+# pointed tests at a REAL tier -- and since 2026-09-25 finalize writes masters
+# into ALAC_ARCHIVE. Only those: the tests' own opt-in switches
+# (MUSAEUS_WRITE_EVIDENCE, MUSAEUS_COVERAGE_SUBPROCESS) are not config and must
+# reach the tests -- clearing every MUSAEUS_ name broke them.
+_CLEARED_MUSAEUS = sorted(
+    set(
+        re.findall(
+            r'"(MUSAEUS_[A-Z_]+)"',
+            (Path(__file__).resolve().parents[1] / "musaeus" / "config.py").read_text(),
+        )
+    )
+)
+for _env_key in _CLEARED_MUSAEUS:
     os.environ.pop(_env_key, None)
 
 for _env_key in (
