@@ -599,23 +599,21 @@ class OrganizeStage(BaseStage):
         return roots
 
     @staticmethod
-    def _master_move(
-        ctx: RunContext, current: Path, target: Path
-    ) -> tuple[Path | None, Path | None]:
+    def _master_move(ctx: RunContext, current: Path, target: Path) -> tuple[Path, Path] | None:
         """(master now, master after) for a library copy that is moving, or
-        (None, None) when the file has no master at its mirrored path."""
+        None when the file has no master at its mirrored path."""
         cfg = getattr(ctx, "config", None)
         lib = getattr(cfg, "alac_library", None) if cfg is not None else None
         arch = getattr(cfg, "alac_archive", None) if cfg is not None else None
         if lib is None or arch is None:
-            return None, None
+            return None
         try:
             rel_now, rel_after = current.relative_to(lib), target.relative_to(lib)
         except ValueError:
-            return None, None
+            return None
         master = Path(arch) / rel_now
         if not master.is_file():
-            return None, None
+            return None
         return master, Path(arch) / rel_after
 
     @staticmethod
@@ -649,12 +647,13 @@ class OrganizeStage(BaseStage):
         library came to hold 390 rows with no master. The master's content is
         never touched; only its path follows its copy's.
         """
-        master_from, master_to = self._master_move(ctx, current_path, target_path)
-        if master_to is not None and master_to.exists():
-            logger.error("[organize] master already at %s; not moving %s", master_to, current_path)
+        pair = self._master_move(ctx, current_path, target_path)
+        if pair is not None and pair[1].exists():
+            logger.error("[organize] master already at %s; not moving %s", pair[1], current_path)
             return False
         current_path.rename(target_path)
-        if master_from is not None:
+        if pair is not None:
+            master_from, master_to = pair
             try:
                 master_to.parent.mkdir(parents=True, exist_ok=True)
                 master_from.rename(master_to)
@@ -669,8 +668,8 @@ class OrganizeStage(BaseStage):
                 "UPDATE archive SET file_path = ? WHERE rowid = ?",
                 (str(target_path), row_id),
             )
-            if master_from is not None:
-                self._follow_master_path(ctx, master_from, master_to)
+            if pair is not None:
+                self._follow_master_path(ctx, pair[0], pair[1])
         except sqlite3.IntegrityError as exc:
             logger.error(
                 "[organize] DB collision for %s -> %s (%s); reverting move",
@@ -680,8 +679,8 @@ class OrganizeStage(BaseStage):
             )
             try:
                 target_path.rename(current_path)
-                if master_from is not None:
-                    master_to.rename(master_from)
+                if pair is not None:
+                    pair[1].rename(pair[0])
             except OSError as revert_exc:
                 logger.error(
                     "[organize] COULD NOT REVERT %s -- disk/DB now out of "

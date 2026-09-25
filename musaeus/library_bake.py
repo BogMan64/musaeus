@@ -230,7 +230,8 @@ def ffmpeg_measure_loudnorm(
     start, end = stderr.rfind("{"), stderr.rfind("}")
     if start == -1 or end == -1 or end <= start:
         raise RuntimeError(f"Could not parse loudnorm measurement for: {path}")
-    return json.loads(stderr[start : end + 1])
+    measured: dict = json.loads(stderr[start : end + 1])
+    return measured
 
 
 def build_second_pass_filter(measured: dict, target_i: str, target_tp: str, target_lra: str) -> str:
@@ -260,7 +261,8 @@ def _probe_streams(path: Path) -> dict:
     proc = _run_with_deadline(cmd, _PROBE_TIMEOUT)
     if proc.returncode != 0:
         raise RuntimeError(f"ffprobe failed on {path} ({proc.returncode}): {proc.stderr[:200]}")
-    return json.loads(proc.stdout)
+    probe: dict = json.loads(proc.stdout)
+    return probe
 
 
 def _has_attached_picture(probe: dict) -> bool:
@@ -481,8 +483,9 @@ def _unmigrated_count(conn, library_dir: Path) -> int:
     migrate_to_archive.py's own _candidate_rows(), so the two scripts
     agree on what "not yet migrated" means -- INCLUDING the exclusion
     of already-baked rows, which both gained on 2026-09-05."""
-    return conn.execute(
-        """
+    return int(
+        conn.execute(
+            """
         SELECT COUNT(*) FROM archive
          WHERE status = 'CATALOGUED'
            AND finalized_at IS NOT NULL
@@ -496,8 +499,9 @@ def _unmigrated_count(conn, library_dir: Path) -> int:
              -- belongs in the advice.
              AND (lufs_baked_at IS NULL OR lufs_baked_at = '')
         """,
-        (str(library_dir),),
-    ).fetchone()[0]
+            (str(library_dir),),
+        ).fetchone()[0]
+    )
 
 
 def _decode_gate(conn, row_id: int, source: Path, execute: bool) -> str:

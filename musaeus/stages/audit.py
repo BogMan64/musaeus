@@ -243,9 +243,9 @@ class AuditStage(BaseStage):
                 continue  # a master (bake pending/failed) or a review folder
             if fp.exists() and not (arch_root / rel).is_file():
                 orphaned.append(str(fp))
-        for fp in orphaned:
+        for copy_path in orphaned:
             problems.append(
-                f"library copy has no master at its mirrored path in ALAC-Archival: {fp}"
+                f"library copy has no master at its mirrored path in ALAC-Archival: {copy_path}"
             )
         in_library = sum(1 for r in finalized_rows if _is_within(Path(r["file_path"]), lib_root))
         if in_library and not orphaned:

@@ -48,7 +48,7 @@ def move_with_master(conn, cfg, src: Path, dst: Path) -> None:
                 raise OSError(f"a master already occupies {master_to}")
     Path(dst).parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(src), str(dst))
-    if master_from is None:
+    if master_from is None or master_to is None:
         return
     try:
         master_to.parent.mkdir(parents=True, exist_ok=True)
