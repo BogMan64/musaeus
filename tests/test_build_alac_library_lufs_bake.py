@@ -32,15 +32,10 @@ pytestmark = pytest.mark.skipif(
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT = _REPO_ROOT / "scripts" / "alac_library" / "build_alac_library.py"
 
-# Imported as a module too, so the pure functions can be tested directly
-# rather than only through a subprocess.
-import importlib.util as _ilu  # noqa: E402
-
-_spec = _ilu.spec_from_file_location("build_alac_library", _SCRIPT)
-assert _spec and _spec.loader
-_bal = _ilu.module_from_spec(_spec)
-sys.modules["build_alac_library"] = _bal
-_spec.loader.exec_module(_bal)
+# The pure functions are tested directly. They live in musaeus/library_bake.py
+# since 2026-09-25 (the pipeline's LibraryBakeStage uses them); the script at
+# _SCRIPT is now a thin entry point, still exercised as a subprocess below.
+import musaeus.library_bake as _bal  # noqa: E402
 
 
 def _script_argv(script_path: Path) -> list[str]:
