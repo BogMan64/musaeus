@@ -159,11 +159,20 @@ KEEP_AS_WRITTEN = frozenset({"feat.", "feat", "ft.", "ft", "vs.", "vs"})
 
 _WHITESPACE = re.compile(r"(\s+)")
 
+#: Dotted initials: "k.d.", "B.I.G", "U.S.A." -- two or more letter-dot pairs,
+#: a last letter optional. Written in capitals, as initials are: "K.D. Lang",
+#: like "The Notorious B.I.G" Grey kept (2026-09-25). _is_fixed alone let
+#: "k.d." through as "K.d." because it strips the dot it counts.
+_INITIALS = re.compile(r"^(?:[^\W\d_]\.){2,}[^\W\d_]?$")
+
 
 def _every_word_cap(word: str) -> str:
     core = word.lstrip('([{"“')
     if not core or core[0] in "'‘’`":
         return word
+    bare = word.strip("(){}[]\"'‘’“”,!?;:")
+    if _INITIALS.match(bare):
+        return word.replace(bare, bare.upper())
     if core.lower().rstrip(",)]}") in KEEP_AS_WRITTEN:
         return word
     if _is_fixed(word):

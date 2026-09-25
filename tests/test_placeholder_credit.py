@@ -144,7 +144,14 @@ class TestArtistIsStoredInTheLibrarysForm:
         from musaeus.stages import various_artists_fix
 
         src = inspect.getsource(various_artists_fix.VariousArtistsFixStage.run)
-        assert "_move_article_to_suffix(real_artist" in src
+        # Since 2026-09-25 the artist is written through normalize.stored_artist,
+        # Normalize's own rule, which runs _move_article_to_suffix and then
+        # stores the natural form Normalize has kept since 2026-09-16. The fold
+        # still happens; it is no longer a partial copy that Normalize undoes.
+        assert "stored_artist(real_artist" in src
+        from musaeus.stages.normalize import stored_artist
+
+        assert stored_artist("Revels (the)") == stored_artist("The Revels") == "The Revels"
 
 
 class TestTheMoveAndTheRowStayInStep:

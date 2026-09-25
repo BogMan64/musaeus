@@ -581,6 +581,24 @@ def _normalise_title(value: str) -> str | None:
     return fixed if fixed != value else None
 
 
+def stored_artist(name: str) -> str:
+    """An artist name exactly as Normalize stores it.
+
+    The ONE final form. Every step that writes archive.artist -- the canon
+    pass, consolidation, the Various Artists fix, the composer step -- writes
+    this, or Normalize changes it on the next run and that step changes it
+    back. A partial copy of the rule is not enough: each one that applied
+    only the every-word capitals still fought Normalize over protected
+    spellings ("WALK THE MOON") and the ALL-CAPS repair (cloud review of #38).
+    """
+    return (_normalise_artist(name) or name) if name else name
+
+
+def stored_title(title: str) -> str:
+    """A song title exactly as Normalize stores it. See stored_artist."""
+    return (_normalise_title(title) or title) if title else title
+
+
 def _normalise_text_field(value: str) -> str | None:
     """
     Normalise a title or album field.
@@ -634,13 +652,25 @@ class NormalizeStage(BaseStage):
             again = _normalise_artist(r["artist"])
             if again is not None and again != r["artist"]:
                 unstable.append((r["artist"], again))
+        problems = []
         if unstable:
             shown = ", ".join(f"{a!r}→{b!r}" for a, b in unstable[:3])
-            return [
+            problems.append(
                 f"{len(unstable)} stored artist name(s) would still change if normalized "
                 f"again, after normalize claimed {result.files_changed} change(s): {shown}"
-            ]
-        return []
+            )
+        # Titles too, since this stage rewrites them (2026-09-25).
+        titles = ctx.conn.execute(
+            "SELECT DISTINCT title FROM archive "
+            "WHERE status='CATALOGUED' AND title IS NOT NULL AND trim(title)!=''"
+        ).fetchall()
+        loose = [(r["title"], t) for r in titles if (t := _normalise_title(r["title"])) is not None]
+        if loose:
+            shown = ", ".join(f"{a!r}→{b!r}" for a, b in loose[:3])
+            problems.append(
+                f"{len(loose)} stored title(s) would still change if normalized again: {shown}"
+            )
+        return problems
 
     # ── Validate ──────────────────────────────────────────────────────────────
 

@@ -737,7 +737,7 @@ class DupeResolverStage(BaseStage):
             # (2026-09-25: four of them from one Act 2). Up to, never including,
             # the root the file lived under.
             for root in self._roots(ctx):
-                if source.is_relative_to(root):
+                if source.resolve().is_relative_to(root.resolve()):
                     _remove_emptied_dirs(source.parent, root)
                     break
 

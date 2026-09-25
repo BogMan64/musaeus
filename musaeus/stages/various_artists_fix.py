@@ -72,12 +72,10 @@ from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from ..artist_form import natural_form
 from ..context import RunContext, StageResult
 from ..filing import load as filing_load
-from ..title_case import every_word_capitalised
 from .base import BaseStage
-from .normalize import _move_article_to_suffix
+from .normalize import _move_article_to_suffix, stored_artist, stored_title
 from .organize import _is_collision_name_for, library_relpath, unique_path
 
 logger = logging.getLogger(__name__)
@@ -395,16 +393,15 @@ class VariousArtistsFixStage(BaseStage):
                 result.files_skipped += 1
                 continue
 
-            # The library stores "Revels, The", not "The Revels" -- 361 artists
-            # use the suffix form. Writing the natural form recovered from the
-            # filename splits an artist in two, which is what happened to The
-            # Revels and The Tornadoes on 2026-08-24 before this was added.
-            real_artist = _move_article_to_suffix(real_artist.strip())
+            # The leading credit is stripped with the artist AS RECOVERED, before
+            # either is converted: "DEAD OR ALIVE - LOVER COME BACK TO ME" no
+            # longer starts with "Dead Or Alive". Both are then stored exactly
+            # as Normalize stores them (normalize.stored_artist/stored_title),
+            # or the next Normalize renames the track (cloud review of #38).
+            real_artist = real_artist.strip()
             clean_title = strip_leading_credit(row.get("title") or "", real_artist)
-            # Every word capitalised, as Normalize writes them (Grey,
-            # 2026-09-25) -- otherwise the next Normalize renames the track.
-            real_artist = every_word_capitalised(natural_form(real_artist))
-            clean_title = every_word_capitalised(clean_title)
+            real_artist = stored_artist(real_artist)
+            clean_title = stored_title(clean_title)
             new_genre = self._genre_from_library(ctx, real_artist)
             target = self._target_path(
                 ctx,
