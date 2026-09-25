@@ -209,17 +209,23 @@ class AuditStage(BaseStage):
         ):
             ok.append(f"all {len(finalized_rows)} finalized row(s) verified present on disk")
 
-        # ── Check 2: disk has a file in ALAC-Library -> DB must know about it
-        disk_files = _scan_alac_library_files(ctx.alac_library)
+        # ── Check 2: a file in either final tier -> DB must know about it
+        #
+        # Both tiers since 2026-09-25: finalize files MASTERS into ALAC-Archival
+        # and the row points there. Scanning ALAC-Library alone left an
+        # orphaned master invisible to the gate that guards the DB wipe.
+        disk_files = _scan_alac_library_files(ctx.alac_library) | _scan_alac_library_files(
+            ctx.config.alac_archive
+        )
         orphans = disk_files - db_side_paths
         for orphan in sorted(orphans):
             problems.append(
-                f"file present in ALAC-Library with no matching finalized row: {orphan}"
+                f"file present in ALAC-Library or ALAC-Archival with no matching finalized row: {orphan}"
             )
 
         if disk_files and not orphans:
             ok.append(
-                f"all {len(disk_files)} file(s) in ALAC-Library have a matching finalized row"
+                f"all {len(disk_files)} file(s) in the library tiers have a matching finalized row"
             )
 
         # ── Check 3: every finalized row's hash must be in the persistent index

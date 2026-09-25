@@ -489,13 +489,20 @@ def unique_path(target: Path) -> Path:
 
 
 def _is_collision_name_for(current: Path, candidate: Path) -> bool:
-    """True when `current` is "<candidate stem> (N)<ext>" beside `candidate`,
-    and `candidate` itself is taken -- i.e. unique_path() already gave this
-    file its name. Without this, organize asked unique_path again, which saw
-    both the taken name AND the file's own " (2)" as taken and answered
-    " (3)"; next run " (2)" was free again. Every collision-named file flipped
-    between the two on every run (R2).
+    """True when `current` is the name unique_path() would have given a second
+    file for `candidate`: "<candidate stem> (N)<ext>" beside it, `candidate`
+    taken, AND every lower slot " (2)" ... " (N-1)" taken too -- unique_path
+    hands out the lowest free N, so a genuine collision name always sits on
+    top of a full run of lower ones.
 
+    Without this, organize asked unique_path again, which saw both the taken
+    name AND the file's own " (2)" as taken and answered " (3)"; next run
+    " (2)" was free again. Every collision-named file flipped on every run
+    (R2). The run-of-lower-slots test keeps a REAL number in a title --
+    "Song (1999)", once the title is corrected to "Song" -- from passing for
+    a collision name and never being renamed.
+
+    FinalizeStage uses this too, so the two stages share one collision rule.
     Plain string checks: bracket regexes belong to musaeus.brackets only.
     """
     if current.parent != candidate.parent or current.suffix != candidate.suffix:
@@ -503,7 +510,13 @@ def _is_collision_name_for(current: Path, candidate: Path) -> bool:
     stem, base = current.stem, candidate.stem
     if not (stem.startswith(base + " (") and stem.endswith(")")):
         return False
-    return stem[len(base) + 2 : -1].isdigit() and candidate.exists()
+    digits = stem[len(base) + 2 : -1]
+    if not digits.isdigit() or int(digits) < 2 or not candidate.exists():
+        return False
+    return all(
+        candidate.with_name(f"{base} ({k}){candidate.suffix}").exists()
+        for k in range(2, int(digits))
+    )
 
 
 # ── Stage ──────────────────────────────────────────────────────────────────────
