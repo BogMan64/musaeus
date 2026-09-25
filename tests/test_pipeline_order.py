@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from musaeus.stages import DEFAULT_PIPELINE
 from musaeus.stages.acousticid import AcousticIDStage
+from musaeus.stages.acoustid_name import AcoustIDNameStage
 from musaeus.stages.albumart import AlbumArtStage
 from musaeus.stages.artist_consolidate import ArtistConsolidateStage
 from musaeus.stages.audit import AuditStage
@@ -107,11 +108,11 @@ def test_enrichment_is_default_on_and_positioned_last():
     assert _index(AuditStage) < _index(EnrichStage)
 
     # Within the block, order is a dependency chain, not a preference.
-    assert AcousticIDStage not in DEFAULT_PIPELINE, (
-        "AcoustID is deferred: its first run is a full-library fingerprint "
-        "migration that held the write lock for 21 hours. Re-wire it only "
-        "once the backlog is fingerprinted."
-    )
+    # AcoustID came back on 2026-09-25 (Grey): the vault was wiped on 09-24,
+    # so the "full-library migration" it was deferred for is ~630 tracks,
+    # most restored from the fingerprint ledger. After MBEnrich -- it asks
+    # about what text could not settle -- and before IdentityTag.
+    assert _index(MBEnrichStage) < _index(AcousticIDStage) < _index(IdentityTagStage)
     assert _index(MBEnrichStage) < _index(IdentityTagStage), (
         "identity is written to the files last, after everything that "
         "resolves it -- otherwise it writes what the run is about to learn"
@@ -129,6 +130,9 @@ def test_full_default_pipeline_order_matches_current_design():
         # about to be refused. Added 2026-08-24.
         DenyListStage,
         ScholarStage,
+        # Right after Scholar, 2026-09-25: a file with no tags and no usable
+        # file name is named by its sound before anything reads the name.
+        AcoustIDNameStage,
         HealthStage,
         CorruptStage,
         AlbumArtStage,
@@ -175,9 +179,9 @@ def test_full_default_pipeline_order_matches_current_design():
         AuditStage,
         EnrichStage,
         MBEnrichStage,
-        # AcousticIDStage deferred out 2026-08-31 -- its first run is a
-        # full-library fingerprint migration, not a per-run cost. See
-        # stages/__init__.py.
+        # Deferred 2026-08-31 (a 21-hour first pass over 10,656 files), back
+        # 2026-09-25 on the wiped vault. See stages/__init__.py.
+        AcousticIDStage,
         IdentityTagStage,
     ]
     assert expected == DEFAULT_PIPELINE

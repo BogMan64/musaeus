@@ -48,7 +48,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
-from ..context import RunContext, StageResult
+from ..context import RunContext, StageResult, elision
 from ..db import ensure_columns
 from ..network_policy import check as _network_check
 from .base import BaseStage, StageError
@@ -218,19 +218,14 @@ def _pick_matching_recording(
     return best
 
 
-def _acousticid_lookup(
-    fingerprint: str,
-    duration: float,
-    api_key: str,
-    want_artist: str = "",
-    want_title: str = "",
-) -> tuple[str, float] | None:
-    """
-    Query AcousticID for a recording match.
+def _acousticid_query(fingerprint: str, duration: float, api_key: str) -> list[dict]:
+    """The raw AcoustID results for one fingerprint.
 
-    Returns (recording_id, score), or None when AcousticID answered and had
-    no match scoring >= 0.80. Raises LookupUnavailable when no answer was
-    obtained at all -- never conflate the two.
+    Raises LookupUnavailable when no answer was obtained at all -- a timeout,
+    a refusal by the network gateway, HTTP errors, or a reply that is not a
+    result. An empty list is an answer: AcoustID knows nothing of this audio.
+    The one place the service is asked, for matching (_acousticid_lookup) and
+    naming (name_from_results) alike.
     """
     params = {
         "client": api_key,
@@ -267,8 +262,88 @@ def _acousticid_lookup(
         # The service replied but not with a result. "error" is not "no
         # such recording", so it must not settle the row.
         raise LookupUnavailable(f"status={data.get('status')!r}")
+    return list(data.get("results", []))
 
-    results = data.get("results", [])
+
+#: Naming needs more than confirming. 0.80 is enough to agree that a file
+#: already named "X - Y" is recording X - Y; taking a name from nothing but
+#: the sound needs a stronger match.
+NAMING_MIN_SCORE = 0.90
+
+
+def _credit(artists: list[dict]) -> str:
+    """An artist credit from AcoustID's artist list, with its join phrases."""
+    parts = []
+    for i, a in enumerate(artists):
+        name = (a.get("name") or "").strip()
+        if not name:
+            continue
+        parts.append(name)
+        if i < len(artists) - 1:
+            parts.append(a.get("joinphrase") or " & ")
+    return "".join(parts).strip()
+
+
+def name_from_results(
+    results: list[dict], title_hint: str, min_score: float = NAMING_MIN_SCORE
+) -> tuple[str, str, float] | None:
+    """(artist, title, score) for an untagged file, or None -- refusing beats guessing.
+
+    Each AcoustID result (one fingerprint cluster) is judged on its own,
+    strongest first. A name is taken from the first result in which a
+    recording's title agrees with what the file name still says (title_hint)
+    AND every agreeing recording names the same artist. A cluster's order
+    means nothing and a cluster is often polluted (see _acousticid_lookup), so
+    neither the first recording nor the majority is trusted: a result whose
+    agreeing recordings disagree about the artist -- covers, a member's solo
+    re-recording -- is passed over, never settled.
+
+    Per result, not pooled: measured against the live service 2026-09-25, the
+    pooled rule refused "T.N.T" (AC/DC alone at 0.973; a second result mixed
+    in two cover bands) and "Come And Get It" (Badfinger alone at 0.924).
+    """
+    hint = _norm_for_match(title_hint)
+    if not hint:
+        return None
+    ranked = sorted(results, key=lambda r: float(r.get("score", 0)), reverse=True)
+    for r in ranked:
+        score = float(r.get("score", 0))
+        if score < min_score:
+            break
+        agreeing: list[tuple[str, str]] = []
+        for rec in r.get("recordings", []) or []:
+            title = (rec.get("title") or "").strip()
+            rt = _norm_for_match(title)
+            if not rt or (rt not in hint and hint not in rt):
+                continue
+            artist = _credit(rec.get("artists") or [])
+            if artist:
+                agreeing.append((artist, title))
+        if not agreeing or len({_norm_for_match(a) for a, _t in agreeing}) != 1:
+            continue
+        # The recording whose title IS the hint, if there is one; otherwise what
+        # the file name said -- not a longer variant ("Yesterday - Remastered").
+        exact = [x for x in agreeing if _norm_for_match(x[1]) == hint]
+        artist, title = (exact or agreeing)[0]
+        return artist, (title if exact else title_hint), score
+    return None
+
+
+def _acousticid_lookup(
+    fingerprint: str,
+    duration: float,
+    api_key: str,
+    want_artist: str = "",
+    want_title: str = "",
+) -> tuple[str, float] | None:
+    """
+    Query AcousticID for a recording match.
+
+    Returns (recording_id, score), or None when AcousticID answered and had
+    no match scoring >= 0.80. Raises LookupUnavailable when no answer was
+    obtained at all -- never conflate the two.
+    """
+    results = _acousticid_query(fingerprint, duration, api_key)
     for r in results:
         score = float(r.get("score", 0))
         if score < 0.80:
@@ -505,6 +580,7 @@ class AcousticIDStage(BaseStage):
         unavailable = 0
         reused = 0
         dupes_found = 0
+        pairs: list[tuple[str, str]] = []
 
         from datetime import datetime, timezone
 
@@ -689,6 +765,7 @@ class AcousticIDStage(BaseStage):
                             )
                             continue
                         dupes_found += 1
+                        pairs.append((Path(other_fp).name, Path(fp).name))
                         group_id = f"acoustic_{uuid.uuid4().hex[:8]}"
                         logger.info(
                             "[acousticid] DUPE  %s  ==  %s  (recording=%s)",
@@ -717,7 +794,7 @@ class AcousticIDStage(BaseStage):
                                     INSERT OR IGNORE INTO duplicates
                                         (group_id, file_path, duplicate_type,
                                          confidence, status, run_id, staged_at, audio_hash)
-                                    VALUES (?, ?, 'ACOUSTIC', ?, 'pending', ?, ?,
+                                    VALUES (?, ?, 'ACOUSTIC', ?, 'review', ?, ?,
                                             (SELECT audio_hash FROM archive WHERE file_path = ?))
                                     """,
                                     (group_id, member, score, ctx.run_id, now, member),
@@ -761,7 +838,20 @@ class AcousticIDStage(BaseStage):
                 "later run with a key still asks about them."
             )
         if dupes_found:
-            result.notes.append(f"{dupes_found} acoustic duplicate(s) staged → `musaeus dedupe`")
+            # Status 'review', not 'pending': DupeResolver acts on every pending
+            # group, and these are Grey's to decide (2026-09-25, choice (b)). A
+            # radio edit or an extended mix can be the same recording to
+            # AcoustID and still a different track to keep. So they are listed
+            # here, by name, and nothing moves them.
+            result.notes.append(
+                f"{dupes_found} same-recording pair(s) for you to decide -- nothing moved:"
+            )
+            for a, b in pairs[:10]:
+                result.notes.append(f"    {a}  ==  {b}")
+            if len(pairs) > 10:
+                result.notes.append(
+                    "    " + elision(len(pairs) - 10, suffix="(duplicates table, status 'review')")
+                )
 
         ctx.record_stage(result)
         return result

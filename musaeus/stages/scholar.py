@@ -174,6 +174,29 @@ _COLLISION_RE = re.compile(r" \((?:[2-9]|[1-9]\d)\)$")
 _PLACEHOLDERS = frozenset({"unknown artist", "unknown title", "unknown"})
 
 
+def _clean_stem(path: Path) -> str:
+    """The file name with track numbers and a collision suffix taken off."""
+    stem = strip_track_number_prefix(_POSITION_RE.sub("", path.stem))
+    return _COLLISION_RE.sub("", stem).strip()
+
+
+def title_hint(path: Path) -> str | None:
+    """What the file name still says about the title, or None.
+
+    For a file _name_from_file could not name: "03 - Yesterday" -> "Yesterday".
+    acoustid_name.py only accepts an AcoustID recording that agrees with it,
+    because an AcoustID result is a cluster of recordings in no meaningful
+    order, often polluted. No hint -- an empty or all-digit stem, or the
+    pipeline's own placeholder -- means no name is taken at all.
+    """
+    stem = _clean_stem(path)
+    if " - " in stem:
+        stem = stem.partition(" - ")[2].strip()
+    if not stem or stem.isdigit() or stem.casefold() in _PLACEHOLDERS:
+        return None
+    return stem
+
+
 def _name_from_file(path: Path) -> tuple[str | None, str | None]:
     """(artist, title) from an "Artist - Title" file name, or (None, None).
 
@@ -182,8 +205,7 @@ def _name_from_file(path: Path) -> tuple[str | None, str | None]:
     though their names said exactly what they were). Splits on the FIRST
     " - " only, so "Dion - Runaround Sue - Live" keeps " - Live" in the title.
     """
-    stem = strip_track_number_prefix(_POSITION_RE.sub("", path.stem))
-    stem = _COLLISION_RE.sub("", stem).strip()
+    stem = _clean_stem(path)
     artist, sep, title = stem.partition(" - ")
     artist, title = artist.strip(), title.strip()
     if not sep or not artist or not title:
