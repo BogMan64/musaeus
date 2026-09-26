@@ -1,7 +1,7 @@
 """
 Tests for SentinelStage — Stage 2: Hash files and detect exact duplicates.
 
-Mocks audio_hash_safe and file_hash to avoid needing ffmpeg installed.
+Mocks audio_hash_checked and file_hash to avoid needing ffmpeg installed.
 """
 
 import csv
@@ -110,7 +110,7 @@ class TestSentinelDryRun:
 
 
 class TestSentinelRun:
-    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.audio_hash_checked")
     @patch("musaeus.stages.sentinel.file_hash")
     def test_hashes_pending_file(self, mock_fh, mock_ah, ctx, tmp_path):
         # Create a real file so Path.exists() passes
@@ -119,7 +119,7 @@ class TestSentinelRun:
         _insert_pending(ctx, str(track))
 
         mock_fh.return_value = "f" * 64
-        mock_ah.return_value = ("a" * 64, None)
+        mock_ah.return_value = ("a" * 64, None, "")
 
         stage = SentinelStage()
         result = stage.execute(ctx)
@@ -134,7 +134,7 @@ class TestSentinelRun:
         assert row["audio_hash"] == "a" * 64
         assert row["full_hash"] == "f" * 64
 
-    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.audio_hash_checked")
     @patch("musaeus.stages.sentinel.file_hash")
     def test_detects_exact_duplicate(self, mock_fh, mock_ah, ctx, tmp_path):
         """Two files with the same audio_hash → flagged as EXACT duplicate."""
@@ -147,7 +147,7 @@ class TestSentinelRun:
 
         shared_hash = "deadbeef" * 8
         mock_fh.return_value = "f" * 64
-        mock_ah.return_value = (shared_hash, None)
+        mock_ah.return_value = (shared_hash, None, "")
 
         stage = SentinelStage()
         result = stage.execute(ctx)
@@ -157,7 +157,7 @@ class TestSentinelRun:
         assert len(dupes) >= 2
         assert all(d["duplicate_type"] == "EXACT" for d in dupes)
 
-    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.audio_hash_checked")
     @patch("musaeus.stages.sentinel.file_hash")
     def test_handles_missing_file(self, mock_fh, mock_ah, ctx, tmp_path):
         """File removed between ingest and sentinel → errored."""
@@ -169,7 +169,7 @@ class TestSentinelRun:
         assert result.files_errored == 1
         assert any("Missing" in e for e in result.errors)
 
-    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.audio_hash_checked")
     @patch("musaeus.stages.sentinel.file_hash")
     def test_audio_hash_failure(self, mock_fh, mock_ah, ctx, tmp_path):
         """If audio_hash fails, full_hash is stored and file stays non-HASHED."""
@@ -178,7 +178,7 @@ class TestSentinelRun:
         _insert_pending(ctx, str(track))
 
         mock_fh.return_value = "f" * 64
-        mock_ah.return_value = (None, "ffmpeg not found")
+        mock_ah.return_value = (None, "ffmpeg not found", "")
 
         stage = SentinelStage()
         result = stage.execute(ctx)
@@ -193,7 +193,7 @@ class TestSentinelRun:
         # Status should NOT have advanced to HASHED since audio hash failed
         assert row["status"] != "HASHED"
 
-    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.audio_hash_checked")
     @patch("musaeus.stages.sentinel.file_hash")
     def test_events_logged(self, mock_fh, mock_ah, ctx, tmp_path):
         track = tmp_path / "song.flac"
@@ -201,7 +201,7 @@ class TestSentinelRun:
         _insert_pending(ctx, str(track))
 
         mock_fh.return_value = "f" * 64
-        mock_ah.return_value = ("a" * 64, None)
+        mock_ah.return_value = ("a" * 64, None, "")
 
         SentinelStage().execute(ctx)
 
@@ -265,7 +265,7 @@ class TestSentinelHelpers:
 
 
 class TestMissingFileIsGhostedNotDeleted:
-    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.audio_hash_checked")
     @patch("musaeus.stages.sentinel.file_hash")
     def test_the_row_survives_as_ghost(self, mock_fh, mock_ah, ctx, tmp_path):
         gone = str(tmp_path / "gone.flac")
@@ -277,7 +277,7 @@ class TestMissingFileIsGhostedNotDeleted:
         assert row is not None, "the row was DELETED; it must be marked instead"
         assert row["status"] == "GHOST"
 
-    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.audio_hash_checked")
     @patch("musaeus.stages.sentinel.file_hash")
     def test_a_ghost_found_event_is_logged(self, mock_fh, mock_ah, ctx, tmp_path):
         gone = str(tmp_path / "gone.flac")
@@ -294,7 +294,7 @@ class TestMissingFileIsGhostedNotDeleted:
 
 
 class TestPhantomsAreNotDuplicateTargets:
-    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.audio_hash_checked")
     @patch("musaeus.stages.sentinel.file_hash")
     def test_a_ghost_row_is_not_matched_as_a_duplicate(self, mock_fh, mock_ah, ctx, tmp_path):
         """A new file must not be quarantined against a row whose file is gone."""
@@ -309,7 +309,7 @@ class TestPhantomsAreNotDuplicateTargets:
         ctx.conn.commit()
 
         mock_fh.return_value = "f" * 64
-        mock_ah.return_value = (shared, None)
+        mock_ah.return_value = (shared, None, "")
 
         SentinelStage().execute(ctx)
 
@@ -318,7 +318,7 @@ class TestPhantomsAreNotDuplicateTargets:
         ).fetchone()["c"]
         assert dupes == 0, "matched against a phantom"
 
-    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.audio_hash_checked")
     @patch("musaeus.stages.sentinel.file_hash")
     def test_a_quarantined_row_is_not_matched_though_its_file_exists(
         self, mock_fh, mock_ah, ctx, tmp_path
@@ -343,7 +343,7 @@ class TestPhantomsAreNotDuplicateTargets:
         ctx.conn.commit()
 
         mock_fh.return_value = "f" * 64
-        mock_ah.return_value = (shared, None)
+        mock_ah.return_value = (shared, None, "")
 
         SentinelStage().execute(ctx)
 
@@ -352,7 +352,7 @@ class TestPhantomsAreNotDuplicateTargets:
         ).fetchone()["c"]
         assert dupes == 0, "matched against a quarantined row that is still on disk"
 
-    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.audio_hash_checked")
     @patch("musaeus.stages.sentinel.file_hash")
     def test_a_row_whose_file_vanished_is_not_matched_either(self, mock_fh, mock_ah, ctx, tmp_path):
         """Status says live, disk says gone. The disk is the true answer."""
@@ -367,7 +367,7 @@ class TestPhantomsAreNotDuplicateTargets:
         ctx.conn.commit()
 
         mock_fh.return_value = "f" * 64
-        mock_ah.return_value = (shared, None)
+        mock_ah.return_value = (shared, None, "")
 
         SentinelStage().execute(ctx)
 
@@ -376,7 +376,7 @@ class TestPhantomsAreNotDuplicateTargets:
         ).fetchone()["c"]
         assert dupes == 0, "status was trusted over the filesystem"
 
-    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.audio_hash_checked")
     @patch("musaeus.stages.sentinel.file_hash")
     def test_a_genuine_live_duplicate_is_still_caught(self, mock_fh, mock_ah, ctx, tmp_path):
         """The guard must not suppress real duplicates."""
@@ -393,7 +393,7 @@ class TestPhantomsAreNotDuplicateTargets:
         ctx.conn.commit()
 
         mock_fh.return_value = "f" * 64
-        mock_ah.return_value = (shared, None)
+        mock_ah.return_value = (shared, None, "")
 
         SentinelStage().execute(ctx)
 
@@ -416,7 +416,7 @@ class TestPhantomsAreNotDuplicateTargets:
 
 
 class TestReHashingDoesNotDemote:
-    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.audio_hash_checked")
     @patch("musaeus.stages.sentinel.file_hash")
     def test_a_finalized_catalogued_row_keeps_its_status(self, mock_fh, mock_ah, ctx, tmp_path):
         track = tmp_path / "finalized.flac"
@@ -428,7 +428,7 @@ class TestReHashingDoesNotDemote:
         )
         ctx.conn.commit()
         mock_fh.return_value = "f" * 64
-        mock_ah.return_value = ("a" * 64, None)
+        mock_ah.return_value = ("a" * 64, None, "")
 
         SentinelStage().execute(ctx)
 
@@ -438,7 +438,7 @@ class TestReHashingDoesNotDemote:
         assert row["status"] == "CATALOGUED", "re-hashing demoted a finalized row"
         assert row["audio_hash"] == "a" * 64, "the hash must still be updated"
 
-    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.audio_hash_checked")
     @patch("musaeus.stages.sentinel.file_hash")
     def test_a_pending_row_still_advances_to_hashed(self, mock_fh, mock_ah, ctx, tmp_path):
         """The guard must not stop a new file progressing."""
@@ -446,7 +446,7 @@ class TestReHashingDoesNotDemote:
         track.write_bytes(b"AUDIO")
         _insert_pending(ctx, str(track))
         mock_fh.return_value = "f" * 64
-        mock_ah.return_value = ("b" * 64, None)
+        mock_ah.return_value = ("b" * 64, None, "")
 
         SentinelStage().execute(ctx)
 
@@ -455,7 +455,7 @@ class TestReHashingDoesNotDemote:
         ).fetchone()
         assert row["status"] == "HASHED"
 
-    @patch("musaeus.stages.sentinel.audio_hash_safe")
+    @patch("musaeus.stages.sentinel.audio_hash_checked")
     @patch("musaeus.stages.sentinel.file_hash")
     def test_a_ghost_whose_file_returns_recovers(self, mock_fh, mock_ah, ctx, tmp_path):
         """The anti-demotion guard must not make GHOST a one-way door.
@@ -474,7 +474,7 @@ class TestReHashingDoesNotDemote:
         )
         ctx.conn.commit()
         mock_fh.return_value = "f" * 64
-        mock_ah.return_value = ("a" * 64, None)
+        mock_ah.return_value = ("a" * 64, None, "")
 
         SentinelStage().execute(ctx)
 
@@ -684,7 +684,7 @@ class TestAFlakyMountDoesNotBookAPurchase:
         f.write_bytes(b"x")
         _insert_pending(ctx, str(f))
         with (
-            patch("musaeus.stages.sentinel.audio_hash_safe", return_value=(None, err)),
+            patch("musaeus.stages.sentinel.audio_hash_checked", return_value=(None, err, "")),
             patch("musaeus.stages.sentinel.file_hash", return_value="a" * 64),
             patch(
                 "musaeus.stages.scholar._probe",

@@ -255,7 +255,7 @@ def _is_reissue(m: dict) -> bool:
 _ALREADY_RESOLVED: frozenset[str] = frozenset({"archive", "keep", "review"})
 
 
-def _keeper_sort_key(m: dict) -> tuple[int, int, int, int, int, int]:
+def _keeper_sort_key(m: dict) -> tuple[int, int, int, int, int, int, int]:
     """Shared ordering rule: real lossless codec beats lossy
     UNCONDITIONALLY (a bitrate/size comparison across different codecs
     isn't a fair quality comparison -- a quiet, highly-compressible FLAC
@@ -295,6 +295,10 @@ def _keeper_sort_key(m: dict) -> tuple[int, int, int, int, int, int]:
         1 if _is_reissue(m) else 0,
         1 if _is_live(m) else 0,
         -(m.get("bitrate") or 0),
+        # Equally good copies: keep the one already filed. Size decided this
+        # before, so a few bytes of tags on a new arrival swapped 79 library
+        # copies for identical ones (2026-09-25).
+        0 if m.get("finalized_at") else 1,
         -(m.get("size_bytes") or 0),
     )
 
@@ -306,7 +310,7 @@ def _get_group_members(conn, group_id: str) -> list[dict]:
         """
         SELECT d.file_path, d.duplicate_type, d.confidence, d.status AS dup_status,
                d.audio_hash AS recorded_hash, a.audio_hash AS current_hash, a.id AS current_row,
-               a.status AS current_status,
+               a.status AS current_status, a.finalized_at,
                a.artist, a.album, a.title, a.ext, a.codec, a.bitrate, a.size_bytes
           FROM duplicates d
           LEFT JOIN archive a USING (file_path)
@@ -367,7 +371,7 @@ def _get_live_exact_clusters(conn) -> list[list[dict]]:
     for row in rows:
         members = conn.execute(
             """
-            SELECT file_path, artist, album, title, ext, codec, bitrate, size_bytes
+            SELECT file_path, artist, album, title, ext, codec, bitrate, size_bytes, finalized_at
               FROM archive
              WHERE audio_hash = ? AND status = 'CATALOGUED'
             """,

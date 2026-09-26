@@ -55,4 +55,6 @@ class TestMetadataVsPathSplit:
 
     def test_smart_quotes_and_trailing_dots_still_fixed(self):
         assert sanitize_value("Smart’quote") == "Smart'quote"
-        assert sanitize_value("Trailing. ") == "Trailing"
+        # The trailing SPACE goes; a final dot is part of a name ("Run-D.M.C.")
+        # since 2026-09-26 -- only a PATH drops it (sanitize_path_component).
+        assert sanitize_value("Trailing. ") == "Trailing."

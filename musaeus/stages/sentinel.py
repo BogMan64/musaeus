@@ -26,7 +26,7 @@ from pathlib import Path
 
 from ..context import RunContext, StageResult, elision
 from ..db import upsert_archive
-from ..hasher import audio_hash_safe, file_hash
+from ..hasher import audio_hash_checked, audio_hash_safe, file_hash
 from .base import BaseStage
 
 logger = logging.getLogger(__name__)
@@ -461,8 +461,23 @@ class SentinelStage(BaseStage):
                 continue
 
             # Audio-stream hash (may fail if ffmpeg absent)
-            ah, err = audio_hash_safe(path)
+            ah, err, said = audio_hash_checked(path)
+            if not err and said:
+                # Decoded, but not cleanly: the shape of a right-sized file with
+                # damage inside the stream. It takes the undecodable route, so
+                # it gets no identity and CorruptStage's arrival gate decides
+                # (quarantine), instead of going on to become a master. Cover
+                # art is not decoded here (-vn), and the same filter the
+                # corrupt check uses drops anything that is not about audio.
+                from .corrupt import audio_relevant_stderr
+
+                damage = audio_relevant_stderr(said, 0)
+                if damage:
+                    ah, err = None, f"decodes with errors: {damage.splitlines()[0][:160]}"
             if err:
+                # Named, so the report says WHICH file (it used to show the
+                # stage's other notes as the failure).
+                result.errors.append(f"audio does not decode cleanly: {path.name}: {err[:160]}")
                 ctx.log_event(
                     "HASH_FAILED",
                     file_path=path_str,
