@@ -304,11 +304,22 @@ def audio_relevant_stderr(stderr: str, audio_index: int | None) -> str:
     testing, and it can be tested without ffmpeg or a real damaged file.
     """
     kept = []
+    dropped_last = False
     for line in (stderr or "").splitlines():
         if not line.strip():
             continue
+        # "Last message repeated N times" repeats the line before it, and
+        # shares its fate: after a cover-art error it is about the picture.
+        # Kept, it reported a broken jpeg as damaged audio (Foreigner,
+        # 2026-09-26).
+        if line.strip().startswith("Last message repeated"):
+            if not dropped_last:
+                kept.append(line)
+            continue
+        dropped_last = False
         tagged = _TAGGED_STDERR_RE.match(line)
         if tagged and tagged.group("tag").lower() in _IMAGE_DECODER_TAGS:
+            dropped_last = True
             continue
         streamed = _STREAM_DECODE_ERROR_RE.match(line) or _PACKETS_BUFFERED_RE.match(line)
         # `audio_index` is an INPUT stream index and these lines name an

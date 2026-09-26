@@ -85,6 +85,7 @@ independent of which lossy container it happened to arrive in.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -94,6 +95,7 @@ from pathlib import Path
 from ..context import RunContext, StageResult, elision
 from ..db import open_hash_index, record_finalized_hash
 from ..filing import load as filing_load
+from ..hasher import audio_hash_safe
 from ..safety.mutation import MutationBoundary, PreconditionError, UnmanagedPathError
 from ..safety.recovery import (
     JOURNAL_FILENAME,
@@ -418,6 +420,81 @@ class FinalizeStage(BaseStage):
             return source
         return unique_path(candidate)
 
+    def _moved_by_earlier_runs(self, ctx: RunContext) -> dict[str, str]:
+        """relative source -> relative destination, from earlier Finalize journals.
+
+        A Finalize interrupted after moving a file but before saving its row
+        leaves the file at its destination and the row pointing at a source
+        that no longer exists (2026-09-25: Ctrl-C in Finalize, 9 George
+        Thorogood files). The journal of that run records the move. Read
+        once per run.
+        """
+        cached: dict[str, str] | None = getattr(self, "_journal_moves", None)
+        if cached is not None:
+            return cached
+        moves: dict[str, str] = {}
+        root = Path(ctx.config.runs_root) / "recovery"
+        for journal in sorted(root.glob("finalize_*/journal.jsonl")) if root.is_dir() else []:
+            try:
+                lines = journal.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                detail = entry.get("detail") or {}
+                if entry.get("operation_kind") == "move" and detail.get("moved_to"):
+                    moves[str(detail.get("relative_path"))] = str(detail["moved_to"])
+        self._journal_moves = moves
+        return moves
+
+    def _adopt_moved(
+        self, ctx: RunContext, row: dict, source: Path, hash_conn: sqlite3.Connection
+    ) -> Path | None:
+        """Point the row at a file an interrupted Finalize already moved, or None.
+
+        Only when the journal names the destination, the file is there, no
+        other row claims it, and its AUDIO is the row's own -- a path alone is
+        not identity. Anything less stays "missing on disk" for a human.
+        """
+        vault = Path(ctx.config.vault_root)
+        try:
+            rel = str(source.relative_to(vault))
+        except ValueError:
+            return None
+        dest_rel = self._moved_by_earlier_runs(ctx).get(rel)
+        if not dest_rel:
+            return None
+        dest = vault / dest_rel
+        if not dest.is_file() or not row.get("audio_hash"):
+            return None
+        taken = ctx.conn.execute(
+            "SELECT 1 FROM archive WHERE file_path = ? AND id != ?", (str(dest), row["id"])
+        ).fetchone()
+        if taken:
+            return None
+        found, _err = audio_hash_safe(dest)
+        if found != row["audio_hash"]:
+            return None
+        self._index_hash_before_finalizing(hash_conn, row, dest)
+        ctx.conn.execute(
+            "UPDATE archive SET file_path = ?, finalized_at = datetime('now') WHERE id = ?",
+            (str(dest), row["id"]),
+        )
+        ctx.log_event(
+            "FINALIZE_ADOPTED",
+            file_path=str(dest),
+            old_value=str(source),
+            new_value=str(dest),
+            stage=self.NAME,
+            note="moved by an interrupted Finalize (journal); same audio; row pointed at it",
+        )
+        ctx.conn.commit()
+        logger.info("[finalize] adopted %s (moved by an interrupted run)", dest.name)
+        return dest
+
     def _index_hash_before_finalizing(
         self, hash_conn: sqlite3.Connection, row: dict, target: Path
     ) -> None:
@@ -528,6 +605,11 @@ class FinalizeStage(BaseStage):
                 result.files_processed += 1
 
                 if not source.exists():
+                    adopted = self._adopt_moved(ctx, row, source, hash_conn)
+                    if adopted is not None:
+                        result.files_changed += 1
+                        indexed += 1
+                        continue
                     result.files_errored += 1
                     result.errors.append(f"{source}: file missing on disk")
                     logger.warning("[finalize] missing: %s", source)

@@ -100,8 +100,11 @@ def sanitize_value(value: str | None) -> str | None:
     # Collapse multiple spaces
     v = re.sub(r"\s+", " ", v).strip()
 
-    # Remove trailing dots and spaces (Windows can't handle these)
-    v = v.rstrip(". ")
+    # Trailing spaces only. A final DOT is part of a name ("Run-D.M.C.",
+    # "fun.") -- Windows refuses it in a path, but paths are made safe by
+    # organize.sanitize_path_component, and stripping it here fought the
+    # canon, which put it back on every Act 1 (2026-09-26).
+    v = v.rstrip(" ")
 
     return v if v else None
 
@@ -121,7 +124,7 @@ def needs_sanitization(value: str | None) -> bool:
         return True
 
     # Check for trailing dots/spaces
-    return value != value.rstrip(". ")
+    return value != value.rstrip(" ")
 
 
 class SanitizeStage(BaseStage):

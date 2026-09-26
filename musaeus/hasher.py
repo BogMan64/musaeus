@@ -98,7 +98,7 @@ def _audio_hash_timeout(sample_rate: int, duration: float) -> int:
 # ── Audio-stream hash ─────────────────────────────────────────────────────────
 
 
-def audio_hash(path: Path) -> str:
+def _audio_hash_and_stderr(path: Path) -> tuple[str, str]:
     """
     Compute a SHA-256 hash of the raw audio stream only (no tags/container).
 
@@ -247,7 +247,7 @@ def audio_hash(path: Path) -> str:
                 path.name,
             )
             try:
-                return file_hash(path)
+                return file_hash(path), ""
             except OSError as exc:
                 raise HasherError(
                     f"ffmpeg timed out (>{_TIMEOUT_SECS}s) for {path} and the "
@@ -255,7 +255,16 @@ def audio_hash(path: Path) -> str:
                 ) from exc
         raise HasherError(f"ffmpeg exited {rc} for {path}: {stderr[:200]}")
 
-    return h.hexdigest()
+    # What ffmpeg reported while decoding, even though it exited 0. The Who's
+    # "Cut My Hair" master hashed cleanly with 6,194 broken frames in it
+    # (2026-09-26): an exit code alone does not say the audio was all there.
+    return h.hexdigest(), b"".join(stderr_chunks).decode("utf-8", errors="replace").strip()
+
+
+def audio_hash(path: Path) -> str:
+    """SHA-256 of the raw audio stream only (no tags/container). See
+    _audio_hash_and_stderr. Raises HasherError on subprocess failure."""
+    return _audio_hash_and_stderr(path)[0]
 
 
 def audio_hash_safe(path: Path) -> tuple[str | None, str | None]:
@@ -268,6 +277,20 @@ def audio_hash_safe(path: Path) -> tuple[str | None, str | None]:
     except HasherError as exc:
         logger.warning("audio_hash failed for %s: %s", path, exc)
         return None, str(exc)
+
+
+def audio_hash_checked(path: Path) -> tuple[str | None, str | None, str]:
+    """Like audio_hash_safe, plus what ffmpeg said while decoding (may be "").
+
+    Sentinel decodes every arrival in full to hash it; this lets it notice
+    audio that decodes WITH errors at no extra cost.
+    """
+    try:
+        h, said = _audio_hash_and_stderr(path)
+        return h, None, said
+    except HasherError as exc:
+        logger.warning("audio_hash failed for %s: %s", path, exc)
+        return None, str(exc), ""
 
 
 # ── Full-file hash ────────────────────────────────────────────────────────────

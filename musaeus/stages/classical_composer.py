@@ -68,11 +68,11 @@ _TITLE_PREFIX = re.compile(r"^([^-–]{2,30}?)\s+[-–]\s+\S")
 #: it resolves safely through L. (Longo), which is Scarlatti-only. An
 #: ambiguous marker earns nothing here.
 _CATALOGUE: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\bBWV\s*\d", re.I), "Johann Sebastian Bach"),
-    (re.compile(r"\bRV\s*\d", re.I), "Antonio Vivaldi"),
-    (re.compile(r"\bHWV\s*\d", re.I), "George Frideric Handel"),
-    (re.compile(r"\bTWV\s*\d", re.I), "Georg Philipp Telemann"),
-    (re.compile(r"\bWWV\s*\d", re.I), "Richard Wagner"),
+    (re.compile(r"\bBWV\.?\s*\d", re.I), "Johann Sebastian Bach"),
+    (re.compile(r"\bRV\.?\s*\d", re.I), "Antonio Vivaldi"),
+    (re.compile(r"\bHWV\.?\s*\d", re.I), "George Frideric Handel"),
+    (re.compile(r"\bTWV\.?\s*\d", re.I), "Georg Philipp Telemann"),
+    (re.compile(r"\bWWV\.?\s*\d", re.I), "Richard Wagner"),
     (re.compile(r"\bL\.\s*\d", re.I), "Domenico Scarlatti"),
     (re.compile(r"\bZ\.?\s*\d{3}\b"), "Henry Purcell"),
     (re.compile(r"\bD\.\s*\d{3}\b"), "Franz Schubert"),

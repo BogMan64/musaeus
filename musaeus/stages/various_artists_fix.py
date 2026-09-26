@@ -233,7 +233,30 @@ def _lookup_musicbrainz(title: str, album: str = "") -> str:
     return result
 
 
-def find_real_artist(source: Path, title: str, album: str, use_mb: bool) -> tuple[str, str]:
+def _acoustid_artist(source: Path, title: str, key: str) -> str:
+    """The artist AcoustID gives for this file's sound, or "" -- never a guess.
+
+    Only when a recording's title agrees with the row's title and every
+    agreeing recording in the result names the same artist
+    (acousticid.name_from_results). "Be My Baby" listed The Ronettes and
+    Sandy Posey together, and is refused (2026-09-26); a title-only
+    MusicBrainz lookup answered "Travis" for it.
+    """
+    from . import acousticid
+
+    try:
+        duration, fingerprint = acousticid._fpcalc(str(source))
+        results = acousticid._acousticid_query(fingerprint, duration, key)
+    except (acousticid.LookupUnavailable, RuntimeError, ValueError, OSError) as exc:
+        logger.info("[various-artists-fix] AcoustID unavailable for %s: %s", source.name, exc)
+        return ""
+    found = acousticid.name_from_results(results, title)
+    return found[0] if found else ""
+
+
+def find_real_artist(
+    source: Path, title: str, album: str, use_mb: bool, acoustid_key: str | None = None
+) -> tuple[str, str]:
     """Returns (real_artist, strategy). real_artist is "" if unresolved."""
     filename = source.name
 
@@ -250,6 +273,13 @@ def find_real_artist(source: Path, title: str, album: str, use_mb: bool) -> tupl
         artist = _lookup_musicbrainz(title, album)
         if artist and not is_placeholder_credit(artist):
             return artist, "musicbrainz"
+
+    # Last: the file's sound (Grey, 2026-09-26), for a title with no credit in
+    # it or its file name to read.
+    if acoustid_key and title:
+        artist = _acoustid_artist(source, title, acoustid_key)
+        if artist and not is_placeholder_credit(artist):
+            return artist, "acoustid"
 
     return "", "unknown"
 
@@ -390,7 +420,11 @@ class VariousArtistsFixStage(BaseStage):
                 continue
 
             real_artist, strategy = find_real_artist(
-                source, row.get("title") or "", row.get("album") or "", use_mb
+                source,
+                row.get("title") or "",
+                row.get("album") or "",
+                use_mb,
+                acoustid_key=ctx.config.acousticid_api_key,
             )
             if not real_artist:
                 unknown += 1
