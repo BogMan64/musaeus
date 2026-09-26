@@ -194,3 +194,28 @@ def test_both_sources_never_move_every_copy_between_them(tmp_path):
     _exact(ctx, "dup_same", "same", arrival)
     DupeResolverStage().run(ctx)
     assert master.is_file() or arrival.is_file(), "both copies were moved out"
+
+
+def test_gone_a_member_with_no_catalogue_row_is_never_the_keeper(tmp_path):
+    # A group outlives its paths: Act 3 files a member somewhere else and
+    # the old path stays in the group with no catalogue row behind it. It
+    # lost only because its missing codec read as lossy; against a lossy
+    # live copy it tied, and won on "studio over live" -- so the only copy
+    # left was moved out as the loser.
+    ctx = _ctx(tmp_path)
+    live = ctx.config.alac_archive / "Soul" / "Wilson Pickett - Mustang Sally (Live).m4a"
+    _row(ctx, live, "live", filed=True)
+    ctx.conn.execute(
+        "UPDATE archive SET codec = 'aac', bitrate = 256000, title = 'Mustang Sally (Live)' "
+        "WHERE file_path = ?",
+        (str(live),),
+    )
+    gone = ctx.inbox / "Wilson Pickett - Mustang Sally.m4a"  # filed elsewhere since
+    ctx.conn.executemany(
+        "INSERT INTO duplicates (group_id, file_path, duplicate_type, status, audio_hash) "
+        "VALUES ('near_2', ?, 'NEAR', 'pending', ?)",
+        [(str(live), "live"), (str(gone), "studio")],
+    )
+    ctx.conn.commit()
+    DupeResolverStage().run(ctx)
+    assert live.is_file(), "the only copy was moved out for a path with nothing behind it"
