@@ -15,7 +15,7 @@ What it does:
     pre-strip title → skipped, since "live" is stripped before scoring
     and would otherwise make them look identical)
   - Stages flagged pairs in the duplicates table with type='NEAR'
-  - Skips pairs already in the EXACT duplicates table
+  - Skips pairs already in one EXACT group together
   - dry_run() reports matches without writing to DB
   - Re-run safe: INSERT OR IGNORE on (group_id, file_path)
 
@@ -232,13 +232,17 @@ class NearDupeStage(BaseStage):
 
         result.files_processed = len(rows)
 
-        # Pre-load existing exact duplicate paths to skip
-        exact_paths: set[str] = {
-            row["file_path"]
-            for row in ctx.conn.execute(
-                "SELECT file_path FROM duplicates WHERE duplicate_type='EXACT'"
-            ).fetchall()
-        }
+        # Exact groups each path belongs to. A pair already in one EXACT
+        # group is the same recording and needs no NEAR row as well. This
+        # skipped any file that had EVER been in an EXACT group, whoever
+        # the other file was: most originals arrived twice (NUC and USB1),
+        # so none was compared with the baked copy it replaces, and 510 of
+        # those copies were filed beside their originals (2026-09-26).
+        exact_groups: dict[str, set[str]] = {}
+        for row in ctx.conn.execute(
+            "SELECT group_id, file_path FROM duplicates WHERE duplicate_type='EXACT'"
+        ).fetchall():
+            exact_groups.setdefault(row["file_path"], set()).add(row["group_id"])
 
         # Pre-load already-staged near dupe pairs to avoid re-flagging
         existing_near: set[tuple[str, str]] = set()
@@ -269,8 +273,10 @@ class NearDupeStage(BaseStage):
                     a = tracks[i]
                     b = tracks[j]
 
-                    # Skip if either is already an exact dupe
-                    if a["file_path"] in exact_paths or b["file_path"] in exact_paths:
+                    # Skip if the two are already an exact pair
+                    if exact_groups.get(a["file_path"], set()) & exact_groups.get(
+                        b["file_path"], set()
+                    ):
                         continue
 
                     # Don't merge two different live recordings of the same
