@@ -255,7 +255,19 @@ def _is_reissue(m: dict) -> bool:
 _ALREADY_RESOLVED: frozenset[str] = frozenset({"archive", "keep", "review"})
 
 
-def _keeper_sort_key(m: dict) -> tuple[int, int, int, int, int, int, int]:
+#: The retired bake's target. A copy measured here (within the tolerance) was
+#: made by it; an original sits here only by chance, rarely. A copy not yet
+#: measured -- every new arrival at Act 2 -- is never taken for one.
+_BAKED_LUFS = -18.0
+_BAKED_TOLERANCE = 0.3
+
+
+def _looks_baked(m: dict) -> bool:
+    lufs = m.get("lufs")
+    return lufs is not None and abs(float(lufs) - _BAKED_LUFS) <= _BAKED_TOLERANCE
+
+
+def _keeper_sort_key(m: dict) -> tuple[int, int, int, int, int, int, int, int]:
     """Shared ordering rule: real lossless codec beats lossy
     UNCONDITIONALLY (a bitrate/size comparison across different codecs
     isn't a fair quality comparison -- a quiet, highly-compressible FLAC
@@ -292,6 +304,11 @@ def _keeper_sort_key(m: dict) -> tuple[int, int, int, int, int, int, int]:
         # leaving the library with neither.
         1 if (m.get("dup_status") or "") in _ALREADY_RESOLVED else 0,
         0 if (m.get("codec") or "").lower() in LOSSLESS_CODECS else 1,
+        # An original beats an old -18 LUFS baked copy (Grey, 2026-09-26):
+        # about 1,170 "masters" were copies the retired edition script had
+        # loudness-processed. Below codec -- a lossless baked copy still
+        # beats a lossy original -- and above everything else.
+        1 if _looks_baked(m) else 0,
         1 if _is_reissue(m) else 0,
         1 if _is_live(m) else 0,
         -(m.get("bitrate") or 0),
@@ -310,7 +327,7 @@ def _get_group_members(conn, group_id: str) -> list[dict]:
         """
         SELECT d.file_path, d.duplicate_type, d.confidence, d.status AS dup_status,
                d.audio_hash AS recorded_hash, a.audio_hash AS current_hash, a.id AS current_row,
-               a.status AS current_status, a.finalized_at,
+               a.status AS current_status, a.finalized_at, a.lufs,
                a.artist, a.album, a.title, a.ext, a.codec, a.bitrate, a.size_bytes
           FROM duplicates d
           LEFT JOIN archive a USING (file_path)
@@ -371,7 +388,7 @@ def _get_live_exact_clusters(conn) -> list[list[dict]]:
     for row in rows:
         members = conn.execute(
             """
-            SELECT file_path, artist, album, title, ext, codec, bitrate, size_bytes, finalized_at
+            SELECT file_path, artist, album, title, ext, codec, bitrate, size_bytes, finalized_at, lufs
               FROM archive
              WHERE audio_hash = ? AND status = 'CATALOGUED'
             """,
