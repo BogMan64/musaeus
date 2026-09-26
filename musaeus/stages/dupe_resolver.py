@@ -252,7 +252,11 @@ def _is_reissue(m: dict) -> bool:
 
 #: duplicates.status values meaning "this row has already been dealt with".
 #: A member in one of these states is not a candidate to keep.
-_ALREADY_RESOLVED: frozenset[str] = frozenset({"archive", "keep", "review"})
+# Not 'keep'. An EXACT group is named after its recording (dup_<hash>), so a
+# new arrival identical to a library master joins the master's OLD group,
+# where the master is still marked 'keep'. Ranked as already dealt with, the
+# master lost to its own copy (P!nk, Pointer Sisters, SRV, 2026-09-26).
+_ALREADY_RESOLVED: frozenset[str] = frozenset({"archive", "review"})
 
 
 #: The retired bake's target. A copy measured here (within the tolerance) was
@@ -265,6 +269,25 @@ _BAKED_TOLERANCE = 0.3
 def _looks_baked(m: dict) -> bool:
     lufs = m.get("lufs")
     return lufs is not None and abs(float(lufs) - _BAKED_LUFS) <= _BAKED_TOLERANCE
+
+
+def _share_loudness(members: list[dict]) -> None:
+    """Give an unmeasured member the loudness of a measured one with the same audio.
+
+    Loudness is measured in Act 3, so at Act 2 a new arrival has none. An
+    arrival with the SAME audio as a master measured at -18 LUFS is the same
+    baked copy, but read on its own it never looked baked, and won: 119
+    masters were swapped for identical copies of themselves (2026-09-26).
+    """
+    measured: dict[str, float] = {}
+    for m in members:
+        h = m.get("current_hash") or m.get("recorded_hash") or m.get("audio_hash")
+        if h and m.get("lufs") is not None:
+            measured.setdefault(h, m["lufs"])
+    for m in members:
+        h = m.get("current_hash") or m.get("recorded_hash") or m.get("audio_hash")
+        if h and m.get("lufs") is None and h in measured:
+            m["lufs"] = measured[h]
 
 
 def _keeper_sort_key(m: dict) -> tuple[int, int, int, int, int, int, int, int]:
@@ -302,7 +325,14 @@ def _keeper_sort_key(m: dict) -> tuple[int, int, int, int, int, int, int, int]:
         # included -- is re-ranked. An already-moved member winning on bitrate
         # would be named keeper and the real keeper moved away after it,
         # leaving the library with neither.
-        1 if (m.get("dup_status") or "") in _ALREADY_RESOLVED else 0,
+        #
+        # A member with no catalogue row at its path is not there either: the
+        # file was filed, moved or removed since the group was found. It lost
+        # before only because its missing codec read as lossy.
+        1
+        if (m.get("dup_status") or "") in _ALREADY_RESOLVED
+        or ("current_row" in m and m["current_row"] is None)
+        else 0,
         0 if (m.get("codec") or "").lower() in LOSSLESS_CODECS else 1,
         # An original beats an old -18 LUFS baked copy (Grey, 2026-09-26):
         # about 1,170 "masters" were copies the retired edition script had
@@ -388,13 +418,15 @@ def _get_live_exact_clusters(conn) -> list[list[dict]]:
     for row in rows:
         members = conn.execute(
             """
-            SELECT file_path, artist, album, title, ext, codec, bitrate, size_bytes, finalized_at, lufs
+            SELECT file_path, artist, album, title, ext, codec, bitrate, size_bytes, finalized_at,
+                   lufs, audio_hash
               FROM archive
              WHERE audio_hash = ? AND status = 'CATALOGUED'
             """,
             (row["audio_hash"],),
         ).fetchall()
         member_dicts = [dict(m) for m in members]
+        _share_loudness(member_dicts)
         member_dicts.sort(key=_keeper_sort_key)
         clusters.append(member_dicts)
     return clusters
@@ -920,6 +952,7 @@ class DupeResolverStage(BaseStage):
 
             # One keeper for the whole component, so a file kept by one of
             # its groups can no longer be moved as another's loser.
+            _share_loudness(members)
             members.sort(key=_keeper_sort_key)
             keeper, losers = _pick_keeper_and_losers(members)
             self._move_losers(
@@ -946,6 +979,11 @@ class DupeResolverStage(BaseStage):
         # recurrence, without trying to reconcile a path that may no
         # longer be reliable. See _get_live_exact_clusters' docstring. ──
         for idx, members in enumerate(live_exact_clusters):
+            # These lists were made before the groups above moved anything.
+            # A member moved there is gone, and where the two sources ranked
+            # a pair differently, re-ranking it here moved the copy the
+            # groups had kept, leaving the library with neither.
+            members = [m for m in members if m["file_path"] not in already_moved]
             if len(members) < 2:
                 continue
             for m in members:
