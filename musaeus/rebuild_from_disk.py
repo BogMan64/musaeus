@@ -302,11 +302,16 @@ def scan_and_rebuild(
     compute_hashes: bool = True,
     progress_every: int = _COMMIT_EVERY,
 ) -> dict[str, Any]:
-    """Walk ALAC-Library and rebuild rows into *table*.
+    """Walk the MASTERS (ALAC-Archival) and rebuild rows into *table*.
 
     Never touches the existing `archive` table. Returns a summary dict.
+
+    It walked ALAC_Library, where finalize filed before 2026-09-25. Masters
+    live in ALAC-Archival now and ALAC_Library holds the Lossless edition,
+    so walking it would make every -18 LUFS copy a row and lose every
+    master -- the retired bake's drift, all at once.
     """
-    lib = cfg.alac_library
+    lib = cfg.alac_archive
     summary: dict[str, Any] = {
         "scanned": 0,
         "rebuilt": 0,
