@@ -215,3 +215,21 @@ def test_the_quiet_masters_that_would_be_compressed_are_counted():
     assert quiet_peaky.may_compress() is True  # +4 dB puts a -2 dBTP peak at +2
     assert quiet_room.may_compress() is False  # +2 dB leaves a -6 dBTP peak at -4
     assert quiet_unknown.may_compress() is None
+
+
+def test_a_new_master_on_a_freed_path_replaces_the_old_copy_in_one_build(cfg):
+    # Every baked-copy swap ends this way: the original is renamed into the
+    # plain name the baked copy left, so the master at that path is a NEW
+    # recording while the old copy still sits at the target, due for removal.
+    master = _master(cfg, REL, "old")
+    _build(cfg)
+    conn = sqlite3.connect(cfg.db_path)
+    conn.execute("UPDATE archive SET audio_hash = 'new'")  # the original took the path
+    conn.commit()
+    conn.close()
+    master.touch()
+    plan, out, recorded = _build(cfg)
+    assert not plan.blocked, plan.blocked
+    assert out.removed == 1 and out.baked == 1
+    assert set(recorded) == {"new"}
+    assert edition_bake.read_marker(cfg.alac_library / REL) == eb.marker_for("new")

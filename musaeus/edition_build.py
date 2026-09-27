@@ -178,10 +178,23 @@ def make_plan(
         selected[m.audio_hash] = (m, edition_root / path.relative_to(masters_root))
 
     wanted_outputs = {str(t) for _, t in selected.values()}
+    # Paths the removals and moves below will empty before any bake lands.
+    # Every baked-copy swap needs this: the original is renamed into the name
+    # the baked copy left, so a NEW master's target still holds the old copy,
+    # which is about to be removed.
+    freed = {
+        c.output_path
+        for h, c in recorded.items()
+        if h not in selected or c.output_path != str(selected[h][1])
+    }
+
+    def taken(path: Path) -> bool:
+        return path.exists() and str(path) not in freed
+
     for h, (m, target) in selected.items():
         c = recorded.get(h)
         if c is None:
-            if target.exists():
+            if taken(target):
                 if edition_bake.read_marker(target) == marker_for(h):
                     plan.adopt.append((m, target))
                 else:
@@ -193,7 +206,7 @@ def make_plan(
         if not out.exists():
             plan.bake.append((m, target))
         elif out != target:
-            if target.exists():
+            if taken(target):
                 plan.blocked.append((m, f"its new place is taken: {target}"))
             else:
                 plan.move.append((m, c, target))
@@ -334,6 +347,10 @@ def execute(
 
     for m, c, target in plan.move:
         old = Path(c.output_path)
+        if target.exists():
+            # Never let a rename overwrite: the file there is not this copy.
+            out.failed.append((str(m.path), f"its new place is taken: {target}"))
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
         old.rename(target)
         edition_bake.copy_tags(m.path, target, marker_for(m.audio_hash))
