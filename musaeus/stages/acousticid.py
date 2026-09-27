@@ -49,7 +49,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 from ..context import RunContext, StageResult, elision
-from ..db import ensure_columns
+from ..db import SET_ASIDE_STATUSES, ensure_columns
 from ..network_policy import check as _network_check
 from .base import BaseStage, StageError
 
@@ -709,11 +709,16 @@ class AcousticIDStage(BaseStage):
             if recording_id:
                 if recording_id not in recording_map:
                     # Also check DB for existing matches
+                    # Only copies still in the library. A copy Act 2 moved to
+                    # review keeps the recording it was given while it was
+                    # here, and 718 of the 756 pairs listed for Grey on
+                    # 2026-09-27 were such a copy and its keeper.
                     try:
+                        marks = ",".join("?" for _ in SET_ASIDE_STATUSES)
                         existing = ctx.conn.execute(
                             "SELECT file_path FROM archive "
-                            "WHERE acousticid_recording=? AND file_path!=?",
-                            (recording_id, fp),
+                            f"WHERE acousticid_recording=? AND file_path!=? AND status NOT IN ({marks})",
+                            (recording_id, fp, *SET_ASIDE_STATUSES),
                         ).fetchall()
                         recording_map[recording_id] = [r["file_path"] for r in existing]
                     except Exception:
