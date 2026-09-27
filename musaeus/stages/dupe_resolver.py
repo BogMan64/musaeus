@@ -86,6 +86,7 @@ import os
 import re
 import shutil
 import stat
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -432,6 +433,21 @@ def _get_live_exact_clusters(conn) -> list[list[dict]]:
     return clusters
 
 
+def _mark(ctx: RunContext, group_ids: Sequence[str], file_path: str, status: str) -> None:
+    """Record a verdict on a path in EVERY group of its component.
+
+    Groups sharing a file are resolved as one, but only the first group's
+    rows were marked; the rest stayed 'pending' (145 after the Act 2 of
+    2026-09-26) and came back on a later Act 2 as "the file at that path is
+    now a different recording" once Act 3 had renamed their files.
+    """
+    marks = ",".join("?" for _ in group_ids)
+    ctx.conn.execute(
+        f"UPDATE duplicates SET status = ? WHERE group_id IN ({marks}) AND file_path = ?",
+        (status, *group_ids, file_path),
+    )
+
+
 def _mismatch(m: dict) -> bool:
     """True if a group member cannot be trusted to be the recording the group was about.
 
@@ -595,6 +611,7 @@ class DupeResolverStage(BaseStage):
         dry_run: bool,
         update_duplicates_table: bool,
         already_moved: dict[str, str],
+        group_ids: Sequence[str] = (),
     ) -> None:
         """
         Shared per-loser move+update+log+manifest-append logic, used by
@@ -617,6 +634,7 @@ class DupeResolverStage(BaseStage):
         errors.
         """
         keeper_desc = keeper["file_path"] if keeper else "(no keeper on record)"
+        gids = tuple(group_ids) or (group_id,)
         for item_index, loser in enumerate(losers):
             result.files_processed += 1
             source = Path(loser["file_path"])
@@ -659,11 +677,7 @@ class DupeResolverStage(BaseStage):
                         f"(stale duplicates-table row)"
                     )
                     if update_duplicates_table and not dry_run:
-                        ctx.conn.execute(
-                            "UPDATE duplicates SET status = 'archive' "
-                            "WHERE group_id = ? AND file_path = ?",
-                            (group_id, source_key),
-                        )
+                        _mark(ctx, gids, source_key, "archive")
                     continue
 
                 # Before calling it lost, ask the archive row where the file
@@ -694,11 +708,7 @@ class DupeResolverStage(BaseStage):
                         f"[{dtype}] skipped {source.name}: relocated by another stage"
                     )
                     if update_duplicates_table and not dry_run:
-                        ctx.conn.execute(
-                            "UPDATE duplicates SET status = 'archive' "
-                            "WHERE group_id = ? AND file_path = ?",
-                            (group_id, source_key),
-                        )
+                        _mark(ctx, gids, source_key, "archive")
                     continue
 
                 # No file, and no archive row either: this duplicates-table
@@ -722,11 +732,7 @@ class DupeResolverStage(BaseStage):
                         f"no archive row for this path"
                     )
                     if update_duplicates_table and not dry_run:
-                        ctx.conn.execute(
-                            "UPDATE duplicates SET status = 'archive' "
-                            "WHERE group_id = ? AND file_path = ?",
-                            (group_id, source_key),
-                        )
+                        _mark(ctx, gids, source_key, "archive")
                     continue
 
                 result.files_errored += 1
@@ -741,11 +747,7 @@ class DupeResolverStage(BaseStage):
                 result.files_skipped += 1
                 result.notes.append(f"[{dtype}] left {source.name}: already in the review folder")
                 if update_duplicates_table and not dry_run:
-                    ctx.conn.execute(
-                        "UPDATE duplicates SET status = 'archive' "
-                        "WHERE group_id = ? AND file_path = ?",
-                        (group_id, source_key),
-                    )
+                    _mark(ctx, gids, source_key, "archive")
                 continue
 
             # Inside the guard, not above it. The move below has isolated
@@ -822,10 +824,7 @@ class DupeResolverStage(BaseStage):
                 _remove_emptied_dirs(source.parent, root)
 
             if update_duplicates_table:
-                ctx.conn.execute(
-                    "UPDATE duplicates SET status = 'archive' WHERE group_id = ? AND file_path = ?",
-                    (group_id, str(source)),
-                )
+                _mark(ctx, gids, str(source), "archive")
             # The archive row's status must change too, and file_path
             # must follow the file to its new location -- otherwise a
             # later stage's WHERE status='CATALOGUED' query has no way
@@ -978,12 +977,10 @@ class DupeResolverStage(BaseStage):
                 dry_run=dry_run,
                 update_duplicates_table=True,
                 already_moved=already_moved,
+                group_ids=component,
             )
             if keeper and not dry_run:
-                ctx.conn.execute(
-                    "UPDATE duplicates SET status = 'keep' WHERE group_id = ? AND file_path = ?",
-                    (group_id, keeper["file_path"]),
-                )
+                _mark(ctx, component, keeper["file_path"], "keep")
 
         # ── Source 2: live EXACT-hash clusters, derived directly from
         # archive.audio_hash -- catches both the historical backlog left
