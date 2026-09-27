@@ -432,6 +432,30 @@ def _get_live_exact_clusters(conn) -> list[list[dict]]:
     return clusters
 
 
+def _mismatch(m: dict) -> bool:
+    """True if a group member cannot be trusted to be the recording the group was about.
+
+    Bug 1. A member is recorded by PATH, and by now that path may hold a
+    different recording -- renamed files free paths and other files take
+    them. The recording the group was about is duplicates.audio_hash,
+    captured when the group was found; the file there now is
+    archive.audio_hash at that path. Unless every member still matches,
+    nothing in the group moves: a wrong keeper is as bad as a wrong loser.
+    Unverifiable -- no identity recorded (rows from before 2026-09-24), or a
+    catalogue row there with no audio_hash -- counts as not matching, because
+    that is precisely the population the bug came from.
+
+    A path with NO catalogue row is different: the file was moved away by
+    another stage, nothing can be moved wrongly from there, and _move_losers
+    already skips such a member (see its relocation handling).
+    """
+    if not m.get("recorded_hash"):
+        return True
+    if m.get("current_row") is None:
+        return False
+    return bool(m.get("current_hash") != m.get("recorded_hash"))
+
+
 def _pick_keeper_and_losers(members: list[dict]) -> tuple[dict | None, list[dict]]:
     """
     Same rule as dedupe.py's _auto_keep_best: members are already sorted
@@ -873,7 +897,37 @@ class DupeResolverStage(BaseStage):
         # and any freshly-detected EXACT group still genuinely 'pending') ──
         # Resolve COMPONENTS, not groups. Overlapping groups otherwise reach
         # contradictory verdicts on the same file -- see _connected_groups.
-        for component in _connected_groups(ctx.conn, groups):
+        # Judged group by group, BEFORE groups sharing a file are joined:
+        # judged per component, one group whose file had changed closed every
+        # group joined to it, sound ones included -- 7 baked copies stayed
+        # beside their originals that way (2026-09-26). A dropped group's
+        # verdict on its members is void; the sound groups decide alone.
+        sound: list[str] = []
+        for gid in groups:
+            group_members = _get_group_members(ctx.conn, gid)
+            stale = [m for m in group_members if _mismatch(m)]
+            if not stale:
+                sound.append(gid)
+                continue
+            for m in stale:
+                why = (
+                    "no recording identity was stored with the group"
+                    if not m.get("recorded_hash")
+                    else "the file at that path is now a different recording"
+                    if m.get("current_hash")
+                    else "the catalogue row at that path has no audio fingerprint"
+                )
+                result.errors.append(
+                    f"duplicate group {gid}: nothing moved -- {m['file_path']}: {why}"
+                )
+            result.files_skipped += len(group_members)
+            if not dry_run:
+                ctx.conn.execute(
+                    "UPDATE duplicates SET status = 'stale' WHERE group_id = ? AND status = 'pending'",
+                    (gid,),
+                )
+
+        for component in _connected_groups(ctx.conn, sound):
             group_id = component[0]
             members = []
             seen_paths: set[str] = set()
@@ -886,48 +940,6 @@ class DupeResolverStage(BaseStage):
             if not members:
                 continue
 
-            # Bug 1. A member is recorded by PATH, and by now that path may
-            # hold a different recording -- renamed files free paths and other
-            # files take them. The recording the group was about is
-            # duplicates.audio_hash, captured when the group was found; the
-            # file there now is archive.audio_hash at that path. Unless every
-            # member still matches, nothing in the component moves: a wrong
-            # keeper is as bad as a wrong loser. Unverifiable -- no identity
-            # recorded (rows from before 2026-09-24), or a catalogue row there
-            # with no audio_hash -- counts as not matching, because that is
-            # precisely the population the bug came from.
-            #
-            # A path with NO catalogue row is different: the file was moved
-            # away by another stage, nothing can be moved wrongly from there,
-            # and _move_losers already skips such a member (see its
-            # relocation handling). It is left to that.
-            def _mismatch(m: dict) -> bool:
-                if not m.get("recorded_hash"):
-                    return True
-                if m.get("current_row") is None:
-                    return False
-                return m.get("current_hash") != m.get("recorded_hash")
-
-            stale = [m for m in members if _mismatch(m)]
-            if stale:
-                for m in stale:
-                    why = (
-                        "no recording identity was stored with the group"
-                        if not m.get("recorded_hash")
-                        else "the file at that path is now a different recording"
-                        if m.get("current_hash")
-                        else "the catalogue row at that path has no audio fingerprint"
-                    )
-                    result.errors.append(
-                        f"duplicate group {group_id}: nothing moved -- {m['file_path']}: {why}"
-                    )
-                result.files_skipped += len(members)
-                if not dry_run:
-                    ctx.conn.executemany(
-                        "UPDATE duplicates SET status = 'stale' WHERE group_id = ? AND status = 'pending'",
-                        [(gid,) for gid in component],
-                    )
-                continue
             # A member already set aside is not a candidate at all -- neither
             # to move nor to KEEP. As a keeper it was the worse failure: a
             # review copy that outranked the library master kept its place,

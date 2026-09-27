@@ -24,7 +24,7 @@ from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db, upsert_archive
 from musaeus.stages.dupe_resolver import DupeResolverStage
-from musaeus.stages.neardupe import NearDupeStage
+from musaeus.stages.neardupe import NearDupeStage, _group_id
 
 
 def _ctx(tmp_path: Path) -> RunContext:
@@ -43,7 +43,17 @@ def _ctx(tmp_path: Path) -> RunContext:
     return RunContext.new(cfg, open_db(cfg.db_path), dry_run=False)
 
 
-def _row(ctx, path: Path, h: str, *, lufs=None, bitrate=900_000, filed=False):
+def _row(
+    ctx,
+    path: Path,
+    h: str,
+    *,
+    lufs=None,
+    bitrate=900_000,
+    filed=False,
+    title="Brown Sugar",
+    duration=None,
+):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"x")
     upsert_archive(
@@ -52,8 +62,9 @@ def _row(ctx, path: Path, h: str, *, lufs=None, bitrate=900_000, filed=False):
             "file_path": str(path),
             "status": "CATALOGUED",
             "artist": "The Rolling Stones",
-            "title": "Brown Sugar",
+            "title": title,
             "album": "Sticky Fingers",
+            "duration": duration,
             "audio_hash": h,
             "codec": "alac",
             "bitrate": bitrate,
@@ -219,3 +230,118 @@ def test_gone_a_member_with_no_catalogue_row_is_never_the_keeper(tmp_path):
     ctx.conn.commit()
     DupeResolverStage().run(ctx)
     assert live.is_file(), "the only copy was moved out for a path with nothing behind it"
+
+
+# ── After the Act 2 of 2026-09-26: 39 more baked copies beside originals ──
+
+
+def _library(ctx, name: str) -> Path:
+    return ctx.config.alac_archive / "Rock" / "Stones" / "Live" / name
+
+
+def _live_pair(ctx, *, orig_duration: float, orig_title: str | None = None):
+    title = "Midnight Rambler (Live In Brussels)"
+    baked = _library(ctx, f"The Rolling Stones - {title}.m4a")
+    orig = _library(ctx, f"The Rolling Stones - {title} (2).m4a")
+    _row(ctx, baked, "baked", lufs=-18.0, filed=True, title=title, duration=412.0)
+    _row(
+        ctx, orig, "orig", lufs=-7.9, filed=True, title=orig_title or title, duration=orig_duration
+    )
+    return baked, orig
+
+
+def test_live_a_baked_live_copy_is_paired_with_its_own_original(tmp_path):
+    # Two live titles were never paired, so that two different concerts are
+    # not merged. A baked copy and its original are the SAME concert: the
+    # same title, the same length. 32 were left beside their originals.
+    ctx = _ctx(tmp_path)
+    baked, orig = _live_pair(ctx, orig_duration=412.1)
+    NearDupeStage().run(ctx)
+    DupeResolverStage().run(ctx)
+    assert orig.is_file()
+    assert not baked.exists(), "the baked live copy was never paired with its original"
+
+
+def test_live_two_concerts_of_one_song_are_still_not_paired(tmp_path):
+    ctx = _ctx(tmp_path)
+    _live_pair(ctx, orig_duration=398.0)  # a different night
+    NearDupeStage().run(ctx)
+    near = ctx.conn.execute("SELECT COUNT(*) FROM duplicates WHERE duplicate_type='NEAR'")
+    assert near.fetchone()[0] == 0
+
+
+def test_live_two_live_titles_that_differ_are_still_not_paired(tmp_path):
+    ctx = _ctx(tmp_path)
+    _live_pair(ctx, orig_duration=412.0, orig_title="Midnight Rambler (Live In Paris)")
+    NearDupeStage().run(ctx)
+    near = ctx.conn.execute("SELECT COUNT(*) FROM duplicates WHERE duplicate_type='NEAR'")
+    assert near.fetchone()[0] == 0
+
+
+def test_stuck_a_pair_closed_as_stale_is_judged_again_when_it_is_whole(tmp_path):
+    # A pair closed as 'stale' was never flagged again: NearDupe treated any
+    # row for the pair as already flagged. 7 baked copies sat stuck.
+    ctx = _ctx(tmp_path)
+    baked = _library(ctx, "The Rolling Stones - Start Me Up.m4a")
+    orig = ctx.config.alac_archive / "Rock" / "Stones" / "Tattoo You" / baked.name
+    _row(ctx, baked, "baked", lufs=-18.0, filed=True, title="Start Me Up")
+    _row(ctx, orig, "orig", lufs=-9.0, filed=True, title="Start Me Up")
+    gid = _group_id(str(baked), str(orig))
+    ctx.conn.executemany(
+        "INSERT INTO duplicates (group_id, file_path, duplicate_type, status, audio_hash) "
+        "VALUES (?, ?, 'NEAR', 'stale', ?)",
+        [(gid, str(baked), "baked"), (gid, str(orig), "orig")],
+    )
+    ctx.conn.commit()
+    NearDupeStage().run(ctx)
+    DupeResolverStage().run(ctx)
+    assert orig.is_file()
+    assert not baked.exists(), "a pair closed as stale was never looked at again"
+
+
+def test_stuck_one_untrustworthy_group_does_not_freeze_a_sound_one(tmp_path):
+    # Groups sharing a file are resolved together. One group whose file had
+    # changed under it closed every group joined to it -- including a sound
+    # NEAR pair of a baked copy and its original.
+    ctx = _ctx(tmp_path)
+    baked = _library(ctx, "The Rolling Stones - Start Me Up.m4a")
+    orig = ctx.config.alac_archive / "Rock" / "Stones" / "Tattoo You" / baked.name
+    _row(ctx, baked, "baked", lufs=-18.0, filed=True, title="Start Me Up")
+    _row(ctx, orig, "orig", lufs=-9.0, filed=True, title="Start Me Up")
+    ctx.conn.execute(
+        "INSERT INTO duplicates (group_id, file_path, duplicate_type, status, audio_hash) "
+        "VALUES ('crossdupe_old', ?, 'CROSS_BATCH', 'pending', 'an-older-recording')",
+        (str(baked),),
+    )
+    ctx.conn.executemany(
+        "INSERT INTO duplicates (group_id, file_path, duplicate_type, status, audio_hash) "
+        "VALUES ('near_sound', ?, 'NEAR', 'pending', ?)",
+        [(str(baked), "baked"), (str(orig), "orig")],
+    )
+    ctx.conn.commit()
+    result = DupeResolverStage().run(ctx)
+    assert any("different recording" in e for e in result.errors), "the bad group is still named"
+    assert orig.is_file()
+    assert not baked.exists(), "a sound pair was frozen by an unrelated bad group"
+
+
+def test_keep_both_follows_the_recordings_not_the_file_names(tmp_path):
+    # Grey chose to keep both copies of 17 different versions (2026-09-26).
+    # The mark named the files by path; Act 3 then renamed one ("... (Live)
+    # (2)" -> "... (Live)"), and the next NearDupe would have paired them
+    # again and moved the live copy.
+    ctx = _ctx(tmp_path)
+    studio = _library(ctx, "Wilson Pickett - Mustang Sally.m4a")
+    live = _library(ctx, "Wilson Pickett - Mustang Sally (Live).m4a")
+    _row(ctx, studio, "studio", lufs=-12.0, filed=True, title="Mustang Sally", duration=180.0)
+    _row(ctx, live, "live", lufs=-11.0, filed=True, title="Mustang Sally (Live)", duration=250.0)
+    old_live = str(live.with_name("Wilson Pickett - Mustang Sally (Live) (2).m4a"))
+    ctx.conn.executemany(
+        "INSERT INTO duplicates (group_id, file_path, duplicate_type, status, audio_hash) "
+        "VALUES ('near_kept', ?, 'NEAR', 'keep', ?)",
+        [(str(studio), "studio"), (old_live, "live")],
+    )
+    ctx.conn.commit()
+    NearDupeStage().run(ctx)
+    DupeResolverStage().run(ctx)
+    assert live.is_file() and studio.is_file(), "a keep-both pair was split after a rename"
