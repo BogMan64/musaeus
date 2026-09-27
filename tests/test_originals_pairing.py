@@ -396,3 +396,28 @@ def test_keep_both_decided_on_an_acoustid_pair_holds_too(tmp_path):
     NearDupeStage().run(ctx)
     DupeResolverStage().run(ctx)
     assert studio.is_file() and mono.is_file(), "a keep-both AcoustID pair was split"
+
+
+def test_open_a_set_aside_members_row_is_closed_too(tmp_path):
+    # A member already set aside (in review) is left out of the decision --
+    # and its row was left 'pending' for ever. 17 groups came back on every
+    # Act 2 that way ("1 member(s) already set aside, left alone"), each time
+    # listing the same stale rows (2026-09-27).
+    ctx = _ctx(tmp_path)
+    a = _library(ctx, "The Rolling Stones - Brown Sugar.m4a")
+    b = ctx.config.alac_archive / "Rock" / "Stones" / "SF" / a.name
+    held = ctx.config.dupes_review_dir / "2026-09-26" / a.name
+    _row(ctx, a, "a", lufs=-9.0, bitrate=2_000_000, filed=True)
+    _row(ctx, b, "b", lufs=-9.0, bitrate=1_000_000, filed=True)
+    _row(ctx, held, "c", lufs=-9.0)
+    ctx.conn.execute("UPDATE archive SET status = 'DUPE_REVIEW' WHERE file_path = ?", (str(held),))
+    ctx.conn.executemany(
+        "INSERT INTO duplicates (group_id, file_path, duplicate_type, status, audio_hash) "
+        "VALUES ('near_3', ?, 'NEAR', 'pending', ?)",
+        [(str(a), "a"), (str(b), "b"), (str(held), "c")],
+    )
+    ctx.conn.commit()
+    DupeResolverStage().run(ctx)
+    assert a.is_file() and not b.exists() and held.is_file()
+    left = ctx.conn.execute("SELECT file_path FROM duplicates WHERE status = 'pending'").fetchall()
+    assert not left, [r[0] for r in left]
