@@ -293,3 +293,42 @@ class TestStaleHashIndexEntries:
         result = CrossDupeStage().execute(ctx)
 
         assert result.files_changed == 1
+
+
+class TestAPathReusedByAnotherRecording:
+    """Act 3 of 2026-09-27 renamed "Copacabana (2)" -> plain, then "(3)" ->
+    "(2)". The ledger still named "(2)" for the first recording, a file
+    exists there, so CrossDupe took it for a held twin -- and the resolver
+    would have moved the ONLY copy of that recording out, keeping nothing.
+    A file at an indexed path is only a twin if it is still that recording."""
+
+    def _setup(self, ctx, twin_row_hash):
+        folder = ctx.alac_library / "Barry Manilow" / "Even Now"
+        folder.mkdir(parents=True)
+        plain, two = folder / "Copacabana.m4a", folder / "Copacabana (2).m4a"
+        plain.write_bytes(b"first recording")
+        two.write_bytes(b"second recording")
+        upsert_archive(
+            ctx.conn, {"file_path": str(plain), "status": "CATALOGUED", "audio_hash": "H1"}
+        )
+        if twin_row_hash:
+            upsert_archive(
+                ctx.conn,
+                {"file_path": str(two), "status": "CATALOGUED", "audio_hash": twin_row_hash},
+            )
+        ctx.conn.commit()
+        hc = open_hash_index(ctx.config.hash_index_path)
+        record_finalized_hash(hc, "H1", str(two))  # where H1 was filed first
+        record_finalized_hash(hc, "H1", str(plain))  # where the rename put it
+        hc.commit()
+        hc.close()
+
+    def test_a_path_now_holding_another_recording_is_not_a_twin(self, ctx):
+        self._setup(ctx, twin_row_hash="H2")
+        result = CrossDupeStage().execute(ctx)
+        assert result.files_changed == 0
+        assert ctx.conn.execute("SELECT COUNT(*) FROM duplicates").fetchone()[0] == 0
+
+    def test_a_path_still_holding_the_recording_is_a_twin(self, ctx):
+        self._setup(ctx, twin_row_hash="H1")
+        assert CrossDupeStage().execute(ctx).files_changed >= 1

@@ -43,6 +43,7 @@ nothing can match an empty index.
 from __future__ import annotations
 
 import logging
+import sqlite3
 from pathlib import Path
 
 from ..context import RunContext, StageResult
@@ -84,6 +85,23 @@ def _get_candidates(conn) -> list[dict]:  # type: ignore[type-arg]
         SET_ASIDE_STATUSES,
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def _still_that_recording(conn: sqlite3.Connection, file_path: str, audio_hash: str) -> bool:
+    """False if the catalogue says a DIFFERENT recording now sits at file_path.
+
+    The ledger keeps every path a recording was ever filed at, and a rename
+    chain hands a freed path to another file: Act 3 of 2026-09-27 renamed
+    "Copacabana (2)" -> plain and "(3)" -> "(2)", so the ledger's "(2)" for
+    the first recording held the second one, and the only copy of the first
+    was flagged as a duplicate of it. With no catalogue row (the database is
+    wiped between batches; the ledger is not) the file's presence is all
+    there is to go on, as before.
+    """
+    row = conn.execute(
+        "SELECT audio_hash FROM archive WHERE file_path = ?", (file_path,)
+    ).fetchone()
+    return row is None or not row["audio_hash"] or row["audio_hash"] == audio_hash
 
 
 class CrossDupeStage(BaseStage):
@@ -154,7 +172,10 @@ class CrossDupeStage(BaseStage):
                     continue
 
                 live_paths = [
-                    r["file_path"] for r in indexed_twins if Path(r["file_path"]).exists()
+                    r["file_path"]
+                    for r in indexed_twins
+                    if Path(r["file_path"]).exists()
+                    and _still_that_recording(ctx.conn, r["file_path"], ah)
                 ]
                 if not live_paths:
                     stale += 1
