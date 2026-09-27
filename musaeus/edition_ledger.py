@@ -77,7 +77,16 @@ def record(conn: sqlite3.Connection, copy: Copy) -> None:
     Committed per copy: the build is hours long and interruptible, and a
     copy that is on disk but not recorded is exactly what the next run has
     to work out again.
+
+    The copy is recorded only once it is in place and carries its marker,
+    so it owns its path: any other master's record still naming that path
+    is stale, and is dropped rather than tripping the UNIQUE index (cloud
+    review of #49: that raised mid-build).
     """
+    conn.execute(
+        "DELETE FROM edition_copies WHERE edition = ? AND output_path = ? AND master_hash != ?",
+        (copy.edition, copy.output_path, copy.master_hash),
+    )
     conn.execute(
         """
         INSERT INTO edition_copies

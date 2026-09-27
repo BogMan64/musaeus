@@ -26,25 +26,32 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .duration import tolerance_for
+from .editions import LOSSLESS
+
 FFMPEG = "ffmpeg"
 FFPROBE = "ffprobe"
-TARGET_I = "-18.0"
+#: The edition's one definition of its target lives in editions.LOSSLESS.
+TARGET_I = f"{LOSSLESS.lufs_target:.1f}"
 TARGET_TP = "-1.0"
 TARGET_LRA = "11.0"
 
 _LUFS_TOLERANCE = 1.0
-_DURATION_TOLERANCE_SEC = 2.0
+# Deadlines count WORKING time (see _run): the idle throttle SIGSTOPs these
+# children while the machine is in use, and paused time is not stalled work.
 _PROBE_TIMEOUT = 60
-# A whole-file two-pass loudnorm of a long hi-res track is minutes, not
-# seconds -- and the edition build runs under IdleThrottle, which SIGSTOPs
-# ffmpeg while the machine is in use. That paused time counts towards this
-# deadline, so it is set to what a long evening at the desk can reach: a
-# hung ffmpeg is rare, a paused one is every build.
-_BAKE_TIMEOUT = 6 * 3600
+_BAKE_TIMEOUT = 1800
+_DECODE_TIMEOUT = 900
+_DEADLINE_POLL_S = 1.0
+
+#: The IdleThrottle holding this module's children, set by the edition build
+#: for as long as it runs; its paused_seconds is taken off every deadline.
+ACTIVE_THROTTLE: Any = None
 
 _OUTPUT_I_RE = re.compile(r"Output Integrated:\s*(-?\d+(?:\.\d+)?)\s*LUFS", re.I)
 _NORM_TYPE_RE = re.compile(r"Normalization Type:\s*(\w+)", re.I)
@@ -60,11 +67,40 @@ class BakeResult:
     mode: str  # "linear" | "dynamic" | "" when loudnorm did not say
 
 
+def _paused() -> float:
+    return float(ACTIVE_THROTTLE.paused_seconds) if ACTIVE_THROTTLE is not None else 0.0
+
+
 def _run(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
-    try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        raise BakeError(f"{cmd[0]} timed out after {timeout}s") from exc
+    """Run *cmd* with a deadline on WORKING time, stdin closed.
+
+    The retired script's _run_with_deadline, restored (cloud review of #49):
+    a flat wall-clock timeout killed work the idle throttle had merely
+    paused -- measured 2026-09-01, a 0.6 s bake sat past 90 s while someone
+    used the machine. And stdin is closed: two workers' ffmpegs otherwise
+    share the terminal, read keystrokes as commands ('q' stops an encode)
+    and leave the tty without echo (CLAUDE.md: every ffmpeg in a loop needs
+    -nostdin).
+    """
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    start, paused_at_start = time.monotonic(), _paused()
+    while True:
+        try:
+            out, err = proc.communicate(timeout=_DEADLINE_POLL_S)
+        except subprocess.TimeoutExpired:
+            working = (time.monotonic() - start) - (_paused() - paused_at_start)
+            if working <= timeout:
+                continue
+            proc.kill()
+            proc.communicate()
+            raise BakeError(f"{cmd[0]} made no progress in {timeout}s of working time") from None
+        return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
 def probe(path: Path) -> dict:
@@ -121,12 +157,13 @@ def sample_rate_of(info: dict) -> int | None:
         return None
 
 
-def measure(path: Path) -> dict:
+def ffmpeg_measure_loudnorm(path: Path) -> dict:
     """First pass: what loudnorm measures of the master."""
     flt = f"loudnorm=I={TARGET_I}:TP={TARGET_TP}:LRA={TARGET_LRA}:print_format=json"
     proc = _run(
         [
             FFMPEG,
+            "-nostdin",
             "-hide_banner",
             "-nostats",
             "-i",
@@ -149,12 +186,14 @@ def measure(path: Path) -> dict:
     return measured
 
 
-def second_pass_filter(measured: dict) -> str:
+def build_second_pass_filter(measured: dict) -> str:
+    """The bake: the measured values applied, linear=true. The repo's name
+    for it, so tests/test_bake_is_always_two_pass.py guards it."""
     return (
-        f"loudnorm=I={TARGET_I}:TP={TARGET_TP}:LRA={TARGET_LRA}:"
-        f"measured_I={measured['input_i']}:measured_LRA={measured['input_lra']}:"
+        f"loudnorm=measured_I={measured['input_i']}:measured_LRA={measured['input_lra']}:"
         f"measured_TP={measured['input_tp']}:measured_thresh={measured['input_thresh']}:"
-        f"offset={measured['target_offset']}:linear=true:print_format=summary"
+        f"offset={measured['target_offset']}:I={TARGET_I}:TP={TARGET_TP}:LRA={TARGET_LRA}:"
+        "linear=true:print_format=summary"
     )
 
 
@@ -172,6 +211,7 @@ def bake_command(source: Path, output: Path, loudnorm: str, info: dict) -> list[
     ]
     cmd = [
         FFMPEG,
+        "-nostdin",
         "-hide_banner",
         "-nostats",
         "-y",
@@ -220,7 +260,7 @@ def verify(source_info: dict, output: Path, achieved: float | None) -> None:
             return None
 
     sd, od = _dur(source_info), _dur(out)
-    if sd is not None and od is not None and abs(sd - od) > _DURATION_TOLERANCE_SEC:
+    if sd is not None and od is not None and abs(sd - od) > tolerance_for(sd):
         raise BakeError(f"length changed: master {sd:.1f}s, copy {od:.1f}s")
 
 
@@ -278,10 +318,44 @@ def bake(source: Path, tmp_output: Path) -> BakeResult:
     that fails verification never sits where a finished one would.
     """
     info = probe(source)
-    measured = measure(source)
-    proc = _run(bake_command(source, tmp_output, second_pass_filter(measured), info), _BAKE_TIMEOUT)
+    measured = ffmpeg_measure_loudnorm(source)
+    proc = _run(
+        bake_command(source, tmp_output, build_second_pass_filter(measured), info), _BAKE_TIMEOUT
+    )
     if proc.returncode != 0:
         raise BakeError(f"ffmpeg exited {proc.returncode}: {(proc.stderr or '')[-200:]}")
     result = BakeResult(parse_achieved(proc.stderr), parse_mode(proc.stderr))
     verify(info, tmp_output, result.achieved_lufs)
     return result
+
+
+def codec_of(path: Path) -> str:
+    """The audio codec ffprobe reports, for a row with none recorded."""
+    try:
+        return str(_audio_stream(probe(path)).get("codec_name") or "")
+    except BakeError:
+        return ""
+
+
+def decode_problem(path: Path) -> str | None:
+    """None when the master decodes cleanly, else the first audio error.
+
+    The retired script's decode gate, restored (cloud review of #49): a
+    master damaged inside its stream bakes "successfully" -- ffmpeg exits 0
+    -- and the copy then decodes clean, hiding the damage from any later
+    audit of the edition. The command and the judgement of which stderr is
+    audio damage are musaeus.duration.decodes_cleanly's; only the running
+    differs (working-time deadline, stdin closed).
+    """
+    from .stages.corrupt import audio_relevant_stderr, audio_stream_index
+
+    proc = _run(
+        [FFMPEG, "-nostdin", "-v", "error", "-nostats", "-i", str(path), "-vn", "-f", "null", "-"],
+        _DECODE_TIMEOUT,
+    )
+    stderr = (proc.stderr or "").strip()
+    if stderr:
+        stderr = audio_relevant_stderr(stderr, audio_stream_index(path))
+    if proc.returncode != 0 or stderr:
+        return stderr.splitlines()[0] if stderr else f"ffmpeg exited {proc.returncode}"
+    return None

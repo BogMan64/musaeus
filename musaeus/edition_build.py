@@ -14,18 +14,27 @@ The rules it keeps, and why each one exists:
                    (db_history_dir/editions.db), keyed by the master's audio
                    hash -- musaeus.db is wiped between batches.
   copies follow masters  A master that moved or was renamed moves its copy;
-                   one re-tagged re-tags its copy; one that left the library
-                   takes its copy with it. Only a new master, or a copy that
-                   is missing, is baked.
+                   one re-tagged re-tags its copy. Only a new master, or a
+                   copy that is missing, is baked.
+  a copy goes only with its master  A copy is removed when its master has
+                   positively left: set aside (in review, quarantined...) or
+                   gone from disk and from the catalogue. NOT merely because
+                   this build did not select it -- after a catalogue reset
+                   that was every copy (cloud review of #49).
+  trust the file, not the record  A recorded copy is moved, re-tagged or
+                   removed only when the file carries the marker naming its
+                   master. A record whose file is something else is stale.
   never delete a stranger  A file in the edition folder with no record is
-                   reported and left alone. Only recorded copies are removed.
+                   reported and left alone.
   interruptible    Each copy is baked to a temporary name, verified, tagged
                    (with a marker naming its master) and only then renamed
                    into place and recorded. A copy renamed but not recorded
                    when the build stopped is recognised by its marker next
                    time and adopted rather than baked again.
+  damaged masters are not baked  A master that does not decode cleanly
+                   would make a copy that does, hiding the damage.
 
-Lossy masters (51 on 2026-09-27) are left out by default: baking AAC into
+Lossy masters are left out by default (Grey, 2026-09-27): baking AAC into
 ALAC makes large files of lossy audio. --lossy alac includes them.
 """
 
@@ -36,24 +45,24 @@ import os
 import shutil
 import sqlite3
 import time
-from collections.abc import Callable, Iterator
-from concurrent.futures import Future, ThreadPoolExecutor
+from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import edition_bake
+from .config import LOSSLESS_CODECS
+from .db import SET_ASIDE_STATUSES
 from .edition_ledger import Copy, copies, forget, record
 
 EDITION = "lossless"
 TARGET_LUFS = float(edition_bake.TARGET_I)
 TMP_SUFFIX = ".edition_tmp"
-LOSSLESS_CODECS = frozenset({"alac", "flac"})
 
-#: Measured on real masters 2026-09-26: ~7.5 s of wall clock per track for
-#: the two passes, per worker.
-SECONDS_PER_TRACK = 7.5
+#: Measured on real masters 2026-09-27: 20 bakes in 130 s with 2 workers.
+SECONDS_PER_TRACK = 6.5
 #: Head-room kept free on the drive beyond the estimate.
 _SPACE_MARGIN = 1.05
 
@@ -71,27 +80,28 @@ class Master:
     lufs_tp: float | None
     size_bytes: int
     mtime_ns: int | None
+    decode_ok: int | None = None  # 1 checked clean, 0 checked damaged, None never checked
 
     @property
     def lossless(self) -> bool:
         return self.codec.lower() in LOSSLESS_CODECS
 
     def may_compress(self) -> bool | None:
-        """Will linear loudnorm fall back to DYNAMIC (compression)?
+        """True when its peaks force DYNAMIC mode; None when that cannot be told.
 
-        True/False when the stored loudness and true peak can say; None when
-        the master needs lifting but its peak was never measured. Linear
-        mode applies one gain; it is refused when that gain would push the
-        true peak past -1 dBTP.
+        Linear loudnorm applies one gain and is refused when that gain would
+        push the true peak past -1 dBTP -- this can be judged from the stored
+        loudness and peak. It is ALSO refused when the track's loudness range
+        (LRA) exceeds the target's, and no LRA is stored (cloud review of
+        #49: a loud, wide-range master went dynamic while this said False).
+        So True is a certainty and nothing is ever promised linear.
         """
-        if self.lufs is None:
+        if self.lufs is None or self.lufs_tp is None:
             return None
         gain = TARGET_LUFS - self.lufs
-        if gain <= 0:
-            return False
-        if self.lufs_tp is None:
-            return None
-        return self.lufs_tp + gain > float(edition_bake.TARGET_TP)
+        if self.lufs_tp + gain > float(edition_bake.TARGET_TP):
+            return True
+        return None
 
 
 @dataclass
@@ -101,7 +111,9 @@ class Plan:
     move: list[tuple[Master, Copy, Path]] = field(default_factory=list)
     retag: list[tuple[Master, Copy]] = field(default_factory=list)
     remove: list[Copy] = field(default_factory=list)
+    forget: list[Copy] = field(default_factory=list)
     up_to_date: int = 0
+    kept_unselected: int = 0
     lossy_left_out: list[Master] = field(default_factory=list)
     same_audio: list[Master] = field(default_factory=list)
     outside_masters: list[str] = field(default_factory=list)
@@ -112,22 +124,27 @@ class Plan:
     def bake_bytes(self) -> int:
         return sum(m.size_bytes for m, _ in self.bake)
 
-    def compress_counts(self) -> tuple[int, int]:
-        """(will be compressed, may be compressed -- peak never measured)."""
-        verdicts = [m.may_compress() for m, _ in self.bake]
-        return sum(v is True for v in verdicts), sum(v is None for v in verdicts)
+    def compress_count(self) -> int:
+        """Bakes certain to be compressed, from their peaks. A lower bound."""
+        return sum(m.may_compress() is True for m, _ in self.bake)
 
 
-def load_masters(conn: sqlite3.Connection) -> list[tuple[str, sqlite3.Row]]:
-    rows = conn.execute(
-        """
-        SELECT file_path, audio_hash, codec, lufs, lufs_tp, size_bytes
+def _columns(conn: sqlite3.Connection) -> set[str]:
+    return {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
+
+
+def load_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Every catalogue row, whatever its status: the removal rule needs to
+    know which masters were set aside, not only which are live."""
+    have = _columns(conn)
+    decode = "decode_ok" if "decode_ok" in have else "NULL AS decode_ok"
+    return conn.execute(
+        f"""
+        SELECT file_path, audio_hash, codec, lufs, lufs_tp, size_bytes, status, {decode}
           FROM archive
-         WHERE status = 'CATALOGUED'
          ORDER BY file_path
         """
     ).fetchall()
-    return [(r["file_path"], r) for r in rows]
 
 
 def _mtime_ns(path: Path) -> int | None:
@@ -149,43 +166,89 @@ def make_plan(
     plan = Plan()
     recorded = copies(ledger, EDITION)
     selected: dict[str, tuple[Master, Path]] = {}
+    live_hashes: set[str] = set()
+    aside_hashes: set[str] = set()
+    live_at: dict[str, str] = {}  # path -> the audio a live row says is there
 
-    for file_path, r in load_masters(conn):
-        path = Path(file_path)
-        if not path.is_relative_to(masters_root):
-            plan.outside_masters.append(file_path)
+    for r in load_rows(conn):
+        h = r["audio_hash"] or ""
+        if r["status"] == "CATALOGUED" and h:
+            live_at[r["file_path"]] = h
+        if r["status"] in SET_ASIDE_STATUSES:
+            if h:
+                aside_hashes.add(h)
             continue
+        if r["status"] != "CATALOGUED":
+            continue
+        if h:
+            live_hashes.add(h)
+        path = Path(r["file_path"])
+        if not path.is_relative_to(masters_root):
+            plan.outside_masters.append(r["file_path"])
+            continue
+        mtime = _mtime_ns(path)
+        codec = r["codec"] or (edition_bake.codec_of(path) if mtime is not None else "")
         m = Master(
             path=path,
-            audio_hash=r["audio_hash"] or "",
-            codec=(r["codec"] or ""),
+            audio_hash=h,
+            codec=codec,
             lufs=r["lufs"],
             lufs_tp=r["lufs_tp"],
             size_bytes=int(r["size_bytes"] or 0),
-            mtime_ns=_mtime_ns(path),
+            mtime_ns=mtime,
+            decode_ok=r["decode_ok"],
         )
-        if not m.audio_hash or m.mtime_ns is None:
-            plan.blocked.append(
-                (m, "no audio fingerprint" if not m.audio_hash else "master missing")
-            )
-            continue
-        if not m.lossless and not include_lossy:
+        if not h:
+            plan.blocked.append((m, "no audio fingerprint"))
+        elif mtime is None:
+            plan.blocked.append((m, "master missing"))
+        elif m.decode_ok == 0:
+            plan.blocked.append((m, "master fails to decode -- not baked"))
+        elif not m.lossless and not include_lossy:
             plan.lossy_left_out.append(m)
-            continue
-        if m.audio_hash in selected:
+        elif h in selected:
             plan.same_audio.append(m)
-            continue
-        selected[m.audio_hash] = (m, edition_root / path.relative_to(masters_root))
+        else:
+            selected[h] = (m, edition_root / path.relative_to(masters_root))
 
-    wanted_outputs = {str(t) for _, t in selected.values()}
-    # Paths the removals and moves below will empty before any bake lands.
+    marker_cache: dict[str, str | None] = {}
+
+    def marker(p: Path) -> str | None:
+        key = str(p)
+        if key not in marker_cache:
+            marker_cache[key] = edition_bake.read_marker(p)
+        return marker_cache[key]
+
+    def ours(p: Path, h: str) -> bool:
+        return p.exists() and marker(p) == marker_for(h)
+
+    # Which records can be trusted: the file they name carries their marker.
+    trusted = {h for h, c in recorded.items() if ours(Path(c.output_path), h)}
+
+    for h, rec in recorded.items():
+        if h in selected:
+            continue
+        # Gone means positively gone: set aside, or its file is not at its
+        # path -- missing, or holding a recording the catalogue says is
+        # another. Not in this build is not gone: after a catalogue reset
+        # nothing is in the build (cloud review of #49).
+        elsewhere = live_at.get(rec.master_path, h) != h
+        gone = h not in live_hashes and (
+            h in aside_hashes or elsewhere or not Path(rec.master_path).exists()
+        )
+        if gone:
+            plan.remove.append(rec)
+        else:
+            plan.kept_unselected += 1
+
+    # Paths that the removals and moves below empty before any bake lands.
     # Every baked-copy swap needs this: the original is renamed into the name
-    # the baked copy left, so a NEW master's target still holds the old copy,
-    # which is about to be removed.
-    freed = {
-        c.output_path
-        for h, c in recorded.items()
-        if h not in selected or c.output_path != str(selected[h][1])
+    # the baked copy left, so a NEW master's target still holds the old copy.
+    freed = {c.output_path for c in plan.remove if c.master_hash in trusted}
+    freed |= {
+        recorded[h].output_path
+        for h, (_, target) in selected.items()
+        if h in trusted and recorded[h].output_path != str(target)
     }
 
     def taken(path: Path) -> bool:
@@ -193,31 +256,29 @@ def make_plan(
 
     for h, (m, target) in selected.items():
         c = recorded.get(h)
-        if c is None:
-            if taken(target):
-                if edition_bake.read_marker(target) == marker_for(h):
-                    plan.adopt.append((m, target))
+        if c is not None and h in trusted:
+            out = Path(c.output_path)
+            if out != target:
+                if taken(target) and not ours(target, h):
+                    plan.blocked.append((m, f"its new place is taken: {target}"))
                 else:
-                    plan.blocked.append((m, f"a file with no record is in the way: {target}"))
+                    plan.move.append((m, c, target))
+            elif c.master_mtime_ns != m.mtime_ns:
+                plan.retag.append((m, c))
             else:
-                plan.bake.append((m, target))
+                plan.up_to_date += 1
             continue
-        out = Path(c.output_path)
-        if not out.exists():
-            plan.bake.append((m, target))
-        elif out != target:
-            if taken(target):
-                plan.blocked.append((m, f"its new place is taken: {target}"))
-            else:
-                plan.move.append((m, c, target))
-        elif c.master_mtime_ns != m.mtime_ns:
-            plan.retag.append((m, c))
+        if c is not None and Path(c.output_path).exists():
+            # The file the record names is not this master's copy.
+            plan.forget.append(c)
+        if ours(target, h):
+            plan.adopt.append((m, target))
+        elif taken(target):
+            plan.blocked.append((m, f"a file with no record is in the way: {target}"))
         else:
-            plan.up_to_date += 1
+            plan.bake.append((m, target))
 
-    plan.remove = [c for h, c in recorded.items() if h not in selected]
-
-    known = {c.output_path for c in recorded.values()} | wanted_outputs
+    known = {c.output_path for c in recorded.values()} | {str(t) for _, t in selected.values()}
     if edition_root.exists():
         for p in sorted(edition_root.rglob("*")):
             if p.is_file() and not p.name.endswith(TMP_SUFFIX) and str(p) not in known:
@@ -227,21 +288,66 @@ def make_plan(
 
 # ── Guards ─────────────────────────────────────────────────────────────────
 
+#: musaeus subcommands that only read. Anything else -- a pipeline act,
+#: organize, finalize, the console (which runs acts in-process) -- can move a
+#: master under a build.
+READ_ONLY_COMMANDS = frozenset(
+    {"edition", "edition-build", "doctor", "version", "status", "runs", "report", "plan"}
+)
 
-def pipeline_pids() -> list[int]:
-    """PIDs of a running `musaeus run`: masters can move under it."""
+
+def _musaeus_subcommand(argv: list[str]) -> str | None:
+    """The subcommand of a musaeus invocation, "" for none, None if not musaeus."""
+    for i, word in enumerate(argv):
+        if word == "-m" and i + 1 < len(argv) and argv[i + 1] in ("musaeus", "musaeus.cli"):
+            rest = argv[i + 2 :]
+        elif Path(word).name == "musaeus" and i <= 1:
+            rest = argv[i + 1 :]
+        else:
+            continue
+        return next((w for w in rest if not w.startswith("-")), "")
+    return None
+
+
+def busy_musaeus(procs: Iterable[tuple[int, int, str, list[str]]], me: int) -> list[int]:
+    """PIDs of other MUSAEUS work that can move masters under a build.
+
+    *procs* is (pid, parent pid, process name, argv). Matched on the process
+    NAME being python or musaeus, never a bare argv search, which matches the
+    shell that is asking (CLAUDE.md, pgrep -f). This process and its
+    ancestors -- the console that launched the build -- are not "other".
+    """
+    table = {pid: (ppid, name, argv) for pid, ppid, name, argv in procs}
+    mine = set()
+    p = me
+    while p in table and p not in mine:
+        mine.add(p)
+        p = table[p][0]
     found = []
+    for pid, (_, name, argv) in table.items():
+        if pid in mine or not (name.startswith("python") or name == "musaeus"):
+            continue
+        sub = _musaeus_subcommand(argv)
+        if sub is not None and sub not in READ_ONLY_COMMANDS:
+            found.append(pid)
+    return found
+
+
+def _proc_table() -> Iterator[tuple[int, int, str, list[str]]]:
     for d in Path("/proc").glob("[0-9]*"):
         try:
-            argv = (d / "cmdline").read_bytes().split(b"\0")
+            stat = (d / "stat").read_text()
+            argv = [a.decode("utf-8", "replace") for a in (d / "cmdline").read_bytes().split(b"\0")]
         except OSError:
             continue
-        words = [a.decode("utf-8", "replace") for a in argv if a]
-        if any(Path(w).name == "musaeus" or w.endswith("musaeus.cli") for w in words) and (
-            "run" in words
-        ):
-            found.append(int(d.name))
-    return found
+        name = stat[stat.index("(") + 1 : stat.rindex(")")]
+        ppid = int(stat[stat.rindex(")") + 2 :].split()[1])
+        yield int(d.name), ppid, name, [a for a in argv if a]
+
+
+def pipeline_pids() -> list[int]:
+    """Other MUSAEUS work running now that could move masters under a build."""
+    return busy_musaeus(_proc_table(), os.getpid())
 
 
 @contextmanager
@@ -304,7 +410,11 @@ def _prune_empty(start: Path, root: Path) -> None:
 
 
 def _bake_one(m: Master, target: Path) -> tuple[Path, edition_bake.BakeResult]:
-    """Worker: bake, verify, tag, all under a temporary name. No database."""
+    """Worker: decode-check, bake, verify, tag, under a temporary name. No database."""
+    if m.decode_ok != 1:
+        problem = edition_bake.decode_problem(m.path)
+        if problem:
+            raise edition_bake.BakeError(f"the master does not decode cleanly: {problem}")
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + TMP_SUFFIX)
     tmp.unlink(missing_ok=True)
@@ -315,6 +425,38 @@ def _bake_one(m: Master, target: Path) -> tuple[Path, edition_bake.BakeResult]:
         tmp.unlink(missing_ok=True)
         raise
     return tmp, result
+
+
+def _move_all(plan: Plan, ledger: sqlite3.Connection, edition_root: Path, out: Outcome) -> None:
+    """Two steps, so a chain or a swap of copies finishes in one build: every
+    moving copy first steps aside to a temporary name, then each goes to its
+    target. Step by step in path order, a swap never finished."""
+    staged: list[tuple[Master, Copy, Path, Path]] = []
+    for m, c, target in plan.move:
+        old = Path(c.output_path)
+        aside = old.with_name(f"{old.name}.{m.audio_hash[:12]}{TMP_SUFFIX}")
+        try:
+            old.rename(aside)
+        except OSError as exc:
+            out.failed.append((str(m.path), f"could not move its copy: {exc}"))
+            continue
+        staged.append((m, c, target, aside))
+    for m, c, target, aside in staged:
+        old = Path(c.output_path)
+        try:
+            if target.exists():
+                # Never rename over a file: it is not this copy.
+                raise OSError(f"its new place is taken: {target}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            aside.rename(target)
+            edition_bake.copy_tags(m.path, target, marker_for(m.audio_hash))
+            record(ledger, _copy(m, target, c.achieved_lufs, c.mode))
+            out.moved += 1
+        except Exception as exc:  # noqa: BLE001 -- one copy, not the build
+            if aside.exists() and not old.exists():
+                aside.rename(old)
+            out.failed.append((str(m.path), f"{type(exc).__name__}: {exc}"))
+        _prune_empty(old.parent, edition_root)
 
 
 def execute(
@@ -333,6 +475,9 @@ def execute(
     for stale in edition_root.rglob(f"*{TMP_SUFFIX}") if edition_root.exists() else []:
         stale.unlink(missing_ok=True)
 
+    for c in plan.forget:
+        forget(ledger, EDITION, c.master_hash)
+
     for c in plan.remove:
         p = Path(c.output_path)
         if p.exists():
@@ -345,23 +490,15 @@ def execute(
         forget(ledger, EDITION, c.master_hash)
         out.removed += 1
 
-    for m, c, target in plan.move:
-        old = Path(c.output_path)
-        if target.exists():
-            # Never let a rename overwrite: the file there is not this copy.
-            out.failed.append((str(m.path), f"its new place is taken: {target}"))
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        old.rename(target)
-        edition_bake.copy_tags(m.path, target, marker_for(m.audio_hash))
-        record(ledger, _copy(m, target, c.achieved_lufs, c.mode))
-        _prune_empty(old.parent, edition_root)
-        out.moved += 1
+    _move_all(plan, ledger, edition_root, out)
 
     for m, c in plan.retag:
-        edition_bake.copy_tags(m.path, Path(c.output_path), marker_for(m.audio_hash))
-        record(ledger, _copy(m, Path(c.output_path), c.achieved_lufs, c.mode))
-        out.retagged += 1
+        try:
+            edition_bake.copy_tags(m.path, Path(c.output_path), marker_for(m.audio_hash))
+            record(ledger, _copy(m, Path(c.output_path), c.achieved_lufs, c.mode))
+            out.retagged += 1
+        except Exception as exc:  # noqa: BLE001
+            out.failed.append((str(m.path), f"{type(exc).__name__}: {exc}"))
 
     for m, target in plan.adopt:
         record(ledger, _copy(m, target, None, "adopted"))
@@ -377,27 +514,29 @@ def execute(
     pool = ThreadPoolExecutor(max_workers=max(1, workers))
     futures: dict[Future, tuple[Master, Path]] = {}
     try:
-        with IdleThrottle():
+        with IdleThrottle() as throttle:
+            edition_bake.ACTIVE_THROTTLE = throttle
             for m, target in todo:
                 futures[pool.submit(_bake_one, m, target)] = (m, target)
             done = 0
-            for fut in _as_completed(futures):
+            for fut in as_completed(futures):
                 m, target = futures[fut]
                 done += 1
                 try:
                     tmp, result = fut.result()
-                except edition_bake.BakeError as exc:
-                    out.failed.append((str(m.path), str(exc)))
-                    continue
+                    if target.exists():
+                        tmp.unlink(missing_ok=True)
+                        raise edition_bake.BakeError(f"something appeared at {target}")
+                    tmp.rename(target)
+                    record(ledger, _copy(m, target, result.achieved_lufs, result.mode))
                 except Exception as exc:  # noqa: BLE001 -- one track, not the build
-                    out.failed.append((str(m.path), f"{type(exc).__name__}: {exc}"))
+                    reason = (
+                        str(exc)
+                        if isinstance(exc, edition_bake.BakeError)
+                        else (f"{type(exc).__name__}: {exc}")
+                    )
+                    out.failed.append((str(m.path), reason))
                     continue
-                if target.exists():
-                    tmp.unlink(missing_ok=True)
-                    out.failed.append((str(m.path), f"something appeared at {target}"))
-                    continue
-                tmp.rename(target)
-                record(ledger, _copy(m, target, result.achieved_lufs, result.mode))
                 out.baked += 1
                 if result.mode == "dynamic":
                     out.dynamic.append(str(target))
@@ -407,18 +546,15 @@ def execute(
                     progress(f"  {done:,}/{len(todo):,} baked  (~{left / 60:.0f} min left)")
     except KeyboardInterrupt:
         out.stopped = True
+    finally:
+        # Always: queued bakes must not run on after the lock and the
+        # throttle are released (cloud review of #49).
         pool.shutdown(wait=True, cancel_futures=True)
-        for stale in edition_root.rglob(f"*{TMP_SUFFIX}"):
-            stale.unlink(missing_ok=True)
-        return out
-    pool.shutdown(wait=True)
+        edition_bake.ACTIVE_THROTTLE = None
+        if out.stopped:
+            for stale in edition_root.rglob(f"*{TMP_SUFFIX}"):
+                stale.unlink(missing_ok=True)
     return out
-
-
-def _as_completed(futures: dict[Future, tuple[Master, Path]]) -> Iterator[Future]:
-    from concurrent.futures import as_completed
-
-    yield from as_completed(futures)
 
 
 def free_bytes(path: Path) -> int:
@@ -436,7 +572,6 @@ def plan_lines(plan: Plan, *, workers: int, free: int | None = None) -> list[str
     """The plan in plain words, for the dry run and the console."""
     gb = plan.bake_bytes / 1_000_000_000
     hours = len(plan.bake) * SECONDS_PER_TRACK / max(1, workers) / 3600
-    will, may = plan.compress_counts()
     lines = [
         f"  To bake       : {len(plan.bake):,} track(s), about {gb:.1f} GB, "
         f"about {hours:.1f} h with {workers} worker(s)",
@@ -447,13 +582,14 @@ def plan_lines(plan: Plan, *, workers: int, free: int | None = None) -> list[str
         ("Move/rename", len(plan.move)),
         ("Re-tag only", len(plan.retag)),
         ("Remove", len(plan.remove)),
+        ("Stale records", len(plan.forget)),
     ):
         if n:
             lines.append(f"  {label:<14}: {n:,}")
-    if will or may:
+    if plan.bake:
         lines.append(
-            f"  Compressed    : {will:,} will be, {may:,} may be -- quieter than "
-            f"{edition_bake.TARGET_I} LUFS, and lifting them would clip without it"
+            f"  Compressed    : at least {plan.compress_count():,} (their peaks); tracks with a "
+            f"wide dynamic range are too -- the build reports the exact number"
         )
     if plan.lossy_left_out:
         lines.append(
@@ -462,6 +598,11 @@ def plan_lines(plan: Plan, *, workers: int, free: int | None = None) -> list[str
         )
     if plan.same_audio:
         lines.append(f"  Same audio    : {len(plan.same_audio):,} second copy(ies), baked once")
+    if plan.kept_unselected:
+        lines.append(
+            f"  Kept          : {plan.kept_unselected:,} copy(ies) whose master is not in "
+            f"this build but has not left the library"
+        )
     if plan.blocked:
         lines.append(f"  Not possible  : {len(plan.blocked):,} -- listed in the log")
     if plan.unrecorded:
