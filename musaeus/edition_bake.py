@@ -1,0 +1,283 @@
+"""The loudness bake: one master in, one -18 LUFS lossless copy out.
+
+Moved here from scripts/alac_library/build_alac_library.py (retired
+2026-09-25 because it REPOINTED catalogue rows at the copies it made). The
+mechanics are unchanged and execution-proven there: a two-pass EBU R128
+loudnorm in linear mode, the master's own sample format kept (a 16-bit master
+baked unpinned came out 24-bit -- 61% bigger, all padding), cover art copied,
+and every bake verified before it is trusted.
+
+Two additions, both from the 2026-09-26 design review:
+
+  sample rate   loudnorm works at 192 kHz internally; the output rate is
+                pinned to the master's, so a 44.1 kHz master never becomes a
+                192 kHz copy.
+  dynamic mode  linear loudnorm falls back to DYNAMIC (compressing the music)
+                when the target cannot be reached by gain alone -- quiet
+                classical that needs lifting is the usual case. The mode is
+                read from the second pass and reported, never hidden.
+
+Nothing here touches the database. edition_build.py decides what to bake and
+records what was made.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+FFMPEG = "ffmpeg"
+FFPROBE = "ffprobe"
+TARGET_I = "-18.0"
+TARGET_TP = "-1.0"
+TARGET_LRA = "11.0"
+
+_LUFS_TOLERANCE = 1.0
+_DURATION_TOLERANCE_SEC = 2.0
+_PROBE_TIMEOUT = 60
+# A whole-file two-pass loudnorm of a long hi-res track is minutes, not seconds.
+_BAKE_TIMEOUT = 1800
+
+_OUTPUT_I_RE = re.compile(r"Output Integrated:\s*(-?\d+(?:\.\d+)?)\s*LUFS", re.I)
+_NORM_TYPE_RE = re.compile(r"Normalization Type:\s*(\w+)", re.I)
+
+
+class BakeError(RuntimeError):
+    """The bake did not produce a copy that can be trusted."""
+
+
+@dataclass(frozen=True)
+class BakeResult:
+    achieved_lufs: float | None
+    mode: str  # "linear" | "dynamic" | "" when loudnorm did not say
+
+
+def _run(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise BakeError(f"{cmd[0]} timed out after {timeout}s") from exc
+
+
+def probe(path: Path) -> dict:
+    proc = _run(
+        [
+            FFPROBE,
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(path),
+        ],
+        _PROBE_TIMEOUT,
+    )
+    if proc.returncode != 0:
+        raise BakeError(f"ffprobe failed on {path} ({proc.returncode}): {proc.stderr[:200]}")
+    data: dict = json.loads(proc.stdout)
+    return data
+
+
+def _audio_stream(info: dict) -> dict:
+    for s in info.get("streams", []):
+        if s.get("codec_type") == "audio":
+            return dict(s)
+    return {}
+
+
+def has_attached_picture(info: dict) -> bool:
+    return any(
+        s.get("codec_type") == "video" and s.get("disposition", {}).get("attached_pic") == 1
+        for s in info.get("streams", [])
+    )
+
+
+def sample_fmt_for(info: dict) -> str | None:
+    """The master's own depth: s16p for 16-bit, s32p for more, None if unknown."""
+    a = _audio_stream(info)
+    depth = a.get("bits_per_raw_sample") or a.get("bits_per_sample")
+    try:
+        bits = int(str(depth))
+    except (TypeError, ValueError):
+        return None
+    if bits <= 0:
+        return None
+    return "s16p" if bits <= 16 else "s32p"
+
+
+def sample_rate_of(info: dict) -> int | None:
+    try:
+        return int(str(_audio_stream(info).get("sample_rate")))
+    except (TypeError, ValueError):
+        return None
+
+
+def measure(path: Path) -> dict:
+    """First pass: what loudnorm measures of the master."""
+    flt = f"loudnorm=I={TARGET_I}:TP={TARGET_TP}:LRA={TARGET_LRA}:print_format=json"
+    proc = _run(
+        [
+            FFMPEG,
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(path),
+            "-map",
+            "0:a:0",
+            "-af",
+            flt,
+            "-f",
+            "null",
+            "-",
+        ],
+        _BAKE_TIMEOUT,
+    )
+    err = proc.stderr or ""
+    start, end = err.rfind("{"), err.rfind("}")
+    if start == -1 or end <= start:
+        raise BakeError(f"could not read the loudness measurement of {path.name}")
+    measured: dict = json.loads(err[start : end + 1])
+    return measured
+
+
+def second_pass_filter(measured: dict) -> str:
+    return (
+        f"loudnorm=I={TARGET_I}:TP={TARGET_TP}:LRA={TARGET_LRA}:"
+        f"measured_I={measured['input_i']}:measured_LRA={measured['input_lra']}:"
+        f"measured_TP={measured['input_tp']}:measured_thresh={measured['input_thresh']}:"
+        f"offset={measured['target_offset']}:linear=true:print_format=summary"
+    )
+
+
+def bake_command(source: Path, output: Path, loudnorm: str, info: dict) -> list[str]:
+    """ALAC -> ALAC at the master's own rate and depth, art and tags copied."""
+    fmt = sample_fmt_for(info)
+    rate = sample_rate_of(info)
+    audio = [
+        "-c:a",
+        "alac",
+        *(["-sample_fmt", fmt] if fmt else []),
+        *(["-ar", str(rate)] if rate else []),
+        "-af",
+        loudnorm,
+    ]
+    cmd = [
+        FFMPEG,
+        "-hide_banner",
+        "-nostats",
+        "-y",
+        "-i",
+        str(source),
+        "-threads",
+        "2",
+        "-map",
+        "0:a:0",
+    ]
+    if has_attached_picture(info):
+        cmd += ["-map", "0:v:0", *audio, "-c:v", "copy", "-disposition:v:0", "attached_pic"]
+    else:
+        cmd += audio
+    return [*cmd, "-map_metadata", "0", "-f", "mp4", str(output)]
+
+
+def parse_achieved(stderr: str) -> float | None:
+    m = _OUTPUT_I_RE.search(stderr or "")
+    return float(m.group(1)) if m else None
+
+
+def parse_mode(stderr: str) -> str:
+    m = _NORM_TYPE_RE.search(stderr or "")
+    return m.group(1).lower() if m else ""
+
+
+def verify(source_info: dict, output: Path, achieved: float | None) -> None:
+    """The copy has audio, the master's rate, its length, and the target loudness."""
+    out = probe(output)
+    a = _audio_stream(out)
+    if not a:
+        raise BakeError("the copy has no audio stream")
+    want_rate = sample_rate_of(source_info)
+    if want_rate and sample_rate_of(out) != want_rate:
+        raise BakeError(f"the copy is {sample_rate_of(out)} Hz, the master {want_rate} Hz")
+    if achieved is None:
+        raise BakeError("loudnorm did not report the loudness it achieved -- unverified")
+    if abs(achieved - float(TARGET_I)) > _LUFS_TOLERANCE:
+        raise BakeError(f"baked to {achieved:.2f} LUFS, wanted {TARGET_I}")
+
+    def _dur(info: dict) -> float | None:
+        try:
+            return float(info.get("format", {}).get("duration"))
+        except (TypeError, ValueError):
+            return None
+
+    sd, od = _dur(source_info), _dur(out)
+    if sd is not None and od is not None and abs(sd - od) > _DURATION_TOLERANCE_SEC:
+        raise BakeError(f"length changed: master {sd:.1f}s, copy {od:.1f}s")
+
+
+#: Freeform tags that carry a loudness GAIN. A copy already baked to -18 LUFS
+#: must not carry its master's: a player would apply the gain a second time.
+_GAIN_TAG_RE = re.compile(r"^----:com\.apple\.iTunes:(r128_|replaygain_|itunnorm)", re.I)
+
+#: Written on every edition copy, so a copy is recognisable as one -- and as
+#: the copy of WHICH master -- from the file alone, even when the record of
+#: it was lost to an interruption between the rename and the write.
+MARKER_KEY = "----:com.apple.iTunes:MUSAEUS_EDITION"
+
+
+def copy_tags(master: Path, copy: Path, marker: str) -> None:
+    """Give *copy* the master's tags, minus any loudness gain, plus *marker*.
+
+    Measured 2026-09-27 on a real master: ffmpeg's -map_metadata 0 keeps
+    the plain iTunes atoms but drops every freeform one -- the gain tags,
+    which is right, and also BPM, key, ISRC, the MusicBrainz id and the
+    track counts, which is not. So the tags are copied here instead.
+    """
+    from mutagen.mp4 import MP4, MP4FreeForm
+
+    src = MP4(master)
+    dst = MP4(copy)
+    if dst.tags is None:
+        dst.add_tags()
+    assert dst.tags is not None
+    dst.tags.clear()
+    for key, value in (src.tags or {}).items():
+        if not _GAIN_TAG_RE.match(key):
+            dst.tags[key] = value
+    dst.tags[MARKER_KEY] = [MP4FreeForm(marker.encode("utf-8"))]
+    dst.save()
+
+
+def read_marker(path: Path) -> str | None:
+    """The edition marker on *path*, or None when it carries none."""
+    from mutagen.mp4 import MP4
+
+    try:
+        tags: Any = MP4(path).tags or {}
+    except Exception:  # noqa: BLE001 -- unreadable means "not ours"
+        return None
+    values = tags.get(MARKER_KEY)
+    if not values:
+        return None
+    return bytes(values[0]).decode("utf-8", "replace")
+
+
+def bake(source: Path, tmp_output: Path) -> BakeResult:
+    """Bake *source* into *tmp_output* and verify it. Raises BakeError.
+
+    The caller moves tmp_output into place only after this returns: a copy
+    that fails verification never sits where a finished one would.
+    """
+    info = probe(source)
+    measured = measure(source)
+    proc = _run(bake_command(source, tmp_output, second_pass_filter(measured), info), _BAKE_TIMEOUT)
+    if proc.returncode != 0:
+        raise BakeError(f"ffmpeg exited {proc.returncode}: {(proc.stderr or '')[-200:]}")
+    result = BakeResult(parse_achieved(proc.stderr), parse_mode(proc.stderr))
+    verify(info, tmp_output, result.achieved_lufs)
+    return result
