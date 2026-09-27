@@ -951,6 +951,12 @@ class DupeResolverStage(BaseStage):
                 result.notes.append(
                     f"group {group_id}: {len(aside)} member(s) already set aside, left alone"
                 )
+                # Left alone, and closed: its row stayed 'pending' for ever,
+                # so the group came back on every Act 2 listing the same
+                # rows -- 17 groups, 2026-09-27.
+                if not dry_run:
+                    for m in aside:
+                        _mark(ctx, component, m["file_path"], "archive")
                 if len(members) < 2:
                     result.files_skipped += len(members) + len(aside)
                     if not dry_run:
