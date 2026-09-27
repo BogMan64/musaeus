@@ -1392,7 +1392,7 @@ class Console:
             )
             return
 
-        hours = max(1, round(len(plan.bake) * eb.SECONDS_PER_TRACK / 2 / 3600))
+        hours = max(1, round(plan.hours(2)))
         _info(
             f"Building bakes {len(plan.bake):,} track(s) — roughly {hours} hour(s). It "
             "pauses while you use the machine, and a stopped build carries on next time."

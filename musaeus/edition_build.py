@@ -61,8 +61,12 @@ EDITION = "lossless"
 TARGET_LUFS = float(edition_bake.TARGET_I)
 TMP_SUFFIX = ".edition_tmp"
 
-#: Measured on real masters 2026-09-27: 20 bakes in 130 s with 2 workers.
-SECONDS_PER_TRACK = 6.5
+#: Worker-seconds of work per second of audio, scaled to 44.1 kHz -- the
+#: decode check plus both loudnorm passes. Measured 2026-09-27 on 29 real
+#: masters: 0.025 without the decode check, 0.077 with it on 192 kHz
+#: masters (847 of the library's are). A flat per-track figure understated
+#: the build by half; the estimate now follows length and sample rate.
+WORK_PER_AUDIO_SECOND = 0.04
 #: Head-room kept free on the drive beyond the estimate.
 _SPACE_MARGIN = 1.05
 
@@ -81,6 +85,11 @@ class Master:
     size_bytes: int
     mtime_ns: int | None
     decode_ok: int | None = None  # 1 checked clean, 0 checked damaged, None never checked
+    seconds_44k: float = 240.0  # its length, scaled to 44.1 kHz: what a bake costs
+
+    @property
+    def work_seconds(self) -> float:
+        return self.seconds_44k * WORK_PER_AUDIO_SECOND
 
     @property
     def lossless(self) -> bool:
@@ -124,6 +133,9 @@ class Plan:
     def bake_bytes(self) -> int:
         return sum(m.size_bytes for m, _ in self.bake)
 
+    def hours(self, workers: int) -> float:
+        return sum(m.work_seconds for m, _ in self.bake) / max(1, workers) / 3600
+
     def compress_count(self) -> int:
         """Bakes certain to be compressed, from their peaks. A lower bound."""
         return sum(m.may_compress() is True for m, _ in self.bake)
@@ -140,7 +152,8 @@ def load_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     decode = "decode_ok" if "decode_ok" in have else "NULL AS decode_ok"
     return conn.execute(
         f"""
-        SELECT file_path, audio_hash, codec, lufs, lufs_tp, size_bytes, status, {decode}
+        SELECT file_path, audio_hash, codec, lufs, lufs_tp, size_bytes, status, {decode},
+               duration, sample_rate
           FROM archive
          ORDER BY file_path
         """
@@ -197,6 +210,7 @@ def make_plan(
             size_bytes=int(r["size_bytes"] or 0),
             mtime_ns=mtime,
             decode_ok=r["decode_ok"],
+            seconds_44k=float(r["duration"] or 240.0) * (int(r["sample_rate"] or 44_100) / 44_100),
         )
         if not h:
             plan.blocked.append((m, "no audio fingerprint"))
@@ -599,10 +613,10 @@ def space_needed(plan: Plan) -> int:
 def plan_lines(plan: Plan, *, workers: int, free: int | None = None) -> list[str]:
     """The plan in plain words, for the dry run and the console."""
     gb = plan.bake_bytes / 1_000_000_000
-    hours = len(plan.bake) * SECONDS_PER_TRACK / max(1, workers) / 3600
+    hours = plan.hours(workers)
     lines = [
         f"  To bake       : {len(plan.bake):,} track(s), about {gb:.1f} GB, "
-        f"about {hours:.1f} h with {workers} worker(s)",
+        f"about {hours:.0f} h with {workers} worker(s), more while the machine is in use",
         f"  Already there : {plan.up_to_date:,}",
     ]
     for label, n in (
