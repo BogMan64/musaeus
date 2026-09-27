@@ -113,6 +113,24 @@ def _has_live_marker(raw_title: str) -> bool:
     return bool(_LIVE_MARKER_RE.search(raw_title))
 
 
+# Two copies this close in length, under the same full title, are one
+# performance. The baked copies and their originals measured 0.0-0.1 s apart;
+# two nights of one song are seconds apart.
+_SAME_TAKE_SECONDS = 1.0
+
+
+def _same_take(a: dict, b: dict) -> bool:
+    """True if two live-marked copies are the same performance, not two.
+
+    The live guard kept every pair of live titles apart. A baked copy and its
+    own original are one concert, so 32 baked live copies stayed filed beside
+    their originals (2026-09-26). Same full title AND the same length.
+    """
+    same_title = " ".join(a["title"].casefold().split()) == " ".join(b["title"].casefold().split())
+    da, db = a.get("duration"), b.get("duration")
+    return same_title and da is not None and db is not None and abs(da - db) <= _SAME_TAKE_SECONDS
+
+
 # Classical works carry TWO independent identifiers, and conflating them
 # was my first mistake here: a work number ("No. 1", "Op. 12", "RV 317",
 # "BWV 974") says WHICH PIECE, and a movement marker ("I.", "II.",
@@ -221,7 +239,7 @@ class NearDupeStage(BaseStage):
         # Load all catalogued rows
         rows = ctx.conn.execute(
             """
-            SELECT file_path, artist, title, bitrate, size_bytes
+            SELECT file_path, artist, title, bitrate, size_bytes, duration, audio_hash
             FROM archive
             WHERE status = 'CATALOGUED'
               AND artist IS NOT NULL AND trim(artist) != ''
@@ -246,10 +264,33 @@ class NearDupeStage(BaseStage):
 
         # Pre-load already-staged near dupe pairs to avoid re-flagging
         existing_near: set[tuple[str, str]] = set()
+        near_rows: dict[str, list] = {}
         for row in ctx.conn.execute(
-            "SELECT group_id, file_path FROM duplicates WHERE duplicate_type='NEAR'"
+            "SELECT group_id, file_path, status, audio_hash FROM duplicates "
+            "WHERE duplicate_type='NEAR'"
         ).fetchall():
             existing_near.add((row["group_id"], row["file_path"]))
+            near_rows.setdefault(row["group_id"], []).append(row)
+
+        # A pair closed as 'stale' -- a file changed under it, or it was
+        # joined to a group that had -- was never flagged again, because any
+        # row counted as "already flagged". 7 baked copies sat stuck beside
+        # their originals (2026-09-26). Found again, it is judged again, with
+        # the recordings there now.
+        stale_near = {
+            gid for gid, rs in near_rows.items() if all(r["status"] == "stale" for r in rs)
+        }
+
+        # Keep both: every member of a NEAR group marked 'keep' (the resolver
+        # keeps ONE; both kept is a person's decision). Held by the two
+        # recordings, not the two paths, so a rename does not undo it.
+        keep_both = {
+            frozenset(r["audio_hash"] for r in rs)
+            for rs in near_rows.values()
+            if len(rs) > 1
+            and all(r["status"] == "keep" and r["audio_hash"] for r in rs)
+            and len({r["audio_hash"] for r in rs}) == 2
+        }
 
         # Bucket tracks by canonical artist
         artist_buckets: dict[str, list[dict]] = {}
@@ -284,7 +325,14 @@ class NearDupeStage(BaseStage):
                     # without this guard they'd look identical and collapse
                     # into one group. Studio-vs-live still matches fine
                     # (only one side carries the marker).
-                    if _has_live_marker(a["title"]) and _has_live_marker(b["title"]):
+                    if (
+                        _has_live_marker(a["title"])
+                        and _has_live_marker(b["title"])
+                        and not _same_take(a, b)
+                    ):
+                        continue
+
+                    if frozenset((a["audio_hash"], b["audio_hash"])) in keep_both:
                         continue
 
                     # Different movements of one work are different pieces.
@@ -303,6 +351,29 @@ class NearDupeStage(BaseStage):
                     # Near duplicate found
                     gid = _group_id(a["file_path"], b["file_path"])
                     confidence = round(score / 100.0, 4)
+
+                    if gid in stale_near:
+                        stale_near.discard(gid)
+                        new_groups += 1
+                        result.files_changed += 1
+                        if not dry_run:
+                            ctx.conn.execute(
+                                """
+                                UPDATE duplicates
+                                   SET status = 'pending', run_id = ?, confidence = ?,
+                                       audio_hash = (SELECT audio_hash FROM archive
+                                                      WHERE archive.file_path = duplicates.file_path)
+                                 WHERE group_id = ?
+                                """,
+                                (ctx.run_id, confidence, gid),
+                            )
+                            ctx.log_event(
+                                "NEAR_DUPLICATE_FOUND",
+                                file_path=a["file_path"],
+                                stage=self.NAME,
+                                note=f"group={gid} score={score} judged again (was stale)",
+                            )
+                        continue
 
                     is_new_group = False
                     for fp in (a["file_path"], b["file_path"]):
