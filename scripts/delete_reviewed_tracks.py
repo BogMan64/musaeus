@@ -171,15 +171,18 @@ def main() -> int:
     # at its master; the copy in ALAC_Library is known only to the edition
     # ledger, by the master's audio hash. Grey, 2026-09-27: it goes with the
     # master, now -- not at the next edition build.
-    edition_db = Path(cfg.vault_root) / "_db_backups" / "editions.db"
-    edition = sqlite3.connect(edition_db) if edition_db.exists() else None
+    # Through edition_ledger, the one definition of where the record lives
+    # and what it holds (cloud review of #49: a second copy of the path would
+    # silently find nothing the day db_history_dir moves, as it did once).
+    from musaeus.edition_build import EDITION
+    from musaeus.edition_ledger import copies as edition_copies
+    from musaeus.edition_ledger import forget as forget_copy
+    from musaeus.edition_ledger import ledger_path, open_ledger
+
+    edition = open_ledger(ledger_path(cfg)) if ledger_path(cfg).exists() else None
     edition_copy: dict[str, str] = {}
     if edition is not None:
-        edition_copy = dict(
-            edition.execute(
-                "SELECT master_hash, output_path FROM edition_copies WHERE edition = 'lossless'"
-            ).fetchall()
-        )
+        edition_copy = {h: c.output_path for h, c in edition_copies(edition, EDITION).items()}
 
     run_id = f"delete_reviewed_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}_{uuid.uuid4().hex[:6]}"
     n_files = n_rows = n_denied = n_absent = n_shared = n_kept_audio = 0
@@ -201,10 +204,6 @@ def main() -> int:
             print(f"     KEPT (a surviving row has the same audio): {ec}")
         elif ec and Path(ec) not in paths:
             paths.append(Path(ec))
-        if ec and h0 not in keep_hashes and args.execute and edition is not None:
-            edition.execute(
-                "DELETE FROM edition_copies WHERE edition = 'lossless' AND master_hash = ?", (h0,)
-            )
         for p in paths:
             if not p.is_file():
                 continue
@@ -223,6 +222,10 @@ def main() -> int:
                      "DELETED_BY_REVIEW", str(p), str(p), "", args.reason))
             n_files += 1
             files_for_row += 1
+        # The copy's record goes AFTER its file, like the row: files first,
+        # then the records (see ORDER MATTERS above).
+        if ec and h0 not in keep_hashes and args.execute and edition is not None:
+            forget_copy(edition, EDITION, h0)
         h = row["audio_hash"] if "audio_hash" in set(row.keys()) else None
         audio_kept = bool(h) and h in keep_hashes
         if audio_kept:
