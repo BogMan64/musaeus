@@ -66,10 +66,13 @@ def _gen_audio(path: Path, freq: int = 440) -> None:
 
 
 def _make_finalized_row(ctx: RunContext, relpath: str, audio_hash_val: str = "hash123") -> Path:
-    """Create a real file directly at its ALAC-Library location, with a
+    """Create a real file directly at its master location, with a
     matching finalized archive row AND a matching persistent hash-index
-    entry -- the fully-consistent state Audit should approve."""
-    path = ctx.alac_library / relpath
+    entry -- the fully-consistent state Audit should approve.
+
+    Masters are filed in ALAC-Archival since 2026-09-25; ALAC_Library holds
+    the Lossless edition, copies that no row points at."""
+    path = ctx.config.alac_archive / relpath
     _gen_audio(path)
     upsert_archive(
         ctx.conn,
@@ -121,7 +124,9 @@ class TestAuditMissingFile:
 
 class TestAuditOrphanFile:
     def test_file_in_library_with_no_finalized_row(self, ctx):
-        orphan = ctx.alac_library / "Sneaky" / "Sneaky.m4a"
+        # A master with no row. Masters live in ALAC-Archival since
+        # 2026-09-25; a stray in ALAC_Library is TestTheLosslessEditionFolder.
+        orphan = ctx.config.alac_archive / "Sneaky" / "Sneaky.m4a"
         _gen_audio(orphan)
         # Deliberately no archive row, no finalized_at, no hash-index entry.
 
@@ -277,3 +282,53 @@ class TestAuditReadOnly:
 
         assert dry_result.success == run_result.success
         assert dry_result.files_errored == run_result.files_errored
+
+
+class TestTheLosslessEditionFolder:
+    """ALAC_Library holds the Lossless edition: -18 LUFS copies of the
+    masters, recorded in the edition ledger, never pointed at by a row
+    (Grey, 2026-09-25/27)."""
+
+    def _copy(self, ctx, rel, *, recorded):
+        from musaeus.edition_ledger import Copy, ledger_path, open_ledger, record
+
+        out = ctx.alac_library / rel
+        _gen_audio(out)
+        if recorded:
+            conn = open_ledger(ledger_path(ctx.config))
+            record(
+                conn,
+                Copy("lossless", "hash123", "m", 1, str(out.resolve()), "now", -18.0, "linear"),
+            )
+            conn.close()
+        return out
+
+    def test_a_recorded_copy_is_not_a_file_without_a_row(self, ctx):
+        _make_finalized_row(ctx, "Rock/Artist/Album/Track.m4a")
+        self._copy(ctx, "Rock/Artist/Album/Track.m4a", recorded=True)
+        result = AuditStage().execute(ctx)
+        assert result.success is True, result.errors
+
+    def test_a_file_in_the_edition_with_no_record_is_reported(self, ctx):
+        _make_finalized_row(ctx, "Rock/Artist/Album/Track.m4a")
+        stray = self._copy(ctx, "Rock/Artist/Album/Stray.m4a", recorded=False)
+        result = AuditStage().execute(ctx)
+        assert result.success is False
+        assert any("no record" in e and stray.name in e for e in result.errors), result.errors
+
+    def test_a_row_pointing_into_the_edition_is_reported(self, ctx):
+        # The retired bake's drift: a row repointed at its -18 copy.
+        path = ctx.alac_library / "Rock/Artist/Album/Track.m4a"
+        _gen_audio(path)
+        upsert_archive(
+            ctx.conn, {"file_path": str(path), "status": "CATALOGUED", "audio_hash": "h"}
+        )
+        ctx.conn.execute("UPDATE archive SET finalized_at = datetime('now')")
+        ctx.conn.commit()
+        hc = open_hash_index(ctx.config.hash_index_path)
+        record_finalized_hash(hc, "h", str(path))
+        hc.commit()
+        hc.close()
+        result = AuditStage().execute(ctx)
+        assert result.success is False
+        assert any("no final root" in e for e in result.errors), result.errors

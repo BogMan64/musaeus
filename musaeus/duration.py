@@ -185,8 +185,21 @@ def decodes_cleanly(path: Path) -> tuple[bool, str | None]:
 
     try:
         r = subprocess.run(
-            ["ffmpeg", "-v", "error", "-nostats", "-i", str(path), "-vn", "-f", "null", "-"],
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-nostats",
+                "-i",
+                str(path),
+                "-vn",
+                "-f",
+                "null",
+                "-",
+            ],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=_DECODE_TIMEOUT_S,
         )

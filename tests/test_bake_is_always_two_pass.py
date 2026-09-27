@@ -23,6 +23,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILDERS = [
+    # The live Lossless bake (2026-09-27); the retired script stays listed
+    # while its code does.
+    ROOT / "musaeus" / "edition_bake.py",
     ROOT / "scripts" / "alac_library" / "build_alac_library.py",
     ROOT / "scripts" / "car_library" / "vendor" / "build_aac_library.py",
 ]

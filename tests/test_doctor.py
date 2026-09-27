@@ -150,6 +150,25 @@ class TestDiagnose:
         rep = diagnose(vault)
         assert any(f.check == "library files with no row" and f.count == 1 for f in rep.findings)
 
+    def test_a_recorded_edition_copy_is_not_a_file_with_no_row(self, vault, tmp_path):
+        # ALAC_Library holds the Lossless edition: copies with no row by
+        # design, recorded in the edition ledger (2026-09-27).
+        from musaeus.edition_ledger import Copy, open_ledger, record
+
+        vault.db_history_dir = tmp_path / "_db_backups"
+        copy = vault.alac_library / "copy.m4a"
+        copy.write_bytes(b"x")
+        conn = open_ledger(vault.db_history_dir / "editions.db")
+        record(conn, Copy("lossless", "h_gone", "m", 1, str(copy), "now", -18.0, "linear"))
+        conn.close()
+        rep = diagnose(vault)
+        assert not any(f.check == "library files with no row" and f.count for f in rep.findings), [
+            (f.check, f.count) for f in rep.findings
+        ]
+        assert any(
+            f.check == "edition copies whose master is gone" and f.count == 1 for f in rep.findings
+        ), "a copy of a master that left the library is left for the next build to remove"
+
     def test_quarantine_holding_a_sole_copy_is_a_failure(self, vault):
         """Purging quarantine wholesale nearly lost 1,002 songs this way."""
         _add(vault, "q.m4a", artist="Herb Alpert", title="Tijuana Taxi", status="DUPE_REVIEW")

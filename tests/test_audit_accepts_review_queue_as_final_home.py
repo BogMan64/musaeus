@@ -14,7 +14,12 @@ def test_audit_counts_the_review_queues_among_its_final_roots():
     block = src.split("final_roots = [", 1)[1].split("]", 1)[0]
     assert "dupes_review_dir" in block, "held dupes would be reported misplaced"
     assert "tribute_review_dir" in block
-    assert "alac_library" in block and "alac_archive" in block
+    assert "alac_archive" in block
+    # Not ALAC_Library since 2026-09-27: it holds the Lossless edition, and a
+    # row pointing there is a copy posing as a master (the retired bake's
+    # drift), which the audit must fail -- see test_audit.py,
+    # test_a_row_pointing_into_the_edition_is_reported.
+    assert "alac_library" not in block
 
 
 def test_the_roots_are_config_derived_not_folder_names():

@@ -182,12 +182,20 @@ def diagnose(cfg: MusicConfig) -> Report:
     # Both tiers. Since 2026-09-25 finalize files MASTERS into alac_archive and
     # the row points there; scanning only alac_library meant a master left
     # with no row (a failed revert, a row-only change) was never reported.
+    # ALAC_Library also holds the Lossless edition: copies with no row by
+    # design, known to the edition ledger instead (2026-09-27).
+    from .edition_ledger import recorded_copies
+
+    edition = recorded_copies(cfg, "lossless") or {}
     orphans = [
         p
         for tier in (cfg.alac_library, getattr(cfg, "alac_archive", None))
         if tier is not None and Path(tier).exists()
         for p in Path(tier).rglob("*.m4a")
-        if not _under_any(p, cfg) and "_history" not in p.parts and str(p) not in known
+        if not _under_any(p, cfg)
+        and "_history" not in p.parts
+        and str(p) not in known
+        and str(p) not in edition
     ]
     rep.add(
         "warn" if orphans else "ok",
@@ -195,6 +203,24 @@ def diagnose(cfg: MusicConfig) -> Report:
         f"{len(orphans)}" + (f"  e.g. {orphans[0].name}" if orphans else ""),
         len(orphans),
     )
+
+    # 2a. Edition copies whose master has left the library -- deleted, or
+    #     set aside. The next edition build removes them; until then the
+    #     edition holds a song the masters do not.
+    if edition:
+        live = {r["audio_hash"] for r in rows if r["status"] == "CATALOGUED" and r["audio_hash"]}
+        gone = [p for p, h in edition.items() if h not in live and Path(p).exists()]
+        rep.add(
+            "warn" if gone else "ok",
+            "edition copies whose master is gone",
+            f"{len(gone)}"
+            + (
+                f"  e.g. {Path(gone[0]).name} -- the next edition build removes them"
+                if gone
+                else ""
+            ),
+            len(gone),
+        )
 
     # 2b. The reciprocal of check 2, for the subtrees check 2 deliberately
     #     skips.

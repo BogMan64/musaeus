@@ -87,7 +87,12 @@ class TestEditionMenu:
 
         out = capsys.readouterr().out
         assert name in out.lower() or EDITIONS[name].codec.upper() in out
-        assert "Selection only" in out
+        # Lossless previews its build plan, the one selection for that
+        # edition (cloud review of #49); the others their selection.
+        expected = (
+            "Nothing has been baked or written yet" if name == "lossless" else "Selection only"
+        )
+        assert expected in out
         assert before == after, "a preview must not create or remove files"
 
     def test_back_does_nothing(self, cfg, monkeypatch, capsys) -> None:

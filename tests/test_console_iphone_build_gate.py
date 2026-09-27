@@ -120,7 +120,10 @@ def test_a_blank_budget_passes_no_budget_flag(cfg, monkeypatch) -> None:
     assert "--budget-gb" not in launched[0]
 
 
-@pytest.mark.parametrize("idx,name", [(0, "lossless"), (1, "car")])
+# Lossless left this list on 2026-09-27: Grey asked for it to be built from
+# the console "like the iPhone one: preview first, then type BUILD"
+# (tests/test_console_lossless_build.py). Car stays preview-only.
+@pytest.mark.parametrize("idx,name", [(1, "car")])
 def test_the_long_editions_are_never_offered_a_build(cfg, monkeypatch, idx, name) -> None:
     """No prompt, and therefore nothing to mistype.
 

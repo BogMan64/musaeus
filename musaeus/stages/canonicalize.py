@@ -379,7 +379,11 @@ def _append_tunemymusic_row(ctx: RunContext, row: dict) -> None:
     recoverable from the archive row and the event log; the identity of
     the track is not, which is why that is what gets written here.
     """
-    csv_path = ctx.config.tunemymusic_csv_path
+    _append_tunemymusic_row_to(ctx.config.tunemymusic_csv_path, row)
+
+
+def _append_tunemymusic_row_to(csv_path: Path, row: dict) -> None:
+    """The writer behind _append_tunemymusic_row, for a caller with no RunContext."""
     is_new = not csv_path.exists()
     csv_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -418,22 +422,23 @@ def _append_tunemymusic_row(ctx: RunContext, row: dict) -> None:
     remember_tunemymusic_track(csv_path, title, artist)
 
 
-def _want_lossless(ctx: RunContext, row: dict, reason: str) -> None:
-    """Put a lossy arrival on the wanted list, by its tags, once.
+def want_track(csv_path: Path, row: dict, reason: str) -> bool:
+    """Put a track on the wanted list (TuneMyMusic.csv), by its tags, once.
 
-    The row handed to _append_tunemymusic_row used to carry only diagnostic
-    fields and the path, so every converted file was listed by its file
-    name ("track07", no artist) -- the title and artist were on the archive
-    row all along. A track already on the list is not added again.
+    Returns True when a line was added. The row handed to the writer used to
+    carry only diagnostic fields and the path, so every converted file was
+    listed by its file name ("track07", no artist) -- the title and artist
+    were on the archive row all along. A track already on the list is not
+    added again. Shared by Canonicalize and the Lossless edition build.
     """
     from .bpm import _tunemymusic_csv_has_track
 
     title = (row.get("title") or "").strip()
     artist = (row.get("artist") or "").strip()
-    if title and _tunemymusic_csv_has_track(ctx.config.tunemymusic_csv_path, title, artist):
-        return
-    _append_tunemymusic_row(
-        ctx,
+    if title and _tunemymusic_csv_has_track(csv_path, title, artist):
+        return False
+    _append_tunemymusic_row_to(
+        csv_path,
         {
             "reason": reason,
             "title": title,
@@ -442,6 +447,12 @@ def _want_lossless(ctx: RunContext, row: dict, reason: str) -> None:
             "file_path": row.get("file_path"),
         },
     )
+    return True
+
+
+def _want_lossless(ctx: RunContext, row: dict, reason: str) -> None:
+    """Put a lossy arrival on the wanted list -- see want_track."""
+    want_track(ctx.config.tunemymusic_csv_path, row, reason)
 
 
 # ── Stage ──────────────────────────────────────────────────────────────────────

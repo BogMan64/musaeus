@@ -176,10 +176,12 @@ class AuditStage(BaseStage):
         # them to vault_root/REVIEW made every held row look misplaced (198
         # errors on the first run after the move). They are listed explicitly
         # rather than by folder name so they follow if they move again.
+        # Not ALAC_Library. It holds the Lossless edition -- copies no row
+        # may point at (Grey, 2026-09-25). A row there is the retired
+        # bake's drift, a copy posing as a master, and it must fail here.
         final_roots = [
             r.resolve()
             for r in (
-                ctx.alac_library,
                 ctx.config.alac_archive,
                 ctx.config.dupes_review_dir,
                 ctx.config.tribute_review_dir,
@@ -201,7 +203,7 @@ class AuditStage(BaseStage):
                 if not any(_is_within(resolved, root) for root in final_roots):
                     problems.append(
                         f"DB says finalized but file is under no final root "
-                        f"(not ALAC-Library, not ALAC_Archive): {row['file_path']}"
+                        f"(not ALAC-Archival, not a review folder): {row['file_path']}"
                     )
 
         if finalized_rows and not any(
@@ -214,19 +216,37 @@ class AuditStage(BaseStage):
         # Both tiers since 2026-09-25: finalize files MASTERS into ALAC-Archival
         # and the row points there. Scanning ALAC-Library alone left an
         # orphaned master invisible to the gate that guards the DB wipe.
-        disk_files = _scan_alac_library_files(ctx.alac_library) | _scan_alac_library_files(
-            ctx.config.alac_archive
-        )
+        disk_files = _scan_alac_library_files(ctx.config.alac_archive)
         orphans = disk_files - db_side_paths
         for orphan in sorted(orphans):
             problems.append(
-                f"file present in ALAC-Library or ALAC-Archival with no matching finalized row: {orphan}"
+                f"file present in ALAC-Archival with no matching finalized row: {orphan}"
             )
 
         if disk_files and not orphans:
             ok.append(
                 f"all {len(disk_files)} file(s) in the library tiers have a matching finalized row"
             )
+
+        # ── Check 2b: ALAC_Library holds recorded edition copies, nothing else
+        #
+        # The Lossless edition's copies have no row by design; the edition
+        # ledger is what knows them. A file there that the ledger does not
+        # know is not a copy MUSAEUS made -- reported, never guessed at.
+        edition_files = _scan_alac_library_files(ctx.alac_library)
+        if edition_files:
+            from ..edition_ledger import recorded_outputs
+
+            recorded = {Path(p).resolve() for p in (recorded_outputs(ctx.config, "lossless") or ())}
+            strays = sorted(edition_files - recorded)
+            for stray in strays:
+                problems.append(
+                    f"file in the Lossless edition (ALAC_Library) with no record of being a copy: {stray}"
+                )
+            if not strays:
+                ok.append(
+                    f"all {len(edition_files)} file(s) in the Lossless edition are recorded copies"
+                )
 
         # ── Check 3: every finalized row's hash must be in the persistent index
         #
