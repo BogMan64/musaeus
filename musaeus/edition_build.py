@@ -86,6 +86,9 @@ class Master:
     mtime_ns: int | None
     decode_ok: int | None = None  # 1 checked clean, 0 checked damaged, None never checked
     seconds_44k: float = 240.0  # its length, scaled to 44.1 kHz: what a bake costs
+    title: str = ""
+    artist: str = ""
+    album: str = ""
 
     @property
     def work_seconds(self) -> float:
@@ -153,7 +156,7 @@ def load_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         f"""
         SELECT file_path, audio_hash, codec, lufs, lufs_tp, size_bytes, status, {decode},
-               duration, sample_rate
+               duration, sample_rate, title, artist, album
           FROM archive
          ORDER BY file_path
         """
@@ -211,6 +214,9 @@ def make_plan(
             mtime_ns=mtime,
             decode_ok=r["decode_ok"],
             seconds_44k=float(r["duration"] or 240.0) * (int(r["sample_rate"] or 44_100) / 44_100),
+            title=r["title"] or "",
+            artist=r["artist"] or "",
+            album=r["album"] or "",
         )
         if not h:
             plan.blocked.append((m, "no audio fingerprint"))
@@ -422,6 +428,7 @@ class Outcome:
     dynamic: list[str] = field(default_factory=list)
     failed: list[tuple[str, str]] = field(default_factory=list)
     stopped: bool = False
+    wanted: int = 0  # compressed masters newly put on the wanted list
 
 
 def _now() -> str:
@@ -509,9 +516,14 @@ def execute(
     workers: int = 2,
     limit: int | None = None,
     progress: Callable[[str], None] = print,
+    wanted_csv: Path | None = None,
 ) -> Outcome:
     """Carry out *plan*. Removals and moves first, so space is freed before
-    it is spent; then the bakes, recorded one by one as they land."""
+    it is spent; then the bakes, recorded one by one as they land.
+
+    *wanted_csv*: each master whose copy had to be compressed goes on that
+    wanted list (Grey, 2026-09-27: "also add them to TuneMyMusic.csv").
+    """
     out = Outcome()
 
     for stale in edition_root.rglob(f"*{TMP_SUFFIX}") if edition_root.exists() else []:
@@ -582,6 +594,8 @@ def execute(
                 out.baked += 1
                 if result.mode == "dynamic":
                     out.dynamic.append(str(target))
+                    if wanted_csv is not None and _want(m, wanted_csv):
+                        out.wanted += 1
                 if done % 25 == 0 or done == len(todo):
                     rate = (time.monotonic() - started) / done
                     left = (len(todo) - done) * rate
@@ -597,6 +611,13 @@ def execute(
             for stale in edition_root.rglob(f"*{TMP_SUFFIX}"):
                 stale.unlink(missing_ok=True)
     return out
+
+
+def _want(m: Master, wanted_csv: Path) -> bool:
+    from .stages.canonicalize import want_track
+
+    row = {"title": m.title, "artist": m.artist, "album": m.album, "file_path": str(m.path)}
+    return want_track(wanted_csv, row, "compressed to reach -18 LUFS in the Lossless edition")
 
 
 def free_bytes(path: Path) -> int:

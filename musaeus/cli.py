@@ -1138,7 +1138,12 @@ def _cmd_edition_build(args) -> int:
         try:
             with eb.build_lock(cfg.runs_root / "locks"):
                 outcome = eb.execute(
-                    plan, ledger, edition_root, workers=args.workers, limit=args.limit
+                    plan,
+                    ledger,
+                    edition_root,
+                    workers=args.workers,
+                    limit=args.limit,
+                    wanted_csv=cfg.tunemymusic_csv_path,
                 )
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
@@ -1150,7 +1155,10 @@ def _cmd_edition_build(args) -> int:
             f"re-tagged {outcome.retagged:,}, removed {outcome.removed:,}."
         )
         if outcome.dynamic:
-            print(f"  {len(outcome.dynamic):,} copy(ies) were compressed to reach -18 LUFS.")
+            print(
+                f"  {len(outcome.dynamic):,} copy(ies) were compressed to reach -18 LUFS; "
+                f"{outcome.wanted:,} newly added to TuneMyMusic.csv."
+            )
         if outcome.failed:
             print(f"  {len(outcome.failed):,} failed -- see the log; the next build retries them.")
         if outcome.stopped:

@@ -394,3 +394,39 @@ def test_review_other_musaeus_work_is_seen_whatever_its_shape():
     assert sorted(eb.busy_musaeus(procs, me=20)) == [10, 11, 12]
     # From the terminal, the console counts: it runs acts in-process.
     assert 13 in eb.busy_musaeus([*procs, (21, 1, "python3", procs[-1][3])], me=21)
+
+
+def test_a_compressed_copy_puts_its_master_on_the_wanted_list(cfg, monkeypatch):
+    # Grey, 2026-09-27: accept compression for the ~2% of tracks that need
+    # it -- "also add them to TuneMyMusic.csv", the list of tracks to find
+    # better copies of. Once each: a second build adds nothing.
+    import csv
+    import shutil as sh
+
+    master = _master(cfg, REL, "h1")
+    _sql(
+        cfg,
+        "UPDATE archive SET artist = 'The Rolling Stones', title = 'Brown Sugar', album = 'Sticky Fingers'",
+    )
+
+    def compressed(source, tmp):
+        sh.copyfile(source, tmp)
+        return edition_bake.BakeResult(-18.0, "dynamic")
+
+    monkeypatch.setattr(edition_bake, "bake", compressed)
+    wanted = cfg.meta_dir / "TuneMyMusic.csv"
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    ledger = open_ledger(ledger_path(cfg))
+    plan = eb.make_plan(conn, ledger, cfg.alac_archive, cfg.alac_library)
+    out = eb.execute(plan, ledger, cfg.alac_library, progress=lambda s: None, wanted_csv=wanted)
+    (cfg.alac_library / REL).unlink()  # force a second bake of the same master
+    plan = eb.make_plan(conn, ledger, cfg.alac_archive, cfg.alac_library)
+    eb.execute(plan, ledger, cfg.alac_library, progress=lambda s: None, wanted_csv=wanted)
+    conn.close()
+    ledger.close()
+    with open(wanted, newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))[1:]
+    assert rows == [["Brown Sugar", "The Rolling Stones", "Sticky Fingers"]], rows
+    assert out.wanted == 1
+    assert master.is_file()
