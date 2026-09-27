@@ -1384,8 +1384,12 @@ class Console:
         if not (plan.bake or plan.move or plan.retag or plan.remove or plan.adopt):
             _ok("The edition is already up to date.")
             return
-        if eb.pipeline_pids():
-            _warn("A `musaeus run` is in progress. Build the edition when it has finished.")
+        busy = eb.pipeline_pids()
+        if busy:
+            _warn(
+                f"Other MUSAEUS work is running: {eb.describe_work(busy)}. "
+                "Build the edition when it has finished."
+            )
             return
 
         hours = max(1, round(len(plan.bake) * eb.SECONDS_PER_TRACK / 2 / 3600))

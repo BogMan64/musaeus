@@ -1070,8 +1070,9 @@ def _cmd_edition_build(args) -> int:
     running = eb.pipeline_pids()
     if running and not args.dry_run:
         print(
-            f"ERROR: a `musaeus run` is in progress (pid {running[0]}); masters can move "
-            "under it. Build the edition when it has finished.",
+            f"ERROR: other MUSAEUS work is running: {eb.describe_work(running)}. Masters "
+            "can move under a build, so finish or close it first -- or build from the "
+            "console's menu 6.",
             file=sys.stderr,
         )
         return 1

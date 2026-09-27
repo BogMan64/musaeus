@@ -109,4 +109,4 @@ def test_typing_build_runs_the_lossless_builder(cfg, monkeypatch):
 def test_no_build_is_offered_while_a_pipeline_run_is_going(cfg, monkeypatch, capsys):
     launched, _ = _run(cfg, monkeypatch, ["1", "BUILD"], running=[4242])
     assert launched == []
-    assert "in progress" in capsys.readouterr().out
+    assert "is running" in capsys.readouterr().out

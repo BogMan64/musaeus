@@ -223,7 +223,16 @@ def make_plan(
         return p.exists() and marker(p) == marker_for(h)
 
     # Which records can be trusted: the file they name carries their marker.
-    trusted = {h for h, c in recorded.items() if ours(Path(c.output_path), h)}
+    # Read only where a decision depends on it -- a copy at its own path,
+    # with its master unchanged, cannot be holding another master's audio
+    # (two masters cannot share a path), and opening every copy's tags on
+    # every plan is thousands of reads for nothing.
+    trust_cache: dict[str, bool] = {}
+
+    def trust(h: str) -> bool:
+        if h not in trust_cache:
+            trust_cache[h] = ours(Path(recorded[h].output_path), h)
+        return trust_cache[h]
 
     for h, rec in recorded.items():
         if h in selected:
@@ -244,11 +253,11 @@ def make_plan(
     # Paths that the removals and moves below empty before any bake lands.
     # Every baked-copy swap needs this: the original is renamed into the name
     # the baked copy left, so a NEW master's target still holds the old copy.
-    freed = {c.output_path for c in plan.remove if c.master_hash in trusted}
+    freed = {c.output_path for c in plan.remove if trust(c.master_hash)}
     freed |= {
         recorded[h].output_path
         for h, (_, target) in selected.items()
-        if h in trusted and recorded[h].output_path != str(target)
+        if h in recorded and recorded[h].output_path != str(target) and trust(h)
     }
 
     def taken(path: Path) -> bool:
@@ -256,17 +265,23 @@ def make_plan(
 
     for h, (m, target) in selected.items():
         c = recorded.get(h)
-        if c is not None and h in trusted:
+        if (
+            c is not None
+            and c.output_path == str(target)
+            and c.master_mtime_ns == m.mtime_ns
+            and target.exists()
+        ):
+            plan.up_to_date += 1
+            continue
+        if c is not None and trust(h):
             out = Path(c.output_path)
             if out != target:
                 if taken(target) and not ours(target, h):
                     plan.blocked.append((m, f"its new place is taken: {target}"))
                 else:
                     plan.move.append((m, c, target))
-            elif c.master_mtime_ns != m.mtime_ns:
-                plan.retag.append((m, c))
             else:
-                plan.up_to_date += 1
+                plan.retag.append((m, c))
             continue
         if c is not None and Path(c.output_path).exists():
             # The file the record names is not this master's copy.
@@ -348,6 +363,19 @@ def _proc_table() -> Iterator[tuple[int, int, str, list[str]]]:
 def pipeline_pids() -> list[int]:
     """Other MUSAEUS work running now that could move masters under a build."""
     return busy_musaeus(_proc_table(), os.getpid())
+
+
+def describe_work(pids: list[int]) -> str:
+    """What those PIDs are, in words: "the console (pid 12)", "musaeus run (pid 9)".
+
+    A bare `musaeus` IS the console (cli.main: command or "console").
+    """
+    argv_of = {pid: argv for pid, _, _, argv in _proc_table()}
+    parts = []
+    for pid in pids:
+        sub = _musaeus_subcommand(argv_of.get(pid, [])) or "console"
+        parts.append(f"{'the console' if sub == 'console' else 'musaeus ' + sub} (pid {pid})")
+    return ", ".join(parts)
 
 
 @contextmanager
