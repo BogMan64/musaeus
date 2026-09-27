@@ -99,21 +99,18 @@ class Master:
         return self.codec.lower() in LOSSLESS_CODECS
 
     def may_compress(self) -> bool | None:
-        """True when its peaks force DYNAMIC mode; None when that cannot be told.
+        """Will linear loudnorm fall back to DYNAMIC (compression)?
 
-        Linear loudnorm applies one gain and is refused when that gain would
-        push the true peak past -1 dBTP -- this can be judged from the stored
-        loudness and peak. It is ALSO refused when the track's loudness range
-        (LRA) exceeds the target's, and no LRA is stored (cloud review of
-        #49: a loud, wide-range master went dynamic while this said False).
-        So True is a certainty and nothing is ever promised linear.
+        Only the peaks can force it now: the range target is at ffmpeg's
+        maximum (edition_bake.TARGET_LRA), so a wide range no longer does.
+        Linear mode applies one gain and is refused when that gain would
+        push the true peak past -1 dBTP. None when the peak was never
+        measured.
         """
         if self.lufs is None or self.lufs_tp is None:
             return None
         gain = TARGET_LUFS - self.lufs
-        if self.lufs_tp + gain > float(edition_bake.TARGET_TP):
-            return True
-        return None
+        return self.lufs_tp + gain > float(edition_bake.TARGET_TP)
 
 
 @dataclass
@@ -124,6 +121,7 @@ class Plan:
     retag: list[tuple[Master, Copy]] = field(default_factory=list)
     remove: list[Copy] = field(default_factory=list)
     forget: list[Copy] = field(default_factory=list)
+    rebake: list[Copy] = field(default_factory=list)  # compressed copies baked again
     up_to_date: int = 0
     kept_unselected: int = 0
     lossy_left_out: list[Master] = field(default_factory=list)
@@ -139,9 +137,10 @@ class Plan:
     def hours(self, workers: int) -> float:
         return sum(m.work_seconds for m, _ in self.bake) / max(1, workers) / 3600
 
-    def compress_count(self) -> int:
-        """Bakes certain to be compressed, from their peaks. A lower bound."""
-        return sum(m.may_compress() is True for m, _ in self.bake)
+    def compress_counts(self) -> tuple[int, int]:
+        """(will be compressed, may be -- peak never measured)."""
+        verdicts = [m.may_compress() for m, _ in self.bake]
+        return sum(v is True for v in verdicts), sum(v is None for v in verdicts)
 
 
 def _columns(conn: sqlite3.Connection) -> set[str]:
@@ -177,6 +176,7 @@ def make_plan(
     edition_root: Path,
     *,
     include_lossy: bool = False,
+    rebake_compressed: bool = False,
 ) -> Plan:
     """Decide what the build does. Reads only; changes nothing."""
     plan = Plan()
@@ -285,6 +285,18 @@ def make_plan(
 
     for h, (m, target) in selected.items():
         c = recorded.get(h)
+        if (
+            rebake_compressed
+            and c is not None
+            and c.mode == "dynamic"
+            and c.output_path == str(target)
+            and target.exists()
+        ):
+            # Baked again under today's rules; the new copy replaces this one
+            # only once it is verified (execute).
+            plan.rebake.append(c)
+            plan.bake.append((m, target))
+            continue
         if (
             c is not None
             and c.output_path == str(target)
@@ -561,6 +573,9 @@ def execute(
     todo = plan.bake[:limit] if limit is not None else plan.bake
     if not todo:
         return out
+    # Copies being baked again: the verified new copy replaces the old one
+    # (its own marked file) in one rename -- never a moment without a copy.
+    replaceable = {c.output_path for c in plan.rebake}
 
     from .idle_throttle import IdleThrottle
 
@@ -578,10 +593,13 @@ def execute(
                 done += 1
                 try:
                     tmp, result = fut.result()
-                    if target.exists():
+                    if target.exists() and not (
+                        str(target) in replaceable
+                        and edition_bake.read_marker(target) == marker_for(m.audio_hash)
+                    ):
                         tmp.unlink(missing_ok=True)
                         raise edition_bake.BakeError(f"something appeared at {target}")
-                    tmp.rename(target)
+                    os.replace(tmp, target)
                     record(ledger, _copy(m, target, result.achieved_lufs, result.mode))
                 except Exception as exc:  # noqa: BLE001 -- one track, not the build
                     reason = (
@@ -649,10 +667,15 @@ def plan_lines(plan: Plan, *, workers: int, free: int | None = None) -> list[str
     ):
         if n:
             lines.append(f"  {label:<14}: {n:,}")
-    if plan.bake:
+    will, may = plan.compress_counts()
+    if will or may:
         lines.append(
-            f"  Compressed    : at least {plan.compress_count():,} (their peaks); tracks with a "
-            f"wide dynamic range are too -- the build reports the exact number"
+            f"  Compressed    : {will:,} will be, {may:,} may be -- lifting them to "
+            f"{edition_bake.TARGET_I} LUFS would push their peaks too high"
+        )
+    if plan.rebake:
+        lines.append(
+            f"  Re-bake       : {len(plan.rebake):,} compressed copy(ies), with the range rule"
         )
     if plan.lossy_left_out:
         lines.append(

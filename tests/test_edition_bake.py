@@ -145,3 +145,25 @@ def test_a_long_masters_drift_is_judged_by_the_shared_rule(tmp_path, monkeypatch
     monkeypatch.setattr(eb, "probe", lambda p: info(615.0))
     with pytest.raises(eb.BakeError, match="length changed"):
         eb.verify(info(600.0), tmp_path / "c.m4a", -18.0)
+
+
+def test_a_wide_range_master_that_needs_no_lift_is_not_compressed(tmp_path):
+    # Grey, 2026-09-27: Barenaked Ladies' "Aluminum" (-16.7 LUFS, peak -6.9,
+    # range 14.2) only needed turning DOWN 1.3 dB, yet was compressed:
+    # loudnorm leaves linear mode when a track's range exceeds the target's
+    # (it was 11). Measured on that master: range 20 or 50 -> linear, -18.0.
+    master = tmp_path / "wide.m4a"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=12:sample_rate=44100",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=12:sample_rate=44100",
+         "-filter_complex",
+         "[0]volume=15dB[a];[1]volume=-1dB[b];[a][b]concat=n=2:v=0:a=1",
+         "-c:a", "alac", "-sample_fmt", "s16p", str(master)],
+        check=True,
+    )  # fmt: skip
+    measured = eb.ffmpeg_measure_loudnorm(master)
+    assert float(measured["input_lra"]) > 11, measured  # the case, not an easy one
+    assert float(measured["input_i"]) > -18, measured  # needs turning down, not lifting
+    result = eb.bake(master, tmp_path / "c.m4a")
+    assert result.mode == "linear", "a track that only needs turning down was compressed"
