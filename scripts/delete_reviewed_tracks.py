@@ -167,6 +167,20 @@ def main() -> int:
     except sqlite3.Error:
         pass
 
+    # The Lossless edition's -18 LUFS copies. Since 2026-09-25 a row points
+    # at its master; the copy in ALAC_Library is known only to the edition
+    # ledger, by the master's audio hash. Grey, 2026-09-27: it goes with the
+    # master, now -- not at the next edition build.
+    edition_db = Path(cfg.vault_root) / "_db_backups" / "editions.db"
+    edition = sqlite3.connect(edition_db) if edition_db.exists() else None
+    edition_copy: dict[str, str] = {}
+    if edition is not None:
+        edition_copy = dict(
+            edition.execute(
+                "SELECT master_hash, output_path FROM edition_copies WHERE edition = 'lossless'"
+            ).fetchall()
+        )
+
     run_id = f"delete_reviewed_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}_{uuid.uuid4().hex[:6]}"
     n_files = n_rows = n_denied = n_absent = n_shared = n_kept_audio = 0
     emptied: set[Path] = set()
@@ -178,7 +192,20 @@ def main() -> int:
             continue
         print(f"\n  id={i}  {row['artist']} - {row['title']}")
         files_for_row = 0
-        for p in copies(row, libs):
+        paths = copies(row, libs)
+        h0 = row["audio_hash"] if "audio_hash" in set(row.keys()) else None
+        ec = edition_copy.get(h0) if h0 else None
+        if ec and h0 in keep_hashes:
+            # A copy is keyed by audio: another row with this audio is still
+            # in the library, so this copy is its copy too.
+            print(f"     KEPT (a surviving row has the same audio): {ec}")
+        elif ec and Path(ec) not in paths:
+            paths.append(Path(ec))
+        if ec and h0 not in keep_hashes and args.execute and edition is not None:
+            edition.execute(
+                "DELETE FROM edition_copies WHERE edition = 'lossless' AND master_hash = ?", (h0,)
+            )
+        for p in paths:
             if not p.is_file():
                 continue
             if str(p) in keep_paths:
@@ -222,10 +249,14 @@ def main() -> int:
         conn.commit()
         if led is not None:
             led.commit()
+        if edition is not None:
+            edition.commit()
         n_dirs = remove_emptied_folders(emptied, libs)
     conn.close()
     if led is not None:
         led.close()
+    if edition is not None:
+        edition.close()
 
     print(f"\n{'DELETED' if args.execute else 'DRY RUN'}: {n_files} file(s), "
           f"{n_rows} row(s), {n_denied} hash(es) denied"

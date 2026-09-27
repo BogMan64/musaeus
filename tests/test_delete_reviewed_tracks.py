@@ -280,3 +280,65 @@ class TestItTidiesUpAfterItself:
         stray.write_bytes(b"\0")
         _run(vault, [1])
         assert stray.exists(), "the car tier has no genre level; a mirrored path is never its copy"
+
+
+class TestTheLosslessEditionCopy:
+    """Grey, 2026-09-27: deleting a track removes its -18 LUFS edition copy
+    at once ("delete all copies"), not at the next edition build. Since
+    2026-09-25 the row points at the MASTER in ALAC-Archival, and the copy
+    in ALAC_Library is known only to the edition ledger, by audio hash."""
+
+    REL = "Rock/Blur/Parklife/Blur - Song 2.m4a"
+
+    def _track(self, vault, rid, h):
+        libs = vault / "Libraries"
+        master = libs / "ALAC-Archival" / self.REL
+        master.parent.mkdir(parents=True, exist_ok=True)
+        master.write_bytes(b"\0")
+        conn = sqlite3.connect(vault / "musaeus.db")
+        conn.execute(
+            "INSERT INTO archive (id, artist, title, status, audio_hash, file_path) "
+            "VALUES (?, 'Blur', 'Song 2', 'CATALOGUED', ?, ?)",
+            (rid, h, str(master) if rid == 1 else str(master) + f".{rid}"),
+        )
+        conn.commit()
+        conn.close()
+
+    def _copy(self, vault, h):
+        from musaeus.edition_ledger import Copy, open_ledger, record
+
+        copy = vault / "Libraries" / "ALAC_Library" / self.REL
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        copy.write_bytes(b"\0")
+        conn = open_ledger(vault / "_db_backups" / "editions.db")
+        record(conn, Copy("lossless", h, "m", 1, str(copy), "now", -18.0, "linear"))
+        conn.close()
+        return copy
+
+    def _recorded(self, vault) -> int:
+        conn = sqlite3.connect(vault / "_db_backups" / "editions.db")
+        n = conn.execute("SELECT COUNT(*) FROM edition_copies").fetchone()[0]
+        conn.close()
+        return n
+
+    def test_the_edition_copy_goes_with_the_master(self, vault):
+        self._track(vault, 1, "hb")
+        copy = self._copy(vault, "hb")
+        r = _run(vault, [1])
+        assert r.returncode == 0, r.stderr
+        assert not (vault / "Libraries" / "ALAC-Archival" / self.REL).exists()
+        assert not copy.exists(), "the -18 LUFS copy outlived its deleted master"
+        assert self._recorded(vault) == 0
+
+    def test_a_dry_run_leaves_the_copy(self, vault):
+        self._track(vault, 1, "hb")
+        copy = self._copy(vault, "hb")
+        _run(vault, [1], execute=False)
+        assert copy.exists() and self._recorded(vault) == 1
+
+    def test_the_copy_stays_while_a_surviving_track_has_the_same_audio(self, vault):
+        self._track(vault, 1, "hb")
+        self._track(vault, 2, "hb")  # the same recording, kept
+        copy = self._copy(vault, "hb")
+        _run(vault, [1])
+        assert copy.exists() and self._recorded(vault) == 1
