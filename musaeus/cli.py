@@ -24,6 +24,8 @@ Pipeline commands:
     edition          Preview what would go into an edition (lossless/car/
                      iphone) with an optional --budget-gb; selection only,
                      encodes nothing
+    edition-build    Build the Lossless edition: every master at -18 LUFS ALAC
+                     into Libraries/ALAC_Library; rows untouched (--dry-run)
     forge            Measure EBU R128 loudness + write ReplayGain tags
     tagger           Write normalised DB metadata back to file tags
     auditor          Pre-forge LUFS audit (flags out-of-window files)
