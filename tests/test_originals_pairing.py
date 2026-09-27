@@ -377,3 +377,22 @@ def test_open_every_group_of_a_resolved_component_is_closed(tmp_path):
         "SELECT group_id, file_path FROM duplicates WHERE status = 'pending'"
     ).fetchall()
     assert not left, [tuple(r) for r in left]
+
+
+def test_keep_both_decided_on_an_acoustid_pair_holds_too(tmp_path):
+    # Grey decides AcoustID's same-recording pairs (2026-09-27: 29 "keep
+    # both"). NearDupe honoured a keep-both only on its own NEAR groups.
+    ctx = _ctx(tmp_path)
+    studio = _library(ctx, "Wilson Pickett - Mustang Sally.m4a")
+    mono = _library(ctx, "Wilson Pickett - Mustang Sally (Mono).m4a")
+    _row(ctx, studio, "stereo", lufs=-12.0, filed=True, title="Mustang Sally", duration=180.0)
+    _row(ctx, mono, "mono", lufs=-11.0, filed=True, title="Mustang Sally (Mono)", duration=180.4)
+    ctx.conn.executemany(
+        "INSERT INTO duplicates (group_id, file_path, duplicate_type, status, audio_hash) "
+        "VALUES ('acoustic_1', ?, 'ACOUSTIC', 'keep', ?)",
+        [(str(studio), "stereo"), (str(mono), "mono")],
+    )
+    ctx.conn.commit()
+    NearDupeStage().run(ctx)
+    DupeResolverStage().run(ctx)
+    assert studio.is_file() and mono.is_file(), "a keep-both AcoustID pair was split"
