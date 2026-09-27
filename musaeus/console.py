@@ -1206,13 +1206,11 @@ class Console:
         _section("Build an Edition")
         names = ["lossless", "car", "iphone"]
         labels = [
-            # Deliberately a fixed string, on Grey's instruction 2026-09-09,
-            # NOT read from cfg.alac_library. I had changed it to read the
-            # config and he reverted that: /home/grey/Music is where the
-            # lossless edition is meant to go, and the label should say so
-            # regardless of what the library root happens to be set to
-            # mid-migration. Revisit only if he asks.
-            "Lossless  — ALAC, -18 LUFS  → /home/grey/Music",
+            # A fixed string (Grey, 2026-09-09). It named /home/grey/Music
+            # until Grey changed it on 2026-09-27: the Lossless edition is
+            # built into the vault's Libraries/ALAC_Library, and MUSAEUS must
+            # never be pointed at /home/grey/Music.
+            "Lossless  — ALAC, -18 LUFS  → vault Libraries/ALAC_Library",
             "Car       — AAC 256k, -14 LUFS, ≤48 kHz  → USB",
             "iPhone    — AAC 256k, -14 LUFS, size-budgeted",
             "Back",
@@ -1282,9 +1280,16 @@ class Console:
         #
         # Added 2026-09-09 on Grey's ruling. The preview above stays the
         # default answer; building is a second, explicit decision.
+        if spec.name == "lossless":
+            # Grey, 2026-09-27: Lossless is built from here too, "like the
+            # iPhone one: preview first, then type BUILD". Car stays
+            # preview-only.
+            self._lossless_build()
+            return
+
         if spec.name != "iphone":
             _info(
-                "To build it, run the builder for that edition; both pause "
+                "To build it, run the builder for that edition; it pauses "
                 "while you use the machine."
             )
             return
@@ -1330,6 +1335,76 @@ class Console:
             _ok("iPhone edition built.")
         else:
             _err(f"Builder exited {rc} — see the output above.")
+
+    def _lossless_build(self) -> None:
+        """The Lossless edition's plan, then the build on a typed BUILD.
+
+        The plan is worked out here, in-process and read-only, from the
+        console's own configuration: the dry run that answers "what would it
+        do?" writes nothing. Only the build runs as a separate process, the
+        way the iPhone build does.
+        """
+        import sqlite3
+        import subprocess
+        import sys
+
+        from . import edition_build as eb
+        from .edition_ledger import _SCHEMA, ledger_path
+
+        cfg = self._config
+        if cfg is None:
+            return
+        # The menu's usual connection: the plan only reads, and a read-only
+        # one cannot tidy SQLite's -wal/-shm away when it closes. The BUILD
+        # itself opens the catalogue read-only (musaeus edition-build).
+        conn = self._open_db()
+        if conn is None:
+            return
+        lpath = ledger_path(cfg)
+        if lpath.exists():
+            ledger = sqlite3.connect(f"file:{lpath}?mode=ro", uri=True)
+            ledger.row_factory = sqlite3.Row
+        else:
+            ledger = sqlite3.connect(":memory:")
+            ledger.row_factory = sqlite3.Row
+            ledger.executescript(_SCHEMA)
+        try:
+            plan = eb.make_plan(conn, ledger, Path(cfg.alac_archive), Path(cfg.alac_library))
+        finally:
+            conn.close()
+            ledger.close()
+
+        _section("Lossless edition — what a build would do")
+        for line in eb.plan_lines(plan, workers=2, free=eb.free_bytes(Path(cfg.alac_library))):
+            print(line)
+        _info("Nothing has been baked or written yet.")
+        if not (plan.bake or plan.move or plan.retag or plan.remove or plan.adopt):
+            _ok("The edition is already up to date.")
+            return
+        if eb.pipeline_pids():
+            _warn("A `musaeus run` is in progress. Build the edition when it has finished.")
+            return
+
+        hours = max(1, round(len(plan.bake) * eb.SECONDS_PER_TRACK / 2 / 3600))
+        _info(
+            f"Building bakes {len(plan.bake):,} track(s) — roughly {hours} hour(s). It "
+            "pauses while you use the machine, and a stopped build carries on next time."
+        )
+        if _prompt("Build it now? Type BUILD to confirm").strip() != "BUILD":
+            _info("Not built.")
+            return
+        cmd = [sys.executable, "-m", "musaeus.cli", "edition-build", "lossless"]
+        _info("Running: musaeus edition-build lossless")
+        _info("Ctrl-C stops it; finished copies are kept and skipped next time.")
+        try:
+            rc = subprocess.run(cmd).returncode
+        except KeyboardInterrupt:
+            _warn("Stopped. Finished copies are kept; run it again to carry on.")
+            return
+        if rc == 0:
+            _ok("Lossless edition built.")
+        else:
+            _err(f"The build exited {rc} — see the output above.")
 
     def _usb_menu(self) -> None:
         """Front door to scripts/usb_transfer/transfer_to_usb.py.
