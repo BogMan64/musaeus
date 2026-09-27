@@ -145,6 +145,66 @@ class TestPassthrough:
         assert row["canon_action"] == "PASSTHROUGH"
 
 
+class TestLossyGoesOnTheWantedList:
+    """Grey, 2026-09-27: every lossy arrival belongs on TuneMyMusic.csv, the
+    list of tracks to find in lossless. Only files Canonicalize CONVERTED
+    (MP3 -> AAC) were listed; an AAC-in-.m4a arrival passed straight
+    through, and 48 of the library's 51 lossy masters were on no list."""
+
+    def _named(self, ctx, path, codec, title, artist="Jr. Walker", album="Shotgun"):
+        _register_catalogued(ctx, path, codec, path.suffix)
+        ctx.conn.execute(
+            "UPDATE archive SET title = ?, artist = ?, album = ? WHERE file_path = ?",
+            (title, artist, album, str(path)),
+        )
+        ctx.conn.commit()
+
+    def _rows(self, ctx):
+        import csv as _csv
+
+        p = ctx.config.tunemymusic_csv_path
+        if not p.exists():
+            return []
+        with open(p, newline="", encoding="utf-8") as fh:
+            return list(_csv.reader(fh))[1:]
+
+    def test_a_lossy_file_kept_as_it_is_goes_on_the_list(self, ctx):
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        path = ctx.inbox / "Jr. Walker - Shotgun.m4a"
+        _gen_audio(path, "aac")
+        self._named(ctx, path, "aac", "Shotgun")
+        CanonicalizeStage().execute(ctx)
+        assert ["Shotgun", "Jr. Walker", "Shotgun"] in self._rows(ctx)
+
+    def test_a_lossless_file_does_not(self, ctx):
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        path = ctx.inbox / "Jr. Walker - Shotgun.m4a"
+        _gen_audio(path, "alac")
+        self._named(ctx, path, "alac", "Shotgun")
+        CanonicalizeStage().execute(ctx)
+        assert self._rows(ctx) == []
+
+    def test_a_track_already_on_the_list_is_not_added_twice(self, ctx):
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        ctx.config.tunemymusic_csv_path.parent.mkdir(parents=True, exist_ok=True)
+        ctx.config.tunemymusic_csv_path.write_text(
+            '"Title","Artist","Album"\r\n"Shotgun","Jr. Walker",""\r\n', encoding="utf-8"
+        )
+        path = ctx.inbox / "Jr. Walker - Shotgun.m4a"
+        _gen_audio(path, "aac")
+        self._named(ctx, path, "aac", "Shotgun")
+        CanonicalizeStage().execute(ctx)
+        assert [r[:2] for r in self._rows(ctx)].count(["Shotgun", "Jr. Walker"]) == 1
+
+    def test_a_converted_file_is_listed_by_its_tags_not_its_file_name(self, ctx):
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        path = ctx.inbox / "track07.mp3"
+        _gen_audio(path, "libmp3lame")
+        self._named(ctx, path, "mp3", "Shotgun")
+        CanonicalizeStage().execute(ctx)
+        assert ["Shotgun", "Jr. Walker", "Shotgun"] in self._rows(ctx)
+
+
 # ── CONVERTED (lossless -> ALAC) ──────────────────────────────────────────────
 
 
@@ -230,7 +290,11 @@ class TestTranscode:
         assert csv_path.exists()
         content = csv_path.read_text()
         assert "Title,Artist,Album" in content  # importable header, matches batch_*.csv
-        assert "source" in content  # the track identity, not its filename
+        # The track identity from its tags, not its filename ("source") --
+        # the filename is what this asserted until 2026-09-27, and it is
+        # how every converted file was listed as "track07" with no artist.
+        assert "Test Title,Test Artist" in content
+        assert "source" not in content
         # Codec is diagnostic and stays in the archive row; this file is
         # Title,Artist,Album so it can be imported.
         assert "MP3" not in content

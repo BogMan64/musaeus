@@ -418,6 +418,32 @@ def _append_tunemymusic_row(ctx: RunContext, row: dict) -> None:
     remember_tunemymusic_track(csv_path, title, artist)
 
 
+def _want_lossless(ctx: RunContext, row: dict, reason: str) -> None:
+    """Put a lossy arrival on the wanted list, by its tags, once.
+
+    The row handed to _append_tunemymusic_row used to carry only diagnostic
+    fields and the path, so every converted file was listed by its file
+    name ("track07", no artist) -- the title and artist were on the archive
+    row all along. A track already on the list is not added again.
+    """
+    from .bpm import _tunemymusic_csv_has_track
+
+    title = (row.get("title") or "").strip()
+    artist = (row.get("artist") or "").strip()
+    if title and _tunemymusic_csv_has_track(ctx.config.tunemymusic_csv_path, title, artist):
+        return
+    _append_tunemymusic_row(
+        ctx,
+        {
+            "reason": reason,
+            "title": title,
+            "artist": artist,
+            "album": row.get("album"),
+            "file_path": row.get("file_path"),
+        },
+    )
+
+
 # ── Stage ──────────────────────────────────────────────────────────────────────
 
 
@@ -714,6 +740,11 @@ class CanonicalizeStage(BaseStage):
         action = self._decide_action(row, source)
 
         if action == "PASSTHROUGH":
+            # Kept as it is, but a lossy file is still one to find in
+            # lossless (Grey, 2026-09-27): 48 of 51 lossy masters were on no
+            # list because only CONVERTED files were ever added.
+            if not dry_run and self._resolve_codec(row, source) not in _ALAC_CODECS:
+                _want_lossless(ctx, row, "lossy source, kept as it is")
             return "PASSTHROUGH", "already canonical codec/container"
 
         if action == "UNKNOWN":
@@ -749,18 +780,7 @@ class CanonicalizeStage(BaseStage):
             row["_final_path"] = str(staged_output)
 
             if action == "TRANSCODE":
-                _append_tunemymusic_row(
-                    ctx,
-                    {
-                        "reason": "sub-lossless source, transcoded to AAC",
-                        "codec": row.get("codec"),
-                        "bitrate": row.get("bitrate"),
-                        "sample_rate": row.get("sample_rate"),
-                        "channels": row.get("channels"),
-                        "duration": row.get("duration"),
-                        "file_path": str(source),
-                    },
-                )
+                _want_lossless(ctx, row, "sub-lossless source, transcoded to AAC")
                 return "TRANSCODED", "sub-lossless -> 256k AAC-in-.m4a (staged)"
 
             return "CONVERTED", "lossless -> ALAC-in-.m4a (staged)"
