@@ -592,10 +592,28 @@ class OrganizeStage(BaseStage):
                 f"{len(absent)} of {len(rows)} file(s) this run reports moving are "
                 f"not at the new path, e.g. {Path(absent[0]).name}"
             )
+        # An old path a later move of this run filled again is not a copy
+        # left behind: renaming "(2)" -> plain and then "(3)" -> "(2)" puts
+        # the second file where the first one was (Copacabana, 2026-09-27).
+        refilled = {
+            r["new_value"]
+            for r in ctx.conn.execute(
+                """
+                SELECT new_value FROM events
+                 WHERE run_id = ? AND stage = ?
+                   AND event_type IN ('ORGANIZE_MOVE', 'ORGANIZE_RENAME')
+                   AND new_value IS NOT NULL
+                """,
+                (ctx.run_id, self.NAME),
+            ).fetchall()
+        }
         left_behind = [
             r["old_value"]
             for r in rows
-            if r["old_value"] and Path(r["old_value"]).exists() and Path(r["new_value"]).exists()
+            if r["old_value"]
+            and r["old_value"] not in refilled
+            and Path(r["old_value"]).exists()
+            and Path(r["new_value"]).exists()
         ]
         if left_behind:
             problems.append(

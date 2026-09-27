@@ -259,3 +259,46 @@ def test_a_same_recording_pair_is_listed_for_grey_not_moved(tmp_path, monkeypatc
         "SELECT COUNT(*) FROM duplicates WHERE duplicate_type = 'ACOUSTIC' AND status = 'pending'"
     ).fetchone()[0]
     assert pending == 0
+
+
+def test_a_copy_already_moved_to_review_is_not_a_pair_to_decide(tmp_path, monkeypatch):
+    # Enrichment of 2026-09-27 listed 756 "same recording" pairs for Grey;
+    # 718 paired a library file with the copy Act 2 had already moved to the
+    # review folder. That copy kept the AcoustID recording it was given when
+    # it was still in the library, and the twin lookup did not ask where it
+    # is now.
+    monkeypatch.setattr(acoustid_mod, "_fpcalc", lambda p: (200.0, "FP-" + Path(p).name))
+    monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", lambda *a, **k: ("rec-1", 0.97))
+    ctx = _ctx(tmp_path)
+    moved = ctx.config.dupes_review_dir / "Tom Jones - It's Not Unusual.m4a"
+    moved.parent.mkdir(parents=True, exist_ok=True)
+    moved.write_bytes(b"audio")
+    upsert_archive(
+        ctx.conn,
+        {
+            "file_path": str(moved),
+            "status": "DUPE_REVIEW",
+            "audio_hash": "baked",
+            "artist": "Tom Jones",
+            "title": "It's Not Unusual",
+            "duration": 200.0,
+        },
+    )
+    # upsert_archive does not write the AcoustID columns; set it as the
+    # earlier enrichment did.
+    ctx.conn.execute(
+        "UPDATE archive SET acousticid_recording = 'rec-1' WHERE file_path = ?", (str(moved),)
+    )
+    ctx.conn.commit()
+    _untagged(
+        ctx,
+        "Tom Jones - It's Not Unusual.m4a",
+        artist="Tom Jones",
+        title="It's Not Unusual",
+        duration=200.0,
+    )
+    AcousticIDStage().run(ctx)
+    pairs = ctx.conn.execute(
+        "SELECT COUNT(*) FROM duplicates WHERE duplicate_type = 'ACOUSTIC'"
+    ).fetchone()[0]
+    assert pairs == 0, "a copy already set aside was listed as a pair to decide"

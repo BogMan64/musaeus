@@ -97,3 +97,15 @@ def test_only_this_run_is_examined(conn, tmp_path: Path) -> None:
 
 def test_no_moves_means_no_complaint(conn) -> None:
     assert OrganizeStage().verify_effect(_Ctx(conn), None) == []
+
+
+def test_a_rename_chain_is_not_a_copy(conn, tmp_path: Path) -> None:
+    """Act 3 of 2026-09-27: "(2)" -> plain, then "(3)" -> "(2)". The first
+    rename's old path holds the second rename's file, which is not a copy
+    of anything (Copacabana; both files' audio matched their rows)."""
+    plain, two, three = (tmp_path / f"Copacabana{s}.m4a" for s in ("", " (2)", " (3)"))
+    plain.write_text("was (2)")
+    two.write_text("was (3)")
+    _event(conn, two, plain, kind="ORGANIZE_RENAME")
+    _event(conn, three, two, kind="ORGANIZE_RENAME")
+    assert OrganizeStage().verify_effect(_Ctx(conn), None) == []

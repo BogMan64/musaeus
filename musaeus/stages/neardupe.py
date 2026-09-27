@@ -281,12 +281,19 @@ class NearDupeStage(BaseStage):
             gid for gid, rs in near_rows.items() if all(r["status"] == "stale" for r in rs)
         }
 
-        # Keep both: every member of a NEAR group marked 'keep' (the resolver
-        # keeps ONE; both kept is a person's decision). Held by the two
-        # recordings, not the two paths, so a rename does not undo it.
+        # Keep both: every member of a NEAR or ACOUSTIC group marked 'keep'
+        # (the resolver keeps ONE; both kept is a person's decision -- Grey
+        # decides AcoustID's pairs). Held by the two recordings, not the two
+        # paths, so a rename does not undo it.
+        decided: dict[str, list] = {}
+        for row in ctx.conn.execute(
+            "SELECT group_id, status, audio_hash FROM duplicates "
+            "WHERE duplicate_type IN ('NEAR', 'ACOUSTIC')"
+        ).fetchall():
+            decided.setdefault(row["group_id"], []).append(row)
         keep_both = {
             frozenset(r["audio_hash"] for r in rs)
-            for rs in near_rows.values()
+            for rs in decided.values()
             if len(rs) > 1
             and all(r["status"] == "keep" and r["audio_hash"] for r in rs)
             and len({r["audio_hash"] for r in rs}) == 2

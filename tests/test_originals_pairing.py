@@ -345,3 +345,54 @@ def test_keep_both_follows_the_recordings_not_the_file_names(tmp_path):
     NearDupeStage().run(ctx)
     DupeResolverStage().run(ctx)
     assert live.is_file() and studio.is_file(), "a keep-both pair was split after a rename"
+
+
+def test_open_every_group_of_a_resolved_component_is_closed(tmp_path):
+    # Groups sharing a file are resolved as one. Only the first group's rows
+    # were marked keep/archive; the others stayed 'pending' (145 after the
+    # Act 2 of 2026-09-26) and came back on a later Act 2 as "nothing moved
+    # -- the file at that path is now a different recording" once Act 3 had
+    # renamed their files.
+    ctx = _ctx(tmp_path)
+    a = _library(ctx, "The Rolling Stones - Brown Sugar.m4a")
+    b = ctx.config.alac_archive / "Rock" / "Stones" / "SF" / a.name
+    c = ctx.config.alac_archive / "Rock" / "Stones" / "Hits" / a.name
+    _row(ctx, a, "a", lufs=-9.0, bitrate=2_000_000, filed=True)
+    _row(ctx, b, "b", lufs=-9.0, bitrate=1_000_000, filed=True)
+    _row(ctx, c, "c", lufs=-9.0, bitrate=900_000, filed=True)
+    ctx.conn.executemany(
+        "INSERT INTO duplicates (group_id, file_path, duplicate_type, status, audio_hash) "
+        "VALUES (?, ?, 'NEAR', 'pending', ?)",
+        [
+            ("near_1", str(a), "a"),
+            ("near_1", str(b), "b"),
+            ("near_2", str(b), "b"),
+            ("near_2", str(c), "c"),
+        ],
+    )
+    ctx.conn.commit()
+    DupeResolverStage().run(ctx)
+    assert a.is_file() and not b.exists() and not c.exists()
+    left = ctx.conn.execute(
+        "SELECT group_id, file_path FROM duplicates WHERE status = 'pending'"
+    ).fetchall()
+    assert not left, [tuple(r) for r in left]
+
+
+def test_keep_both_decided_on_an_acoustid_pair_holds_too(tmp_path):
+    # Grey decides AcoustID's same-recording pairs (2026-09-27: 29 "keep
+    # both"). NearDupe honoured a keep-both only on its own NEAR groups.
+    ctx = _ctx(tmp_path)
+    studio = _library(ctx, "Wilson Pickett - Mustang Sally.m4a")
+    mono = _library(ctx, "Wilson Pickett - Mustang Sally (Mono).m4a")
+    _row(ctx, studio, "stereo", lufs=-12.0, filed=True, title="Mustang Sally", duration=180.0)
+    _row(ctx, mono, "mono", lufs=-11.0, filed=True, title="Mustang Sally (Mono)", duration=180.4)
+    ctx.conn.executemany(
+        "INSERT INTO duplicates (group_id, file_path, duplicate_type, status, audio_hash) "
+        "VALUES ('acoustic_1', ?, 'ACOUSTIC', 'keep', ?)",
+        [(str(studio), "stereo"), (str(mono), "mono")],
+    )
+    ctx.conn.commit()
+    NearDupeStage().run(ctx)
+    DupeResolverStage().run(ctx)
+    assert studio.is_file() and mono.is_file(), "a keep-both AcoustID pair was split"
