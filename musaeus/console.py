@@ -1225,6 +1225,16 @@ class Console:
 
         spec = EDITIONS[names[idx]]
 
+        if spec.name == "lossless":
+            # One selection for the Lossless edition: the build plan. The
+            # generic preview counted every catalogued row -- lossy, same
+            # audio and blocked ones too -- and printed a second, larger
+            # figure just above the plan's (cloud review of #49).
+            # Grey, 2026-09-27: built from here "like the iPhone one:
+            # preview first, then type BUILD". Car stays preview-only.
+            self._lossless_build()
+            return
+
         budget = None
         if spec.name == "iphone":
             # The only edition where a budget is not optional: 81.7 GB of
@@ -1280,13 +1290,6 @@ class Console:
         #
         # Added 2026-09-09 on Grey's ruling. The preview above stays the
         # default answer; building is a second, explicit decision.
-        if spec.name == "lossless":
-            # Grey, 2026-09-27: Lossless is built from here too, "like the
-            # iPhone one: preview first, then type BUILD". Car stays
-            # preview-only.
-            self._lossless_build()
-            return
-
         if spec.name != "iphone":
             _info(
                 "To build it, run the builder for that edition; it pauses "

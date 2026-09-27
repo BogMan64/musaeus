@@ -1168,6 +1168,34 @@ def _limited(plan, limit: int):
     return replace(plan, bake=plan.bake[:limit])
 
 
+def _print_lossless_plan(cfg) -> int:
+    """The Lossless edition's build plan, read-only, writing nothing."""
+    import sqlite3
+
+    from . import edition_build as eb
+    from .edition_ledger import _SCHEMA, ledger_path
+
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    lpath = ledger_path(cfg)
+    if lpath.exists():
+        ledger = sqlite3.connect(f"file:{lpath}?mode=ro", uri=True)
+    else:
+        ledger = sqlite3.connect(":memory:")
+        ledger.executescript(_SCHEMA)
+    ledger.row_factory = sqlite3.Row
+    try:
+        plan = eb.make_plan(conn, ledger, Path(cfg.alac_archive), Path(cfg.alac_library))
+    finally:
+        conn.close()
+        ledger.close()
+    print()
+    for line in eb.plan_lines(plan, workers=2, free=eb.free_bytes(Path(cfg.alac_library))):
+        print(line)
+    print()
+    return 0
+
+
 def _cmd_edition(args) -> int:
     """Preview an edition's selection. Reads only -- encodes nothing.
 
@@ -1185,6 +1213,11 @@ def _cmd_edition(args) -> int:
         return 1
 
     spec = EDITIONS[args.name]
+    if spec.name == "lossless" and not (args.genre or args.artist or args.budget_gb):
+        # One selection for the Lossless edition: what its build would do.
+        print("\n  The Lossless edition is built by `musaeus edition-build lossless`;")
+        print("  this is its plan (a dry run -- nothing is written):")
+        return _print_lossless_plan(cfg)
     budget = int(args.budget_gb * 1_000_000_000) if args.budget_gb else None
 
     conn = open_db(cfg.db_path)
