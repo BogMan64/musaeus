@@ -39,8 +39,12 @@ TARGET_LRA = "11.0"
 _LUFS_TOLERANCE = 1.0
 _DURATION_TOLERANCE_SEC = 2.0
 _PROBE_TIMEOUT = 60
-# A whole-file two-pass loudnorm of a long hi-res track is minutes, not seconds.
-_BAKE_TIMEOUT = 1800
+# A whole-file two-pass loudnorm of a long hi-res track is minutes, not
+# seconds -- and the edition build runs under IdleThrottle, which SIGSTOPs
+# ffmpeg while the machine is in use. That paused time counts towards this
+# deadline, so it is set to what a long evening at the desk can reach: a
+# hung ffmpeg is rare, a paused one is every build.
+_BAKE_TIMEOUT = 6 * 3600
 
 _OUTPUT_I_RE = re.compile(r"Output Integrated:\s*(-?\d+(?:\.\d+)?)\s*LUFS", re.I)
 _NORM_TYPE_RE = re.compile(r"Normalization Type:\s*(\w+)", re.I)

@@ -1045,6 +1045,127 @@ def _cmd_deep_scan(args) -> int:
     return 0
 
 
+def _cmd_edition_build(args) -> int:
+    """Build the Lossless edition from the masters. See musaeus/edition_build.py.
+
+    The catalogue is opened READ-ONLY: building an edition must never change
+    a row (the retired build_alac_library.py pointed rows at its copies), and
+    a read-only connection makes that a property of SQLite, not of care.
+    """
+    import sqlite3
+    from datetime import datetime
+
+    from . import edition_build as eb
+    from .edition_ledger import ledger_path, open_ledger
+
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    masters_root, edition_root = Path(cfg.alac_archive), Path(cfg.alac_library)
+    running = eb.pipeline_pids()
+    if running and not args.dry_run:
+        print(
+            f"ERROR: a `musaeus run` is in progress (pid {running[0]}); masters can move "
+            "under it. Build the edition when it has finished.",
+            file=sys.stderr,
+        )
+        return 1
+
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    lpath = ledger_path(cfg)
+    ledger = open_ledger(lpath) if (lpath.exists() or not args.dry_run) else None
+    if ledger is None:
+        ledger = sqlite3.connect(":memory:")
+        ledger.row_factory = sqlite3.Row
+        from .edition_ledger import _SCHEMA
+
+        ledger.executescript(_SCHEMA)
+    try:
+        plan = eb.make_plan(
+            conn, ledger, masters_root, edition_root, include_lossy=args.lossy == "alac"
+        )
+        free = eb.free_bytes(edition_root)
+        print()
+        print(f"  Lossless edition: {edition_root}")
+        print(f"  From the masters: {masters_root}")
+        for line in eb.plan_lines(plan, workers=args.workers, free=free):
+            print(line)
+        if args.limit is not None and len(plan.bake) > args.limit:
+            print(f"  --limit {args.limit}: only the first {args.limit} will be baked this time")
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log = cfg.runs_root / "LOGS" / f"edition_{eb.EDITION}_{stamp}.log"
+
+        def _write_log(outcome=None) -> None:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with open(log, "w", encoding="utf-8") as fh:
+                fh.write(f"Lossless edition -- {'dry run' if args.dry_run else 'build'} {stamp}\n")
+                fh.write("\n".join(eb.plan_lines(plan, workers=args.workers, free=free)) + "\n")
+                for title, items in (
+                    ("NOT POSSIBLE", [f"{m.path}\t{why}" for m, why in plan.blocked]),
+                    ("UNKNOWN FILES (left alone)", [str(p) for p in plan.unrecorded]),
+                    ("LOSSY, LEFT OUT", [str(m.path) for m in plan.lossy_left_out]),
+                    (
+                        "WILL BE COMPRESSED",
+                        [str(m.path) for m, _ in plan.bake if m.may_compress() is True],
+                    ),
+                    ("FAILED", [f"{p}\t{why}" for p, why in (outcome.failed if outcome else [])]),
+                    ("COMPRESSED (dynamic mode)", list(outcome.dynamic) if outcome else []),
+                ):
+                    if items:
+                        fh.write(f"\n{title} ({len(items)})\n" + "\n".join(items) + "\n")
+
+        if args.dry_run:
+            _write_log()
+            print(f"\n  Dry run -- nothing was written. List: {log}\n")
+            return 0
+
+        need = eb.space_needed(plan if args.limit is None else _limited(plan, args.limit))
+        if need > free:
+            print(
+                f"ERROR: about {need / 1e9:.0f} GB needed, {free / 1e9:.0f} GB free.",
+                file=sys.stderr,
+            )
+            return 1
+
+        try:
+            with eb.build_lock(cfg.runs_root / "locks"):
+                outcome = eb.execute(
+                    plan, ledger, edition_root, workers=args.workers, limit=args.limit
+                )
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        _write_log(outcome)
+        print()
+        print(
+            f"  Baked {outcome.baked:,}, adopted {outcome.adopted:,}, moved {outcome.moved:,}, "
+            f"re-tagged {outcome.retagged:,}, removed {outcome.removed:,}."
+        )
+        if outcome.dynamic:
+            print(f"  {len(outcome.dynamic):,} copy(ies) were compressed to reach -18 LUFS.")
+        if outcome.failed:
+            print(f"  {len(outcome.failed):,} failed -- see the log; the next build retries them.")
+        if outcome.stopped:
+            print("  Stopped. Finished copies are kept; run it again to carry on.")
+        print(f"  Log: {log}\n")
+        return 1 if outcome.failed or outcome.stopped else 0
+    finally:
+        conn.close()
+        ledger.close()
+
+
+def _limited(plan, limit: int):
+    """The plan with only the first *limit* bakes, for the space check."""
+    from dataclasses import replace
+
+    return replace(plan, bake=plan.bake[:limit])
+
+
 def _cmd_edition(args) -> int:
     """Preview an edition's selection. Reads only -- encodes nothing.
 
@@ -1692,6 +1813,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "--list", action="store_true", help="Print every selected track, not just the summary"
     )
 
+    # edition-build
+    eb_p = sub.add_parser(
+        "edition-build",
+        help="Build the Lossless edition (-18 LUFS ALAC) from the masters into ALAC_Library",
+    )
+    eb_p.add_argument("name", choices=("lossless",), help="Which edition to build")
+    eb_p.add_argument("--dry-run", action="store_true", help="Show the plan; write nothing")
+    eb_p.add_argument("--limit", type=int, metavar="N", default=None, help="Bake at most N")
+    eb_p.add_argument(
+        "--workers", type=int, metavar="N", default=2, help="Tracks baked at once (default 2)"
+    )
+    eb_p.add_argument(
+        "--lossy",
+        choices=("leave-out", "alac"),
+        default="leave-out",
+        help="Lossy masters: leave them out (default) or bake them into ALAC",
+    )
+
     playlist_p = sub.add_parser(
         "playlist",
         help="Build M3U8 playlists (genre + All) with relative paths — works on Android & Apple",
@@ -2180,6 +2319,8 @@ def main() -> None:
 
         elif command == "edition":
             sys.exit(_cmd_edition(args))
+        elif command == "edition-build":
+            sys.exit(_cmd_edition_build(args))
 
         elif command == "playlist":
             sys.exit(_run_pipeline([PlaylistStage], dry_run=dry_run))
