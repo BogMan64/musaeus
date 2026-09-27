@@ -187,8 +187,10 @@ def ffmpeg_measure_loudnorm(path: Path) -> dict:
 
 
 def build_second_pass_filter(measured: dict) -> str:
-    """The bake: the measured values applied, linear=true. The repo's name
-    for it, so tests/test_bake_is_always_two_pass.py guards it."""
+    """The bake: the first pass's measurements applied in linear mode. The
+    repo's name for it, so tests/test_bake_is_always_two_pass.py guards it
+    (which is why this docstring names no filter option: the guard reads
+    this function's text)."""
     return (
         f"loudnorm=measured_I={measured['input_i']}:measured_LRA={measured['input_lra']}:"
         f"measured_TP={measured['input_tp']}:measured_thresh={measured['input_thresh']}:"

@@ -86,3 +86,62 @@ def test_a_file_without_the_marker_is_not_a_copy(tmp_path):
     master = _master(tmp_path / "m.m4a")
     assert eb.read_marker(master) is None
     assert eb.read_marker(tmp_path / "missing.m4a") is None
+
+
+# ── Cloud review of #49 ──
+
+
+def test_paused_time_does_not_count_towards_a_deadline(monkeypatch):
+    import time
+
+    class AlwaysPaused:
+        def __init__(self):
+            self.t0 = time.monotonic()
+
+        @property
+        def paused_seconds(self):
+            return time.monotonic() - self.t0
+
+    monkeypatch.setattr(eb, "_DEADLINE_POLL_S", 0.1)
+    monkeypatch.setattr(eb, "ACTIVE_THROTTLE", AlwaysPaused())
+    assert eb._run(["sleep", "1.5"], 1).returncode == 0, "a paused child was killed as hung"
+
+
+def test_a_real_hang_still_times_out(monkeypatch):
+    monkeypatch.setattr(eb, "_DEADLINE_POLL_S", 0.1)
+    monkeypatch.setattr(eb, "ACTIVE_THROTTLE", None)
+    with pytest.raises(eb.BakeError, match="no progress"):
+        eb._run(["sleep", "3"], 1)
+
+
+def test_every_child_runs_with_stdin_closed(tmp_path, monkeypatch):
+    # Two workers' ffmpegs shared the terminal: keystrokes read as commands
+    # and the tty left without echo (CLAUDE.md: -nostdin in every loop).
+    seen = []
+    real = subprocess.Popen
+
+    def spy(cmd, *a, **k):
+        seen.append((list(cmd), k.get("stdin")))
+        return real(cmd, *a, **k)
+
+    master = _master(tmp_path / "m.m4a")
+    monkeypatch.setattr(subprocess, "Popen", spy)
+    eb.bake(master, tmp_path / "c.m4a")
+    eb.decode_problem(master)
+    monkeypatch.undo()
+    assert seen and all(stdin == subprocess.DEVNULL for _, stdin in seen), seen
+    assert all("-nostdin" in cmd for cmd, _ in seen if cmd[0] == "ffmpeg")
+
+
+def test_a_long_masters_drift_is_judged_by_the_shared_rule(tmp_path, monkeypatch):
+    def info(seconds):
+        return {
+            "streams": [{"codec_type": "audio", "sample_rate": "44100"}],
+            "format": {"duration": str(seconds)},
+        }
+
+    monkeypatch.setattr(eb, "probe", lambda p: info(603.0))
+    eb.verify(info(600.0), tmp_path / "c.m4a", -18.0)  # 3 s of 10 min: within 2 %
+    monkeypatch.setattr(eb, "probe", lambda p: info(615.0))
+    with pytest.raises(eb.BakeError, match="length changed"):
+        eb.verify(info(600.0), tmp_path / "c.m4a", -18.0)

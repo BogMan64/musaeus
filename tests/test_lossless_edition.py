@@ -378,3 +378,19 @@ def test_review_a_record_on_a_path_now_holding_a_new_copy_does_not_stop_the_buil
     assert out.baked == 2 and not out.failed, out.failed
     assert recorded["hy"].output_path == str(cfg.alac_library / a)
     assert recorded["hx"].output_path == str(cfg.alac_library / z)
+
+
+def test_review_other_musaeus_work_is_seen_whatever_its_shape():
+    procs = [
+        (10, 1, "python3", ["/usr/bin/python3", "/usr/local/bin/musaeus", "run", "--act", "3"]),
+        (11, 1, "python3", ["python3", "-m", "musaeus", "organize"]),
+        (12, 1, "musaeus", ["/usr/bin/python3", "/usr/local/bin/musaeus", "finalize"]),
+        (13, 1, "python3", ["python3", "-m", "musaeus.cli", "console"]),
+        (14, 1, "python3", ["python3", "-m", "musaeus", "doctor"]),  # reads only
+        (15, 1, "bash", ["bash", "-c", "pgrep -f 'python3 -m musaeus run'"]),  # the asker
+        (20, 13, "python3", ["python3", "-m", "musaeus.cli", "edition-build", "lossless"]),
+    ]
+    # 20 is this build, launched from the console (13): neither is "other".
+    assert sorted(eb.busy_musaeus(procs, me=20)) == [10, 11, 12]
+    # From the terminal, the console counts: it runs acts in-process.
+    assert 13 in eb.busy_musaeus([*procs, (21, 1, "python3", procs[-1][3])], me=21)
