@@ -49,9 +49,16 @@ def _master(
     path = cfg.alac_archive / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     enc = ["-c:a", "aac"] if codec == "aac" else ["-c:a", "alac", "-sample_fmt", "s16p"]
+    # Two levels, not one: loudnorm allows linear mode only when the measured
+    # range is above zero, and a steady sine's is exactly 0 -- every pure
+    # test tone bakes "dynamic". Real music never has zero range.
+    half = seconds / 2
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
-         "-i", f"sine=frequency=440:duration={seconds}", "-af", "volume=-6dB", *enc, str(path)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", f"sine=frequency=440:duration={half}",
+         "-f", "lavfi", "-i", f"sine=frequency=440:duration={half}",
+         "-filter_complex", "[0]volume=-4dB[a];[1]volume=-8dB[b];[a][b]concat=n=2:v=0:a=1",
+         *enc, str(path)],
         check=True,
     )  # fmt: skip
     conn = open_db(cfg.db_path)
@@ -213,11 +220,11 @@ def test_the_quiet_masters_that_would_be_compressed_are_counted():
     quiet_unknown = eb.Master(
         Path("d"), "h", "alac", lufs=-21.0, lufs_tp=None, size_bytes=1, mtime_ns=1
     )
-    # True is a certainty; linear is never promised -- loudnorm also goes
-    # dynamic on a wide loudness range, which is not stored (cloud review).
-    assert loud.may_compress() is None
+    # Since the range target went to ffmpeg's maximum (Grey, 2026-09-27),
+    # only the peaks decide, so the stored peak gives a definite answer.
+    assert loud.may_compress() is False
     assert quiet_peaky.may_compress() is True  # +4 dB puts a -2 dBTP peak at +2
-    assert quiet_room.may_compress() is None  # its peak allows it; its range may not
+    assert quiet_room.may_compress() is False  # +2 dB leaves a -6 dBTP peak at -4
     assert quiet_unknown.may_compress() is None
 
 
@@ -430,3 +437,27 @@ def test_a_compressed_copy_puts_its_master_on_the_wanted_list(cfg, monkeypatch):
     assert rows == [["Brown Sugar", "The Rolling Stones", "Sticky Fingers"]], rows
     assert out.wanted == 1
     assert master.is_file()
+
+
+def test_a_compressed_copy_can_be_baked_again_under_todays_rules(cfg, monkeypatch):
+    # After the range rule changed, the copies already compressed are baked
+    # again -- on request, and the old copy is replaced only by a verified
+    # new one, in one rename.
+    import shutil as sh
+
+    _master(cfg, REL, "h1")
+    real_bake = edition_bake.bake
+
+    def compressed(source, tmp):
+        sh.copyfile(source, tmp)
+        return edition_bake.BakeResult(-18.4, "dynamic")
+
+    monkeypatch.setattr(edition_bake, "bake", compressed)
+    _build(cfg)
+    monkeypatch.setattr(edition_bake, "bake", real_bake)
+    plan, out, recorded = _build(cfg)
+    assert plan.up_to_date == 1 and not plan.bake, "not without being asked"
+    plan, out, recorded = _build(cfg, rebake_compressed=True)
+    assert len(plan.rebake) == 1 and out.baked == 1 and not out.failed, out.failed
+    assert recorded["h1"].mode == "linear"
+    assert edition_bake.read_marker(cfg.alac_library / REL) == eb.marker_for("h1")

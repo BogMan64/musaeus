@@ -1089,7 +1089,12 @@ def _cmd_edition_build(args) -> int:
         ledger.executescript(_SCHEMA)
     try:
         plan = eb.make_plan(
-            conn, ledger, masters_root, edition_root, include_lossy=args.lossy == "alac"
+            conn,
+            ledger,
+            masters_root,
+            edition_root,
+            include_lossy=args.lossy == "alac",
+            rebake_compressed=args.rebake_compressed,
         )
         free = eb.free_bytes(edition_root)
         print()
@@ -1867,6 +1872,11 @@ def _build_parser() -> argparse.ArgumentParser:
     eb_p.add_argument("--limit", type=int, metavar="N", default=None, help="Bake at most N")
     eb_p.add_argument(
         "--workers", type=int, metavar="N", default=2, help="Tracks baked at once (default 2)"
+    )
+    eb_p.add_argument(
+        "--rebake-compressed",
+        action="store_true",
+        help="Bake the compressed copies again under today's rules (after a rule change)",
     )
     eb_p.add_argument(
         "--lossy",

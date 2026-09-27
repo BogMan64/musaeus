@@ -39,7 +39,13 @@ FFPROBE = "ffprobe"
 #: The edition's one definition of its target lives in editions.LOSSLESS.
 TARGET_I = f"{LOSSLESS.lufs_target:.1f}"
 TARGET_TP = "-1.0"
-TARGET_LRA = "11.0"
+#: The loudness-range target, at ffmpeg's maximum. loudnorm leaves linear
+#: mode -- one fixed gain -- for DYNAMIC (compression) when a track's range
+#: exceeds this, as well as when the gain would push its peaks past TP.
+#: At 11 it compressed tracks that only needed turning down: Barenaked
+#: Ladies' "Aluminum" (range 14.2) went dynamic for a 1.3 dB cut. Grey,
+#: 2026-09-27: compress only when the peaks force it.
+TARGET_LRA = "50.0"
 
 _LUFS_TOLERANCE = 1.0
 # Deadlines count WORKING time (see _run): the idle throttle SIGSTOPs these
