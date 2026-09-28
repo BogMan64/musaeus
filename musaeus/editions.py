@@ -306,14 +306,19 @@ def master_path_for(
     return MasterResolution(p, False)
 
 
-def output_path_for(track: Track, spec: EditionSpec, root: Path) -> Path:
-    """Where *track* lands in the edition.
+def artist_album_path(master: Path, root: Path) -> Path:
+    """Where a master lands in an AAC edition: Artist/Album/Title.m4a.
 
     Mirrors the master's own Artist/Album shape rather than inventing one,
-    so an edition is diffable against the masters it came from.
+    so an edition is diffable against the masters it came from. The one
+    statement of the rule: the car and iPhone builds and the selection
+    preview all come here (cloud review of #53: it had been copied).
     """
-    src = Path(track.file_path)
-    suffix = ".m4a"
-    parent = src.parent.name or "Unknown Album"
-    grand = src.parent.parent.name or "Unknown Artist"
-    return root / grand / parent / (src.stem + suffix)
+    parent = master.parent.name or "Unknown Album"
+    grand = master.parent.parent.name or "Unknown Artist"
+    return root / grand / parent / (master.stem + ".m4a")
+
+
+def output_path_for(track: Track, spec: EditionSpec, root: Path) -> Path:
+    """Where *track* lands in the edition."""
+    return artist_album_path(Path(track.file_path), root)

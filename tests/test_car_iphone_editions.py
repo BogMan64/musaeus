@@ -213,3 +213,16 @@ def test_an_option_that_would_do_nothing_is_refused(cfg, args, why):
     _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
     r = _cli(cfg, *args, "--dry-run")
     assert r.returncode != 0 and why in r.stderr, r.stdout + r.stderr
+
+
+def test_the_build_and_the_preview_place_a_track_by_one_rule(tmp_path):
+    # Cloud review of #53: the car layout was written twice (the build's and
+    # the selection preview's). Both now call editions.artist_album_path.
+    from musaeus.editions import CAR, Track, output_path_for
+
+    for rel in ("Rock/Stones/Hits/Angie.m4a", "Angie.flac", "Stones/Angie.m4a"):
+        master = tmp_path / "masters" / rel
+        t = Track(str(master), "", "", "", "", 1.0, 1)
+        assert eb.CAR_KIND.place(tmp_path / "masters", tmp_path / "car", master) == (
+            output_path_for(t, CAR, tmp_path / "car")
+        )

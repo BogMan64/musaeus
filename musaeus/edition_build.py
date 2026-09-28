@@ -68,11 +68,8 @@ def _mirror(masters_root: Path, edition_root: Path, master: Path) -> Path:
 
 
 def _artist_album(masters_root: Path, edition_root: Path, master: Path) -> Path:
-    """The AAC editions: Artist/Album/Title.m4a -- editions.output_path_for's
-    layout, the one the old car builder filed by (no genre level)."""
-    parent = master.parent.name or "Unknown Album"
-    grand = master.parent.parent.name or "Unknown Artist"
-    return edition_root / grand / parent / (master.stem + ".m4a")
+    """The AAC editions: Artist/Album/Title.m4a (no genre level)."""
+    return editions.artist_album_path(master, edition_root)
 
 
 @dataclass(frozen=True)
