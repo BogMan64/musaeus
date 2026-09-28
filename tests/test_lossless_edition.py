@@ -188,6 +188,27 @@ def test_a_copy_renamed_into_place_but_not_recorded_is_adopted(cfg):
     assert recorded["h1"].output_path == str(target)
 
 
+def test_an_adopted_copy_takes_the_masters_tags_of_today(cfg):
+    # Second review of #49: the build stopped after the rename, the master
+    # was then re-tagged, and adopting recorded the master's NEW mtime -- so
+    # the retag check never fired and the copy kept its old title for good.
+    from mutagen.mp4 import MP4
+
+    master = _master(cfg, REL, "h1")
+    target = cfg.alac_library / REL
+    target.parent.mkdir(parents=True, exist_ok=True)
+    edition_bake.bake(master, target)
+    edition_bake.copy_tags(master, target, eb.marker_for("h1"))  # the build stopped here
+    f = MP4(master)
+    f.tags["\xa9nam"] = ["Brown Sugar (2009 Remaster)"]
+    f.save()
+    _, out, _ = _build(cfg)
+    assert out.adopted == 1 and out.baked == 0
+    assert MP4(target).tags["\xa9nam"] == ["Brown Sugar (2009 Remaster)"]
+    _, again, _ = _build(cfg)
+    assert again.retagged == 0 and again.baked == 0 and again.adopted == 0
+
+
 def test_lossy_masters_are_left_out_unless_asked_for(cfg):
     _master(cfg, REL, "h1", codec="aac")
     plan, out, _ = _build(cfg)

@@ -63,6 +63,20 @@ def open_ledger(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def open_for_reading(path: Path) -> sqlite3.Connection:
+    """The record opened read-only for a plan -- or, before the first build
+    has made it, an empty one in memory: asking "what would a build do?"
+    must not create the file (second review of #49: three callers each
+    built this from _SCHEMA)."""
+    if path.exists():
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    else:
+        conn = sqlite3.connect(":memory:")
+        conn.executescript(_SCHEMA)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def copies(conn: sqlite3.Connection, edition: str) -> dict[str, Copy]:
     """Every recorded copy of *edition*, by master hash."""
     return {

@@ -194,6 +194,10 @@ def ffmpeg_measure_loudnorm(
         _BAKE_TIMEOUT,
     )
     err = proc.stderr or ""
+    if proc.returncode != 0:
+        # loudnorm prints its JSON even when ffmpeg stops early: a partial
+        # measurement must not steer the second pass (second review of #49).
+        raise BakeError(f"measuring {path.name}: ffmpeg exited {proc.returncode}: {err[-200:]}")
     start, end = err.rfind("{"), err.rfind("}")
     if start == -1 or end <= start:
         raise BakeError(f"could not read the loudness measurement of {path.name}")

@@ -42,3 +42,39 @@ def test_only_edition_ledger_names_the_record_file():
             ):
                 offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
     assert not offenders, offenders
+
+
+def test_a_plan_reads_the_record_without_creating_or_changing_it(tmp_path):
+    # Second review of #49: three callers each built an empty in-memory
+    # record from the private _SCHEMA. One helper now: read-only when the
+    # record exists, empty (and nothing created) before the first build.
+    import sqlite3
+
+    import pytest
+
+    from musaeus.edition_ledger import Copy, copies, open_for_reading, open_ledger, record
+
+    path = tmp_path / "hist" / "editions.db"
+    empty = open_for_reading(path)
+    assert copies(empty, "car") == {} and not path.exists() and not path.parent.exists()
+    empty.close()
+
+    conn = open_ledger(path)
+    record(conn, Copy("car", "h", "m", 1, "o", "now", -14.0, "linear"))
+    conn.close()
+    ro = open_for_reading(path)
+    assert set(copies(ro, "car")) == {"h"}
+    with pytest.raises(sqlite3.OperationalError):
+        ro.execute("DELETE FROM edition_copies")
+    ro.close()
+
+
+def test_nothing_outside_edition_ledger_reaches_for_its_schema():
+    offenders = [
+        str(p.relative_to(ROOT))
+        for p in [*(ROOT / "musaeus").rglob("*.py"), *(ROOT / "scripts").rglob("*.py")]
+        if p != HOME
+        and "_SCHEMA" in p.read_text(encoding="utf-8")
+        and "edition_ledger" in p.read_text(encoding="utf-8")
+    ]
+    assert offenders == [], offenders

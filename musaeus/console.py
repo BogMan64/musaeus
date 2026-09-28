@@ -1347,12 +1347,11 @@ class Console:
         do?" writes nothing. Only the build runs as a separate process, the
         way the iPhone build does.
         """
-        import sqlite3
         import subprocess
         import sys
 
         from . import edition_build as eb
-        from .edition_ledger import _SCHEMA, ledger_path
+        from .edition_ledger import ledger_path, open_for_reading
 
         cfg = self._config
         if cfg is None:
@@ -1363,14 +1362,7 @@ class Console:
         conn = self._open_db()
         if conn is None:
             return
-        lpath = ledger_path(cfg)
-        if lpath.exists():
-            ledger = sqlite3.connect(f"file:{lpath}?mode=ro", uri=True)
-            ledger.row_factory = sqlite3.Row
-        else:
-            ledger = sqlite3.connect(":memory:")
-            ledger.row_factory = sqlite3.Row
-            ledger.executescript(_SCHEMA)
+        ledger = open_for_reading(ledger_path(cfg))
         try:
             plan = eb.make_plan(conn, ledger, Path(cfg.alac_archive), Path(cfg.alac_library))
         finally:
@@ -1378,6 +1370,10 @@ class Console:
             ledger.close()
 
         _section("Lossless edition — what a build would do")
+        # The folder the build really writes to: the menu label is a fixed
+        # string, the configured folder is not (second review of #49).
+        print(f"  Lossless edition: {cfg.alac_library}")
+        print(f"  From the masters: {cfg.alac_archive}")
         for line in eb.plan_lines(plan, workers=2, free=eb.free_bytes(Path(cfg.alac_library))):
             print(line)
         _info("Nothing has been baked or written yet.")

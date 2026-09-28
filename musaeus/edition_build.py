@@ -671,8 +671,15 @@ def execute(
             out.failed.append((str(m.path), f"{type(exc).__name__}: {exc}"))
 
     for m, target in plan.adopt:
-        record(ledger, _copy(m, target, None, "adopted", kind))
-        out.adopted += 1
+        # Tagged again: the record takes the master's mtime of today, so a
+        # retag between the stopped build and this one would never reach the
+        # copy otherwise (second review of #49).
+        try:
+            edition_bake.copy_tags(m.path, target, marker_for(m.audio_hash, kind))
+            record(ledger, _copy(m, target, None, "adopted", kind))
+            out.adopted += 1
+        except Exception as exc:  # noqa: BLE001
+            out.failed.append((str(m.path), f"{type(exc).__name__}: {exc}"))
 
     todo = plan.bake[:limit] if limit is not None else plan.bake
     if not todo:

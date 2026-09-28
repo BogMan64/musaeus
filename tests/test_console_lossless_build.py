@@ -110,3 +110,17 @@ def test_no_build_is_offered_while_a_pipeline_run_is_going(cfg, monkeypatch, cap
     launched, _ = _run(cfg, monkeypatch, ["1", "BUILD"], running=[4242])
     assert launched == []
     assert "is running" in capsys.readouterr().out
+
+
+def test_the_real_destination_is_shown_before_build_is_asked(cfg, monkeypatch, capsys):
+    # Second review of #49: the label is a fixed string (Grey's choice), but
+    # the build writes to the configured folder, which an environment
+    # variable can re-point. The screen that asks for BUILD must name it.
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        "musaeus.console._prompt", lambda text, *a, **k: prompts.append(text) or "no"
+    )
+    _run(cfg, monkeypatch, ["1"])
+    out = capsys.readouterr().out
+    assert prompts, "BUILD was never asked"
+    assert str(cfg.alac_library) in out, out

@@ -1066,7 +1066,7 @@ def _cmd_edition_build(args) -> int:
     from datetime import datetime
 
     from . import edition_build as eb
-    from .edition_ledger import ledger_path, open_ledger
+    from .edition_ledger import ledger_path, open_for_reading, open_ledger
 
     try:
         cfg = get_config()
@@ -1090,13 +1090,7 @@ def _cmd_edition_build(args) -> int:
     conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     lpath = ledger_path(cfg)
-    ledger = open_ledger(lpath) if (lpath.exists() or not args.dry_run) else None
-    if ledger is None:
-        ledger = sqlite3.connect(":memory:")
-        ledger.row_factory = sqlite3.Row
-        from .edition_ledger import _SCHEMA
-
-        ledger.executescript(_SCHEMA)
+    ledger = open_for_reading(lpath) if args.dry_run else open_ledger(lpath)
     try:
         allowed = None
         if kind.name == "iphone" and args.budget_gb:
@@ -1218,17 +1212,11 @@ def _print_lossless_plan(cfg) -> int:
     import sqlite3
 
     from . import edition_build as eb
-    from .edition_ledger import _SCHEMA, ledger_path
+    from .edition_ledger import ledger_path, open_for_reading
 
     conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
-    lpath = ledger_path(cfg)
-    if lpath.exists():
-        ledger = sqlite3.connect(f"file:{lpath}?mode=ro", uri=True)
-    else:
-        ledger = sqlite3.connect(":memory:")
-        ledger.executescript(_SCHEMA)
-    ledger.row_factory = sqlite3.Row
+    ledger = open_for_reading(ledger_path(cfg))
     try:
         plan = eb.make_plan(conn, ledger, Path(cfg.alac_archive), Path(cfg.alac_library))
     finally:

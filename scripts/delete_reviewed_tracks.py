@@ -174,7 +174,8 @@ def main() -> int:
     # Through edition_ledger, the one definition of where the record lives
     # and what it holds (cloud review of #49: a second copy of the path would
     # silently find nothing the day db_history_dir moves, as it did once).
-    from musaeus.edition_build import KINDS
+    from musaeus.edition_bake import read_marker
+    from musaeus.edition_build import KINDS, marker_for
     from musaeus.edition_ledger import copies as edition_copies
     from musaeus.edition_ledger import forget as forget_copy
     from musaeus.edition_ledger import ledger_path, open_ledger
@@ -202,11 +203,16 @@ def main() -> int:
         paths = copies(row, libs)
         h0 = row["audio_hash"] if "audio_hash" in set(row.keys()) else None
         ecs = [(name, held[h0]) for name, held in edition_copy.items() if h0 and h0 in held]
-        for _, ec in ecs:
+        for name, ec in ecs:
             if h0 in keep_hashes:
                 # A copy is keyed by audio: another row with this audio is
                 # still in the library, so this copy is its copy too.
                 print(f"     KEPT (a surviving row has the same audio): {ec}")
+            elif Path(ec).is_file() and read_marker(Path(ec)) != marker_for(h0, KINDS[name]):
+                # The build never deletes a file whose marker is not the
+                # copy's, and neither does this (second review of #49). The
+                # record is stale; it goes below with the others.
+                print(f"     LEFT (the file there is not this track's copy): {ec}")
             elif Path(ec) not in paths:
                 paths.append(Path(ec))
         for p in paths:

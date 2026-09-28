@@ -183,3 +183,18 @@ def test_a_wide_range_master_that_needs_no_lift_is_not_compressed(tmp_path):
     assert float(measured["input_i"]) > -18, measured  # needs turning down, not lifting
     result = eb.bake(master, tmp_path / "c.m4a")
     assert result.mode == "linear", "a track that only needs turning down was compressed"
+
+
+def test_a_measurement_from_a_failed_ffmpeg_run_is_refused(tmp_path, monkeypatch):
+    # Second review of #49: the measure pass parsed loudnorm's JSON without
+    # checking ffmpeg's exit. loudnorm prints its JSON even when ffmpeg stops
+    # early, so a partial measurement would steer the second pass.
+    partial = (
+        '{"input_i" : "-30.00", "input_tp" : "-9.00", "input_lra" : "1.00",'
+        ' "input_thresh" : "-40.00", "target_offset" : "0.00"}'
+    )
+    monkeypatch.setattr(
+        eb, "_run", lambda cmd, timeout: subprocess.CompletedProcess(cmd, 1, "", partial)
+    )
+    with pytest.raises(eb.BakeError, match="exited 1"):
+        eb.ffmpeg_measure_loudnorm(tmp_path / "m.m4a")

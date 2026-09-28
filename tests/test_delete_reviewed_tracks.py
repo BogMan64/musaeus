@@ -307,9 +307,7 @@ class TestTheLosslessEditionCopy:
     def _copy(self, vault, h):
         from musaeus.edition_ledger import Copy, open_ledger, record
 
-        copy = vault / "Libraries" / "ALAC_Library" / self.REL
-        copy.parent.mkdir(parents=True, exist_ok=True)
-        copy.write_bytes(b"\0")
+        copy = _marked(vault / "Libraries" / "ALAC_Library" / self.REL, "lossless", h)
         conn = open_ledger(vault / "_db_backups" / "editions.db")
         record(conn, Copy("lossless", h, "m", 1, str(copy), "now", -18.0, "linear"))
         conn.close()
@@ -364,9 +362,7 @@ def test_every_editions_copy_goes_with_the_master(vault):
     led = open_ledger(vault / "_db_backups" / "editions.db")
     made = []
     for edition, tier in (("car", "CAR_Library"), ("iphone", "iPHONE_Library")):
-        p = libs / tier / "Blur" / "Parklife" / "Blur - Song 2.m4a"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(b"\0")
+        p = _marked(libs / tier / "Blur" / "Parklife" / "Blur - Song 2.m4a", edition, "hb")
         record(led, Copy(edition, "hb", str(master), 1, str(p), "now", -14.0, "linear"))
         made.append(p)
     led.close()
@@ -375,4 +371,59 @@ def test_every_editions_copy_goes_with_the_master(vault):
     assert not any(p.exists() for p in made), "a car or iPhone copy outlived its master"
     led = sqlite3.connect(vault / "_db_backups" / "editions.db")
     assert led.execute("SELECT COUNT(*) FROM edition_copies").fetchone()[0] == 0
+    led.close()
+
+
+def _marked(path: Path, edition: str, h: str) -> Path:
+    """A real (tiny) m4a carrying the edition marker of master *h*."""
+    from mutagen.mp4 import MP4, MP4FreeForm
+
+    from musaeus.edition_bake import MARKER_KEY
+    from musaeus.edition_build import KINDS, marker_for
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+         "-i", "anullsrc=r=44100:cl=stereo", "-t", "0.2", "-c:a", "aac", str(path)],
+        check=True, stdin=subprocess.DEVNULL,
+    )  # fmt: skip
+    f = MP4(path)
+    if f.tags is None:
+        f.add_tags()
+    f.tags[MARKER_KEY] = [MP4FreeForm(marker_for(h, KINDS[edition]).encode())]
+    f.save()
+    return path
+
+
+def test_a_file_at_a_copys_place_that_is_not_the_copy_is_left(vault):
+    # Second review of #49: the tool deleted whatever sat at the recorded
+    # path. The build never deletes a file whose marker is not the copy's.
+    from musaeus.edition_ledger import Copy, open_ledger, record
+
+    rel = "Rock/Blur/Parklife/Blur - Song 2.m4a"
+    libs = vault / "Libraries"
+    master = libs / "ALAC-Archival" / rel
+    master.parent.mkdir(parents=True, exist_ok=True)
+    master.write_bytes(b"\0")
+    conn = sqlite3.connect(vault / "musaeus.db")
+    conn.execute(
+        "INSERT INTO archive (id, artist, title, status, audio_hash, file_path) "
+        "VALUES (1, 'Blur', 'Song 2', 'CATALOGUED', 'hb', ?)",
+        (str(master),),
+    )
+    conn.commit()
+    conn.close()
+    stranger = _marked(
+        libs / "CAR_Library" / "Blur" / "Parklife" / "Blur - Song 2.m4a", "car", "hx"
+    )
+    led = open_ledger(vault / "_db_backups" / "editions.db")
+    record(led, Copy("car", "hb", str(master), 1, str(stranger), "now", -14.0, "linear"))
+    led.close()
+    r = _run(vault, [1])
+    assert r.returncode == 0, r.stderr
+    assert stranger.exists(), "another master's copy was deleted"
+    led = sqlite3.connect(vault / "_db_backups" / "editions.db")
+    assert led.execute("SELECT COUNT(*) FROM edition_copies").fetchone()[0] == 0, (
+        "stale record kept"
+    )
     led.close()
