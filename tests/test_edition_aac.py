@@ -186,3 +186,42 @@ def test_the_finished_file_is_measured_not_only_the_report(tmp_path, monkeypatch
     monkeypatch.setattr(eb, "NOISE_LEVELS_DB", {"brown": 8.0, "pink": 8.0, "white": 8.0})
     with pytest.raises(eb.BakeError, match="finished copy"):
         eb.bake_aac(_master(tmp_path / "m.m4a"), tmp_path / "car.m4a", noise=True)
+
+
+def test_a_copy_a_fifth_of_a_second_short_is_refused(tmp_path, monkeypatch):
+    # Cloud review of #53: with ffmpeg 6.1 the noise mix cut ~0.2 s off 48 kHz
+    # car copies, inside the shared 2 s / 2 % rule. Not on ffmpeg 5.1 here --
+    # so the AAC copies are held to 0.1 s, and an upgrade cannot hide it.
+    master = _master(tmp_path / "m.m4a", seconds=20)
+    out = tmp_path / "car.m4a"
+    real = eb.probe
+
+    def short(path):
+        info = real(path)
+        if Path(path) == out:
+            info["format"]["duration"] = str(float(info["format"]["duration"]) - 0.2)
+        return info
+
+    monkeypatch.setattr(eb, "probe", short)
+    with pytest.raises(eb.BakeError, match="length changed"):
+        eb.bake_aac(master, out, noise=True)
+
+
+def test_the_time_limit_grows_with_the_song(tmp_path, monkeypatch):
+    # Cloud review of #53: a flat 30-minute working-time limit would kill a
+    # multi-hour master's encode on every build. Here the flat limit is made
+    # smaller than a 12 s song; every ffmpeg call must still get the song's
+    # length at least.
+    master = _master(tmp_path / "m.m4a", seconds=12)
+    monkeypatch.setattr(eb, "_BAKE_TIMEOUT", 5)
+    limits = []
+    real = eb._run
+
+    def spy(cmd, timeout):
+        if cmd[0] == eb.FFMPEG:
+            limits.append(timeout)
+        return real(cmd, timeout)
+
+    monkeypatch.setattr(eb, "_run", spy)
+    eb.bake_aac(master, tmp_path / "car.m4a", noise=True)
+    assert limits and min(limits) >= 12, limits

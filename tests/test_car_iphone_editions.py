@@ -200,6 +200,10 @@ def _cli(cfg, *args: str) -> subprocess.CompletedProcess[str]:
         (("lossless", "--budget-gb", "30"), "iphone"),
         (("car", "--lossy", "alac"), "lossless"),
         (("iphone", "--lossy", "leave-out"), "lossless"),
+        # At range 11 compression is normal in the car: the flag would re-make
+        # about 7 in 10 copies for nothing (cloud review of #53).
+        (("car", "--rebake-compressed"), "lossless"),
+        (("iphone", "--rebake-compressed"), "lossless"),
     ],
 )
 def test_an_option_that_would_do_nothing_is_refused(cfg, args, why):

@@ -1076,6 +1076,12 @@ def _cmd_edition_build(args) -> int:
     if args.budget_gb is not None and args.budget_gb <= 0:
         print("ERROR: a budget must be more than 0 GB.", file=sys.stderr)
         return 2
+    if args.rebake_compressed and kind.name != "lossless":
+        # At range 11 compression is normal in the car and on the iPhone: the
+        # flag would re-make about 7 in 10 copies for nothing (cloud review
+        # of #53). It is for the Lossless edition's rule changes.
+        print("ERROR: --rebake-compressed is for the lossless edition only.", file=sys.stderr)
+        return 2
     if args.lossy is not None and kind.name != "lossless":
         print(
             "ERROR: --lossy is for the lossless edition only "

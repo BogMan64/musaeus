@@ -188,6 +188,7 @@ def ffmpeg_measure_loudnorm(
     target_tp: str = TARGET_TP,
     target_lra: str = TARGET_LRA,
     before: str = "",
+    timeout: int | None = None,
 ) -> dict:
     """First pass: what loudnorm measures of the master (after *before*,
     the same filters the second pass runs ahead of loudnorm)."""
@@ -210,7 +211,7 @@ def ffmpeg_measure_loudnorm(
             "null",
             "-",
         ],
-        _BAKE_TIMEOUT,
+        timeout or _BAKE_TIMEOUT,
     )
     err = proc.stderr or ""
     if proc.returncode != 0:
@@ -303,8 +304,12 @@ def verify(
     rate: int | None = None,
     codec: str | None = None,
     max_channels: int | None = None,
+    length_tolerance: float | None = None,
 ) -> None:
     """The copy has audio, the right rate, its length, and the target loudness.
+
+    *length_tolerance*, when given, replaces the shared drift rule (2 s or
+    2 %) for the length.
 
     *rate* is the rate the copy must have -- the master's own unless given
     (the AAC editions cap it). *codec* and *max_channels*, when given, are
@@ -335,8 +340,9 @@ def verify(
             return None
 
     sd, od = _dur(source_info), _dur(out)
-    if sd is not None and od is not None and abs(sd - od) > tolerance_for(sd):
-        raise BakeError(f"length changed: master {sd:.1f}s, copy {od:.1f}s")
+    allowed = length_tolerance if length_tolerance is not None else tolerance_for(sd)
+    if sd is not None and od is not None and abs(sd - od) > allowed:
+        raise BakeError(f"length changed: master {sd:.2f}s, copy {od:.2f}s")
 
 
 #: Freeform tags that carry a loudness GAIN. A copy already baked to -18 LUFS
@@ -476,13 +482,28 @@ NOISE_SEEDS = {"brown": 1, "pink": 2, "white": 3}
 CEILING = 0.977
 
 
+#: How far an AAC copy's length may differ from its master's. The copies
+#: measured to 0.001 s (2026-09-28); AAC's priming and padding at the edges
+#: are under 0.08 s. With ffmpeg 6.1 the noise mix cut ~0.2 s off 48 kHz car
+#: copies (cloud review of #53) -- inside the shared 2 s rule, not this one.
+_AAC_LENGTH_TOLERANCE = 0.1
+
+
+def _deadline(seconds: float) -> int:
+    """Working seconds an ffmpeg call on a song this long may take: the flat
+    limit, or one second per second of audio if that is more. The encode
+    runs at about a tenth of that; a multi-hour master must not be killed
+    as hung on every build (cloud review of #53)."""
+    return max(_BAKE_TIMEOUT, int(seconds) + 1)
+
+
 #: How far the finished AAC file may measure from the loudness loudnorm
 #: reported for the music. The noise adds a little: rehearsal, 2026-09-28,
 #: +0.0 to +0.4 LU in the car, within 0.1 on the iPhone.
 _FINISHED_TOLERANCE = 1.0
 
 
-def integrated_lufs(path: Path) -> float:
+def integrated_lufs(path: Path, timeout: int | None = None) -> float:
     """The file's integrated loudness (EBU R128), measured from the file.
 
     ebur128 without true peak: no 4x upsampling, so it costs about a
@@ -492,7 +513,7 @@ def integrated_lufs(path: Path) -> float:
     proc = _run(
         [FFMPEG, "-nostdin", "-hide_banner", "-nostats", "-i", str(path),
          "-map", "0:a:0", "-af", "ebur128", "-f", "null", "-"],
-        _BAKE_TIMEOUT,
+        timeout or _BAKE_TIMEOUT,
     )  # fmt: skip
     if proc.returncode != 0:
         raise BakeError(f"measuring {path.name}: ffmpeg exited {proc.returncode}")
@@ -626,21 +647,27 @@ def bake_aac(
         recipe,
         known,
         lambda: ffmpeg_measure_loudnorm(
-            source, AAC_TARGET_I, TARGET_TP, AAC_TARGET_LRA, aac_before_loudnorm(rate, channels)
+            source,
+            AAC_TARGET_I,
+            TARGET_TP,
+            AAC_TARGET_LRA,
+            aac_before_loudnorm(rate, channels),
+            timeout=_deadline(seconds),
         ),
     )
     loud = build_second_pass_filter(measured, AAC_TARGET_I, TARGET_TP, AAC_TARGET_LRA)
     graph = aac_filter(loud, rate, channels, seconds, noise)
-    proc = _run(aac_command(source, tmp_output, graph, rate), _BAKE_TIMEOUT)
+    proc = _run(aac_command(source, tmp_output, graph, rate), _deadline(seconds))
     if proc.returncode != 0:
         raise BakeError(f"ffmpeg exited {proc.returncode}: {(proc.stderr or '')[-200:]}")
     result = BakeResult(parse_achieved(proc.stderr), parse_mode(proc.stderr), recipe, measured)
     verify(
         info, tmp_output, result.achieved_lufs, result.mode,
         target_i=AAC_TARGET_I, rate=rate, codec="aac", max_channels=2,
+        length_tolerance=_AAC_LENGTH_TOLERANCE,
     )  # fmt: skip
     assert result.achieved_lufs is not None  # verify refuses a copy without it
-    finished = integrated_lufs(tmp_output)
+    finished = integrated_lufs(tmp_output, _deadline(seconds))
     if abs(finished - result.achieved_lufs) > _FINISHED_TOLERANCE:
         raise BakeError(
             f"the finished copy measures {finished:.1f} LUFS; loudnorm reported "
