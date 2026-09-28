@@ -79,8 +79,7 @@ def main() -> int:
     if not src.is_dir():
         print(f"\n  The iPhone edition does not exist yet at {src}.")
         print("  Build it first:")
-        print("     python3 scripts/car_library/build_car_library.py \\")
-        print("             --edition iphone --source car --budget-gb 45")
+        print("     musaeus edition-build iphone --budget-gb 45")
         return 1
     files = list(src.rglob("*.m4a"))
     size = sum(f.stat().st_size for f in files)

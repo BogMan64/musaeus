@@ -39,6 +39,10 @@ import pytest
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
 
+pytestmark = pytest.mark.skip(
+    reason="script retired 2026-09-28: `musaeus edition-build car|iphone` builds the car and iPhone editions"
+)
+
 
 def _main_body() -> list[ast.stmt]:
     tree = ast.parse(_SCRIPT.read_text())

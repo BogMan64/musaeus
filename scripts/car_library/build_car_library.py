@@ -479,7 +479,27 @@ def _copy_edition_from_car(cfg, conn, dest_root: Path, budget_bytes: int | None,
     return 0
 
 
+RETIRED_MESSAGE = """\
+build_car_library.py is retired (2026-09-28).
+
+The car and iPhone editions are built by:
+
+    musaeus edition-build car
+    musaeus edition-build iphone --budget-gb N
+
+one AAC pass from each master, recorded in the edition record, with a
+marker in every copy. This script wrote the same Artist/Album/Title paths
+with no marker, so every file it wrote there would block the new build and
+fail the audit. Nothing was changed.
+"""
+
+
 def main() -> int:
+    print(RETIRED_MESSAGE, file=sys.stderr)
+    return 2
+
+
+def _main_legacy() -> int:  # the old entry point, kept for reference
     # Keep the machine awake for the whole run without touching the X11
     # idle counter the throttle reads. See musaeus/sleep_inhibit.py.
     reexec_under_inhibitor("car/iPhone edition build in progress")
