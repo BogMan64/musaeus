@@ -342,3 +342,37 @@ class TestTheLosslessEditionCopy:
         copy = self._copy(vault, "hb")
         _run(vault, [1])
         assert copy.exists() and self._recorded(vault) == 1
+
+
+def test_every_editions_copy_goes_with_the_master(vault):
+    # Grey: "delete all copies" -- the car and iPhone copies too (2026-09-28).
+    from musaeus.edition_ledger import Copy, open_ledger, record
+
+    rel = "Rock/Blur/Parklife/Blur - Song 2.m4a"
+    libs = vault / "Libraries"
+    master = libs / "ALAC-Archival" / rel
+    master.parent.mkdir(parents=True, exist_ok=True)
+    master.write_bytes(b"\0")
+    conn = sqlite3.connect(vault / "musaeus.db")
+    conn.execute(
+        "INSERT INTO archive (id, artist, title, status, audio_hash, file_path) "
+        "VALUES (1, 'Blur', 'Song 2', 'CATALOGUED', 'hb', ?)",
+        (str(master),),
+    )
+    conn.commit()
+    conn.close()
+    led = open_ledger(vault / "_db_backups" / "editions.db")
+    made = []
+    for edition, tier in (("car", "CAR_Library"), ("iphone", "iPHONE_Library")):
+        p = libs / tier / "Blur" / "Parklife" / "Blur - Song 2.m4a"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\0")
+        record(led, Copy(edition, "hb", str(master), 1, str(p), "now", -14.0, "linear"))
+        made.append(p)
+    led.close()
+    r = _run(vault, [1])
+    assert r.returncode == 0, r.stderr
+    assert not any(p.exists() for p in made), "a car or iPhone copy outlived its master"
+    led = sqlite3.connect(vault / "_db_backups" / "editions.db")
+    assert led.execute("SELECT COUNT(*) FROM edition_copies").fetchone()[0] == 0
+    led.close()

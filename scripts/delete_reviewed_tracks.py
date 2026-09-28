@@ -174,15 +174,19 @@ def main() -> int:
     # Through edition_ledger, the one definition of where the record lives
     # and what it holds (cloud review of #49: a second copy of the path would
     # silently find nothing the day db_history_dir moves, as it did once).
-    from musaeus.edition_build import EDITION
+    from musaeus.edition_build import KINDS
     from musaeus.edition_ledger import copies as edition_copies
     from musaeus.edition_ledger import forget as forget_copy
     from musaeus.edition_ledger import ledger_path, open_ledger
 
     edition = open_ledger(ledger_path(cfg)) if ledger_path(cfg).exists() else None
-    edition_copy: dict[str, str] = {}
+    # Every edition -- Lossless, car, iPhone (Grey, 2026-09-28: all copies).
+    edition_copy: dict[str, dict[str, str]] = {}
     if edition is not None:
-        edition_copy = {h: c.output_path for h, c in edition_copies(edition, EDITION).items()}
+        edition_copy = {
+            name: {h: c.output_path for h, c in edition_copies(edition, name).items()}
+            for name in KINDS
+        }
 
     run_id = f"delete_reviewed_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}_{uuid.uuid4().hex[:6]}"
     n_files = n_rows = n_denied = n_absent = n_shared = n_kept_audio = 0
@@ -197,13 +201,14 @@ def main() -> int:
         files_for_row = 0
         paths = copies(row, libs)
         h0 = row["audio_hash"] if "audio_hash" in set(row.keys()) else None
-        ec = edition_copy.get(h0) if h0 else None
-        if ec and h0 in keep_hashes:
-            # A copy is keyed by audio: another row with this audio is still
-            # in the library, so this copy is its copy too.
-            print(f"     KEPT (a surviving row has the same audio): {ec}")
-        elif ec and Path(ec) not in paths:
-            paths.append(Path(ec))
+        ecs = [(name, held[h0]) for name, held in edition_copy.items() if h0 and h0 in held]
+        for _, ec in ecs:
+            if h0 in keep_hashes:
+                # A copy is keyed by audio: another row with this audio is
+                # still in the library, so this copy is its copy too.
+                print(f"     KEPT (a surviving row has the same audio): {ec}")
+            elif Path(ec) not in paths:
+                paths.append(Path(ec))
         for p in paths:
             if not p.is_file():
                 continue
@@ -224,8 +229,9 @@ def main() -> int:
             files_for_row += 1
         # The copy's record goes AFTER its file, like the row: files first,
         # then the records (see ORDER MATTERS above).
-        if ec and h0 not in keep_hashes and args.execute and edition is not None:
-            forget_copy(edition, EDITION, h0)
+        if h0 not in keep_hashes and args.execute and edition is not None:
+            for name, _ in ecs:
+                forget_copy(edition, name, h0)
         h = row["audio_hash"] if "audio_hash" in set(row.keys()) else None
         audio_kept = bool(h) and h in keep_hashes
         if audio_kept:

@@ -332,3 +332,24 @@ class TestTheLosslessEditionFolder:
         result = AuditStage().execute(ctx)
         assert result.success is False
         assert any("no final root" in e for e in result.errors), result.errors
+
+
+class TestTheCarAndIphoneFolders:
+    """CAR_Library and iPHONE_Library hold edition copies too (2026-09-28):
+    known to the edition ledger, never to a row."""
+
+    def test_a_recorded_car_copy_passes_and_a_stray_is_reported(self, ctx):
+        from musaeus.edition_ledger import Copy, ledger_path, open_ledger, record
+
+        _make_finalized_row(ctx, "Rock/Artist/Album/Track.m4a")
+        copy = ctx.config.car_library / "Artist/Album/Track.m4a"
+        _gen_audio(copy)
+        led = open_ledger(ledger_path(ctx.config))
+        record(led, Copy("car", "hash123", "m", 1, str(copy.resolve()), "now", -14.0, "linear"))
+        led.close()
+        assert AuditStage().execute(ctx).success is True
+        stray = ctx.config.iphone_library / "Artist/Album/Stray.m4a"
+        _gen_audio(stray)
+        result = AuditStage().execute(ctx)
+        assert result.success is False
+        assert any("iPhone" in e and stray.name in e for e in result.errors), result.errors
