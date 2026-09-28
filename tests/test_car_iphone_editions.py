@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from musaeus import edition_bake
+from musaeus import deep_scan, edition_bake
 from musaeus import edition_build as eb
 from musaeus.config import MusicConfig
 from musaeus.db import open_db, upsert_archive
@@ -124,10 +124,7 @@ def test_a_budgeted_track_that_is_only_blocked_keeps_its_iphone_copy(cfg):
     b = _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Wild Horses.m4a", "h2")
     _build(cfg, eb.IPHONE_KIND, allowed={str(a), str(b)})
     conn = sqlite3.connect(cfg.db_path)
-    if "decode_ok" not in {r[1] for r in conn.execute("PRAGMA table_info(archive)")}:
-        conn.execute(
-            "ALTER TABLE archive ADD COLUMN decode_ok INTEGER"
-        )  # the live catalogue has it
+    deep_scan.ensure_columns(conn)  # the live catalogue has decode_ok
     conn.execute("UPDATE archive SET decode_ok = 0 WHERE audio_hash = 'h2'")
     conn.commit()
     conn.close()
@@ -171,8 +168,7 @@ def test_the_budget_is_filled_only_with_tracks_the_build_can_make(cfg):
     _master(cfg, "Rock/Zz/Al/Zz - Last.m4a", "h2")
     conn = sqlite3.connect(cfg.db_path)
     conn.row_factory = sqlite3.Row
-    if "decode_ok" not in {r[1] for r in conn.execute("PRAGMA table_info(archive)")}:
-        conn.execute("ALTER TABLE archive ADD COLUMN decode_ok INTEGER")
+    deep_scan.ensure_columns(conn)  # the live catalogue has decode_ok
     conn.execute("UPDATE archive SET decode_ok = 0 WHERE audio_hash = 'h1'")
     conn.commit()
     one = max(estimated_bytes(t, IPHONE) for t in load_tracks(conn))
