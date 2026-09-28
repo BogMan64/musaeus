@@ -247,7 +247,16 @@ def parse_mode(stderr: str) -> str:
     return m.group(1).lower() if m else ""
 
 
-def verify(source_info: dict, output: Path, achieved: float | None) -> None:
+#: How far BELOW the target a DYNAMIC-mode copy may land and still be kept.
+#: Linear mode lands on the target; dynamic mode, on a quiet master with big
+#: peaks, can fall short -- Handel's "Zadok The Priest" reaches -19.5 at
+#: best and was refused on every build. Grey, 2026-09-28: include such a
+#: track at its best level rather than leave it out. Never louder than the
+#: target, and never a linear copy off it.
+_DYNAMIC_SHORTFALL = 2.0
+
+
+def verify(source_info: dict, output: Path, achieved: float | None, mode: str = "linear") -> None:
     """The copy has audio, the master's rate, its length, and the target loudness."""
     out = probe(output)
     a = _audio_stream(out)
@@ -258,7 +267,9 @@ def verify(source_info: dict, output: Path, achieved: float | None) -> None:
         raise BakeError(f"the copy is {sample_rate_of(out)} Hz, the master {want_rate} Hz")
     if achieved is None:
         raise BakeError("loudnorm did not report the loudness it achieved -- unverified")
-    if abs(achieved - float(TARGET_I)) > _LUFS_TOLERANCE:
+    off = achieved - float(TARGET_I)
+    short_but_best = mode == "dynamic" and -_DYNAMIC_SHORTFALL <= off < 0
+    if abs(off) > _LUFS_TOLERANCE and not short_but_best:
         raise BakeError(f"baked to {achieved:.2f} LUFS, wanted {TARGET_I}")
 
     def _dur(info: dict) -> float | None:
@@ -333,7 +344,7 @@ def bake(source: Path, tmp_output: Path) -> BakeResult:
     if proc.returncode != 0:
         raise BakeError(f"ffmpeg exited {proc.returncode}: {(proc.stderr or '')[-200:]}")
     result = BakeResult(parse_achieved(proc.stderr), parse_mode(proc.stderr))
-    verify(info, tmp_output, result.achieved_lufs)
+    verify(info, tmp_output, result.achieved_lufs, result.mode)
     return result
 
 

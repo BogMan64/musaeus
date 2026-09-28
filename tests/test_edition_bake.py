@@ -147,6 +147,22 @@ def test_a_long_masters_drift_is_judged_by_the_shared_rule(tmp_path, monkeypatch
         eb.verify(info(600.0), tmp_path / "c.m4a", -18.0)
 
 
+def test_a_compressed_copy_a_little_short_of_the_target_is_kept(tmp_path, monkeypatch):
+    # Handel's "Zadok The Priest" reaches -19.5 at best in dynamic mode and
+    # was refused on every build. Grey, 2026-09-28: include it at its best
+    # level. Only a DYNAMIC copy, only BELOW the target, only up to 2 LU.
+    info = {
+        "streams": [{"codec_type": "audio", "sample_rate": "44100"}],
+        "format": {"duration": "300.0"},
+    }
+    monkeypatch.setattr(eb, "probe", lambda p: info)
+    out = tmp_path / "c.m4a"
+    eb.verify(info, out, -19.5, "dynamic")
+    for achieved, mode in ((-19.5, "linear"), (-20.5, "dynamic"), (-16.5, "dynamic")):
+        with pytest.raises(eb.BakeError, match="wanted"):
+            eb.verify(info, out, achieved, mode)
+
+
 def test_a_wide_range_master_that_needs_no_lift_is_not_compressed(tmp_path):
     # Grey, 2026-09-27: Barenaked Ladies' "Aluminum" (-16.7 LUFS, peak -6.9,
     # range 14.2) only needed turning DOWN 1.3 dB, yet was compressed:
