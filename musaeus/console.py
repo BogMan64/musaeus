@@ -301,16 +301,9 @@ class Console:
             forged = conn.execute(
                 "SELECT COUNT(*) FROM archive WHERE rg_tagged_at IS NOT NULL"
             ).fetchone()[0]
-            from .edition_ledger import recorded_copies
+            from .edition_ledger import car_copy_count
 
-            # The car edition's copies live in the edition ledger (2026-09-28);
-            # car_export_path counts only an edition built the old way.
-            car_exported = (
-                len(recorded_copies(self._config, "car") or {})
-                or conn.execute(
-                    "SELECT COUNT(*) FROM archive WHERE car_export_path IS NOT NULL"
-                ).fetchone()[0]
-            )
+            car_exported = car_copy_count(self._config, conn)
 
             _info(f"Total files   : {_c(str(total), _BOLD)}")
             _info(f"  PENDING     : {pending}")

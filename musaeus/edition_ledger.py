@@ -77,6 +77,22 @@ def open_for_reading(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def car_copy_count(config: object, conn: sqlite3.Connection) -> int:
+    """How many car copies there are, for the status screens.
+
+    The car edition's copies live here since 2026-09-28; before that the old
+    builder marked rows' car_export_path, so that counts when this record
+    holds no car copy. One statement of it for `musaeus status` and the
+    console (cloud review of #53: it was written in both).
+    """
+    return (
+        len(recorded_copies(config, "car") or {})
+        or conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE car_export_path IS NOT NULL"
+        ).fetchone()[0]
+    )
+
+
 def copies(conn: sqlite3.Connection, edition: str) -> dict[str, Copy]:
     """Every recorded copy of *edition*, by master hash."""
     return {

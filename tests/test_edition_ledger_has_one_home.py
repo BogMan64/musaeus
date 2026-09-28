@@ -78,3 +78,21 @@ def test_nothing_outside_edition_ledger_reaches_for_its_schema():
         and "edition_ledger" in p.read_text(encoding="utf-8")
     ]
     assert offenders == [], offenders
+
+
+def test_the_car_count_is_the_records_else_the_old_builders(tmp_path):
+    # Cloud review of #53: `musaeus status` and the console each wrote this.
+    import sqlite3
+    from types import SimpleNamespace
+
+    from musaeus.edition_ledger import Copy, car_copy_count, open_ledger, record
+
+    cfg = SimpleNamespace(db_history_dir=tmp_path / "hist")
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE archive (car_export_path TEXT)")
+    conn.executemany("INSERT INTO archive VALUES (?)", [("/car/a",), ("/car/b",), (None,)])
+    assert car_copy_count(cfg, conn) == 2  # built the old way
+    led = open_ledger(tmp_path / "hist" / "editions.db")
+    record(led, Copy("car", "h", "m", 1, "/car/x", "now", -14.0, "linear"))
+    led.close()
+    assert car_copy_count(cfg, conn) == 1  # the edition framework's record wins
