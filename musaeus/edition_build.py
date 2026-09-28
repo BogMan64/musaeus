@@ -204,10 +204,13 @@ class Plan:
         the master, and counting the master overstated the car by ~8x."""
         if self.kind_name == EDITION:
             return sum(m.size_bytes for m, _ in self.bake)
-        from .editions import CAR, Track, estimated_bytes
-
+        # Each edition by its own format: the iPhone was sized with the car's
+        # (cloud review of #53), right only while both say 256k.
+        spec = editions.EDITIONS[self.kind_name]
         return sum(
-            estimated_bytes(Track(str(m.path), "", "", "", "", m.seconds, m.size_bytes), CAR)
+            editions.estimated_bytes(
+                editions.Track(str(m.path), "", "", "", "", m.seconds, m.size_bytes), spec
+            )
             for m, _ in self.bake
         )
 

@@ -240,3 +240,17 @@ def test_only_the_edition_kinds_name_the_edition_folders():
         and ('"car_library"' in p.read_text() or '"iphone_library"' in p.read_text())
     ]
     assert offenders == [], offenders
+
+
+def test_each_aac_edition_is_sized_by_its_own_format(monkeypatch):
+    # Cloud review of #53: the iPhone plan was sized with the car's spec --
+    # right only while both say 256k.
+    from dataclasses import replace
+
+    from musaeus import editions
+
+    monkeypatch.setitem(editions.EDITIONS, "iphone", replace(editions.IPHONE, bitrate_kbps=128))
+    m = eb.Master(Path("m.m4a"), "h", "alac", -20.0, -3.0, 1, 1, seconds=600.0)
+    car = eb.Plan(bake=[(m, Path("c.m4a"))], kind_name="car")
+    phone = eb.Plan(bake=[(m, Path("p.m4a"))], kind_name="iphone")
+    assert phone.bake_bytes < car.bake_bytes
