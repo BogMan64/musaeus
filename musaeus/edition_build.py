@@ -61,6 +61,56 @@ EDITION = "lossless"
 TARGET_LUFS = float(edition_bake.TARGET_I)
 TMP_SUFFIX = ".edition_tmp"
 
+
+def _mirror(masters_root: Path, edition_root: Path, master: Path) -> Path:
+    """The Lossless edition: the master's own path under the edition root."""
+    return edition_root / master.relative_to(masters_root)
+
+
+def _artist_album(masters_root: Path, edition_root: Path, master: Path) -> Path:
+    """The AAC editions: Artist/Album/Title.m4a -- editions.output_path_for's
+    layout, the one the old car builder filed by (no genre level)."""
+    parent = master.parent.name or "Unknown Album"
+    grand = master.parent.parent.name or "Unknown Artist"
+    return edition_root / grand / parent / (master.stem + ".m4a")
+
+
+@dataclass(frozen=True)
+class Kind:
+    """What one edition is: its record name, loudness, layout and encode."""
+
+    name: str
+    target_i: str
+    root_attr: str  # the MusicConfig attribute naming its folder
+    place: Callable[[Path, Path, Path], Path]
+    bake: Callable[[Path, Path], edition_bake.BakeResult]
+    include_lossy: bool
+    #: Put a master whose copy had to be compressed on the wanted list.
+    #: Grey, 2026-09-27, for the Lossless edition only.
+    list_compressed: bool = False
+
+    def root(self, config: object) -> Path:
+        return Path(getattr(config, self.root_attr))
+
+
+LOSSLESS_KIND = Kind(
+    "lossless", edition_bake.TARGET_I, "alac_library", _mirror,
+    # Looked up at call time, not bound at import: tests stand in for it.
+    lambda src, tmp: edition_bake.bake(src, tmp),
+    include_lossy=False, list_compressed=True,
+)  # fmt: skip
+#: Grey, 2026-09-28: car and iPhone include the lossy masters (re-encoded
+#: once); the car has the noise under every song.
+CAR_KIND = Kind(
+    "car", edition_bake.AAC_TARGET_I, "car_library", _artist_album,
+    lambda src, tmp: edition_bake.bake_aac(src, tmp, noise=True), include_lossy=True,
+)  # fmt: skip
+IPHONE_KIND = Kind(
+    "iphone", edition_bake.AAC_TARGET_I, "iphone_library", _artist_album,
+    lambda src, tmp: edition_bake.bake_aac(src, tmp, noise=False), include_lossy=True,
+)  # fmt: skip
+KINDS = {k.name: k for k in (LOSSLESS_KIND, CAR_KIND, IPHONE_KIND)}
+
 #: Worker-seconds of work per second of audio, scaled to 44.1 kHz -- the
 #: decode check plus both loudnorm passes. Measured 2026-09-27 on 29 real
 #: masters: 0.025 without the decode check, 0.077 with it on 192 kHz
@@ -71,8 +121,11 @@ WORK_PER_AUDIO_SECOND = 0.04
 _SPACE_MARGIN = 1.05
 
 
-def marker_for(master_hash: str) -> str:
-    return f"{EDITION} {edition_bake.TARGET_I} LUFS master={master_hash}"
+def marker_for(master_hash: str, kind: Kind | None = None) -> str:
+    """The marker naming *master_hash*'s copy in *kind* (the Lossless
+    edition's form, unchanged, so its copies stay recognised)."""
+    k = kind or LOSSLESS_KIND
+    return f"{k.name} {k.target_i} LUFS master={master_hash}"
 
 
 @dataclass(frozen=True)
@@ -98,7 +151,7 @@ class Master:
     def lossless(self) -> bool:
         return self.codec.lower() in LOSSLESS_CODECS
 
-    def may_compress(self) -> bool | None:
+    def may_compress(self, target_lufs: float = TARGET_LUFS) -> bool | None:
         """Will linear loudnorm fall back to DYNAMIC (compression)?
 
         Only the peaks can force it now: the range target is at ffmpeg's
@@ -109,7 +162,7 @@ class Master:
         """
         if self.lufs is None or self.lufs_tp is None:
             return None
-        gain = TARGET_LUFS - self.lufs
+        gain = target_lufs - self.lufs
         return self.lufs_tp + gain > float(edition_bake.TARGET_TP)
 
 
@@ -125,10 +178,13 @@ class Plan:
     up_to_date: int = 0
     kept_unselected: int = 0
     lossy_left_out: list[Master] = field(default_factory=list)
+    over_budget: list[Master] = field(default_factory=list)
     same_audio: list[Master] = field(default_factory=list)
     outside_masters: list[str] = field(default_factory=list)
     blocked: list[tuple[Master, str]] = field(default_factory=list)
     unrecorded: list[Path] = field(default_factory=list)
+    kind_name: str = EDITION
+    target_lufs: float = TARGET_LUFS
 
     @property
     def bake_bytes(self) -> int:
@@ -139,7 +195,7 @@ class Plan:
 
     def compress_counts(self) -> tuple[int, int]:
         """(will be compressed, may be -- peak never measured)."""
-        verdicts = [m.may_compress() for m, _ in self.bake]
+        verdicts = [m.may_compress(self.target_lufs) for m, _ in self.bake]
         return sum(v is True for v in verdicts), sum(v is None for v in verdicts)
 
 
@@ -175,12 +231,23 @@ def make_plan(
     masters_root: Path,
     edition_root: Path,
     *,
-    include_lossy: bool = False,
+    kind: Kind | None = None,
+    include_lossy: bool | None = None,
     rebake_compressed: bool = False,
+    allowed: set[str] | None = None,
 ) -> Plan:
-    """Decide what the build does. Reads only; changes nothing."""
-    plan = Plan()
-    recorded = copies(ledger, EDITION)
+    """Decide what the build does. Reads only; changes nothing.
+
+    *allowed*: the master paths a size-budgeted edition (iPhone) selected. A
+    live master outside it is left out, and its copy removed -- dropped for
+    space is a reason, where "not in this build" alone is not.
+    """
+    kind = kind or LOSSLESS_KIND
+    if include_lossy is None:
+        include_lossy = kind.include_lossy
+    plan = Plan(kind_name=kind.name, target_lufs=float(kind.target_i))
+    recorded = copies(ledger, kind.name)
+    targets_taken: set[str] = set()
     selected: dict[str, tuple[Master, Path]] = {}
     live_hashes: set[str] = set()
     aside_hashes: set[str] = set()
@@ -228,8 +295,17 @@ def make_plan(
             plan.lossy_left_out.append(m)
         elif h in selected:
             plan.same_audio.append(m)
+        elif allowed is not None and str(path) not in allowed:
+            plan.over_budget.append(m)
         else:
-            selected[h] = (m, edition_root / path.relative_to(masters_root))
+            target = kind.place(masters_root, edition_root, path)
+            if str(target) in targets_taken:
+                # Two masters, one place: the AAC layout drops the genre
+                # folder, so the same Artist/Album/Title under two genres meet.
+                plan.blocked.append((m, f"another master has the same place: {target}"))
+                continue
+            targets_taken.add(str(target))
+            selected[h] = (m, target)
 
     marker_cache: dict[str, str | None] = {}
 
@@ -240,7 +316,7 @@ def make_plan(
         return marker_cache[key]
 
     def ours(p: Path, h: str) -> bool:
-        return p.exists() and marker(p) == marker_for(h)
+        return p.exists() and marker(p) == marker_for(h, kind)
 
     # Which records can be trusted: the file they name carries their marker.
     # Read only where a decision depends on it -- a copy at its own path,
@@ -265,6 +341,8 @@ def make_plan(
         gone = h not in live_hashes and (
             h in aside_hashes or elsewhere or not Path(rec.master_path).exists()
         )
+        if allowed is not None and h in live_hashes:
+            gone = True  # dropped from a budgeted edition for space
         if gone:
             plan.remove.append(rec)
         else:
@@ -411,10 +489,10 @@ def describe_work(pids: list[int]) -> str:
 
 
 @contextmanager
-def build_lock(lock_dir: Path) -> Iterator[None]:
-    """One build at a time. fcntl.flock: the kernel frees it if we die."""
+def build_lock(lock_dir: Path, name: str = EDITION) -> Iterator[None]:
+    """One build of an edition at a time. fcntl.flock: the kernel frees it if we die."""
     lock_dir.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_dir / f"edition-build-{EDITION}.lock", "w")  # noqa: SIM115
+    fh = open(lock_dir / f"edition-build-{name}.lock", "w")  # noqa: SIM115
     try:
         try:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -447,9 +525,9 @@ def _now() -> str:
     return datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
 
 
-def _copy(m: Master, output: Path, achieved: float | None, mode: str) -> Copy:
+def _copy(m: Master, output: Path, achieved: float | None, mode: str, kind: Kind) -> Copy:
     return Copy(
-        edition=EDITION,
+        edition=kind.name,
         master_hash=m.audio_hash,
         master_path=str(m.path),
         master_mtime_ns=m.mtime_ns,
@@ -470,7 +548,7 @@ def _prune_empty(start: Path, root: Path) -> None:
         d = d.parent
 
 
-def _bake_one(m: Master, target: Path) -> tuple[Path, edition_bake.BakeResult]:
+def _bake_one(m: Master, target: Path, kind: Kind) -> tuple[Path, edition_bake.BakeResult]:
     """Worker: decode-check, bake, verify, tag, under a temporary name. No database."""
     if m.decode_ok != 1:
         problem = edition_bake.decode_problem(m.path)
@@ -480,15 +558,17 @@ def _bake_one(m: Master, target: Path) -> tuple[Path, edition_bake.BakeResult]:
     tmp = target.with_name(target.name + TMP_SUFFIX)
     tmp.unlink(missing_ok=True)
     try:
-        result = edition_bake.bake(m.path, tmp)
-        edition_bake.copy_tags(m.path, tmp, marker_for(m.audio_hash))
+        result = kind.bake(m.path, tmp)
+        edition_bake.copy_tags(m.path, tmp, marker_for(m.audio_hash, kind))
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
     return tmp, result
 
 
-def _move_all(plan: Plan, ledger: sqlite3.Connection, edition_root: Path, out: Outcome) -> None:
+def _move_all(
+    plan: Plan, ledger: sqlite3.Connection, edition_root: Path, out: Outcome, kind: Kind
+) -> None:
     """Two steps, so a chain or a swap of copies finishes in one build: every
     moving copy first steps aside to a temporary name, then each goes to its
     target. Step by step in path order, a swap never finished."""
@@ -510,8 +590,8 @@ def _move_all(plan: Plan, ledger: sqlite3.Connection, edition_root: Path, out: O
                 raise OSError(f"its new place is taken: {target}")
             target.parent.mkdir(parents=True, exist_ok=True)
             aside.rename(target)
-            edition_bake.copy_tags(m.path, target, marker_for(m.audio_hash))
-            record(ledger, _copy(m, target, c.achieved_lufs, c.mode))
+            edition_bake.copy_tags(m.path, target, marker_for(m.audio_hash, kind))
+            record(ledger, _copy(m, target, c.achieved_lufs, c.mode, kind))
             out.moved += 1
         except Exception as exc:  # noqa: BLE001 -- one copy, not the build
             if aside.exists() and not old.exists():
@@ -529,6 +609,7 @@ def execute(
     limit: int | None = None,
     progress: Callable[[str], None] = print,
     wanted_csv: Path | None = None,
+    kind: Kind | None = None,
 ) -> Outcome:
     """Carry out *plan*. Removals and moves first, so space is freed before
     it is spent; then the bakes, recorded one by one as they land.
@@ -536,38 +617,39 @@ def execute(
     *wanted_csv*: each master whose copy had to be compressed goes on that
     wanted list (Grey, 2026-09-27: "also add them to TuneMyMusic.csv").
     """
+    kind = kind or LOSSLESS_KIND
     out = Outcome()
 
     for stale in edition_root.rglob(f"*{TMP_SUFFIX}") if edition_root.exists() else []:
         stale.unlink(missing_ok=True)
 
     for c in plan.forget:
-        forget(ledger, EDITION, c.master_hash)
+        forget(ledger, kind.name, c.master_hash)
 
     for c in plan.remove:
         p = Path(c.output_path)
         if p.exists():
-            if edition_bake.read_marker(p) != marker_for(c.master_hash):
+            if edition_bake.read_marker(p) != marker_for(c.master_hash, kind):
                 out.failed.append((c.output_path, "recorded, but the file there is not the copy"))
-                forget(ledger, EDITION, c.master_hash)
+                forget(ledger, kind.name, c.master_hash)
                 continue
             p.unlink()
             _prune_empty(p.parent, edition_root)
-        forget(ledger, EDITION, c.master_hash)
+        forget(ledger, kind.name, c.master_hash)
         out.removed += 1
 
-    _move_all(plan, ledger, edition_root, out)
+    _move_all(plan, ledger, edition_root, out, kind)
 
     for m, c in plan.retag:
         try:
-            edition_bake.copy_tags(m.path, Path(c.output_path), marker_for(m.audio_hash))
-            record(ledger, _copy(m, Path(c.output_path), c.achieved_lufs, c.mode))
+            edition_bake.copy_tags(m.path, Path(c.output_path), marker_for(m.audio_hash, kind))
+            record(ledger, _copy(m, Path(c.output_path), c.achieved_lufs, c.mode, kind))
             out.retagged += 1
         except Exception as exc:  # noqa: BLE001
             out.failed.append((str(m.path), f"{type(exc).__name__}: {exc}"))
 
     for m, target in plan.adopt:
-        record(ledger, _copy(m, target, None, "adopted"))
+        record(ledger, _copy(m, target, None, "adopted", kind))
         out.adopted += 1
 
     todo = plan.bake[:limit] if limit is not None else plan.bake
@@ -586,7 +668,7 @@ def execute(
         with IdleThrottle() as throttle:
             edition_bake.ACTIVE_THROTTLE = throttle
             for m, target in todo:
-                futures[pool.submit(_bake_one, m, target)] = (m, target)
+                futures[pool.submit(_bake_one, m, target, kind)] = (m, target)
             done = 0
             for fut in as_completed(futures):
                 m, target = futures[fut]
@@ -595,12 +677,12 @@ def execute(
                     tmp, result = fut.result()
                     if target.exists() and not (
                         str(target) in replaceable
-                        and edition_bake.read_marker(target) == marker_for(m.audio_hash)
+                        and edition_bake.read_marker(target) == marker_for(m.audio_hash, kind)
                     ):
                         tmp.unlink(missing_ok=True)
                         raise edition_bake.BakeError(f"something appeared at {target}")
                     os.replace(tmp, target)
-                    record(ledger, _copy(m, target, result.achieved_lufs, result.mode))
+                    record(ledger, _copy(m, target, result.achieved_lufs, result.mode, kind))
                 except Exception as exc:  # noqa: BLE001 -- one track, not the build
                     reason = (
                         str(exc)
@@ -612,7 +694,7 @@ def execute(
                 out.baked += 1
                 if result.mode == "dynamic":
                     out.dynamic.append(str(target))
-                    if wanted_csv is not None and _want(m, wanted_csv):
+                    if kind.list_compressed and wanted_csv is not None and _want(m, wanted_csv):
                         out.wanted += 1
                 if done % 25 == 0 or done == len(todo):
                     rate = (time.monotonic() - started) / done
@@ -668,11 +750,18 @@ def plan_lines(plan: Plan, *, workers: int, free: int | None = None) -> list[str
         if n:
             lines.append(f"  {label:<14}: {n:,}")
     will, may = plan.compress_counts()
-    if will or may:
+    if plan.kind_name != EDITION and plan.bake:
+        lines.append(
+            f"  Compressed    : at least {will:,} (their peaks); wide-range tracks too -- "
+            f"welcome in the {plan.kind_name} (Grey, 2026-09-28)"
+        )
+    elif will or may:
         lines.append(
             f"  Compressed    : {will:,} will be, {may:,} may be -- lifting them to "
-            f"{edition_bake.TARGET_I} LUFS would push their peaks too high"
+            f"{plan.target_lufs:.1f} LUFS would push their peaks too high"
         )
+    if plan.over_budget:
+        lines.append(f"  Over budget   : {len(plan.over_budget):,} track(s) left out for space")
     if plan.rebake:
         lines.append(
             f"  Re-bake       : {len(plan.rebake):,} compressed copy(ies), with the range rule"
