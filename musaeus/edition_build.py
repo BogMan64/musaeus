@@ -85,6 +85,8 @@ class Kind:
     #: Put a master whose copy had to be compressed on the wanted list.
     #: Grey, 2026-09-27, for the Lossless edition only.
     list_compressed: bool = False
+    #: The name people read: "Lossless", "Car", "iPhone".
+    label: str = ""
 
     def root(self, config: object) -> Path:
         return Path(getattr(config, self.root_attr))
@@ -94,17 +96,19 @@ LOSSLESS_KIND = Kind(
     "lossless", edition_bake.TARGET_I, "alac_library", _mirror,
     # Looked up at call time, not bound at import: tests stand in for it.
     lambda src, tmp: edition_bake.bake(src, tmp),
-    include_lossy=False, list_compressed=True,
+    include_lossy=False, list_compressed=True, label="Lossless",
 )  # fmt: skip
 #: Grey, 2026-09-28: car and iPhone include the lossy masters (re-encoded
 #: once); the car has the noise under every song.
 CAR_KIND = Kind(
     "car", edition_bake.AAC_TARGET_I, "car_library", _artist_album,
     lambda src, tmp: edition_bake.bake_aac(src, tmp, noise=True), include_lossy=True,
+    label="Car",
 )  # fmt: skip
 IPHONE_KIND = Kind(
     "iphone", edition_bake.AAC_TARGET_I, "iphone_library", _artist_album,
     lambda src, tmp: edition_bake.bake_aac(src, tmp, noise=False), include_lossy=True,
+    label="iPhone",
 )  # fmt: skip
 KINDS = {k.name: k for k in (LOSSLESS_KIND, CAR_KIND, IPHONE_KIND)}
 

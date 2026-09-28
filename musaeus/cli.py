@@ -1090,7 +1090,7 @@ def _cmd_edition_build(args) -> int:
             file=sys.stderr,
         )
         return 2
-    label = {"lossless": "Lossless", "car": "Car", "iphone": "iPhone"}[kind.name]
+    label = kind.label
     masters_root, edition_root = Path(cfg.alac_archive), kind.root(cfg)
     running = eb.pipeline_pids()
     if running and not args.dry_run:

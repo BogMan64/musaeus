@@ -128,18 +128,15 @@ class PlaylistStage(BaseStage):
         # master's audio hash (2026-09-27/28), not in car_export_path. A
         # playlist written inside an edition folder indexes THAT edition;
         # the vault's own playlists keep their old preference, the car's.
+        from ..edition_build import KINDS
         from ..edition_ledger import recorded_copies
 
         indexed = "car"
         where = Path(playlist_dir).resolve()
-        for name, attr in (
-            ("car", "car_library"),
-            ("iphone", "iphone_library"),
-            ("lossless", "alac_library"),
-        ):
-            root = getattr(ctx.config, attr, None)
+        for kind in KINDS.values():  # which folder is each edition's: Kind.root_attr
+            root = getattr(ctx.config, kind.root_attr, None)
             if root and where.is_relative_to(Path(root).resolve()):
-                indexed = name
+                indexed = kind.name
                 break
         edition_copy = {h: out for out, h in (recorded_copies(ctx.config, indexed) or {}).items()}
 

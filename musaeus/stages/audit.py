@@ -234,13 +234,12 @@ class AuditStage(BaseStage):
         # knows them. A file there that the ledger does not know is not a
         # copy MUSAEUS made -- reported, never guessed at. Lossless since
         # 2026-09-27; car and iPhone since 2026-09-28.
+        from ..edition_build import KINDS
         from ..edition_ledger import recorded_outputs
 
-        for label, edition, root in (
-            ("Lossless", "lossless", ctx.alac_library),
-            ("Car", "car", getattr(ctx.config, "car_library", None)),
-            ("iPhone", "iphone", getattr(ctx.config, "iphone_library", None)),
-        ):
+        for kind in KINDS.values():  # which folder is each edition's: Kind.root_attr
+            label, edition = kind.label, kind.name
+            root = getattr(ctx.config, kind.root_attr, None)
             if root is None:
                 continue
             edition_files = _scan_alac_library_files(Path(root))

@@ -226,3 +226,17 @@ def test_the_build_and_the_preview_place_a_track_by_one_rule(tmp_path):
         assert eb.CAR_KIND.place(tmp_path / "masters", tmp_path / "car", master) == (
             output_path_for(t, CAR, tmp_path / "car")
         )
+
+
+def test_only_the_edition_kinds_name_the_edition_folders():
+    # Cloud review of #53: the edition -> folder table was written by hand in
+    # the playlist stage, the audit and the CLI. Kind.root_attr is the one.
+    root = Path(__file__).resolve().parents[1]
+    home = {root / "musaeus" / "config.py", root / "musaeus" / "edition_build.py"}
+    offenders = [
+        str(p.relative_to(root))
+        for p in [*(root / "musaeus").rglob("*.py"), *(root / "scripts").rglob("*.py")]
+        if p not in home
+        and ('"car_library"' in p.read_text() or '"iphone_library"' in p.read_text())
+    ]
+    assert offenders == [], offenders
