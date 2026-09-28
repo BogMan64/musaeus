@@ -352,6 +352,10 @@ def make_plan(
             trust_cache[h] = ours(Path(recorded[h].output_path), h)
         return trust_cache[h]
 
+    # Only what the budget itself left out. A master blocked for another
+    # reason (it does not decode, its place is taken) keeps its copy, as it
+    # does without a budget (cloud review of #53).
+    dropped_for_space = {m.audio_hash for m in plan.over_budget}
     for h, rec in recorded.items():
         if h in selected:
             continue
@@ -363,7 +367,7 @@ def make_plan(
         gone = h not in live_hashes and (
             h in aside_hashes or elsewhere or not Path(rec.master_path).exists()
         )
-        if allowed is not None and h in live_hashes:
+        if h in dropped_for_space:
             gone = True  # dropped from a budgeted edition for space
         if gone:
             plan.remove.append(rec)

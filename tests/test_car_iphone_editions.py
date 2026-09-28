@@ -116,6 +116,26 @@ def test_the_iphone_budget_adds_and_drops_tracks(cfg):
     assert len(plan.over_budget) == 1
 
 
+def test_a_budgeted_track_that_is_only_blocked_keeps_its_iphone_copy(cfg):
+    # Cloud review of #53: with a budget, every live master not selected was
+    # taken for "dropped for space" -- a master blocked for another reason
+    # (here: found not to decode) lost its copy while still in the budget.
+    a = _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    b = _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Wild Horses.m4a", "h2")
+    _build(cfg, eb.IPHONE_KIND, allowed={str(a), str(b)})
+    conn = sqlite3.connect(cfg.db_path)
+    if "decode_ok" not in {r[1] for r in conn.execute("PRAGMA table_info(archive)")}:
+        conn.execute(
+            "ALTER TABLE archive ADD COLUMN decode_ok INTEGER"
+        )  # the live catalogue has it
+    conn.execute("UPDATE archive SET decode_ok = 0 WHERE audio_hash = 'h2'")
+    conn.commit()
+    conn.close()
+    plan, out, phone, _ = _build(cfg, eb.IPHONE_KIND, allowed={str(a), str(b)})
+    assert len(plan.blocked) == 1
+    assert out.removed == 0 and set(phone) == {"h1", "h2"}, "a blocked track lost its copy"
+
+
 def test_the_car_estimate_uses_the_aac_encodes_own_rate():
     # The AAC encode measured 0.18 worker-s per audio second; the Lossless
     # figure (0.04, scaled by rate) would have promised the car in a quarter
