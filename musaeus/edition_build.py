@@ -117,6 +117,11 @@ KINDS = {k.name: k for k in (LOSSLESS_KIND, CAR_KIND, IPHONE_KIND)}
 #: masters (847 of the library's are). A flat per-track figure understated
 #: the build by half; the estimate now follows length and sample rate.
 WORK_PER_AUDIO_SECOND = 0.04
+#: The car and iPhone encode, per second of audio at any rate (the rate is
+#: brought down before loudnorm). Measured 2026-09-28 on 14 real masters,
+#: 2 workers, Grey's i3-1315U: 0.18. Two ffmpegs at once run only 1.4x
+#: faster than one on this 15 W chip, so the per-worker figure is high.
+AAC_WORK_PER_AUDIO_SECOND = 0.18
 #: Head-room kept free on the drive beyond the estimate.
 _SPACE_MARGIN = 1.05
 
@@ -203,7 +208,11 @@ class Plan:
         )
 
     def hours(self, workers: int) -> float:
-        return sum(m.work_seconds for m, _ in self.bake) / max(1, workers) / 3600
+        if self.kind_name == EDITION:
+            work = sum(m.work_seconds for m, _ in self.bake)
+        else:
+            work = sum(m.seconds * AAC_WORK_PER_AUDIO_SECOND for m, _ in self.bake)
+        return work / max(1, workers) / 3600
 
     def compress_counts(self) -> tuple[int, int]:
         """(will be compressed, may be -- peak never measured)."""

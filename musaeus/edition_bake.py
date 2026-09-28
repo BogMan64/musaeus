@@ -164,10 +164,17 @@ def sample_rate_of(info: dict) -> int | None:
 
 
 def ffmpeg_measure_loudnorm(
-    path: Path, target_i: str = TARGET_I, target_tp: str = TARGET_TP, target_lra: str = TARGET_LRA
+    path: Path,
+    target_i: str = TARGET_I,
+    target_tp: str = TARGET_TP,
+    target_lra: str = TARGET_LRA,
+    before: str = "",
 ) -> dict:
-    """First pass: what loudnorm measures of the master."""
+    """First pass: what loudnorm measures of the master (after *before*,
+    the same filters the second pass runs ahead of loudnorm)."""
     flt = f"loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}:print_format=json"
+    if before:
+        flt = f"{before},{flt}"
     proc = _run(
         [
             FFMPEG,
@@ -430,8 +437,13 @@ NOISE_RAW_LUFS = {"brown": -15.6, "pink": -14.7, "white": -1.7}
 #: Fixed seeds: the same master gives the same car file on every build.
 NOISE_SEEDS = {"brown": 1, "pink": 2, "white": 3}
 #: The old masker's ceiling: -0.2 dBFS. amix with normalize=0 adds the noise
-#: on top of the music, so a limiter is not optional.
-NOISE_CEILING = 0.977
+#: on top of the music, so a limiter is not optional -- and not for the
+#: iPhone either: loudnorm limits at 192 kHz, and the way back down to the
+#: copy's rate plus the AAC encode put Spirit Of The West's iPhone copy at
+#: +1.9 dBTP (rehearsal, 2026-09-28; its car copy, limited, was -0.4). A
+#: lower ceiling did not help the one car over left (Beck, 5.1: +0.1 at this
+#: ceiling, +0.2 at -1 dBFS) -- that one is the AAC encoder's own.
+CEILING = 0.977
 
 
 def noise_gain_db(colour: str) -> float:
@@ -462,17 +474,40 @@ def channels_of(info: dict) -> int:
         return 0
 
 
+def _layout(channels: int) -> str:
+    return "mono" if channels == 1 else "stereo"
+
+
+def aac_before_loudnorm(rate: int, channels: int) -> str:
+    """The rate and the fold to stereo, ahead of BOTH loudnorm passes.
+
+    Folded after loudnorm, a 5.1 master was measured as six channels and
+    then summed: a synthetic one reported -13.5 and played at -10.5
+    (2026-09-28). Measured here, the fold is what loudnorm sees, and the
+    192 kHz 5.1 Beck track took 48 s instead of 178.
+    """
+    # rematrix_maxval=1: the fold never clips, whatever sample format ffmpeg
+    # negotiates. Unset, an integer fold was scaled down and a float one was
+    # not -- the two passes measured the same master 8 LU apart.
+    fold = ":ochl=stereo:rematrix_maxval=1.0" if channels > 2 else ""  # mono stays mono
+    return f"aresample={rate}{fold},aformat=channel_layouts={_layout(channels)}"
+
+
 def aac_filter(loudnorm: str, rate: int, channels: int, seconds: float, noise: bool) -> str:
     """The one filter graph: music at the target, noise under it, limited."""
-    fold = ":ocl=stereo" if channels > 2 else ""  # 5.1 -> stereo; mono stays mono
     # The layout is STATED on both sides of the mix. Left to negotiation,
     # loudnorm plus the three-colour mix collapsed a stereo master to mono
     # (measured 2026-09-28; each part alone stayed stereo) -- CLAUDE.md: an
-    # unstated format property is decided by the input.
-    layout = "mono" if channels == 1 else "stereo"
-    music = f"[0:a:0]{loudnorm},aresample={rate}{fold},aformat=channel_layouts={layout}"
+    # unstated format property is decided by the input. The rate is stated
+    # again after loudnorm, which always outputs 192 kHz.
+    layout = _layout(channels)
+    music = (
+        f"[0:a:0]{aac_before_loudnorm(rate, channels)},{loudnorm},"
+        f"aresample={rate},aformat=channel_layouts={layout}"
+    )
+    limit = f"alimiter=limit={CEILING}:level=disabled"
     if not noise:
-        return f"{music}[out]"
+        return f"{music},{limit}[out]"
     length = int(seconds) + 2
     beds = ";".join(
         f"anoisesrc=colour={c}:sample_rate={rate}:seed={NOISE_SEEDS[c]}:duration={length},"
@@ -483,19 +518,22 @@ def aac_filter(loudnorm: str, rate: int, channels: int, seconds: float, noise: b
         f"{music}[music];{beds};"
         f"[nb][np][nw]amix=inputs=3:normalize=0,aformat=channel_layouts={layout}[noise];"
         "[music][noise]amix=inputs=2:normalize=0:duration=first[mixed];"
-        f"[mixed]alimiter=limit={NOISE_CEILING}:level=disabled[out]"
+        f"[mixed]{limit}[out]"
     )
 
 
-def aac_command(source: Path, output: Path, graph: str, info: dict, rate: int) -> list[str]:
-    cmd = [
+def aac_command(source: Path, output: Path, graph: str, rate: int) -> list[str]:
+    """Audio only. The cover art reaches the copy through copy_tags (covr).
+
+    Mapping the art as a second stream, as the Lossless bake does, ended a
+    car copy after 0.09 s: the in-graph noise sources plus the one-frame
+    picture stream stop the output at once (ffmpeg 5.1, Martha Reeves' "A
+    Love Like Yours", 2026-09-28; each alone was fine).
+    """
+    return [
         FFMPEG, "-nostdin", "-hide_banner", "-nostats", "-y", "-i", str(source),
         "-threads", "2", "-filter_complex", graph, "-map", "[out]",
-    ]  # fmt: skip
-    if has_attached_picture(info):
-        cmd += ["-map", "0:v:0", "-c:v", "copy", "-disposition:v:0", "attached_pic"]
-    return [
-        *cmd, "-c:a", "aac", "-b:a", AAC_BITRATE, "-ar", str(rate),
+        "-c:a", "aac", "-b:a", AAC_BITRATE, "-ar", str(rate),
         "-map_metadata", "0", "-f", "mp4", str(output),
     ]  # fmt: skip
 
@@ -515,10 +553,13 @@ def bake_aac(source: Path, tmp_output: Path, *, noise: bool) -> BakeResult:
         seconds = float(info.get("format", {}).get("duration"))
     except (TypeError, ValueError) as exc:
         raise BakeError("the master's length could not be read") from exc
-    measured = ffmpeg_measure_loudnorm(source, AAC_TARGET_I, TARGET_TP, AAC_TARGET_LRA)
+    channels = channels_of(info)
+    measured = ffmpeg_measure_loudnorm(
+        source, AAC_TARGET_I, TARGET_TP, AAC_TARGET_LRA, aac_before_loudnorm(rate, channels)
+    )
     loud = build_second_pass_filter(measured, AAC_TARGET_I, TARGET_TP, AAC_TARGET_LRA)
-    graph = aac_filter(loud, rate, channels_of(info), seconds, noise)
-    proc = _run(aac_command(source, tmp_output, graph, info, rate), _BAKE_TIMEOUT)
+    graph = aac_filter(loud, rate, channels, seconds, noise)
+    proc = _run(aac_command(source, tmp_output, graph, rate), _BAKE_TIMEOUT)
     if proc.returncode != 0:
         raise BakeError(f"ffmpeg exited {proc.returncode}: {(proc.stderr or '')[-200:]}")
     result = BakeResult(parse_achieved(proc.stderr), parse_mode(proc.stderr))

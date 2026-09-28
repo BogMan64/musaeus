@@ -114,3 +114,14 @@ def test_the_iphone_budget_adds_and_drops_tracks(cfg):
     plan, out, phone, _ = _build(cfg, eb.IPHONE_KIND, allowed={str(a)})  # budget shrank
     assert out.removed == 1 and set(phone) == {"h1"}
     assert len(plan.over_budget) == 1
+
+
+def test_the_car_estimate_uses_the_aac_encodes_own_rate():
+    # The AAC encode measured 0.18 worker-s per audio second; the Lossless
+    # figure (0.04, scaled by rate) would have promised the car in a quarter
+    # of its time.
+    m = eb.Master(Path("m.m4a"), "h", "alac", -20.0, -3.0, 1, 1, seconds=3600.0, seconds_44k=3600.0)
+    car = eb.Plan(bake=[(m, Path("c.m4a"))], kind_name="car")
+    lossless = eb.Plan(bake=[(m, Path("c.m4a"))], kind_name=eb.EDITION)
+    assert car.hours(1) == pytest.approx(eb.AAC_WORK_PER_AUDIO_SECOND)
+    assert lossless.hours(1) == pytest.approx(eb.WORK_PER_AUDIO_SECOND)

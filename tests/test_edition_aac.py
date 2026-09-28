@@ -127,3 +127,53 @@ def test_the_aac_encode_runs_with_stdin_closed(tmp_path, monkeypatch):
     monkeypatch.undo()
     assert seen and all(stdin == subprocess.DEVNULL for _, stdin in seen)
     assert all("-nostdin" in cmd for cmd, _ in seen if cmd[0] == "ffmpeg")
+
+
+@pytest.mark.parametrize("noise", [True, False])
+def test_a_master_with_cover_art_keeps_its_length_and_its_art(tmp_path, noise):
+    # Rehearsal, 2026-09-28: Martha Reeves' "A Love Like Yours" (cover art in
+    # the master) came out 0.09 s long. Bisected: the in-graph noise sources
+    # plus the art mapped as a second stream end the file at once.
+    from mutagen.mp4 import MP4, MP4Cover
+
+    master = _master(tmp_path / "m.m4a")
+    jpeg = tmp_path / "cover.jpg"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+         "-i", "color=c=red:s=64x64", "-frames:v", "1", str(jpeg)],
+        check=True,
+    )  # fmt: skip
+    f = MP4(master)
+    if f.tags is None:
+        f.add_tags()
+    f.tags["covr"] = [MP4Cover(jpeg.read_bytes(), imageformat=MP4Cover.FORMAT_JPEG)]
+    f.save()
+    assert eb.has_attached_picture(eb.probe(master))  # the case, not an easy one
+
+    out = tmp_path / "c.m4a"
+    eb.bake_aac(master, out, noise=noise)
+    eb.copy_tags(master, out, "car -14 LUFS master=abc")
+    assert abs(float(eb.probe(out)["format"]["duration"]) - 12.0) < 0.5
+    assert MP4(out).tags["covr"][0] == jpeg.read_bytes(), "the copy lost its art"
+
+
+def test_a_5_1_copy_plays_at_the_loudness_it_reports(tmp_path):
+    # loudnorm measured the six channels, then the fold to stereo changed the
+    # loudness: a synthetic 5.1 master reported -13.5 and played at -10.5.
+    # The fold (and the rate) now come BEFORE both loudnorm passes, so what
+    # is measured is what is encoded.
+    out = tmp_path / "phone.m4a"
+    result = eb.bake_aac(_master(tmp_path / "s.m4a", layout="5.1"), out, noise=False)
+    finished, _ = _measure(out)
+    assert result.achieved_lufs is not None
+    assert abs(finished - result.achieved_lufs) <= 0.5, (finished, result.achieved_lufs)
+    assert abs(finished + 14.0) <= 1.0, finished
+
+
+def test_the_iphone_copy_is_limited_too():
+    # Rehearsal, 2026-09-28: Spirit Of The West's iPhone copy peaked at
+    # +1.9 dBTP (its car copy, limited, -0.4); with the limiter, -0.8.
+    # Synthetic masters never overshot, so the graph itself is checked.
+    for noise in (True, False):
+        graph = eb.aac_filter("loudnorm=linear=true", 44_100, 2, 10.0, noise)
+        assert graph.endswith(f"alimiter=limit={eb.CEILING}:level=disabled[out]"), graph
