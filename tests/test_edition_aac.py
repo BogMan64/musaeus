@@ -177,3 +177,12 @@ def test_the_iphone_copy_is_limited_too():
     for noise in (True, False):
         graph = eb.aac_filter("loudnorm=linear=true", 44_100, 2, 10.0, noise)
         assert graph.endswith(f"alimiter=limit={eb.CEILING}:level=disabled[out]"), graph
+
+
+def test_the_finished_file_is_measured_not_only_the_report(tmp_path, monkeypatch):
+    # Cloud review of #53 (CLAUDE.md: measure the artifact, not the report):
+    # loudnorm reports the music BEFORE the noise, the limiter and the AAC
+    # encode. With the noise far too loud the report still said -14.
+    monkeypatch.setattr(eb, "NOISE_LEVELS_DB", {"brown": 8.0, "pink": 8.0, "white": 8.0})
+    with pytest.raises(eb.BakeError, match="finished copy"):
+        eb.bake_aac(_master(tmp_path / "m.m4a"), tmp_path / "car.m4a", noise=True)

@@ -450,6 +450,32 @@ NOISE_SEEDS = {"brown": 1, "pink": 2, "white": 3}
 CEILING = 0.977
 
 
+#: How far the finished AAC file may measure from the loudness loudnorm
+#: reported for the music. The noise adds a little: rehearsal, 2026-09-28,
+#: +0.0 to +0.4 LU in the car, within 0.1 on the iPhone.
+_FINISHED_TOLERANCE = 1.0
+
+
+def integrated_lufs(path: Path) -> float:
+    """The file's integrated loudness (EBU R128), measured from the file.
+
+    ebur128 without true peak: no 4x upsampling, so it costs about a
+    decode. loudnorm's own figure is the music before the noise, the
+    limiter and the encode (CLAUDE.md: measure the artifact, not the report).
+    """
+    proc = _run(
+        [FFMPEG, "-nostdin", "-hide_banner", "-nostats", "-i", str(path),
+         "-map", "0:a:0", "-af", "ebur128", "-f", "null", "-"],
+        _BAKE_TIMEOUT,
+    )  # fmt: skip
+    if proc.returncode != 0:
+        raise BakeError(f"measuring {path.name}: ffmpeg exited {proc.returncode}")
+    found = re.findall(r"I:\s+(-?\d+(?:\.\d+)?) LUFS", proc.stderr or "")
+    if not found:
+        raise BakeError(f"could not measure the loudness of {path.name}")
+    return float(found[-1])  # the summary is the last
+
+
 def noise_gain_db(colour: str) -> float:
     """The gain that brings *colour* from anoisesrc to its level under the music."""
     return NOISE_BED_LUFS - NOISE_RAW_LUFS[colour] + NOISE_LEVELS_DB[colour]
@@ -571,4 +597,11 @@ def bake_aac(source: Path, tmp_output: Path, *, noise: bool) -> BakeResult:
         info, tmp_output, result.achieved_lufs, result.mode,
         target_i=AAC_TARGET_I, rate=rate, codec="aac", max_channels=2,
     )  # fmt: skip
+    assert result.achieved_lufs is not None  # verify refuses a copy without it
+    finished = integrated_lufs(tmp_output)
+    if abs(finished - result.achieved_lufs) > _FINISHED_TOLERANCE:
+        raise BakeError(
+            f"the finished copy measures {finished:.1f} LUFS; loudnorm reported "
+            f"{result.achieved_lufs:.1f} for the music"
+        )
     return result
