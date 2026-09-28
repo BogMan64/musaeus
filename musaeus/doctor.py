@@ -794,28 +794,43 @@ def _catalogued_tracks_reach_the_car(cfg: MusicConfig, rep: Report) -> None:
 
     car = recorded_copies(cfg, "car")
     if car:
-        held = set(car.values())
+        # Counted from the car build's own plan (cloud review of #53): what
+        # it would make, and apart from that what it cannot -- two masters
+        # meeting at one Artist/Album/Title, a master that does not decode.
+        # Counting "no copy yet" promised those to the build on every run.
+        from . import edition_build as eb
+        from .edition_ledger import ledger_path, open_for_reading
+
         conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        ledger = open_for_reading(ledger_path(cfg))
         try:
-            rows = conn.execute(
-                "SELECT file_path, audio_hash FROM archive WHERE status='CATALOGUED'"
-            ).fetchall()
+            plan = eb.make_plan(
+                conn, ledger, Path(cfg.alac_archive), eb.CAR_KIND.root(cfg), kind=eb.CAR_KIND
+            )
         except sqlite3.Error as exc:
             rep.add("warn", "car edition coverage", f"could not read the catalogue: {exc}")
             return
         finally:
             conn.close()
-        missing = [fp for fp, h in rows if h and h not in held and Path(fp).is_file()]
-        rep.add(
-            "warn" if missing else "ok",
-            "car edition coverage",
-            (
-                f"{len(missing)} catalogued track(s) have no car copy -- "
+            ledger.close()
+        to_make, cannot = len(plan.bake), len(plan.blocked)
+        parts = []
+        if to_make:
+            parts.append(
+                f"{to_make} catalogued track(s) have no car copy -- "
                 "`musaeus edition-build car` makes them"
-                if missing
-                else "every catalogued track has a car copy"
-            ),
-            len(missing),
+            )
+        if cannot:
+            parts.append(
+                f"{cannot} track(s) cannot be built for the car -- "
+                "`musaeus edition-build car --dry-run` says why"
+            )
+        rep.add(
+            "warn" if parts else "ok",
+            "car edition coverage",
+            "; ".join(parts) or "every catalogued track has a car copy",
+            to_make + cannot,
         )
         return
     conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)

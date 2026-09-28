@@ -256,30 +256,73 @@ class TestALossyMasterIsNotAGap:
 def test_a_car_edition_in_the_ledger_is_counted_from_the_ledger(tmp_path):
     # 2026-09-28: the car edition records its copies in the edition ledger by
     # the master's audio hash; car_export_path stays empty. Read from there,
-    # every catalogued master would look uncovered.
+    # every catalogued master would look uncovered. Counted from the car
+    # build's plan since the cloud review of #53, so the real schema.
+    from musaeus.db import open_db, upsert_archive
     from musaeus.edition_ledger import Copy, ledger_path, open_ledger, record
 
-    arc = tmp_path / "Libraries" / "ALAC-Archival"
-    arc.mkdir(parents=True)
-    db = tmp_path / "musaeus.db"
-    conn = sqlite3.connect(db)
-    conn.execute(
-        "CREATE TABLE archive (file_path TEXT, status TEXT, car_export_path TEXT, audio_hash TEXT)"
-    )
-    for name, h in (("a.m4a", "ha"), ("b.m4a", "hb")):
-        (arc / name).write_bytes(b"\0")
-        conn.execute("INSERT INTO archive VALUES (?, 'CATALOGUED', '', ?)", (str(arc / name), h))
-    conn.commit()
-    conn.close()
     cfg = MusicConfig(
         vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
         quarantine=tmp_path / "Q", runs_root=tmp_path / "RUNS", meta_dir=tmp_path / "MetaData",
-        alac_library=tmp_path / "Libraries" / "ALAC_Library", db_path=db, alac_archive=arc,
+        alac_library=tmp_path / "Libraries" / "ALAC_Library", db_path=tmp_path / "musaeus.db",
     )  # fmt: skip
+    conn = open_db(cfg.db_path)
+    for name, h in (("A - a.m4a", "ha"), ("A - b.m4a", "hb")):
+        m = cfg.alac_archive / "Rock" / "A" / "Al" / name
+        m.parent.mkdir(parents=True, exist_ok=True)
+        m.write_bytes(b"\0")
+        upsert_archive(conn, {"file_path": str(m), "status": "CATALOGUED", "audio_hash": h,
+                              "codec": "alac"})  # fmt: skip
+    conn.commit()
+    conn.close()
+    master = cfg.alac_archive / "Rock" / "A" / "Al" / "A - a.m4a"
+    copy = cfg.car_library / "A" / "Al" / "A - a.m4a"
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(b"\0")
     led = open_ledger(ledger_path(cfg))
-    record(led, Copy("car", "ha", str(arc / "a.m4a"), 1, "/car/a.m4a", "now", -14.0, "linear"))
+    mtime = master.stat().st_mtime_ns
+    record(led, Copy("car", "ha", str(master), mtime, str(copy), "now", -14.0, "linear"))
     led.close()
     rep = Report()
     _catalogued_tracks_reach_the_car(cfg, rep)
     f = _only(rep)
     assert f.level == "warn" and f.count == 1, (f.level, f.detail)
+
+
+def test_a_track_the_car_build_cannot_make_is_not_promised_to_it(tmp_path):
+    # Cloud review of #53: two masters with the same Artist/Album/Title under
+    # two genres meet in the car layout, and the build blocks the second.
+    # The doctor said "`musaeus edition-build car` makes them" on every run,
+    # and running it never cleared the warning. It now counts from the car
+    # build's own plan.
+    from musaeus.db import open_db, upsert_archive
+    from musaeus.edition_ledger import Copy, ledger_path, open_ledger, record
+
+    cfg = MusicConfig(
+        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "Q", runs_root=tmp_path / "RUNS", meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "Libraries" / "ALAC_Library", db_path=tmp_path / "musaeus.db",
+    )  # fmt: skip
+    conn = open_db(cfg.db_path)
+    masters = {}
+    for genre, h in (("Rock", "h1"), ("Soft Rock", "h2")):
+        m = cfg.alac_archive / genre / "Stones" / "Hits" / "The Rolling Stones - Angie.m4a"
+        m.parent.mkdir(parents=True, exist_ok=True)
+        m.write_bytes(b"\0")
+        upsert_archive(conn, {"file_path": str(m), "status": "CATALOGUED", "audio_hash": h,
+                              "codec": "alac"})  # fmt: skip
+        masters[h] = m
+    conn.commit()
+    conn.close()
+    copy = cfg.car_library / "Stones" / "Hits" / "The Rolling Stones - Angie.m4a"
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(b"\0")
+    led = open_ledger(ledger_path(cfg))
+    mtime = masters["h1"].stat().st_mtime_ns
+    record(led, Copy("car", "h1", str(masters["h1"]), mtime, str(copy), "now", -14.0, "linear"))
+    led.close()
+    rep = Report()
+    _catalogued_tracks_reach_the_car(cfg, rep)
+    f = _only(rep)
+    assert "makes them" not in f.detail, f.detail
+    assert "cannot be built" in f.detail, f.detail
