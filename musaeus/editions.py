@@ -216,9 +216,17 @@ def select_edition(
     artists: set[str] | None = None,
     budget_bytes: int | None = None,
     genre_priority: tuple[str, ...] = DEFAULT_GENRE_PRIORITY,
+    makeable: set[str] | None = None,
 ) -> Selection:
-    """Decide what goes into an edition. Reads only; writes nothing."""
+    """Decide what goes into an edition. Reads only; writes nothing.
+
+    *makeable*, when given, is the master paths the build can make; nothing
+    else is offered the budget (cloud review of #53: a track the build
+    blocks took the space and the phone came out short).
+    """
     tracks = load_tracks(conn, genres=genres, artists=artists)
+    if makeable is not None:
+        tracks = [t for t in tracks if t.file_path in makeable]
 
     # Deterministic: the same catalogue and criteria must always produce the
     # same edition, or a rebuild silently differs from what was delivered.

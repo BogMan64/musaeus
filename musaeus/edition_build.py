@@ -52,7 +52,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import edition_bake
+from . import edition_bake, editions
 from .config import AUDIO_EXTENSIONS, LOSSLESS_CODECS
 from .db import SET_ASIDE_STATUSES
 from .edition_ledger import Copy, copies, forget, record
@@ -185,6 +185,9 @@ class Plan:
     kept_unselected: int = 0
     lossy_left_out: list[Master] = field(default_factory=list)
     over_budget: list[Master] = field(default_factory=list)
+    #: The masters this build could make, budget aside: what a budget may be
+    #: filled from (cloud review of #53).
+    makeable: set[str] = field(default_factory=set)
     same_audio: list[Master] = field(default_factory=list)
     outside_masters: list[str] = field(default_factory=list)
     blocked: list[tuple[Master, str]] = field(default_factory=list)
@@ -270,6 +273,7 @@ def make_plan(
     recorded = copies(ledger, kind.name)
     targets_taken: set[str] = set()
     selected: dict[str, tuple[Master, Path]] = {}
+    over_budget_hashes: set[str] = set()
     live_hashes: set[str] = set()
     aside_hashes: set[str] = set()
     live_at: dict[str, str] = {}  # path -> the audio a live row says is there
@@ -315,10 +319,8 @@ def make_plan(
             plan.blocked.append((m, "master fails to decode -- not baked"))
         elif not m.lossless and not include_lossy:
             plan.lossy_left_out.append(m)
-        elif h in selected:
+        elif h in selected or h in over_budget_hashes:
             plan.same_audio.append(m)
-        elif allowed is not None and str(path) not in allowed:
-            plan.over_budget.append(m)
         else:
             target = kind.place(masters_root, edition_root, path)
             if str(target) in targets_taken:
@@ -327,6 +329,11 @@ def make_plan(
                 plan.blocked.append((m, f"another master has the same place: {target}"))
                 continue
             targets_taken.add(str(target))
+            plan.makeable.add(str(path))
+            if allowed is not None and str(path) not in allowed:
+                plan.over_budget.append(m)
+                over_budget_hashes.add(h)
+                continue
             selected[h] = (m, target)
 
     marker_cache: dict[str, str | None] = {}
@@ -443,6 +450,35 @@ def make_plan(
             ):
                 plan.unrecorded.append(p)
     return plan
+
+
+def budgeted(
+    conn: sqlite3.Connection,
+    ledger: sqlite3.Connection,
+    masters_root: Path,
+    edition_root: Path,
+    kind: Kind,
+    budget_bytes: int,
+    *,
+    rebake_compressed: bool = False,
+) -> tuple[Plan, editions.Selection]:
+    """The plan for a budgeted edition, and the selection that fills it.
+
+    The budget is filled only from masters this build can make -- the plan
+    without a budget says which -- so a blocked or duplicate row never takes
+    the space. The CLI and the console both come here, so the preview and
+    the build cannot disagree.
+    """
+    whole = make_plan(conn, ledger, masters_root, edition_root, kind=kind)
+    sel = editions.select_edition(
+        conn, editions.EDITIONS[kind.name], budget_bytes=budget_bytes, makeable=whole.makeable
+    )
+    allowed = {str(t.file_path) for t in sel.included}
+    plan = make_plan(
+        conn, ledger, masters_root, edition_root,
+        kind=kind, allowed=allowed, rebake_compressed=rebake_compressed,
+    )  # fmt: skip
+    return plan, sel
 
 
 # ── Guards ─────────────────────────────────────────────────────────────────

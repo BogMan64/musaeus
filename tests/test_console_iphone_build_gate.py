@@ -46,10 +46,17 @@ def _seed(cfg: MusicConfig) -> None:
     cfg.ensure_dirs()
     conn = open_db(cfg.db_path)
     for i in range(6):
+        # Real files under the masters: the build's plan only counts masters
+        # that are there (a missing one is blocked, not built).
+        master = cfg.alac_archive / "Rock" / "A" / "Al" / f"A - T{i}.m4a"
+        master.parent.mkdir(parents=True, exist_ok=True)
+        master.write_bytes(b"x")
         upsert_archive(
             conn,
             {
-                "file_path": f"/vault/a{i}.m4a",
+                "file_path": str(master),
+                "audio_hash": f"h{i}",
+                "codec": "alac",
                 "status": "CATALOGUED",
                 "artist": "A",
                 "album": "Al",
@@ -131,3 +138,15 @@ def test_the_long_editions_are_never_offered_a_build(cfg, monkeypatch, idx, name
     on the launched command rather than passing quietly.
     """
     assert _run(cfg, monkeypatch, [str(idx + 1), "BUILD"]) == []
+
+
+def test_the_time_shown_before_build_is_the_builders_own_estimate(cfg, monkeypatch, capsys):
+    # Cloud review of #53: the screen still used the old builder's 2.2 s per
+    # track -- about a twentieth of the new encode's time. The estimate now
+    # comes from the build's own plan (Plan.hours).
+    from musaeus import edition_build
+
+    monkeypatch.setattr(edition_build, "AAC_WORK_PER_AUDIO_SECOND", 50.0)
+    _run(cfg, monkeypatch, ["3", "", "no"])
+    # 6 tracks x 240 s x 50 worker-s / 2 workers = 10 hours
+    assert "roughly 10 hour(s)" in capsys.readouterr().out

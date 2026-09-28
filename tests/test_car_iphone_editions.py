@@ -159,3 +159,34 @@ def test_playlists_in_the_car_folder_are_not_unknown_files(cfg):
     stray.write_bytes(b"\0")
     plan, _, _, _ = _build(cfg, eb.CAR_KIND)
     assert plan.unrecorded == [stray]
+
+
+def test_the_budget_is_filled_only_with_tracks_the_build_can_make(cfg):
+    # Cloud review of #53: the budget was filled from every catalogued row,
+    # so a track the build cannot make (here: it does not decode) took the
+    # space and the phone came out short. The budget here fits one track.
+    import os
+    import sys
+
+    from musaeus.editions import IPHONE, estimated_bytes, load_tracks
+
+    _master(cfg, "Rock/Aa/Al/Aa - First.m4a", "h1")  # first in the order, blocked
+    _master(cfg, "Rock/Zz/Al/Zz - Last.m4a", "h2")
+    conn = sqlite3.connect(cfg.db_path)
+    conn.row_factory = sqlite3.Row
+    if "decode_ok" not in {r[1] for r in conn.execute("PRAGMA table_info(archive)")}:
+        conn.execute("ALTER TABLE archive ADD COLUMN decode_ok INTEGER")
+    conn.execute("UPDATE archive SET decode_ok = 0 WHERE audio_hash = 'h1'")
+    conn.commit()
+    one = max(estimated_bytes(t, IPHONE) for t in load_tracks(conn))
+    conn.close()
+    env = {**os.environ, "MUSAEUS_VAULT_ROOT": str(cfg.vault_root),
+           "MUSAEUS_DB_PATH": str(cfg.db_path)}  # fmt: skip
+    r = subprocess.run(
+        [sys.executable, "-m", "musaeus.cli", "edition-build", "iphone",
+         "--budget-gb", f"{1.5 * one / 1e9:.9f}", "--dry-run"],
+        capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
+        cwd=Path(__file__).resolve().parents[1], timeout=120,
+    )  # fmt: skip
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "To bake       : 1 track(s)" in r.stdout, r.stdout

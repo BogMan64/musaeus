@@ -1258,8 +1258,14 @@ class Console:
         conn = self._open_db()
         if conn is None:
             return
+        plan = None
         try:
-            sel = select_edition(conn, spec, budget_bytes=budget)
+            if spec.name == "iphone":
+                # The build's own plan and selection (cloud review of #53):
+                # the preview, the time and the build cannot disagree.
+                plan, sel = self._iphone_plan(conn, budget)
+            else:
+                sel = select_edition(conn, spec, budget_bytes=budget)
         finally:
             conn.close()
 
@@ -1307,10 +1313,14 @@ class Console:
         if not sel.included:
             _warn("Nothing selected — there is nothing to build.")
             return
+        assert plan is not None
+        if not (plan.bake or plan.move or plan.retag or plan.remove or plan.adopt):
+            _ok("The iPhone edition is already up to date.")
+            return
 
-        hours = max(1, round(len(sel.included) * 2.2 / 3600))
+        hours = max(1, round(plan.hours(2)))
         _info(
-            f"Building would encode {len(sel.included):,} track(s) — roughly "
+            f"Building would encode {len(plan.bake):,} track(s) — roughly "
             f"{hours} hour(s). It pauses while you use the machine, and it "
             f"resumes if interrupted."
         )
@@ -1338,6 +1348,24 @@ class Console:
             _ok("iPhone edition built.")
         else:
             _err(f"Builder exited {rc} — see the output above.")
+
+    def _iphone_plan(self, conn, budget: int | None):
+        """The iPhone build's plan and the selection behind it, read-only."""
+        from . import edition_build as eb
+        from .edition_ledger import ledger_path, open_for_reading
+        from .editions import EDITIONS, select_edition
+
+        cfg = self._config
+        assert cfg is not None
+        masters, root = Path(cfg.alac_archive), eb.IPHONE_KIND.root(cfg)
+        ledger = open_for_reading(ledger_path(cfg))
+        try:
+            if budget is not None:
+                return eb.budgeted(conn, ledger, masters, root, eb.IPHONE_KIND, budget)
+            plan = eb.make_plan(conn, ledger, masters, root, kind=eb.IPHONE_KIND)
+            return plan, select_edition(conn, EDITIONS["iphone"], makeable=plan.makeable)
+        finally:
+            ledger.close()
 
     def _lossless_build(self) -> None:
         """The Lossless edition's plan, then the build on a typed BUILD.

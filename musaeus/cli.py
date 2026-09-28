@@ -1092,24 +1092,21 @@ def _cmd_edition_build(args) -> int:
     lpath = ledger_path(cfg)
     ledger = open_for_reading(lpath) if args.dry_run else open_ledger(lpath)
     try:
-        allowed = None
         if kind.name == "iphone" and args.budget_gb:
-            from .editions import EDITIONS, select_edition
-
-            sel = select_edition(
-                conn, EDITIONS["iphone"], budget_bytes=int(args.budget_gb * 1_000_000_000)
+            plan, _ = eb.budgeted(
+                conn, ledger, masters_root, edition_root, kind,
+                int(args.budget_gb * 1_000_000_000), rebake_compressed=args.rebake_compressed,
+            )  # fmt: skip
+        else:
+            plan = eb.make_plan(
+                conn,
+                ledger,
+                masters_root,
+                edition_root,
+                kind=kind,
+                include_lossy=(args.lossy == "alac") if kind.name == "lossless" else None,
+                rebake_compressed=args.rebake_compressed,
             )
-            allowed = {str(t.file_path) for t in sel.included}
-        plan = eb.make_plan(
-            conn,
-            ledger,
-            masters_root,
-            edition_root,
-            kind=kind,
-            include_lossy=(args.lossy == "alac") if kind.name == "lossless" else None,
-            rebake_compressed=args.rebake_compressed,
-            allowed=allowed,
-        )
         free = eb.free_bytes(edition_root)
         print()
         print(f"  {label} edition: {edition_root}")

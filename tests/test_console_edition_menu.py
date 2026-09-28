@@ -47,10 +47,17 @@ def _seed(cfg: MusicConfig) -> None:
     cfg.ensure_dirs()
     conn = open_db(cfg.db_path)
     for i in range(6):
+        # Real files under the masters: the iPhone preview is the build's
+        # own selection, which counts only masters that are there.
+        master = cfg.alac_archive / "Rock" / "A" / "Al" / f"A - T{i}.m4a"
+        master.parent.mkdir(parents=True, exist_ok=True)
+        master.write_bytes(b"x")
         upsert_archive(
             conn,
             {
-                "file_path": f"/vault/a{i}.m4a",
+                "file_path": str(master),
+                "audio_hash": f"h{i}",
+                "codec": "alac",
                 "status": "CATALOGUED",
                 "artist": "A",
                 "album": "Al",
