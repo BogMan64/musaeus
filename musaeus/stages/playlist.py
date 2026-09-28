@@ -104,7 +104,7 @@ class PlaylistStage(BaseStage):
 
         rows = ctx.conn.execute(
             """
-            SELECT file_path, car_export_path, genre, artist, title, year
+            SELECT file_path, car_export_path, audio_hash, genre, artist, title, year
             FROM archive
             WHERE status = 'CATALOGUED'
               AND genre IS NOT NULL AND trim(genre) != ''
@@ -124,8 +124,31 @@ class PlaylistStage(BaseStage):
         no_year = 0
         no_source = 0
 
+        # An edition's copies are recorded in the edition ledger by the
+        # master's audio hash (2026-09-27/28), not in car_export_path. A
+        # playlist written inside an edition folder indexes THAT edition;
+        # the vault's own playlists keep their old preference, the car's.
+        from ..edition_ledger import recorded_copies
+
+        indexed = "car"
+        where = Path(playlist_dir).resolve()
+        for name, attr in (
+            ("car", "car_library"),
+            ("iphone", "iphone_library"),
+            ("lossless", "alac_library"),
+        ):
+            root = getattr(ctx.config, attr, None)
+            if root and where.is_relative_to(Path(root).resolve()):
+                indexed = name
+                break
+        edition_copy = {h: out for out, h in (recorded_copies(ctx.config, indexed) or {}).items()}
+
         for row in rows:
-            source = row["car_export_path"] or row["file_path"]
+            source = (
+                edition_copy.get(row["audio_hash"] or "")
+                or row["car_export_path"]
+                or row["file_path"]
+            )
             if not source:
                 no_source += 1
                 continue

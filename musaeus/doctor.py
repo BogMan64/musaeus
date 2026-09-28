@@ -785,6 +785,39 @@ def _catalogued_tracks_reach_the_car(cfg: MusicConfig, rep: Report) -> None:
     if not Path(cfg.db_path).is_file():
         rep.add("ok", "car edition coverage", "no database -- skipped")
         return
+    # The car edition built by `musaeus edition-build car` (2026-09-28)
+    # records its copies in the edition ledger by the master's audio hash;
+    # car_export_path stays empty. When that ledger holds car copies, count
+    # from it -- every catalogued master with no car copy, lossy included
+    # (Grey: the lossy masters go in the car too).
+    from .edition_ledger import recorded_copies
+
+    car = recorded_copies(cfg, "car")
+    if car:
+        held = set(car.values())
+        conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT file_path, audio_hash FROM archive WHERE status='CATALOGUED'"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            rep.add("warn", "car edition coverage", f"could not read the catalogue: {exc}")
+            return
+        finally:
+            conn.close()
+        missing = [fp for fp, h in rows if h and h not in held and Path(fp).is_file()]
+        rep.add(
+            "warn" if missing else "ok",
+            "car edition coverage",
+            (
+                f"{len(missing)} catalogued track(s) have no car copy -- "
+                "`musaeus edition-build car` makes them"
+                if missing
+                else "every catalogued track has a car copy"
+            ),
+            len(missing),
+        )
+        return
     conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
     try:
         # A catalogue with no car_export_path column has no car edition to be
