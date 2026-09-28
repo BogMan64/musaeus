@@ -165,9 +165,6 @@ def test_the_budget_is_filled_only_with_tracks_the_build_can_make(cfg):
     # Cloud review of #53: the budget was filled from every catalogued row,
     # so a track the build cannot make (here: it does not decode) took the
     # space and the phone came out short. The budget here fits one track.
-    import os
-    import sys
-
     from musaeus.editions import IPHONE, estimated_bytes, load_tracks
 
     _master(cfg, "Rock/Aa/Al/Aa - First.m4a", "h1")  # first in the order, blocked
@@ -180,13 +177,39 @@ def test_the_budget_is_filled_only_with_tracks_the_build_can_make(cfg):
     conn.commit()
     one = max(estimated_bytes(t, IPHONE) for t in load_tracks(conn))
     conn.close()
+    r = _cli(cfg, "iphone", "--budget-gb", f"{1.5 * one / 1e9:.9f}", "--dry-run")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "To bake       : 1 track(s)" in r.stdout, r.stdout
+
+
+def _cli(cfg, *args: str) -> subprocess.CompletedProcess[str]:
+    """`musaeus edition-build ...` against this test's vault."""
+    import os
+    import sys
+
     env = {**os.environ, "MUSAEUS_VAULT_ROOT": str(cfg.vault_root),
            "MUSAEUS_DB_PATH": str(cfg.db_path)}  # fmt: skip
-    r = subprocess.run(
-        [sys.executable, "-m", "musaeus.cli", "edition-build", "iphone",
-         "--budget-gb", f"{1.5 * one / 1e9:.9f}", "--dry-run"],
+    return subprocess.run(
+        [sys.executable, "-m", "musaeus.cli", "edition-build", *args],
         capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
         cwd=Path(__file__).resolve().parents[1], timeout=120,
     )  # fmt: skip
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert "To bake       : 1 track(s)" in r.stdout, r.stdout
+
+
+@pytest.mark.parametrize(
+    "args,why",
+    [
+        (("iphone", "--budget-gb", "0"), "more than 0"),
+        (("car", "--budget-gb", "30"), "iphone"),
+        (("lossless", "--budget-gb", "30"), "iphone"),
+        (("car", "--lossy", "alac"), "lossless"),
+        (("iphone", "--lossy", "leave-out"), "lossless"),
+    ],
+)
+def test_an_option_that_would_do_nothing_is_refused(cfg, args, why):
+    # Cloud review of #53: --budget-gb 0 counted as "no budget" (the whole
+    # library into the phone), and --budget-gb / --lossy on an edition that
+    # has no use for them were silently ignored.
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    r = _cli(cfg, *args, "--dry-run")
+    assert r.returncode != 0 and why in r.stderr, r.stdout + r.stderr

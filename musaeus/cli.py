@@ -1075,6 +1075,21 @@ def _cmd_edition_build(args) -> int:
         return 1
 
     kind = eb.KINDS[args.name]
+    # An option the edition has no use for is refused, not ignored: `car
+    # --budget-gb 30` ran the whole 19-hour build (cloud review of #53).
+    if args.budget_gb is not None and kind.name != "iphone":
+        print("ERROR: --budget-gb is for the iphone edition only.", file=sys.stderr)
+        return 2
+    if args.budget_gb is not None and args.budget_gb <= 0:
+        print("ERROR: a budget must be more than 0 GB.", file=sys.stderr)
+        return 2
+    if args.lossy is not None and kind.name != "lossless":
+        print(
+            "ERROR: --lossy is for the lossless edition only "
+            "(car and iphone always include the lossy masters).",
+            file=sys.stderr,
+        )
+        return 2
     label = {"lossless": "Lossless", "car": "Car", "iphone": "iPhone"}[kind.name]
     masters_root, edition_root = Path(cfg.alac_archive), kind.root(cfg)
     running = eb.pipeline_pids()
@@ -1092,7 +1107,7 @@ def _cmd_edition_build(args) -> int:
     lpath = ledger_path(cfg)
     ledger = open_for_reading(lpath) if args.dry_run else open_ledger(lpath)
     try:
-        if kind.name == "iphone" and args.budget_gb:
+        if args.budget_gb is not None:
             plan, _ = eb.budgeted(
                 conn, ledger, masters_root, edition_root, kind,
                 int(args.budget_gb * 1_000_000_000), rebake_compressed=args.rebake_compressed,
@@ -1881,7 +1896,8 @@ def _build_parser() -> argparse.ArgumentParser:
     # edition-build
     eb_p = sub.add_parser(
         "edition-build",
-        help="Build the Lossless edition (-18 LUFS ALAC) from the masters into ALAC_Library",
+        help="Build an edition from the masters: lossless (-18 LUFS ALAC), car (-14 LUFS AAC, "
+        "noise under), iphone (-14 LUFS AAC, --budget-gb)",
     )
     eb_p.add_argument("name", choices=("lossless", "car", "iphone"), help="Which edition to build")
     eb_p.add_argument(
@@ -1904,7 +1920,7 @@ def _build_parser() -> argparse.ArgumentParser:
     eb_p.add_argument(
         "--lossy",
         choices=("leave-out", "alac"),
-        default="leave-out",
+        default=None,
         help="lossless only: leave lossy masters out (default) or bake them into ALAC "
         "(car and iphone always include them)",
     )
