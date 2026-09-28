@@ -220,7 +220,7 @@ def test_lossy_masters_are_left_out_unless_asked_for(cfg):
 def test_a_failed_bake_leaves_nothing_behind(cfg, monkeypatch):
     _master(cfg, REL, "h1")
 
-    def broken(source, tmp):
+    def broken(source, tmp, known=None):
         tmp.write_bytes(b"half a file")
         raise edition_bake.BakeError("baked to -9.00 LUFS, wanted -18.0")
 
@@ -437,7 +437,7 @@ def test_a_compressed_copy_puts_its_master_on_the_wanted_list(cfg, monkeypatch):
         "UPDATE archive SET artist = 'The Rolling Stones', title = 'Brown Sugar', album = 'Sticky Fingers'",
     )
 
-    def compressed(source, tmp):
+    def compressed(source, tmp, known=None):
         sh.copyfile(source, tmp)
         return edition_bake.BakeResult(-18.0, "dynamic")
 
@@ -469,7 +469,7 @@ def test_a_compressed_copy_can_be_baked_again_under_todays_rules(cfg, monkeypatc
     _master(cfg, REL, "h1")
     real_bake = edition_bake.bake
 
-    def compressed(source, tmp):
+    def compressed(source, tmp, known=None):
         sh.copyfile(source, tmp)
         return edition_bake.BakeResult(-18.4, "dynamic")
 

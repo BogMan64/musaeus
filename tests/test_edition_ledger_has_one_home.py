@@ -96,3 +96,20 @@ def test_the_car_count_is_the_records_else_the_old_builders(tmp_path):
     record(led, Copy("car", "h", "m", 1, "/car/x", "now", -14.0, "linear"))
     led.close()
     assert car_copy_count(cfg, conn) == 1  # the edition framework's record wins
+
+
+def test_a_record_from_before_measurements_reads_as_nothing_measured(tmp_path):
+    # The vault's editions.db predates the measurements table; a read-only
+    # open (dry runs, the doctor, the console) cannot create it.
+    import sqlite3
+
+    from musaeus.edition_ledger import measured_hashes, measurements_of, open_for_reading
+
+    path = tmp_path / "editions.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE edition_copies (edition TEXT, master_hash TEXT)")
+    old.commit()
+    old.close()
+    ro = open_for_reading(path)
+    assert measurements_of(ro, "h") == {} and measured_hashes(ro, "aac") == set()
+    ro.close()

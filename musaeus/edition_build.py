@@ -45,7 +45,7 @@ import os
 import shutil
 import sqlite3
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -55,7 +55,15 @@ from pathlib import Path
 from . import edition_bake, editions
 from .config import AUDIO_EXTENSIONS, LOSSLESS_CODECS
 from .db import SET_ASIDE_STATUSES
-from .edition_ledger import Copy, copies, forget, record
+from .edition_ledger import (
+    Copy,
+    copies,
+    forget,
+    keep_measurement,
+    measured_hashes,
+    measurements_of,
+    record,
+)
 
 EDITION = "lossless"
 TARGET_LUFS = float(edition_bake.TARGET_I)
@@ -80,13 +88,16 @@ class Kind:
     target_i: str
     root_attr: str  # the MusicConfig attribute naming its folder
     place: Callable[[Path, Path, Path], Path]
-    bake: Callable[[Path, Path], edition_bake.BakeResult]
+    #: (master, temporary output, the record's kept measurements by recipe)
+    bake: Callable[[Path, Path, Mapping[str, dict]], edition_bake.BakeResult]
     include_lossy: bool
     #: Put a master whose copy had to be compressed on the wanted list.
     #: Grey, 2026-09-27, for the Lossless edition only.
     list_compressed: bool = False
     #: The name people read: "Lossless", "Car", "iPhone".
     label: str = ""
+    #: What its measurements' recipes start with (edition_bake).
+    recipe_family: str = ""
 
     def root(self, config: object) -> Path:
         return Path(getattr(config, self.root_attr))
@@ -95,20 +106,21 @@ class Kind:
 LOSSLESS_KIND = Kind(
     "lossless", edition_bake.TARGET_I, "alac_library", _mirror,
     # Looked up at call time, not bound at import: tests stand in for it.
-    lambda src, tmp: edition_bake.bake(src, tmp),
+    lambda src, tmp, known: edition_bake.bake(src, tmp, known=known),
     include_lossy=False, list_compressed=True, label="Lossless",
+    recipe_family=edition_bake.LOSSLESS_RECIPE,
 )  # fmt: skip
 #: Grey, 2026-09-28: car and iPhone include the lossy masters (re-encoded
 #: once); the car has the noise under every song.
 CAR_KIND = Kind(
     "car", edition_bake.AAC_TARGET_I, "car_library", _artist_album,
-    lambda src, tmp: edition_bake.bake_aac(src, tmp, noise=True), include_lossy=True,
-    label="Car",
+    lambda src, tmp, known: edition_bake.bake_aac(src, tmp, noise=True, known=known),
+    include_lossy=True, label="Car", recipe_family=edition_bake.AAC_RECIPE_FAMILY,
 )  # fmt: skip
 IPHONE_KIND = Kind(
     "iphone", edition_bake.AAC_TARGET_I, "iphone_library", _artist_album,
-    lambda src, tmp: edition_bake.bake_aac(src, tmp, noise=False), include_lossy=True,
-    label="iPhone",
+    lambda src, tmp, known: edition_bake.bake_aac(src, tmp, noise=False, known=known),
+    include_lossy=True, label="iPhone", recipe_family=edition_bake.AAC_RECIPE_FAMILY,
 )  # fmt: skip
 KINDS = {k.name: k for k in (LOSSLESS_KIND, CAR_KIND, IPHONE_KIND)}
 
@@ -123,6 +135,10 @@ WORK_PER_AUDIO_SECOND = 0.04
 #: 2 workers, Grey's i3-1315U: 0.18. Two ffmpegs at once run only 1.4x
 #: faster than one on this 15 W chip, so the per-worker figure is high.
 AAC_WORK_PER_AUDIO_SECOND = 0.18
+#: The share of that which is the measure pass (6.3 of 11.2 s on a 44.1 kHz
+#: master, 14.5 of 24.9 on a 192 kHz one, 2026-09-28): what a song whose
+#: measurement is already in the record does not cost.
+AAC_MEASURE_SHARE = 0.55
 #: Head-room kept free on the drive beyond the estimate.
 _SPACE_MARGIN = 1.05
 
@@ -189,6 +205,8 @@ class Plan:
     #: The masters this build could make, budget aside: what a budget may be
     #: filled from (cloud review of #53).
     makeable: set[str] = field(default_factory=set)
+    #: Audio hashes whose measurement the record already keeps for this kind.
+    measured: set[str] = field(default_factory=set)
     same_audio: list[Master] = field(default_factory=list)
     outside_masters: list[str] = field(default_factory=list)
     blocked: list[tuple[Master, str]] = field(default_factory=list)
@@ -218,7 +236,13 @@ class Plan:
         if self.kind_name == EDITION:
             work = sum(m.work_seconds for m, _ in self.bake)
         else:
-            work = sum(m.seconds * AAC_WORK_PER_AUDIO_SECOND for m, _ in self.bake)
+            # A song whose measurement is kept skips the measure pass.
+            work = sum(
+                m.seconds
+                * AAC_WORK_PER_AUDIO_SECOND
+                * (1 - AAC_MEASURE_SHARE if m.audio_hash in self.measured else 1)
+                for m, _ in self.bake
+            )
         return work / max(1, workers) / 3600
 
     def compress_counts(self) -> tuple[int, int]:
@@ -274,6 +298,7 @@ def make_plan(
     if include_lossy is None:
         include_lossy = kind.include_lossy
     plan = Plan(kind_name=kind.name, target_lufs=float(kind.target_i))
+    plan.measured = measured_hashes(ledger, kind.recipe_family)
     recorded = copies(ledger, kind.name)
     targets_taken: set[str] = set()
     selected: dict[str, tuple[Master, Path]] = {}
@@ -622,7 +647,9 @@ def _prune_empty(start: Path, root: Path) -> None:
         d = d.parent
 
 
-def _bake_one(m: Master, target: Path, kind: Kind) -> tuple[Path, edition_bake.BakeResult]:
+def _bake_one(
+    m: Master, target: Path, kind: Kind, known: Mapping[str, dict]
+) -> tuple[Path, edition_bake.BakeResult]:
     """Worker: decode-check, bake, verify, tag, under a temporary name. No database."""
     if m.decode_ok != 1:
         problem = edition_bake.decode_problem(m.path)
@@ -632,7 +659,7 @@ def _bake_one(m: Master, target: Path, kind: Kind) -> tuple[Path, edition_bake.B
     tmp = target.with_name(target.name + TMP_SUFFIX)
     tmp.unlink(missing_ok=True)
     try:
-        result = kind.bake(m.path, tmp)
+        result = kind.bake(m.path, tmp, known)
         edition_bake.copy_tags(m.path, tmp, marker_for(m.audio_hash, kind))
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -748,8 +775,12 @@ def execute(
     try:
         with IdleThrottle() as throttle:
             edition_bake.ACTIVE_THROTTLE = throttle
+            # Kept measurements are read here, in this thread: the workers
+            # never touch the record.
+            known = {m.audio_hash: measurements_of(ledger, m.audio_hash) for m, _ in todo}
             for m, target in todo:
-                futures[pool.submit(_bake_one, m, target, kind)] = (m, target)
+                fut = pool.submit(_bake_one, m, target, kind, known[m.audio_hash])
+                futures[fut] = (m, target)
             done = 0
             for fut in as_completed(futures):
                 m, target = futures[fut]
@@ -764,6 +795,12 @@ def execute(
                         raise edition_bake.BakeError(f"something appeared at {target}")
                     os.replace(tmp, target)
                     record(ledger, _copy(m, target, result.achieved_lufs, result.mode, kind))
+                    if (
+                        result.recipe
+                        and result.measured is not None
+                        and known[m.audio_hash].get(result.recipe) != result.measured
+                    ):
+                        keep_measurement(ledger, m.audio_hash, result.recipe, result.measured)
                 except Exception as exc:  # noqa: BLE001 -- one track, not the build
                     reason = (
                         str(exc)

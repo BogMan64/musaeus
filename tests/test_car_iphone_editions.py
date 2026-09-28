@@ -250,3 +250,46 @@ def test_each_aac_edition_is_sized_by_its_own_format(monkeypatch):
     car = eb.Plan(bake=[(m, Path("c.m4a"))], kind_name="car")
     phone = eb.Plan(bake=[(m, Path("p.m4a"))], kind_name="iphone")
     assert phone.bake_bytes < car.bake_bytes
+
+
+def _count_measures(monkeypatch) -> list[Path]:
+    seen: list[Path] = []
+    real = edition_bake.ffmpeg_measure_loudnorm
+
+    def counting(path, *a, **k):
+        seen.append(Path(path))
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(edition_bake, "ffmpeg_measure_loudnorm", counting)
+    return seen
+
+
+def test_a_song_is_measured_once_for_the_car_and_the_iphone(cfg, monkeypatch):
+    # Grey, 2026-09-28: keep each song's measurement in the build's record,
+    # so the iPhone build (same -14 target, same filters) and any rebuild
+    # skip it. The measure pass is about half of every song's time.
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    measures = _count_measures(monkeypatch)
+    _, car_out, _, _ = _build(cfg, eb.CAR_KIND)
+    assert car_out.baked == 1 and len(measures) == 1
+    _, phone_out, phone, _ = _build(cfg, eb.IPHONE_KIND)
+    assert phone_out.baked == 1 and not phone_out.failed, phone_out.failed
+    assert len(measures) == 1, "the iPhone build measured the song again"
+    assert phone["h1"].achieved_lufs is not None
+
+
+def test_a_measurement_serves_only_its_own_recipe(cfg, monkeypatch):
+    # The Lossless edition measures for -18 at the master's own rate; the car
+    # for -14 after its filters. Neither may stand in for the other.
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    measures = _count_measures(monkeypatch)
+    _build(cfg, eb.LOSSLESS_KIND)
+    _build(cfg, eb.CAR_KIND)
+    assert len(measures) == 2
+
+
+def test_the_estimate_knows_which_songs_are_already_measured(cfg):
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    car_plan, _, _, _ = _build(cfg, eb.CAR_KIND)
+    phone_plan, _, _, _ = _build(cfg, eb.IPHONE_KIND)
+    assert phone_plan.hours(1) == pytest.approx(car_plan.hours(1) * (1 - eb.AAC_MEASURE_SHARE))

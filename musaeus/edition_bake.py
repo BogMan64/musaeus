@@ -27,6 +27,7 @@ import json
 import re
 import subprocess
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,24 @@ class BakeError(RuntimeError):
 class BakeResult:
     achieved_lufs: float | None
     mode: str  # "linear" | "dynamic" | "" when loudnorm did not say
+    #: What was measured and how (edition_ledger keeps it: Grey, 2026-09-28,
+    #: a song is measured once). Empty when a stand-in bake did not say.
+    recipe: str = ""
+    measured: dict | None = None
+
+
+#: The fields build_second_pass_filter reads. A kept measurement missing any
+#: of them is not used -- the song is measured again.
+_MEASURED_FIELDS = ("input_i", "input_lra", "input_tp", "input_thresh", "target_offset")
+
+
+def _measure_or_reuse(
+    recipe: str, known: Mapping[str, dict] | None, measure: Callable[[], dict]
+) -> dict:
+    kept = (known or {}).get(recipe)
+    if kept is not None and all(k in kept for k in _MEASURED_FIELDS):
+        return kept
+    return measure()
 
 
 def _paused() -> float:
@@ -367,20 +386,27 @@ def read_marker(path: Path) -> str | None:
     return bytes(values[0]).decode("utf-8", "replace")
 
 
-def bake(source: Path, tmp_output: Path) -> BakeResult:
+#: The Lossless bake's measurement: loudnorm's targets, no filters before it.
+LOSSLESS_RECIPE = f"alac I={TARGET_I} TP={TARGET_TP} LRA={TARGET_LRA}"
+
+
+def bake(source: Path, tmp_output: Path, known: Mapping[str, dict] | None = None) -> BakeResult:
     """Bake *source* into *tmp_output* and verify it. Raises BakeError.
 
     The caller moves tmp_output into place only after this returns: a copy
-    that fails verification never sits where a finished one would.
+    that fails verification never sits where a finished one would. *known*
+    is the record's kept measurements of this audio, by recipe.
     """
     info = probe(source)
-    measured = ffmpeg_measure_loudnorm(source)
+    measured = _measure_or_reuse(LOSSLESS_RECIPE, known, lambda: ffmpeg_measure_loudnorm(source))
     proc = _run(
         bake_command(source, tmp_output, build_second_pass_filter(measured), info), _BAKE_TIMEOUT
     )
     if proc.returncode != 0:
         raise BakeError(f"ffmpeg exited {proc.returncode}: {(proc.stderr or '')[-200:]}")
-    result = BakeResult(parse_achieved(proc.stderr), parse_mode(proc.stderr))
+    result = BakeResult(
+        parse_achieved(proc.stderr), parse_mode(proc.stderr), LOSSLESS_RECIPE, measured
+    )
     verify(info, tmp_output, result.achieved_lufs, result.mode)
     return result
 
@@ -523,6 +549,15 @@ def aac_before_loudnorm(rate: int, channels: int) -> str:
     return f"aresample={rate}{fold},aformat=channel_layouts={_layout(channels)}"
 
 
+#: Every AAC recipe starts with this: the car and the iPhone share it.
+AAC_RECIPE_FAMILY = f"aac I={AAC_TARGET_I} TP={TARGET_TP} LRA={AAC_TARGET_LRA}"
+
+
+def aac_recipe(rate: int, channels: int) -> str:
+    """The AAC measurement's recipe: its targets and the filters before it."""
+    return f"{AAC_RECIPE_FAMILY} | {aac_before_loudnorm(rate, channels)}"
+
+
 def aac_filter(loudnorm: str, rate: int, channels: int, seconds: float, noise: bool) -> str:
     """The one filter graph: music at the target, noise under it, limited."""
     # The layout is STATED on both sides of the mix. Left to negotiation,
@@ -568,7 +603,9 @@ def aac_command(source: Path, output: Path, graph: str, rate: int) -> list[str]:
     ]  # fmt: skip
 
 
-def bake_aac(source: Path, tmp_output: Path, *, noise: bool) -> BakeResult:
+def bake_aac(
+    source: Path, tmp_output: Path, *, noise: bool, known: Mapping[str, dict] | None = None
+) -> BakeResult:
     """Bake *source* into an AAC edition copy at *tmp_output*, verified.
 
     The music is what lands on -14 (the loudness loudnorm reports is before
@@ -584,15 +621,20 @@ def bake_aac(source: Path, tmp_output: Path, *, noise: bool) -> BakeResult:
     except (TypeError, ValueError) as exc:
         raise BakeError("the master's length could not be read") from exc
     channels = channels_of(info)
-    measured = ffmpeg_measure_loudnorm(
-        source, AAC_TARGET_I, TARGET_TP, AAC_TARGET_LRA, aac_before_loudnorm(rate, channels)
+    recipe = aac_recipe(rate, channels)
+    measured = _measure_or_reuse(
+        recipe,
+        known,
+        lambda: ffmpeg_measure_loudnorm(
+            source, AAC_TARGET_I, TARGET_TP, AAC_TARGET_LRA, aac_before_loudnorm(rate, channels)
+        ),
     )
     loud = build_second_pass_filter(measured, AAC_TARGET_I, TARGET_TP, AAC_TARGET_LRA)
     graph = aac_filter(loud, rate, channels, seconds, noise)
     proc = _run(aac_command(source, tmp_output, graph, rate), _BAKE_TIMEOUT)
     if proc.returncode != 0:
         raise BakeError(f"ffmpeg exited {proc.returncode}: {(proc.stderr or '')[-200:]}")
-    result = BakeResult(parse_achieved(proc.stderr), parse_mode(proc.stderr))
+    result = BakeResult(parse_achieved(proc.stderr), parse_mode(proc.stderr), recipe, measured)
     verify(
         info, tmp_output, result.achieved_lufs, result.mode,
         target_i=AAC_TARGET_I, rate=rate, codec="aac", max_channels=2,
