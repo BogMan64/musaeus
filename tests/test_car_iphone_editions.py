@@ -145,3 +145,17 @@ def test_the_car_estimate_uses_the_aac_encodes_own_rate():
     lossless = eb.Plan(bake=[(m, Path("c.m4a"))], kind_name=eb.EDITION)
     assert car.hours(1) == pytest.approx(eb.AAC_WORK_PER_AUDIO_SECOND)
     assert lossless.hours(1) == pytest.approx(eb.WORK_PER_AUDIO_SECOND)
+
+
+def test_playlists_in_the_car_folder_are_not_unknown_files(cfg):
+    # Cloud review of #53: the playlist stage can write its index into
+    # CAR_Library/Playlists, and every car build listed those as unknown
+    # files. A real stray song is still listed.
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    (cfg.car_library / "Playlists").mkdir(parents=True)
+    (cfg.car_library / "Playlists" / "Rock.m3u8").write_text("#EXTM3U\n")
+    stray = cfg.car_library / "Nobody" / "Nothing" / "Nobody - Stray.m4a"
+    stray.parent.mkdir(parents=True)
+    stray.write_bytes(b"\0")
+    plan, _, _, _ = _build(cfg, eb.CAR_KIND)
+    assert plan.unrecorded == [stray]

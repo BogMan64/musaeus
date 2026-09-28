@@ -53,7 +53,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import edition_bake
-from .config import LOSSLESS_CODECS
+from .config import AUDIO_EXTENSIONS, LOSSLESS_CODECS
 from .db import SET_ASIDE_STATUSES
 from .edition_ledger import Copy, copies, forget, record
 
@@ -432,7 +432,15 @@ def make_plan(
     known = {c.output_path for c in recorded.values()} | {str(t) for _, t in selected.values()}
     if edition_root.exists():
         for p in sorted(edition_root.rglob("*")):
-            if p.is_file() and not p.name.endswith(TMP_SUFFIX) and str(p) not in known:
+            # Audio only, as the audit counts: the playlist stage may write
+            # its index into the edition (CAR_Library/Playlists), and those
+            # are not strays (cloud review of #53).
+            if (
+                p.is_file()
+                and p.suffix.lower() in AUDIO_EXTENSIONS
+                and not p.name.endswith(TMP_SUFFIX)
+                and str(p) not in known
+            ):
                 plan.unrecorded.append(p)
     return plan
 
