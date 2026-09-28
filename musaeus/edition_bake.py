@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from .duration import tolerance_for
-from .editions import LOSSLESS
+from .editions import CAR, LOSSLESS
 
 FFMPEG = "ffmpeg"
 FFPROBE = "ffprobe"
@@ -163,9 +163,11 @@ def sample_rate_of(info: dict) -> int | None:
         return None
 
 
-def ffmpeg_measure_loudnorm(path: Path) -> dict:
+def ffmpeg_measure_loudnorm(
+    path: Path, target_i: str = TARGET_I, target_tp: str = TARGET_TP, target_lra: str = TARGET_LRA
+) -> dict:
     """First pass: what loudnorm measures of the master."""
-    flt = f"loudnorm=I={TARGET_I}:TP={TARGET_TP}:LRA={TARGET_LRA}:print_format=json"
+    flt = f"loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}:print_format=json"
     proc = _run(
         [
             FFMPEG,
@@ -192,7 +194,12 @@ def ffmpeg_measure_loudnorm(path: Path) -> dict:
     return measured
 
 
-def build_second_pass_filter(measured: dict) -> str:
+def build_second_pass_filter(
+    measured: dict,
+    target_i: str = TARGET_I,
+    target_tp: str = TARGET_TP,
+    target_lra: str = TARGET_LRA,
+) -> str:
     """The bake: the first pass's measurements applied in linear mode. The
     repo's name for it, so tests/test_bake_is_always_two_pass.py guards it
     (which is why this docstring names no filter option: the guard reads
@@ -200,7 +207,7 @@ def build_second_pass_filter(measured: dict) -> str:
     return (
         f"loudnorm=measured_I={measured['input_i']}:measured_LRA={measured['input_lra']}:"
         f"measured_TP={measured['input_tp']}:measured_thresh={measured['input_thresh']}:"
-        f"offset={measured['target_offset']}:I={TARGET_I}:TP={TARGET_TP}:LRA={TARGET_LRA}:"
+        f"offset={measured['target_offset']}:I={target_i}:TP={target_tp}:LRA={target_lra}:"
         "linear=true:print_format=summary"
     )
 
@@ -256,21 +263,40 @@ def parse_mode(stderr: str) -> str:
 _DYNAMIC_SHORTFALL = 2.0
 
 
-def verify(source_info: dict, output: Path, achieved: float | None, mode: str = "linear") -> None:
-    """The copy has audio, the master's rate, its length, and the target loudness."""
+def verify(
+    source_info: dict,
+    output: Path,
+    achieved: float | None,
+    mode: str = "linear",
+    *,
+    target_i: str = TARGET_I,
+    rate: int | None = None,
+    codec: str | None = None,
+    max_channels: int | None = None,
+) -> None:
+    """The copy has audio, the right rate, its length, and the target loudness.
+
+    *rate* is the rate the copy must have -- the master's own unless given
+    (the AAC editions cap it). *codec* and *max_channels*, when given, are
+    checked too: measure the artifact, not the report.
+    """
     out = probe(output)
     a = _audio_stream(out)
     if not a:
         raise BakeError("the copy has no audio stream")
-    want_rate = sample_rate_of(source_info)
+    want_rate = rate or sample_rate_of(source_info)
     if want_rate and sample_rate_of(out) != want_rate:
-        raise BakeError(f"the copy is {sample_rate_of(out)} Hz, the master {want_rate} Hz")
+        raise BakeError(f"the copy is {sample_rate_of(out)} Hz, wanted {want_rate} Hz")
+    if codec and a.get("codec_name") != codec:
+        raise BakeError(f"the copy is {a.get('codec_name')}, wanted {codec}")
+    if max_channels and int(a.get("channels") or 0) > max_channels:
+        raise BakeError(f"the copy has {a.get('channels')} channels, at most {max_channels}")
     if achieved is None:
         raise BakeError("loudnorm did not report the loudness it achieved -- unverified")
-    off = achieved - float(TARGET_I)
+    off = achieved - float(target_i)
     short_but_best = mode == "dynamic" and -_DYNAMIC_SHORTFALL <= off < 0
     if abs(off) > _LUFS_TOLERANCE and not short_but_best:
-        raise BakeError(f"baked to {achieved:.2f} LUFS, wanted {TARGET_I}")
+        raise BakeError(f"baked to {achieved:.2f} LUFS, wanted {target_i}")
 
     def _dur(info: dict) -> float | None:
         try:
@@ -378,3 +404,126 @@ def decode_problem(path: Path) -> str | None:
     if proc.returncode != 0 or stderr:
         return stderr.splitlines()[0] if stderr else f"ffmpeg exited {proc.returncode}"
     return None
+
+
+# ── The AAC editions: car and iPhone ────────────────────────────────────────
+#
+# One ffmpeg pass per track, from the master: measure, apply the measured
+# loudness (the music lands on -14), cap the rate, fold anything wider than
+# stereo to stereo, mix the noise under it (car only), limit, encode AAC.
+# The old car builder encoded AAC, decoded it, mixed the noise and encoded
+# AAC again -- every car track lossy twice.
+
+AAC_TARGET_I = f"{CAR.lufs_target:.1f}"
+#: ffmpeg's normal range target. Grey, 2026-09-28: in the car, compression
+#: that keeps quiet passages audible over road noise is welcome.
+AAC_TARGET_LRA = "11.0"
+AAC_BITRATE = f"{CAR.bitrate_kbps}k"
+
+#: Grey's levels for the noise under every car track (the old masker's).
+NOISE_LEVELS_DB = {"brown": -12.0, "pink": -15.0, "white": -18.0}
+#: Those levels applied to noise at -16 LUFS: the old noise beds were each
+#: colour brought to -16 LUFS. anoisesrc at amplitude 1, measured 2026-09-28
+#: (60 s, 44.1 and 48 kHz within 0.1): brown -15.6, pink -14.7, white -1.7.
+NOISE_BED_LUFS = -16.0
+NOISE_RAW_LUFS = {"brown": -15.6, "pink": -14.7, "white": -1.7}
+#: Fixed seeds: the same master gives the same car file on every build.
+NOISE_SEEDS = {"brown": 1, "pink": 2, "white": 3}
+#: The old masker's ceiling: -0.2 dBFS. amix with normalize=0 adds the noise
+#: on top of the music, so a limiter is not optional.
+NOISE_CEILING = 0.977
+
+
+def noise_gain_db(colour: str) -> float:
+    """The gain that brings *colour* from anoisesrc to its level under the music."""
+    return NOISE_BED_LUFS - NOISE_RAW_LUFS[colour] + NOISE_LEVELS_DB[colour]
+
+
+def target_rate(source_rate: int | None) -> int | None:
+    """The AAC editions' rate: the master's own up to 48 kHz, else 48 or 44.1.
+
+    Ported from the old car encoder (build_aac_library._target_rate), where
+    it was measured: the rate must always be stated, because loudnorm
+    resamples internally and an unpinned encode takes the filter's rate (a
+    44.1 kHz master came out 96 kHz, 2026-08-31). Above 48 kHz each rate
+    stays in its own family, so the ratio is exact (192->48, 88.2->44.1).
+    """
+    if not source_rate:
+        return None
+    if source_rate <= 48_000:
+        return source_rate
+    return 44_100 if source_rate % 44_100 == 0 else 48_000
+
+
+def channels_of(info: dict) -> int:
+    try:
+        return int(str(_audio_stream(info).get("channels")))
+    except (TypeError, ValueError):
+        return 0
+
+
+def aac_filter(loudnorm: str, rate: int, channels: int, seconds: float, noise: bool) -> str:
+    """The one filter graph: music at the target, noise under it, limited."""
+    fold = ":ocl=stereo" if channels > 2 else ""  # 5.1 -> stereo; mono stays mono
+    # The layout is STATED on both sides of the mix. Left to negotiation,
+    # loudnorm plus the three-colour mix collapsed a stereo master to mono
+    # (measured 2026-09-28; each part alone stayed stereo) -- CLAUDE.md: an
+    # unstated format property is decided by the input.
+    layout = "mono" if channels == 1 else "stereo"
+    music = f"[0:a:0]{loudnorm},aresample={rate}{fold},aformat=channel_layouts={layout}"
+    if not noise:
+        return f"{music}[out]"
+    length = int(seconds) + 2
+    beds = ";".join(
+        f"anoisesrc=colour={c}:sample_rate={rate}:seed={NOISE_SEEDS[c]}:duration={length},"
+        f"volume={noise_gain_db(c):.2f}dB[n{c[0]}]"
+        for c in ("brown", "pink", "white")
+    )
+    return (
+        f"{music}[music];{beds};"
+        f"[nb][np][nw]amix=inputs=3:normalize=0,aformat=channel_layouts={layout}[noise];"
+        "[music][noise]amix=inputs=2:normalize=0:duration=first[mixed];"
+        f"[mixed]alimiter=limit={NOISE_CEILING}:level=disabled[out]"
+    )
+
+
+def aac_command(source: Path, output: Path, graph: str, info: dict, rate: int) -> list[str]:
+    cmd = [
+        FFMPEG, "-nostdin", "-hide_banner", "-nostats", "-y", "-i", str(source),
+        "-threads", "2", "-filter_complex", graph, "-map", "[out]",
+    ]  # fmt: skip
+    if has_attached_picture(info):
+        cmd += ["-map", "0:v:0", "-c:v", "copy", "-disposition:v:0", "attached_pic"]
+    return [
+        *cmd, "-c:a", "aac", "-b:a", AAC_BITRATE, "-ar", str(rate),
+        "-map_metadata", "0", "-f", "mp4", str(output),
+    ]  # fmt: skip
+
+
+def bake_aac(source: Path, tmp_output: Path, *, noise: bool) -> BakeResult:
+    """Bake *source* into an AAC edition copy at *tmp_output*, verified.
+
+    The music is what lands on -14 (the loudness loudnorm reports is before
+    the noise is added); the noise makes the finished file a little louder,
+    as the old car edition's was.
+    """
+    info = probe(source)
+    rate = target_rate(sample_rate_of(info))
+    if rate is None:
+        raise BakeError("the master's sample rate could not be read")
+    try:
+        seconds = float(info.get("format", {}).get("duration"))
+    except (TypeError, ValueError) as exc:
+        raise BakeError("the master's length could not be read") from exc
+    measured = ffmpeg_measure_loudnorm(source, AAC_TARGET_I, TARGET_TP, AAC_TARGET_LRA)
+    loud = build_second_pass_filter(measured, AAC_TARGET_I, TARGET_TP, AAC_TARGET_LRA)
+    graph = aac_filter(loud, rate, channels_of(info), seconds, noise)
+    proc = _run(aac_command(source, tmp_output, graph, info, rate), _BAKE_TIMEOUT)
+    if proc.returncode != 0:
+        raise BakeError(f"ffmpeg exited {proc.returncode}: {(proc.stderr or '')[-200:]}")
+    result = BakeResult(parse_achieved(proc.stderr), parse_mode(proc.stderr))
+    verify(
+        info, tmp_output, result.achieved_lufs, result.mode,
+        target_i=AAC_TARGET_I, rate=rate, codec="aac", max_channels=2,
+    )  # fmt: skip
+    return result
