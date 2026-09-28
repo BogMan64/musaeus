@@ -24,8 +24,9 @@ Pipeline commands:
     edition          Preview what would go into an edition (lossless/car/
                      iphone) with an optional --budget-gb; selection only,
                      encodes nothing
-    edition-build    Build the Lossless edition: every master at -18 LUFS ALAC
-                     into Libraries/ALAC_Library; rows untouched (--dry-run)
+    edition-build    Build an edition from the masters: lossless (-18 LUFS ALAC),
+                     car (-14 AAC, noise under), iphone (-14 AAC, --budget-gb);
+                     rows untouched (--dry-run)
     forge            Measure EBU R128 loudness + write ReplayGain tags
     tagger           Write normalised DB metadata back to file tags
     auditor          Pre-forge LUFS audit (flags out-of-window files)
@@ -1048,7 +1049,7 @@ def _cmd_deep_scan(args) -> int:
 
 
 def _cmd_edition_build(args) -> int:
-    """Build the Lossless edition from the masters. See musaeus/edition_build.py.
+    """Build an edition from the masters. See musaeus/edition_build.py.
 
     The catalogue is opened READ-ONLY: building an edition must never change
     a row (the retired build_alac_library.py pointed rows at its copies), and
@@ -1066,7 +1067,9 @@ def _cmd_edition_build(args) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    masters_root, edition_root = Path(cfg.alac_archive), Path(cfg.alac_library)
+    kind = eb.KINDS[args.name]
+    label = {"lossless": "Lossless", "car": "Car", "iphone": "iPhone"}[kind.name]
+    masters_root, edition_root = Path(cfg.alac_archive), kind.root(cfg)
     running = eb.pipeline_pids()
     if running and not args.dry_run:
         print(
@@ -1088,17 +1091,27 @@ def _cmd_edition_build(args) -> int:
 
         ledger.executescript(_SCHEMA)
     try:
+        allowed = None
+        if kind.name == "iphone" and args.budget_gb:
+            from .editions import EDITIONS, select_edition
+
+            sel = select_edition(
+                conn, EDITIONS["iphone"], budget_bytes=int(args.budget_gb * 1_000_000_000)
+            )
+            allowed = {str(t.file_path) for t in sel.included}
         plan = eb.make_plan(
             conn,
             ledger,
             masters_root,
             edition_root,
-            include_lossy=args.lossy == "alac",
+            kind=kind,
+            include_lossy=(args.lossy == "alac") if kind.name == "lossless" else None,
             rebake_compressed=args.rebake_compressed,
+            allowed=allowed,
         )
         free = eb.free_bytes(edition_root)
         print()
-        print(f"  Lossless edition: {edition_root}")
+        print(f"  {label} edition: {edition_root}")
         print(f"  From the masters: {masters_root}")
         for line in eb.plan_lines(plan, workers=args.workers, free=free):
             print(line)
@@ -1106,20 +1119,25 @@ def _cmd_edition_build(args) -> int:
             print(f"  --limit {args.limit}: only the first {args.limit} will be baked this time")
 
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log = cfg.runs_root / "LOGS" / f"edition_{eb.EDITION}_{stamp}.log"
+        log = cfg.runs_root / "LOGS" / f"edition_{kind.name}_{stamp}.log"
 
         def _write_log(outcome=None) -> None:
             log.parent.mkdir(parents=True, exist_ok=True)
             with open(log, "w", encoding="utf-8") as fh:
-                fh.write(f"Lossless edition -- {'dry run' if args.dry_run else 'build'} {stamp}\n")
+                fh.write(f"{label} edition -- {'dry run' if args.dry_run else 'build'} {stamp}\n")
                 fh.write("\n".join(eb.plan_lines(plan, workers=args.workers, free=free)) + "\n")
                 for title, items in (
                     ("NOT POSSIBLE", [f"{m.path}\t{why}" for m, why in plan.blocked]),
                     ("UNKNOWN FILES (left alone)", [str(p) for p in plan.unrecorded]),
                     ("LOSSY, LEFT OUT", [str(m.path) for m in plan.lossy_left_out]),
+                    ("OVER BUDGET, LEFT OUT", [str(m.path) for m in plan.over_budget]),
                     (
                         "WILL BE COMPRESSED",
-                        [str(m.path) for m, _ in plan.bake if m.may_compress() is True],
+                        [
+                            str(m.path)
+                            for m, _ in plan.bake
+                            if m.may_compress(plan.target_lufs) is True
+                        ],
                     ),
                     ("FAILED", [f"{p}\t{why}" for p, why in (outcome.failed if outcome else [])]),
                     ("COMPRESSED (dynamic mode)", list(outcome.dynamic) if outcome else []),
@@ -1141,7 +1159,7 @@ def _cmd_edition_build(args) -> int:
             return 1
 
         try:
-            with eb.build_lock(cfg.runs_root / "locks"):
+            with eb.build_lock(cfg.runs_root / "locks", kind.name):
                 outcome = eb.execute(
                     plan,
                     ledger,
@@ -1149,6 +1167,7 @@ def _cmd_edition_build(args) -> int:
                     workers=args.workers,
                     limit=args.limit,
                     wanted_csv=cfg.tunemymusic_csv_path,
+                    kind=kind,
                 )
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
@@ -1160,9 +1179,14 @@ def _cmd_edition_build(args) -> int:
             f"re-tagged {outcome.retagged:,}, removed {outcome.removed:,}."
         )
         if outcome.dynamic:
+            listed = (
+                f"; {outcome.wanted:,} newly added to TuneMyMusic.csv"
+                if kind.list_compressed
+                else ""
+            )
             print(
-                f"  {len(outcome.dynamic):,} copy(ies) were compressed to reach -18 LUFS; "
-                f"{outcome.wanted:,} newly added to TuneMyMusic.csv."
+                f"  {len(outcome.dynamic):,} copy(ies) were compressed to reach "
+                f"{kind.target_i} LUFS{listed}."
             )
         if outcome.failed:
             print(f"  {len(outcome.failed):,} failed -- see the log; the next build retries them.")
@@ -1867,7 +1891,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "edition-build",
         help="Build the Lossless edition (-18 LUFS ALAC) from the masters into ALAC_Library",
     )
-    eb_p.add_argument("name", choices=("lossless",), help="Which edition to build")
+    eb_p.add_argument("name", choices=("lossless", "car", "iphone"), help="Which edition to build")
+    eb_p.add_argument(
+        "--budget-gb",
+        type=float,
+        metavar="GB",
+        default=None,
+        help="iphone: the device budget; genres are filled in priority order",
+    )
     eb_p.add_argument("--dry-run", action="store_true", help="Show the plan; write nothing")
     eb_p.add_argument("--limit", type=int, metavar="N", default=None, help="Bake at most N")
     eb_p.add_argument(
@@ -1882,7 +1913,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--lossy",
         choices=("leave-out", "alac"),
         default="leave-out",
-        help="Lossy masters: leave them out (default) or bake them into ALAC",
+        help="lossless only: leave lossy masters out (default) or bake them into ALAC "
+        "(car and iphone always include them)",
     )
 
     playlist_p = sub.add_parser(

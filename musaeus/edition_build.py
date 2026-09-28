@@ -139,6 +139,7 @@ class Master:
     mtime_ns: int | None
     decode_ok: int | None = None  # 1 checked clean, 0 checked damaged, None never checked
     seconds_44k: float = 240.0  # its length, scaled to 44.1 kHz: what a bake costs
+    seconds: float = 240.0  # its length
     title: str = ""
     artist: str = ""
     album: str = ""
@@ -188,7 +189,18 @@ class Plan:
 
     @property
     def bake_bytes(self) -> int:
-        return sum(m.size_bytes for m, _ in self.bake)
+        """What the bakes will write. A lossless copy is about its master's
+        size; an AAC copy is its length at the bitrate (editions'
+        estimate, container overhead included) -- 256k is a fraction of
+        the master, and counting the master overstated the car by ~8x."""
+        if self.kind_name == EDITION:
+            return sum(m.size_bytes for m, _ in self.bake)
+        from .editions import CAR, Track, estimated_bytes
+
+        return sum(
+            estimated_bytes(Track(str(m.path), "", "", "", "", m.seconds, m.size_bytes), CAR)
+            for m, _ in self.bake
+        )
 
     def hours(self, workers: int) -> float:
         return sum(m.work_seconds for m, _ in self.bake) / max(1, workers) / 3600
@@ -281,6 +293,7 @@ def make_plan(
             mtime_ns=mtime,
             decode_ok=r["decode_ok"],
             seconds_44k=float(r["duration"] or 240.0) * (int(r["sample_rate"] or 44_100) / 44_100),
+            seconds=float(r["duration"] or 240.0),
             title=r["title"] or "",
             artist=r["artist"] or "",
             album=r["album"] or "",
@@ -751,9 +764,13 @@ def plan_lines(plan: Plan, *, workers: int, free: int | None = None) -> list[str
             lines.append(f"  {label:<14}: {n:,}")
     will, may = plan.compress_counts()
     if plan.kind_name != EDITION and plan.bake:
+        why = (
+            "welcome in the car (Grey, 2026-09-28)"
+            if plan.kind_name == "car"
+            else "ffmpeg's normal range rule, as for the car"
+        )
         lines.append(
-            f"  Compressed    : at least {will:,} (their peaks); wide-range tracks too -- "
-            f"welcome in the {plan.kind_name} (Grey, 2026-09-28)"
+            f"  Compressed    : at least {will:,} (their peaks); wide-range tracks too -- {why}"
         )
     elif will or may:
         lines.append(
