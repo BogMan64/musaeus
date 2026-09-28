@@ -105,9 +105,8 @@ def test_typing_build_runs_the_iphone_builder_with_the_budget(cfg, monkeypatch) 
     launched = _run(cfg, monkeypatch, ["3", "0.02", "BUILD"])
     assert len(launched) == 1, "exactly one build should start"
     cmd = launched[0]
-    assert any(c.endswith("build_car_library.py") for c in cmd)
-    assert "--edition" in cmd and cmd[cmd.index("--edition") + 1] == "iphone"
-    assert "--from-catalogue" in cmd
+    # The edition framework's builder since 2026-09-28, not build_car_library.py.
+    assert "edition-build" in cmd and cmd[cmd.index("edition-build") + 1] == "iphone"
     # The budget the owner typed has to reach the builder. Without this the
     # menu would preview a 20 MB selection and then encode the whole library.
     assert "--budget-gb" in cmd

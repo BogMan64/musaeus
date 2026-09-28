@@ -301,9 +301,16 @@ class Console:
             forged = conn.execute(
                 "SELECT COUNT(*) FROM archive WHERE rg_tagged_at IS NOT NULL"
             ).fetchone()[0]
-            car_exported = conn.execute(
-                "SELECT COUNT(*) FROM archive WHERE car_export_path IS NOT NULL"
-            ).fetchone()[0]
+            from .edition_ledger import recorded_copies
+
+            # The car edition's copies live in the edition ledger (2026-09-28);
+            # car_export_path counts only an edition built the old way.
+            car_exported = (
+                len(recorded_copies(self._config, "car") or {})
+                or conn.execute(
+                    "SELECT COUNT(*) FROM archive WHERE car_export_path IS NOT NULL"
+                ).fetchone()[0]
+            )
 
             _info(f"Total files   : {_c(str(total), _BOLD)}")
             _info(f"  PENDING     : {pending}")
@@ -1292,8 +1299,8 @@ class Console:
         # default answer; building is a second, explicit decision.
         if spec.name != "iphone":
             _info(
-                "To build it, run the builder for that edition; it pauses "
-                "while you use the machine."
+                "To build it: `musaeus edition-build car` (add --dry-run to see the plan). "
+                "It pauses while you use the machine."
             )
             return
 
@@ -1314,17 +1321,10 @@ class Console:
         import subprocess
         import sys
 
-        builder = (
-            Path(__file__).resolve().parent.parent
-            / "scripts"
-            / "car_library"
-            / "build_car_library.py"
-        )
-        if not builder.exists():
-            _err(f"Builder not found at {builder}")
-            return
-
-        cmd = [sys.executable, str(builder), "--from-catalogue", "--edition", "iphone", "--no-mask"]
+        # The edition framework's builder (2026-09-28): one AAC pass from each
+        # master, recorded in the edition ledger. build_car_library.py encoded
+        # twice and recorded its copies in the catalogue, which is wiped.
+        cmd = [sys.executable, "-m", "musaeus.cli", "edition-build", "iphone"]
         if budget:
             cmd += ["--budget-gb", str(budget / 1_000_000_000)]
         _info("Running: " + " ".join(cmd[1:]))

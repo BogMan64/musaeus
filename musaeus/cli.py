@@ -756,9 +756,16 @@ def _cmd_status() -> int:
         forged = conn.execute(
             "SELECT COUNT(*) FROM archive WHERE rg_tagged_at IS NOT NULL"
         ).fetchone()[0]
-        tagged_car = conn.execute(
-            "SELECT COUNT(*) FROM archive WHERE car_export_path IS NOT NULL"
-        ).fetchone()[0]
+        from .edition_ledger import recorded_copies
+
+        # The car edition's copies live in the edition ledger (2026-09-28);
+        # car_export_path counts only an edition built the old way.
+        tagged_car = (
+            len(recorded_copies(cfg, "car") or {})
+            or conn.execute(
+                "SELECT COUNT(*) FROM archive WHERE car_export_path IS NOT NULL"
+            ).fetchone()[0]
+        )
         dupes = conn.execute(
             "SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE status='pending'"
         ).fetchone()[0]
