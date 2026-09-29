@@ -43,7 +43,9 @@ from __future__ import annotations
 import fcntl
 import os
 import shutil
+import signal
 import sqlite3
+import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -827,6 +829,10 @@ def execute(
 
     started = time.monotonic()
     pool = ThreadPoolExecutor(max_workers=max(1, workers))
+    # A shutdown (SIGTERM) or a closed terminal (SIGHUP) stops the build as
+    # Ctrl-C does, cleaning up after itself: they left half-made copies in
+    # the edition, which the transfers copied (cloud review of #53).
+    restore = _stop_on_signals()
     futures: dict[Future, tuple[Master, Path]] = {}
     try:
         with IdleThrottle() as throttle:
@@ -877,6 +883,9 @@ def execute(
     except KeyboardInterrupt:
         out.stopped = True
     finally:
+        restore()
+        if out.stopped:
+            edition_bake.stop_children()  # the running encodes, not only the queued
         # Always: queued bakes must not run on after the lock and the
         # throttle are released (cloud review of #49).
         pool.shutdown(wait=True, cancel_futures=True)
@@ -885,6 +894,26 @@ def execute(
             for stale in edition_root.rglob(f"*{TMP_SUFFIX}"):
                 stale.unlink(missing_ok=True)
     return out
+
+
+def _stop_on_signals() -> Callable[[], None]:
+    """Turn SIGTERM and SIGHUP into KeyboardInterrupt; return the undo.
+
+    Only the main thread may set handlers; elsewhere this does nothing.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return lambda: None
+
+    def stop(signum, frame):
+        raise KeyboardInterrupt
+
+    old = {s: signal.signal(s, stop) for s in (signal.SIGTERM, signal.SIGHUP)}
+
+    def restore() -> None:
+        for s, handler in old.items():
+            signal.signal(s, handler)
+
+    return restore
 
 
 def _want(m: Master, wanted_csv: Path) -> bool:

@@ -23,10 +23,12 @@ records what was made.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import re
 import subprocess
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -115,18 +117,42 @@ def _run(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
         stderr=subprocess.PIPE,
         text=True,
     )
-    start, paused_at_start = time.monotonic(), _paused()
-    while True:
-        try:
-            out, err = proc.communicate(timeout=_DEADLINE_POLL_S)
-        except subprocess.TimeoutExpired:
-            working = (time.monotonic() - start) - (_paused() - paused_at_start)
-            if working <= timeout:
-                continue
+    with _CHILDREN_LOCK:
+        _CHILDREN.add(proc)
+    try:
+        start, paused_at_start = time.monotonic(), _paused()
+        while True:
+            try:
+                out, err = proc.communicate(timeout=_DEADLINE_POLL_S)
+            except subprocess.TimeoutExpired:
+                working = (time.monotonic() - start) - (_paused() - paused_at_start)
+                if working <= timeout:
+                    continue
+                proc.kill()
+                proc.communicate()
+                raise BakeError(
+                    f"{cmd[0]} made no progress in {timeout}s of working time"
+                ) from None
+            return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+    finally:
+        with _CHILDREN_LOCK:
+            _CHILDREN.discard(proc)
+
+
+#: Every child _run has running, so a stopped build can end them: stopped by
+#: SIGTERM, an ffmpeg kept encoding after the build had let go of its lock
+#: (cloud review of #53).
+_CHILDREN: set[subprocess.Popen] = set()
+_CHILDREN_LOCK = threading.Lock()
+
+
+def stop_children() -> None:
+    """Kill every child _run has running. For a build being stopped."""
+    with _CHILDREN_LOCK:
+        running = list(_CHILDREN)
+    for proc in running:
+        with contextlib.suppress(OSError):
             proc.kill()
-            proc.communicate()
-            raise BakeError(f"{cmd[0]} made no progress in {timeout}s of working time") from None
-        return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
 def probe(path: Path) -> dict:

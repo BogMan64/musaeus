@@ -129,7 +129,7 @@ def main() -> int:
     if args.wipe:
         lines.append(f"rm -rf {mount}/*")
     lines += [
-        f"rsync -a --info=progress2 '{src}/' '{mount}/'",
+        f"rsync -a --info=progress2 --exclude='*.edition_tmp' '{src}/' '{mount}/'",
         f"fusermount -u {mount}",
     ]
     for ln in lines:
