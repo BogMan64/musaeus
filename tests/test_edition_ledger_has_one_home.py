@@ -113,3 +113,35 @@ def test_a_record_from_before_measurements_reads_as_nothing_measured(tmp_path):
     ro = open_for_reading(path)
     assert measurements_of(ro, "h") == {} and measured_hashes(ro, "aac") == set()
     ro.close()
+
+
+def test_the_report_counts_car_copies_as_status_does(tmp_path):
+    # Cloud review of #53: `musaeus report` still counted car_export_path, so
+    # after a new-style build it said 'Car export 0' while status said N.
+    import importlib.util
+    from types import SimpleNamespace
+
+    from musaeus.edition_ledger import Copy, open_ledger, record
+
+    spec = importlib.util.spec_from_file_location("mreport", ROOT / "scripts" / "musaeus_report.py")
+    mreport = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mreport)
+    cfg = SimpleNamespace(db_history_dir=tmp_path / "hist")
+    led = open_ledger(tmp_path / "hist" / "editions.db")
+    record(led, Copy("car", "h", "m", 1, "/car/x", "now", -14.0, "linear"))
+    led.close()
+    from musaeus.db import open_db
+
+    conn = open_db(tmp_path / "musaeus.db")  # the real schema, empty
+    data = mreport._gather(conn, cfg)
+    assert data["car_export"] == 1
+
+
+def test_only_edition_ledger_counts_the_car_copies():
+    offenders = [
+        str(p.relative_to(ROOT))
+        for p in [*(ROOT / "musaeus").rglob("*.py"), *(ROOT / "scripts").rglob("*.py")]
+        if p != HOME
+        and "COUNT(*) FROM archive WHERE car_export_path" in p.read_text(encoding="utf-8")
+    ]
+    assert offenders == [], offenders
