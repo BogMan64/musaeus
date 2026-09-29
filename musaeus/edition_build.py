@@ -706,7 +706,16 @@ def _bake_one(
     tmp = target.with_name(target.name + TMP_SUFFIX)
     tmp.unlink(missing_ok=True)
     try:
-        result = kind.bake(m.path, tmp, known)
+        try:
+            result = kind.bake(m.path, tmp, known)
+        except edition_bake.BakeError:
+            if not known:
+                raise
+            # A kept measurement is reused for ever, so a wrong one would fail
+            # every build: once more on a fresh one, which the build then
+            # keeps in its place (cloud review of #53).
+            tmp.unlink(missing_ok=True)
+            result = kind.bake(m.path, tmp, {})
         edition_bake.copy_tags(m.path, tmp, marker_for(m.audio_hash, kind))
     except BaseException:
         tmp.unlink(missing_ok=True)

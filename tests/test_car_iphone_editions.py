@@ -424,3 +424,23 @@ def test_a_budget_that_is_not_a_size_is_refused(cfg, gb):
               _cli(cfg, "iphone", "--budget-gb", gb, "--dry-run")):  # fmt: skip
         assert r.returncode != 0 and "Traceback" not in r.stderr, r.stdout + r.stderr
         assert "more than 0" in r.stderr, r.stderr
+
+
+def test_a_wrong_kept_measurement_is_measured_again(cfg, monkeypatch):
+    # Cloud review of #53: a kept measurement was reused for ever -- one 6 LU
+    # off failed three builds in a row and was never re-measured. A bake that
+    # fails on a kept measurement is tried once more on a fresh one.
+    from musaeus.edition_ledger import keep_measurement, measurements_of
+
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    _build(cfg, eb.CAR_KIND)  # measures and keeps it
+    ledger = open_ledger(ledger_path(cfg))
+    ((recipe, good),) = measurements_of(ledger, "h1").items()
+    keep_measurement(ledger, "h1", recipe, {**good, "input_i": str(float(good["input_i"]) - 6)})
+    ledger.close()
+    _, out, phone, _ = _build(cfg, eb.IPHONE_KIND)
+    assert out.baked == 1 and not out.failed, out.failed
+    ledger = open_ledger(ledger_path(cfg))
+    kept = measurements_of(ledger, "h1")[recipe]
+    ledger.close()
+    assert abs(float(kept["input_i"]) - float(good["input_i"])) < 0.2, "the bad one was kept"

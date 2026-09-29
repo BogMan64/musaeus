@@ -24,6 +24,7 @@ records what was made.
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
 import time
@@ -222,6 +223,15 @@ def ffmpeg_measure_loudnorm(
     if start == -1 or end <= start:
         raise BakeError(f"could not read the loudness measurement of {path.name}")
     measured: dict = json.loads(err[start : end + 1])
+    # Kept and reused, so it must be numbers: loudnorm prints "-inf" for
+    # silence, and a partial run can leave a field out.
+    for key in _MEASURED_FIELDS:
+        try:
+            value = float(measured[key])
+        except (KeyError, TypeError, ValueError):
+            raise BakeError(f"the loudness measurement of {path.name} has no {key}") from None
+        if not math.isfinite(value):
+            raise BakeError(f"the loudness measurement of {path.name} gave {key} = {value}")
     return measured
 
 
@@ -347,7 +357,14 @@ def verify(
 
 #: Freeform tags that carry a loudness GAIN. A copy already baked to -18 LUFS
 #: must not carry its master's: a player would apply the gain a second time.
-_GAIN_TAG_RE = re.compile(r"^----:com\.apple\.iTunes:(r128_|replaygain_|itunnorm)", re.I)
+#: Not carried to a copy: the master's loudness gain (the copy is baked to
+#: its target), and its encoder's own notes -- iTunSMPB (priming, padding,
+#: length) and Encoding Params describe the master's encode, and a player
+#: honouring the master's iTunSMPB cut 48 ms off the start of a new AAC copy
+#: (cloud review of #53).
+_GAIN_TAG_RE = re.compile(
+    r"^----:com\.apple\.iTunes:(r128_|replaygain_|itunnorm|itunsmpb$|encoding params$)", re.I
+)
 
 #: Written on every edition copy, so a copy is recognisable as one -- and as
 #: the copy of WHICH master -- from the file alone, even when the record of
