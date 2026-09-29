@@ -427,3 +427,34 @@ def test_a_file_at_a_copys_place_that_is_not_the_copy_is_left(vault):
         "stale record kept"
     )
     led.close()
+
+
+def test_deleting_the_last_iphone_copy_keeps_the_iphone_folder(vault):
+    # Cloud review of #53 (extra list): the empty-folder sweep stopped at the
+    # tiers it knew, and iPHONE_Library was not one -- the edition's own
+    # folder went with its last copy.
+    from musaeus.edition_ledger import Copy, open_ledger, record
+
+    rel = "Rock/Blur/Parklife/Blur - Song 2.m4a"
+    libs = vault / "Libraries"
+    master = libs / "ALAC-Archival" / rel
+    master.parent.mkdir(parents=True, exist_ok=True)
+    master.write_bytes(b"\0")
+    conn = sqlite3.connect(vault / "musaeus.db")
+    conn.execute(
+        "INSERT INTO archive (id, artist, title, status, audio_hash, file_path) "
+        "VALUES (1, 'Blur', 'Song 2', 'CATALOGUED', 'hb', ?)",
+        (str(master),),
+    )
+    conn.commit()
+    conn.close()
+    copy = _marked(
+        libs / "iPHONE_Library" / "Blur" / "Parklife" / "Blur - Song 2.m4a", "iphone", "hb"
+    )
+    led = open_ledger(vault / "_db_backups" / "editions.db")
+    record(led, Copy("iphone", "hb", str(master), 1, str(copy), "now", -14.0, "linear"))
+    led.close()
+    r = _run(vault, [1])
+    assert r.returncode == 0, r.stderr
+    assert not copy.exists()
+    assert (libs / "iPHONE_Library").is_dir(), "the iPhone edition's folder was removed"

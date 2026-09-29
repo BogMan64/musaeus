@@ -90,15 +90,19 @@ def copies(row: sqlite3.Row, libs: Path) -> list[Path]:
     return out
 
 
-def remove_emptied_folders(folders: set[Path], libs: Path) -> int:
+def remove_emptied_folders(
+    folders: set[Path], libs: Path, editions: tuple[Path, ...] = ()
+) -> int:
     """rmdir each folder a deletion emptied, and its parents while they are
-    empty, stopping at the tier roots. Never rmtree: art, a .part or a stray
-    the catalogue does not know keeps its folder for a person to look at.
-    (Before this, 224 removals on 2026-09-23 left ~3,600 empty folders.)"""
-    roots = {libs, *(libs / t for t in TIERS)}
+    empty, stopping at the tier roots and every edition's own folder. Never
+    rmtree: art, a .part or a stray the catalogue does not know keeps its
+    folder for a person to look at. (Before this, 224 removals on 2026-09-23
+    left ~3,600 empty folders; and iPHONE_Library, not a tier here, went
+    with its last copy -- cloud review of #53.)"""
+    roots = {libs, *(libs / t for t in TIERS), *editions}
     removed = 0
     for d in sorted(folders, key=lambda p: len(p.parts), reverse=True):
-        while d not in roots and d != d.parent and libs in d.parents:
+        while d not in roots and d != d.parent and any(r in d.parents for r in roots):
             try:
                 d.rmdir()
             except OSError:
@@ -266,7 +270,9 @@ def main() -> int:
             led.commit()
         if edition is not None:
             edition.commit()
-        n_dirs = remove_emptied_folders(emptied, libs)
+        n_dirs = remove_emptied_folders(
+            emptied, libs, tuple(kind.root(cfg) for kind in KINDS.values())
+        )
     conn.close()
     if led is not None:
         led.close()
