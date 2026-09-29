@@ -526,3 +526,25 @@ def test_the_index_script_writes_where_the_car_edition_is(cfg, tmp_path):
         capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, timeout=120,
     )  # fmt: skip
     assert r.returncode == 0 and str(moved) in r.stdout, r.stdout + r.stderr
+
+
+def test_a_partial_edition_has_no_empty_playlists(cfg):
+    # The 200-song vault build, 2026-09-29: the playlist stage writes a list
+    # per genre of the whole catalogue, and a genre with no copy in this
+    # edition yet (a partial car build; every budgeted iPhone edition) came
+    # out as an empty playlist -- and failed the build's check.
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    _master(cfg, "Jazz/Miles/Kind/Miles Davis - So What.m4a", "h2")
+    conn = sqlite3.connect(cfg.db_path)
+    conn.execute(
+        "UPDATE archive SET genre = 'Rock', artist = 'Stones', title = 'Angie' WHERE audio_hash = 'h1'"
+    )
+    conn.execute(
+        "UPDATE archive SET genre = 'Jazz', artist = 'Miles', title = 'So What' WHERE audio_hash = 'h2'"
+    )
+    conn.commit()
+    conn.close()
+    r = _cli(cfg, "car", "--limit", "1")  # Jazz sorts first: only it is built
+    assert r.returncode == 0, r.stdout + r.stderr
+    names = sorted(p.name for p in (cfg.car_library / "Playlists").glob("*.m3u8"))
+    assert "Rock.m3u8" not in names and "Jazz.m3u8" in names, names

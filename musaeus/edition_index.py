@@ -83,6 +83,14 @@ def verify_index(index_dir: Path) -> list[str]:
     return problems
 
 
+def _entries(playlist: Path) -> list[str]:
+    return [
+        ln.strip()
+        for ln in playlist.read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.startswith("#")
+    ]
+
+
 def write_index(cfg: MusicConfig, edition_root: Path, apply: bool) -> tuple[list[str], list[str]]:
     """Write (or dry-run) the index for *edition_root*.
 
@@ -129,6 +137,14 @@ def write_index(cfg: MusicConfig, edition_root: Path, apply: bool) -> tuple[list
             if f not in fresh:
                 f.unlink()
                 notes.append(f"removed stale playlist (genre is now empty): {f.name}")
+        # A genre with no copy in THIS edition yet -- a partial car build,
+        # every budgeted iPhone edition -- comes out as a playlist with no
+        # entries: not written (the 200-song vault build, 2026-09-29).
+        empty = [f for f in sorted(index_dir.glob("*.m3u8")) if not _entries(f)]
+        for f in empty:
+            f.unlink()
+        if empty:
+            notes.append(f"left out {len(empty)} playlist(s) with no song in this edition yet")
 
     problems = verify_index(index_dir) if apply else []
     return notes, problems
