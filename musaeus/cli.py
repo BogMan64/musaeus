@@ -1103,6 +1103,14 @@ def _cmd_edition_build(args) -> int:
         )
         return 1
 
+    if not args.dry_run:
+        # Hours of work: keep the machine awake (cloud review of #53 -- the
+        # retired builder held this, and the idle throttle needs the
+        # screen-saver's keep-awake off). Re-runs this command inhibited.
+        from .sleep_inhibit import reexec_under_inhibitor
+
+        reexec_under_inhibitor(f"{label} edition build in progress")
+
     conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     lpath = ledger_path(cfg)

@@ -107,6 +107,10 @@ def reexec_under_inhibitor(why: str) -> None:
         logger.info("[sleep] systemd-inhibit refused (%s) -- continuing uninhibited", detail)
         return
 
+    # sys.orig_argv, not sys.argv: under `python3 -m musaeus.cli ...` sys.argv[0]
+    # is the module's file, and run again as a script the child fails on its
+    # first relative import. orig_argv is the command as typed (3.10+).
+    typed = getattr(sys, "orig_argv", None) or [sys.executable, *sys.argv]
     argv = [
         exe,
         "--what=sleep:idle",
@@ -114,7 +118,7 @@ def reexec_under_inhibitor(why: str) -> None:
         f"--why={why}",
         "--mode=block",
         sys.executable,
-        *sys.argv,
+        *typed[1:],
     ]
     env = dict(os.environ, **{_GUARD: "1"})
     print(f"[sleep] holding a sleep inhibitor for: {why}", flush=True)
