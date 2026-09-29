@@ -7,6 +7,7 @@ four format bugs in three days were visible only by probing the output.
 
 from __future__ import annotations
 
+import math
 import re
 import shutil
 import subprocess
@@ -293,3 +294,55 @@ def test_an_odd_rate_master_encodes(tmp_path):
     master = _master(tmp_path / "m.m4a", rate=47_250)
     eb.bake_aac(master, tmp_path / "c.m4a", noise=True)
     assert eb.sample_rate_of(eb.probe(tmp_path / "c.m4a")) == 48_000
+
+
+def _limits_used(monkeypatch) -> list[float]:
+    seen: list[float] = []
+    real = eb._run
+
+    def spy(cmd, timeout):
+        graph = next((c for c in cmd if "alimiter=limit=" in c), "")
+        seen.extend(float(x) for x in re.findall(r"alimiter=limit=([\d.]+)", graph))
+        return real(cmd, timeout)
+
+    monkeypatch.setattr(eb, "_run", spy)
+    return seen
+
+
+def test_a_copy_that_peaks_over_is_encoded_again_with_a_lower_limit(tmp_path, monkeypatch):
+    # The 200-song vault build, 2026-09-29: 11 car copies peaked over 0 dBTP
+    # after the AAC encode, one at +2.1 (The Commitments' "In The Midnight
+    # Hour": -0.2 before the encoder, +2.1 after). Grey: fix it -- measure
+    # the peak, and when it is over, encode again with the limiter lowered by
+    # the overshoot.
+    real = eb.loudness_of
+    peaks = iter([2.1, -0.6])
+
+    def overshoot(path, timeout=None):
+        i, quiet, _ = real(path, timeout)
+        return i, quiet, next(peaks)
+
+    monkeypatch.setattr(eb, "loudness_of", overshoot)
+    limits = _limits_used(monkeypatch)
+    eb.bake_aac(_master(tmp_path / "m.m4a"), tmp_path / "car.m4a", noise=True)
+    assert len(limits) == 2, limits
+    lowered_db = 20 * math.log10(limits[1] / limits[0])
+    assert lowered_db == pytest.approx(-(2.1 - eb._PEAK_AIM_DBTP), abs=0.05), lowered_db
+
+
+def test_a_copy_still_far_over_after_the_tries_is_refused(tmp_path, monkeypatch):
+    real = eb.loudness_of
+
+    def always_over(path, timeout=None):
+        i, quiet, _ = real(path, timeout)
+        return i, quiet, 3.0
+
+    monkeypatch.setattr(eb, "loudness_of", always_over)
+    with pytest.raises(eb.BakeError, match="peak"):
+        eb.bake_aac(_master(tmp_path / "m.m4a"), tmp_path / "car.m4a", noise=True)
+
+
+def test_a_copy_within_the_limit_is_encoded_once(tmp_path, monkeypatch):
+    limits = _limits_used(monkeypatch)
+    eb.bake_aac(_master(tmp_path / "m.m4a"), tmp_path / "car.m4a", noise=True)
+    assert limits == [eb.CEILING]

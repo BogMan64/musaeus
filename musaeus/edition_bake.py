@@ -539,18 +539,19 @@ def _deadline(seconds: float) -> int:
 _FINISHED_TOLERANCE = 1.0
 
 
-def loudness_of(path: Path, timeout: int | None = None) -> tuple[float, float]:
-    """(integrated, quietest moment) of the file, in LUFS, measured from it.
+def loudness_of(path: Path, timeout: int | None = None) -> tuple[float, float, float]:
+    """(integrated LUFS, quietest moment LUFS, true peak dBTP), measured
+    from the file itself.
 
-    ebur128 without true peak: no 4x upsampling, so it costs about a decode.
-    loudnorm's own figure is the music before the noise, the limiter and the
-    encode (CLAUDE.md: measure the artifact, not the report). The quietest
-    moment is the lowest 400 ms reading after the first half second (the
-    first readings are of a window not yet full).
+    loudnorm's own figures are the music before the noise, the limiter and
+    the encode (CLAUDE.md: measure the artifact, not the report). The
+    quietest moment is the lowest 400 ms reading after the first half second
+    (the first readings are of a window not yet full). The true peak is the
+    encoded file's: the AAC encoder itself overshoots the limiter.
     """
     proc = _run(
         [FFMPEG, "-nostdin", "-hide_banner", "-nostats", "-i", str(path),
-         "-map", "0:a:0", "-af", "ebur128", "-f", "null", "-"],
+         "-map", "0:a:0", "-af", "ebur128=peak=true", "-f", "null", "-"],
         timeout or _BAKE_TIMEOUT,
     )  # fmt: skip
     if proc.returncode != 0:
@@ -562,15 +563,26 @@ def loudness_of(path: Path, timeout: int | None = None) -> tuple[float, float]:
         for t, m in re.findall(r"t:\s*([\d.]+)\s+TARGET:.*?M:\s*(-?[\d.]+)", err)
         if float(t) >= 0.5
     ]
-    if not found or not moments:
+    peaks = re.findall(r"Peak:\s+(-?(?:\d+(?:\.\d+)?|inf)) dBFS", err)
+    if not found or not moments or not peaks:
         raise BakeError(f"could not measure the loudness of {path.name}")
-    return float(found[-1]), min(moments)  # the summary's I is the last
+    return float(found[-1]), min(moments), float(peaks[-1])  # the summary is the last
 
 
 #: Bumped when the AAC graph changes what a copy sounds like, so the copies
 #: made the old way are made again (2: frames steadied for ffmpeg 6.1,
 #: 2026-09-29).
-AAC_GRAPH_VERSION = 2
+AAC_GRAPH_VERSION = 3  # 3: a copy peaking over is encoded again (2026-09-29)
+
+#: No AAC copy may peak over this, measured after the encode. When one does,
+#: it is encoded again with the limiter lowered by the overshoot, aiming for
+#: _PEAK_AIM_DBTP. The 200-song vault build, 2026-09-29: 11 of 200 car copies
+#: peaked over 0 dBTP, one at +2.1 -- -0.2 before the encoder (Grey: fix it).
+_PEAK_LIMIT_DBTP = 0.0
+_PEAK_AIM_DBTP = -0.5
+_PEAK_RETRIES = 2
+#: Still this far over after the tries: refused, not kept.
+_PEAK_REFUSE_DBTP = 0.5
 
 
 def aac_settings(noise: bool) -> str:
@@ -664,7 +676,14 @@ def aac_recipe(rate: int, channels: int) -> str:
     return f"{AAC_RECIPE_FAMILY} | {aac_before_loudnorm(rate, channels)}"
 
 
-def aac_filter(loudnorm: str, rate: int, channels: int, seconds: float, noise: bool) -> str:
+def aac_filter(
+    loudnorm: str,
+    rate: int,
+    channels: int,
+    seconds: float,
+    noise: bool,
+    ceiling: float | None = None,
+) -> str:
     """The one filter graph: music at the target, noise under it, limited."""
     # The layout is STATED on both sides of the mix. Left to negotiation,
     # loudnorm plus the three-colour mix collapsed a stereo master to mono
@@ -681,7 +700,7 @@ def aac_filter(loudnorm: str, rate: int, channels: int, seconds: float, noise: b
         f"[0:a:0]{aac_before_loudnorm(rate, channels)},{loudnorm},"
         f"aresample={rate},aformat=channel_layouts={layout},asetnsamples=n=1024:p=0"
     )
-    limit = f"alimiter=limit={CEILING}:level=disabled"
+    limit = f"alimiter=limit={CEILING if ceiling is None else ceiling:.6g}:level=disabled"
     if not noise:
         return f"{music},{limit}[out]"
     length = int(seconds) + 2
@@ -746,33 +765,41 @@ def bake_aac(
         ),
     )
     loud = build_second_pass_filter(measured, AAC_TARGET_I, TARGET_TP, AAC_TARGET_LRA)
-    graph = aac_filter(loud, rate, channels, seconds, noise)
-    proc = _run(aac_command(source, tmp_output, graph, rate), _deadline(seconds))
-    if proc.returncode != 0:
-        raise BakeError(f"ffmpeg exited {proc.returncode}: {(proc.stderr or '')[-200:]}")
-    result = BakeResult(parse_achieved(proc.stderr), parse_mode(proc.stderr), recipe, measured)
-    verify(
-        info, tmp_output, result.achieved_lufs, result.mode,
-        target_i=AAC_TARGET_I, rate=rate, codec="aac", max_channels=2,
-        length_tolerance=REENCODE_TOLERANCE_SEC,
-    )  # fmt: skip
-    assert result.achieved_lufs is not None  # verify refuses a copy without it
-    finished, quietest = loudness_of(tmp_output, _deadline(seconds))
-    # The noise only adds loudness, and in a mostly silent song (a hidden
-    # track) the loudness gate counts the noise-filled silence, so the car
-    # file measures UNDER the music: only louder is a fault there (cloud
-    # review of #53 -- a correct copy was refused on every build).
-    off = finished - result.achieved_lufs
-    if off > _FINISHED_TOLERANCE or (not noise and off < -_FINISHED_TOLERANCE):
-        raise BakeError(
-            f"the finished copy measures {finished:.1f} LUFS; loudnorm reported "
-            f"{result.achieved_lufs:.1f} for the music"
-        )
-    # And the noise must be there: no moment of a car copy is quieter than
-    # the bed under it.
-    if noise and quietest < noise_bed_lufs() - _NOISE_MARGIN:
-        raise BakeError(
-            f"the noise is missing: the car copy's quietest moment measures "
-            f"{quietest:.1f} LUFS, the noise alone {noise_bed_lufs():.1f}"
-        )
+    ceiling = CEILING
+    for attempt in range(_PEAK_RETRIES + 1):
+        graph = aac_filter(loud, rate, channels, seconds, noise, ceiling)
+        proc = _run(aac_command(source, tmp_output, graph, rate), _deadline(seconds))
+        if proc.returncode != 0:
+            raise BakeError(f"ffmpeg exited {proc.returncode}: {(proc.stderr or '')[-200:]}")
+        result = BakeResult(parse_achieved(proc.stderr), parse_mode(proc.stderr), recipe, measured)
+        verify(
+            info, tmp_output, result.achieved_lufs, result.mode,
+            target_i=AAC_TARGET_I, rate=rate, codec="aac", max_channels=2,
+            length_tolerance=REENCODE_TOLERANCE_SEC,
+        )  # fmt: skip
+        assert result.achieved_lufs is not None  # verify refuses a copy without it
+        finished, quietest, peak = loudness_of(tmp_output, _deadline(seconds))
+        # The noise only adds loudness, and in a mostly silent song (a hidden
+        # track) the loudness gate counts the noise-filled silence, so the car
+        # file measures UNDER the music: only louder is a fault there (cloud
+        # review of #53 -- a correct copy was refused on every build).
+        off = finished - result.achieved_lufs
+        if off > _FINISHED_TOLERANCE or (not noise and off < -_FINISHED_TOLERANCE):
+            raise BakeError(
+                f"the finished copy measures {finished:.1f} LUFS; loudnorm reported "
+                f"{result.achieved_lufs:.1f} for the music"
+            )
+        # And the noise must be there: no moment of a car copy is quieter than
+        # the bed under it.
+        if noise and quietest < noise_bed_lufs() - _NOISE_MARGIN:
+            raise BakeError(
+                f"the noise is missing: the car copy's quietest moment measures "
+                f"{quietest:.1f} LUFS, the noise alone {noise_bed_lufs():.1f}"
+            )
+        if peak <= _PEAK_LIMIT_DBTP or attempt == _PEAK_RETRIES:
+            break
+        # The encoder overshot the limiter: again, lower by the overshoot.
+        ceiling *= 10 ** (-(peak - _PEAK_AIM_DBTP) / 20)
+    if peak > _PEAK_REFUSE_DBTP:
+        raise BakeError(f"the copy still peaks at {peak:+.1f} dBTP with the limiter lowered")
     return result
