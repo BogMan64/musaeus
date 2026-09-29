@@ -300,7 +300,10 @@ def make_plan(
     plan = Plan(kind_name=kind.name, target_lufs=float(kind.target_i))
     plan.measured = measured_hashes(ledger, kind.recipe_family)
     recorded = copies(ledger, kind.name)
-    targets_taken: set[str] = set()
+    # Which master holds each place so far, and whose copy the record puts
+    # there: two masters meeting at one place, the one already built keeps it.
+    place_holder: dict[str, Master] = {}
+    copy_at = {c.output_path: h for h, c in recorded.items()}
     selected: dict[str, tuple[Master, Path]] = {}
     over_budget_hashes: set[str] = set()
     live_hashes: set[str] = set()
@@ -352,12 +355,21 @@ def make_plan(
             plan.same_audio.append(m)
         else:
             target = kind.place(masters_root, edition_root, path)
-            if str(target) in targets_taken:
+            holder = place_holder.get(str(target))
+            if holder is not None:
                 # Two masters, one place: the AAC layout drops the genre
                 # folder, so the same Artist/Album/Title under two genres meet.
-                plan.blocked.append((m, f"another master has the same place: {target}"))
-                continue
-            targets_taken.add(str(target))
+                # The place is the built one's, not whichever sorts first
+                # (cloud review of #53: a newcomer blocked both).
+                loser = holder if copy_at.get(str(target)) == h else m
+                plan.blocked.append((loser, f"another master has the same place: {target}"))
+                if loser is m:
+                    continue
+                selected.pop(holder.audio_hash, None)
+                over_budget_hashes.discard(holder.audio_hash)
+                plan.over_budget = [x for x in plan.over_budget if x is not holder]
+                plan.makeable.discard(str(holder.path))
+            place_holder[str(target)] = m
             plan.makeable.add(str(path))
             if allowed is not None and str(path) not in allowed:
                 plan.over_budget.append(m)

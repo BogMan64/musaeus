@@ -325,3 +325,17 @@ def test_the_budget_never_goes_to_a_track_the_build_then_blocks(cfg):
         ledger.close()
     assert not plan.remove, "the buildable track's copy was dropped for a blocked one"
     assert plan.up_to_date == 1
+
+
+def test_the_place_goes_to_the_master_whose_copy_is_there(cfg):
+    # Cloud review of #53: two masters meeting at one Artist/Album/Title --
+    # the place went to whichever sorted first, so a newcomer in an earlier
+    # genre blocked the built one ("another master has the same place") and
+    # itself ("a file with no record is in the way", which was false).
+    _master(cfg, "Soft Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h2")
+    _build(cfg, eb.IPHONE_KIND)  # h2 is on the phone
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")  # sorts first
+    plan, _, phone, _ = _build(cfg, eb.IPHONE_KIND)
+    assert plan.up_to_date == 1 and set(phone) == {"h2"}
+    assert [m.audio_hash for m, _ in plan.blocked] == ["h1"]
+    assert "same place" in plan.blocked[0][1]
