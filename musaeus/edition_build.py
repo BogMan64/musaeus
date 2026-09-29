@@ -450,6 +450,7 @@ def make_plan(
             if out != target:
                 if taken(target) and not ours(target, h):
                     plan.blocked.append((m, f"its new place is taken: {target}"))
+                    plan.makeable.discard(str(m.path))  # the budget must not go to it
                 else:
                     plan.move.append((m, c, target))
             else:
@@ -462,6 +463,7 @@ def make_plan(
             plan.adopt.append((m, target))
         elif taken(target):
             plan.blocked.append((m, f"a file with no record is in the way: {target}"))
+            plan.makeable.discard(str(m.path))  # the budget must not go to it
         else:
             plan.bake.append((m, target))
 

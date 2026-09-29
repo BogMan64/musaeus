@@ -297,3 +297,31 @@ def test_the_estimate_knows_which_songs_are_already_measured(cfg):
     car_plan, _, _, _ = _build(cfg, eb.CAR_KIND)
     phone_plan, _, _, _ = _build(cfg, eb.IPHONE_KIND)
     assert phone_plan.hours(1) == pytest.approx(car_plan.hours(1) * (1 - eb.AAC_MEASURE_SHARE))
+
+
+def test_the_budget_never_goes_to_a_track_the_build_then_blocks(cfg):
+    # Cloud review of #53: makeable was decided before the second pass could
+    # still block a master (a file with no record in its place). The budget
+    # went to that one, the buildable track was put over budget, and its
+    # iPhone copy was deleted -- an empty edition, exit 0.
+    from musaeus.editions import IPHONE, estimated_bytes, load_tracks
+
+    _master(cfg, "Rock/Aa/Al/Aa - First.m4a", "h1")  # first in the fill order
+    zz = _master(cfg, "Rock/Zz/Al/Zz - Last.m4a", "h2")
+    _build(cfg, eb.IPHONE_KIND, allowed={str(zz)})  # Zz is on the phone
+    stranger = cfg.iphone_library / "Aa" / "Al" / "Aa - First.m4a"
+    stranger.parent.mkdir(parents=True)
+    stranger.write_bytes(b"\0")  # an unmarked file where Aa's copy would go
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    one = max(estimated_bytes(t, IPHONE) for t in load_tracks(conn))
+    ledger = open_ledger(ledger_path(cfg))
+    try:
+        plan, _ = eb.budgeted(
+            conn, ledger, cfg.alac_archive, cfg.iphone_library, eb.IPHONE_KIND, int(1.5 * one)
+        )
+    finally:
+        conn.close()
+        ledger.close()
+    assert not plan.remove, "the buildable track's copy was dropped for a blocked one"
+    assert plan.up_to_date == 1
