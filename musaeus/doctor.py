@@ -207,9 +207,13 @@ def diagnose(cfg: MusicConfig) -> Report:
     # 2a. Edition copies whose master has left the library -- deleted, or
     #     set aside. The next edition build removes them; until then the
     #     edition holds a song the masters do not.
-    if edition:
+    #     Every edition's copies, not only the Lossless (cloud review of #53).
+    from .edition_build import KINDS
+
+    every_copy = {p: h for name in KINDS for p, h in (recorded_copies(cfg, name) or {}).items()}
+    if every_copy:
         live = {r["audio_hash"] for r in rows if r["status"] == "CATALOGUED" and r["audio_hash"]}
-        gone = [p for p, h in edition.items() if h not in live and Path(p).exists()]
+        gone = [p for p, h in every_copy.items() if h not in live and Path(p).exists()]
         rep.add(
             "warn" if gone else "ok",
             "edition copies whose master is gone",
@@ -764,6 +768,22 @@ def _artist_tag_is_natural_form(cfg: MusicConfig, rep: Report) -> None:
     )
 
 
+def _an_old_car_edition(cfg: MusicConfig) -> bool:
+    """Rows the retired car builder marked (car_export_path): its edition."""
+    try:
+        conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+        try:
+            return bool(
+                conn.execute(
+                    "SELECT 1 FROM archive WHERE COALESCE(car_export_path, '') <> '' LIMIT 1"
+                ).fetchone()
+            )
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return False
+
+
 def _catalogued_tracks_reach_the_car(cfg: MusicConfig, rep: Report) -> None:
     """How many catalogued tracks have no car edition, and could have one?
 
@@ -793,7 +813,7 @@ def _catalogued_tracks_reach_the_car(cfg: MusicConfig, rep: Report) -> None:
     from .edition_ledger import recorded_copies
 
     car = recorded_copies(cfg, "car")
-    if car:
+    if car or not _an_old_car_edition(cfg):
         # Counted from the car build's own plan (cloud review of #53): what
         # it would make, and apart from that what it cannot -- two masters
         # meeting at one Artist/Album/Title, a master that does not decode.
@@ -801,6 +821,14 @@ def _catalogued_tracks_reach_the_car(cfg: MusicConfig, rep: Report) -> None:
         from . import edition_build as eb
         from .edition_ledger import ledger_path, open_for_reading
 
+        missing_setup = [
+            a
+            for a in ("db_history_dir", "alac_archive", "car_library")
+            if not getattr(cfg, a, None)
+        ]
+        if missing_setup:
+            rep.add("ok", "car edition coverage", "no car edition configured -- skipped")
+            return
         conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         ledger = open_for_reading(ledger_path(cfg))
@@ -808,13 +836,33 @@ def _catalogued_tracks_reach_the_car(cfg: MusicConfig, rep: Report) -> None:
             plan = eb.make_plan(
                 conn, ledger, Path(cfg.alac_archive), eb.CAR_KIND.root(cfg), kind=eb.CAR_KIND
             )
-        except sqlite3.Error as exc:
-            rep.add("warn", "car edition coverage", f"could not read the catalogue: {exc}")
+        except sqlite3.OperationalError as exc:
+            # A catalogue that predates the edition build's columns has no
+            # car edition to be incomplete: skipped, as before. No catalogue
+            # table at all is a fault.
+            if "no such column" in str(exc):
+                rep.add(
+                    "ok", "car edition coverage", f"skipped -- the catalogue predates it ({exc})"
+                )
+            else:
+                rep.add("warn", "car edition coverage", f"could not read the catalogue: {exc}")
+            return
+        except Exception as exc:  # noqa: BLE001 -- a finding, never a traceback
+            # With no ffprobe the plan cannot tell a codec-less row's codec,
+            # and the doctor died before its own tools check could say so
+            # (cloud review of #53).
+            rep.add("warn", "car edition coverage", f"could not work out the car plan: {exc}")
             return
         finally:
             conn.close()
             ledger.close()
-        to_make, cannot = len(plan.bake), len(plan.blocked)
+        # A copy to be re-made with today's settings has a car copy; a master
+        # that is gone is not a car problem (this docstring); one outside
+        # the masters is -- the car build never makes it.
+        remake = len(plan.rebake)
+        to_make = len(plan.bake) - remake
+        cannot = sum(1 for _, why in plan.blocked if why != "master missing")
+        cannot += len(plan.outside_masters)
         parts = []
         if to_make:
             parts.append(
@@ -826,6 +874,8 @@ def _catalogued_tracks_reach_the_car(cfg: MusicConfig, rep: Report) -> None:
                 f"{cannot} track(s) cannot be built for the car -- "
                 "`musaeus edition-build car --dry-run` says why"
             )
+        if remake:
+            parts.append(f"{remake} car copy(ies) will be re-made with today's settings")
         rep.add(
             "warn" if parts else "ok",
             "car edition coverage",

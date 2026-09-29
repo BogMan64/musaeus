@@ -169,6 +169,23 @@ class TestDiagnose:
             f.check == "edition copies whose master is gone" and f.count == 1 for f in rep.findings
         ), "a copy of a master that left the library is left for the next build to remove"
 
+    def test_a_car_or_iphone_copy_of_a_gone_master_is_reported_too(self, vault, tmp_path):
+        # Cloud review of #53: check 2a read only the Lossless record.
+        from musaeus.edition_ledger import Copy, open_ledger, record
+
+        vault.db_history_dir = tmp_path / "_db_backups"
+        conn = open_ledger(vault.db_history_dir / "editions.db")
+        for edition in ("car", "iphone"):
+            copy = tmp_path / edition / "copy.m4a"
+            copy.parent.mkdir()
+            copy.write_bytes(b"x")
+            record(conn, Copy(edition, "h_gone", "m", 1, str(copy), "now", -14.0, "linear"))
+        conn.close()
+        rep = diagnose(vault)
+        assert any(
+            f.check == "edition copies whose master is gone" and f.count == 2 for f in rep.findings
+        ), [(f.check, f.count) for f in rep.findings]
+
     def test_quarantine_holding_a_sole_copy_is_a_failure(self, vault):
         """Purging quarantine wholesale nearly lost 1,002 songs this way."""
         _add(vault, "q.m4a", artist="Herb Alpert", title="Tijuana Taxi", status="DUPE_REVIEW")

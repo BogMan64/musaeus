@@ -326,3 +326,71 @@ def test_a_track_the_car_build_cannot_make_is_not_promised_to_it(tmp_path):
     f = _only(rep)
     assert "makes them" not in f.detail, f.detail
     assert "cannot be built" in f.detail, f.detail
+
+
+def _plan_vault(tmp_path, rows):
+    """A real-schema catalogue; *rows* are (relative path or absolute, hash, on disk)."""
+    from musaeus.db import open_db, upsert_archive
+
+    cfg = MusicConfig(
+        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "Q", runs_root=tmp_path / "RUNS", meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "Libraries" / "ALAC_Library", db_path=tmp_path / "musaeus.db",
+    )  # fmt: skip
+    conn = open_db(cfg.db_path)
+    for where, h, on_disk, codec in rows:
+        m = Path(where) if Path(where).is_absolute() else cfg.alac_archive / where
+        if on_disk:
+            m.parent.mkdir(parents=True, exist_ok=True)
+            m.write_bytes(b"\0")
+        upsert_archive(conn, {"file_path": str(m), "status": "CATALOGUED", "audio_hash": h,
+                              "codec": codec})  # fmt: skip
+    conn.commit()
+    conn.close()
+    return cfg
+
+
+def test_a_missing_ffprobe_is_a_finding_not_a_traceback(tmp_path, monkeypatch):
+    # Cloud review of #53: the plan probes a codec-less row with ffprobe; with
+    # none installed `musaeus doctor` died before its own tools check.
+    from musaeus import edition_bake
+
+    cfg = _plan_vault(tmp_path, [("Rock/A/Al/A - T.m4a", "h1", True, None)])
+
+    def no_ffprobe(path):
+        raise FileNotFoundError("ffprobe")
+
+    monkeypatch.setattr(edition_bake, "probe", no_ffprobe)
+    rep = Report()
+    _catalogued_tracks_reach_the_car(cfg, rep)
+    assert _only(rep).level == "warn"
+
+
+def test_a_gone_master_is_not_a_car_problem_but_one_outside_the_masters_is(tmp_path):
+    # The docstring's own rule: a master that is gone is not a car problem.
+    # A master outside ALAC-Archival is one the car build never makes.
+    outside = tmp_path / "elsewhere" / "B - Out.m4a"
+    cfg = _plan_vault(
+        tmp_path,
+        [("Rock/A/Al/A - Gone.m4a", "h1", False, "alac"), (str(outside), "h2", True, "alac")],
+    )
+    rep = Report()
+    _catalogued_tracks_reach_the_car(cfg, rep)
+    f = _only(rep)
+    assert f.count == 1 and "cannot be built" in f.detail, (f.count, f.detail)
+
+
+def test_before_the_first_new_car_build_the_count_is_the_plans(tmp_path):
+    # No car copy recorded yet and no old car edition: the build's plan, not
+    # the old builder's rules (which called lossy masters unimprovable).
+    cfg = _plan_vault(
+        tmp_path,
+        [
+            ("Rock/A/Al/A - One.m4a", "h1", True, "alac"),
+            ("Rock/A/Al/A - Two.m4a", "h2", True, "aac"),
+        ],
+    )
+    rep = Report()
+    _catalogued_tracks_reach_the_car(cfg, rep)
+    f = _only(rep)
+    assert f.count == 2 and "makes them" in f.detail, (f.count, f.detail)
