@@ -823,7 +823,7 @@ def _catalogued_tracks_reach_the_car(cfg: MusicConfig, rep: Report) -> None:
 
         missing_setup = [
             a
-            for a in ("db_history_dir", "alac_archive", "car_library")
+            for a in ("db_history_dir", "alac_archive", eb.CAR_KIND.root_attr)
             if not getattr(cfg, a, None)
         ]
         if missing_setup:

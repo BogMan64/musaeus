@@ -1214,8 +1214,23 @@ def _cmd_edition_build(args) -> int:
             print(f"  {len(outcome.failed):,} failed -- see the log; the next build retries them.")
         if outcome.stopped:
             print("  Stopped. Finished copies are kept; run it again to carry on.")
+        index_failed = False
+        if kind.name in ("car", "iphone") and not outcome.stopped:
+            # The playlists travel with the edition (Grey, 2026-09-17), so
+            # they are written after every build, as the retired builder did
+            # (cloud review of #53: a stale index went to the USB). Its
+            # entries are resolved against the disk; a dead one fails.
+            from .edition_index import write_index
+
+            _, problems = write_index(cfg, edition_root, apply=True)
+            problems = [p for p in problems if not p.startswith("no playlists were written")]
+            playlists = sorted((edition_root / "Playlists").glob("*.m3u8"))
+            print(f"  Playlists: {len(playlists):,} in {edition_root / 'Playlists'}")
+            for problem in problems[:10]:
+                print(f"  PLAYLIST PROBLEM: {problem}")
+            index_failed = bool(problems)
         print(f"  Log: {log}\n")
-        return 1 if outcome.failed or outcome.stopped else 0
+        return 1 if outcome.failed or outcome.stopped or index_failed else 0
     finally:
         conn.close()
         ledger.close()

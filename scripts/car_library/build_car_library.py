@@ -872,7 +872,7 @@ def _main_legacy() -> int:  # the old entry point, kept for reference
         _here = str(Path(__file__).resolve().parent)
         if _here not in sys.path:
             sys.path.insert(0, _here)
-        from write_car_index import write_index
+        from musaeus.edition_index import write_index
 
         index_notes, index_problems = write_index(cfg, final_dir, apply=True)
         print("\nBrowsing index:")

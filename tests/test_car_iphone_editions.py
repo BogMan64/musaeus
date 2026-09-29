@@ -184,7 +184,8 @@ def _cli(cfg, *args: str) -> subprocess.CompletedProcess[str]:
     import sys
 
     env = {**os.environ, "MUSAEUS_VAULT_ROOT": str(cfg.vault_root),
-           "MUSAEUS_DB_PATH": str(cfg.db_path)}  # fmt: skip
+           "MUSAEUS_DB_PATH": str(cfg.db_path),
+           "MUSAEUS_NO_SLEEP_INHIBIT": "1", "MUSAEUS_NO_IDLE_THROTTLE": "1"}  # fmt: skip
     return subprocess.run(
         [sys.executable, "-m", "musaeus.cli", "edition-build", *args],
         capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
@@ -483,3 +484,45 @@ def test_a_retag_does_not_hide_a_changed_setting(cfg, monkeypatch):
     monkeypatch.setattr(edition_bake, "AAC_BITRATE", "192k")
     plan, _, _, _ = _build(cfg, eb.CAR_KIND)
     assert len(plan.rebake) == 1, "a new master mtime must not stand for new settings"
+
+
+def test_a_car_build_writes_the_playlists_that_travel_with_it(cfg):
+    # Cloud review of #53, finding 9: the retired builder's last step wrote
+    # M3U8s into CAR_Library/Playlists, so they go to the USB with the songs
+    # (Grey, 2026-09-17). The new build never wrote them, and a stale one was
+    # copied to the stick as it was.
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    conn = sqlite3.connect(cfg.db_path)
+    conn.execute(
+        "UPDATE archive SET genre = 'Rock', artist = 'The Rolling Stones', title = 'Angie'"
+    )
+    conn.commit()
+    conn.close()
+    playlists = cfg.car_library / "Playlists"
+    playlists.mkdir(parents=True)
+    (playlists / "Holiday.m3u8").write_text("#EXTM3U\n../Old/Gone/Old - Gone.m4a\n")
+    r = _cli(cfg, "car")
+    assert r.returncode == 0, r.stdout + r.stderr
+    rock = playlists / "Rock.m3u8"
+    assert rock.is_file(), r.stdout
+    assert "../Stones/Hits/The Rolling Stones - Angie.m4a" in rock.read_text()
+    assert not (playlists / "Holiday.m3u8").exists(), "a stale playlist travelled on"
+
+
+def test_the_index_script_writes_where_the_car_edition_is(cfg, tmp_path):
+    # ...and write_car_index.py built its folder from the vault's Libraries,
+    # ignoring MUSAEUS_CAR_LIBRARY.
+    import os
+    import sys
+
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    moved = tmp_path / "Elsewhere" / "MyCar"
+    moved.mkdir(parents=True)
+    env = {**os.environ, "MUSAEUS_VAULT_ROOT": str(cfg.vault_root),
+           "MUSAEUS_DB_PATH": str(cfg.db_path), "MUSAEUS_CAR_LIBRARY": str(moved)}  # fmt: skip
+    root = Path(__file__).resolve().parents[1]
+    r = subprocess.run(
+        [sys.executable, str(root / "scripts" / "car_library" / "write_car_index.py")],
+        capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, timeout=120,
+    )  # fmt: skip
+    assert r.returncode == 0 and str(moved) in r.stdout, r.stdout + r.stderr
