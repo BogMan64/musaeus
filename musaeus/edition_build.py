@@ -505,6 +505,38 @@ def _size(path: Path) -> int:
         return 0
 
 
+def selection(
+    conn: sqlite3.Connection,
+    ledger: sqlite3.Connection,
+    masters_root: Path,
+    edition_root: Path,
+    kind: Kind,
+    budget_bytes: int | None = None,
+    *,
+    genres: set[str] | None = None,
+    artists: set[str] | None = None,
+) -> editions.Selection:
+    """What an edition holds, filled only from masters this build can make.
+
+    The plan without a budget says which those are, so a blocked or
+    duplicate row never takes the space. Copies kept for masters not in this
+    catalogue (after the between-batches wipe) stay on the device and are
+    charged first. The build, `musaeus edition` and the console all come
+    here, so the preview and the build cannot disagree (cloud review of #53).
+    """
+    whole = make_plan(conn, ledger, masters_root, edition_root, kind=kind)
+    if budget_bytes is not None:
+        budget_bytes = max(0, budget_bytes - sum(_size(Path(c.output_path)) for c in whole.kept))
+    return editions.select_edition(
+        conn,
+        editions.EDITIONS[kind.name],
+        genres=genres,
+        artists=artists,
+        budget_bytes=budget_bytes,
+        makeable=whole.makeable,
+    )
+
+
 def budgeted(
     conn: sqlite3.Connection,
     ledger: sqlite3.Connection,
@@ -515,24 +547,8 @@ def budgeted(
     *,
     rebake_compressed: bool = False,
 ) -> tuple[Plan, editions.Selection]:
-    """The plan for a budgeted edition, and the selection that fills it.
-
-    The budget is filled only from masters this build can make -- the plan
-    without a budget says which -- so a blocked or duplicate row never takes
-    the space. The CLI and the console both come here, so the preview and
-    the build cannot disagree.
-    """
-    whole = make_plan(conn, ledger, masters_root, edition_root, kind=kind)
-    # Copies kept for masters not in this catalogue (after the between-batches
-    # wipe) stay on the device: they are charged first (cloud review of #53:
-    # each budgeted build had put a whole budget on top of them).
-    kept_bytes = sum(_size(Path(c.output_path)) for c in whole.kept)
-    sel = editions.select_edition(
-        conn,
-        editions.EDITIONS[kind.name],
-        budget_bytes=max(0, budget_bytes - kept_bytes),
-        makeable=whole.makeable,
-    )
+    """The plan for a budgeted edition, and the selection that fills it."""
+    sel = selection(conn, ledger, masters_root, edition_root, kind, budget_bytes)
     allowed = {str(t.file_path) for t in sel.included}
     plan = make_plan(
         conn, ledger, masters_root, edition_root,

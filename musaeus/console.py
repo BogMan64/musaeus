@@ -1257,6 +1257,8 @@ class Console:
                 # The build's own plan and selection (cloud review of #53):
                 # the preview, the time and the build cannot disagree.
                 plan, sel = self._iphone_plan(conn, budget)
+            elif spec.name == "car":
+                sel = self._car_selection(conn)
             else:
                 sel = select_edition(conn, spec, budget_bytes=budget)
         finally:
@@ -1352,6 +1354,22 @@ class Console:
             _ok("iPhone edition built.")
         else:
             _err(f"Builder exited {rc} — see the output above.")
+
+    def _car_selection(self, conn):
+        """What the car build would hold: only masters it can make (cloud
+        review of #53 -- this screen counted every catalogued row)."""
+        from . import edition_build as eb
+        from .edition_ledger import ledger_path, open_for_reading
+
+        cfg = self._config
+        assert cfg is not None
+        ledger = open_for_reading(ledger_path(cfg))
+        try:
+            return eb.selection(
+                conn, ledger, Path(cfg.alac_archive), eb.CAR_KIND.root(cfg), eb.CAR_KIND
+            )
+        finally:
+            ledger.close()
 
     def _iphone_plan(self, conn, budget: int | None):
         """The iPhone build's plan and the selection behind it, read-only."""

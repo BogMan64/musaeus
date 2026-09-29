@@ -379,3 +379,48 @@ def test_copies_kept_after_a_catalogue_wipe_count_against_the_budget(cfg):
     assert plan.kept_unselected == 3
     assert len(plan.bake) == 1, f"{len(plan.bake)} new tracks for room for one"
     assert kept + plan.bake_bytes <= budget
+
+
+def _preview(cfg, *args: str) -> subprocess.CompletedProcess[str]:
+    """`musaeus edition ...` (the preview) against this test's vault."""
+    import os
+    import sys
+
+    env = {**os.environ, "MUSAEUS_VAULT_ROOT": str(cfg.vault_root),
+           "MUSAEUS_DB_PATH": str(cfg.db_path)}  # fmt: skip
+    return subprocess.run(
+        [sys.executable, "-m", "musaeus.cli", "edition", *args],
+        capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
+        cwd=Path(__file__).resolve().parents[1], timeout=120,
+    )  # fmt: skip
+
+
+def test_the_preview_lists_what_the_build_would_make(cfg):
+    # Cloud review of #53: `musaeus edition iphone --budget-gb N` picked with
+    # plain select_edition -- it listed a master the build blocks (does not
+    # decode) and left out the one the build makes.
+    from musaeus.editions import IPHONE, estimated_bytes, load_tracks
+
+    _master(cfg, "Rock/Aa/Al/Aa - First.m4a", "h1")
+    _master(cfg, "Rock/Zz/Al/Zz - Last.m4a", "h2")
+    conn = sqlite3.connect(cfg.db_path)
+    conn.row_factory = sqlite3.Row
+    deep_scan.ensure_columns(conn)
+    conn.execute("UPDATE archive SET decode_ok = 0, title = 'First' WHERE audio_hash = 'h1'")
+    conn.execute("UPDATE archive SET title = 'Last' WHERE audio_hash = 'h2'")
+    conn.commit()
+    one = max(estimated_bytes(t, IPHONE) for t in load_tracks(conn))
+    conn.close()
+    r = _preview(cfg, "iphone", "--budget-gb", f"{1.5 * one / 1e9:.9f}", "--list")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Last" in r.stdout and "First" not in r.stdout, r.stdout
+
+
+@pytest.mark.parametrize("gb", ["0", "nan", "inf", "-1"])
+def test_a_budget_that_is_not_a_size_is_refused(cfg, gb):
+    # --budget-gb 0 previewed the whole library; nan and inf crashed.
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    for r in (_preview(cfg, "iphone", "--budget-gb", gb),
+              _cli(cfg, "iphone", "--budget-gb", gb, "--dry-run")):  # fmt: skip
+        assert r.returncode != 0 and "Traceback" not in r.stderr, r.stdout + r.stderr
+        assert "more than 0" in r.stderr, r.stderr

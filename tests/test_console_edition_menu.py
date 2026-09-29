@@ -130,3 +130,26 @@ class TestEditionMenu:
         out = capsys.readouterr().out
         assert "Not a number" in out
         assert "Selection only" not in out, "must not proceed on an unparseable budget"
+
+
+def test_the_car_screen_counts_what_the_car_build_would_make(cfg, monkeypatch, capsys):
+    # Cloud review of #53: the console's Car screen counted every catalogued
+    # row, pointing at `musaeus edition-build car`, whose plan made fewer.
+    _seed(cfg)
+    conn = open_db(cfg.db_path)
+    upsert_archive(
+        conn,
+        {"file_path": str(cfg.alac_archive / "Rock" / "A" / "Al" / "A - Gone.m4a"),
+         "audio_hash": "hgone", "codec": "alac", "status": "CATALOGUED", "artist": "A",
+         "album": "Al", "title": "Gone", "genre": "Rock", "duration": 240.0,
+         "size_bytes": 40_000_000},
+    )  # fmt: skip
+    conn.commit()
+    conn.close()
+    con = Console()
+    con._config = cfg
+    answers = iter(["2"])  # Car
+    monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+    con._edition_menu()
+    out = capsys.readouterr().out
+    assert "car: 6 track(s)" in out, out

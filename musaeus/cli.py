@@ -1073,8 +1073,10 @@ def _cmd_edition_build(args) -> int:
     if args.budget_gb is not None and kind.name != "iphone":
         print("ERROR: --budget-gb is for the iphone edition only.", file=sys.stderr)
         return 2
-    if args.budget_gb is not None and args.budget_gb <= 0:
-        print("ERROR: a budget must be more than 0 GB.", file=sys.stderr)
+    try:
+        budget = _budget_bytes(args.budget_gb)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     if args.rebake_compressed and kind.name != "lossless":
         # At range 11 compression is normal in the car and on the iPhone: the
@@ -1106,10 +1108,10 @@ def _cmd_edition_build(args) -> int:
     lpath = ledger_path(cfg)
     ledger = open_for_reading(lpath) if args.dry_run else open_ledger(lpath)
     try:
-        if args.budget_gb is not None:
+        if budget is not None:
             plan, _ = eb.budgeted(
                 conn, ledger, masters_root, edition_root, kind,
-                int(args.budget_gb * 1_000_000_000), rebake_compressed=args.rebake_compressed,
+                budget, rebake_compressed=args.rebake_compressed,
             )  # fmt: skip
         else:
             plan = eb.make_plan(
@@ -1240,6 +1242,18 @@ def _print_lossless_plan(cfg) -> int:
     return 0
 
 
+def _budget_bytes(gb: float | None) -> int | None:
+    """--budget-gb in bytes. Raises ValueError unless it is a real size:
+    0 read as "no budget" and nan or inf crashed (cloud review of #53)."""
+    import math
+
+    if gb is None:
+        return None
+    if not math.isfinite(gb) or gb <= 0:
+        raise ValueError("a budget must be more than 0 GB.")
+    return int(gb * 1_000_000_000)
+
+
 def _cmd_edition(args) -> int:
     """Preview an edition's selection. Reads only -- encodes nothing.
 
@@ -1262,17 +1276,33 @@ def _cmd_edition(args) -> int:
         print("\n  The Lossless edition is built by `musaeus edition-build lossless`;")
         print("  this is its plan (a dry run -- nothing is written):")
         return _print_lossless_plan(cfg)
-    budget = int(args.budget_gb * 1_000_000_000) if args.budget_gb else None
+    try:
+        budget = _budget_bytes(args.budget_gb)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
+    genres = set(args.genre) if args.genre else None
+    artists = set(args.artist) if args.artist else None
     conn = open_db(cfg.db_path)
     try:
-        sel = select_edition(
-            conn,
-            spec,
-            genres=set(args.genre) if args.genre else None,
-            artists=set(args.artist) if args.artist else None,
-            budget_bytes=budget,
-        )
+        if spec.name in ("car", "iphone"):
+            # The build's own selection: only masters it can make (cloud
+            # review of #53 -- this listed tracks the build then blocked).
+            from . import edition_build as eb
+            from .edition_ledger import ledger_path, open_for_reading
+
+            kind = eb.KINDS[spec.name]
+            ledger = open_for_reading(ledger_path(cfg))
+            try:
+                sel = eb.selection(
+                    conn, ledger, Path(cfg.alac_archive), kind.root(cfg), kind, budget,
+                    genres=genres, artists=artists,
+                )  # fmt: skip
+            finally:
+                ledger.close()
+        else:
+            sel = select_edition(conn, spec, genres=genres, artists=artists, budget_bytes=budget)
     finally:
         conn.close()
 
