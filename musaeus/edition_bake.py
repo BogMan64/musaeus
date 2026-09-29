@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .duration import tolerance_for
+from .duration import REENCODE_TOLERANCE_SEC, tolerance_for
 from .editions import CAR, LOSSLESS
 
 FFMPEG = "ffmpeg"
@@ -482,13 +482,6 @@ NOISE_SEEDS = {"brown": 1, "pink": 2, "white": 3}
 CEILING = 0.977
 
 
-#: How far an AAC copy's length may differ from its master's. The copies
-#: measured to 0.001 s (2026-09-28); AAC's priming and padding at the edges
-#: are under 0.08 s. With ffmpeg 6.1 the noise mix cut ~0.2 s off 48 kHz car
-#: copies (cloud review of #53) -- inside the shared 2 s rule, not this one.
-_AAC_LENGTH_TOLERANCE = 0.1
-
-
 def _deadline(seconds: float) -> int:
     """Working seconds an ffmpeg call on a song this long may take: the flat
     limit, or one second per second of audio if that is more. The encode
@@ -587,9 +580,14 @@ def aac_filter(loudnorm: str, rate: int, channels: int, seconds: float, noise: b
     # unstated format property is decided by the input. The rate is stated
     # again after loudnorm, which always outputs 192 kHz.
     layout = _layout(channels)
+    # asetnsamples: steady 1024-sample frames, the last one not padded. On
+    # ffmpeg 6.1 amix's duration=first ended the car mix 0.2-0.7 s before
+    # the music without it (CI, cloud review of #53); 5.1 was exact either
+    # way. Mixing to the noise's end instead would pad a truncated master
+    # with noise and pass it.
     music = (
         f"[0:a:0]{aac_before_loudnorm(rate, channels)},{loudnorm},"
-        f"aresample={rate},aformat=channel_layouts={layout}"
+        f"aresample={rate},aformat=channel_layouts={layout},asetnsamples=n=1024:p=0"
     )
     limit = f"alimiter=limit={CEILING}:level=disabled"
     if not noise:
@@ -664,7 +662,7 @@ def bake_aac(
     verify(
         info, tmp_output, result.achieved_lufs, result.mode,
         target_i=AAC_TARGET_I, rate=rate, codec="aac", max_channels=2,
-        length_tolerance=_AAC_LENGTH_TOLERANCE,
+        length_tolerance=REENCODE_TOLERANCE_SEC,
     )  # fmt: skip
     assert result.achieved_lufs is not None  # verify refuses a copy without it
     finished = integrated_lufs(tmp_output, _deadline(seconds))

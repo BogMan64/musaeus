@@ -225,3 +225,22 @@ def test_the_time_limit_grows_with_the_song(tmp_path, monkeypatch):
     monkeypatch.setattr(eb, "_run", spy)
     eb.bake_aac(master, tmp_path / "car.m4a", noise=True)
     assert limits and min(limits) >= 12, limits
+
+
+def test_a_truncated_master_is_refused_not_padded(tmp_path):
+    # The container says 30 s; the audio stops short. The mix must end where
+    # the music ends, so the copy is refused -- never filled out with noise.
+    master = tmp_path / "m.m4a"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=15:sample_rate=44100",
+         "-f", "lavfi", "-i", "sine=frequency=660:duration=15:sample_rate=44100",
+         "-filter_complex", "[0]volume=-4dB[a];[1]volume=-9dB[b];[a][b]concat=n=2:v=0:a=1",
+         "-ac", "2", "-c:a", "alac", "-movflags", "+faststart", str(master)],
+        check=True,
+    )  # fmt: skip
+    data = master.read_bytes()
+    master.write_bytes(data[: int(len(data) * 0.94)])
+    assert float(eb.probe(master)["format"]["duration"]) == pytest.approx(30.0, abs=0.1)
+    with pytest.raises(eb.BakeError, match="length changed"):
+        eb.bake_aac(master, tmp_path / "car.m4a", noise=True)

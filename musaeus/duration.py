@@ -60,6 +60,15 @@ logger = logging.getLogger(__name__)
 TOLERANCE_SEC = 2.0
 
 
+#: How far a re-encode of the same audio may differ in length from its
+#: master: an AAC edition copy (the car, the iPhone). The copies measured to
+#: 0.011 s on real masters (2026-09-28); AAC's priming and padding at the
+#: edges are under 0.08 s. A copy cut short -- ffmpeg 6.1's noise mix cut
+#: 0.2-0.7 s before the fix (cloud review of #53) -- is inside tolerance_for's
+#: 2 s / 2 %, never inside this.
+REENCODE_TOLERANCE_SEC = 0.1
+
+
 def tolerance_for(recorded_sec: float | None) -> float:
     """How far a duration of this length may drift before it means something.
 
