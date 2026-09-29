@@ -444,3 +444,42 @@ def test_a_wrong_kept_measurement_is_measured_again(cfg, monkeypatch):
     kept = measurements_of(ledger, "h1")[recipe]
     ledger.close()
     assert abs(float(kept["input_i"]) - float(good["input_i"])) < 0.2, "the bad one was kept"
+
+
+@pytest.mark.parametrize(
+    "setting,value",
+    [("NOISE_LEVELS_DB", {"brown": -13.0, "pink": -15.0, "white": -18.0}),
+     ("AAC_BITRATE", "192k"), ("CEILING", 0.95)],
+)  # fmt: skip
+def test_a_changed_setting_rebuilds_the_car_copies_once(cfg, monkeypatch, setting, value):
+    # Grey, 2026-09-29, on the cloud review of #53 (finding 8): after a car
+    # setting changes, the copies made the old way are made again -- one
+    # edition never holds copies made two ways.
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    _build(cfg, eb.CAR_KIND)
+    monkeypatch.setattr(edition_bake, setting, value)
+    plan, out, car, _ = _build(cfg, eb.CAR_KIND)
+    assert len(plan.rebake) == 1 and out.baked == 1 and not out.failed, out.failed
+    plan, out, _, _ = _build(cfg, eb.CAR_KIND)
+    assert plan.up_to_date == 1 and not plan.bake, "rebuilt again with nothing changed"
+
+
+def test_a_lossless_copy_is_never_rebuilt_for_a_car_setting(cfg, monkeypatch):
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    _build(cfg, eb.LOSSLESS_KIND)
+    monkeypatch.setattr(edition_bake, "AAC_BITRATE", "192k")
+    plan, _, _, _ = _build(cfg, eb.LOSSLESS_KIND)
+    assert plan.up_to_date == 1 and not plan.rebake
+
+
+def test_a_retag_does_not_hide_a_changed_setting(cfg, monkeypatch):
+    from mutagen.mp4 import MP4
+
+    master = _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    _build(cfg, eb.CAR_KIND)
+    f = MP4(master)
+    f.tags["\xa9nam"] = ["Angie (Remaster)"]
+    f.save()
+    monkeypatch.setattr(edition_bake, "AAC_BITRATE", "192k")
+    plan, _, _, _ = _build(cfg, eb.CAR_KIND)
+    assert len(plan.rebake) == 1, "a new master mtime must not stand for new settings"

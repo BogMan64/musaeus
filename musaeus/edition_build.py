@@ -100,6 +100,10 @@ class Kind:
     label: str = ""
     #: What its measurements' recipes start with (edition_bake).
     recipe_family: str = ""
+    #: What a copy is made with (edition_bake.aac_settings), read at call
+    #: time; a copy recorded with other settings is made again. None: the
+    #: Lossless edition, which does not do this.
+    settings: Callable[[], str] | None = None
 
     def root(self, config: object) -> Path:
         return Path(getattr(config, self.root_attr))
@@ -118,11 +122,13 @@ CAR_KIND = Kind(
     "car", edition_bake.AAC_TARGET_I, "car_library", _artist_album,
     lambda src, tmp, known: edition_bake.bake_aac(src, tmp, noise=True, known=known),
     include_lossy=True, label="Car", recipe_family=edition_bake.AAC_RECIPE_FAMILY,
+    settings=lambda: edition_bake.aac_settings(noise=True),
 )  # fmt: skip
 IPHONE_KIND = Kind(
     "iphone", edition_bake.AAC_TARGET_I, "iphone_library", _artist_album,
     lambda src, tmp, known: edition_bake.bake_aac(src, tmp, noise=False, known=known),
     include_lossy=True, label="iPhone", recipe_family=edition_bake.AAC_RECIPE_FAMILY,
+    settings=lambda: edition_bake.aac_settings(noise=False),
 )  # fmt: skip
 KINDS = {k.name: k for k in (LOSSLESS_KIND, CAR_KIND, IPHONE_KIND)}
 
@@ -199,7 +205,8 @@ class Plan:
     retag: list[tuple[Master, Copy]] = field(default_factory=list)
     remove: list[Copy] = field(default_factory=list)
     forget: list[Copy] = field(default_factory=list)
-    rebake: list[Copy] = field(default_factory=list)  # compressed copies baked again
+    rebake: list[Copy] = field(default_factory=list)  # copies baked again, in place
+    resettled: int = 0  # of those, the ones made with other settings
     up_to_date: int = 0
     kept_unselected: int = 0
     #: Those copies: their masters are on disk but not in this catalogue.
@@ -440,8 +447,22 @@ def make_plan(
     def taken(path: Path) -> bool:
         return path.exists() and str(path) not in freed
 
+    settings_now = kind.settings() if kind.settings is not None else None
     for h, (m, target) in selected.items():
         c = recorded.get(h)
+        if (
+            settings_now is not None
+            and c is not None
+            and c.settings != settings_now
+            and c.output_path == str(target)
+            and target.exists()
+        ):
+            # Made with other settings (Grey, 2026-09-29): made again, and the
+            # verified new copy replaces it (execute), as a re-bake does.
+            plan.rebake.append(c)
+            plan.resettled += 1
+            plan.bake.append((m, target))
+            continue
         if (
             rebake_compressed
             and c is not None
@@ -673,7 +694,18 @@ def _now() -> str:
     return datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
 
 
-def _copy(m: Master, output: Path, achieved: float | None, mode: str, kind: Kind) -> Copy:
+def _copy(
+    m: Master,
+    output: Path,
+    achieved: float | None,
+    mode: str,
+    kind: Kind,
+    settings: str | None = None,
+) -> Copy:
+    """The record of a copy. *settings*: what it was made with -- today's by
+    default; a move or a retag keeps the copy's own."""
+    if settings is None:
+        settings = kind.settings() if kind.settings is not None else ""
     return Copy(
         edition=kind.name,
         master_hash=m.audio_hash,
@@ -683,6 +715,7 @@ def _copy(m: Master, output: Path, achieved: float | None, mode: str, kind: Kind
         built_at=_now(),
         achieved_lufs=achieved,
         mode=mode,
+        settings=settings,
     )
 
 
@@ -750,7 +783,7 @@ def _move_all(
             target.parent.mkdir(parents=True, exist_ok=True)
             aside.rename(target)
             edition_bake.copy_tags(m.path, target, marker_for(m.audio_hash, kind))
-            record(ledger, _copy(m, target, c.achieved_lufs, c.mode, kind))
+            record(ledger, _copy(m, target, c.achieved_lufs, c.mode, kind, c.settings))
             out.moved += 1
         except Exception as exc:  # noqa: BLE001 -- one copy, not the build
             if aside.exists() and not old.exists():
@@ -802,7 +835,7 @@ def execute(
     for m, c in plan.retag:
         try:
             edition_bake.copy_tags(m.path, Path(c.output_path), marker_for(m.audio_hash, kind))
-            record(ledger, _copy(m, Path(c.output_path), c.achieved_lufs, c.mode, kind))
+            record(ledger, _copy(m, Path(c.output_path), c.achieved_lufs, c.mode, kind, c.settings))
             out.retagged += 1
         except Exception as exc:  # noqa: BLE001
             out.failed.append((str(m.path), f"{type(exc).__name__}: {exc}"))
@@ -969,9 +1002,12 @@ def plan_lines(plan: Plan, *, workers: int, free: int | None = None) -> list[str
         )
     if plan.over_budget:
         lines.append(f"  Over budget   : {len(plan.over_budget):,} track(s) left out for space")
-    if plan.rebake:
+    if plan.resettled:
+        lines.append(f"  Re-make       : {plan.resettled:,} copy(ies) made with other settings")
+    if len(plan.rebake) > plan.resettled:
         lines.append(
-            f"  Re-bake       : {len(plan.rebake):,} compressed copy(ies), with the range rule"
+            f"  Re-bake       : {len(plan.rebake) - plan.resettled:,} compressed copy(ies), "
+            "with the range rule"
         )
     if plan.lossy_left_out:
         lines.append(

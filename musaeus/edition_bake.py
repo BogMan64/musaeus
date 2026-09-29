@@ -567,6 +567,27 @@ def loudness_of(path: Path, timeout: int | None = None) -> tuple[float, float]:
     return float(found[-1]), min(moments)  # the summary's I is the last
 
 
+#: Bumped when the AAC graph changes what a copy sounds like, so the copies
+#: made the old way are made again (2: frames steadied for ffmpeg 6.1,
+#: 2026-09-29).
+AAC_GRAPH_VERSION = 2
+
+
+def aac_settings(noise: bool) -> str:
+    """What an AAC copy is made with, as the record keeps it: a copy made
+    with anything else is made again (Grey, 2026-09-29)."""
+    made = (
+        f"aac graph={AAC_GRAPH_VERSION} {AAC_BITRATE} I={AAC_TARGET_I} TP={TARGET_TP} "
+        f"LRA={AAC_TARGET_LRA} ceiling={CEILING}"
+    )
+    if not noise:
+        return made
+    beds = " ".join(
+        f"{c}={NOISE_LEVELS_DB[c]:+g}/{NOISE_SEEDS[c]}" for c in sorted(NOISE_LEVELS_DB)
+    )
+    return f"{made} noise {beds} bed={NOISE_BED_LUFS:g}"
+
+
 def noise_bed_lufs() -> float:
     """The loudness of the three noise beds together, under every car song."""
     return 10 * math.log10(

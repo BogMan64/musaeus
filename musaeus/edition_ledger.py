@@ -37,6 +37,12 @@ CREATE TABLE IF NOT EXISTS edition_copies (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_edition_output
     ON edition_copies (edition, output_path);
+CREATE TABLE IF NOT EXISTS copy_settings (
+    edition      TEXT NOT NULL,
+    master_hash  TEXT NOT NULL,
+    settings     TEXT NOT NULL,
+    PRIMARY KEY (edition, master_hash)
+);
 CREATE TABLE IF NOT EXISTS measurements (
     master_hash  TEXT NOT NULL,
     recipe       TEXT NOT NULL,
@@ -57,6 +63,9 @@ class Copy:
     built_at: str
     achieved_lufs: float | None
     mode: str
+    #: What the copy was made with (Kind.settings): a copy made another way
+    #: is made again (Grey, 2026-09-29). Empty for the Lossless edition.
+    settings: str = ""
 
 
 def ledger_path(config: object) -> Path:
@@ -150,8 +159,16 @@ def measured_hashes(conn: sqlite3.Connection, family: str) -> set[str]:
 
 def copies(conn: sqlite3.Connection, edition: str) -> dict[str, Copy]:
     """Every recorded copy of *edition*, by master hash."""
+    try:
+        settings = dict(
+            conn.execute(
+                "SELECT master_hash, settings FROM copy_settings WHERE edition = ?", (edition,)
+            ).fetchall()
+        )
+    except sqlite3.OperationalError:
+        settings = {}  # a record from before settings, opened read-only
     return {
-        r["master_hash"]: Copy(**dict(r))
+        r["master_hash"]: Copy(**dict(r), settings=settings.get(r["master_hash"], ""))
         for r in conn.execute("SELECT * FROM edition_copies WHERE edition = ?", (edition,))
     }
 
@@ -197,12 +214,24 @@ def record(conn: sqlite3.Connection, copy: Copy) -> None:
             copy.mode,
         ),
     )
+    conn.execute(
+        "DELETE FROM copy_settings WHERE edition = ? AND master_hash = ?",
+        (copy.edition, copy.master_hash),
+    )
+    if copy.settings:
+        conn.execute(
+            "INSERT INTO copy_settings (edition, master_hash, settings) VALUES (?, ?, ?)",
+            (copy.edition, copy.master_hash, copy.settings),
+        )
     conn.commit()
 
 
 def forget(conn: sqlite3.Connection, edition: str, master_hash: str) -> None:
     conn.execute(
         "DELETE FROM edition_copies WHERE edition = ? AND master_hash = ?", (edition, master_hash)
+    )
+    conn.execute(
+        "DELETE FROM copy_settings WHERE edition = ? AND master_hash = ?", (edition, master_hash)
     )
     conn.commit()
 
