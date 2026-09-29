@@ -539,12 +539,14 @@ def _deadline(seconds: float) -> int:
 _FINISHED_TOLERANCE = 1.0
 
 
-def integrated_lufs(path: Path, timeout: int | None = None) -> float:
-    """The file's integrated loudness (EBU R128), measured from the file.
+def loudness_of(path: Path, timeout: int | None = None) -> tuple[float, float]:
+    """(integrated, quietest moment) of the file, in LUFS, measured from it.
 
-    ebur128 without true peak: no 4x upsampling, so it costs about a
-    decode. loudnorm's own figure is the music before the noise, the
-    limiter and the encode (CLAUDE.md: measure the artifact, not the report).
+    ebur128 without true peak: no 4x upsampling, so it costs about a decode.
+    loudnorm's own figure is the music before the noise, the limiter and the
+    encode (CLAUDE.md: measure the artifact, not the report). The quietest
+    moment is the lowest 400 ms reading after the first half second (the
+    first readings are of a window not yet full).
     """
     proc = _run(
         [FFMPEG, "-nostdin", "-hide_banner", "-nostats", "-i", str(path),
@@ -553,10 +555,30 @@ def integrated_lufs(path: Path, timeout: int | None = None) -> float:
     )  # fmt: skip
     if proc.returncode != 0:
         raise BakeError(f"measuring {path.name}: ffmpeg exited {proc.returncode}")
-    found = re.findall(r"I:\s+(-?\d+(?:\.\d+)?) LUFS", proc.stderr or "")
-    if not found:
+    err = proc.stderr or ""
+    found = re.findall(r"I:\s+(-?\d+(?:\.\d+)?) LUFS", err)
+    moments = [
+        float(m)
+        for t, m in re.findall(r"t:\s*([\d.]+)\s+TARGET:.*?M:\s*(-?[\d.]+)", err)
+        if float(t) >= 0.5
+    ]
+    if not found or not moments:
         raise BakeError(f"could not measure the loudness of {path.name}")
-    return float(found[-1])  # the summary is the last
+    return float(found[-1]), min(moments)  # the summary's I is the last
+
+
+def noise_bed_lufs() -> float:
+    """The loudness of the three noise beds together, under every car song."""
+    return 10 * math.log10(
+        sum(10 ** ((NOISE_BED_LUFS + NOISE_LEVELS_DB[c]) / 10) for c in NOISE_LEVELS_DB)
+    )
+
+
+#: How far under the noise bed the quietest moment of a car copy may read
+#: before the noise is missing. Measured 2026-09-29: the vault's car copies'
+#: quietest moments were -26.1 to -25.6 (the bed, -25.6); the same songs'
+#: iPhone copies, no noise, -42.9 and far below.
+_NOISE_MARGIN = 4.0
 
 
 def noise_gain_db(colour: str) -> float:
@@ -708,10 +730,22 @@ def bake_aac(
         length_tolerance=REENCODE_TOLERANCE_SEC,
     )  # fmt: skip
     assert result.achieved_lufs is not None  # verify refuses a copy without it
-    finished = integrated_lufs(tmp_output, _deadline(seconds))
-    if abs(finished - result.achieved_lufs) > _FINISHED_TOLERANCE:
+    finished, quietest = loudness_of(tmp_output, _deadline(seconds))
+    # The noise only adds loudness, and in a mostly silent song (a hidden
+    # track) the loudness gate counts the noise-filled silence, so the car
+    # file measures UNDER the music: only louder is a fault there (cloud
+    # review of #53 -- a correct copy was refused on every build).
+    off = finished - result.achieved_lufs
+    if off > _FINISHED_TOLERANCE or (not noise and off < -_FINISHED_TOLERANCE):
         raise BakeError(
             f"the finished copy measures {finished:.1f} LUFS; loudnorm reported "
             f"{result.achieved_lufs:.1f} for the music"
+        )
+    # And the noise must be there: no moment of a car copy is quieter than
+    # the bed under it.
+    if noise and quietest < noise_bed_lufs() - _NOISE_MARGIN:
+        raise BakeError(
+            f"the noise is missing: the car copy's quietest moment measures "
+            f"{quietest:.1f} LUFS, the noise alone {noise_bed_lufs():.1f}"
         )
     return result

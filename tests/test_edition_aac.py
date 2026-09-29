@@ -244,3 +244,37 @@ def test_a_truncated_master_is_refused_not_padded(tmp_path):
     assert float(eb.probe(master)["format"]["duration"]) == pytest.approx(30.0, abs=0.1)
     with pytest.raises(eb.BakeError, match="length changed"):
         eb.bake_aac(master, tmp_path / "car.m4a", noise=True)
+
+
+def _hidden_track_master(path: Path) -> Path:
+    """A song, a long silence, then a hidden track: half the file is silence."""
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=20:sample_rate=44100",
+         "-f", "lavfi", "-i", "sine=frequency=660:duration=20:sample_rate=44100",
+         "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=60",
+         "-f", "lavfi", "-i", "sine=frequency=550:duration=20:sample_rate=44100",
+         "-filter_complex",
+         "[0]volume=-4dB[a];[1]volume=-9dB[b];[3]volume=-6dB[d];"
+         "[a][b][2][d]concat=n=4:v=0:a=1,pan=stereo|c0=c0|c1=c0",
+         "-c:a", "alac", "-sample_fmt", "s32p", str(path)],
+        check=True,
+    )  # fmt: skip
+    return path
+
+
+def test_a_hidden_track_gets_its_car_copy(tmp_path):
+    # Cloud review of #53: the noise fills the silence, which the loudness
+    # gate then counts, so the finished car file measured ~2 LU under the
+    # music and a correct copy was refused on every build.
+    master = _hidden_track_master(tmp_path / "m.m4a")
+    result = eb.bake_aac(master, tmp_path / "car.m4a", noise=True)
+    assert result.achieved_lufs is not None
+
+
+def test_a_car_copy_with_no_noise_in_it_is_refused(tmp_path, monkeypatch):
+    # ...and the check could not tell a car copy with no noise at all.
+    monkeypatch.setattr(eb, "NOISE_LEVELS_DB", {"brown": -120.0, "pink": -120.0, "white": -120.0})
+    master = _hidden_track_master(tmp_path / "m.m4a")
+    with pytest.raises(eb.BakeError, match="noise"):
+        eb.bake_aac(master, tmp_path / "car.m4a", noise=True)
