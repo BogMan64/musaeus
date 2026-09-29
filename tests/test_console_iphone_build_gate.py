@@ -150,3 +150,28 @@ def test_the_time_shown_before_build_is_the_builders_own_estimate(cfg, monkeypat
     _run(cfg, monkeypatch, ["3", "", "no"])
     # 6 tracks x 240 s x 50 worker-s / 2 workers = 10 hours
     assert "roughly 10 hour(s)" in capsys.readouterr().out
+
+
+def test_the_screen_says_what_build_would_delete(cfg, monkeypatch, capsys):
+    # Cloud review of #53: with a smaller (or mistyped) budget, the screen
+    # said only "Building would encode 0 track(s)", and BUILD then deleted
+    # the copies that no longer fit.
+    from musaeus import edition_build as eb
+    from musaeus.edition_ledger import Copy, ledger_path, open_ledger, record
+
+    _seed(cfg)
+    led = open_ledger(ledger_path(cfg))
+    for i, master in enumerate(sorted(cfg.alac_archive.rglob("*.m4a"))):
+        out = eb.IPHONE_KIND.place(cfg.alac_archive, cfg.iphone_library, master)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"x")
+        mtime = master.stat().st_mtime_ns
+        record(led, Copy("iphone", f"h{i}", str(master), mtime, str(out), "now", -14.0, "linear"))
+    led.close()
+    con = Console()
+    con._config = cfg
+    answers = iter(["3", "0.02", "no"])  # room for 2 of the 6 on the phone
+    monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+    con._edition_menu()
+    out = capsys.readouterr().out
+    assert "delete 4" in out.lower(), out

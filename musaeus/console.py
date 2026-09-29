@@ -1311,12 +1311,23 @@ class Console:
             _ok("The iPhone edition is already up to date.")
             return
 
-        hours = max(1, round(plan.hours(2)))
-        _info(
-            f"Building would encode {len(plan.bake):,} track(s) — roughly "
-            f"{hours} hour(s). It pauses while you use the machine, and it "
-            f"resumes if interrupted."
-        )
+        # What BUILD would delete is said before it is asked (cloud review of
+        # #53): a smaller or mistyped budget read "encode 0 track(s)" and
+        # BUILD then removed the copies that no longer fit.
+        if plan.remove:
+            _warn(
+                f"BUILD would delete {len(plan.remove):,} iPhone copy(ies): they no "
+                "longer fit this budget, or their master left the library."
+            )
+        if plan.bake:
+            hours = max(1, round(plan.hours(2)))
+            _info(
+                f"Building would encode {len(plan.bake):,} track(s) — roughly "
+                f"{hours} hour(s). It pauses while you use the machine, and it "
+                f"resumes if interrupted."
+            )
+        else:
+            _info("Building would encode nothing.")
         if _prompt("Build it now? Type BUILD to confirm").strip() != "BUILD":
             _info("Not built. The selection above is unchanged.")
             return
