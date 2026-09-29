@@ -200,6 +200,8 @@ class Plan:
     rebake: list[Copy] = field(default_factory=list)  # compressed copies baked again
     up_to_date: int = 0
     kept_unselected: int = 0
+    #: Those copies: their masters are on disk but not in this catalogue.
+    kept: list[Copy] = field(default_factory=list)
     lossy_left_out: list[Master] = field(default_factory=list)
     over_budget: list[Master] = field(default_factory=list)
     #: The masters this build could make, budget aside: what a budget may be
@@ -421,6 +423,7 @@ def make_plan(
             plan.remove.append(rec)
         else:
             plan.kept_unselected += 1
+            plan.kept.append(rec)
 
     # Paths that the removals and moves below empty before any bake lands.
     # Every baked-copy swap needs this: the original is renamed into the name
@@ -495,6 +498,13 @@ def make_plan(
     return plan
 
 
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
 def budgeted(
     conn: sqlite3.Connection,
     ledger: sqlite3.Connection,
@@ -513,8 +523,15 @@ def budgeted(
     the build cannot disagree.
     """
     whole = make_plan(conn, ledger, masters_root, edition_root, kind=kind)
+    # Copies kept for masters not in this catalogue (after the between-batches
+    # wipe) stay on the device: they are charged first (cloud review of #53:
+    # each budgeted build had put a whole budget on top of them).
+    kept_bytes = sum(_size(Path(c.output_path)) for c in whole.kept)
     sel = editions.select_edition(
-        conn, editions.EDITIONS[kind.name], budget_bytes=budget_bytes, makeable=whole.makeable
+        conn,
+        editions.EDITIONS[kind.name],
+        budget_bytes=max(0, budget_bytes - kept_bytes),
+        makeable=whole.makeable,
     )
     allowed = {str(t.file_path) for t in sel.included}
     plan = make_plan(

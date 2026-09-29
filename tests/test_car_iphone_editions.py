@@ -339,3 +339,43 @@ def test_the_place_goes_to_the_master_whose_copy_is_there(cfg):
     assert plan.up_to_date == 1 and set(phone) == {"h2"}
     assert [m.audio_hash for m, _ in plan.blocked] == ["h1"]
     assert "same place" in plan.blocked[0][1]
+
+
+def test_copies_kept_after_a_catalogue_wipe_count_against_the_budget(cfg):
+    # Cloud review of #53: after the between-batches wipe, the copies of
+    # masters no longer catalogued are kept (right) but were not charged to
+    # the budget, so each budgeted build put a whole budget on top of them.
+    from musaeus.editions import IPHONE, estimated_bytes, load_tracks
+
+    def six_seconds():
+        c = sqlite3.connect(cfg.db_path)
+        c.execute("UPDATE archive SET duration = 6.0")
+        c.commit()
+        c.close()
+
+    old = [_master(cfg, f"Rock/Old/Al/Old - T{i}.m4a", f"o{i}") for i in range(3)]
+    six_seconds()
+    _build(cfg, eb.IPHONE_KIND, allowed={str(p) for p in old})
+    kept = sum(p.stat().st_size for p in cfg.iphone_library.rglob("*.m4a"))
+    wipe = sqlite3.connect(cfg.db_path)
+    wipe.execute("DELETE FROM archive")  # "AUDIT PASSED: safe to snapshot and wipe"
+    wipe.commit()
+    wipe.close()
+    for i in range(3):
+        _master(cfg, f"Rock/New/Al/New - T{i}.m4a", f"n{i}")
+    six_seconds()
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    one = max(estimated_bytes(t, IPHONE) for t in load_tracks(conn))
+    budget = kept + int(1.5 * one)  # room for the kept copies and one new track
+    ledger = open_ledger(ledger_path(cfg))
+    try:
+        plan, _ = eb.budgeted(
+            conn, ledger, cfg.alac_archive, cfg.iphone_library, eb.IPHONE_KIND, budget
+        )
+    finally:
+        conn.close()
+        ledger.close()
+    assert plan.kept_unselected == 3
+    assert len(plan.bake) == 1, f"{len(plan.bake)} new tracks for room for one"
+    assert kept + plan.bake_bytes <= budget
