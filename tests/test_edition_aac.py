@@ -278,3 +278,18 @@ def test_a_car_copy_with_no_noise_in_it_is_refused(tmp_path, monkeypatch):
     master = _hidden_track_master(tmp_path / "m.m4a")
     with pytest.raises(eb.BakeError, match="noise"):
         eb.bake_aac(master, tmp_path / "car.m4a", noise=True)
+
+
+@pytest.mark.parametrize(
+    "source,expected", [(37_800, 44_100), (44_056, 44_100), (47_250, 48_000), (22_050, 22_050)]
+)
+def test_an_odd_rate_goes_up_to_the_next_rate_aac_takes(source, expected):
+    # Cloud review of #53: the AAC encoder takes only standard rates, and a
+    # master at 37.8, 44.056 or 47.25 kHz failed the encode on every build.
+    assert eb.target_rate(source) == expected
+
+
+def test_an_odd_rate_master_encodes(tmp_path):
+    master = _master(tmp_path / "m.m4a", rate=47_250)
+    eb.bake_aac(master, tmp_path / "c.m4a", noise=True)
+    assert eb.sample_rate_of(eb.probe(tmp_path / "c.m4a")) == 48_000

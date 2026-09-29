@@ -619,8 +619,14 @@ def target_rate(source_rate: int | None) -> int | None:
     if not source_rate:
         return None
     if source_rate <= 48_000:
-        return source_rate
+        # The next rate the AAC encoder takes: a master at 37.8, 44.056 or
+        # 47.25 kHz failed the encode on every build (cloud review of #53).
+        return next(r for r in _AAC_RATES if r >= source_rate)
     return 44_100 if source_rate % 44_100 == 0 else 48_000
+
+
+#: The rates ffmpeg's AAC encoder takes, up to the editions' 48 kHz cap.
+_AAC_RATES = (7_350, 8_000, 11_025, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000)
 
 
 def channels_of(info: dict) -> int:
