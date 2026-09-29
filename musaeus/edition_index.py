@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import dataclasses
 import sqlite3
-import time
 from pathlib import Path
 
 from .config import MusicConfig
@@ -93,7 +92,10 @@ def write_index(cfg: MusicConfig, edition_root: Path, apply: bool) -> tuple[list
     already runs on.
     """
     index_dir = index_dir_for(edition_root)
-    started = time.time() - 1  # -1s of slack for filesystem timestamp granularity
+    # What was there before, by exact timestamp: a playlist this run leaves
+    # untouched is stale. (It was 'older than the start less 1 s', and a
+    # build faster than that second kept a stale one: the ffmpeg 6.1 container.)
+    before = {f: f.stat().st_mtime_ns for f in index_dir.glob("*.m3u8")}
     # dataclasses.replace, not mutation: the stage reads cfg.playlists and
     # nothing else should see this override.
     cfg = dataclasses.replace(cfg, playlists=index_dir)
@@ -122,7 +124,7 @@ def write_index(cfg: MusicConfig, edition_root: Path, apply: bool) -> tuple[list
         #
         # An index that lists what is gone is worse than no index: in the car
         # it is a dead entry, and here it looked exactly like a build failure.
-        fresh = {f for f in index_dir.glob("*.m3u8") if f.stat().st_mtime >= started}
+        fresh = {f for f in index_dir.glob("*.m3u8") if before.get(f) != f.stat().st_mtime_ns}
         for f in sorted(index_dir.glob("*.m3u8")):
             if f not in fresh:
                 f.unlink()
