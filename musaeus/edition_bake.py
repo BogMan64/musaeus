@@ -572,7 +572,16 @@ def loudness_of(path: Path, timeout: int | None = None) -> tuple[float, float, f
 #: Bumped when the AAC graph changes what a copy sounds like, so the copies
 #: made the old way are made again (2: frames steadied for ffmpeg 6.1,
 #: 2026-09-29).
-AAC_GRAPH_VERSION = 3  # 3: a copy peaking over is encoded again (2026-09-29)
+# 3: a copy peaking over is encoded again. 4: no noise substitution (both
+# 2026-09-29).
+AAC_GRAPH_VERSION = 4
+
+#: The AAC encoder's perceptual noise substitution (ffmpeg's default) is off.
+#: It replaces noise-like bands with synthesised noise -- and every car song
+#: has noise under it -- and its spikes defeated the limiter: Billie Jean
+#: peaked +3.0 dBTP with it, -0.6 without (-1.2 before the encoder); the
+#: peak jumped about as the limiter was lowered, so retries never caught it.
+#: A low-bitrate tool; at 256k it saves nothing worth having.
 
 #: No AAC copy may peak over this, measured after the encode. When one does,
 #: it is encoded again with the limiter lowered by the overshoot, aiming for
@@ -589,7 +598,7 @@ def aac_settings(noise: bool) -> str:
     """What an AAC copy is made with, as the record keeps it: a copy made
     with anything else is made again (Grey, 2026-09-29)."""
     made = (
-        f"aac graph={AAC_GRAPH_VERSION} {AAC_BITRATE} I={AAC_TARGET_I} TP={TARGET_TP} "
+        f"aac graph={AAC_GRAPH_VERSION} {AAC_BITRATE} pns=off I={AAC_TARGET_I} TP={TARGET_TP} "
         f"LRA={AAC_TARGET_LRA} ceiling={CEILING}"
     )
     if not noise:
@@ -728,7 +737,7 @@ def aac_command(source: Path, output: Path, graph: str, rate: int) -> list[str]:
     return [
         FFMPEG, "-nostdin", "-hide_banner", "-nostats", "-y", "-i", str(source),
         "-threads", "2", "-filter_complex", graph, "-map", "[out]",
-        "-c:a", "aac", "-b:a", AAC_BITRATE, "-ar", str(rate),
+        "-c:a", "aac", "-b:a", AAC_BITRATE, "-aac_pns", "0", "-ar", str(rate),
         "-map_metadata", "0", "-f", "mp4", str(output),
     ]  # fmt: skip
 

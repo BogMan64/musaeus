@@ -346,3 +346,15 @@ def test_a_copy_within_the_limit_is_encoded_once(tmp_path, monkeypatch):
     limits = _limits_used(monkeypatch)
     eb.bake_aac(_master(tmp_path / "m.m4a"), tmp_path / "car.m4a", noise=True)
     assert limits == [eb.CEILING]
+
+
+def test_the_aac_encode_has_no_noise_substitution():
+    # The 700-song vault build, 2026-09-29: four copies still peaked +0.9 to
+    # +1.5 dBTP after three tries, and the peak jumped about as the limiter
+    # was lowered. The encoder's perceptual noise substitution (on by
+    # default) put the spikes in: every car song has noise under it for it
+    # to substitute. Billie Jean: +3.0 with it, -0.6 without; five of the six
+    # worst songs under 0 on the first encode.
+    cmd = eb.aac_command(Path("m.m4a"), Path("c.m4a"), "[0:a:0]anull[out]", 44_100)
+    assert cmd[cmd.index("-aac_pns") + 1] == "0"
+    assert "pns=off" in eb.aac_settings(noise=True), "a copy made with it must be made again"
