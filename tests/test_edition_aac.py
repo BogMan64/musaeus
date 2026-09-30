@@ -425,3 +425,15 @@ def test_a_click_the_encoder_adds_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(eb, "window_peaks", clicked)
     with pytest.raises(eb.BakeError, match="click"):
         eb.bake_aac(_master(tmp_path / "m.m4a"), tmp_path / "car.m4a", noise=True)
+
+
+def test_the_last_sliver_of_a_song_is_not_taken_for_a_click():
+    # The car re-make, 2026-09-30: six songs were refused for a "click" in
+    # their very last 100 ms window -- where the encoder's input holds a
+    # sliver of the fade and the copy also holds fdkaac's end padding, which
+    # ffmpeg 5.1 does not trim. A click inside the song is still one.
+    went_in = [-12.0] * 10 + [-50.0]  # the last window: a few ms of fade
+    tail = [-12.0] * 10 + [-43.0, -60.0]  # the copy: that, plus the padding
+    assert eb._click_in(went_in, tail) is None
+    inside = [-12.0] * 5 + [-7.0] + [-12.0] * 4 + [-50.0]
+    assert eb._click_in(went_in, inside) == (5, 5.0)

@@ -817,9 +817,15 @@ def window_peaks(path: Path, rate: int, timeout: int | None = None) -> list[floa
 
 
 def _click_in(went_in: list[float], came_out: list[float]) -> tuple[int, float] | None:
-    """(100 ms stretch, dB over) of the worst click, or None."""
+    """(100 ms stretch, dB over) of the worst click, or None.
+
+    The last window of the input is not compared: it holds a sliver of the
+    song's end, while the copy's also holds fdkaac's end padding, which
+    ffmpeg 5.1 does not trim -- six songs were refused for a "click" there
+    (the car re-make, 2026-09-30).
+    """
     worst = None
-    for i, (a, b) in enumerate(zip(went_in, came_out, strict=False)):  # the tail may differ by one
+    for i, (a, b) in enumerate(zip(went_in[:-1], came_out, strict=False)):
         if a > -60 and b - a >= _CLICK_DB and (worst is None or b - a > worst[1]):
             worst = (i, b - a)
     return worst
