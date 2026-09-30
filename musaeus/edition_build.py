@@ -218,6 +218,9 @@ class Plan:
     makeable: set[str] = field(default_factory=set)
     #: Audio hashes whose measurement the record already keeps for this kind.
     measured: set[str] = field(default_factory=set)
+    #: Masters the second pass blocked (their place taken): not makeable, and
+    #: never "over budget" either -- their copy stays where it is.
+    cannot_place: dict[str, Copy | None] = field(default_factory=dict)
     same_audio: list[Master] = field(default_factory=list)
     outside_masters: list[str] = field(default_factory=list)
     blocked: list[tuple[Master, str]] = field(default_factory=list)
@@ -489,6 +492,7 @@ def make_plan(
                 if taken(target) and not ours(target, h):
                     plan.blocked.append((m, f"its new place is taken: {target}"))
                     plan.makeable.discard(str(m.path))  # the budget must not go to it
+                    plan.cannot_place[str(m.path)] = c
                 else:
                     plan.move.append((m, c, target))
             else:
@@ -502,6 +506,7 @@ def make_plan(
         elif taken(target):
             plan.blocked.append((m, f"a file with no record is in the way: {target}"))
             plan.makeable.discard(str(m.path))  # the budget must not go to it
+            plan.cannot_place[str(m.path)] = c
         else:
             plan.bake.append((m, target))
 
@@ -547,10 +552,31 @@ def selection(
     charged first. The build, `musaeus edition` and the console all come
     here, so the preview and the build cannot disagree (cloud review of #53).
     """
+    whole, sel = _whole_and_selection(
+        conn, ledger, masters_root, edition_root, kind, budget_bytes, genres=genres, artists=artists
+    )
+    return sel
+
+
+def _whole_and_selection(
+    conn: sqlite3.Connection,
+    ledger: sqlite3.Connection,
+    masters_root: Path,
+    edition_root: Path,
+    kind: Kind,
+    budget_bytes: int | None,
+    *,
+    genres: set[str] | None = None,
+    artists: set[str] | None = None,
+) -> tuple[Plan, editions.Selection]:
     whole = make_plan(conn, ledger, masters_root, edition_root, kind=kind)
     if budget_bytes is not None:
-        budget_bytes = max(0, budget_bytes - sum(_size(Path(c.output_path)) for c in whole.kept))
-    return editions.select_edition(
+        # What stays on the device whatever the budget: copies kept for
+        # masters not in this catalogue, and the copies of masters that
+        # cannot be placed (second review of #53).
+        staying = [*whole.kept, *(c for c in whole.cannot_place.values() if c)]
+        budget_bytes = max(0, budget_bytes - sum(_size(Path(c.output_path)) for c in staying))
+    return whole, editions.select_edition(
         conn,
         editions.EDITIONS[kind.name],
         genres=genres,
@@ -571,8 +597,10 @@ def budgeted(
     rebake_compressed: bool = False,
 ) -> tuple[Plan, editions.Selection]:
     """The plan for a budgeted edition, and the selection that fills it."""
-    sel = selection(conn, ledger, masters_root, edition_root, kind, budget_bytes)
-    allowed = {str(t.file_path) for t in sel.included}
+    whole, sel = _whole_and_selection(conn, ledger, masters_root, edition_root, kind, budget_bytes)
+    # The masters that cannot be placed are let through the budget: blocked
+    # again below, their copies kept -- not dropped "for space".
+    allowed = {str(t.file_path) for t in sel.included} | set(whole.cannot_place)
     plan = make_plan(
         conn, ledger, masters_root, edition_root,
         kind=kind, allowed=allowed, rebake_compressed=rebake_compressed,

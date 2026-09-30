@@ -548,3 +548,35 @@ def test_a_partial_edition_has_no_empty_playlists(cfg):
     assert r.returncode == 0, r.stdout + r.stderr
     names = sorted(p.name for p in (cfg.car_library / "Playlists").glob("*.m3u8"))
     assert "Rock.m3u8" not in names and "Jazz.m3u8" in names, names
+
+
+def test_a_budget_never_deletes_the_copy_of_a_master_that_cannot_move(cfg):
+    # Second review of #53, 1: a master whose copy cannot move (its new place
+    # is taken) keeps its copy without a budget; with one -- even one that
+    # everything fits in -- it was counted over budget and its copy deleted.
+    a = _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    _build(cfg, eb.IPHONE_KIND)
+    old = cfg.iphone_library / "Stones" / "Hits" / "The Rolling Stones - Angie.m4a"
+    moved = cfg.alac_archive / "Rock" / "Stones" / "Best Of" / "The Rolling Stones - Angie.m4a"
+    moved.parent.mkdir(parents=True)
+    a.rename(moved)
+    conn = sqlite3.connect(cfg.db_path)
+    conn.execute("UPDATE archive SET file_path = ? WHERE audio_hash = 'h1'", (str(moved),))
+    conn.commit()
+    conn.close()
+    stranger = cfg.iphone_library / "Stones" / "Best Of" / "The Rolling Stones - Angie.m4a"
+    stranger.parent.mkdir(parents=True)
+    stranger.write_bytes(b"\\0")  # the new place is taken
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    ledger = open_ledger(ledger_path(cfg))
+    try:
+        plan, _ = eb.budgeted(
+            conn, ledger, cfg.alac_archive, cfg.iphone_library, eb.IPHONE_KIND, 10**12
+        )
+    finally:
+        conn.close()
+        ledger.close()
+    assert not plan.remove and not plan.over_budget, (plan.remove, plan.over_budget)
+    assert old.exists()
+    assert any("new place is taken" in why for _, why in plan.blocked)
