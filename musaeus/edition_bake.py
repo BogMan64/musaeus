@@ -88,13 +88,35 @@ class BakeResult:
 _MEASURED_FIELDS = ("input_i", "input_lra", "input_tp", "input_thresh", "target_offset")
 
 
-def _measure_or_reuse(
-    recipe: str, known: Mapping[str, dict] | None, measure: Callable[[], dict]
-) -> dict:
+def _reusable(recipe: str, known: Mapping[str, dict] | None) -> dict | None:
     kept = (known or {}).get(recipe)
     if kept is not None and all(k in kept for k in _MEASURED_FIELDS):
         return kept
-    return measure()
+    return None
+
+
+#: Per bake (each worker thread): whether a KEPT measurement is in use. A
+#: failure then is worth one more try on a fresh one; any other is not
+#: (second review of #53: every failure was baked twice).
+_TL = threading.local()
+
+
+def _measure_or_reuse(
+    recipe: str, known: Mapping[str, dict] | None, measure: Callable[[], dict]
+) -> dict:
+    kept = _reusable(recipe, known)
+    _TL.reused = kept is not None
+    return kept or measure()
+
+
+def _noting_reuse(bake_fn: Callable[[], BakeResult]) -> BakeResult:
+    """Run a bake; a BakeError it raises says whether a kept measurement was used."""
+    _TL.reused = False
+    try:
+        return bake_fn()
+    except BakeError as exc:
+        exc.reused = getattr(_TL, "reused", False)  # type: ignore[attr-defined]
+        raise
 
 
 def _paused() -> float:
@@ -148,8 +170,14 @@ _CHILDREN: set[subprocess.Popen] = set()
 _CHILDREN_LOCK = threading.Lock()
 
 
+#: Set while a build is stopping: a bake that fails then is not tried again
+#: (second review of #53 -- a stopped build re-made the songs it had killed).
+STOPPING = threading.Event()
+
+
 def stop_children() -> None:
     """Kill every child _run has running. For a build being stopped."""
+    STOPPING.set()
     with _CHILDREN_LOCK:
         running = list(_CHILDREN)
     for proc in running:
@@ -452,6 +480,10 @@ def bake(source: Path, tmp_output: Path, known: Mapping[str, dict] | None = None
     that fails verification never sits where a finished one would. *known*
     is the record's kept measurements of this audio, by recipe.
     """
+    return _noting_reuse(lambda: _bake_lossless(source, tmp_output, known))
+
+
+def _bake_lossless(source: Path, tmp_output: Path, known: Mapping[str, dict] | None) -> BakeResult:
     info = probe(source)
     measured = _measure_or_reuse(LOSSLESS_RECIPE, known, lambda: ffmpeg_measure_loudnorm(source))
     proc = _run(
@@ -830,13 +862,28 @@ def _run_pipeline(
         p1 = subprocess.Popen(
             first, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=err1, text=False
         )
-        p2 = subprocess.Popen(
-            second, stdin=p1.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
-        )
+        with _CHILDREN_LOCK:
+            _CHILDREN.add(p1)  # tracked at once: a stop must reach it whatever follows
+        try:
+            p2 = subprocess.Popen(
+                second,
+                stdin=p1.stdout,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except OSError as exc:
+            # fdkaac missing: ffmpeg would run on into a pipe nobody reads
+            # (second review of #53).
+            p1.kill()
+            p1.wait()
+            with _CHILDREN_LOCK:
+                _CHILDREN.discard(p1)
+            raise BakeError(f"{second[0]} could not start: {exc}") from None
         assert p1.stdout is not None
         p1.stdout.close()  # p2 alone holds the read end: p1 sees it close
         with _CHILDREN_LOCK:
-            _CHILDREN.update((p1, p2))
+            _CHILDREN.add(p2)
         try:
             start, paused_at_start = time.monotonic(), _paused()
             while True:
@@ -866,6 +913,13 @@ def _run_pipeline(
 
 
 def bake_aac(
+    source: Path, tmp_output: Path, *, noise: bool, known: Mapping[str, dict] | None = None
+) -> BakeResult:
+    """Bake *source* into an AAC edition copy at *tmp_output*, verified."""
+    return _noting_reuse(lambda: _bake_aac(source, tmp_output, noise=noise, known=known))
+
+
+def _bake_aac(
     source: Path, tmp_output: Path, *, noise: bool, known: Mapping[str, dict] | None = None
 ) -> BakeResult:
     """Bake *source* into an AAC edition copy at *tmp_output*, verified.

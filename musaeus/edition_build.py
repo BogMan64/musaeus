@@ -771,8 +771,10 @@ def _bake_one(
     try:
         try:
             result = kind.bake(m.path, tmp, known)
-        except edition_bake.BakeError:
-            if not known:
+        except edition_bake.BakeError as exc:
+            # Only when the failure came on a KEPT measurement, and never
+            # while the build is stopping (second review of #53).
+            if not getattr(exc, "reused", False) or edition_bake.STOPPING.is_set():
                 raise
             # A kept measurement is reused for ever, so a wrong one would fail
             # every build: once more on a fresh one, which the build then
@@ -946,10 +948,14 @@ def execute(
     finally:
         restore()
         if out.stopped:
-            edition_bake.stop_children()  # the running encodes, not only the queued
+            # The queue first, then the running encodes: killed first, a
+            # worker could start the next song in between (second review).
+            pool.shutdown(wait=False, cancel_futures=True)
+            edition_bake.stop_children()
         # Always: queued bakes must not run on after the lock and the
         # throttle are released (cloud review of #49).
         pool.shutdown(wait=True, cancel_futures=True)
+        edition_bake.STOPPING.clear()
         edition_bake.ACTIVE_THROTTLE = None
         if out.stopped:
             for stale in edition_root.rglob(f"*{TMP_SUFFIX}"):

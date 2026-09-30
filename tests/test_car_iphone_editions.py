@@ -580,3 +580,70 @@ def test_a_budget_never_deletes_the_copy_of_a_master_that_cannot_move(cfg):
     assert not plan.remove and not plan.over_budget, (plan.remove, plan.over_budget)
     assert old.exists()
     assert any("new place is taken" in why for _, why in plan.blocked)
+
+
+def test_a_failed_bake_is_retried_only_when_it_used_a_kept_measurement(cfg, monkeypatch):
+    # Second review of #53, 2: the retry fired whenever the record held ANY
+    # measurement of the song (here the Lossless one), so every real failure
+    # was baked twice -- and a stopped build re-made the songs it had killed.
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    _build(cfg, eb.LOSSLESS_KIND)  # keeps the Lossless recipe's measurement
+    calls = []
+
+    def broken(src, tmp, *, noise, known=None):
+        calls.append(known)
+        raise edition_bake.BakeError("a click")
+
+    monkeypatch.setattr(edition_bake, "bake_aac", broken)
+    _, out, _, _ = _build(cfg, eb.CAR_KIND)
+    assert out.failed and len(calls) == 1, calls
+
+
+def test_a_stopping_build_does_not_retry(monkeypatch, tmp_path):
+    calls = []
+
+    def reused_fail(src, tmp, known):
+        calls.append(1)
+        err = edition_bake.BakeError("killed")
+        err.reused = True
+        raise err
+
+    kind = eb.Kind("car", "-14.0", "car_library", eb._artist_album, reused_fail, include_lossy=True)
+    m = eb.Master(tmp_path / "m.m4a", "h", "alac", -20.0, -3.0, 1, 1, decode_ok=1)
+    edition_bake.STOPPING.set()
+    try:
+        with pytest.raises(edition_bake.BakeError):
+            eb._bake_one(m, tmp_path / "c.m4a", kind, {"r": {}})
+    finally:
+        edition_bake.STOPPING.clear()
+    assert calls == [1]
+
+
+def test_no_ffmpeg_is_left_running_when_fdkaac_cannot_start(tmp_path, monkeypatch):
+    # Second review of #53, 4: ffmpeg started first and was recorded only
+    # once fdkaac had started too; with fdkaac missing it ran on, untracked,
+    # into a pipe nobody read.
+    import time
+
+    started = []
+    real = subprocess.Popen
+
+    def spy(cmd, *a, **k):
+        p = real(cmd, *a, **k)
+        started.append((cmd[0], p))
+        return p
+
+    master = tmp_path / "m.m4a"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+         "-i", "sine=frequency=440:duration=4", "-ac", "2", "-c:a", "alac", str(master)],
+        check=True,
+    )  # fmt: skip
+    monkeypatch.setattr(edition_bake, "FDKAAC", str(tmp_path / "no-such-fdkaac"))
+    monkeypatch.setattr(subprocess, "Popen", spy)
+    with pytest.raises(edition_bake.BakeError, match="could not start"):
+        edition_bake.bake_aac(master, tmp_path / "c.m4a", noise=False)
+    monkeypatch.undo()
+    time.sleep(0.5)
+    left = [name for name, p in started if name == "ffmpeg" and p.poll() is None]
+    assert not left, "an ffmpeg was left running"
