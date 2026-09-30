@@ -65,7 +65,7 @@ jobs:
       # same failure this project catalogues everywhere else: a check that
       # finds nothing is not a check that found nothing wrong.
       - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fdkaac
       - name: Install dependencies
         run: pip install -e ".[dev,fuzzy]"
       - name: Run tests

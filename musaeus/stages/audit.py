@@ -228,24 +228,33 @@ class AuditStage(BaseStage):
                 f"all {len(disk_files)} file(s) in the library tiers have a matching finalized row"
             )
 
-        # ── Check 2b: ALAC_Library holds recorded edition copies, nothing else
+        # ── Check 2b: the edition folders hold recorded copies, nothing else
         #
-        # The Lossless edition's copies have no row by design; the edition
-        # ledger is what knows them. A file there that the ledger does not
-        # know is not a copy MUSAEUS made -- reported, never guessed at.
-        edition_files = _scan_alac_library_files(ctx.alac_library)
-        if edition_files:
-            from ..edition_ledger import recorded_outputs
+        # Edition copies have no row by design; the edition ledger is what
+        # knows them. A file there that the ledger does not know is not a
+        # copy MUSAEUS made -- reported, never guessed at. Lossless since
+        # 2026-09-27; car and iPhone since 2026-09-28.
+        from ..edition_build import KINDS
+        from ..edition_ledger import recorded_outputs
 
-            recorded = {Path(p).resolve() for p in (recorded_outputs(ctx.config, "lossless") or ())}
+        for kind in KINDS.values():  # which folder is each edition's: Kind.root_attr
+            label, edition = kind.label, kind.name
+            root = getattr(ctx.config, kind.root_attr, None)
+            if root is None:
+                continue
+            edition_files = _scan_alac_library_files(Path(root))
+            if not edition_files:
+                continue
+            recorded = {Path(p).resolve() for p in (recorded_outputs(ctx.config, edition) or ())}
             strays = sorted(edition_files - recorded)
             for stray in strays:
                 problems.append(
-                    f"file in the Lossless edition (ALAC_Library) with no record of being a copy: {stray}"
+                    f"file in the {label} edition ({Path(root).name}) with no record of "
+                    f"being a copy: {stray}"
                 )
             if not strays:
                 ok.append(
-                    f"all {len(edition_files)} file(s) in the Lossless edition are recorded copies"
+                    f"all {len(edition_files)} file(s) in the {label} edition are recorded copies"
                 )
 
         # ── Check 3: every finalized row's hash must be in the persistent index

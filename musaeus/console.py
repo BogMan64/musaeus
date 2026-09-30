@@ -301,9 +301,9 @@ class Console:
             forged = conn.execute(
                 "SELECT COUNT(*) FROM archive WHERE rg_tagged_at IS NOT NULL"
             ).fetchone()[0]
-            car_exported = conn.execute(
-                "SELECT COUNT(*) FROM archive WHERE car_export_path IS NOT NULL"
-            ).fetchone()[0]
+            from .edition_ledger import car_copy_count
+
+            car_exported = car_copy_count(self._config, conn)
 
             _info(f"Total files   : {_c(str(total), _BOLD)}")
             _info(f"  PENDING     : {pending}")
@@ -1251,8 +1251,16 @@ class Console:
         conn = self._open_db()
         if conn is None:
             return
+        plan = None
         try:
-            sel = select_edition(conn, spec, budget_bytes=budget)
+            if spec.name == "iphone":
+                # The build's own plan and selection (cloud review of #53):
+                # the preview, the time and the build cannot disagree.
+                plan, sel = self._iphone_plan(conn, budget)
+            elif spec.name == "car":
+                sel = self._car_selection(conn)
+            else:
+                sel = select_edition(conn, spec, budget_bytes=budget)
         finally:
             conn.close()
 
@@ -1292,21 +1300,36 @@ class Console:
         # default answer; building is a second, explicit decision.
         if spec.name != "iphone":
             _info(
-                "To build it, run the builder for that edition; it pauses "
-                "while you use the machine."
+                "To build it: `musaeus edition-build car` (add --dry-run to see the plan). "
+                "It pauses while you use the machine."
             )
             return
 
         if not sel.included:
             _warn("Nothing selected — there is nothing to build.")
             return
+        assert plan is not None
+        if not (plan.bake or plan.move or plan.retag or plan.remove or plan.adopt):
+            _ok("The iPhone edition is already up to date.")
+            return
 
-        hours = max(1, round(len(sel.included) * 2.2 / 3600))
-        _info(
-            f"Building would encode {len(sel.included):,} track(s) — roughly "
-            f"{hours} hour(s). It pauses while you use the machine, and it "
-            f"resumes if interrupted."
-        )
+        # What BUILD would delete is said before it is asked (cloud review of
+        # #53): a smaller or mistyped budget read "encode 0 track(s)" and
+        # BUILD then removed the copies that no longer fit.
+        if plan.remove:
+            _warn(
+                f"BUILD would delete {len(plan.remove):,} iPhone copy(ies): they no "
+                "longer fit this budget, or their master left the library."
+            )
+        if plan.bake:
+            hours = max(1, round(plan.hours(2)))
+            _info(
+                f"Building would encode {len(plan.bake):,} track(s) — roughly "
+                f"{hours} hour(s). It pauses while you use the machine, and it "
+                f"resumes if interrupted."
+            )
+        else:
+            _info("Building would encode nothing.")
         if _prompt("Build it now? Type BUILD to confirm").strip() != "BUILD":
             _info("Not built. The selection above is unchanged.")
             return
@@ -1314,17 +1337,10 @@ class Console:
         import subprocess
         import sys
 
-        builder = (
-            Path(__file__).resolve().parent.parent
-            / "scripts"
-            / "car_library"
-            / "build_car_library.py"
-        )
-        if not builder.exists():
-            _err(f"Builder not found at {builder}")
-            return
-
-        cmd = [sys.executable, str(builder), "--from-catalogue", "--edition", "iphone", "--no-mask"]
+        # The edition framework's builder (2026-09-28): one AAC pass from each
+        # master, recorded in the edition ledger. build_car_library.py encoded
+        # twice and recorded its copies in the catalogue, which is wiped.
+        cmd = [sys.executable, "-m", "musaeus.cli", "edition-build", "iphone"]
         if budget:
             cmd += ["--budget-gb", str(budget / 1_000_000_000)]
         _info("Running: " + " ".join(cmd[1:]))
@@ -1339,6 +1355,40 @@ class Console:
         else:
             _err(f"Builder exited {rc} — see the output above.")
 
+    def _car_selection(self, conn):
+        """What the car build would hold: only masters it can make (cloud
+        review of #53 -- this screen counted every catalogued row)."""
+        from . import edition_build as eb
+        from .edition_ledger import ledger_path, open_for_reading
+
+        cfg = self._config
+        assert cfg is not None
+        ledger = open_for_reading(ledger_path(cfg))
+        try:
+            return eb.selection(
+                conn, ledger, Path(cfg.alac_archive), eb.CAR_KIND.root(cfg), eb.CAR_KIND
+            )
+        finally:
+            ledger.close()
+
+    def _iphone_plan(self, conn, budget: int | None):
+        """The iPhone build's plan and the selection behind it, read-only."""
+        from . import edition_build as eb
+        from .edition_ledger import ledger_path, open_for_reading
+        from .editions import EDITIONS, select_edition
+
+        cfg = self._config
+        assert cfg is not None
+        masters, root = Path(cfg.alac_archive), eb.IPHONE_KIND.root(cfg)
+        ledger = open_for_reading(ledger_path(cfg))
+        try:
+            if budget is not None:
+                return eb.budgeted(conn, ledger, masters, root, eb.IPHONE_KIND, budget)
+            plan = eb.make_plan(conn, ledger, masters, root, kind=eb.IPHONE_KIND)
+            return plan, select_edition(conn, EDITIONS["iphone"], makeable=plan.makeable)
+        finally:
+            ledger.close()
+
     def _lossless_build(self) -> None:
         """The Lossless edition's plan, then the build on a typed BUILD.
 
@@ -1347,12 +1397,11 @@ class Console:
         do?" writes nothing. Only the build runs as a separate process, the
         way the iPhone build does.
         """
-        import sqlite3
         import subprocess
         import sys
 
         from . import edition_build as eb
-        from .edition_ledger import _SCHEMA, ledger_path
+        from .edition_ledger import ledger_path, open_for_reading
 
         cfg = self._config
         if cfg is None:
@@ -1363,14 +1412,7 @@ class Console:
         conn = self._open_db()
         if conn is None:
             return
-        lpath = ledger_path(cfg)
-        if lpath.exists():
-            ledger = sqlite3.connect(f"file:{lpath}?mode=ro", uri=True)
-            ledger.row_factory = sqlite3.Row
-        else:
-            ledger = sqlite3.connect(":memory:")
-            ledger.row_factory = sqlite3.Row
-            ledger.executescript(_SCHEMA)
+        ledger = open_for_reading(ledger_path(cfg))
         try:
             plan = eb.make_plan(conn, ledger, Path(cfg.alac_archive), Path(cfg.alac_library))
         finally:
@@ -1378,6 +1420,10 @@ class Console:
             ledger.close()
 
         _section("Lossless edition — what a build would do")
+        # The folder the build really writes to: the menu label is a fixed
+        # string, the configured folder is not (second review of #49).
+        print(f"  Lossless edition: {cfg.alac_library}")
+        print(f"  From the masters: {cfg.alac_archive}")
         for line in eb.plan_lines(plan, workers=2, free=eb.free_bytes(Path(cfg.alac_library))):
             print(line)
         _info("Nothing has been baked or written yet.")

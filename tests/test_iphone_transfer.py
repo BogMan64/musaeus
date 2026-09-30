@@ -163,4 +163,4 @@ class TestTheChecks:
         r = run(vault=vault, env={"MUSAEUS_IPHONE_LIBRARY": str(tmp_path / "nope")})
         assert r.returncode == 1
         assert "does not exist yet" in r.stdout
-        assert "build_car_library.py" in r.stdout, "it should say how to make one"
+        assert "musaeus edition-build iphone" in r.stdout, "it should say how to make one"

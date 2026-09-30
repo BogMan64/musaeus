@@ -216,9 +216,17 @@ def select_edition(
     artists: set[str] | None = None,
     budget_bytes: int | None = None,
     genre_priority: tuple[str, ...] = DEFAULT_GENRE_PRIORITY,
+    makeable: set[str] | None = None,
 ) -> Selection:
-    """Decide what goes into an edition. Reads only; writes nothing."""
+    """Decide what goes into an edition. Reads only; writes nothing.
+
+    *makeable*, when given, is the master paths the build can make; nothing
+    else is offered the budget (cloud review of #53: a track the build
+    blocks took the space and the phone came out short).
+    """
     tracks = load_tracks(conn, genres=genres, artists=artists)
+    if makeable is not None:
+        tracks = [t for t in tracks if t.file_path in makeable]
 
     # Deterministic: the same catalogue and criteria must always produce the
     # same edition, or a rebuild silently differs from what was delivered.
@@ -298,14 +306,19 @@ def master_path_for(
     return MasterResolution(p, False)
 
 
-def output_path_for(track: Track, spec: EditionSpec, root: Path) -> Path:
-    """Where *track* lands in the edition.
+def artist_album_path(master: Path, root: Path) -> Path:
+    """Where a master lands in an AAC edition: Artist/Album/Title.m4a.
 
     Mirrors the master's own Artist/Album shape rather than inventing one,
-    so an edition is diffable against the masters it came from.
+    so an edition is diffable against the masters it came from. The one
+    statement of the rule: the car and iPhone builds and the selection
+    preview all come here (cloud review of #53: it had been copied).
     """
-    src = Path(track.file_path)
-    suffix = ".m4a"
-    parent = src.parent.name or "Unknown Album"
-    grand = src.parent.parent.name or "Unknown Artist"
-    return root / grand / parent / (src.stem + suffix)
+    parent = master.parent.name or "Unknown Album"
+    grand = master.parent.parent.name or "Unknown Artist"
+    return root / grand / parent / (master.stem + ".m4a")
+
+
+def output_path_for(track: Track, spec: EditionSpec, root: Path) -> Path:
+    """Where *track* lands in the edition."""
+    return artist_album_path(Path(track.file_path), root)

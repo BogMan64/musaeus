@@ -52,7 +52,7 @@ def _row(label: str, value: int, total: int, width: int = 28) -> str:
 # ── Data gathering ────────────────────────────────────────────────────────────
 
 
-def _gather(conn) -> dict:  # type: ignore[type-arg]
+def _gather(conn, cfg=None) -> dict:  # type: ignore[type-arg]
     d: dict = {}
 
     # ── Pipeline status ───────────────────────────────────────────────────────
@@ -66,9 +66,11 @@ def _gather(conn) -> dict:  # type: ignore[type-arg]
     d["forged"] = conn.execute(
         "SELECT COUNT(*) FROM archive WHERE rg_tagged_at IS NOT NULL"
     ).fetchone()[0]
-    d["car_export"] = conn.execute(
-        "SELECT COUNT(*) FROM archive WHERE car_export_path IS NOT NULL"
-    ).fetchone()[0]
+    # As \`musaeus status\` counts them: the edition record, else the retired
+    # builder's rows (cloud review of #53: 'Car export 0' beside status's N).
+    from musaeus.edition_ledger import car_copy_count
+
+    d["car_export"] = car_copy_count(cfg, conn)
 
     # MB enrichment (columns may not exist yet)
     try:
@@ -374,7 +376,7 @@ def main() -> None:
 
     conn = open_db(cfg.db_path)
     try:
-        data = _gather(conn)
+        data = _gather(conn, cfg)
     finally:
         conn.close()
 

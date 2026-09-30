@@ -129,3 +129,37 @@ class TestNoEntryIsEverAbsolute:
         skipped = [n for n in result.notes if "skipped (path outside" in n]
         assert skipped, f"the skip was not reported: {result.notes}"
         assert ": 1" in skipped[0], skipped[0]
+
+
+def test_a_car_playlist_points_at_the_car_copy_from_the_edition_record(tmp_path):
+    # 2026-09-28: car copies are recorded in the edition ledger by the
+    # master's audio hash, not in archive.car_export_path. A car playlist
+    # (written inside CAR_Library) must find them there -- the row's own
+    # path is the master, outside the car tree, and would be dropped.
+    from musaeus.context import RunContext
+    from musaeus.edition_ledger import Copy, ledger_path, open_ledger, record
+
+    dv = make_disposable_vault(tmp_path)
+    edition = dv.cfg.car_library
+    copy = edition / "The Beatles" / "Revolver" / "Taxman.m4a"
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    copy.write_bytes(b"not really audio")
+    master = dv.cfg.alac_archive / "Rock" / "The Beatles" / "Revolver" / "The Beatles - Taxman.m4a"
+    master.parent.mkdir(parents=True, exist_ok=True)
+    master.write_bytes(b"not really audio")
+    cfg = dataclasses.replace(dv.cfg, playlists=edition / "Playlists")
+    conn = open_db(cfg.db_path)
+    conn.execute(
+        "INSERT INTO archive (file_path, filename, artist, title, genre, year, status, audio_hash) "
+        "VALUES (?,?,?,?,?,?,'CATALOGUED','h1')",
+        (str(master), master.name, "The Beatles", "Taxman", "Rock", "1966"),
+    )
+    conn.commit()
+    led = open_ledger(ledger_path(cfg))
+    record(led, Copy("car", "h1", str(master), 1, str(copy), "now", -14.0, "linear"))
+    led.close()
+    ctx = RunContext.new(cfg, conn)
+    PlaylistStage().run(ctx)
+    ctx.finish()
+    conn.close()
+    assert _entries(edition / "Playlists" / "Rock.m3u8") == ["../The Beatles/Revolver/Taxman.m4a"]

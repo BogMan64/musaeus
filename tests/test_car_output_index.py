@@ -158,6 +158,9 @@ def test_indexing_is_one_pass_not_a_scan_per_source(tmp_path: Path, monkeypatch)
 # ── The wiring, not just the function ──────────────────────────────────────────
 
 
+@pytest.mark.skip(
+    reason="script retired 2026-09-28: `musaeus edition-build car|iphone` builds the car and iPhone editions"
+)
 def test_the_index_is_built_once_outside_the_matching_loop() -> None:
     """A unit test on _index_output_by_tags alone cannot catch a caller
     that stops using it. Reverting main()'s call site to rebuild the index

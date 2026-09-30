@@ -251,3 +251,146 @@ class TestALossyMasterIsNotAGap:
         rep = Report()
         _catalogued_tracks_reach_the_car(cfg, rep)
         assert _only(rep).count == 1
+
+
+def test_a_car_edition_in_the_ledger_is_counted_from_the_ledger(tmp_path):
+    # 2026-09-28: the car edition records its copies in the edition ledger by
+    # the master's audio hash; car_export_path stays empty. Read from there,
+    # every catalogued master would look uncovered. Counted from the car
+    # build's plan since the cloud review of #53, so the real schema.
+    from musaeus.db import open_db, upsert_archive
+    from musaeus.edition_ledger import Copy, ledger_path, open_ledger, record
+
+    cfg = MusicConfig(
+        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "Q", runs_root=tmp_path / "RUNS", meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "Libraries" / "ALAC_Library", db_path=tmp_path / "musaeus.db",
+    )  # fmt: skip
+    conn = open_db(cfg.db_path)
+    for name, h in (("A - a.m4a", "ha"), ("A - b.m4a", "hb")):
+        m = cfg.alac_archive / "Rock" / "A" / "Al" / name
+        m.parent.mkdir(parents=True, exist_ok=True)
+        m.write_bytes(b"\0")
+        upsert_archive(conn, {"file_path": str(m), "status": "CATALOGUED", "audio_hash": h,
+                              "codec": "alac"})  # fmt: skip
+    conn.commit()
+    conn.close()
+    master = cfg.alac_archive / "Rock" / "A" / "Al" / "A - a.m4a"
+    copy = cfg.car_library / "A" / "Al" / "A - a.m4a"
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(b"\0")
+    led = open_ledger(ledger_path(cfg))
+    mtime = master.stat().st_mtime_ns
+    record(led, Copy("car", "ha", str(master), mtime, str(copy), "now", -14.0, "linear"))
+    led.close()
+    rep = Report()
+    _catalogued_tracks_reach_the_car(cfg, rep)
+    f = _only(rep)
+    assert f.level == "warn" and f.count == 1, (f.level, f.detail)
+
+
+def test_a_track_the_car_build_cannot_make_is_not_promised_to_it(tmp_path):
+    # Cloud review of #53: two masters with the same Artist/Album/Title under
+    # two genres meet in the car layout, and the build blocks the second.
+    # The doctor said "`musaeus edition-build car` makes them" on every run,
+    # and running it never cleared the warning. It now counts from the car
+    # build's own plan.
+    from musaeus.db import open_db, upsert_archive
+    from musaeus.edition_ledger import Copy, ledger_path, open_ledger, record
+
+    cfg = MusicConfig(
+        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "Q", runs_root=tmp_path / "RUNS", meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "Libraries" / "ALAC_Library", db_path=tmp_path / "musaeus.db",
+    )  # fmt: skip
+    conn = open_db(cfg.db_path)
+    masters = {}
+    for genre, h in (("Rock", "h1"), ("Soft Rock", "h2")):
+        m = cfg.alac_archive / genre / "Stones" / "Hits" / "The Rolling Stones - Angie.m4a"
+        m.parent.mkdir(parents=True, exist_ok=True)
+        m.write_bytes(b"\0")
+        upsert_archive(conn, {"file_path": str(m), "status": "CATALOGUED", "audio_hash": h,
+                              "codec": "alac"})  # fmt: skip
+        masters[h] = m
+    conn.commit()
+    conn.close()
+    copy = cfg.car_library / "Stones" / "Hits" / "The Rolling Stones - Angie.m4a"
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(b"\0")
+    led = open_ledger(ledger_path(cfg))
+    mtime = masters["h1"].stat().st_mtime_ns
+    record(led, Copy("car", "h1", str(masters["h1"]), mtime, str(copy), "now", -14.0, "linear"))
+    led.close()
+    rep = Report()
+    _catalogued_tracks_reach_the_car(cfg, rep)
+    f = _only(rep)
+    assert "makes them" not in f.detail, f.detail
+    assert "cannot be built" in f.detail, f.detail
+
+
+def _plan_vault(tmp_path, rows):
+    """A real-schema catalogue; *rows* are (relative path or absolute, hash, on disk)."""
+    from musaeus.db import open_db, upsert_archive
+
+    cfg = MusicConfig(
+        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "Q", runs_root=tmp_path / "RUNS", meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "Libraries" / "ALAC_Library", db_path=tmp_path / "musaeus.db",
+    )  # fmt: skip
+    conn = open_db(cfg.db_path)
+    for where, h, on_disk, codec in rows:
+        m = Path(where) if Path(where).is_absolute() else cfg.alac_archive / where
+        if on_disk:
+            m.parent.mkdir(parents=True, exist_ok=True)
+            m.write_bytes(b"\0")
+        upsert_archive(conn, {"file_path": str(m), "status": "CATALOGUED", "audio_hash": h,
+                              "codec": codec})  # fmt: skip
+    conn.commit()
+    conn.close()
+    return cfg
+
+
+def test_a_missing_ffprobe_is_a_finding_not_a_traceback(tmp_path, monkeypatch):
+    # Cloud review of #53: the plan probes a codec-less row with ffprobe; with
+    # none installed `musaeus doctor` died before its own tools check.
+    from musaeus import edition_bake
+
+    cfg = _plan_vault(tmp_path, [("Rock/A/Al/A - T.m4a", "h1", True, None)])
+
+    def no_ffprobe(path):
+        raise FileNotFoundError("ffprobe")
+
+    monkeypatch.setattr(edition_bake, "probe", no_ffprobe)
+    rep = Report()
+    _catalogued_tracks_reach_the_car(cfg, rep)
+    assert _only(rep).level == "warn"
+
+
+def test_a_gone_master_is_not_a_car_problem_but_one_outside_the_masters_is(tmp_path):
+    # The docstring's own rule: a master that is gone is not a car problem.
+    # A master outside ALAC-Archival is one the car build never makes.
+    outside = tmp_path / "elsewhere" / "B - Out.m4a"
+    cfg = _plan_vault(
+        tmp_path,
+        [("Rock/A/Al/A - Gone.m4a", "h1", False, "alac"), (str(outside), "h2", True, "alac")],
+    )
+    rep = Report()
+    _catalogued_tracks_reach_the_car(cfg, rep)
+    f = _only(rep)
+    assert f.count == 1 and "cannot be built" in f.detail, (f.count, f.detail)
+
+
+def test_before_the_first_new_car_build_the_count_is_the_plans(tmp_path):
+    # No car copy recorded yet and no old car edition: the build's plan, not
+    # the old builder's rules (which called lossy masters unimprovable).
+    cfg = _plan_vault(
+        tmp_path,
+        [
+            ("Rock/A/Al/A - One.m4a", "h1", True, "alac"),
+            ("Rock/A/Al/A - Two.m4a", "h2", True, "aac"),
+        ],
+    )
+    rep = Report()
+    _catalogued_tracks_reach_the_car(cfg, rep)
+    f = _only(rep)
+    assert f.count == 2 and "makes them" in f.detail, (f.count, f.detail)

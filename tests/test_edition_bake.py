@@ -183,3 +183,42 @@ def test_a_wide_range_master_that_needs_no_lift_is_not_compressed(tmp_path):
     assert float(measured["input_i"]) > -18, measured  # needs turning down, not lifting
     result = eb.bake(master, tmp_path / "c.m4a")
     assert result.mode == "linear", "a track that only needs turning down was compressed"
+
+
+def test_a_measurement_from_a_failed_ffmpeg_run_is_refused(tmp_path, monkeypatch):
+    # Second review of #49: the measure pass parsed loudnorm's JSON without
+    # checking ffmpeg's exit. loudnorm prints its JSON even when ffmpeg stops
+    # early, so a partial measurement would steer the second pass.
+    partial = (
+        '{"input_i" : "-30.00", "input_tp" : "-9.00", "input_lra" : "1.00",'
+        ' "input_thresh" : "-40.00", "target_offset" : "0.00"}'
+    )
+    monkeypatch.setattr(
+        eb, "_run", lambda cmd, timeout: subprocess.CompletedProcess(cmd, 1, "", partial)
+    )
+    with pytest.raises(eb.BakeError, match="exited 1"):
+        eb.ffmpeg_measure_loudnorm(tmp_path / "m.m4a")
+
+
+def test_the_masters_encoder_notes_are_not_copied(tmp_path):
+    # Cloud review of #53: a lossy master's iTunSMPB (ITS encoder's priming,
+    # padding and length) landed on the new AAC copy, and players that honour
+    # it cut the first 48 ms of the song. The copy's own encode describes it.
+    master = _master(tmp_path / "m.m4a")
+    _tag(
+        master,
+        iTunSMPB=" 00000000 00000840 000001C0 0000000000055E00",
+        ISRC="USSM16600249",
+    )
+    f = __import__("mutagen.mp4", fromlist=["MP4"]).MP4(master)
+    f.tags["----:com.apple.iTunes:Encoding Params"] = [b"vers\x00\x00\x00\x01"]
+    f.save()
+    out = tmp_path / "c.m4a"
+    eb.bake(master, out)
+    eb.copy_tags(master, out, "car -14 LUFS master=abc")
+    from mutagen.mp4 import MP4
+
+    keys = {k.lower() for k in MP4(out).tags}
+    assert "----:com.apple.itunes:itunsmpb" not in keys
+    assert "----:com.apple.itunes:encoding params" not in keys
+    assert "----:com.apple.itunes:isrc" in keys, "the ordinary tags still travel"

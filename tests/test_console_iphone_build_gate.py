@@ -46,10 +46,17 @@ def _seed(cfg: MusicConfig) -> None:
     cfg.ensure_dirs()
     conn = open_db(cfg.db_path)
     for i in range(6):
+        # Real files under the masters: the build's plan only counts masters
+        # that are there (a missing one is blocked, not built).
+        master = cfg.alac_archive / "Rock" / "A" / "Al" / f"A - T{i}.m4a"
+        master.parent.mkdir(parents=True, exist_ok=True)
+        master.write_bytes(b"x")
         upsert_archive(
             conn,
             {
-                "file_path": f"/vault/a{i}.m4a",
+                "file_path": str(master),
+                "audio_hash": f"h{i}",
+                "codec": "alac",
                 "status": "CATALOGUED",
                 "artist": "A",
                 "album": "Al",
@@ -105,9 +112,8 @@ def test_typing_build_runs_the_iphone_builder_with_the_budget(cfg, monkeypatch) 
     launched = _run(cfg, monkeypatch, ["3", "0.02", "BUILD"])
     assert len(launched) == 1, "exactly one build should start"
     cmd = launched[0]
-    assert any(c.endswith("build_car_library.py") for c in cmd)
-    assert "--edition" in cmd and cmd[cmd.index("--edition") + 1] == "iphone"
-    assert "--from-catalogue" in cmd
+    # The edition framework's builder since 2026-09-28, not build_car_library.py.
+    assert "edition-build" in cmd and cmd[cmd.index("edition-build") + 1] == "iphone"
     # The budget the owner typed has to reach the builder. Without this the
     # menu would preview a 20 MB selection and then encode the whole library.
     assert "--budget-gb" in cmd
@@ -132,3 +138,40 @@ def test_the_long_editions_are_never_offered_a_build(cfg, monkeypatch, idx, name
     on the launched command rather than passing quietly.
     """
     assert _run(cfg, monkeypatch, [str(idx + 1), "BUILD"]) == []
+
+
+def test_the_time_shown_before_build_is_the_builders_own_estimate(cfg, monkeypatch, capsys):
+    # Cloud review of #53: the screen still used the old builder's 2.2 s per
+    # track -- about a twentieth of the new encode's time. The estimate now
+    # comes from the build's own plan (Plan.hours).
+    from musaeus import edition_build
+
+    monkeypatch.setattr(edition_build, "AAC_WORK_PER_AUDIO_SECOND", 50.0)
+    _run(cfg, monkeypatch, ["3", "", "no"])
+    # 6 tracks x 240 s x 50 worker-s / 2 workers = 10 hours
+    assert "roughly 10 hour(s)" in capsys.readouterr().out
+
+
+def test_the_screen_says_what_build_would_delete(cfg, monkeypatch, capsys):
+    # Cloud review of #53: with a smaller (or mistyped) budget, the screen
+    # said only "Building would encode 0 track(s)", and BUILD then deleted
+    # the copies that no longer fit.
+    from musaeus import edition_build as eb
+    from musaeus.edition_ledger import Copy, ledger_path, open_ledger, record
+
+    _seed(cfg)
+    led = open_ledger(ledger_path(cfg))
+    for i, master in enumerate(sorted(cfg.alac_archive.rglob("*.m4a"))):
+        out = eb.IPHONE_KIND.place(cfg.alac_archive, cfg.iphone_library, master)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"x")
+        mtime = master.stat().st_mtime_ns
+        record(led, Copy("iphone", f"h{i}", str(master), mtime, str(out), "now", -14.0, "linear"))
+    led.close()
+    con = Console()
+    con._config = cfg
+    answers = iter(["3", "0.02", "no"])  # room for 2 of the 6 on the phone
+    monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+    con._edition_menu()
+    out = capsys.readouterr().out
+    assert "delete 4" in out.lower(), out

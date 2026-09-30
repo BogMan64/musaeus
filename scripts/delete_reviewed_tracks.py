@@ -90,15 +90,19 @@ def copies(row: sqlite3.Row, libs: Path) -> list[Path]:
     return out
 
 
-def remove_emptied_folders(folders: set[Path], libs: Path) -> int:
+def remove_emptied_folders(
+    folders: set[Path], libs: Path, editions: tuple[Path, ...] = ()
+) -> int:
     """rmdir each folder a deletion emptied, and its parents while they are
-    empty, stopping at the tier roots. Never rmtree: art, a .part or a stray
-    the catalogue does not know keeps its folder for a person to look at.
-    (Before this, 224 removals on 2026-09-23 left ~3,600 empty folders.)"""
-    roots = {libs, *(libs / t for t in TIERS)}
+    empty, stopping at the tier roots and every edition's own folder. Never
+    rmtree: art, a .part or a stray the catalogue does not know keeps its
+    folder for a person to look at. (Before this, 224 removals on 2026-09-23
+    left ~3,600 empty folders; and iPHONE_Library, not a tier here, went
+    with its last copy -- cloud review of #53.)"""
+    roots = {libs, *(libs / t for t in TIERS), *editions}
     removed = 0
     for d in sorted(folders, key=lambda p: len(p.parts), reverse=True):
-        while d not in roots and d != d.parent and libs in d.parents:
+        while d not in roots and d != d.parent and any(r in d.parents for r in roots):
             try:
                 d.rmdir()
             except OSError:
@@ -174,15 +178,20 @@ def main() -> int:
     # Through edition_ledger, the one definition of where the record lives
     # and what it holds (cloud review of #49: a second copy of the path would
     # silently find nothing the day db_history_dir moves, as it did once).
-    from musaeus.edition_build import EDITION
+    from musaeus.edition_bake import read_marker
+    from musaeus.edition_build import KINDS, marker_for
     from musaeus.edition_ledger import copies as edition_copies
     from musaeus.edition_ledger import forget as forget_copy
     from musaeus.edition_ledger import ledger_path, open_ledger
 
     edition = open_ledger(ledger_path(cfg)) if ledger_path(cfg).exists() else None
-    edition_copy: dict[str, str] = {}
+    # Every edition -- Lossless, car, iPhone (Grey, 2026-09-28: all copies).
+    edition_copy: dict[str, dict[str, str]] = {}
     if edition is not None:
-        edition_copy = {h: c.output_path for h, c in edition_copies(edition, EDITION).items()}
+        edition_copy = {
+            name: {h: c.output_path for h, c in edition_copies(edition, name).items()}
+            for name in KINDS
+        }
 
     run_id = f"delete_reviewed_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}_{uuid.uuid4().hex[:6]}"
     n_files = n_rows = n_denied = n_absent = n_shared = n_kept_audio = 0
@@ -197,13 +206,19 @@ def main() -> int:
         files_for_row = 0
         paths = copies(row, libs)
         h0 = row["audio_hash"] if "audio_hash" in set(row.keys()) else None
-        ec = edition_copy.get(h0) if h0 else None
-        if ec and h0 in keep_hashes:
-            # A copy is keyed by audio: another row with this audio is still
-            # in the library, so this copy is its copy too.
-            print(f"     KEPT (a surviving row has the same audio): {ec}")
-        elif ec and Path(ec) not in paths:
-            paths.append(Path(ec))
+        ecs = [(name, held[h0]) for name, held in edition_copy.items() if h0 and h0 in held]
+        for name, ec in ecs:
+            if h0 in keep_hashes:
+                # A copy is keyed by audio: another row with this audio is
+                # still in the library, so this copy is its copy too.
+                print(f"     KEPT (a surviving row has the same audio): {ec}")
+            elif Path(ec).is_file() and read_marker(Path(ec)) != marker_for(h0, KINDS[name]):
+                # The build never deletes a file whose marker is not the
+                # copy's, and neither does this (second review of #49). The
+                # record is stale; it goes below with the others.
+                print(f"     LEFT (the file there is not this track's copy): {ec}")
+            elif Path(ec) not in paths:
+                paths.append(Path(ec))
         for p in paths:
             if not p.is_file():
                 continue
@@ -224,8 +239,9 @@ def main() -> int:
             files_for_row += 1
         # The copy's record goes AFTER its file, like the row: files first,
         # then the records (see ORDER MATTERS above).
-        if ec and h0 not in keep_hashes and args.execute and edition is not None:
-            forget_copy(edition, EDITION, h0)
+        if h0 not in keep_hashes and args.execute and edition is not None:
+            for name, _ in ecs:
+                forget_copy(edition, name, h0)
         h = row["audio_hash"] if "audio_hash" in set(row.keys()) else None
         audio_kept = bool(h) and h in keep_hashes
         if audio_kept:
@@ -254,7 +270,9 @@ def main() -> int:
             led.commit()
         if edition is not None:
             edition.commit()
-        n_dirs = remove_emptied_folders(emptied, libs)
+        n_dirs = remove_emptied_folders(
+            emptied, libs, tuple(kind.root(cfg) for kind in KINDS.values())
+        )
     conn.close()
     if led is not None:
         led.close()

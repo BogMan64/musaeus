@@ -38,6 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from musaeus.config import MusicConfig  # noqa: E402
+from musaeus.edition_build import TMP_SUFFIX  # noqa: E402
 
 #: The app whose Documents folder the music lands in. VLC reads a folder tree
 #: and plays m4a natively; iOS sandboxing means the built-in Music app can
@@ -79,8 +80,7 @@ def main() -> int:
     if not src.is_dir():
         print(f"\n  The iPhone edition does not exist yet at {src}.")
         print("  Build it first:")
-        print("     python3 scripts/car_library/build_car_library.py \\")
-        print("             --edition iphone --source car --budget-gb 45")
+        print("     musaeus edition-build iphone --budget-gb 45")
         return 1
     files = list(src.rglob("*.m4a"))
     size = sum(f.stat().st_size for f in files)
@@ -130,7 +130,7 @@ def main() -> int:
     if args.wipe:
         lines.append(f"rm -rf {mount}/*")
     lines += [
-        f"rsync -a --info=progress2 '{src}/' '{mount}/'",
+        f"rsync -a --info=progress2 --exclude='*{TMP_SUFFIX}' '{src}/' '{mount}/'",
         f"fusermount -u {mount}",
     ]
     for ln in lines:
