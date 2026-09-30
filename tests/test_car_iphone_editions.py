@@ -647,3 +647,46 @@ def test_no_ffmpeg_is_left_running_when_fdkaac_cannot_start(tmp_path, monkeypatc
     time.sleep(0.5)
     left = [name for name, p in started if name == "ffmpeg" and p.poll() is None]
     assert not left, "an ffmpeg was left running"
+
+
+def _events(cfg) -> int:
+    conn = sqlite3.connect(cfg.db_path)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_a_car_build_writes_nothing_to_the_catalogue(cfg):
+    # Second review of #53, 5: edition-build is read-only on the catalogue,
+    # but its playlist step logged a run's start and end into its events.
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    conn = sqlite3.connect(cfg.db_path)
+    conn.execute("UPDATE archive SET genre = 'Rock', artist = 'Stones', title = 'Angie'")
+    conn.commit()
+    conn.close()
+    before = _events(cfg)
+    r = _cli(cfg, "car")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (cfg.car_library / "Playlists" / "Rock.m3u8").is_file()
+    assert _events(cfg) == before, "the build wrote to the catalogue"
+
+
+def test_playlists_are_left_as_they_are_when_nothing_is_catalogued(cfg):
+    # Second review of #53, 3: with nothing catalogued (a wipe), the playlist
+    # step wrote nothing, the sweep then deleted every playlist, and the
+    # build said nothing.
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    _build(cfg, eb.CAR_KIND)
+    playlists = cfg.car_library / "Playlists"
+    playlists.mkdir(parents=True, exist_ok=True)
+    kept = playlists / "Rock.m3u8"
+    kept.write_text("#EXTM3U\n../Stones/Hits/The Rolling Stones - Angie.m4a\n")
+    wipe = sqlite3.connect(cfg.db_path)
+    wipe.execute("DELETE FROM archive")
+    wipe.commit()
+    wipe.close()
+    r = _cli(cfg, "car")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert kept.is_file(), "the playlists were swept away"
+    assert "left as they were" in r.stdout, r.stdout

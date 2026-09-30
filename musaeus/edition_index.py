@@ -91,6 +91,26 @@ def _entries(playlist: Path) -> list[str]:
     ]
 
 
+def _catalogue_read_only(db_path: Path) -> sqlite3.Connection:
+    """The catalogue for the playlist stage, read-only.
+
+    The stage logs its run's start and end as events, and an edition build
+    must not write to the catalogue (second review of #53: five rows per
+    build). It reads the catalogue's archive through a view, and its events
+    go to an in-memory table that is thrown away.
+    """
+    conn = sqlite3.connect("file::memory:", uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute("ATTACH DATABASE ? AS cat", (f"file:{db_path}?mode=ro",))
+    events = conn.execute(
+        "SELECT sql FROM cat.sqlite_master WHERE type = 'table' AND name = 'events'"
+    ).fetchone()
+    if events is not None:
+        conn.execute(events[0])
+    conn.execute("CREATE TEMP VIEW archive AS SELECT * FROM cat.archive")
+    return conn
+
+
 def write_index(cfg: MusicConfig, edition_root: Path, apply: bool) -> tuple[list[str], list[str]]:
     """Write (or dry-run) the index for *edition_root*.
 
@@ -108,8 +128,7 @@ def write_index(cfg: MusicConfig, edition_root: Path, apply: bool) -> tuple[list
     # nothing else should see this override.
     cfg = dataclasses.replace(cfg, playlists=index_dir)
 
-    conn = sqlite3.connect(cfg.db_path)
-    conn.row_factory = sqlite3.Row
+    conn = _catalogue_read_only(Path(cfg.db_path))
     ctx = RunContext.new(cfg, conn, dry_run=not apply)
     try:
         stage = PlaylistStage()
@@ -133,6 +152,15 @@ def write_index(cfg: MusicConfig, edition_root: Path, apply: bool) -> tuple[list
         # An index that lists what is gone is worse than no index: in the car
         # it is a dead entry, and here it looked exactly like a build failure.
         fresh = {f for f in index_dir.glob("*.m3u8") if before.get(f) != f.stat().st_mtime_ns}
+        if not fresh:
+            # Nothing written: nothing catalogued with a genre (after a
+            # wipe, say). Sweeping against nothing would delete every
+            # playlist (second review of #53): they are left as they were.
+            notes.append(
+                "nothing was written (nothing catalogued with a genre): "
+                "the playlists were left as they were"
+            )
+            return notes, verify_index(index_dir) if before else []
         for f in sorted(index_dir.glob("*.m3u8")):
             if f not in fresh:
                 f.unlink()

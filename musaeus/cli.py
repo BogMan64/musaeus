@@ -1222,10 +1222,13 @@ def _cmd_edition_build(args) -> int:
             # entries are resolved against the disk; a dead one fails.
             from .edition_index import write_index
 
-            _, problems = write_index(cfg, edition_root, apply=True)
+            notes, problems = write_index(cfg, edition_root, apply=True)
             problems = [p for p in problems if not p.startswith("no playlists were written")]
             playlists = sorted((edition_root / "Playlists").glob("*.m3u8"))
             print(f"  Playlists: {len(playlists):,} in {edition_root / 'Playlists'}")
+            for note in notes:
+                if note.startswith(("nothing was written", "removed stale", "left out")):
+                    print(f"  Playlists: {note}")
             for problem in problems[:10]:
                 print(f"  PLAYLIST PROBLEM: {problem}")
             index_failed = bool(problems)
