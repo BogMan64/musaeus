@@ -186,6 +186,29 @@ class TestDiagnose:
             f.check == "edition copies whose master is gone" and f.count == 2 for f in rep.findings
         ), [(f.check, f.count) for f in rep.findings]
 
+    def test_a_copy_whose_master_is_on_disk_but_not_catalogued_is_not_gone(self, vault, tmp_path):
+        # Second review of #53, 7: the build KEEPS such a copy (its master is
+        # not positively gone), so "the next edition build removes them"
+        # never cleared -- after a wipe, a warning for every copy.
+        from musaeus.edition_ledger import Copy, open_ledger, record
+
+        vault.db_history_dir = tmp_path / "_db_backups"
+        master = tmp_path / "masters" / "m.m4a"
+        master.parent.mkdir()
+        master.write_bytes(b"x")
+        copy = tmp_path / "car" / "copy.m4a"
+        copy.parent.mkdir()
+        copy.write_bytes(b"x")
+        conn = open_ledger(vault.db_history_dir / "editions.db")
+        record(
+            conn, Copy("car", "h_uncatalogued", str(master), 1, str(copy), "now", -14.0, "linear")
+        )
+        conn.close()
+        rep = diagnose(vault)
+        assert not any(
+            f.check == "edition copies whose master is gone" and f.count for f in rep.findings
+        ), [(f.check, f.count) for f in rep.findings]
+
     def test_quarantine_holding_a_sole_copy_is_a_failure(self, vault):
         """Purging quarantine wholesale nearly lost 1,002 songs this way."""
         _add(vault, "q.m4a", artist="Herb Alpert", title="Tijuana Taxi", status="DUPE_REVIEW")

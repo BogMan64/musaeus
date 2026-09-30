@@ -690,3 +690,24 @@ def test_playlists_are_left_as_they_are_when_nothing_is_catalogued(cfg):
     assert r.returncode == 0, r.stdout + r.stderr
     assert kept.is_file(), "the playlists were swept away"
     assert "left as they were" in r.stdout, r.stdout
+
+
+def test_a_car_build_refuses_to_start_without_fdkaac(cfg, monkeypatch, capsys):
+    # Second review of #53, 6: nothing checked for fdkaac; a build measured
+    # every song, then failed them all.
+    from musaeus import cli
+
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    monkeypatch.setattr(cli, "get_config", lambda: cfg)
+    monkeypatch.setattr(edition_bake, "FDKAAC", "/nonexistent/fdkaac")
+    monkeypatch.setenv("MUSAEUS_NO_SLEEP_INHIBIT", "1")
+    args = cli._build_parser().parse_args(["edition-build", "car"])
+    assert cli._cmd_edition_build(args) != 0
+    assert "fdkaac" in capsys.readouterr().err
+    assert not list(cfg.car_library.rglob("*.m4a")) if cfg.car_library.exists() else True
+
+
+def test_the_doctor_names_a_missing_fdkaac():
+    from musaeus import doctor
+
+    assert "fdkaac" in {name for name, *_ in doctor._EXTERNAL_TOOLS}

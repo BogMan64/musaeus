@@ -208,12 +208,23 @@ def diagnose(cfg: MusicConfig) -> Report:
     #     set aside. The next edition build removes them; until then the
     #     edition holds a song the masters do not.
     #     Every edition's copies, not only the Lossless (cloud review of #53).
-    from .edition_build import KINDS
 
-    every_copy = {p: h for name in KINDS for p, h in (recorded_copies(cfg, name) or {}).items()}
+    #     Gone by the build's own rule (second review of #53): set aside, or
+    #     its master missing from disk. A master on disk but not in the
+    #     catalogue (after a wipe) keeps its copy, so it is no warning.
+    every_copy = _every_edition_copy(cfg)
     if every_copy:
+        from .db import SET_ASIDE_STATUSES
+
         live = {r["audio_hash"] for r in rows if r["status"] == "CATALOGUED" and r["audio_hash"]}
-        gone = [p for p, h in every_copy.items() if h not in live and Path(p).exists()]
+        aside = {r["audio_hash"] for r in rows if r["status"] in SET_ASIDE_STATUSES}
+        gone = [
+            c.output_path
+            for c in every_copy
+            if c.master_hash not in live
+            and (c.master_hash in aside or not Path(c.master_path).exists())
+            and Path(c.output_path).exists()
+        ]
         rep.add(
             "warn" if gone else "ok",
             "edition copies whose master is gone",
@@ -784,6 +795,22 @@ def _an_old_car_edition(cfg: MusicConfig) -> bool:
         return False
 
 
+def _every_edition_copy(cfg: MusicConfig) -> list:
+    """Every recorded copy of every edition (edition_ledger.Copy), read-only."""
+    from .edition_build import KINDS
+    from .edition_ledger import copies, ledger_path, open_for_reading
+
+    if getattr(cfg, "db_history_dir", None) is None or not ledger_path(cfg).exists():
+        return []
+    ledger = open_for_reading(ledger_path(cfg))
+    try:
+        return [c for name in KINDS for c in copies(ledger, name).values()]
+    except sqlite3.Error:
+        return []
+    finally:
+        ledger.close()
+
+
 def _catalogued_tracks_reach_the_car(cfg: MusicConfig, rep: Report) -> None:
     """How many catalogued tracks have no car edition, and could have one?
 
@@ -973,6 +1000,7 @@ _EXTERNAL_TOOLS: tuple[tuple[str, str, str, bool], ...] = (
     ("ffmpeg", "every encode, bake and mask", "ffmpeg", True),
     ("ffprobe", "duration, sample rate and channel checks", "ffmpeg", True),
     ("fpcalc", "AcoustID fingerprinting", "libchromaprint-tools", False),
+    ("fdkaac", "the car and iPhone editions' AAC encode", "fdkaac", False),
     ("idevice_id", "seeing an attached iPhone", "libimobiledevice-utils", False),
     ("ifuse", "copying the iPhone edition onto the device", "ifuse", False),
     ("rsync", "the backup tiers", "rsync", False),

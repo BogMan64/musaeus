@@ -1103,6 +1103,20 @@ def _cmd_edition_build(args) -> int:
         )
         return 1
 
+    if kind.name in ("car", "iphone") and not args.dry_run:
+        import shutil
+
+        from . import edition_bake
+
+        if not shutil.which(edition_bake.FDKAAC):
+            # Without it every song is measured and then fails (second
+            # review of #53).
+            print(
+                "ERROR: fdkaac is not installed -- the car and iPhone editions encode with "
+                "it. Install it: sudo apt install fdkaac",
+                file=sys.stderr,
+            )
+            return 2
     if not args.dry_run:
         # Hours of work: keep the machine awake (cloud review of #53 -- the
         # retired builder held this, and the idle throttle needs the
