@@ -18,8 +18,8 @@ import pytest
 from musaeus import edition_bake as eb
 
 pytestmark = pytest.mark.skipif(
-    not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
-    reason="ffmpeg/ffprobe not available",
+    not (shutil.which("ffmpeg") and shutil.which("ffprobe") and shutil.which("fdkaac")),
+    reason="ffmpeg/ffprobe/fdkaac not available",
 )
 
 
@@ -126,7 +126,10 @@ def test_the_aac_encode_runs_with_stdin_closed(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", spy)
     eb.bake_aac(master, tmp_path / "c.m4a", noise=True)
     monkeypatch.undo()
-    assert seen and all(stdin == subprocess.DEVNULL for _, stdin in seen)
+    # Nothing reads the terminal: ffmpeg's stdin is closed, and fdkaac's is
+    # the pipe from ffmpeg.
+    assert seen and all(stdin is not None for _, stdin in seen), seen
+    assert all(stdin == subprocess.DEVNULL for cmd, stdin in seen if cmd[0] == "ffmpeg")
     assert all("-nostdin" in cmd for cmd, _ in seen if cmd[0] == "ffmpeg")
 
 
@@ -177,7 +180,8 @@ def test_the_iphone_copy_is_limited_too():
     # Synthetic masters never overshot, so the graph itself is checked.
     for noise in (True, False):
         graph = eb.aac_filter("loudnorm=linear=true", 44_100, 2, 10.0, noise)
-        assert graph.endswith(f"alimiter=limit={eb.CEILING}:level=disabled[out]"), graph
+        last = graph.rsplit("]", 2)[-2] if noise else graph
+        assert f"alimiter=limit={eb.CEILING}:level=disabled" in last, graph
 
 
 def test_the_finished_file_is_measured_not_only_the_report(tmp_path, monkeypatch):
@@ -274,8 +278,15 @@ def test_a_hidden_track_gets_its_car_copy(tmp_path):
 
 
 def test_a_car_copy_with_no_noise_in_it_is_refused(tmp_path, monkeypatch):
-    # ...and the check could not tell a car copy with no noise at all.
-    monkeypatch.setattr(eb, "NOISE_LEVELS_DB", {"brown": -120.0, "pink": -120.0, "white": -120.0})
+    # ...and the check could not tell a car copy with no noise at all. The
+    # noise is dropped from the graph while the build still expects it (a
+    # graph fault); turning the levels down would move the expected bed too.
+    real = eb.aac_filter
+
+    def no_noise(loudnorm, rate, channels, seconds, noise, ceiling=None, **kw):
+        return real(loudnorm, rate, channels, seconds, False, ceiling, **kw)
+
+    monkeypatch.setattr(eb, "aac_filter", no_noise)
     master = _hidden_track_master(tmp_path / "m.m4a")
     with pytest.raises(eb.BakeError, match="noise"):
         eb.bake_aac(master, tmp_path / "car.m4a", noise=True)
@@ -305,7 +316,15 @@ def _limits_used(monkeypatch) -> list[float]:
         seen.extend(float(x) for x in re.findall(r"alimiter=limit=([\d.]+)", graph))
         return real(cmd, timeout)
 
+    real_pipe = eb._run_pipeline
+
+    def spy_pipe(first, second, timeout):
+        graph = next((c for c in first if "alimiter=limit=" in c), "")
+        seen.extend(float(x) for x in re.findall(r"alimiter=limit=([\d.]+)", graph))
+        return real_pipe(first, second, timeout)
+
     monkeypatch.setattr(eb, "_run", spy)
+    monkeypatch.setattr(eb, "_run_pipeline", spy_pipe)
     return seen
 
 
@@ -348,13 +367,61 @@ def test_a_copy_within_the_limit_is_encoded_once(tmp_path, monkeypatch):
     assert limits == [eb.CEILING]
 
 
-def test_the_aac_encode_has_no_noise_substitution():
-    # The 700-song vault build, 2026-09-29: four copies still peaked +0.9 to
-    # +1.5 dBTP after three tries, and the peak jumped about as the limiter
-    # was lowered. The encoder's perceptual noise substitution (on by
-    # default) put the spikes in: every car song has noise under it for it
-    # to substitute. Billie Jean: +3.0 with it, -0.6 without; five of the six
-    # worst songs under 0 on the first encode.
-    cmd = eb.aac_command(Path("m.m4a"), Path("c.m4a"), "[0:a:0]anull[out]", 44_100)
-    assert cmd[cmd.index("-aac_pns") + 1] == "0"
-    assert "pns=off" in eb.aac_settings(noise=True), "a copy made with it must be made again"
+def test_the_aac_copy_is_encoded_by_fdk(tmp_path, monkeypatch):
+    # 2026-09-30: ffmpeg's own AAC encoder (5.1 and 6.1 alike) put short
+    # spikes into ~4% of songs -- Melissa Etheridge's "I Want To Come Over"
+    # peaks -13.1 dBFS and a plain encode spiked to -5.3; RMS unchanged, so
+    # clicks. Fraunhofer's FDK (fdkaac) gave -13.7. Grey: switch.
+    seen = []
+    real = subprocess.Popen
+
+    def spy(cmd, *a, **k):
+        seen.append(list(cmd))
+        return real(cmd, *a, **k)
+
+    monkeypatch.setattr(subprocess, "Popen", spy)
+    eb.bake_aac(_master(tmp_path / "m.m4a"), tmp_path / "car.m4a", noise=True)
+    monkeypatch.undo()
+    assert any(Path(cmd[0]).name == "fdkaac" for cmd in seen), "not encoded by fdkaac"
+    assert not any("-c:a" in cmd and cmd[cmd.index("-c:a") + 1] == "aac" for cmd in seen)
+    assert "enc=fdkaac" in eb.aac_settings(noise=True), "a copy made before must be made again"
+    assert eb._audio_stream(eb.probe(tmp_path / "car.m4a"))["codec_name"] == "aac"
+
+
+def test_the_copy_keeps_its_own_gapless_note_not_the_masters(tmp_path):
+    # fdkaac writes the copy's own encoder delay and padding (iTunSMPB) for
+    # gapless playback; copy_tags must keep it, and never put the master's
+    # in its place (cloud review of #53, finding 6: a player honouring the
+    # master's cut 48 ms off the start).
+    from mutagen.mp4 import MP4, MP4FreeForm
+
+    master = _master(tmp_path / "m.m4a")
+    f = MP4(master)
+    if f.tags is None:
+        f.add_tags()
+    f.tags["----:com.apple.iTunes:iTunSMPB"] = [MP4FreeForm(b" 00000000 00000840 000001C0 0")]
+    f.save()
+    out = tmp_path / "phone.m4a"
+    eb.bake_aac(master, out, noise=False)
+    own = MP4(out).tags["----:com.apple.iTunes:iTunSMPB"]
+    eb.copy_tags(master, out, "iphone -14.0 LUFS master=abc")
+    after = MP4(out).tags["----:com.apple.iTunes:iTunSMPB"]
+    assert after == own and bytes(after[0]) != b" 00000000 00000840 000001C0 0"
+
+
+def test_a_click_the_encoder_adds_is_refused(tmp_path, monkeypatch):
+    # 2026-09-30: ffmpeg's encoder put clicks into ~4% of songs, and the peak
+    # check caught only those crossing 0 dBTP (Melissa Etheridge's peaked at
+    # -5.3 over music at -13). Every 100 ms of the copy is now compared with
+    # the audio that went into the encoder; +3 dB or more is a click.
+    real = eb.window_peaks
+
+    def clicked(path, rate, timeout=None):
+        peaks = real(path, rate, timeout)
+        if Path(path).suffix == ".m4a" and len(peaks) > 20:
+            peaks[20] += 6.0  # one 100 ms stretch, 6 dB over what went in
+        return peaks
+
+    monkeypatch.setattr(eb, "window_peaks", clicked)
+    with pytest.raises(eb.BakeError, match="click"):
+        eb.bake_aac(_master(tmp_path / "m.m4a"), tmp_path / "car.m4a", noise=True)

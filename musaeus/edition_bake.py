@@ -26,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import os
 import re
 import subprocess
 import threading
@@ -39,6 +40,7 @@ from .duration import REENCODE_TOLERANCE_SEC, tolerance_for
 from .editions import CAR, LOSSLESS
 
 FFMPEG = "ffmpeg"
+FDKAAC = "fdkaac"
 FFPROBE = "ffprobe"
 #: The edition's one definition of its target lives in editions.LOSSLESS.
 TARGET_I = f"{LOSSLESS.lufs_target:.1f}"
@@ -413,7 +415,11 @@ def copy_tags(master: Path, copy: Path, marker: str) -> None:
     if dst.tags is None:
         dst.add_tags()
     assert dst.tags is not None
+    # The copy's OWN encoder notes stay: fdkaac writes its delay and padding
+    # (iTunSMPB) for gapless playback. The master's never replace them.
+    own = {k: v for k, v in dst.tags.items() if _GAIN_TAG_RE.match(k) and "itunsmpb" in k.lower()}
     dst.tags.clear()
+    dst.tags.update(own)
     for key, value in (src.tags or {}).items():
         if not _GAIN_TAG_RE.match(key):
             dst.tags[key] = value
@@ -558,9 +564,11 @@ def loudness_of(path: Path, timeout: int | None = None) -> tuple[float, float, f
         raise BakeError(f"measuring {path.name}: ffmpeg exited {proc.returncode}")
     err = proc.stderr or ""
     found = re.findall(r"I:\s+(-?\d+(?:\.\d+)?) LUFS", err)
+    # "-inf": digital silence (fdkaac encodes it as exact zeros) -- the
+    # quietest a moment can be, never left out.
     moments = [
         float(m)
-        for t, m in re.findall(r"t:\s*([\d.]+)\s+TARGET:.*?M:\s*(-?[\d.]+)", err)
+        for t, m in re.findall(r"t:\s*([\d.]+)\s+TARGET:.*?M:\s*(-?(?:[\d.]+|inf))", err)
         if float(t) >= 0.5
     ]
     peaks = re.findall(r"Peak:\s+(-?(?:\d+(?:\.\d+)?|inf)) dBFS", err)
@@ -574,14 +582,13 @@ def loudness_of(path: Path, timeout: int | None = None) -> tuple[float, float, f
 #: 2026-09-29).
 # 3: a copy peaking over is encoded again. 4: no noise substitution (both
 # 2026-09-29).
-AAC_GRAPH_VERSION = 4
+AAC_GRAPH_VERSION = 5  # 5: encoded by fdkaac (2026-09-30)
 
-#: The AAC encoder's perceptual noise substitution (ffmpeg's default) is off.
-#: It replaces noise-like bands with synthesised noise -- and every car song
-#: has noise under it -- and its spikes defeated the limiter: Billie Jean
-#: peaked +3.0 dBTP with it, -0.6 without (-1.2 before the encoder); the
-#: peak jumped about as the limiter was lowered, so retries never caught it.
-#: A low-bitrate tool; at 256k it saves nothing worth having.
+# History of the encoder: ffmpeg's own AAC encoder, with perceptual noise
+# substitution (its default) turned off in version 4 -- it synthesised noise
+# for noise-like bands, every car song has noise under it, and Billie Jean
+# peaked +3.0 dBTP with it, -0.6 without. Its other spikes (clicks in ~4% of
+# songs) are why version 5 encodes with fdkaac (aac_commands).
 
 #: No AAC copy may peak over this, measured after the encode. When one does,
 #: it is encoded again with the limiter lowered by the overshoot, aiming for
@@ -598,7 +605,7 @@ def aac_settings(noise: bool) -> str:
     """What an AAC copy is made with, as the record keeps it: a copy made
     with anything else is made again (Grey, 2026-09-29)."""
     made = (
-        f"aac graph={AAC_GRAPH_VERSION} {AAC_BITRATE} pns=off I={AAC_TARGET_I} TP={TARGET_TP} "
+        f"aac graph={AAC_GRAPH_VERSION} {AAC_BITRATE} enc=fdkaac I={AAC_TARGET_I} TP={TARGET_TP} "
         f"LRA={AAC_TARGET_LRA} ceiling={CEILING}"
     )
     if not noise:
@@ -692,8 +699,13 @@ def aac_filter(
     seconds: float,
     noise: bool,
     ceiling: float | None = None,
+    peaks_to: Path | None = None,
 ) -> str:
-    """The one filter graph: music at the target, noise under it, limited."""
+    """The one filter graph: music at the target, noise under it, limited.
+
+    *peaks_to*: also write the peak of every 100 ms of what goes into the
+    encoder there, for the click check (window_peaks, _click_in).
+    """
     # The layout is STATED on both sides of the mix. Left to negotiation,
     # loudnorm plus the three-colour mix collapsed a stereo master to mono
     # (measured 2026-09-28; each part alone stayed stereo) -- CLAUDE.md: an
@@ -709,9 +721,21 @@ def aac_filter(
         f"[0:a:0]{aac_before_loudnorm(rate, channels)},{loudnorm},"
         f"aresample={rate},aformat=channel_layouts={layout},asetnsamples=n=1024:p=0"
     )
-    limit = f"alimiter=limit={CEILING if ceiling is None else ceiling:.6g}:level=disabled"
+    # The limiter, then 16 bits with TPDF dither: what fdkaac encodes.
+    limit = (
+        f"alimiter=limit={CEILING if ceiling is None else ceiling:.6g}:level=disabled,"
+        "aresample=osf=s16:dither_method=triangular"
+    )
+    tap = ""
+    if peaks_to is not None:
+        # A copy of the encoder's input, measured per 100 ms and dropped.
+        tap = (
+            f",asplit=2[out][tap];[tap]asetnsamples=n={rate // 10}:p=0,"
+            "astats=metadata=1:reset=1,"
+            f"ametadata=mode=print:key={_PEAK_KEY}:file={peaks_to},anullsink"
+        )
     if not noise:
-        return f"{music},{limit}[out]"
+        return f"{music},{limit}{tap or '[out]'}"
     length = int(seconds) + 2
     beds = ";".join(
         f"anoisesrc=colour={c}:sample_rate={rate}:seed={NOISE_SEEDS[c]}:duration={length},"
@@ -722,24 +746,123 @@ def aac_filter(
         f"{music}[music];{beds};"
         f"[nb][np][nw]amix=inputs=3:normalize=0,aformat=channel_layouts={layout}[noise];"
         "[music][noise]amix=inputs=2:normalize=0:duration=first[mixed];"
-        f"[mixed]{limit}[out]"
+        f"[mixed]{limit}{tap or '[out]'}"
     )
 
 
-def aac_command(source: Path, output: Path, graph: str, rate: int) -> list[str]:
-    """Audio only. The cover art reaches the copy through copy_tags (covr).
+_PEAK_KEY = "lavfi.astats.Overall.Peak_level"
+#: A 100 ms stretch of the copy this much louder than what went into the
+#: encoder is a click the encoder put there. 2026-09-30: ffmpeg's own
+#: encoder's were +3 to +8 dB in ~4% of songs; FDK's worst on the same
+#: songs, +1.3.
+_CLICK_DB = 3.0
 
-    Mapping the art as a second stream, as the Lossless bake does, ended a
-    car copy after 0.09 s: the in-graph noise sources plus the one-frame
-    picture stream stop the output at once (ffmpeg 5.1, Martha Reeves' "A
-    Love Like Yours", 2026-09-28; each alone was fine).
-    """
+
+def _peaks_in(text: str) -> list[float]:
     return [
+        float(v) if v != "-inf" else -200.0 for v in re.findall(r"Peak_level=(-?[\d.]+|-inf)", text)
+    ]
+
+
+def window_peaks(path: Path, rate: int, timeout: int | None = None) -> list[float]:
+    """The peak (dBFS) of every 100 ms of *path*, decoded, from its start."""
+    proc = _run(
+        [FFMPEG, "-nostdin", "-hide_banner", "-nostats", "-i", str(path), "-map", "0:a:0",
+         "-af", f"asetnsamples=n={rate // 10}:p=0,astats=metadata=1:reset=1,"
+         f"ametadata=mode=print:key={_PEAK_KEY}",
+         "-f", "null", "-"],
+        timeout or _BAKE_TIMEOUT,
+    )  # fmt: skip
+    if proc.returncode != 0:
+        raise BakeError(f"measuring {path.name}: ffmpeg exited {proc.returncode}")
+    return _peaks_in(proc.stderr or "")
+
+
+def _click_in(went_in: list[float], came_out: list[float]) -> tuple[int, float] | None:
+    """(100 ms stretch, dB over) of the worst click, or None."""
+    worst = None
+    for i, (a, b) in enumerate(zip(went_in, came_out, strict=False)):  # the tail may differ by one
+        if a > -60 and b - a >= _CLICK_DB and (worst is None or b - a > worst[1]):
+            worst = (i, b - a)
+    return worst
+
+
+def aac_commands(source: Path, output: Path, graph: str, rate: int) -> tuple[list[str], list[str]]:
+    """(ffmpeg, fdkaac): the finished audio as 16-bit WAV on a pipe, and the
+    AAC encode of it.
+
+    Audio only: the cover art reaches the copy through copy_tags (covr).
+    Mapping it as a second stream ended a car copy after 0.09 s (the noise
+    sources plus the one-frame picture, 2026-09-28).
+
+    fdkaac, not ffmpeg's own encoder (Grey, 2026-09-30): ffmpeg's put short
+    spikes into ~4% of songs, 5.1 and 6.1 alike -- Melissa Etheridge's "I
+    Want To Come Over" peaks -13.1 dBFS and ffmpeg's encode spiked to -5.3
+    with the RMS unchanged (clicks); FDK's gave -13.7. -G 2: the encoder
+    delay is written both ways (iTunSMPB and an edit list), so the copy is
+    gapless and its length exact everywhere.
+    """
+    wav = [
         FFMPEG, "-nostdin", "-hide_banner", "-nostats", "-y", "-i", str(source),
         "-threads", "2", "-filter_complex", graph, "-map", "[out]",
-        "-c:a", "aac", "-b:a", AAC_BITRATE, "-aac_pns", "0", "-ar", str(rate),
-        "-map_metadata", "0", "-f", "mp4", str(output),
+        "-c:a", "pcm_s16le", "-ar", str(rate), "-f", "wav", "-",
     ]  # fmt: skip
+    bits = int(AAC_BITRATE.rstrip("k")) * 1000
+    enc = [
+        FDKAAC, "-S", "-I", "-p", "2", "-b", str(bits), "-G", "2",
+        "--moov-before-mdat", "-o", str(output), "-",
+    ]  # fmt: skip
+    return wav, enc
+
+
+def _run_pipeline(
+    first: list[str], second: list[str], timeout: int
+) -> subprocess.CompletedProcess[str]:
+    """*first* piped into *second*, with _run's working-time deadline.
+
+    The returned stderr is *first*'s (loudnorm's summary is read from it)
+    then *second*'s; the return code is the first non-zero of the two.
+    *first*'s stderr goes to a file, so a full pipe can never stall it.
+    """
+    import tempfile
+
+    with tempfile.TemporaryFile(mode="w+") as err1:
+        p1 = subprocess.Popen(
+            first, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=err1, text=False
+        )
+        p2 = subprocess.Popen(
+            second, stdin=p1.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+        )
+        assert p1.stdout is not None
+        p1.stdout.close()  # p2 alone holds the read end: p1 sees it close
+        with _CHILDREN_LOCK:
+            _CHILDREN.update((p1, p2))
+        try:
+            start, paused_at_start = time.monotonic(), _paused()
+            while True:
+                try:
+                    _, err2 = p2.communicate(timeout=_DEADLINE_POLL_S)
+                    break
+                except subprocess.TimeoutExpired:
+                    working = (time.monotonic() - start) - (_paused() - paused_at_start)
+                    if working <= timeout:
+                        continue
+                    p1.kill()
+                    p2.kill()
+                    p2.communicate()
+                    p1.wait()
+                    raise BakeError(
+                        f"{first[0]} | {second[0]} made no progress in {timeout}s of working time"
+                    ) from None
+            p1.wait()
+        finally:
+            with _CHILDREN_LOCK:
+                _CHILDREN.discard(p1)
+                _CHILDREN.discard(p2)
+        err1.seek(0)
+        err = err1.read() + (err2 or "")
+    code = p1.returncode or p2.returncode
+    return subprocess.CompletedProcess(first, code, "", err)
 
 
 def bake_aac(
@@ -774,10 +897,45 @@ def bake_aac(
         ),
     )
     loud = build_second_pass_filter(measured, AAC_TARGET_I, TARGET_TP, AAC_TARGET_LRA)
+    import tempfile
+
+    fd, tap_name = tempfile.mkstemp(prefix="musaeus_peaks_", suffix=".txt")
+    os.close(fd)
+    tap = Path(tap_name)
+    try:
+        result = _bake_aac_tries(
+            source, tmp_output, info, rate, channels, seconds, noise, loud, recipe, measured, tap
+        )
+        click = _click_in(
+            _peaks_in(tap.read_text()), window_peaks(tmp_output, rate, _deadline(seconds))
+        )
+    finally:
+        tap.unlink(missing_ok=True)
+    if click is not None:
+        at, over = click
+        raise BakeError(f"the encoder put a click in the copy: +{over:.1f} dB at {at / 10:.1f} s")
+    return result
+
+
+def _bake_aac_tries(
+    source: Path,
+    tmp_output: Path,
+    info: dict,
+    rate: int,
+    channels: int,
+    seconds: float,
+    noise: bool,
+    loud: str,
+    recipe: str,
+    measured: dict,
+    tap: Path,
+) -> BakeResult:
+    """The encode, and again with the limiter lowered while it peaks over."""
     ceiling = CEILING
     for attempt in range(_PEAK_RETRIES + 1):
-        graph = aac_filter(loud, rate, channels, seconds, noise, ceiling)
-        proc = _run(aac_command(source, tmp_output, graph, rate), _deadline(seconds))
+        tap.write_text("")
+        graph = aac_filter(loud, rate, channels, seconds, noise, ceiling, peaks_to=tap)
+        proc = _run_pipeline(*aac_commands(source, tmp_output, graph, rate), _deadline(seconds))
         if proc.returncode != 0:
             raise BakeError(f"ffmpeg exited {proc.returncode}: {(proc.stderr or '')[-200:]}")
         result = BakeResult(parse_achieved(proc.stderr), parse_mode(proc.stderr), recipe, measured)

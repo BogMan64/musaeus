@@ -21,8 +21,8 @@ from musaeus.db import open_db, upsert_archive
 from musaeus.edition_ledger import copies, ledger_path, open_ledger
 
 pytestmark = pytest.mark.skipif(
-    not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
-    reason="ffmpeg/ffprobe not available",
+    not (shutil.which("ffmpeg") and shutil.which("ffprobe") and shutil.which("fdkaac")),
+    reason="ffmpeg/ffprobe/fdkaac not available",
 )
 
 
