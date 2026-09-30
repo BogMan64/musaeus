@@ -761,11 +761,7 @@ def aac_filter(
     tap = ""
     if peaks_to is not None:
         # A copy of the encoder's input, measured per 100 ms and dropped.
-        tap = (
-            f",asplit=2[out][tap];[tap]asetnsamples=n={rate // 10}:p=0,"
-            "astats=metadata=1:reset=1,"
-            f"ametadata=mode=print:key={_PEAK_KEY}:file={peaks_to},anullsink"
-        )
+        tap = f",asplit=2[out][tap];[tap]{_window_peak_filters(rate, peaks_to)},anullsink"
     if not noise:
         return f"{music},{limit}{tap or '[out]'}"
     length = int(seconds) + 2
@@ -790,6 +786,17 @@ _PEAK_KEY = "lavfi.astats.Overall.Peak_level"
 _CLICK_DB = 3.0
 
 
+def _window_peak_filters(rate: int, to_file: Path | None = None) -> str:
+    """The one way a 100 ms peak is measured, for the encoder's input and for
+    the copy alike: two chains written apart would give false or missed
+    clicks (second review of #53)."""
+    where = f":file={to_file}" if to_file is not None else ""
+    return (
+        f"asetnsamples=n={rate // 10}:p=0,astats=metadata=1:reset=1,"
+        f"ametadata=mode=print:key={_PEAK_KEY}{where}"
+    )
+
+
 def _peaks_in(text: str) -> list[float]:
     return [
         float(v) if v != "-inf" else -200.0 for v in re.findall(r"Peak_level=(-?[\d.]+|-inf)", text)
@@ -800,8 +807,7 @@ def window_peaks(path: Path, rate: int, timeout: int | None = None) -> list[floa
     """The peak (dBFS) of every 100 ms of *path*, decoded, from its start."""
     proc = _run(
         [FFMPEG, "-nostdin", "-hide_banner", "-nostats", "-i", str(path), "-map", "0:a:0",
-         "-af", f"asetnsamples=n={rate // 10}:p=0,astats=metadata=1:reset=1,"
-         f"ametadata=mode=print:key={_PEAK_KEY}",
+         "-af", _window_peak_filters(rate),
          "-f", "null", "-"],
         timeout or _BAKE_TIMEOUT,
     )  # fmt: skip
@@ -953,7 +959,13 @@ def _bake_aac(
     loud = build_second_pass_filter(measured, AAC_TARGET_I, TARGET_TP, AAC_TARGET_LRA)
     import tempfile
 
-    fd, tap_name = tempfile.mkstemp(prefix="musaeus_peaks_", suffix=".txt")
+    # The peaks file's path goes into the filter graph: a temp folder whose
+    # name has graph syntax in it (':' ',' ';' '[' quotes) would break every
+    # copy (second review of #53), so such a folder is not used.
+    tmp_dir = tempfile.gettempdir()
+    if not re.fullmatch(r"[\w/.\-]+", tmp_dir):
+        tmp_dir = "/tmp"
+    fd, tap_name = tempfile.mkstemp(prefix="musaeus_peaks_", suffix=".txt", dir=tmp_dir)
     os.close(fd)
     tap = Path(tap_name)
     try:

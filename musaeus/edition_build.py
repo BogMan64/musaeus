@@ -876,7 +876,10 @@ def execute(
         # copy otherwise (second review of #49).
         try:
             edition_bake.copy_tags(m.path, target, marker_for(m.audio_hash, kind))
-            record(ledger, _copy(m, target, None, "adopted", kind))
+            # Its make is unknown (the marker names the master, not the
+            # settings): recorded as such, so a copy from before a settings
+            # change is made again (second review of #53).
+            record(ledger, _copy(m, target, None, "adopted", kind, settings=""))
             out.adopted += 1
         except Exception as exc:  # noqa: BLE001
             out.failed.append((str(m.path), f"{type(exc).__name__}: {exc}"))

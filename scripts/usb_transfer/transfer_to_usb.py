@@ -979,8 +979,10 @@ def main() -> int:
 
     # Never a half-made copy: an edition build encodes to *.edition_tmp
     # beside the finished files (edition_build.TMP_SUFFIX).
+    from musaeus.edition_build import TMP_SUFFIX
+
     files = sorted(
-        p for p in source_root.rglob("*") if p.is_file() and not p.name.endswith(".edition_tmp")
+        p for p in source_root.rglob("*") if p.is_file() and not p.name.endswith(TMP_SUFFIX)
     )
     print(f"Source: {source_root} ({len(files)} file(s))")
 

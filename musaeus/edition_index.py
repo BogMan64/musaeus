@@ -65,11 +65,7 @@ def verify_index(index_dir: Path) -> list[str]:
     if not playlists:
         return [f"no playlists were written to {index_dir}"]
     for pl in playlists:
-        entries = [
-            ln.strip()
-            for ln in pl.read_text(encoding="utf-8").splitlines()
-            if ln.strip() and not ln.startswith("#")
-        ]
+        entries = _entries(pl)
         if not entries:
             problems.append(f"{pl.name}: no entries")
             continue

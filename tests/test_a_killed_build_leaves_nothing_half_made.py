@@ -82,4 +82,5 @@ def test_a_signalled_build_cleans_up(tmp_path, sig):
 def test_the_transfers_never_copy_a_half_made_copy():
     usb = (ROOT / "scripts" / "usb_transfer" / "transfer_to_usb.py").read_text()
     phone = (ROOT / "scripts" / "iphone_transfer.py").read_text()
-    assert "edition_tmp" in usb and "edition_tmp" in phone
+    # By the one name (edition_build.TMP_SUFFIX), not a copy of its text.
+    assert "TMP_SUFFIX" in usb and "TMP_SUFFIX" in phone

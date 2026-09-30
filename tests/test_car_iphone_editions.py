@@ -711,3 +711,37 @@ def test_the_doctor_names_a_missing_fdkaac():
     from musaeus import doctor
 
     assert "fdkaac" in {name for name, *_ in doctor._EXTERNAL_TOOLS}
+
+
+def test_an_adopted_car_copy_is_made_again_with_todays_settings(cfg):
+    # Second review of #53, 9: a copy left by a stopped build was recorded as
+    # made with today's settings, though its marker cannot say what made it
+    # -- a copy from before a settings change was never made again.
+    master = _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    target = eb.CAR_KIND.place(cfg.alac_archive, cfg.car_library, master)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    edition_bake.bake_aac(master, target, noise=True)
+    edition_bake.copy_tags(master, target, eb.marker_for("h1", eb.CAR_KIND))  # stopped here
+    _, out, _, _ = _build(cfg, eb.CAR_KIND)
+    assert out.adopted == 1
+    plan, _, _, _ = _build(cfg, eb.CAR_KIND)
+    assert plan.resettled == 1, "an adopted copy of unknown make was taken for today's"
+
+
+def test_an_odd_temp_folder_name_does_not_break_the_encode(tmp_path, monkeypatch):
+    # Second review of #53, 10: the peaks file's path went into the filter
+    # graph unescaped; a temp folder with ':' or ',' broke every copy.
+    import tempfile
+
+    odd = tmp_path / "tmp:odd,dir"
+    odd.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(odd))
+    master = tmp_path / "m.m4a"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+         "-i", "sine=frequency=440:duration=4", "-f", "lavfi", "-i", "sine=frequency=660:duration=4",
+         "-filter_complex", "[0]volume=-4dB[a];[1]volume=-9dB[b];[a][b]concat=n=2:v=0:a=1",
+         "-ac", "2", "-c:a", "alac", str(master)],
+        check=True,
+    )  # fmt: skip
+    edition_bake.bake_aac(master, tmp_path / "c.m4a", noise=True)
