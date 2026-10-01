@@ -614,7 +614,12 @@ def loudness_of(path: Path, timeout: int | None = None) -> tuple[float, float, f
 #: 2026-09-29).
 # 3: a copy peaking over is encoded again. 4: no noise substitution (both
 # 2026-09-29).
-AAC_GRAPH_VERSION = 5  # 5: encoded by fdkaac (2026-09-30)
+AAC_GRAPH_VERSION = 6  # 5: encoded by fdkaac (2026-09-30). 6: its full band (2026-10-01)
+
+#: fdkaac's bandwidth. Its default cuts the highs: a master whose energy was
+#: mostly at 18 kHz came out at -38 LUFS instead of -14, and Sonny Clark's "I
+#: Can't Give You Anything But Love" lost 1.1 LU (-15.1; -14.3 at 20 kHz).
+AAC_BANDWIDTH_HZ = 20000
 
 # History of the encoder: ffmpeg's own AAC encoder, with perceptual noise
 # substitution (its default) turned off in version 4 -- it synthesised noise
@@ -637,7 +642,8 @@ def aac_settings(noise: bool) -> str:
     """What an AAC copy is made with, as the record keeps it: a copy made
     with anything else is made again (Grey, 2026-09-29)."""
     made = (
-        f"aac graph={AAC_GRAPH_VERSION} {AAC_BITRATE} enc=fdkaac I={AAC_TARGET_I} TP={TARGET_TP} "
+        f"aac graph={AAC_GRAPH_VERSION} {AAC_BITRATE} enc=fdkaac bw={AAC_BANDWIDTH_HZ} "
+        f"I={AAC_TARGET_I} TP={TARGET_TP} "
         f"LRA={AAC_TARGET_LRA} ceiling={CEILING}"
     )
     if not noise:
@@ -784,6 +790,8 @@ _PEAK_KEY = "lavfi.astats.Overall.Peak_level"
 #: encoder's were +3 to +8 dB in ~4% of songs; FDK's worst on the same
 #: songs, +1.3.
 _CLICK_DB = 3.0
+#: ...and only where the copy is loud enough to hear one (2026-10-01).
+_CLICK_FLOOR_DBFS = -40.0
 
 
 def _window_peak_filters(rate: int, to_file: Path | None = None) -> str:
@@ -826,7 +834,9 @@ def _click_in(went_in: list[float], came_out: list[float]) -> tuple[int, float] 
     """
     worst = None
     for i, (a, b) in enumerate(zip(went_in[:-1], came_out, strict=False)):
-        if a > -60 and b - a >= _CLICK_DB and (worst is None or b - a > worst[1]):
+        # Heard, not just measured: a jump in a near-silent stretch is a
+        # trace of encoder ringing (Wu-Tang's a cappella: -45.9 in, -42.5 out).
+        if b >= _CLICK_FLOOR_DBFS and b - a >= _CLICK_DB and (worst is None or b - a > worst[1]):
             worst = (i, b - a)
     return worst
 
@@ -854,7 +864,7 @@ def aac_commands(source: Path, output: Path, graph: str, rate: int) -> tuple[lis
     bits = int(AAC_BITRATE.rstrip("k")) * 1000
     enc = [
         FDKAAC, "-S", "-I", "-p", "2", "-b", str(bits), "-G", "2",
-        "--moov-before-mdat", "-o", str(output), "-",
+        "-w", str(AAC_BANDWIDTH_HZ), "--moov-before-mdat", "-o", str(output), "-",
     ]  # fmt: skip
     return wav, enc
 

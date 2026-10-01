@@ -437,3 +437,36 @@ def test_the_last_sliver_of_a_song_is_not_taken_for_a_click():
     assert eb._click_in(went_in, tail) is None
     inside = [-12.0] * 5 + [-7.0] + [-12.0] * 4 + [-50.0]
     assert eb._click_in(went_in, inside) == (5, 5.0)
+
+
+def test_the_top_of_the_audio_band_is_kept(tmp_path):
+    # 2026-10-01: fdkaac's default bandwidth cuts the highs -- Sonny Clark's
+    # "I Can't Give You Anything But Love" lost 1.1 LU (-14.0 before the
+    # encoder, -15.1 after; -14.3 with -w 20000). A master whose energy is
+    # mostly at 18 kHz must come out at the loudness it went in at.
+    master = tmp_path / "m.m4a"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", "sine=frequency=18000:duration=12:sample_rate=44100",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=6:sample_rate=44100",
+         "-f", "lavfi", "-i", "sine=frequency=660:duration=6:sample_rate=44100",
+         "-filter_complex",
+         "[1]volume=-24dB[a];[2]volume=-30dB[b];[a][b]concat=n=2:v=0:a=1[low];"
+         "[0]volume=-6dB[hi];[hi][low]amix=inputs=2:normalize=0,pan=stereo|c0=c0|c1=c0",
+         "-c:a", "alac", "-sample_fmt", "s32p", str(master)],
+        check=True,
+    )  # fmt: skip
+    out = tmp_path / "phone.m4a"
+    eb.bake_aac(master, out, noise=False)  # refused if the 18 kHz is cut
+    assert "bw=20000" in eb.aac_settings(noise=False), "copies made without it are made again"
+
+
+def test_a_jump_in_a_near_silent_stretch_is_not_a_click():
+    # Wu-Tang Clan's "C.R.E.A.M." (A Cappella), 2026-10-01: right after the
+    # voice stops, the input's 100 ms reads -45.9 dBFS and the copy's -42.5 --
+    # a trace of encoder ringing, far below hearing. A click is at music
+    # level (Melissa Etheridge's: -13 in, -5.3 out).
+    went_in = [-12.0] * 5 + [-45.9] + [-12.0] * 4 + [-50.0]
+    assert eb._click_in(went_in, [-12.0] * 5 + [-42.5] + [-12.0] * 5) is None
+    loud_click = [-12.0, -12.0, -7.0, -12.0, -12.0, -45.9, -12.0, -12.0, -12.0, -12.0, -50.0]
+    assert eb._click_in(went_in, loud_click) == (2, 5.0)
