@@ -470,3 +470,32 @@ def test_a_jump_in_a_near_silent_stretch_is_not_a_click():
     assert eb._click_in(went_in, [-12.0] * 5 + [-42.5] + [-12.0] * 5) is None
     loud_click = [-12.0, -12.0, -7.0, -12.0, -12.0, -45.9, -12.0, -12.0, -12.0, -12.0, -50.0]
     assert eb._click_in(went_in, loud_click) == (2, 5.0)
+
+
+def test_a_copy_that_clicks_at_20_khz_is_encoded_again_at_19(tmp_path, monkeypatch):
+    # The iPhone re-make at full bandwidth, 2026-10-01: three songs clicked at
+    # 20 kHz (Donna Summer's "Bad Girls": -5.6 dBFS in, -1.7 out), none at
+    # 19 kHz (-5.2). The top of the band is kept for every song it suits.
+    widths = []
+    real_pipe = eb._run_pipeline
+
+    def spy(first, second, timeout):
+        widths.append(int(second[second.index("-w") + 1]))
+        return real_pipe(first, second, timeout)
+
+    real_click = eb._click_in
+    clicks = iter([(10, 3.9)])
+
+    def click_once(went_in, came_out):
+        return next(clicks, None) or real_click(went_in, came_out)
+
+    monkeypatch.setattr(eb, "_run_pipeline", spy)
+    monkeypatch.setattr(eb, "_click_in", click_once)
+    eb.bake_aac(_master(tmp_path / "m.m4a"), tmp_path / "phone.m4a", noise=False)
+    assert widths == [20000, 19000], widths
+
+
+def test_a_copy_that_clicks_at_every_width_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(eb, "_click_in", lambda went_in, came_out: (10, 3.9))
+    with pytest.raises(eb.BakeError, match="click"):
+        eb.bake_aac(_master(tmp_path / "m.m4a"), tmp_path / "phone.m4a", noise=False)
