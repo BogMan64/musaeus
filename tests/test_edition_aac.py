@@ -437,3 +437,65 @@ def test_the_last_sliver_of_a_song_is_not_taken_for_a_click():
     assert eb._click_in(went_in, tail) is None
     inside = [-12.0] * 5 + [-7.0] + [-12.0] * 4 + [-50.0]
     assert eb._click_in(went_in, inside) == (5, 5.0)
+
+
+def test_the_top_of_the_audio_band_is_kept(tmp_path):
+    # 2026-10-01: fdkaac's default bandwidth cuts the highs -- Sonny Clark's
+    # "I Can't Give You Anything But Love" lost 1.1 LU (-14.0 before the
+    # encoder, -15.1 after; -14.3 with -w 20000). A master whose energy is
+    # mostly at 18 kHz must come out at the loudness it went in at.
+    master = tmp_path / "m.m4a"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", "sine=frequency=18000:duration=12:sample_rate=44100",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=6:sample_rate=44100",
+         "-f", "lavfi", "-i", "sine=frequency=660:duration=6:sample_rate=44100",
+         "-filter_complex",
+         "[1]volume=-24dB[a];[2]volume=-30dB[b];[a][b]concat=n=2:v=0:a=1[low];"
+         "[0]volume=-6dB[hi];[hi][low]amix=inputs=2:normalize=0,pan=stereo|c0=c0|c1=c0",
+         "-c:a", "alac", "-sample_fmt", "s32p", str(master)],
+        check=True,
+    )  # fmt: skip
+    out = tmp_path / "phone.m4a"
+    eb.bake_aac(master, out, noise=False)  # refused if the 18 kHz is cut
+    assert "bw=20000" in eb.aac_settings(noise=False), "copies made without it are made again"
+
+
+def test_a_jump_in_a_near_silent_stretch_is_not_a_click():
+    # Wu-Tang Clan's "C.R.E.A.M." (A Cappella), 2026-10-01: right after the
+    # voice stops, the input's 100 ms reads -45.9 dBFS and the copy's -42.5 --
+    # a trace of encoder ringing, far below hearing. A click is at music
+    # level (Melissa Etheridge's: -13 in, -5.3 out).
+    went_in = [-12.0] * 5 + [-45.9] + [-12.0] * 4 + [-50.0]
+    assert eb._click_in(went_in, [-12.0] * 5 + [-42.5] + [-12.0] * 5) is None
+    loud_click = [-12.0, -12.0, -7.0, -12.0, -12.0, -45.9, -12.0, -12.0, -12.0, -12.0, -50.0]
+    assert eb._click_in(went_in, loud_click) == (2, 5.0)
+
+
+def test_a_copy_that_clicks_at_20_khz_is_encoded_again_at_19(tmp_path, monkeypatch):
+    # The iPhone re-make at full bandwidth, 2026-10-01: three songs clicked at
+    # 20 kHz (Donna Summer's "Bad Girls": -5.6 dBFS in, -1.7 out), none at
+    # 19 kHz (-5.2). The top of the band is kept for every song it suits.
+    widths = []
+    real_pipe = eb._run_pipeline
+
+    def spy(first, second, timeout):
+        widths.append(int(second[second.index("-w") + 1]))
+        return real_pipe(first, second, timeout)
+
+    real_click = eb._click_in
+    clicks = iter([(10, 3.9)])
+
+    def click_once(went_in, came_out):
+        return next(clicks, None) or real_click(went_in, came_out)
+
+    monkeypatch.setattr(eb, "_run_pipeline", spy)
+    monkeypatch.setattr(eb, "_click_in", click_once)
+    eb.bake_aac(_master(tmp_path / "m.m4a"), tmp_path / "phone.m4a", noise=False)
+    assert widths == [20000, 19000], widths
+
+
+def test_a_copy_that_clicks_at_every_width_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(eb, "_click_in", lambda went_in, came_out: (10, 3.9))
+    with pytest.raises(eb.BakeError, match="click"):
+        eb.bake_aac(_master(tmp_path / "m.m4a"), tmp_path / "phone.m4a", noise=False)
