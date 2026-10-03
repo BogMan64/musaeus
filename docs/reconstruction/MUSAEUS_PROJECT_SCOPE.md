@@ -19,7 +19,10 @@ things stand right now"; this covers "what this project actually is, and
 what its standing rules are." Grey to review, correct, and extend —
 anything missing here is fair game to add.
 
-*Last folded in: 2026-09-19 (Claude Code) — see §9. Before that,
+*Last folded in: 2026-10-03 (Claude Code): one file per track, the three
+editions, the USB1 batch, and rules 1–14 (see §9). The file name still says
+2026-09-23 so links keep working. Before that, 2026-09-22/23 and
+2026-09-19 (Claude Code). Before that,
 2026-09-04 (Claude Code) — SOPs §4.27-4.30
 (verify the claim not a constant; 255 BYTES per path component;
 a wanted-list entry must clear already_owned), the ForClaudeHandoff
@@ -1374,6 +1377,145 @@ folded into §4 or §5 directly, not left here.
   Cross-check disk state directly per §4.1.
 
 ## 9. Update log
+
+- **2026-09-24 → 2026-10-03 sessions (Claude Code): one file per track,
+  three editions on one framework, the USB1 batch filed, and fourteen
+  standing rules.**
+
+  **What changed.** The vault was wiped once more (2026-09-24, after a
+  verified 428 GB backup; MetaData and the LEDGER kept) and rebuilt by running
+  MUSAEUS Act by Act. Grey, 2026-09-30: **no more wipes**; new batches go on
+  top. PRs #28–#55 merged. The USB1_Curated_RAW batch ran Acts 1–3 on
+  2026-10-02/03 (9,913 ingested, 6,889 filed; audit passed). On 2026-10-03
+  the catalogue held 9,197 masters, and the car edition was being built for
+  the new batch.
+
+  **Standing rules that came out of it:**
+
+  1. **One file per track (Grey, 2026-09-25, #36).** A catalogue row points
+     at its MASTER in `ALAC-Archival`. Every other library is an *edition*:
+     copies built from the masters, recorded in `_db_backups/editions.db` and
+     never pointed at by a row. The audit fails a row that names an edition
+     copy. `build_alac_library.py` and `build_car_library.py` are retired and
+     refuse to run.
+  2. **Copies follow their masters.** `musaeus edition-build
+     lossless|car|iphone` moves, re-tags or removes a copy after its master
+     moved, was re-tagged or was set aside. It moves only a file carrying its
+     marker, and never deletes a file it has no record of. **A tool that moves
+     masters (organize, the rename tool) must not move copies itself**, or the
+     ledger names an empty path. Found 2026-10-03: the rename tool still
+     assumed rows lived in `ALAC_Library` and would only ever have relabelled
+     (#55).
+  3. **The edition build writes the head-unit playlists itself**
+     (`musaeus.edition_index`). This supersedes the 2026-09-23 rule 5 below.
+     `write_car_index.py` is now a thin wrapper.
+  4. **AAC is fdkaac**, 256k, full band (`-w 20000`, with a 19 kHz retry for
+     songs that click at 20 kHz), measured, peak-checked and click-checked
+     after every encode. ffmpeg's native `aac` put clicks into about 4% of
+     songs. The recipe is part of each copy's recorded settings, so changing
+     it re-makes the copies.
+  5. **A song's loudness is measured once** and kept in `editions.db`
+     (`measurements`, keyed by audio hash and recipe). A copy in the masters'
+     own tags is wanted later as its own step (tags only, never audio).
+  6. **The iPhone edition holds the whole library** (Grey, 2026-10-03:
+     "unlimited", so songs can be picked on the phone). No `--budget-gb`.
+  7. **The car stick is MBR + FAT32** (what the Android head unit chose for
+     itself). Copy with `transfer_to_usb.py --library car --no-format --dest
+     …`. Never reformat a stick the head unit has set up.
+  8. **Library names must be FAT32-safe (Grey, 2026-10-03).** Forbidden
+     characters are removed by the shared filing rule
+     (`organize.sanitize_path_component`, used by finalize and organize), and
+     the editions copy those names. **Open:** names that differ only by letter
+     case (26 master folder pairs on 2026-10-03) merge on FAT32. A case rule
+     in the filing rule, a doctor check and a pre-copy check are planned.
+  9. **Never update the main folder's code while ANY `musaeus` process
+     runs**: console, `run`, every `edition-build`. `pipeline_pids()` is NOT
+     that check. By design it ignores edition builds, and during the
+     2026-10-03 car build it reported nothing running. Gate on every
+     `musaeus` invocation.
+  10. **Every word of an artist or title is capitalised** (Grey's choice B,
+      2026-09-25): "Dead Or Alive". Special spellings (ABBA, McCartney,
+      AC/DC) are kept.
+  11. **A rename is `scripts/consolidate_artist_folders.py OLD NEW
+      [--genre G]`**, dry run first. It moves the master and every table that
+      names it, and writes the canon entry. Then an Act 3 pass lets the tagger
+      write the new artist and genre into the master, and the next edition
+      build carries them to the copies. **Song titles are not changed by a
+      rename.** Until the tagger trusts canon rulings, an album-artist tag the
+      tagger cannot prove is the same act needs setting by hand, logged as
+      `TAGGER_WRITE`.
+  12. **Removing an artist removes every trace** (Grey, 2026-10-02):
+      - rows naming them, collaborations included;
+      - untagged rows carrying the same audio (an "Unknown Artist" row was
+        ¥$ "Carnival");
+      - every edition copy;
+      - the fingerprints, onto the deny list;
+      - their lines in `TuneMyMusic.csv`.
+  13. **TuneMyMusic:** a damaged file is added to the wanted list before it is
+      deleted. **A blocked (deny-listed) song is not added**, because each one
+      is Grey's own earlier delete ruling (Grey accepted this, 2026-10-03).
+  14. **Exact duplicates in review are deleted** when another live,
+      catalogued row carries the same audio and its file exists. No deny entry
+      is written, because the kept copy carries that fingerprint (Grey,
+      2026-10-02: "keep one copy, delete the rest").
+
+  **Superseded below:** 2026-09-23 rule 5 (by rule 3 here). Rule 6 no longer
+  matters in practice: `scripts/car_library/relink_car_exports.py` still
+  exists, but the `car_export_path` links it wrote are retired (no row has
+  carried one since the car edition moved to the ledger). Do not run it.
+
+  **Lesson, same shape as every week:** two things that must agree, quietly
+  ceasing to. #36 moved the rows and the rename tool kept the old picture.
+  A busy check answered a different question from the one asked of it. The
+  audit said "5 errors" and recorded none of them. Each was found by
+  checking the files, not the report.
+
+- **2026-09-22/23 sessions (Claude Code): the trunk caught up, the library
+  curated, and seven standing rules.**
+
+  **`main` is current.** It was 349 commits behind because PR #14 had been
+  blocked on a red lint check since 2026-08-21 — so its CI tests had never
+  once run. Clearing lint exposed 11 failures; all fixed, #14 squash-merged
+  2026-09-23. `main` is protected by the pre-push hook: changes land through
+  PRs, with CI (pytest on 3.10–3.12, ruff check and format, Semgrep) green.
+
+  **Standing rules that came out of it:**
+
+  1. **The TuneMyMusic wanted list lives in `MetaData/` only.**
+     `config.tunemymusic_csv_path` is the one place that names it, and
+     `tests/test_tunemymusic_has_one_home.py` fails if any module builds its
+     own path. Three drifted copies had to be merged by hand on 2026-09-23.
+  2. **Deletions go through `scripts/delete_reviewed_tracks.py`.** It denies
+     a fingerprint only when no surviving row carries the same audio (an
+     exact duplicate's fingerprint IS the kept copy's), and every removed row
+     leaves a `DELETED_BY_REVIEW` event even when its files were already gone.
+  3. **Reversing a deletion goes through `db.undeny_hash` /
+     `scripts/undeny_hashes.py`**, which records the ruling it lifted. The
+     ledger keeps no history of its own.
+  4. **Never rebuild with `--skip deny-list` without checking afterwards.**
+     One such rebuild re-admitted 1,359 tracks Grey had ruled out.
+     `doctor`'s "removed audio still held" now reads the ledger, so it
+     reports them (#24); before that a catalogue reset hid them.
+  5. **The car edition files `Artist/Album`** (`editions.output_path_for`),
+     not `Genre/Artist/Album`. Anything that changes `CAR_Library` outside
+     `build_car_library.py` must finish with `write_car_index.py` — the
+     head-unit playlists are part of the edition (Grey, 2026-09-23).
+  6. **Do not trust `relink_car_exports.py` until it requires the artist to
+     agree.** It matches on title plus duration, and would have linked 197
+     tracks to a different recording (Aretha Franklin's *Do Right Woman* to
+     The Commitments'). Seeded files were linked from the seeding's own
+     record instead.
+  7. **A test run must leave the working tree as it found it.** CI fails if
+     `pytest` changes a tracked file (#17).
+
+  **Reviewing:** `docs/REVIEW_BRIEF.md`, pointed at from `CLAUDE.md`, tells
+  any reviewer what to look for (two things that must agree, quietly ceasing
+  to), what is already known, and how to report.
+
+  **Open, and not a standing rule yet:** the duplicate resolver moves files by
+  stored path without checking the audio (bug 1); it must be fixed before the
+  next ingest. `MUSAEUS_OPEN_ITEMS.md`, named in §7 and §8, was archived
+  2026-09-07 — open items live in `MUSAEUS_TODO.md`.
 
 - **2026-09-18/19 sessions (Claude Code), the library wiped and rebuilt from
   source, and one rule that came out of it:**

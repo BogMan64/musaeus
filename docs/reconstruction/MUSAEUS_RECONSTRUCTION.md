@@ -76,6 +76,64 @@ Rulings, the deny list, the wanted list, and files awaiting a human belong in
 `MetaData/`, `_db_backups/` or `REVIEW/` — never in the tree whose whole
 virtue is that it can be thrown away.
 
+**Reviewed again 2026-10-03: two rulings changed on purpose, and three new
+entries for §5.** The reasoning still holds. For current numbers, read "State
+on 2026-10-03" at the top of `MUSAEUS_TODO`.
+
+*Rulings that changed, and why (for § Editions and §4):*
+
+- **One file per track** (Grey, 2026-09-25). The row points at the master in
+  `ALAC-Archival`. Every other library is an edition, recorded in its own
+  ledger (`_db_backups/editions.db`) and never pointed at by a row. The old
+  two-file design (#35) was closed after a review found five ways for the two
+  records to drift. One file has nothing to drift from.
+- **Masters may carry new TAGS, never new audio** (Grey, 2026-09-25). This
+  supersedes "masters are never physically altered". Names live in tags, and
+  a ruling that cannot reach the file is not applied. Audio identity
+  (`audio_hash`, PCM) is untouched by a tag write, and that is what the
+  ledgers key on.
+- **Every word of a name is capitalised** (Grey's choice B, 2026-09-25, over
+  their own earlier small-words rule): "Dead Or Alive". It is simpler to state
+  and to check. Special spellings (ABBA, McCartney, AC/DC) are kept.
+- **No more catalogue wipes** (Grey, 2026-09-30). The fresh run proved the
+  pipeline end to end, so new batches go on top.
+- **Removing an artist removes every trace** (Grey, 2026-10-02):
+  - collaborations;
+  - untagged rows carrying the same audio;
+  - every edition copy;
+  - the deny list;
+  - the wanted list.
+
+  The reason: the deny list is fingerprints only, so a trace left behind is
+  a way back in.
+- **A deny-listed song is never put on the wanted list.** Each one is the
+  owner's own earlier delete ruling, and the wanted list would undo it
+  (2026-10-03).
+
+*New in §5, the failure catalogue: the same shape, three more times:*
+
+1. **A tool kept the old picture after the data moved** (*rules that fought
+   each other*). #36 moved every row to the masters, and
+   `consolidate_artist_folders.py` still asked whether a row's file was under
+   `ALAC_Library`. Every row answered "no", so every rename would have been
+   "relabel only": the catalogue renamed, the files left behind. Its dry run
+   said "0 to move" in a perfectly normal-looking line. Fixed in #55, with
+   tests built on the new layout that failed on the old code for exactly that
+   reason.
+2. **One function answering two questions** (*one value answering two
+   questions*). `edition_build.pipeline_pids()` answers "can anything move
+   masters under this build?", so by design it ignores other edition builds.
+   It was being used to answer "is it safe to update the code?", and during
+   the 2026-10-03 car build it said "nothing running". The guard is a
+   separate check that counts every `musaeus` process.
+3. **A failure count with nothing behind it** (*silent absence*). The Act 3
+   audit printed "FAILED … errors=5" and recorded none of the five, not in
+   the events table and not in `RUNS/LOGS`. Finding them meant re-running its
+   checks by hand. They were Lossless copies a person had dragged back into
+   the masters folder by hand. **That check worked**: the audit's "file with
+   no row" rule is exactly what catches a copy posing as a master. Only its
+   report was empty.
+
 **Reviewed again 2026-09-17.** Still no ruling in this document has been
 overturned. Three things have changed underneath it, and all three *confirm*
 rather than contradict what is written here — which is the useful kind of
