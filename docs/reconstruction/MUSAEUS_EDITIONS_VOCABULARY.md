@@ -33,6 +33,81 @@ before any code, because the naming is the part that has to survive.
 > rebuilt from the masters once the library is complete, which is the
 > vocabulary working exactly as written.
 
+> **Reviewed 2026-09-23 — the Car Edition exists again, and was seeded rather
+> than re-encoded.** 7,856 car files were copied from two copies of the same
+> 16–17 September build — the NUC's pre-rebuild backup and the car USB stick —
+> and **each was checked against its own master** before it was kept: length
+> within 2 s, AAC stereo at no more than 48 kHz, and a clean decode. That is
+> the vocabulary at work: an Edition is derived and disposable, so an old
+> rendering of the *same* master is as good as a new one, and one of a
+> different master is not — which is why 170 were set aside and will be
+> encoded fresh. After the day's removals: **7,716 files, 85% of the
+> catalogue.** The overnight `--only-missing` build covers the rest.
+>
+> Four things this settled:
+>
+> - **Where the Car Edition lives:** `Libraries/CAR_Library`, filed
+>   `Artist/Album` (`editions.output_path_for`) — *not* `Genre/Artist/Album`
+>   like the Lossless Edition. The "Location TBD" further down is answered.
+> - **The head-unit index is part of the Car Edition.** M3U8 playlists in
+>   `CAR_Library/Playlists/` (per genre, per decade, All), written by the
+>   builder at the end of every build. Anything that fills the edition outside
+>   the builder — as the seeding did — must finish with `write_car_index.py`.
+> - **413 catalogued tracks have no master on disk.** No edition may be built
+>   for them: building from the −18 Lossless Edition would be building one
+>   edition from another, which this document forbids.
+> - **Correction:** the Lossless Edition table below says it "lives at
+>   `/home/grey/Music`". It does not, and must not: it lives in the vault at
+>   `Libraries/ALAC_Library`, and MUSAEUS is never to be pointed at
+>   `/home/grey/Music`.
+
+> **Reviewed 2026-10-03: the four words held again, and the machinery under
+> them was rebuilt.** Read this note before the tables below, which are kept
+> as the record of what was decided on 2026-08-31.
+>
+> - **One file per track (Grey, 2026-09-25, PR #36).** A catalogue row
+>   points at its **master** in `Libraries/ALAC-Archival`, in the vault on
+>   FORGE2TB. The "long-term home `/mnt/NUC8TB_BACKUP`" below is superseded:
+>   the NUC holds *backups* of the masters, not the masters. No row may point
+>   at an edition copy, and the audit fails one that does. The "413 tracks
+>   with no master" problem above went with the 2026-09-24 rebuild: every row
+>   is now a master.
+> - **Masters may have TAGS written, never audio** (Grey, 2026-09-25). This
+>   supersedes "Masters are never physically altered after finalize". The
+>   tagger writes the catalogue's names and genre into them. A rename is
+>   carried into them by an Act 3 pass. A copy of each song's loudness
+>   measurement is wanted in their tags later, as its own step. The bit-rot
+>   check counts "tags changed, audio the same" as a benign re-tag.
+> - **All three editions are built the same way:** `musaeus edition-build
+>   lossless|car|iphone` (`musaeus/edition_build.py`). Each copy is recorded
+>   in its own ledger, `_db_backups/editions.db`, keyed by the master's
+>   audio. The old builders (`build_alac_library.py`, `build_car_library.py`)
+>   are retired and refuse to run. The Edition table below now reads:
+>
+>   | Edition | Folder | Format | Loudness | Extras |
+>   |---|---|---|---|---|
+>   | **Lossless** | `ALAC_Library`, `Genre/Artist/Album` (mirrors the masters) | ALAC | −18 LUFS | lossy masters left out by default (Grey, 2026-09-27) |
+>   | **Car** | `CAR_Library`, `Artist/Album` | AAC 256k, **fdkaac**, full band | −14 LUFS | noise bed; head-unit playlists |
+>   | **iPhone** | `iPHONE_Library`, `Artist/Album` | AAC 256k, **fdkaac**, full band | −14 LUFS | **whole library, no size limit** (Grey, 2026-10-03) |
+>
+>   Each song's loudness is measured once and kept (`editions.db`,
+>   `measurements`), so the iPhone build after the car build skips measuring.
+>   fdkaac replaced ffmpeg's native `aac`, which put clicks into about 4% of
+>   songs (2026-09-30).
+> - **Copies follow their masters.** When a master moves, is renamed or is
+>   re-tagged, the next build moves or re-tags its copy. When a master is set
+>   aside, the copy goes. Tools that move masters must leave copies to the
+>   build (2026-10-03, PR #55).
+> - **Delivery to the car changed:** the stick is **MBR + FAT32**, which is
+>   what the Android head unit chose for itself after rejecting GPT+exFAT on
+>   2026-09-04. Copy with `--no-format` onto the stick as the head unit left
+>   it; never reformat it. Grey's stick from 2026-10-03 is the 257 GB volume
+>   at `/media/grey/5651-0F05`. FAT32 forbids some characters, which the
+>   shared filing rule already removes, and ignores letter case. A case rule
+>   is planned (see the TODO, 2026-10-03).
+> - The "Location TBD" for the Car Edition at the bottom of this document is
+>   answered: `Libraries/CAR_Library`.
+
 > **Reviewed 2026-09-17.** Three editions now exist and the four words
 > have not needed amending once. Current counts live in "State on 2026-09-17"
 > at the top of `MUSAEUS_TODO.md`; this document holds the vocabulary, not

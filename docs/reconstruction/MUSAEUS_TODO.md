@@ -10,8 +10,10 @@ bug found this week. One file now. MUSAEUS_OPEN_ITEMS.md is archived.
 
 Counts in the body below were verified against the live vault on
 **2026-09-07** and have NOT been re-verified since. Where a number matters,
-read "State on 2026-09-19" immediately below — it supersedes them,
-and every count in "State on 2026-09-14" below that.
+read "State on 2026-10-03" immediately below — it supersedes them,
+and every count in the older "State on …" sections below it. (The file name
+still says 2026-09-23 so links to it keep working; the 09-23 copy is kept in
+`~/Desktop/MUSAEUS_HANDOVER_2026-10-03/doc_backups/`.)
 
 ~~**Claude Opus 5 access ends 2026-09-08. Kiro runs ~30 days after.**~~
 **Superseded 2026-09-14:** the subscription was renewed and the September
@@ -29,6 +31,197 @@ as still correct.
 line is: a TODO item has a cost if left undone — something is unprotected or
 a check is lying. A wishlist item has none; the library is correct without
 it. Given limited time, take the TODO.
+
+---
+
+## State on 2026-10-03 — fresh vault, USB1 batch filed, editions on fdkaac, car build running
+
+**Measured against the live vault on 2026-10-03, about 08:40 PDT**, while the car build for the USB1 batch was running. It supersedes every count below it. The next session's working notes are in `~/Desktop/MUSAEUS_HANDOVER_2026-10-03/HANDOVER.md`.
+
+| | |
+|---|---|
+| CATALOGUED (one row per master) | **9,197** |
+| DUPE_REVIEW | **3,741**: Grey's review list is `~/Desktop/MUSAEUS_duplicate_review_2026-10-03.xlsx` |
+| QUARANTINED | **0**: cleared 2026-10-03; the list is kept in `MetaData/quarantine_deleted_2026-10-03.csv` |
+| TRIBUTE_REVIEW | 1 |
+| distinct artists | 1,705 |
+| CATALOGUED with no album name | 3,671 (filed under "Unsorted") |
+| CATALOGUED with no genre | 7 |
+| CATALOGUED lossy masters | 293 |
+| denied fingerprints (the LEDGER) | 3,508 |
+| bit-rot baselines | **0**: cleared by the 09-24 wipe, never regenerated |
+
+| edition (copies of the masters) | files |
+|---|---|
+| `ALAC-Archival`: the masters, which the rows point at | 9,197 |
+| `ALAC_Library`: Lossless edition, −18 LUFS | 3,107 (pre-USB1 library; lossy masters left out) |
+| `CAR_Library`: AAC 256k, fdkaac, graph 6 | 2,354 and climbing: **build running**, 6,844 to make |
+| `iPHONE_Library`: same encoder | 3,173 (pre-USB1 library) |
+
+`TuneMyMusic.csv` (in `MetaData/` only) has 955 songs.
+
+### What happened, 24 September to 3 October
+
+- **The vault was wiped and rebuilt from raw, once** (2026-09-24, after a verified 428 GB NUC backup). MetaData and the LEDGER were kept. **Grey, 2026-09-30: no more wipes.** New batches go on top of the library.
+- **Bug 1 is fixed (#31).** The duplicate resolver checks every member's audio before it moves anything.
+- **`musaeus run --act 1|2|3|enrichment` (#32)**, with per-Act problem lists in `RUNS/LOGS/run_<id>_problems.tsv`.
+- **Masters first (#36, Grey's choice of one file per track).**
+  - The row points at the master in `ALAC-Archival`.
+  - Every other library is an *edition*: copies built from the masters and recorded in their own ledger (`_db_backups/editions.db`), never pointed at by a row.
+  - `build_alac_library.py` and `build_car_library.py` are retired and refuse to run.
+- **Names (#37–#41):** every word capitalised (Grey's choice B), AC/DC credits and folders, AcoustID names for untagged files.
+- **Editions (#49–#54):** a Lossless edition (#49); car and iPhone editions on the same framework (#53); loudness measured once and kept.
+  - The AAC encoder moved from ffmpeg's native `aac` to **fdkaac** (#53), because the native encoder put clicks into about 4% of songs.
+  - Then **full band** (#54): `-w 20000`, with a 19 kHz retry for the three songs that clicked at 20 kHz.
+  - Car and iPhone were both re-made and rechecked on 2026-10-01. Two exceptions, both approved by Grey: Tony Bennett "Body And Soul (Audio From Video)" and Zadok the Priest.
+- **USB1_Curated_RAW batch (2026-10-02/03):**
+  - Act 1 ingested 9,913 (8 damaged, 795 denied, 1,589 duplicates);
+  - Act 2 set 3,090 aside for review;
+  - Act 3 filed 6,889.
+- **Grey's clean-ups, 2026-10-02/03:**
+  - 14 artists removed with every trace: 61 rows, 106 files, 61 fingerprints denied, their TuneMyMusic lines too.
+  - 2,130 exact duplicates deleted from review.
+  - 1,354 quarantined files deleted.
+  - 3 renames: Derek → Derek & The Dominos (Blues Rock), The Y Jacks → Terry Jacks, The BC Sweet → The Sweet. Folder, file name, artist and album-artist tags all follow.
+- **#55: the rename tool had kept looking for rows under `ALAC_Library`** after #36 moved them to the masters. It would only ever have relabelled the catalogue. Fixed: it moves the master, and the editions follow on their next build.
+
+### Open, in the order I'd take them
+
+1. **Car build (running), then copy it to Grey's 257 GB stick** (`/media/grey/5651-0F05`, MBR + FAT32, never reformat). Then `edition-build lossless`, then `edition-build iphone` with no size limit (Grey: "unlimited"), then `doctor`.
+2. **FAT32-safe names.**
+   - Forbidden characters are already handled by the shared filing rule.
+   - Names that differ only by case are not: 26 master folder pairs. On FAT32 they merge, and two files differing only by case would overwrite each other.
+   - Fix: a case rule in the filing rule, a one-time merge, a doctor check, and a pre-copy check in the transfer.
+   - Grey asked for it "in Act 1". Act 1 names no library files, so the filing rule is the single place. Confirm with Grey.
+3. **Bit-rot baselines** for all 9,197 masters, after the builds.
+4. **Grey's wish list (approved 2026-10-03, worked alone, questions in one list):**
+   - audit problems saved to a log;
+   - the tagger trusts rename rulings for the album artist;
+   - a `remove-artist` command;
+   - the review list as a command;
+   - measurements copied into the masters' tags;
+   - why tempo analysis ran 3× slower;
+   - then one ultrareview.
+5. **Duplicate review (Grey):** 3,741 songs.
+6. **Safety layer (slice #22, A and B together, F6):** no merged fix found; re-check.
+7. 3,671 songs with no album name · 7 with no genre · 293 lossy masters to upgrade.
+
+### The lesson, again
+
+The same shape as 2026-09-23: **two things that must agree, quietly ceasing to.**
+
+- #36 moved rows to the masters, and the rename tool kept the old picture. Its dry run reported "0 to move" in a normal-looking line.
+- `pipeline_pids()` answers "can anything move masters under a build?" and was being used to answer "is it safe to update the code?". During a build it said "nothing running".
+- The audit said "5 errors" and recorded none of them.
+
+Each was found by checking the result against the files, not by reading the report.
+
+---
+
+## State on 2026-09-23 — rebuild finished, library curated, car edition seeded
+
+**Measured against the live vault on 2026-09-23, after the day's removals.**
+It supersedes every count below it.
+
+| | |
+|---|---|
+| CATALOGUED | **9,006** |
+| DUPE_REVIEW | **0** (the queue was reviewed and deleted by hand) |
+| QUARANTINED | 22 — `doctor`: 4 of them are the only copy of their audio |
+| TRIBUTE_REVIEW | 4 |
+| distinct artists | 1,598 |
+| CATALOGUED with no genre | 9 |
+| CATALOGUED with no album name | 293 |
+| denied fingerprints (the LEDGER) | 3,313 |
+
+| edition | files |
+|---|---|
+| `ALAC-Archival` (masters) | 9,078 |
+| `ALAC_Library` (−18 LUFS) | 9,002 |
+| `CAR_Library` | **7,716** — 85% complete, seeded from backups (below) |
+| `iPHONE_Library` | 0 — rebuilt after the car edition |
+
+`TuneMyMusic.csv` now lives **only** in `MetaData/` — 545 songs.
+
+### What happened on 22–23 September
+
+- **`main` caught up.** It was 349 commits behind because PR #14 had sat
+  blocked on a red `lint` check since 2026-08-21, so its test jobs had
+  **never run**. Clearing lint surfaced 11 CI failures, all fixed:
+  `sleep_inhibit` exec'd before checking the inhibitor worked; P0-19's G10
+  hardcoded `/home/grey/.cache`; `doctor` let a missing `ifuse` fail the
+  *library* verdict; `musaeus_notify.py` never asked `network_policy`.
+  #14 was squash-merged 2026-09-23; #17, #18 and #23–#27 followed.
+- **Reviews.** `docs/REVIEW_BRIEF.md` points any reviewer at this codebase's
+  real defect shape. Ultrareview of two slices (#21 duplicates, #22 safety):
+  10 of 12 findings reproduced, plus two the reviewer missed (safety A and B,
+  which must be fixed together). An outside AI review of 38 scripts: 2 of 7
+  checkable claims held; both "critical" ones were wrong.
+- **The duplicate resolver moves files by stored path without checking the
+  audio (bug 1).** Organize renames files back and forth every run (R2),
+  freeing a path that a *different* recording then takes, and the resolver
+  later moves whatever sits there. Proven on ABC *Poison Arrow* and Eddie
+  Rabbitt. **Not fixed yet.**
+- **The dupe-review queue (1,136 rows) was deleted by hand**; the LEDGER was
+  caught up with the fixed deletion tool (#23): 884 denied, 252 not — their
+  audio is still in the library.
+- **The `--skip deny-list` rebuild had re-admitted 1,359 ruled-out tracks**,
+  and `doctor` could not see it (fixed, #24 — it now reads the ledger).
+  1,189 removed; 170 kept on review and taken off the deny list (#25).
+- **ARTISTS_BY_GENRE review:** 224 more tracks removed. 17 songs that the
+  resolver bug had pushed out of the library were restored to the ledger
+  (un-denied) and wait to be re-ingested.
+- **Car library seeded, not re-encoded:** 7,856 files from the NUC's
+  pre-rebuild copy and the car USB stick, each checked against its own master
+  (length within 2 s, AAC stereo ≤ 48 kHz, clean decode). Linked from the
+  seeding's own record — `relink_car_exports.py` would have linked 197 tracks
+  to the wrong recording. 7,716 after today's removals.
+- **Housekeeping:** three drifted TuneMyMusic lists merged into one (#26);
+  `/mnt/FORGE2TB/Projects` consolidated; `_db_backups` trimmed from 22 GB to
+  under 2 GB, the pre-reset history (20 GB, checksum-verified) moved to
+  `NUC/3.-BACKUPS/musaeus_db_history_pre_reset`.
+- **The black-screen crash has evidence at last:** `i915: GPU HANG … Failed to
+  reset chip … Failed to reset GuC, ret = -110` at 18:24:36. Raptor Lake-P
+  graphics on kernel 6.1 with Feb-2023 firmware. Proposed fix: bookworm-
+  backports kernel 6.12 plus `firmware-misc-nonfree`.
+
+### Open, in the order I'd take them
+
+1. ~~**The combine batch**~~ — **DONE 2026-09-24.** 93 combines, 207 tracks,
+   one folder per artist, every moved track on organize's rule. Needed the tool
+   fixed first (PR #28: it could not see the Genre/Artist/Album layout). 12 songs
+   kept both copies as "Song (2)" — which copy stays is a later duplicate call
+   (Held sheet in `BATCH_COMBINE_DRY_RUN_2026-09-24.xlsx`). MasterLaw: Delerium
+   → Celtic, Smokey Robinson & The Miracles → R&B/Funk/Soul, 9 lines added. 6
+   masters realigned to their tracks (no-master count 396 → 390). Log:
+   `RUNS/LOGS/combine_batch_20260924T145913Z.log`. The 4 RPO covers removed.
+2. **Fix duplicate-resolver bug 1** (and R1–R4, and organize/finalize naming,
+   R2) **before any new ingest** — a fresh ingest is exactly what triggers it.
+3. **Re-ingest after that fix:** the 17 restored songs (copies in
+   `~/Desktop/combine`) and the 26 recoverable songs (sources on the NUC; the
+   Desktop holding folder has since been removed).
+4. **Overnight car build** — `build_car_library.py --from-catalogue
+   --only-missing`, about 970 tracks; it ends by writing the head-unit
+   playlists. After the batch.
+5. **Two tool defects:** `relink_car_exports.py` must require the artist to
+   agree; `delete_reviewed_tracks.py` looks for car copies under a genre
+   folder the car library does not have.
+6. **Safety layer:** fix A and B together; the journal re-reads itself on
+   every append (F6).
+7. **Crash fix** — kernel and firmware, one change at a time.
+8. 4 quarantined sole copies · 413 tracks with no master (no edition may be
+   built for them) · 293 with no album · 9 with no genre.
+9. iPhone edition and USB stick — after the car build.
+10. Bit-rot baselines — owed since the rebuild.
+
+### The lesson, again
+
+Every defect found in these two days was **two things that must agree,
+quietly ceasing to**: a stored path and the audio at it; a title and an
+artist; the deletion tool's idea of the car layout and the builder's; a check
+that read removals from the catalogue while the ledger held them; three copies
+of one list. None of them was caught by a linter. Most were found by
+measuring the artifact rather than reading the report.
 
 ---
 
