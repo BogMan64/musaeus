@@ -3,9 +3,7 @@
 
 Grey, 2026-09-16: "we do not need to edit the music tracks just the artist
 folder for searching." So this moves FILES and updates the CATALOGUE. It
-never rewrites a library or master tag -- those files are left
-byte-identical. (The car copy's album-artist tag is rewritten, because the
-car edition files by it.)
+never rewrites a tag -- the master is left byte-identical.
 
 WHY THIS IS NOT JUST `mv`
 
@@ -13,7 +11,6 @@ WHY THIS IS NOT JUST `mv`
     archive.genre           the top folder; a merge can cross genres
     archive.mb_artist_*     the target's MusicBrainz identity; folder_artist reads it
     archive.file_path       absolute; a move orphans it
-    archive.car_export_path absolute; same
     artist_canon.tsv        what stops the split reappearing on the next ingest
 
 A rename that carries only some of those produces a catalogue pointing at
@@ -28,15 +25,28 @@ nothing -- a dry run of "Simon" -> "Simon & Garfunkel" on 2026-09-24 reported
 0 files in both ALAC tiers while 17 sat in Folk/Simon, and an --execute
 would have relabelled all 17 rows and moved none of their files. The car tier
 had already taught the same lesson (it files by album-artist, so the folder
-guess missed it). So now:
-
-    library copy   archive.file_path
-    master copy    editions.master_path_for(file_path)  -- the mirrored path
-    car copy       archive.car_export_path
-
-and every destination comes from organize.library_relpath(), the rule
+guess missed it). So the file that moves is the one the row names, and
+every destination comes from organize.library_relpath(), the rule
 OrganizeStage files by, so the next organize pass leaves a merged file where
 this put it.
+
+THE ROW NAMES ITS MASTER; THE EDITIONS FOLLOW IT
+
+Since 2026-09-25 archive.file_path is the MASTER, in ALAC-Archival.
+ALAC_Library holds the Lossless edition: copies no row may point at. This
+script went on looking for each row under ALAC_Library, so on 2026-10-03 a
+dry run of "Derek" -> "Derek & The Dominos" said "0 to move, 2 outside the
+library, relabel only" -- --execute would have renamed the artist in the
+catalogue and left every master in the old folder. The phantom-row failure
+above, back by another route.
+
+So this moves the master and nothing else. The Lossless, car and iPhone
+copies are edition-build's: its ledger knows each by its master's audio, and
+a master that moved moves its copy on the next build ("copies follow
+masters", edition_build). Moving a copy here would leave the ledger naming an
+empty path. A row that names an edition copy instead of a master is the
+drift the audit fails, and it refuses the merge rather than move a copy as if
+it were a master.
 
 A CLASH REFUSES THE WHOLE MERGE
 
@@ -79,13 +89,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-import mutagen.mp4
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from musaeus.artist_form import comparison_key, sort_form  # noqa: E402
+from musaeus.artist_form import comparison_key  # noqa: E402
 from musaeus.config import MusicConfig  # noqa: E402
-from musaeus.editions import master_path_for  # noqa: E402
 from musaeus.filing import load as filing_load  # noqa: E402
 from musaeus.stages.organize import (  # noqa: E402
     _MAX_COMPONENT_BYTES,
@@ -99,9 +106,8 @@ EXIT_CLASH = 3
 @dataclass
 class RowPlan:
     id: int
-    moves: list[tuple[Path, Path]] = field(default_factory=list)  # (src, dst), every tier
+    moves: list[tuple[Path, Path]] = field(default_factory=list)  # (src, dst): the master
     file_path: str | None = None  # new value, or None to leave
-    car_export_path: str | None = None  # new value, or None to leave
     identity: tuple[str | None, str | None] | None = None  # (mb_artist_name, mb_artist_id) to adopt
 
 
@@ -111,11 +117,11 @@ class MergePlan:
     new: str
     genre: str | None  # the genre written to moved rows; None = each keeps its own
     rows: list[RowPlan] = field(default_factory=list)
-    relabel_only: int = 0  # rows with no library file (quarantine, review)
+    relabel_only: int = 0  # rows with no master in the library (quarantine, review)
     clashes: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     dest_folders: collections.Counter = field(default_factory=collections.Counter)
-    kept_both: list[str] = field(default_factory=list)  # library paths given a " (N)"
+    kept_both: list[str] = field(default_factory=list)  # master paths given a " (N)"
 
     @property
     def moves(self) -> list[tuple[Path, Path]]:
@@ -211,13 +217,11 @@ def plan_merge(
 
     keep_both: a destination already taken by a DIFFERENT recording gets the
     first free " (N)" instead of refusing the merge -- the name unique_path()
-    gives a collision everywhere else in the pipeline. Library and master
-    take the same N, so the master still mirrors its library copy. Grey,
-    2026-09-24: "keep both"; which copy stays is a duplicate decision for
-    later, not a naming one.
+    gives a collision everywhere else in the pipeline. Grey, 2026-09-24:
+    "keep both"; which copy stays is a duplicate decision for later, not a
+    naming one.
     """
     lib, arch = Path(cfg.alac_library), Path(cfg.alac_archive)
-    car_root = Path(cfg.vault_root) / "Libraries" / "CAR_Library"
     g, notes = target_genre(conn, old, new, genre)
     ident = target_identity(conn, old, new)
     plan = MergePlan(old, new, g, notes=notes)
@@ -226,15 +230,15 @@ def plan_merge(
     meta = getattr(cfg, "meta_dir", None)
     filing = filing_load(Path(meta)) if meta and Path(meta).is_dir() else {}
     claimed: dict[Path, int] = {}  # dst -> row id, so two rows cannot land on one path
-    car_moved: dict[Path, Path] = {}  # a car file two rows share moves once
     for row in conn.execute("SELECT * FROM archive WHERE artist = ? ORDER BY id", (old,)).fetchall():
         rp = RowPlan(row["id"], identity=ident)
         mb_name = ident[0] if ident else row["mb_artist_name"]
         fp = Path(row["file_path"]) if row["file_path"] else None
-        try:
-            rel_now = fp.relative_to(lib) if fp else None
-        except ValueError:
-            rel_now = None
+        if fp is not None and fp.is_relative_to(lib):
+            plan.clashes.append(f"id={row['id']}: names a Lossless edition copy, not its master: {fp}")
+            plan.rows.append(rp)
+            continue
+        rel_now = fp.relative_to(arch) if fp is not None and fp.is_relative_to(arch) else None
         if rel_now is None:
             plan.relabel_only += 1
             plan.rows.append(rp)
@@ -243,29 +247,13 @@ def plan_merge(
         rel = library_relpath(new, mb_name, g or row["genre"], row["album"], row["title"], fp.suffix, filing)
         plan.dest_folders[str(Path(*rel.parts[:2]))] += 1
         if keep_both and rel != rel_now:
-            free = _free_name(rel, lambda r: (lib / r).exists() or (arch / r).exists() or lib / r in claimed or arch / r in claimed)
+            free = _free_name(rel, lambda r: (arch / r).exists() or arch / r in claimed)
             if free != rel:
-                plan.kept_both.append(str(lib / free))
+                plan.kept_both.append(str(arch / free))
                 rel = free
         if rel != rel_now:
-            rp.moves.append((fp, lib / rel))
-            rp.file_path = str(lib / rel)
-            master = master_path_for(fp, lib, arch)
-            if master.is_master and master.path != fp:
-                rp.moves.append((master.path, arch / rel))
-
-        car = Path(row["car_export_path"]) if row["car_export_path"] else None
-        if car is not None and car.is_file():
-            stem = car.name
-            renamed = f"{sort_form(new)} - {stem.split(' - ', 1)[1]}" if " - " in stem else stem
-            car_dst = car_root / sort_form(new) / car.parent.name / renamed
-            if keep_both and car_dst != car:
-                car_dst = car_root / _free_name(car_dst.relative_to(car_root), lambda r: (car_root / r).exists() or car_root / r in claimed)
-            if car_dst != car:
-                if car not in car_moved:
-                    car_moved[car] = car_dst
-                    rp.moves.append((car, car_dst))
-                rp.car_export_path = str(car_dst)
+            rp.moves.append((fp, arch / rel))
+            rp.file_path = str(arch / rel)
 
         for src, dst in rp.moves:
             if not src.is_file():
@@ -296,14 +284,6 @@ def _remove_empty_parents(start: Path, stop_at: set[Path]) -> int:
     return removed
 
 
-def _retag_car(path: Path, album_artist: str) -> None:
-    tags = mutagen.mp4.MP4(path)
-    if tags.tags is None:
-        tags.add_tags()
-    tags.tags["aART"] = [album_artist]
-    tags.save()
-
-
 # Tables that name a file by its absolute path. A move that leaves them behind
 # orphans them: bit-rot baselines for masters that "vanished" while new ones
 # sit unbaselined, and duplicate-group members pointing at a freed path --
@@ -318,7 +298,7 @@ _PATH_COLUMNS = (
 )
 
 
-def _record_row(conn, rp, plan, car_root, path_tables, run_id, now, note, counts) -> None:
+def _record_row(conn, rp, plan, path_tables, run_id, now, note, counts) -> None:
     """The catalogue half of one row's move. Raises; the caller rolls back."""
     sets, args = ["artist = ?"], [plan.new]
     if plan.genre and rp.file_path is not None:
@@ -333,11 +313,6 @@ def _record_row(conn, rp, plan, car_root, path_tables, run_id, now, note, counts
     conn.execute(f"UPDATE archive SET {', '.join(sets)} WHERE id = ?", (*args, rp.id))
     counts["rows"] += 1
     for src, dst in rp.moves:
-        if dst.is_relative_to(car_root):
-            # Every row naming this car file follows it, not only this one.
-            counts["car_paths"] += conn.execute(
-                "UPDATE archive SET car_export_path = ? WHERE car_export_path = ?", (str(dst), str(src))
-            ).rowcount
         for table, col in path_tables:
             # OR REPLACE: a stale row already naming dst describes a file
             # that is not there (the clash check proved dst empty).
@@ -362,8 +337,7 @@ def execute_plan(cfg, conn: sqlite3.Connection, plan: MergePlan) -> dict[str, in
     """
     if plan.clashes:
         raise RuntimeError("refusing to execute a plan with clashes")
-    lib, arch = Path(cfg.alac_library), Path(cfg.alac_archive)
-    car_root = Path(cfg.vault_root) / "Libraries" / "CAR_Library"
+    arch = Path(cfg.alac_archive)
     run_id = f"consolidate_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     note = f"{plan.old} -> {plan.new}" + (f" [genre {plan.genre}]" if plan.genre else "")
@@ -382,20 +356,17 @@ def execute_plan(cfg, conn: sqlite3.Connection, plan: MergePlan) -> dict[str, in
                 src.rename(dst)
                 done.append((src, dst))
                 emptied.add(src.parent)
-                if dst.is_relative_to(car_root):
-                    _retag_car(dst, plan.new)
-            _record_row(conn, rp, plan, car_root, path_tables, run_id, now, note, counts)
+            _record_row(conn, rp, plan, path_tables, run_id, now, note, counts)
             conn.commit()
         except Exception:
-            # Files and row go back together. A car file already retagged
-            # keeps its new album-artist tag; the audio is untouched.
+            # Files and row go back together.
             conn.rollback()
             for src, dst in reversed(done):
                 dst.rename(src)
             raise
 
     for d in emptied:
-        counts["dirs_removed"] += _remove_empty_parents(d, {lib, arch, car_root})
+        counts["dirs_removed"] += _remove_empty_parents(d, {arch})
     return dict(counts)
 
 
@@ -469,7 +440,9 @@ def main() -> int:
     plan = plan_merge(cfg, conn, args.old, args.new, args.genre, keep_both=args.keep_both)
     n_lib = sum(1 for r in plan.rows if r.file_path is not None)
     print(f"  {args.old!r} -> {args.new!r}" + (f"  [genre: {plan.genre}]" if plan.genre else ""))
-    print(f"  rows: {len(plan.rows)}  ({n_lib} to move, {plan.relabel_only} outside the library, relabel only)")
+    print(f"  rows: {len(plan.rows)}  ({n_lib} master(s) to move, {plan.relabel_only} outside the library, relabel only)")
+    if n_lib:
+        print("  edition copies (Lossless, car, iPhone) follow their masters on the next edition-build")
     for folder, n in plan.dest_folders.most_common():
         print(f"  into {folder}/  ({n})")
     for n in plan.notes:
@@ -500,7 +473,7 @@ def main() -> int:
                 print(f"  artist_canon.tsv: re-pointed {n_chain} entry(ies) that would "
                       f"otherwise chain through {args.old!r}")
     print(f"\nDONE: {counts.get('files', 0)} file(s), {counts.get('rows', 0)} row(s), "
-          f"{counts.get('car_paths', 0)} car_export_path, {counts.get('other_paths', 0)} other table path(s), "
+          f"{counts.get('other_paths', 0)} other table path(s), "
           f"{counts.get('dirs_removed', 0)} empty folder(s) removed")
     return 0
 
