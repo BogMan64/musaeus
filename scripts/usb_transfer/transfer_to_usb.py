@@ -110,6 +110,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
 from musaeus.config import get_config  # noqa: E402
+from musaeus.fat_names import names_unsafe_on_fat  # noqa: E402  (one rule with doctor)
 from musaeus.hasher import file_hash  # noqa: E402
 
 _SPEED_WINDOW = 5  # files of history before speed-drop detection kicks in
@@ -446,39 +447,6 @@ def files_too_big_for_fat32(files: list[Path]) -> list[tuple[Path, int]]:
         if size >= _FAT32_MAX_FILE_BYTES:
             oversized.append((f, size))
     return oversized
-
-
-#: Refused in a FAT32 or exFAT name. "/" is the separator, so never in a part.
-_FAT_FORBIDDEN = frozenset('\\:*?"<>|')
-
-
-def names_unsafe_on_fat(files: list[Path], source_root: Path) -> tuple[list[Path], list[list[Path]]]:
-    """Pure (no I/O): the files a FAT32 stick cannot hold as named.
-
-    Returns (bad, clashes):
-      bad      a file whose path has a character FAT refuses, a control
-               character, or a part ending in a dot or space (FAT drops it)
-      clashes  groups of files whose paths differ only by letter case --
-               FAT ignores case, so they land on ONE name and the second
-               copy overwrites the first
-
-    Folders differing only by case are not a clash: on the stick they merge
-    into one folder, and nothing is lost unless two FILES then share a name,
-    which the clash test catches. Grey, 2026-10-03, after 26 such folder
-    pairs were found among the masters.
-
-    str.casefold() is stricter than FAT's own upcase table, so this can only
-    over-report a clash, never miss one."""
-    bad: list[Path] = []
-    folded: dict[str, list[Path]] = {}
-    for f in files:
-        rel = f.relative_to(source_root)
-        if any(
-            ch in _FAT_FORBIDDEN or ord(ch) < 32 for part in rel.parts for ch in part
-        ) or any(part.endswith((".", " ")) for part in rel.parts):
-            bad.append(f)
-        folded.setdefault(str(rel).casefold(), []).append(f)
-    return bad, [sorted(group) for group in folded.values() if len(group) > 1]
 
 
 def build_wipe_and_format_commands(
