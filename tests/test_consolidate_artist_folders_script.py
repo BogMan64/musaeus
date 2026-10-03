@@ -6,10 +6,19 @@ of "Simon" -> "Simon & Garfunkel" on 2026-09-24 reported 0 files in both ALAC
 tiers while 17 sat in Folk/Simon, and --execute would have relabelled every
 row and moved none of the files.
 
-These tests build a small vault in that layout and hold the script to:
-every copy found from the catalogue, every destination from the rule organize
-files by, a clash refusing the whole merge, and nothing deleted that the
-catalogue does not know about.
+The same failure came back on 2026-10-03. Since 2026-09-25 a row names its
+MASTER in ALAC-Archival, and ALAC_Library holds the Lossless edition -- copies
+no row may point at. The script still looked for each row under ALAC_Library,
+so a dry run of "Derek" -> "Derek & The Dominos" reported "0 to move, 2
+outside the library, relabel only": --execute would have renamed the artist in
+the catalogue and left every master in the old folder.
+
+These tests build a small vault in today's layout -- the row names its master,
+the editions hold copies the ledger knows -- and hold the script to: the
+master the row names is the file that moves, every destination comes from the
+rule organize files by, edition copies are left for edition-build to move
+after their master, a clash refuses the whole merge, and nothing is deleted
+that the catalogue does not know about.
 """
 
 from __future__ import annotations
@@ -37,7 +46,7 @@ def _load():
 
 
 @pytest.fixture
-def vault(tmp_path, monkeypatch):
+def vault(tmp_path):
     libs = tmp_path / "Libraries"
     cfg = SimpleNamespace(
         vault_root=tmp_path,
@@ -61,61 +70,89 @@ def vault(tmp_path, monkeypatch):
         "file_path TEXT, old_value TEXT, new_value TEXT, stage TEXT, note TEXT)"
     )
     mod = _load()
-    retagged: list[Path] = []
-    monkeypatch.setattr(mod, "_retag_car", lambda p, a: retagged.append(p))
 
-    def add(
-        artist, genre, album, title, *, car=True, master=True, data=b"audio", mb=None, mbid=None
-    ):
+    def add(artist, genre, album, title, *, editions=True, data=b"audio", mb=None, mbid=None):
+        """A catalogued master, and (editions=True) its Lossless and car copies."""
         rel = library_relpath(artist, mb, genre, album, title, ".m4a")
-        lib = cfg.alac_library / rel
-        lib.parent.mkdir(parents=True, exist_ok=True)
-        lib.write_bytes(data)
-        if master:
-            m = cfg.alac_archive / rel
-            m.parent.mkdir(parents=True, exist_ok=True)
-            m.write_bytes(data)
-        car_path = None
-        if car:
-            car_path = libs / "CAR_Library" / rel.parts[1] / rel.parts[2] / rel.parts[3]
-            car_path.parent.mkdir(parents=True, exist_ok=True)
-            car_path.write_bytes(data)
+        master = cfg.alac_archive / rel
+        master.parent.mkdir(parents=True, exist_ok=True)
+        master.write_bytes(data)
+        if editions:
+            for copy in (cfg.alac_library / rel, libs / "CAR_Library" / Path(*rel.parts[1:])):
+                copy.parent.mkdir(parents=True, exist_ok=True)
+                copy.write_bytes(b"copy of " + data)
         cur = conn.execute(
-            "INSERT INTO archive (artist, genre, album, title, file_path, car_export_path, "
-            "mb_artist_name, mb_artist_id, status) VALUES (?,?,?,?,?,?,?,?, 'CATALOGUED')",
-            (artist, genre, album, title, str(lib), str(car_path) if car_path else None, mb, mbid),
+            "INSERT INTO archive (artist, genre, album, title, file_path, "
+            "mb_artist_name, mb_artist_id, status) VALUES (?,?,?,?,?,?,?, 'CATALOGUED')",
+            (artist, genre, album, title, str(master), mb, mbid),
         )
         conn.commit()
         return cur.lastrowid
 
-    return SimpleNamespace(cfg=cfg, conn=conn, mod=mod, add=add, libs=libs, retagged=retagged)
+    return SimpleNamespace(cfg=cfg, conn=conn, mod=mod, add=add, libs=libs)
 
 
 def _row(v, rid):
     return v.conn.execute("SELECT * FROM archive WHERE id=?", (rid,)).fetchone()
 
 
-def test_finds_every_copy_under_the_genre_level_and_moves_all_three(vault):
+def _edition_files(v):
+    return {
+        p: p.read_bytes()
+        for root in (v.cfg.alac_library, v.libs / "CAR_Library")
+        for p in root.rglob("*")
+        if p.is_file()
+    }
+
+
+def test_moves_the_master_the_row_names(vault):
     vault.add("Simon & Garfunkel", "Folk", "Bookends", "Mrs. Robinson")
     rid = vault.add("Simon", "Folk", "Bookends", "America")
 
     plan = vault.mod.plan_merge(vault.cfg, vault.conn, "Simon", "Simon & Garfunkel")
-    assert len(plan.moves) == 3, "library, master and car copies must all be found"
+    assert plan.relabel_only == 0, "a row naming its master is in the library"
+    assert len(plan.moves) == 1, "the master is the one file the row names"
     vault.mod.execute_plan(vault.cfg, vault.conn, plan)
 
-    want = Path("Folk/Simon & Garfunkel/Bookends/Simon & Garfunkel - America.m4a")
-    assert (vault.cfg.alac_library / want).is_file()
-    assert (vault.cfg.alac_archive / want).is_file()
-    car = vault.libs / "CAR_Library/Simon & Garfunkel/Bookends/Simon & Garfunkel - America.m4a"
-    assert car.is_file()
-    row = _row(vault, rid)
-    assert (row["artist"], row["file_path"], row["car_export_path"]) == (
-        "Simon & Garfunkel",
-        str(vault.cfg.alac_library / want),
-        str(car),
+    want = (
+        vault.cfg.alac_archive / "Folk/Simon & Garfunkel/Bookends/Simon & Garfunkel - America.m4a"
     )
-    assert not (vault.cfg.alac_library / "Folk/Simon").exists(), "emptied folder should go"
-    assert vault.retagged == [car]
+    assert want.is_file()
+    row = _row(vault, rid)
+    assert (row["artist"], row["file_path"]) == ("Simon & Garfunkel", str(want))
+    assert not (vault.cfg.alac_archive / "Folk/Simon").exists(), "emptied folder should go"
+
+
+def test_edition_copies_are_left_for_edition_build(vault):
+    """Copies follow their master on the next edition-build, which knows them
+    by the master's audio and moves only a file carrying its marker. Moving a
+    copy here would leave the ledger naming a path that is empty."""
+    vault.add("Simon", "Folk", "Bookends", "America")
+    before = _edition_files(vault)
+    vault.mod.execute_plan(
+        vault.cfg,
+        vault.conn,
+        vault.mod.plan_merge(vault.cfg, vault.conn, "Simon", "Simon & Garfunkel"),
+    )
+    assert _edition_files(vault) == before
+
+
+def test_a_row_pointing_into_the_lossless_edition_refuses_the_merge(vault):
+    """No row may name an edition copy (Grey, 2026-09-25); the audit fails one.
+    Moving it would move a copy as if it were a master."""
+    vault.add("Simon", "Folk", "Bookends", "America")
+    rid = vault.add("Simon", "Folk", "Bookends", "Cecilia")
+    copy = vault.cfg.alac_library / Path(_row(vault, rid)["file_path"]).relative_to(
+        vault.cfg.alac_archive
+    )
+    vault.conn.execute("UPDATE archive SET file_path=? WHERE id=?", (str(copy), rid))
+    vault.conn.commit()
+
+    plan = vault.mod.plan_merge(vault.cfg, vault.conn, "Simon", "Simon & Garfunkel")
+    assert any("Lossless edition" in c for c in plan.clashes)
+    with pytest.raises(RuntimeError):
+        vault.mod.execute_plan(vault.cfg, vault.conn, plan)
+    assert _row(vault, rid)["artist"] == "Simon"
 
 
 def test_the_next_organize_pass_would_move_nothing(vault):
@@ -134,7 +171,7 @@ def test_the_next_organize_pass_would_move_nothing(vault):
         rel = library_relpath(
             r["artist"], r["mb_artist_name"], r["genre"], r["album"], r["title"], ".m4a"
         )
-        assert Path(r["file_path"]) == vault.cfg.alac_library / rel
+        assert Path(r["file_path"]) == vault.cfg.alac_archive / rel
 
 
 def test_a_cross_genre_merge_lands_in_the_targets_genre(vault):
@@ -148,7 +185,7 @@ def test_a_cross_genre_merge_lands_in_the_targets_genre(vault):
     row = _row(vault, rid)
     assert row["genre"] == "Folk Rock"
     assert "/Folk Rock/Crosby, Stills, Nash & Young/Deja Vu/" in row["file_path"]
-    assert not (vault.cfg.alac_library / "Hip Hop").exists()
+    assert not (vault.cfg.alac_archive / "Hip Hop").exists()
 
 
 def test_a_target_with_no_rows_keeps_each_rows_own_genre(vault):
@@ -196,7 +233,7 @@ def test_a_clash_refuses_the_whole_merge_and_deletes_nothing(vault, same_bytes):
 def test_a_file_the_catalogue_does_not_know_survives(vault):
     vault.add("Simon & Garfunkel", "Folk", "Bookends", "Mrs. Robinson")
     vault.add("Simon", "Folk", "Bookends", "America")
-    art = vault.cfg.alac_library / "Folk/Simon/Bookends/cover.jpg"
+    art = vault.cfg.alac_archive / "Folk/Simon/Bookends/cover.jpg"
     art.write_bytes(b"jpg")
     vault.mod.execute_plan(
         vault.cfg,
@@ -236,7 +273,7 @@ def test_every_move_is_recorded_as_an_event(vault):
     n = vault.conn.execute(
         "SELECT COUNT(*) FROM events WHERE event_type='ARTIST_CONSOLIDATED'"
     ).fetchone()[0]
-    assert n == 3
+    assert n == 1
 
 
 def test_a_merged_row_takes_the_targets_identity_and_files_with_it(vault):
@@ -265,7 +302,7 @@ def test_a_merged_row_takes_the_targets_identity_and_files_with_it(vault):
     rel = library_relpath(
         row["artist"], row["mb_artist_name"], row["genre"], row["album"], row["title"], ".m4a"
     )
-    assert Path(row["file_path"]) == vault.cfg.alac_library / rel
+    assert Path(row["file_path"]) == vault.cfg.alac_archive / rel
 
 
 def test_an_identity_that_names_someone_else_is_not_adopted(vault):
@@ -312,11 +349,10 @@ def test_and_versus_ampersand_is_still_the_same_identity(vault):
 
 def test_other_tables_naming_a_moved_file_follow_it(vault):
     rid = vault.add("Simon", "Folk", "Bookends", "America")
-    lib = Path(_row(vault, rid)["file_path"])
-    master = vault.cfg.alac_archive / lib.relative_to(vault.cfg.alac_library)
-    vault.conn.execute("INSERT INTO archive_tier_hashes VALUES (?, 'abc')", (str(master),))
+    master = _row(vault, rid)["file_path"]
+    vault.conn.execute("INSERT INTO archive_tier_hashes VALUES (?, 'abc')", (master,))
     vault.conn.execute(
-        "INSERT INTO duplicates (group_id, file_path, status) VALUES (7, ?, 'keep')", (str(lib),)
+        "INSERT INTO duplicates (group_id, file_path, status) VALUES (7, ?, 'keep')", (master,)
     )
     vault.conn.commit()
     vault.mod.execute_plan(
@@ -324,12 +360,10 @@ def test_other_tables_naming_a_moved_file_follow_it(vault):
         vault.conn,
         vault.mod.plan_merge(vault.cfg, vault.conn, "Simon", "Simon & Garfunkel"),
     )
-    new_lib = Path(_row(vault, rid)["file_path"])
-    new_master = vault.cfg.alac_archive / new_lib.relative_to(vault.cfg.alac_library)
-    assert vault.conn.execute("SELECT path FROM archive_tier_hashes").fetchone()[0] == str(
-        new_master
-    )
-    assert vault.conn.execute("SELECT file_path FROM duplicates").fetchone()[0] == str(new_lib)
+    new_master = _row(vault, rid)["file_path"]
+    assert new_master != master
+    assert vault.conn.execute("SELECT path FROM archive_tier_hashes").fetchone()[0] == new_master
+    assert vault.conn.execute("SELECT file_path FROM duplicates").fetchone()[0] == new_master
 
 
 def test_a_database_failure_puts_the_files_back(vault, monkeypatch):
@@ -350,7 +384,7 @@ def test_a_database_failure_puts_the_files_back(vault, monkeypatch):
     assert _row(vault, rid)["artist"] == "Simon"
 
 
-def test_keep_both_files_a_clash_as_n_in_every_tier_and_touches_nothing_else(vault):
+def test_keep_both_files_a_clash_as_n_and_touches_nothing_else(vault):
     kept = vault.add("Steve Miller Band", "Rock", "Born 2B Blue", "Ya Ya", data=b"band")
     rid = vault.add("Steve Miller", "Rock", "Born 2B Blue", "Ya Ya", data=b"solo")
     kept_path = Path(_row(vault, kept)["file_path"])
@@ -361,15 +395,11 @@ def test_keep_both_files_a_clash_as_n_in_every_tier_and_touches_nothing_else(vau
     assert not plan.clashes
     vault.mod.execute_plan(vault.cfg, vault.conn, plan)
 
-    name = "Steve Miller Band - Ya Ya (2).m4a"
-    row = _row(vault, rid)
-    assert Path(row["file_path"]).name == name
-    rel = Path(row["file_path"]).relative_to(vault.cfg.alac_library)
-    assert (vault.cfg.alac_archive / rel).read_bytes() == b"solo", (
-        "master must mirror its library copy"
-    )
-    assert Path(row["car_export_path"]).name == name
-    assert kept_path.read_bytes() == b"band", "the copy already there must be untouched"
+    row = Path(_row(vault, rid)["file_path"])
+    assert row.name == "Steve Miller Band - Ya Ya (2).m4a"
+    assert row.parent == kept_path.parent
+    assert row.read_bytes() == b"solo"
+    assert kept_path.read_bytes() == b"band", "the master already there must be untouched"
 
 
 def test_keep_both_still_refuses_a_missing_source(vault):
