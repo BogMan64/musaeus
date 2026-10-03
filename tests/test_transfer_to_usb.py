@@ -1820,3 +1820,67 @@ class TestPlaylistEntriesResolve:
         assert not (cfg.vault_root / "Playlists").exists()
         assert copy_playlists(cfg.vault_root, cfg.alac_library, dest) == []
         assert existing.read_text() == "#EXTM3U\n"
+
+
+# ── Names a FAT32 stick cannot hold (Grey, 2026-10-03) ──────────────────────
+#
+# The car stick is FAT32. FAT32 refuses \ : * ? " < > | in a name, drops a
+# trailing dot or space, and ignores letter case -- so two files whose paths
+# differ only by case land on ONE name and the second overwrites the first.
+# On 2026-10-03 the masters held 26 folder pairs differing only by case
+# ("The Dark Side Of The Moon" / "The Dark Side of the Moon"). Folders merge
+# harmlessly; files do not. The transfer checks before it copies anything.
+
+
+class TestNamesUnsafeOnFat:
+    def _files(self, root, *rels):
+        out = []
+        for r in rels:
+            p = root / r
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"x")
+            out.append(p)
+        return out
+
+    def test_files_differing_only_by_case_clash(self, tmp_path):
+        files = self._files(tmp_path, "Pink Floyd/Album/Money.m4a", "Pink Floyd/album/money.m4a")
+        bad, clashes = usb_mod.names_unsafe_on_fat(files, tmp_path)
+        assert bad == []
+        assert clashes == [sorted(files)]
+
+    def test_folders_differing_by_case_with_different_files_merge_harmlessly(self, tmp_path):
+        files = self._files(
+            tmp_path,
+            "Pink Floyd/The Dark Side Of The Moon/Time.m4a",
+            "Pink Floyd/The Dark Side of the Moon/Money.m4a",
+        )
+        assert usb_mod.names_unsafe_on_fat(files, tmp_path) == ([], [])
+
+    @pytest.mark.parametrize(
+        "name", ["AC:DC.m4a", 'Say "Hi".m4a', "What?.m4a", "a|b.m4a", "Track.m4a."]
+    )
+    def test_forbidden_characters_and_trailing_dots_are_reported(self, tmp_path, name):
+        files = self._files(tmp_path, f"Artist/Album/{name}")
+        bad, clashes = usb_mod.names_unsafe_on_fat(files, tmp_path)
+        assert bad == files and clashes == []
+
+    def test_a_trailing_space_on_a_folder_is_reported(self, tmp_path):
+        files = self._files(tmp_path, "Artist /Album/Song.m4a")
+        assert usb_mod.names_unsafe_on_fat(files, tmp_path)[0] == files
+
+    def test_ordinary_names_pass(self, tmp_path):
+        files = self._files(tmp_path, "Sweet, The/Unsorted/Sweet, The - Co-Co.m4a", "R&B/x (2).m4a")
+        assert usb_mod.names_unsafe_on_fat(files, tmp_path) == ([], [])
+
+    def test_no_format_refuses_before_copying_anything(self, tmp_path, monkeypatch, capsys):
+        cfg, stick = _no_format_env(tmp_path, monkeypatch)
+        (cfg.car_library / "TRACK.m4a").write_bytes(b"other")  # beside track.m4a
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["prog", "--library", "car", "--no-format", "--dest", str(stick), "--execute"],
+        )
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _FakeCompleted())
+        assert usb_mod.main() == 1
+        assert list(stick.iterdir()) == [], "nothing may be copied when names would collide"
+        assert "same name on a FAT32" in capsys.readouterr().err

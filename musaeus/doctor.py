@@ -703,6 +703,7 @@ def diagnose(cfg: MusicConfig) -> Report:
     #      A single authority can be correct and the system still wrong.
     _authority_disagreements(cfg, rep)
     _editions_come_from_masters(cfg, rep)
+    _names_safe_on_fat(cfg, rep)
     _artist_tag_is_natural_form(cfg, rep)
     _catalogued_tracks_reach_the_car(cfg, rep)
     _external_tools_present(cfg, rep)
@@ -1187,3 +1188,56 @@ def _editions_come_from_masters(cfg: MusicConfig, rep: Report) -> None:
             "editions from masters",
             f"all {len(rows):,} catalogued rows resolve to a master",
         )
+
+
+def _names_safe_on_fat(cfg: MusicConfig, rep: Report) -> None:
+    """Can every library be copied onto a FAT32 stick as named? (Grey, 2026-10-03)
+
+    The car stick is FAT32: it refuses \\ : * ? " < > |, drops a trailing dot
+    or space, and ignores letter case. ext4 does none of that, so a name can
+    be fine here and lose a song there -- two files differing only by case
+    land on one name on the stick. The USB transfer refuses such a copy; this
+    says so before anyone tries. One rule for both: musaeus/fat_names.py.
+
+    Folders differing only by case (26 pairs among the masters on 2026-10-03)
+    merge harmlessly on a stick, but each is one album shown as two, and the
+    place a file clash comes from -- reported too.
+    """
+    from .edition_build import KINDS, TMP_SUFFIX
+    from .fat_names import folders_differing_only_by_case, names_unsafe_on_fat
+
+    trees = [("masters", getattr(cfg, "alac_archive", None))]
+    trees += [(kind.label, getattr(cfg, kind.root_attr, None)) for kind in KINDS.values()]
+    for label, root in trees:
+        if not root or not Path(root).is_dir():
+            continue
+        root = Path(root)
+        files, dirs = [], []
+        for p in root.rglob("*"):
+            if p.is_dir():
+                dirs.append(p)
+            elif not p.name.endswith(TMP_SUFFIX):
+                files.append(p)
+        bad, clashes = names_unsafe_on_fat(files, root)
+        pairs = folders_differing_only_by_case(dirs, root)
+        problems = []
+        if bad:
+            problems.append(
+                f"{len(bad):,} file(s) a FAT32 stick cannot hold as named, "
+                f"e.g. {bad[0].relative_to(root)}"
+            )
+        if clashes:
+            problems.append(
+                f"{len(clashes):,} group(s) of files that would overwrite each other "
+                f"(differ only by case), e.g. {clashes[0][0].relative_to(root)}"
+            )
+        if pairs:
+            problems.append(
+                f"{len(pairs):,} folder pair(s) differ only by letter case "
+                f"(one folder on a stick), e.g. {pairs[0][0].relative_to(root)}"
+            )
+        check = f"FAT32-safe names: {label}"
+        if problems:
+            rep.add("warn", check, "; ".join(problems), len(bad) + len(clashes) + len(pairs))
+        else:
+            rep.add("ok", check, f"all {len(files):,} file(s) safe on a FAT32 stick")
