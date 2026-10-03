@@ -110,6 +110,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
 from musaeus.config import get_config  # noqa: E402
+from musaeus.fat_names import names_unsafe_on_fat  # noqa: E402  (one rule with doctor)
 from musaeus.hasher import file_hash  # noqa: E402
 
 _SPEED_WINDOW = 5  # files of history before speed-drop detection kicks in
@@ -985,6 +986,30 @@ def main() -> int:
         p for p in source_root.rglob("*") if p.is_file() and not p.name.endswith(TMP_SUFFIX)
     )
     print(f"Source: {source_root} ({len(files)} file(s))")
+
+    # Before either branch, so a dry run shows it too: a stick is FAT32 or
+    # exFAT in practice, and a collision found during the copy means a song
+    # already overwritten on it.
+    bad_names, clashes = names_unsafe_on_fat(files, source_root)
+    if bad_names or clashes:
+        if bad_names:
+            print(
+                f"ERROR: {len(bad_names)} file(s) have a name a FAT32 stick cannot hold "
+                '(\\ : * ? " < > |, a control character, or a trailing dot or space):',
+                file=sys.stderr,
+            )
+            for path in bad_names[:5]:
+                print(f"  {path.relative_to(source_root)}", file=sys.stderr)
+        if clashes:
+            print(
+                f"ERROR: {len(clashes)} group(s) of files would land on the same name on a "
+                f"FAT32 stick (their paths differ only by letter case):",
+                file=sys.stderr,
+            )
+            for group in clashes[:5]:
+                print("  " + "  |  ".join(str(p.relative_to(source_root)) for p in group), file=sys.stderr)
+        print("Refusing to copy anything. Fix the names in the library first.", file=sys.stderr)
+        return 1
 
     # ── --no-format: copy onto what is already there ─────────────────────────
     #
