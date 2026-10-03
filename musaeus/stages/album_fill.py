@@ -109,7 +109,8 @@ def _get_json(url: str, headers: dict[str, str] | None = None) -> dict:
         with urlopen(
             Request(url, headers={"User-Agent": _UA, **(headers or {})}), timeout=_TIMEOUT_S
         ) as r:
-            return json.load(r)
+            data: dict = json.load(r)
+            return data
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
         raise Unavailable(str(exc)) from exc
 
@@ -139,13 +140,14 @@ def mb_first_release(release_group_id: str) -> str | None:
 def discogs_search(artist: str, title: str, key: str, secret: str) -> list[dict]:
     q = {"artist": artist, "track": title, "type": "release", "per_page": 25}
     auth = {"Authorization": f"Discogs key={key}, secret={secret}"}
-    return _get_json(f"{_DISCOGS_URL}?{urlencode(q)}", auth).get("results", [])
+    results: list[dict] = _get_json(f"{_DISCOGS_URL}?{urlencode(q)}", auth).get("results", [])
+    return results
 
 
 def deezer_search(artist: str, title: str) -> list[dict]:
-    return _get_json(f"{_DEEZER_URL}?{urlencode({'q': f'{artist} {title}', 'limit': 10})}").get(
-        "data", []
-    )
+    query = urlencode({"q": f"{artist} {title}", "limit": 10})
+    items: list[dict] = _get_json(f"{_DEEZER_URL}?{query}").get("data", [])
+    return items
 
 
 # ── The choices, pure (the rules of the 2026-09 scripts, unchanged) ─────────
@@ -195,8 +197,8 @@ def choose_from_discogs(results: list[dict], artist: str) -> tuple[str | None, s
         if want and want not in norm(who):
             continue
         try:
-            year = int(x.get("year"))
-        except (TypeError, ValueError):
+            year: int | None = int(str(x.get("year") or ""))
+        except ValueError:
             year = None
         cands.append((year or 9999, album.strip()))
     if not cands:
