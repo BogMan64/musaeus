@@ -207,3 +207,23 @@ def test_one_rule_decides_both_lists(vault):
     wins, _ = vault.mod.review_wins(vault.conn, losers)
     assert [p.review["id"] for p in wins] == [better]
     assert sorted(losers) == sorted([worse, tie]), "1.5 s longer is a tie, and a tie deletes"
+
+
+def test_limit_promotes_only_the_first_n(vault, monkeypatch, capsys):
+    """A one-song trial before the rest: --promote --execute --limit 1."""
+    _lib_and_better_review(vault)
+    other_lib = vault.masters / "Rock/Toto/Toto IV/Toto - Africa.m4a"
+    vault.row(other_lib, "CATALOGUED", "L2", title="Africa", album="Toto IV")
+    other_rev = vault.review_dir / "Toto/x/Toto - Africa.m4a"
+    vault.row(other_rev, "DUPE_REVIEW", "R2", title="Africa", sample_rate=96000)
+    vault.set_aside(other_rev, other_lib)
+    cfg = SimpleNamespace(
+        db_path=vault.cfg.db_path, alac_archive=vault.masters, runs_root=vault.cfg.runs_root
+    )
+    monkeypatch.setattr(vault.mod.MusicConfig, "from_env", staticmethod(lambda: cfg))
+    monkeypatch.setattr(sys, "argv", ["prog", "--promote", "--execute", "--limit", "1"])
+    assert vault.mod.main() == 0
+    n = vault.conn.execute(
+        "SELECT COUNT(*) FROM events WHERE event_type='SWAP_PROMOTED'"
+    ).fetchone()[0]
+    assert n == 1

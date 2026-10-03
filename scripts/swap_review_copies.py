@@ -34,6 +34,7 @@ the hash recorded for it -- the duplicate resolver moved the wrong recording
 out of the library in September by trusting a stored path (bug 1).
 
     python3 scripts/swap_review_copies.py --promote            # dry run
+    python3 scripts/swap_review_copies.py --promote --execute --limit 1   # trial
     python3 scripts/swap_review_copies.py --promote --execute
     musaeus run --act 3
     python3 scripts/swap_review_copies.py --retire             # dry run
@@ -255,6 +256,13 @@ def main() -> int:
         "per line, for scripts/delete_reviewed_tracks.py; reads only",
     )
     ap.add_argument("--execute", action="store_true", help="act (default: dry run)")
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        metavar="N",
+        help="--promote at most N (a one-song trial before the rest: --limit 1)",
+    )
     args = ap.parse_args()
 
     cfg = MusicConfig.from_env()
@@ -273,7 +281,7 @@ def main() -> int:
         wins, tally = review_wins(conn)
         for k, v in tally.most_common():
             print(f"  {v:6,}  {k}")
-        out = promote(conn, wins, args.execute)
+        out = promote(conn, wins[: args.limit] if args.limit > 0 else wins, args.execute)
         verb = "PROMOTED" if args.execute else "DRY RUN: would promote"
         print(f"\n{verb} {out['promoted']:,}; refused {out['refused']:,}")
         if args.execute and out["promoted"]:
