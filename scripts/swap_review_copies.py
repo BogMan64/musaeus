@@ -128,8 +128,14 @@ def library_copy(conn: sqlite3.Connection, review: sqlite3.Row) -> sqlite3.Row |
     ).fetchone()
 
 
-def review_wins(conn: sqlite3.Connection) -> tuple[list[Pair], collections.Counter]:
-    """Every review row whose copy beats its library copy, and a tally of the rest."""
+def review_wins(
+    conn: sqlite3.Connection, losers: list[int] | None = None
+) -> tuple[list[Pair], collections.Counter]:
+    """Every review row whose copy beats its library copy, and a tally of the rest.
+
+    *losers*, if given, collects the review rows whose library copy wins or
+    ties: the ones the rule says to delete. One rule decides both lists.
+    """
     wins: list[Pair] = []
     tally: collections.Counter = collections.Counter()
     for review in conn.execute("SELECT * FROM archive WHERE status='DUPE_REVIEW' ORDER BY id"):
@@ -141,6 +147,8 @@ def review_wins(conn: sqlite3.Connection) -> tuple[list[Pair], collections.Count
         tally[f"{winner} ({step})" if step else winner] += 1
         if winner == "review":
             wins.append(Pair(review, library, step))
+        elif losers is not None:
+            losers.append(review["id"])
     return wins, tally
 
 
@@ -240,6 +248,12 @@ def main() -> int:
     step = ap.add_mutually_exclusive_group(required=True)
     step.add_argument("--promote", action="store_true", help="return winning review copies to Act 3")
     step.add_argument("--retire", action="store_true", help="delete masters a promoted copy has replaced")
+    step.add_argument(
+        "--write-losers",
+        metavar="FILE",
+        help="write the review rows the rule says to DELETE (library wins or ties), one id "
+        "per line, for scripts/delete_reviewed_tracks.py; reads only",
+    )
     ap.add_argument("--execute", action="store_true", help="act (default: dry run)")
     args = ap.parse_args()
 
@@ -247,6 +261,14 @@ def main() -> int:
     conn = sqlite3.connect(cfg.db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 60000")
+    if args.write_losers:
+        losers: list[int] = []
+        _, tally = review_wins(conn, losers)
+        Path(args.write_losers).write_text("".join(f"{i}\n" for i in losers))
+        for k, v in tally.most_common():
+            print(f"  {v:6,}  {k}")
+        print(f"\n{len(losers):,} review row(s) to delete -> {args.write_losers}")
+        return 0
     if args.promote:
         wins, tally = review_wins(conn)
         for k, v in tally.most_common():

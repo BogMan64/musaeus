@@ -191,3 +191,19 @@ def test_retire_waits_for_act_3_then_hands_the_master_to_the_delete_tool(vault, 
     cmd = calls[0]
     assert Path(cmd[1]).name == "delete_reviewed_tracks.py" and "--execute" not in cmd
     assert Path(cmd[2]).read_text() == f"{lib}\n"
+
+
+def test_one_rule_decides_both_lists(vault):
+    """The rows to delete come from the same rule as the swaps (a Desktop copy of
+    the rule bucketed lengths and over-counted swaps by 72, 2026-10-03)."""
+    _, better, _, _ = _lib_and_better_review(vault)
+    worse_path = vault.review_dir / "Toto/Live/Toto - Rosanna (Live).m4a"
+    worse = vault.row(worse_path, "DUPE_REVIEW", "W", title="Rosanna (Live)")
+    vault.set_aside(worse_path, vault.masters / "Rock/Toto/Toto IV/Toto - Rosanna.m4a")
+    tie_path = vault.review_dir / "Toto/x/Toto - Rosanna.m4a"
+    tie = vault.row(tie_path, "DUPE_REVIEW", "T", duration=332.5)
+    vault.set_aside(tie_path, vault.masters / "Rock/Toto/Toto IV/Toto - Rosanna.m4a")
+    losers: list[int] = []
+    wins, _ = vault.mod.review_wins(vault.conn, losers)
+    assert [p.review["id"] for p in wins] == [better]
+    assert sorted(losers) == sorted([worse, tie]), "1.5 s longer is a tie, and a tie deletes"
