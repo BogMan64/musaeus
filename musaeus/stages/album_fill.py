@@ -235,8 +235,13 @@ def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
     ensure_columns(conn, (("album_fill_checked_at", "TEXT"),))
 
 
+#: An album that is not an album. Grey, 2026-10-03 ("yes"): a source folder's
+#: playlist name -- "My playlist S", 1,841 songs in the USB1 batch -- counts
+#: as no album, so a real one may replace it. Nothing else is ever replaced.
+NO_ALBUM_SQL = "(album IS NULL OR TRIM(album)='' OR album LIKE 'My playlist%')"
+
 _CANDIDATES = (
-    "FROM archive WHERE status='CATALOGUED' AND (album IS NULL OR TRIM(album)='') "
+    f"FROM archive WHERE status='CATALOGUED' AND {NO_ALBUM_SQL} "
     "AND (album_fill_checked_at IS NULL OR album_fill_checked_at='')"
 )
 
@@ -253,8 +258,7 @@ class AlbumFillStage(BaseStage):
         for query in (
             f"SELECT COUNT(*) {_CANDIDATES}",
             # album_fill_checked_at arrives on the first real run
-            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' "
-            "AND (album IS NULL OR TRIM(album)='')",
+            f"SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' AND {NO_ALBUM_SQL}",
         ):
             try:
                 return int(conn.execute(query).fetchone()[0]), what
@@ -342,7 +346,7 @@ class AlbumFillStage(BaseStage):
             if album:
                 changed = ctx.conn.execute(
                     "UPDATE archive SET album=?, album_fill_checked_at=? "
-                    "WHERE id=? AND (album IS NULL OR TRIM(album)='')",
+                    f"WHERE id=? AND {NO_ALBUM_SQL}",
                     (album, now, row["id"]),
                 ).rowcount
                 if changed:

@@ -180,3 +180,20 @@ def test_filled_rows_are_recorded_as_events(env):
         "SELECT new_value, note FROM events WHERE event_type='ALBUM_FILLED' AND file_path=?", (p,)
     ).fetchone()
     assert ev[0] == "Toto IV" and ev[1].startswith("acoustid:")
+
+
+def test_a_playlist_name_is_not_an_album_and_is_replaced(env):
+    """Grey, 2026-10-03: "My playlist S" (1,841 songs) counts as no album."""
+    p = env.add("Rosanna", album="My playlist R")
+    env.answers["acoustid"] = [_rg("r1", "Toto IV")]
+    env.run()
+    assert env.album(p)[0] == "Toto IV"
+
+
+def test_a_playlist_name_left_when_nothing_is_certain(env):
+    p = env.add("Rosanna", album="My playlist R")
+    env.answers["acoustid"] = [_rg("a", "One"), _rg("b", "Two")]
+    env.answers["mb"] = {"a": "1980", "b": "1980"}
+    env.answers["deezer"] = []
+    env.run()
+    assert env.album(p)[0] == "My playlist R", "ambiguous: nothing written"
