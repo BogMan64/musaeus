@@ -137,6 +137,7 @@ and before GenreValidate.
 
 from .acousticid import AcousticIDStage
 from .acoustid_name import AcoustIDNameStage
+from .album_fill import AlbumFillStage
 from .albumart import AlbumArtStage
 from .artist_consolidate import ArtistConsolidateStage
 from .audit import AuditStage
@@ -208,6 +209,7 @@ __all__ = [
     "OriginalYearStage",
     "NearDupeStage",
     "AcousticIDStage",
+    "AlbumFillStage",
     "IdentityTagStage",
     "AcoustIDNameStage",
     "TranscodeStage",
@@ -417,6 +419,11 @@ ENRICHMENT: list[type] = [
     # DIFFERENT audio hashes that are the same recording, which PCM
     # hashing structurally cannot detect. That is why it is worth
     # finishing rather than abandoning.
+    # AFTER AcoustID: an empty album is filled from the fingerprint that
+    # stage just stored, then Discogs, then Deezer (Grey, 2026-10-03: the
+    # three album scripts of 2026-09, wired in). Before IdentityTag, so the
+    # album is settled before identity is written to the files.
+    AlbumFillStage,
     # LAST. It writes identity to the FILES, so it must run after everything
     # that resolves identity -- otherwise it writes what the run is about to
     # learn. This is the stage whose absence let ~8,074 MBIDs live only in a
@@ -491,4 +498,5 @@ ENRICH_PIPELINE: list[type] = [
     EnrichStage,
     MBEnrichStage,
     AcousticIDStage,
+    AlbumFillStage,
 ]

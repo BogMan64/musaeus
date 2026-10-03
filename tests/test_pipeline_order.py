@@ -18,6 +18,7 @@ from __future__ import annotations
 from musaeus.stages import DEFAULT_PIPELINE
 from musaeus.stages.acousticid import AcousticIDStage
 from musaeus.stages.acoustid_name import AcoustIDNameStage
+from musaeus.stages.album_fill import AlbumFillStage
 from musaeus.stages.albumart import AlbumArtStage
 from musaeus.stages.artist_consolidate import ArtistConsolidateStage
 from musaeus.stages.audit import AuditStage
@@ -113,6 +114,9 @@ def test_enrichment_is_default_on_and_positioned_last():
     # most restored from the fingerprint ledger. After MBEnrich -- it asks
     # about what text could not settle -- and before IdentityTag.
     assert _index(MBEnrichStage) < _index(AcousticIDStage) < _index(IdentityTagStage)
+    # Album fill reads the fingerprint AcoustID stores, and must settle the
+    # album before identity is written to the files.
+    assert _index(AcousticIDStage) < _index(AlbumFillStage) < _index(IdentityTagStage)
     assert _index(MBEnrichStage) < _index(IdentityTagStage), (
         "identity is written to the files last, after everything that "
         "resolves it -- otherwise it writes what the run is about to learn"
@@ -182,6 +186,9 @@ def test_full_default_pipeline_order_matches_current_design():
         # Deferred 2026-08-31 (a 21-hour first pass over 10,656 files), back
         # 2026-09-25 on the wiped vault. See stages/__init__.py.
         AcousticIDStage,
+        # Grey, 2026-10-03: the 2026-09 album scripts wired in, after the
+        # fingerprint they read and before identity is written to the files.
+        AlbumFillStage,
         IdentityTagStage,
     ]
     assert expected == DEFAULT_PIPELINE
