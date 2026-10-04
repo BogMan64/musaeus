@@ -19,6 +19,8 @@ their rules unchanged:
                 credit our artist; earliest year wins.
   3. Deezer     exact artist + exact title, studio albums only (no greatest
                 hits, collections, live-at...), one unambiguous album.
+  4. iTunes     the same strict rules (Grey, 2026-10-03): exact artist and
+                title, no single/EP/compilation/reissue, earliest release.
 
 Text sources (2, 3) never try a title naming a specific version -- live,
 remix, acoustic, demo, edit...: the searches ignore the qualifier and return
@@ -67,12 +69,14 @@ _ACOUSTID_URL = "https://api.acoustid.org/v2/lookup"
 _MB_RG_URL = "https://musicbrainz.org/ws/2/release-group/{}?fmt=json"
 _DISCOGS_URL = "https://api.discogs.com/database/search"
 _DEEZER_URL = "https://api.deezer.com/search"
+_ITUNES_URL = "https://itunes.apple.com/search"
 _UA = "MUSAEUS/1.0 ( musaeus-local )"
 
 _AID_RATE_S = 0.34  # AcoustID: 3 requests/second
 _MB_RATE_S = 1.1  # MusicBrainz: 1 request/second
 _DISCOGS_RATE_S = 1.1  # Discogs: 60 requests/minute authenticated
 _DEEZER_RATE_S = 0.25
+_ITUNES_RATE_S = 3.0  # Apple publishes about 20 requests per minute
 _TIMEOUT_S = 30
 _COMMIT_EVERY = 25
 _MB_CANDIDATES_MAX = 6  # cap MusicBrainz calls per track
@@ -88,6 +92,14 @@ _DEEZER_BAD_ALBUM = re.compile(
     r"\b(greatest hits|best of|the collection|essential|anthology|"
     r"compilation|live (at|in|from)|hits|vol\.? ?\d|now that|"
     r"ultimate|definitive|platinum collection|super hits)\b",
+    re.I,
+)
+
+
+#: An iTunes album that is a reissue, not the original (Grey: the original wins).
+_ITUNES_REISSUE = re.compile(
+    r"\b(deluxe|remaster(ed)?|anniversary|expanded|re-?issue|bonus|special edition|"
+    r"legacy edition|collector'?s)\b",
     re.I,
 )
 
@@ -148,6 +160,12 @@ def deezer_search(artist: str, title: str) -> list[dict]:
     query = urlencode({"q": f"{artist} {title}", "limit": 10})
     items: list[dict] = _get_json(f"{_DEEZER_URL}?{query}").get("data", [])
     return items
+
+
+def itunes_search(artist: str, title: str) -> list[dict]:
+    query = urlencode({"term": f"{artist} {title}", "entity": "song", "limit": 25})
+    results: list[dict] = _get_json(f"{_ITUNES_URL}?{query}").get("results", [])
+    return results
 
 
 # ── The choices, pure (the rules of the 2026-09 scripts, unchanged) ─────────
@@ -220,6 +238,8 @@ def choose_from_deezer(items: list[dict], artist: str, title: str) -> tuple[str 
     for t in items:
         if norm((t.get("artist") or {}).get("name")) != want_a or norm(t.get("title")) != want_t:
             continue
+        if _VERSION_QUALIFIER.search(t.get("title") or ""):
+            continue  # norm() drops brackets: "Rosanna (Live)" would match "Rosanna"
         alb = (t.get("album") or {}).get("title") or ""
         if not alb or _DEEZER_BAD_ALBUM.search(alb) or norm(alb) == want_t:
             continue
@@ -230,6 +250,40 @@ def choose_from_deezer(items: list[dict], artist: str, title: str) -> tuple[str 
     if len(uniq) == 1:
         return uniq[0], "unambiguous"
     return None, f"{len(uniq)} candidate albums"
+
+
+def choose_from_itunes(items: list[dict], artist: str, title: str) -> tuple[str | None, str]:
+    """iTunes, under the same strict rules as the others.
+
+    Exact artist and exact title (a "(Live)" or "(Single Version)" title is a
+    different recording and does not match); an album that is a single, EP,
+    compilation or reissue is skipped; the EARLIEST release wins; two albums
+    with the same earliest date are a tie and the row is left empty.
+    """
+    want_a, want_t = norm(artist), norm(title)
+    dated: list[tuple[str, str]] = []
+    for t in items:
+        if norm(t.get("artistName")) != want_a or norm(t.get("trackName")) != want_t:
+            continue
+        if _VERSION_QUALIFIER.search(t.get("trackName") or ""):
+            continue  # norm() drops brackets: "Rosanna (Live)" would match "Rosanna"
+        alb = (t.get("collectionName") or "").strip()
+        if not alb or norm(alb) == want_t:
+            continue
+        if _DEEZER_BAD_ALBUM.search(alb) or _ITUNES_REISSUE.search(alb):
+            continue
+        if re.search(r"\s-\s(single|ep)$", alb, re.I) or (t.get("trackCount") or 0) < 4:
+            continue
+        dated.append(((t.get("releaseDate") or "9999")[:10], alb))
+    if not dated:
+        return None, "no studio album for an exact artist+title match"
+    names = {a for _, a in dated}
+    if len(names) == 1:
+        return dated[0][1], "unambiguous"
+    dated.sort()
+    if len({a for d, a in dated if d == dated[0][0]}) > 1:
+        return None, f"{len(names)} candidate albums, earliest date is a tie"
+    return dated[0][1], f"earliest of {len(names)} ({dated[0][0]})"
 
 
 def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
@@ -328,6 +382,10 @@ class AlbumFillStage(BaseStage):
                     time.sleep(_DEEZER_RATE_S)
                     album, reason = choose_from_deezer(deezer_search(artist, title), artist, title)
                     source, answered = "deezer", True
+                if album is None and text_ok:
+                    time.sleep(_ITUNES_RATE_S)
+                    album, reason = choose_from_itunes(itunes_search(artist, title), artist, title)
+                    source, answered = "itunes", True
             except Unavailable as exc:
                 # Not an answer: leave the row unstamped, ask again next run.
                 result.files_skipped += 1
