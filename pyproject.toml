@@ -22,6 +22,7 @@ dev = [
     "ruff",
     "mypy>=1.5",
     "semgrep",
+    "openpyxl",  # scripts/suggest_albums_itunes.py and its test read Grey's xlsx workbooks
 ]
 fuzzy = [
     "rapidfuzz>=3",
