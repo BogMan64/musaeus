@@ -20,7 +20,10 @@ their rules unchanged:
   3. Deezer     exact artist + exact title, studio albums only (no greatest
                 hits, collections, live-at...), one unambiguous album.
   4. iTunes     the same strict rules (Grey, 2026-10-03): exact artist and
-                title, no single/EP/compilation/reissue, earliest release.
+                title, no single/EP/compilation/reissue/live album, earliest
+                release -- and only if MusicBrainz confirms the song is on that
+                official studio album (iTunes alone picked "Built for Speed",
+                dated 1974, for a 1981 Stray Cats song).
 
 Text sources (2, 3) never try a title naming a specific version -- live,
 remix, acoustic, demo, edit...: the searches ignore the qualifier and return
@@ -70,6 +73,7 @@ _MB_RG_URL = "https://musicbrainz.org/ws/2/release-group/{}?fmt=json"
 _DISCOGS_URL = "https://api.discogs.com/database/search"
 _DEEZER_URL = "https://api.deezer.com/search"
 _ITUNES_URL = "https://itunes.apple.com/search"
+_MB_RECORDING_URL = "https://musicbrainz.org/ws/2/recording/"
 _UA = "MUSAEUS/1.0 ( musaeus-local )"
 
 _AID_RATE_S = 0.34  # AcoustID: 3 requests/second
@@ -90,7 +94,7 @@ _VERSION_QUALIFIER = re.compile(
 )
 _DEEZER_BAD_ALBUM = re.compile(
     r"\b(greatest hits|best of|the collection|essential|anthology|"
-    r"compilation|live (at|in|from)|hits|vol\.? ?\d|now that|"
+    r"compilation|\blive\b|hits|vol\.? ?\d|now that|"
     r"ultimate|definitive|platinum collection|super hits)\b",
     re.I,
 )
@@ -160,6 +164,23 @@ def deezer_search(artist: str, title: str) -> list[dict]:
     query = urlencode({"q": f"{artist} {title}", "limit": 10})
     items: list[dict] = _get_json(f"{_DEEZER_URL}?{query}").get("data", [])
     return items
+
+
+def mb_confirm(artist: str, album: str, title: str) -> tuple[bool, str]:
+    """Ask MusicBrainz whether this song is on an official studio album of this name.
+
+    A name another source proposed is only a claim. MusicBrainz is asked the
+    one question that settles it: is a recording of this title, credited to
+    this artist, on an OFFICIAL release of that name whose group is a plain
+    Album? Raises Unavailable when it cannot answer (a 503 is not "no").
+    """
+    q = lambda x: strip_bracketed(x).replace("\\", " ").replace('"', " ").strip()  # noqa: E731
+    query = f'recording:"{q(title)}" AND artist:"{q(artist)}" AND release:"{q(album)}"'
+    time.sleep(_MB_RATE_S)
+    data = _get_json(
+        f"{_MB_RECORDING_URL}?{urlencode({'query': query, 'fmt': 'json', 'limit': 10})}"
+    )
+    return choose_mb_confirmation(data.get("recordings", []), artist, title, album)
 
 
 def itunes_search(artist: str, title: str) -> list[dict]:
@@ -286,6 +307,32 @@ def choose_from_itunes(items: list[dict], artist: str, title: str) -> tuple[str 
     return dated[0][1], f"earliest of {len(names)} ({dated[0][0]})"
 
 
+def choose_mb_confirmation(
+    recordings: list[dict], artist: str, title: str, album: str
+) -> tuple[bool, str]:
+    """Pure: does any recording carry *title* by *artist* on an official studio album *album*?"""
+    want_a, want_t, want_alb = norm(artist), norm(title), norm(album)
+    first = want_a.split(" ")[0] if want_a else ""
+    for rec in recordings:
+        credit = norm(" ".join(c.get("name", "") for c in rec.get("artist-credit") or []))
+        if rec.get("score", 0) < 90 or norm(rec.get("title")) != want_t or first not in credit:
+            continue
+        for rel in rec.get("releases") or []:
+            rg = rel.get("release-group") or {}
+            if (
+                norm(rel.get("title")) == want_alb
+                and rel.get("status") == "Official"
+                and rg.get("primary-type") == "Album"
+                and not rg.get("secondary-types")
+            ):
+                year = (rel.get("date") or "?")[:4]
+                return True, f"MusicBrainz: on the official album '{rel['title']}' ({year})"
+    return (
+        False,
+        "MusicBrainz could not confirm this song is on an official studio album of that name",
+    )
+
+
 def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
     """The column this stage owns, beside the code that reads it."""
     ensure_columns(conn, (("album_fill_checked_at", "TEXT"),))
@@ -386,6 +433,12 @@ class AlbumFillStage(BaseStage):
                     time.sleep(_ITUNES_RATE_S)
                     album, reason = choose_from_itunes(itunes_search(artist, title), artist, title)
                     source, answered = "itunes", True
+                    if album is not None:
+                        # iTunes' catalogue is full of compilations and placeholder dates:
+                        # its answer is only a claim until MusicBrainz agrees.
+                        confirmed, evidence = mb_confirm(artist, album, title)
+                        reason = f"{reason}; {evidence}"
+                        album = album if confirmed else None
             except Unavailable as exc:
                 # Not an answer: leave the row unstamped, ask again next run.
                 result.files_skipped += 1

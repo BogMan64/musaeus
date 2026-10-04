@@ -59,7 +59,12 @@ def env(tmp_path, monkeypatch):
         af, "deezer_search", lambda a, t: calls["deezer"].append(t) or answers["deezer"]
     )
     monkeypatch.setattr(
-        af, "itunes_search", lambda a, t: calls["itunes"].append(t) or answers["itunes"]
+        af,
+        "itunes_search",
+        lambda a, t: (
+            calls["itunes"].append(t)
+            or (answers["itunes"](t) if callable(answers["itunes"]) else answers["itunes"])
+        ),
     )
 
     def add(title, artist="Toto", album=None, fp="FP"):
@@ -254,7 +259,8 @@ def test_itunes_another_artist_never_matches():
     )
 
 
-def test_the_stage_asks_itunes_last_and_only_for_what_is_left(env):
+def test_the_stage_asks_itunes_last_and_only_for_what_is_left(env, monkeypatch):
+    monkeypatch.setattr(af, "mb_confirm", lambda a, al, t: (True, "mb ok"))
     p = env.add("Africa")
     env.answers["acoustid"] = []
     env.answers["discogs"] = []
@@ -281,3 +287,81 @@ def test_a_live_or_version_candidate_title_is_not_the_same_recording():
         )[0]
         is None
     )
+
+
+# ── MusicBrainz confirmation: is this song really on that official studio album? ──
+
+
+def _rec(title="Rosanna", artist="Toto", score=100, releases=None):
+    return {
+        "title": title,
+        "score": score,
+        "artist-credit": [{"name": artist}],
+        "releases": releases or [],
+    }
+
+
+def _rel(title, status="Official", date="1982", primary="Album", secondary=None):
+    rg = {"primary-type": primary, "secondary-types": secondary or []}
+    return {"title": title, "status": status, "date": date, "release-group": rg}
+
+
+def test_musicbrainz_confirms_an_official_studio_album():
+    ok, why = af.choose_mb_confirmation(
+        [_rec(releases=[_rel("Toto IV")])], "Toto", "Rosanna", "Toto IV"
+    )
+    assert ok and "Toto IV" in why and "1982" in why
+
+
+@pytest.mark.parametrize(
+    "recs",
+    [
+        [_rec(releases=[_rel("Toto IV", status="Bootleg")])],
+        [_rec(releases=[_rel("Toto IV", secondary=["Compilation"])])],
+        [_rec(releases=[_rel("Toto IV", primary="Single")])],
+        [_rec(releases=[_rel("Tambu")])],
+        [_rec(score=56, releases=[_rel("Toto IV")])],
+        [_rec(artist="Tribute Band", releases=[_rel("Toto IV")])],
+        [_rec(title="Africa", releases=[_rel("Toto IV")])],
+        [],
+    ],
+)
+def test_musicbrainz_does_not_confirm_anything_less(recs):
+    assert af.choose_mb_confirmation(recs, "Toto", "Rosanna", "Toto IV")[0] is False
+
+
+def test_an_album_named_live_is_never_a_studio_answer():
+    """MusicBrainz lists "Forever Gold (Live)" as a plain Album, so the name is filtered too."""
+    for album in ("Forever Gold (Live)", "Absolutely Live", "Live at the Roxy 1981"):
+        assert (
+            af.choose_from_itunes(
+                [_it("Rock This Town", album, "2002-12-31", artist="Stray Cats")],
+                "Stray Cats",
+                "Rock This Town",
+            )[0]
+            is None
+        )
+        dz = {
+            "artist": {"name": "Stray Cats"},
+            "title": "Rock This Town",
+            "album": {"title": album},
+        }
+        assert af.choose_from_deezer([dz], "Stray Cats", "Rock This Town")[0] is None
+
+
+def test_the_stage_takes_an_itunes_album_only_if_musicbrainz_confirms(env, monkeypatch):
+    p_yes, p_no = env.add("Africa"), env.add("Hold The Line")
+    env.answers["acoustid"] = []
+    env.answers["discogs"] = []
+    env.answers["deezer"] = []
+    env.answers["itunes"] = lambda t: [_it(t, "Toto IV" if t == "Africa" else "Toto", "1982-03-01")]
+    asked = []
+    monkeypatch.setattr(
+        af, "mb_confirm", lambda a, al, t: asked.append(al) or (t == "Africa", f"mb:{t}")
+    )
+    env.run()
+    assert env.album(p_yes)[0] == "Toto IV"
+    assert env.album(p_no)[0] is None and env.album(p_no)[1], (
+        "unconfirmed: left empty, and stamped as asked"
+    )
+    assert sorted(asked) == ["Toto", "Toto IV"]
