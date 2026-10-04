@@ -227,3 +227,20 @@ def test_limit_promotes_only_the_first_n(vault, monkeypatch, capsys):
         "SELECT COUNT(*) FROM events WHERE event_type='SWAP_PROMOTED'"
     ).fetchone()[0]
     assert n == 1
+
+
+def test_two_better_copies_of_one_song_promote_only_the_best(vault):
+    """2026-10-03: each review copy was compared with the master alone, so a
+    song with two better copies had BOTH promoted -- 40 duplicate masters.
+    All copies of a song are ranked together; only the best one is promoted,
+    and the others join the rows to delete."""
+    lib, good, _, _ = _lib_and_better_review(vault, sample_rate=96000)
+    lib_path = vault.masters / "Rock/Toto/Toto IV/Toto - Rosanna.m4a"
+    best_path = vault.review_dir / "Toto/hi/Toto - Rosanna.m4a"
+    best = vault.row(best_path, "DUPE_REVIEW", "B", sample_rate=192000)
+    vault.set_aside(best_path, lib_path)
+    losers: list[int] = []
+    wins, tally = vault.mod.review_wins(vault.conn, losers)
+    assert [(p.review["id"], p.library["id"]) for p in wins] == [(best, lib)]
+    assert losers == [good], "beaten by a better copy of the same song"
+    assert tally["beaten by a better review copy"] == 1
