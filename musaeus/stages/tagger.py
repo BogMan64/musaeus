@@ -299,10 +299,27 @@ def _write_tags(path: Path, changes: dict[str, str]) -> bool:
                 "genre": "\xa9gen",
                 "year": "\xa9day",
             }
+            # Every field asked for must be one this branch can store. Until
+            # 2026-10-03 "track" was missing here: skipped without a word, the
+            # file re-saved anyway, success reported -- 1,983 masters "written"
+            # on every Act 3 and never converging, each re-tagging its edition
+            # copies. An unknown field is now a failure, before anything is saved.
+            unknown = [f for f in changes if f not in _map and f != "track"]
+            if unknown:
+                logger.warning("write_tags %s: cannot store %s in MP4", path, unknown)
+                return False
             for field, val in changes.items():
-                key = _map.get(field)
-                if key:
-                    audio[key] = [val]
+                if field == "track":
+                    # trkn is [(track, total)]. Keep a total already there;
+                    # the catalogue holds only the number.
+                    m = re.match(r"\s*(\d+)", str(val))
+                    if not m:
+                        logger.warning("write_tags %s: track %r is not a number", path, val)
+                        return False
+                    old = audio.tags.get("trkn") or [(0, 0)]
+                    audio["trkn"] = [(int(m.group(1)), old[0][1] if len(old[0]) > 1 else 0)]
+                else:
+                    audio[_map[field]] = [val]
             audio.save()
             return True
 
