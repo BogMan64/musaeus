@@ -41,9 +41,72 @@ from musaeus.network_policy import NetworkPolicy, policy  # noqa: E402
 from musaeus.stages import album_fill as af  # noqa: E402
 
 SUGGEST, EVIDENCE, CHECK = "Suggested album (iTunes)", "iTunes evidence", "MusicBrainz check"
+DISCOGS = "Discogs check"
+
+
+def compare_with_discogs(src: Path) -> int:
+    """`--discogs`: ask Discogs about every album iTunes proposed, beside MusicBrainz's answer.
+
+    Grey, 2026-10-04: run Discogs on the same rows, compare it with iTunes +
+    MusicBrainz, put the better source first. Prints the table; the workbook gets
+    a "Discogs check" column. Suggestions are not changed.
+    """
+    from musaeus.config import MusicConfig
+
+    cfg = MusicConfig.from_env()
+    if not (cfg.discogs_consumer_key and cfg.discogs_consumer_secret):
+        print("Discogs credentials not available", file=sys.stderr)
+        return 1
+    wb = load_workbook(src)
+    ws = wb.worksheets[0]
+    head = [c.value for c in ws[1]]
+    if DISCOGS not in head:
+        ws.cell(1, len(head) + 1, DISCOGS)
+        head.append(DISCOGS)
+    col = {h: i + 1 for i, h in enumerate(head)}
+    tally = {"both": 0, "MusicBrainz only": 0, "Discogs only": 0, "neither": 0, "no answer": 0}
+    with policy(NetworkPolicy.ALLOWED):
+        for r in range(2, ws.max_row + 1):
+            suggested = ws.cell(r, col[SUGGEST]).value
+            said = re.search(r"iTunes said '(.+?)' but", str(ws.cell(r, col[EVIDENCE]).value or ""))
+            album = suggested or (said.group(1) if said else None)
+            if not album or ws.cell(r, col[DISCOGS]).value:
+                continue
+            mb_ok = bool(suggested)
+            try:
+                dg_ok, why = af.discogs_confirm(
+                    str(ws.cell(r, col["Artist"]).value), album, str(ws.cell(r, col["Song"]).value),
+                    cfg.discogs_consumer_key, cfg.discogs_consumer_secret,
+                )  # fmt: skip
+            except af.Unavailable as exc:
+                ws.cell(r, col[DISCOGS], f"no answer ({str(exc)[:50]}); run again")
+                tally["no answer"] += 1
+                continue
+            ws.cell(r, col[DISCOGS], ("CONFIRMED: " if dg_ok else "NOT CONFIRMED: ") + why)
+            tally[
+                "both"
+                if mb_ok and dg_ok
+                else "MusicBrainz only"
+                if mb_ok
+                else "Discogs only"
+                if dg_ok
+                else "neither"
+            ] += 1
+    ws.column_dimensions[ws.cell(1, col[DISCOGS]).column_letter].width = 60
+    tmp = src.with_suffix(".partial.xlsx")
+    wb.save(tmp)
+    tmp.replace(src)
+    print("\nalbums iTunes proposed, by who confirms them:")
+    for k, v in tally.items():
+        print(f"  {v:5,}  {k}")
+    return 0
 
 
 def main() -> int:
+    if "--discogs" in sys.argv:
+        return compare_with_discogs(
+            Path([a for a in sys.argv[1:] if not a.startswith("--")][0]).expanduser()
+        )
     # Execute-mode only: the gateway is local-only unless a caller opts in, and
     # this script's whole job is to ask iTunes. Put back when it ends.
     with policy(NetworkPolicy.ALLOWED):

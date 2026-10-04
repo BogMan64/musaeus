@@ -307,6 +307,43 @@ def choose_from_itunes(items: list[dict], artist: str, title: str) -> tuple[str 
     return dated[0][1], f"earliest of {len(names)} ({dated[0][0]})"
 
 
+def discogs_confirm(artist: str, album: str, title: str, key: str, secret: str) -> tuple[bool, str]:
+    """A second opinion: does Discogs list an Album release of this name by this artist?
+
+    Weaker than MusicBrainz's answer: Discogs' search filters on the song
+    title but does not return the tracklist, so this says the album exists
+    under that artist and the search found the song with it. Raises
+    Unavailable when it cannot answer.
+    """
+    q = {
+        "artist": artist,
+        "release_title": album,
+        "track": title,
+        "type": "release",
+        "per_page": 25,
+    }
+    auth = {"Authorization": f"Discogs key={key}, secret={secret}"}
+    time.sleep(_DISCOGS_RATE_S)
+    results = _get_json(f"{_DISCOGS_URL}?{urlencode(q)}", auth).get("results", [])
+    return choose_discogs_confirmation(results, artist, album)
+
+
+def choose_discogs_confirmation(results: list[dict], artist: str, album: str) -> tuple[bool, str]:
+    """Pure: an Album-format release titled *album*, credited to *artist*, not a single/EP/compilation."""
+    first = norm(artist).split(" ")[0] if artist else ""
+    for x in results:
+        fmts = {f.lower() for f in (x.get("format") or [])}
+        if "album" not in fmts or (fmts & _DISCOGS_BAD):
+            continue
+        title = x.get("title") or ""
+        if " - " not in title:
+            continue
+        who, name = title.split(" - ", 1)
+        if first in norm(who) and norm(name) == norm(album):
+            return True, f"Discogs: lists the album '{name.strip()}' ({x.get('year') or '?'})"
+    return False, "Discogs could not confirm an album of that name by this artist"
+
+
 def choose_mb_confirmation(
     recordings: list[dict], artist: str, title: str, album: str
 ) -> tuple[bool, str]:

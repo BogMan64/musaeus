@@ -63,3 +63,43 @@ def test_suggests_only_confirmed_albums_and_checks_typed_ones(tmp_path, monkeypa
     h2 = {c.value: c.column for c in s2[1]}
     assert s2.cell(2, h2[mod.CHECK]).value.startswith("CONFIRMED")
     assert not src.with_suffix(".partial.xlsx").exists()
+
+
+def test_discogs_comparison_adds_a_column_and_counts_who_confirms(tmp_path, monkeypatch, capsys):
+    mod = _load()
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Album (type here)", "Artist", "Song", mod.SUGGEST, mod.EVIDENCE])
+    ws.append(
+        [None, "Toto", "Africa", "Toto IV", "unambiguous; MusicBrainz: on the official album"]
+    )
+    ws.append(
+        [
+            None,
+            "Toto",
+            "Hold The Line",
+            None,
+            "iTunes said 'Toto' but MusicBrainz could not confirm",
+        ]
+    )
+    ws.append(
+        [None, "Toto", "Georgy Porgy", None, "no studio album for an exact artist+title match"]
+    )
+    src = tmp_path / "w.xlsx"
+    wb.save(src)
+    monkeypatch.setattr(af.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        af, "discogs_confirm", lambda a, al, t, k, s: (t == "Hold The Line", f"dg:{al}")
+    )
+    cfg = type("C", (), {"discogs_consumer_key": "k", "discogs_consumer_secret": "s"})()
+    monkeypatch.setattr("musaeus.config.MusicConfig.from_env", staticmethod(lambda: cfg))
+    monkeypatch.setattr(mod, "policy", lambda *_a, **_k: __import__("contextlib").nullcontext())
+    monkeypatch.setattr(sys, "argv", ["prog", str(src), "--discogs"])
+    assert mod.main() == 0
+    s1 = load_workbook(src).worksheets[0]
+    head = {c.value: c.column for c in s1[1]}
+    assert s1.cell(2, head[mod.DISCOGS]).value.startswith("NOT CONFIRMED")
+    assert s1.cell(3, head[mod.DISCOGS]).value.startswith("CONFIRMED")
+    assert s1.cell(4, head[mod.DISCOGS]).value is None, "nothing proposed, nothing to check"
+    out = capsys.readouterr().out
+    assert "1  MusicBrainz only" in out and "1  Discogs only" in out

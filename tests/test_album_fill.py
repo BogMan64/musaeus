@@ -365,3 +365,31 @@ def test_the_stage_takes_an_itunes_album_only_if_musicbrainz_confirms(env, monke
         "unconfirmed: left empty, and stamped as asked"
     )
     assert sorted(asked) == ["Toto", "Toto IV"]
+
+
+# ── Discogs as a second opinion on an album another source proposed ──
+
+
+def _dg(title, formats=("Vinyl", "Album"), year="1982"):
+    return {"title": title, "format": list(formats), "year": year}
+
+
+def test_discogs_confirms_an_album_release_by_the_artist():
+    ok, why = af.choose_discogs_confirmation([_dg("Toto - Toto IV")], "Toto", "Toto IV")
+    assert ok and "Toto IV" in why and "1982" in why
+
+
+@pytest.mark.parametrize(
+    "results",
+    [
+        [_dg("Toto - Toto IV", formats=("Vinyl", "Single"))],
+        [_dg("Toto - Toto IV", formats=("CD", "Compilation"))],
+        [_dg("Toto - Toto IV", formats=("CD", "Album", "Unofficial Release"))],
+        [_dg("Tribute Band - Toto IV")],
+        [_dg("Toto - Tambu")],
+        [{"title": "no dash", "format": ["Album"]}],
+        [],
+    ],
+)
+def test_discogs_does_not_confirm_anything_less(results):
+    assert af.choose_discogs_confirmation(results, "Toto", "Toto IV")[0] is False
