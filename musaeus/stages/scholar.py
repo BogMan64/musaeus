@@ -31,6 +31,7 @@ from typing import Any
 
 from ..context import RunContext, StageResult, elision
 from ..db import upsert_archive
+from ..playlist_album import is_playlist_album
 from .base import BaseStage
 from .organize import strip_track_number_prefix
 
@@ -143,7 +144,9 @@ def _extract_meta(probe_data: dict[str, Any]) -> dict[str, Any]:
     return {
         "title": tag("title"),
         "artist": tag("artist", "albumartist"),
-        "album": tag("album"),
+        # A playlist's name is not an album (Grey, 2026-10-03): the USB1 playlist
+        # folders put "My playlist S" here for 1,841 songs.
+        "album": None if is_playlist_album(tag("album")) else tag("album"),
         "genre": tag("genre"),
         "year": year,
         "track": track,
