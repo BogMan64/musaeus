@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import functools
 import sqlite3
 import subprocess
 import sys
@@ -132,24 +133,45 @@ def library_copy(conn: sqlite3.Connection, review: sqlite3.Row) -> sqlite3.Row |
 def review_wins(
     conn: sqlite3.Connection, losers: list[int] | None = None
 ) -> tuple[list[Pair], collections.Counter]:
-    """Every review row whose copy beats its library copy, and a tally of the rest.
+    """The best review copy of each song, where it beats the library copy; a tally of the rest.
 
-    *losers*, if given, collects the review rows whose library copy wins or
-    ties: the ones the rule says to delete. One rule decides both lists.
+    *losers*, if given, collects the review rows the rule says to delete: the
+    library copy wins or ties, or another review copy of the same song is
+    better. One rule decides both lists.
+
+    All review copies of a song are ranked TOGETHER. On 2026-10-03 each was
+    compared with the master alone, so a song with two better copies had both
+    promoted -- 40 duplicate masters to clean up by hand.
     """
     wins: list[Pair] = []
     tally: collections.Counter = collections.Counter()
+    by_song: dict[int, tuple[sqlite3.Row, list[sqlite3.Row]]] = {}
     for review in conn.execute("SELECT * FROM archive WHERE status='DUPE_REVIEW' ORDER BY id"):
         library = library_copy(conn, review)
         if library is None:
             tally["no library copy"] += 1
             continue
-        winner, step = decide(dict(review), dict(library))
+        by_song.setdefault(library["id"], (library, []))[1].append(review)
+
+    def better_first(a: sqlite3.Row, b: sqlite3.Row) -> int:
+        winner, _ = decide(dict(a), dict(b))
+        return -1 if winner == "review" else 1 if winner == "library" else 0
+
+    for library, reviews in by_song.values():
+        ranked = sorted(reviews, key=functools.cmp_to_key(better_first))  # stable: ties keep id order
+        best, rest = ranked[0], ranked[1:]
+        winner, step = decide(dict(best), dict(library))
         tally[f"{winner} ({step})" if step else winner] += 1
         if winner == "review":
-            wins.append(Pair(review, library, step))
+            wins.append(Pair(best, library, step))
         elif losers is not None:
-            losers.append(review["id"])
+            losers.append(best["id"])
+        for other in rest:
+            tally["beaten by a better review copy" if winner == "review" else
+                  ("tie" if decide(dict(other), dict(library))[0] == "tie" else "library (beaten)")] += 1  # fmt: skip
+            if losers is not None:
+                losers.append(other["id"])
+    wins.sort(key=lambda p: p.review["id"])
     return wins, tally
 
 

@@ -34,6 +34,7 @@ from typing import Any
 
 from ..artist_form import has_article, natural_form, sort_form
 from ..context import RunContext, StageResult
+from ..playlist_album import is_playlist_album
 from .base import NO_VERIFICATION, BaseStage, StageError, VerifyResult
 from .normalize import _move_article_to_suffix
 
@@ -318,6 +319,8 @@ def _write_tags(path: Path, changes: dict[str, str]) -> bool:
                         return False
                     old = audio.tags.get("trkn") or [(0, 0)]
                     audio["trkn"] = [(int(m.group(1)), old[0][1] if len(old[0]) > 1 else 0)]
+                elif val == "":
+                    audio.tags.pop(_map[field], None)  # "" removes the tag
                 else:
                     audio[_map[field]] = [val]
             audio.save()
@@ -338,7 +341,9 @@ def _write_tags(path: Path, changes: dict[str, str]) -> bool:
             }
             for field, val in changes.items():
                 key = _map_f.get(field)
-                if key:
+                if key and val == "":
+                    audio.pop(key, None)  # "" removes the tag
+                elif key:
                     audio[key] = [val]
             audio.save()
             return True
@@ -363,7 +368,9 @@ def _write_tags(path: Path, changes: dict[str, str]) -> bool:
             }
             for field, val in changes.items():
                 key = _map_m.get(field)
-                if key:
+                if key and val == "":
+                    audio.pop(key, None)  # "" removes the tag
+                elif key:
                     audio[key] = [val]
             audio.save(str(path))
             return True
@@ -450,6 +457,14 @@ class TaggerStage(BaseStage):
             file_val = str(file_tags.get(tag_field) or "").strip()
             if db_val and db_val != file_val:
                 changes[db_field] = db_val
+
+        # A playlist's name in the ALBUM tag is a source-folder artefact, not an
+        # album (Grey, 2026-10-03). Act 1 no longer lets one into the catalogue;
+        # where the catalogue has no album, the leftover tag is removed so it
+        # cannot come back on a rebuild from the files. A real album is never
+        # touched, and the catalogue's album, when there is one, wins above.
+        if not str(db_row.get("album") or "").strip() and is_playlist_album(file_tags.get("album")):
+            changes["album"] = ""
 
         # ── the two forms of the artist name ──────────────────────────────
         #
