@@ -105,7 +105,7 @@ _STRIP_WORDS_RE = re.compile(
 
 # Raw (pre-strip) live-recording marker, used to avoid merging two
 # different live recordings of the same song into one near-dupe group.
-_LIVE_MARKER_RE = re.compile(r"\b(live|in concert|at the)\b", re.IGNORECASE)
+_LIVE_MARKER_RE = re.compile(r"\b(live|in concert)\b", re.IGNORECASE)
 
 
 def _has_live_marker(raw_title: str) -> bool:
@@ -113,10 +113,13 @@ def _has_live_marker(raw_title: str) -> bool:
     return bool(_LIVE_MARKER_RE.search(raw_title))
 
 
-# Two copies this close in length, under the same full title, are one
-# performance. The baked copies and their originals measured 0.0-0.1 s apart;
-# two nights of one song are seconds apart.
-_SAME_TAKE_SECONDS = 1.0
+# Two copies this close in length, under the same title, are one performance.
+# The baked copies and their originals measured 0.0-0.1 s apart; two nights of
+# one song are seconds apart. dupeGuru found 10 live pairs (Gary Moore, The
+# Police, Cream ...) this guard kept apart (Grey, 2026-10-05): the titles
+# differed only by "-" against "/" (the file name could not hold "/"), and one
+# pair was 1.3 s apart. The length tolerance is the keep rule's own, 2 s.
+_SAME_TAKE_SECONDS = 2.0
 
 
 def _same_take(a: dict, b: dict) -> bool:
@@ -124,9 +127,10 @@ def _same_take(a: dict, b: dict) -> bool:
 
     The live guard kept every pair of live titles apart. A baked copy and its
     own original are one concert, so 32 baked live copies stayed filed beside
-    their originals (2026-09-26). Same full title AND the same length.
+    their originals (2026-09-26). Same title (punctuation and case ignored)
+    AND the same length.
     """
-    same_title = " ".join(a["title"].casefold().split()) == " ".join(b["title"].casefold().split())
+    same_title = _normalise(a["title"]) == _normalise(b["title"])
     da, db = a.get("duration"), b.get("duration")
     return same_title and da is not None and db is not None and abs(da - db) <= _SAME_TAKE_SECONDS
 
@@ -199,6 +203,28 @@ def _normalise(s: str, strip_qualifiers: bool = False) -> str:
     if s.startswith("the "):
         s = s[4:]
     return s
+
+
+# A credit that names a second artist after the first: "Stevie Ray Vaughan &
+# Double Trouble", "Janis Joplin, Big Brother ...", "Duke Ellington & His
+# Orchestra". dupeGuru found 57 pairs of one recording filed under the plain
+# name and under the credit with a collaborator, which the artist buckets
+# never compared (Grey, 2026-10-05).
+_COLLAB_SPLIT_RE = re.compile(
+    r"\s*(?:,|&|/|\band\b|\bwith\b|\bfeat\.?|\bfeaturing\b)\s*", re.IGNORECASE
+)
+
+# A credit with a collaborator is only paired with the plain name when the two
+# copies are the same length too: "X" and "X & Y" are often two recordings.
+_COLLAB_SECONDS = 3.0
+
+
+def _primary_artist_key(raw_artist: str) -> str:
+    """The normalised first artist of a credit ("" if it names only one)."""
+    parts = _COLLAB_SPLIT_RE.split(raw_artist.strip(), maxsplit=1)
+    if len(parts) < 2 or not parts[0].strip():
+        return ""
+    return _normalise(parts[0])
 
 
 def _without_artist_prefix(norm_title: str, norm_artist: str) -> str:
@@ -321,135 +347,146 @@ class NearDupeStage(BaseStage):
 
         # Bucket tracks by canonical artist
         artist_buckets: dict[str, list[dict]] = {}
+        canonical_of_key: dict[str, str] = {}
         for row in rows:
             raw_artist = row["artist"].strip()
             canonical = artist_canon.resolve(raw_artist) or raw_artist
             key = _normalise(canonical)
+            canonical_of_key.setdefault(key, canonical)
             bucket = artist_buckets.setdefault(key, [])
             bucket.append(dict(row))
 
         new_groups = 0
         new_pairs = 0
 
-        for artist_key, tracks in artist_buckets.items():
-            if len(tracks) < 2:
+        # Collab credits to the plain name's bucket: [(plain key, credit tracks)].
+        collab_of: dict[str, list[dict]] = {}
+        for key, tracks in artist_buckets.items():
+            raw = canonical_of_key.get(key, "")
+            primary = _primary_artist_key(raw)
+            if primary and primary != key and primary in artist_buckets:
+                collab_of.setdefault(primary, []).extend(tracks)
+
+        def _candidate_pairs():
+            for key, tracks in artist_buckets.items():
+                for i in range(len(tracks)):
+                    for j in range(i + 1, len(tracks)):
+                        yield key, tracks[i], tracks[j], False
+                for a_ in tracks:
+                    for b_ in collab_of.get(key, ()):
+                        yield key, a_, b_, True
+
+        for artist_key, a, b, cross in _candidate_pairs():
+            if cross and abs((a["duration"] or 0) - (b["duration"] or 0)) > _COLLAB_SECONDS:
                 continue
 
-            # O(n²) within each artist group
-            for i in range(len(tracks)):
-                for j in range(i + 1, len(tracks)):
-                    a = tracks[i]
-                    b = tracks[j]
+            # Skip if the two are already an exact pair
+            if exact_groups.get(a["file_path"], set()) & exact_groups.get(b["file_path"], set()):
+                continue
 
-                    # Skip if the two are already an exact pair
-                    if exact_groups.get(a["file_path"], set()) & exact_groups.get(
-                        b["file_path"], set()
-                    ):
-                        continue
+            # Don't merge two different live recordings of the same
+            # song — "live" is stripped before scoring below, so
+            # without this guard they'd look identical and collapse
+            # into one group. Studio-vs-live still matches fine
+            # (only one side carries the marker).
+            if (
+                _has_live_marker(a["title"])
+                and _has_live_marker(b["title"])
+                and not _same_take(a, b)
+            ):
+                continue
 
-                    # Don't merge two different live recordings of the same
-                    # song — "live" is stripped before scoring below, so
-                    # without this guard they'd look identical and collapse
-                    # into one group. Studio-vs-live still matches fine
-                    # (only one side carries the marker).
-                    if (
-                        _has_live_marker(a["title"])
-                        and _has_live_marker(b["title"])
-                        and not _same_take(a, b)
-                    ):
-                        continue
+            if frozenset((a["audio_hash"], b["audio_hash"])) in keep_both:
+                continue
 
-                    if frozenset((a["audio_hash"], b["audio_hash"])) in keep_both:
-                        continue
+            # Different movements of one work are different pieces.
+            # The shared work title makes them score in the 90s, so
+            # the threshold cannot catch this -- only the marker can.
+            if _is_different_piece(a["title"], b["title"]):
+                continue
 
-                    # Different movements of one work are different pieces.
-                    # The shared work title makes them score in the 90s, so
-                    # the threshold cannot catch this -- only the marker can.
-                    if _is_different_piece(a["title"], b["title"]):
-                        continue
+            title_a = _normalise(a["title"], strip_qualifiers=True)
+            title_b = _normalise(b["title"], strip_qualifiers=True)
 
-                    title_a = _normalise(a["title"], strip_qualifiers=True)
-                    title_b = _normalise(b["title"], strip_qualifiers=True)
+            # Also compare with the artist's name taken off the front of either
+            # title; the best of the four wins. Never lowers a score.
+            bare_a = _without_artist_prefix(title_a, artist_key)
+            bare_b = _without_artist_prefix(title_b, artist_key)
+            score = max(
+                fuzz.ratio(title_a, title_b),
+                fuzz.ratio(bare_a, title_b),
+                fuzz.ratio(title_a, bare_b),
+                fuzz.ratio(bare_a, bare_b),
+            )
+            if score < TITLE_THRESHOLD:
+                continue
 
-                    # Also compare with the artist's name taken off the front of either
-                    # title; the best of the four wins. Never lowers a score.
-                    bare_a = _without_artist_prefix(title_a, artist_key)
-                    bare_b = _without_artist_prefix(title_b, artist_key)
-                    score = max(
-                        fuzz.ratio(title_a, title_b),
-                        fuzz.ratio(bare_a, title_b),
-                        fuzz.ratio(title_a, bare_b),
-                        fuzz.ratio(bare_a, bare_b),
+            # Near duplicate found
+            gid = _group_id(a["file_path"], b["file_path"])
+            confidence = round(score / 100.0, 4)
+
+            if gid in stale_near:
+                stale_near.discard(gid)
+                new_groups += 1
+                result.files_changed += 1
+                if not dry_run:
+                    ctx.conn.execute(
+                        """
+                        UPDATE duplicates
+                           SET status = 'pending', run_id = ?, confidence = ?,
+                               audio_hash = (SELECT audio_hash FROM archive
+                                              WHERE archive.file_path = duplicates.file_path)
+                         WHERE group_id = ?
+                        """,
+                        (ctx.run_id, confidence, gid),
                     )
-                    if score < TITLE_THRESHOLD:
-                        continue
+                    ctx.log_event(
+                        "NEAR_DUPLICATE_FOUND",
+                        file_path=a["file_path"],
+                        stage=self.NAME,
+                        note=f"group={gid} score={score} judged again (was stale)",
+                    )
+                continue
 
-                    # Near duplicate found
-                    gid = _group_id(a["file_path"], b["file_path"])
-                    confidence = round(score / 100.0, 4)
+            is_new_group = False
+            for fp in (a["file_path"], b["file_path"]):
+                pair_key = (gid, fp)
+                if pair_key not in existing_near:
+                    is_new_group = True
+                    new_pairs += 1
+                    existing_near.add(pair_key)
 
-                    if gid in stale_near:
-                        stale_near.discard(gid)
-                        new_groups += 1
-                        result.files_changed += 1
-                        if not dry_run:
-                            ctx.conn.execute(
-                                """
-                                UPDATE duplicates
-                                   SET status = 'pending', run_id = ?, confidence = ?,
-                                       audio_hash = (SELECT audio_hash FROM archive
-                                                      WHERE archive.file_path = duplicates.file_path)
-                                 WHERE group_id = ?
-                                """,
-                                (ctx.run_id, confidence, gid),
-                            )
-                            ctx.log_event(
-                                "NEAR_DUPLICATE_FOUND",
-                                file_path=a["file_path"],
-                                stage=self.NAME,
-                                note=f"group={gid} score={score} judged again (was stale)",
-                            )
-                        continue
-
-                    is_new_group = False
-                    for fp in (a["file_path"], b["file_path"]):
-                        pair_key = (gid, fp)
-                        if pair_key not in existing_near:
-                            is_new_group = True
-                            new_pairs += 1
-                            existing_near.add(pair_key)
-
-                            if not dry_run:
-                                ctx.conn.execute(
-                                    """
-                                    INSERT OR IGNORE INTO duplicates
-                                        (group_id, file_path, duplicate_type,
-                                         confidence, run_id, audio_hash)
-                                    VALUES (?, ?, 'NEAR', ?, ?,
-                                            (SELECT audio_hash FROM archive WHERE file_path = ?))
-                                    """,
-                                    (gid, fp, confidence, ctx.run_id, fp),
-                                )
-                                ctx.log_event(
-                                    "NEAR_DUPLICATE_FOUND",
-                                    file_path=fp,
-                                    stage=self.NAME,
-                                    note=(
-                                        f"group={gid} score={score} "
-                                        f"title_a={a['title']!r} "
-                                        f"title_b={b['title']!r}"
-                                    ),
-                                )
-                    if is_new_group:
-                        new_groups += 1
-                        result.files_changed += 1
-                        logger.info(
-                            "near-dupe: %r ~~ %r (score=%d, artist=%s)",
-                            a["title"],
-                            b["title"],
-                            score,
-                            artist_key,
+                    if not dry_run:
+                        ctx.conn.execute(
+                            """
+                            INSERT OR IGNORE INTO duplicates
+                                (group_id, file_path, duplicate_type,
+                                 confidence, run_id, audio_hash)
+                            VALUES (?, ?, 'NEAR', ?, ?,
+                                    (SELECT audio_hash FROM archive WHERE file_path = ?))
+                            """,
+                            (gid, fp, confidence, ctx.run_id, fp),
                         )
+                        ctx.log_event(
+                            "NEAR_DUPLICATE_FOUND",
+                            file_path=fp,
+                            stage=self.NAME,
+                            note=(
+                                f"group={gid} score={score} "
+                                f"title_a={a['title']!r} "
+                                f"title_b={b['title']!r}"
+                            ),
+                        )
+            if is_new_group:
+                new_groups += 1
+                result.files_changed += 1
+                logger.info(
+                    "near-dupe: %r ~~ %r (score=%d, artist=%s)",
+                    a["title"],
+                    b["title"],
+                    score,
+                    artist_key,
+                )
 
         if not dry_run and new_pairs > 0:
             ctx.conn.commit()
