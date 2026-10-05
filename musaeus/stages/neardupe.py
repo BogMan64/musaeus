@@ -201,6 +201,26 @@ def _normalise(s: str, strip_qualifiers: bool = False) -> str:
     return s
 
 
+def _without_artist_prefix(norm_title: str, norm_artist: str) -> str:
+    """The title with the artist's own name taken off the front, for COMPARISON only.
+
+    The wanted list and the library both held titles like "Toto Africa" under the
+    artist Toto, "Kinks Lola", "Belinda Carlisle I Feel Free" (Grey, 2026-10-05: 64
+    in the library, 14 with the clean-titled song beside them). A fuzzy ratio of
+    "toto africa" against "africa" is about 70, far under the threshold, so such a
+    pair was never staged. Both arguments are already normalised. Nothing is left
+    when the title IS the artist's name, and then the title stays whole. This is
+    only ever one MORE way to compare two titles (the best score wins); nothing is
+    rewritten, so a title that merely starts with a band's word ("Heart Of Glass")
+    can at worst be offered for a person to judge.
+    """
+    if len(norm_artist) >= 3 and norm_title.startswith(norm_artist + " "):
+        rest = norm_title[len(norm_artist) + 1 :].strip()
+        if rest:
+            return rest
+    return norm_title
+
+
 def _group_id(path_a: str, path_b: str) -> str:
     """Stable group ID from the two sorted paths."""
     combined = "\n".join(sorted([path_a, path_b]))
@@ -351,7 +371,16 @@ class NearDupeStage(BaseStage):
                     title_a = _normalise(a["title"], strip_qualifiers=True)
                     title_b = _normalise(b["title"], strip_qualifiers=True)
 
-                    score = fuzz.ratio(title_a, title_b)
+                    # Also compare with the artist's name taken off the front of either
+                    # title; the best of the four wins. Never lowers a score.
+                    bare_a = _without_artist_prefix(title_a, artist_key)
+                    bare_b = _without_artist_prefix(title_b, artist_key)
+                    score = max(
+                        fuzz.ratio(title_a, title_b),
+                        fuzz.ratio(bare_a, title_b),
+                        fuzz.ratio(title_a, bare_b),
+                        fuzz.ratio(bare_a, bare_b),
+                    )
                     if score < TITLE_THRESHOLD:
                         continue
 
