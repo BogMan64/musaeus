@@ -32,8 +32,14 @@ def env(tmp_path, monkeypatch):
     conn = open_db(cfg.db_path)
     fingerprint_columns(conn)
     monkeypatch.setattr(af.time, "sleep", lambda *_: None)
-    calls: dict[str, list] = {"acoustid": [], "mb": [], "discogs": [], "deezer": []}
-    answers: dict[str, object] = {"acoustid": [], "mb": {}, "discogs": [], "deezer": []}
+    calls: dict[str, list] = {"acoustid": [], "mb": [], "discogs": [], "deezer": [], "itunes": []}
+    answers: dict[str, object] = {
+        "acoustid": [],
+        "mb": {},
+        "discogs": [],
+        "deezer": [],
+        "itunes": [],
+    }
 
     def _aid(fp, dur, key):
         calls["acoustid"].append(fp)
@@ -51,6 +57,14 @@ def env(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         af, "deezer_search", lambda a, t: calls["deezer"].append(t) or answers["deezer"]
+    )
+    monkeypatch.setattr(
+        af,
+        "itunes_search",
+        lambda a, t: (
+            calls["itunes"].append(t)
+            or (answers["itunes"](t) if callable(answers["itunes"]) else answers["itunes"])
+        ),
     )
 
     def add(title, artist="Toto", album=None, fp="FP"):
@@ -197,3 +211,185 @@ def test_a_playlist_name_left_when_nothing_is_certain(env):
     env.answers["deezer"] = []
     env.run()
     assert env.album(p)[0] == "My playlist R", "ambiguous: nothing written"
+
+
+def _it(track, album, date, artist="Toto", count=10):
+    return {"artistName": artist, "trackName": track, "collectionName": album, "releaseDate": date + "T08:00:00Z", "trackCount": count}  # fmt: skip
+
+
+def test_itunes_earliest_exact_studio_album_wins():
+    items = [
+        _it("Rosanna", "Toto IV", "1982-03-01"),
+        _it("ROSANNA", "Guilty Pleasures", "1982-04-01", count=17),
+        _it("Rosanna (Live)", "Absolutely Live", "1993-10-12", count=8),
+        _it("Rosanna (Single Version)", "Essential - 80s Love", "1982-03-31", count=20),
+    ]
+    assert af.choose_from_itunes(items, "Toto", "Rosanna") == (
+        "Toto IV",
+        "earliest of 2 (1982-03-01)",
+    )
+
+
+@pytest.mark.parametrize(
+    ("album", "count"),
+    [("Rosanna - Single", 2), ("Rosanna - EP", 4), ("Toto IV (Deluxe Edition)", 20), ("Toto IV (Remastered)", 10),
+     ("Greatest Hits", 18), ("Toto IV", 3)],
+)  # fmt: skip
+def test_itunes_skips_singles_eps_reissues_compilations(album, count):
+    assert (
+        af.choose_from_itunes(
+            [_it("Rosanna", album, "1982-03-01", count=count)], "Toto", "Rosanna"
+        )[0]
+        is None
+    )
+
+
+def test_itunes_two_albums_on_one_date_is_a_tie_and_left_empty():
+    items = [_it("Africa", "Album One", "1982-01-01"), _it("Africa", "Album Two", "1982-01-01")]
+    album, why = af.choose_from_itunes(items, "Toto", "Africa")
+    assert album is None and "tie" in why
+
+
+def test_itunes_another_artist_never_matches():
+    assert (
+        af.choose_from_itunes(
+            [_it("Rosanna", "Cover Album", "2001-01-01", artist="Tribute Band")], "Toto", "Rosanna"
+        )[0]
+        is None
+    )
+
+
+def test_the_stage_asks_itunes_last_and_only_for_what_is_left(env, monkeypatch):
+    monkeypatch.setattr(af, "mb_confirm", lambda a, al, t: (True, "mb ok"))
+    p = env.add("Africa")
+    env.answers["acoustid"] = []
+    env.answers["discogs"] = []
+    env.answers["deezer"] = []
+    env.answers["itunes"] = [_it("Africa", "Toto IV", "1982-03-01")]
+    env.run()
+    assert env.album(p)[0] == "Toto IV" and env.calls["itunes"] == ["Africa"]
+    ev = env.conn.execute("SELECT note FROM events WHERE event_type='ALBUM_FILLED'").fetchone()[0]
+    assert ev.startswith("itunes:")
+
+
+def test_a_live_or_version_candidate_title_is_not_the_same_recording():
+    """norm() strips brackets, so "Rosanna (Live)" normalised equal to "Rosanna" and the
+    live album could be returned for the studio song (found 2026-10-03)."""
+    live = {
+        "artist": {"name": "Toto"},
+        "title": "Rosanna (Live)",
+        "album": {"title": "Absolutely Live"},
+    }
+    assert af.choose_from_deezer([live], "Toto", "Rosanna")[0] is None
+    assert (
+        af.choose_from_itunes(
+            [_it("Rosanna (Live)", "Absolutely Live", "1993-10-12", count=8)], "Toto", "Rosanna"
+        )[0]
+        is None
+    )
+
+
+# ── MusicBrainz confirmation: is this song really on that official studio album? ──
+
+
+def _rec(title="Rosanna", artist="Toto", score=100, releases=None):
+    return {
+        "title": title,
+        "score": score,
+        "artist-credit": [{"name": artist}],
+        "releases": releases or [],
+    }
+
+
+def _rel(title, status="Official", date="1982", primary="Album", secondary=None):
+    rg = {"primary-type": primary, "secondary-types": secondary or []}
+    return {"title": title, "status": status, "date": date, "release-group": rg}
+
+
+def test_musicbrainz_confirms_an_official_studio_album():
+    ok, why = af.choose_mb_confirmation(
+        [_rec(releases=[_rel("Toto IV")])], "Toto", "Rosanna", "Toto IV"
+    )
+    assert ok and "Toto IV" in why and "1982" in why
+
+
+@pytest.mark.parametrize(
+    "recs",
+    [
+        [_rec(releases=[_rel("Toto IV", status="Bootleg")])],
+        [_rec(releases=[_rel("Toto IV", secondary=["Compilation"])])],
+        [_rec(releases=[_rel("Toto IV", primary="Single")])],
+        [_rec(releases=[_rel("Tambu")])],
+        [_rec(score=56, releases=[_rel("Toto IV")])],
+        [_rec(artist="Tribute Band", releases=[_rel("Toto IV")])],
+        [_rec(title="Africa", releases=[_rel("Toto IV")])],
+        [],
+    ],
+)
+def test_musicbrainz_does_not_confirm_anything_less(recs):
+    assert af.choose_mb_confirmation(recs, "Toto", "Rosanna", "Toto IV")[0] is False
+
+
+def test_an_album_named_live_is_never_a_studio_answer():
+    """MusicBrainz lists "Forever Gold (Live)" as a plain Album, so the name is filtered too."""
+    for album in ("Forever Gold (Live)", "Absolutely Live", "Live at the Roxy 1981"):
+        assert (
+            af.choose_from_itunes(
+                [_it("Rock This Town", album, "2002-12-31", artist="Stray Cats")],
+                "Stray Cats",
+                "Rock This Town",
+            )[0]
+            is None
+        )
+        dz = {
+            "artist": {"name": "Stray Cats"},
+            "title": "Rock This Town",
+            "album": {"title": album},
+        }
+        assert af.choose_from_deezer([dz], "Stray Cats", "Rock This Town")[0] is None
+
+
+def test_the_stage_takes_an_itunes_album_only_if_musicbrainz_confirms(env, monkeypatch):
+    p_yes, p_no = env.add("Africa"), env.add("Hold The Line")
+    env.answers["acoustid"] = []
+    env.answers["discogs"] = []
+    env.answers["deezer"] = []
+    env.answers["itunes"] = lambda t: [_it(t, "Toto IV" if t == "Africa" else "Toto", "1982-03-01")]
+    asked = []
+    monkeypatch.setattr(
+        af, "mb_confirm", lambda a, al, t: asked.append(al) or (t == "Africa", f"mb:{t}")
+    )
+    env.run()
+    assert env.album(p_yes)[0] == "Toto IV"
+    assert env.album(p_no)[0] is None and env.album(p_no)[1], (
+        "unconfirmed: left empty, and stamped as asked"
+    )
+    assert sorted(asked) == ["Toto", "Toto IV"]
+
+
+# ── Discogs as a second opinion on an album another source proposed ──
+
+
+def _dg(title, formats=("Vinyl", "Album"), year="1982"):
+    return {"title": title, "format": list(formats), "year": year}
+
+
+def test_discogs_confirms_an_album_release_by_the_artist():
+    ok, why = af.choose_discogs_confirmation([_dg("Toto - Toto IV")], "Toto", "Toto IV")
+    assert ok and "Toto IV" in why and "1982" in why
+
+
+@pytest.mark.parametrize(
+    "results",
+    [
+        [_dg("Toto - Toto IV", formats=("Vinyl", "Single"))],
+        [_dg("Toto - Toto IV", formats=("CD", "Compilation"))],
+        [_dg("Toto - Toto IV", formats=("CD", "Album", "Unofficial Release"))],
+        [_dg("Tribute Band - Toto IV")],
+        [_dg("Toto - Tambu")],
+        [{"title": "no dash", "format": ["Album"]}],
+        [],
+    ],
+)
+def test_discogs_does_not_confirm_anything_less(results):
+    assert af.choose_discogs_confirmation(results, "Toto", "Toto IV")[0] is False

@@ -19,6 +19,11 @@ their rules unchanged:
                 credit our artist; earliest year wins.
   3. Deezer     exact artist + exact title, studio albums only (no greatest
                 hits, collections, live-at...), one unambiguous album.
+  4. iTunes     the same strict rules (Grey, 2026-10-03): exact artist and
+                title, no single/EP/compilation/reissue/live album, earliest
+                release -- and only if MusicBrainz confirms the song is on that
+                official studio album (iTunes alone picked "Built for Speed",
+                dated 1974, for a 1981 Stray Cats song).
 
 Text sources (2, 3) never try a title naming a specific version -- live,
 remix, acoustic, demo, edit...: the searches ignore the qualifier and return
@@ -67,12 +72,15 @@ _ACOUSTID_URL = "https://api.acoustid.org/v2/lookup"
 _MB_RG_URL = "https://musicbrainz.org/ws/2/release-group/{}?fmt=json"
 _DISCOGS_URL = "https://api.discogs.com/database/search"
 _DEEZER_URL = "https://api.deezer.com/search"
+_ITUNES_URL = "https://itunes.apple.com/search"
+_MB_RECORDING_URL = "https://musicbrainz.org/ws/2/recording/"
 _UA = "MUSAEUS/1.0 ( musaeus-local )"
 
 _AID_RATE_S = 0.34  # AcoustID: 3 requests/second
 _MB_RATE_S = 1.1  # MusicBrainz: 1 request/second
 _DISCOGS_RATE_S = 1.1  # Discogs: 60 requests/minute authenticated
 _DEEZER_RATE_S = 0.25
+_ITUNES_RATE_S = 3.0  # Apple publishes about 20 requests per minute
 _TIMEOUT_S = 30
 _COMMIT_EVERY = 25
 _MB_CANDIDATES_MAX = 6  # cap MusicBrainz calls per track
@@ -86,8 +94,16 @@ _VERSION_QUALIFIER = re.compile(
 )
 _DEEZER_BAD_ALBUM = re.compile(
     r"\b(greatest hits|best of|the collection|essential|anthology|"
-    r"compilation|live (at|in|from)|hits|vol\.? ?\d|now that|"
+    r"compilation|\blive\b|hits|vol\.? ?\d|now that|"
     r"ultimate|definitive|platinum collection|super hits)\b",
+    re.I,
+)
+
+
+#: An iTunes album that is a reissue, not the original (Grey: the original wins).
+_ITUNES_REISSUE = re.compile(
+    r"\b(deluxe|remaster(ed)?|anniversary|expanded|re-?issue|bonus|special edition|"
+    r"legacy edition|collector'?s)\b",
     re.I,
 )
 
@@ -148,6 +164,29 @@ def deezer_search(artist: str, title: str) -> list[dict]:
     query = urlencode({"q": f"{artist} {title}", "limit": 10})
     items: list[dict] = _get_json(f"{_DEEZER_URL}?{query}").get("data", [])
     return items
+
+
+def mb_confirm(artist: str, album: str, title: str) -> tuple[bool, str]:
+    """Ask MusicBrainz whether this song is on an official studio album of this name.
+
+    A name another source proposed is only a claim. MusicBrainz is asked the
+    one question that settles it: is a recording of this title, credited to
+    this artist, on an OFFICIAL release of that name whose group is a plain
+    Album? Raises Unavailable when it cannot answer (a 503 is not "no").
+    """
+    q = lambda x: strip_bracketed(x).replace("\\", " ").replace('"', " ").strip()  # noqa: E731
+    query = f'recording:"{q(title)}" AND artist:"{q(artist)}" AND release:"{q(album)}"'
+    time.sleep(_MB_RATE_S)
+    data = _get_json(
+        f"{_MB_RECORDING_URL}?{urlencode({'query': query, 'fmt': 'json', 'limit': 10})}"
+    )
+    return choose_mb_confirmation(data.get("recordings", []), artist, title, album)
+
+
+def itunes_search(artist: str, title: str) -> list[dict]:
+    query = urlencode({"term": f"{artist} {title}", "entity": "song", "limit": 25})
+    results: list[dict] = _get_json(f"{_ITUNES_URL}?{query}").get("results", [])
+    return results
 
 
 # ── The choices, pure (the rules of the 2026-09 scripts, unchanged) ─────────
@@ -220,6 +259,8 @@ def choose_from_deezer(items: list[dict], artist: str, title: str) -> tuple[str 
     for t in items:
         if norm((t.get("artist") or {}).get("name")) != want_a or norm(t.get("title")) != want_t:
             continue
+        if _VERSION_QUALIFIER.search(t.get("title") or ""):
+            continue  # norm() drops brackets: "Rosanna (Live)" would match "Rosanna"
         alb = (t.get("album") or {}).get("title") or ""
         if not alb or _DEEZER_BAD_ALBUM.search(alb) or norm(alb) == want_t:
             continue
@@ -230,6 +271,103 @@ def choose_from_deezer(items: list[dict], artist: str, title: str) -> tuple[str 
     if len(uniq) == 1:
         return uniq[0], "unambiguous"
     return None, f"{len(uniq)} candidate albums"
+
+
+def choose_from_itunes(items: list[dict], artist: str, title: str) -> tuple[str | None, str]:
+    """iTunes, under the same strict rules as the others.
+
+    Exact artist and exact title (a "(Live)" or "(Single Version)" title is a
+    different recording and does not match); an album that is a single, EP,
+    compilation or reissue is skipped; the EARLIEST release wins; two albums
+    with the same earliest date are a tie and the row is left empty.
+    """
+    want_a, want_t = norm(artist), norm(title)
+    dated: list[tuple[str, str]] = []
+    for t in items:
+        if norm(t.get("artistName")) != want_a or norm(t.get("trackName")) != want_t:
+            continue
+        if _VERSION_QUALIFIER.search(t.get("trackName") or ""):
+            continue  # norm() drops brackets: "Rosanna (Live)" would match "Rosanna"
+        alb = (t.get("collectionName") or "").strip()
+        if not alb or norm(alb) == want_t:
+            continue
+        if _DEEZER_BAD_ALBUM.search(alb) or _ITUNES_REISSUE.search(alb):
+            continue
+        if re.search(r"\s-\s(single|ep)$", alb, re.I) or (t.get("trackCount") or 0) < 4:
+            continue
+        dated.append(((t.get("releaseDate") or "9999")[:10], alb))
+    if not dated:
+        return None, "no studio album for an exact artist+title match"
+    names = {a for _, a in dated}
+    if len(names) == 1:
+        return dated[0][1], "unambiguous"
+    dated.sort()
+    if len({a for d, a in dated if d == dated[0][0]}) > 1:
+        return None, f"{len(names)} candidate albums, earliest date is a tie"
+    return dated[0][1], f"earliest of {len(names)} ({dated[0][0]})"
+
+
+def discogs_confirm(artist: str, album: str, title: str, key: str, secret: str) -> tuple[bool, str]:
+    """A second opinion: does Discogs list an Album release of this name by this artist?
+
+    Weaker than MusicBrainz's answer: Discogs' search filters on the song
+    title but does not return the tracklist, so this says the album exists
+    under that artist and the search found the song with it. Raises
+    Unavailable when it cannot answer.
+    """
+    q = {
+        "artist": artist,
+        "release_title": album,
+        "track": title,
+        "type": "release",
+        "per_page": 25,
+    }
+    auth = {"Authorization": f"Discogs key={key}, secret={secret}"}
+    time.sleep(_DISCOGS_RATE_S)
+    results = _get_json(f"{_DISCOGS_URL}?{urlencode(q)}", auth).get("results", [])
+    return choose_discogs_confirmation(results, artist, album)
+
+
+def choose_discogs_confirmation(results: list[dict], artist: str, album: str) -> tuple[bool, str]:
+    """Pure: an Album-format release titled *album*, credited to *artist*, not a single/EP/compilation."""
+    first = norm(artist).split(" ")[0] if artist else ""
+    for x in results:
+        fmts = {f.lower() for f in (x.get("format") or [])}
+        if "album" not in fmts or (fmts & _DISCOGS_BAD):
+            continue
+        title = x.get("title") or ""
+        if " - " not in title:
+            continue
+        who, name = title.split(" - ", 1)
+        if first in norm(who) and norm(name) == norm(album):
+            return True, f"Discogs: lists the album '{name.strip()}' ({x.get('year') or '?'})"
+    return False, "Discogs could not confirm an album of that name by this artist"
+
+
+def choose_mb_confirmation(
+    recordings: list[dict], artist: str, title: str, album: str
+) -> tuple[bool, str]:
+    """Pure: does any recording carry *title* by *artist* on an official studio album *album*?"""
+    want_a, want_t, want_alb = norm(artist), norm(title), norm(album)
+    first = want_a.split(" ")[0] if want_a else ""
+    for rec in recordings:
+        credit = norm(" ".join(c.get("name", "") for c in rec.get("artist-credit") or []))
+        if rec.get("score", 0) < 90 or norm(rec.get("title")) != want_t or first not in credit:
+            continue
+        for rel in rec.get("releases") or []:
+            rg = rel.get("release-group") or {}
+            if (
+                norm(rel.get("title")) == want_alb
+                and rel.get("status") == "Official"
+                and rg.get("primary-type") == "Album"
+                and not rg.get("secondary-types")
+            ):
+                year = (rel.get("date") or "?")[:4]
+                return True, f"MusicBrainz: on the official album '{rel['title']}' ({year})"
+    return (
+        False,
+        "MusicBrainz could not confirm this song is on an official studio album of that name",
+    )
 
 
 def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
@@ -328,6 +466,16 @@ class AlbumFillStage(BaseStage):
                     time.sleep(_DEEZER_RATE_S)
                     album, reason = choose_from_deezer(deezer_search(artist, title), artist, title)
                     source, answered = "deezer", True
+                if album is None and text_ok:
+                    time.sleep(_ITUNES_RATE_S)
+                    album, reason = choose_from_itunes(itunes_search(artist, title), artist, title)
+                    source, answered = "itunes", True
+                    if album is not None:
+                        # iTunes' catalogue is full of compilations and placeholder dates:
+                        # its answer is only a claim until MusicBrainz agrees.
+                        confirmed, evidence = mb_confirm(artist, album, title)
+                        reason = f"{reason}; {evidence}"
+                        album = album if confirmed else None
             except Unavailable as exc:
                 # Not an answer: leave the row unstamped, ask again next run.
                 result.files_skipped += 1
