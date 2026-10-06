@@ -388,7 +388,7 @@ def validate_label(label: str, filesystem: str) -> None:
     if label != label.upper():
         raise ValueError(
             f"FAT32 volume label {label!r} must be uppercase. mkfs.vfat only warns "
-            f"(\"lowercase labels might not work properly on some systems\") and "
+            f'("lowercase labels might not work properly on some systems") and '
             f"writes it anyway -- refused here because the target is a head unit. "
             f"Use {label.upper()!r}."
         )
@@ -408,9 +408,7 @@ def _which_including_sbin(command: str) -> str | None:
     actually be found from, not where this process happens to look."""
     return shutil.which(command) or shutil.which(
         command,
-        path=os.pathsep.join(
-            [os.environ.get("PATH", ""), "/usr/local/sbin", "/usr/sbin", "/sbin"]
-        ),
+        path=os.pathsep.join([os.environ.get("PATH", ""), "/usr/local/sbin", "/usr/sbin", "/sbin"]),
     )
 
 
@@ -482,7 +480,9 @@ def build_wipe_and_format_commands(
     ]
 
 
-def wait_for_partition(partition_path: str, timeout: float = 10.0, poll_interval: float = 0.5) -> None:
+def wait_for_partition(
+    partition_path: str, timeout: float = 10.0, poll_interval: float = 0.5
+) -> None:
     """parted's partition-table change is picked up by the kernel
     immediately, but the /dev/sdXN device node is created asynchronously
     by udev -- calling mkfs.exfat right after parted returns can race
@@ -728,9 +728,7 @@ def _source_dir(library: str, cfg) -> Path:
 #      entry, on both libraries.
 
 
-def _rewrite_playlist_for_device(
-    content: str, source_root: Path, vault_root: Path
-) -> str | None:
+def _rewrite_playlist_for_device(content: str, source_root: Path, vault_root: Path) -> str | None:
     """
     Given one playlist's raw .m3u8 text (as written by playlist.py --
     #EXTM3U header, then alternating #EXTINF / path-relative-to-vault_root
@@ -812,6 +810,154 @@ def copy_playlists(vault_root: Path, source_root: Path, dest_root: Path) -> list
     return written
 
 
+# ── --sync: bring a stick in line with the library ───────────────────────────
+#
+# Grey, 2026-10-05: the stick is a snapshot. Songs deleted, renamed or moved to
+# review since the copy stay on it, and new ones are missing. --sync copies what
+# is new or changed, deletes what the library no longer has, and leaves alone
+# what is already right. It deletes only files whose type the library itself
+# holds (songs, playlists, covers), never a hidden or system folder.
+
+#: A sync that would delete more than this share of the stick's library files
+#: is refused: that is the wrong target, or the wrong library, not a few changes.
+_SYNC_MAX_DELETE_SHARE = 0.25
+
+
+@dataclass
+class SyncPlan:
+    copy: list[Path] = field(default_factory=list)  # source files to (re)copy
+    delete: list[Path] = field(default_factory=list)  # files on the target to remove
+    new: int = 0
+    changed: int = 0
+    case_only: int = 0
+    unchanged: int = 0
+    target_library_files: int = 0
+    replaced_bytes: int = 0  # old size of target files a changed copy overwrites
+
+
+def _is_hidden(rel: Path) -> bool:
+    return any(
+        part.startswith(".") or part.lower() == "system volume information" for part in rel.parts
+    )
+
+
+def plan_sync(
+    files: list[Path], source_root: Path, dest_root: Path, keep_names: set[str] | None = None
+) -> SyncPlan:
+    """What a sync would copy and delete. Reads both trees, changes nothing.
+
+    A stick is FAT32 or exFAT, which cannot tell "USHER" from "Usher": paths are
+    matched ignoring case, and a path whose case changed is deleted and copied
+    again (a FAT rename that only changes case does not take). Same size counts
+    as unchanged -- every copy is hash-verified when it is made, and a re-tag
+    changes the size. *keep_names* are paths the run writes itself (the
+    rewritten playlists), never deleted.
+    """
+    plan = SyncPlan()
+    keep = {k.casefold() for k in (keep_names or set())}
+    source = {f.relative_to(source_root).as_posix().casefold(): f for f in files}
+    kinds = {f.suffix.lower() for f in files}
+
+    on_target: dict[str, Path] = {}
+    for p in dest_root.rglob("*"):
+        rel = p.relative_to(dest_root)
+        if _is_hidden(rel) or not p.is_file() or p.suffix.lower() not in kinds:
+            continue
+        on_target[rel.as_posix().casefold()] = p
+    plan.target_library_files = len(on_target)
+
+    for key, dst in on_target.items():
+        if key in keep:
+            continue
+        src = source.get(key)
+        if src is None:
+            plan.delete.append(dst)
+        elif dst.relative_to(dest_root).as_posix() != src.relative_to(source_root).as_posix():
+            plan.delete.append(dst)
+            plan.copy.append(src)
+            plan.case_only += 1
+        elif dst.stat().st_size != src.stat().st_size:
+            plan.copy.append(src)
+            plan.changed += 1
+            plan.replaced_bytes += dst.stat().st_size
+        else:
+            plan.unchanged += 1
+    for key, src in source.items():
+        if key not in on_target:
+            plan.copy.append(src)
+            plan.new += 1
+    plan.copy.sort()
+    plan.delete.sort()
+    return plan
+
+
+def check_sync_space(dest_root: Path, plan: SyncPlan) -> None:
+    """Raises UsbTargetError if the sync will not fit. Deletions run first, so
+    the space they free counts, and so does the old size of a file copied over."""
+    needed = sum(src.stat().st_size for src in plan.copy)
+    freed = sum(p.stat().st_size for p in plan.delete) + plan.replaced_bytes
+    free = shutil.disk_usage(dest_root).free
+    if needed > free + freed:
+        raise UsbTargetError(
+            f"not enough free space on {dest_root}: the sync writes {_human_size(needed)} and "
+            f"frees {_human_size(freed)}, with {_human_size(free)} free now."
+        )
+
+
+def apply_sync_deletions(plan: SyncPlan, dest_root: Path) -> int:
+    """Delete the planned files, then any folder they leave empty. Returns the count."""
+    removed = 0
+    for p in plan.delete:
+        try:
+            p.unlink()
+            removed += 1
+        except FileNotFoundError:
+            pass
+    for d in sorted({p.parent for p in plan.delete}, key=lambda d: len(d.parts), reverse=True):
+        while d != dest_root and dest_root in d.parents:
+            try:
+                d.rmdir()  # only succeeds when empty
+            except OSError:
+                break
+            d = d.parent
+    return removed
+
+
+def check_sync_target(
+    dest_root: Path, plan: SyncPlan, vault_root: Path, extra_mounts: list[Path]
+) -> None:
+    """Raises UsbTargetError unless *dest_root* is safe to delete from.
+
+    It must sit on a removable device that backs none of /, /home or the vault
+    (failing closed when that cannot be worked out), and the sync must not
+    delete more than a quarter of what is there.
+    """
+    disk = _backing_disk_for_path(dest_root)
+    if disk is None:
+        raise UsbTargetError(
+            f"could not tell which device {dest_root} is on -- refusing to delete anything"
+        )
+    try:
+        denylist = critical_backing_disks(vault_root, extra_mounts)
+    except DenylistResolutionError as exc:
+        raise UsbTargetError(str(exc)) from exc
+    if is_denylisted(disk, denylist):
+        raise UsbTargetError(
+            f"{dest_root} is on {disk}, which backs /, /home or the vault -- refusing"
+        )
+    if disk not in {d.path for d in list_removable_devices()}:
+        raise UsbTargetError(
+            f"{dest_root} is on {disk}, which is not a removable device -- refusing"
+        )
+    deleting = len(plan.delete) - plan.case_only
+    if plan.target_library_files and deleting > _SYNC_MAX_DELETE_SHARE * plan.target_library_files:
+        raise UsbTargetError(
+            f"the sync would delete {deleting} of the {plan.target_library_files} library files on "
+            f"{dest_root} -- more than {_SYNC_MAX_DELETE_SHARE:.0%}. Wrong stick or wrong library? "
+            f"Use a fresh copy (without --sync) instead."
+        )
+
+
 # ── main ───────────────────────────────────────────────────────────────────────
 
 
@@ -827,6 +973,48 @@ def _report(result: CopyResult, playlists_written: list[str]) -> None:
     print(
         f"{len(playlists_written)} playlist(s) copied: {', '.join(playlists_written) or '(none)'}"
     )
+
+
+def _run_sync(
+    args, cfg, files: list[Path], source_root: Path, dest_root: Path, extra_mounts: list[Path]
+) -> int:
+    """--sync: plan, refuse if unsafe, show the plan; with --execute delete, then copy."""
+    playlist_dir = cfg.vault_root / "Playlists"
+    keep_names = (
+        {f"Playlists/{m.name}" for m in playlist_dir.glob("*.m3u8")}
+        if playlist_dir.exists()
+        else set()
+    )
+    plan = plan_sync(files, source_root, dest_root, keep_names)
+    print(
+        f"Sync: {plan.new} new, {plan.changed} changed, {plan.case_only} letter-case renames, "
+        f"{len(plan.delete) - plan.case_only} to delete, {plan.unchanged} already right"
+    )
+    for label, paths, root in (
+        ("copy", plan.copy, source_root),
+        ("delete", plan.delete, dest_root),
+    ):
+        for p in paths[:10]:
+            print(f"  {label}: {p.relative_to(root)}")
+        if len(paths) > 10:
+            print(f"  ... and {len(paths) - 10} more to {label}")
+    try:
+        check_sync_target(dest_root, plan, cfg.vault_root, extra_mounts)
+        check_sync_space(dest_root, plan)
+    except UsbTargetError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    if not args.execute:
+        print("\nDRY RUN (pass --execute to sync) -- nothing was copied or deleted")
+        return 0
+    removed = apply_sync_deletions(plan, dest_root)
+    result = copy_with_verification(
+        plan.copy, source_root, dest_root, cooldown_seconds=args.cooldown_seconds
+    )
+    playlists_written = copy_playlists(cfg.vault_root, source_root, dest_root)
+    print(f"\n{removed} file(s) deleted from the target")
+    _report(result, playlists_written)
+    return 1 if result.failed else 0
 
 
 def main() -> int:
@@ -860,6 +1048,15 @@ def main() -> int:
             "formatting anything. Needs --dest (or --device with exactly one "
             "mounted partition). Destroys nothing, so it needs neither root nor "
             "the typed wipe confirmation -- but still needs --execute."
+        ),
+    )
+    parser.add_argument(
+        "--sync",
+        action="store_true",
+        help=(
+            "With --no-format: bring the target in line with the library -- copy new and "
+            "changed songs, DELETE songs the library no longer has, leave the rest. "
+            "Dry run unless --execute."
         ),
     )
     parser.add_argument(
@@ -900,6 +1097,8 @@ def main() -> int:
 
     if not args.library:
         parser.error("--library {alac,car} is required (or use --list-devices)")
+    if args.sync and not args.no_format:
+        parser.error("--sync works on the filesystem already there: add --no-format")
 
     # argparse default is None, not a filesystem, so an explicit --filesystem
     # stays distinguishable from a defaulted one -- that is what makes
@@ -1007,7 +1206,10 @@ def main() -> int:
                 file=sys.stderr,
             )
             for group in clashes[:5]:
-                print("  " + "  |  ".join(str(p.relative_to(source_root)) for p in group), file=sys.stderr)
+                print(
+                    "  " + "  |  ".join(str(p.relative_to(source_root)) for p in group),
+                    file=sys.stderr,
+                )
         print("Refusing to copy anything. Fix the names in the library first.", file=sys.stderr)
         return 1
 
@@ -1027,6 +1229,8 @@ def main() -> int:
                 return 1
 
         print(f"Target: {dest_root} (existing filesystem — nothing will be formatted)")
+        if args.sync:
+            return _run_sync(args, cfg, files, source_root, dest_root, extra_mounts)
         try:
             check_free_space(dest_root, files)
         except (UsbTargetError, OSError) as exc:
@@ -1086,8 +1290,7 @@ def main() -> int:
         for cmd in build_unmount_commands(device) + format_commands:
             print(f"  would run: {' '.join(cmd)}")
         print(
-            f"  would copy {len(files)} file(s) to a fresh {filesystem} filesystem "
-            f"on {device.path}"
+            f"  would copy {len(files)} file(s) to a fresh {filesystem} filesystem on {device.path}"
         )
         return 0
 
