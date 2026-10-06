@@ -5,6 +5,10 @@ then studio over live, then quality, then length". Asked the same day and
 answered yes to each reading:
 
   1. format          ALAC, then FLAC, then any other lossless, then lossy
+                     (a copy whose codec is unknown is never taken for lossless)
+  1b. baked          an original beats a copy the retired bake made at
+                     -18 LUFS (Grey, 2026-09-26; the resolver's own step,
+                     joined to this rule 2026-10-05 so there is ONE rule)
   2. studio / live   a studio recording beats a live one
   3. original        the original beats a remaster, remix or re-recording --
                      Grey's standing ruling ("the original trumps the
@@ -14,6 +18,11 @@ answered yes to each reading:
                      no audible gain (AC/DC "Big Gun", 2026-10-03)
   5. length          the longer copy, when it is at least 2 s longer
   6. a full tie      the library copy stays
+
+Grey, 2026-10-05: the duplicate resolver ranked by bitrate and size and never
+used this rule, so 32 of its 256 planned moves kept the SHORTER copy ("Sweet
+Child O' Mine" 4:23 over 5:56). Grey: "you may change the keep rule". The
+resolver now ranks by this rule too.
 
 Live and remaster are read the way the duplicate resolver reads them
 (dupe_resolver._is_live / _is_reissue: title AND album), so the review list
@@ -25,16 +34,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from .stages.dupe_resolver import _is_live, _is_reissue
-
 LOSSY = frozenset({"aac", "mp3", "vorbis", "opus", "wma", "wmav2", "mp2"})
-STEPS = ("format", "studio/live", "original/remaster", "quality", "length")
+STEPS = ("format", "original/baked", "studio/live", "original/remaster", "quality", "length")
 #: Lengths closer than this are the same length (a fade, a gap of silence).
 LENGTH_SLACK_S = 2.0
 
 
 def _format_rank(codec: str | None) -> int:
     c = (codec or "").lower()
+    if not c:
+        return 3
     if c == "alac":
         return 0
     if c == "flac":
@@ -42,14 +51,19 @@ def _format_rank(codec: str | None) -> int:
     return 3 if c in LOSSY else 2
 
 
-def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int]:
-    """Steps 1-4; smaller is better. *m* needs codec, title, album, sample_rate.
+def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int]:
+    """Steps 1-4; smaller is better. *m* needs codec, title, album, sample_rate, lufs.
 
     Length (step 5) is not in the key: "at least 2 s longer" is a tolerance,
     and a sort key cannot hold one without bucketing 201.9 s and 202.1 s apart.
     """
+    # Imported here: the resolver imports this module, and these read titles
+    # and albums exactly the way it does.
+    from .stages.dupe_resolver import _is_live, _is_reissue, _looks_baked
+
     return (
         _format_rank(m.get("codec")),
+        1 if _looks_baked(dict(m)) else 0,
         1 if _is_live(dict(m)) else 0,
         1 if _is_reissue(dict(m)) else 0,
         -int(m.get("sample_rate") or 0),

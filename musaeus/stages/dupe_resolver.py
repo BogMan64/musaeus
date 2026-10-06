@@ -90,9 +90,9 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..config import LOSSLESS_CODECS
 from ..context import RunContext, StageResult
 from ..db import SET_ASIDE_STATUSES
+from ..keep_rule import LENGTH_SLACK_S, keep_key
 from .base import BaseStage
 from .organize import (
     _remove_emptied_dirs,
@@ -291,64 +291,68 @@ def _share_loudness(members: list[dict]) -> None:
             m["lufs"] = measured[h]
 
 
-def _keeper_sort_key(m: dict) -> tuple[int, int, int, int, int, int, int, int]:
-    """Shared ordering rule: real lossless codec beats lossy
-    UNCONDITIONALLY (a bitrate/size comparison across different codecs
-    isn't a fair quality comparison -- a quiet, highly-compressible FLAC
-    can report a lower bitrate than a dense, less-compressible lossy
-    file despite being the objectively better copy), THEN the original
-    release beats a remaster/reissue, then bitrate/size as a tiebreak
-    among files that are equally lossless or equally lossy.
+def _keeper_sort_key(m: dict) -> tuple[int, ...]:
+    """Best keeper first: Grey's keep rule (musaeus/keep_rule.py), one rule for
+    the resolver and the swap tool.
 
-    The original-over-remaster rank sits BELOW codec deliberately: a
-    lossless remaster is still a better artifact than a lossy original,
-    and Grey's preference is about which *release* to keep, not a licence
-    to keep a worse file. Above bitrate, though -- a remaster is often
-    louder and larger without being the version wanted.
+    The resolver ranked by codec, baked, reissue, live, then BITRATE and size;
+    Grey's rule of 2026-10-03 says sample rate only ("bitrate between two ALAC
+    copies is noise") and then the longer copy. Planned on the live vault
+    2026-10-05: 32 of 256 moves kept the shorter copy and 3 kept the lower
+    sample rate. Grey: "you may change the keep rule". The length step is
+    applied by _rank (a sort key cannot hold a 2 s tolerance).
 
-    Third rank, studio over live, added 2026-08-22. It sits below the
-    reissue test so it only decides groups the earlier tests tie on, and
-    well below codec: a lossless live take still beats a lossy studio one,
-    because the constraint that matters most is what was thrown away in
-    encoding, not which room it was recorded in.
-
-    Used both for duplicates-table-driven groups and for
-    audio_hash-derived live EXACT clusters (see
-    _get_live_exact_clusters) -- one rule, not two copies of it."""
+    Order: already moved away; format; an original over an old baked copy;
+    studio over live; original over remaster; sample rate; then the copy
+    already filed stays; bitrate and size only break a tie nothing else can
+    (a fixed order, not a judgement of quality).
+    """
     return (
         # A member this resolver has already moved away cannot be the keeper.
         # Ranked first because it is not a quality judgement at all -- it is
         # whether the file is still where the library expects it.
         #
-        # P0-E, 2026-09-09: `dup_status` was selected and never read. Losers
-        # are marked 'archive' while the keeper stays 'pending', so the group
-        # is still pending on the next run and every member -- moved ones
-        # included -- is re-ranked. An already-moved member winning on bitrate
-        # would be named keeper and the real keeper moved away after it,
-        # leaving the library with neither.
+        # P0-E, 2026-09-09: losers are marked 'archive' while the keeper stays
+        # 'pending', so the group is still pending on the next run and every
+        # member -- moved ones included -- is re-ranked. An already-moved
+        # member winning would be named keeper and the real keeper moved away
+        # after it, leaving the library with neither.
         #
         # A member with no catalogue row at its path is not there either: the
-        # file was filed, moved or removed since the group was found. It lost
-        # before only because its missing codec read as lossy.
+        # file was filed, moved or removed since the group was found.
         1
         if (m.get("dup_status") or "") in _ALREADY_RESOLVED
         or ("current_row" in m and m["current_row"] is None)
         else 0,
-        0 if (m.get("codec") or "").lower() in LOSSLESS_CODECS else 1,
-        # An original beats an old -18 LUFS baked copy (Grey, 2026-09-26):
-        # about 1,170 "masters" were copies the retired edition script had
-        # loudness-processed. Below codec -- a lossless baked copy still
-        # beats a lossy original -- and above everything else.
-        1 if _looks_baked(m) else 0,
-        1 if _is_reissue(m) else 0,
-        1 if _is_live(m) else 0,
-        -(m.get("bitrate") or 0),
+        *keep_key(m),
         # Equally good copies: keep the one already filed. Size decided this
         # before, so a few bytes of tags on a new arrival swapped 79 library
         # copies for identical ones (2026-09-25).
         0 if m.get("finalized_at") else 1,
+        -(m.get("bitrate") or 0),
         -(m.get("size_bytes") or 0),
     )
+
+
+def _rank(members: list[dict]) -> None:
+    """Sort best keeper first, then Grey's length step (keep_rule step 5).
+
+    Among the members tied with the best on every step before length, the
+    longest is kept when it is at least LENGTH_SLACK_S longer than the one
+    otherwise first: "Higher Love" 5:48.7 and 5:51.5, both 192 kHz, kept the
+    shorter by bitrate (2026-10-05).
+    """
+    members.sort(key=_keeper_sort_key)
+    if len(members) < 2:
+        return
+    steps = len(keep_key(members[0])) + 1
+    best = _keeper_sort_key(members[0])[:steps]
+    tied = [m for m in members if _keeper_sort_key(m)[:steps] == best]
+    longest = max(tied, key=lambda m: float(m.get("duration") or 0))
+    gap = float(longest.get("duration") or 0) - float(members[0].get("duration") or 0)
+    if longest is not members[0] and gap >= LENGTH_SLACK_S:
+        members.remove(longest)
+        members.insert(0, longest)
 
 
 def _get_group_members(conn, group_id: str) -> list[dict]:
@@ -359,7 +363,8 @@ def _get_group_members(conn, group_id: str) -> list[dict]:
         SELECT d.file_path, d.duplicate_type, d.confidence, d.status AS dup_status,
                d.audio_hash AS recorded_hash, a.audio_hash AS current_hash, a.id AS current_row,
                a.status AS current_status, a.finalized_at, a.lufs,
-               a.artist, a.album, a.title, a.ext, a.codec, a.bitrate, a.size_bytes
+               a.artist, a.album, a.title, a.ext, a.codec, a.bitrate, a.size_bytes,
+               a.sample_rate, a.duration
           FROM duplicates d
           LEFT JOIN archive a USING (file_path)
          WHERE d.group_id = ?
@@ -367,7 +372,7 @@ def _get_group_members(conn, group_id: str) -> list[dict]:
         (group_id,),
     ).fetchall()
     members = [dict(r) for r in rows]
-    members.sort(key=_keeper_sort_key)
+    _rank(members)
     return members
 
 
@@ -420,7 +425,7 @@ def _get_live_exact_clusters(conn) -> list[list[dict]]:
         members = conn.execute(
             """
             SELECT file_path, artist, album, title, ext, codec, bitrate, size_bytes, finalized_at,
-                   lufs, audio_hash
+                   lufs, audio_hash, sample_rate, duration
               FROM archive
              WHERE audio_hash = ? AND status = 'CATALOGUED'
             """,
@@ -428,7 +433,7 @@ def _get_live_exact_clusters(conn) -> list[list[dict]]:
         ).fetchall()
         member_dicts = [dict(m) for m in members]
         _share_loudness(member_dicts)
-        member_dicts.sort(key=_keeper_sort_key)
+        _rank(member_dicts)
         clusters.append(member_dicts)
     return clusters
 
@@ -970,7 +975,7 @@ class DupeResolverStage(BaseStage):
             # One keeper for the whole component, so a file kept by one of
             # its groups can no longer be moved as another's loser.
             _share_loudness(members)
-            members.sort(key=_keeper_sort_key)
+            _rank(members)
             keeper, losers = _pick_keeper_and_losers(members)
             self._move_losers(
                 ctx,
