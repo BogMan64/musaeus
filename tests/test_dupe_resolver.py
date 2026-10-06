@@ -923,15 +923,16 @@ class TestStudioOverLive:
         lossless_live = self._m(codec="alac", title="Song (Live)")
         assert sorted([lossy_studio, lossless_live], key=_keeper_sort_key)[0] is lossless_live
 
-    def test_live_original_beats_studio_remaster(self):
-        """Rank 2 (reissue) outranks rank 3 (live), so this is correct.
+    def test_studio_remaster_beats_live_original(self):
+        """Grey's keep rule (2026-10-03, keep_rule.py): studio/live is step 2,
+        original/remaster step 3 -- "placed after studio/live: 'keep this'".
 
-        Studio-over-live only decides groups that tie on codec AND reissue
-        status -- "same codec and type" in Grey's wording.
+        The resolver ranked reissue above live until 2026-10-05, when it was
+        made to use the keep rule; this test asserted that older order.
         """
         live_original = self._m(title="Song (Live)")
         studio_remaster = self._m(title="Song (Remastered)")
-        assert sorted([live_original, studio_remaster], key=_keeper_sort_key)[0] is live_original
+        assert sorted([live_original, studio_remaster], key=_keeper_sort_key)[0] is studio_remaster
 
     def test_studio_wins_before_bitrate_is_considered(self):
         """A louder, larger live take must not outrank the studio cut."""
