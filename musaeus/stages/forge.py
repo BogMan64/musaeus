@@ -101,8 +101,13 @@ def _write_tags_m4a(path: Path, rg_gain: float, rg_peak: float) -> bool:
         tags["----:com.apple.iTunes:R128_TRACK_GAIN"] = [
             MP4FreeForm(str(int(round(rg_gain * 256))).encode("utf-8"))
         ]
+        # ReplayGain 2 is referenced to -18 LUFS, R128_TRACK_GAIN to -23: the
+        # same loudness needs a gain 5 dB higher here. Both were written from
+        # the -23 gain until 2026-10-06, so every player reading ReplayGain
+        # played the masters 5 dB too quietly.
+        replaygain = rg_gain + (R128_REFERENCE - R128_APPLE_REFERENCE)
         tags["----:com.apple.iTunes:replaygain_track_gain"] = [
-            MP4FreeForm(f"{rg_gain:+.2f} dB".encode())
+            MP4FreeForm(f"{replaygain:+.2f} dB".encode())
         ]
         tags["----:com.apple.iTunes:replaygain_track_peak"] = [
             MP4FreeForm(f"{rg_peak:.8f}".encode())
@@ -210,7 +215,9 @@ def write_rg_tags(
     ext = path.suffix.lower()
     if ext in (".m4a", ".alac"):
         # Apple com.apple.iTunes.R128_TRACK_GAIN must reference -23 LUFS.
-        return _write_tags_m4a(path, r128_gain if r128_gain is not None else rg_gain, rg_peak)
+        # The writer takes the -23 gain; one given at *reference* is moved there.
+        r128 = r128_gain if r128_gain is not None else rg_gain + (R128_APPLE_REFERENCE - reference)
+        return _write_tags_m4a(path, r128, rg_peak)
     if ext == ".flac":
         return _write_tags_flac(path, rg_gain, rg_peak, reference)
     if ext == ".mp3":

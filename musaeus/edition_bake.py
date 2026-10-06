@@ -485,8 +485,11 @@ def copy_tags(master: Path, copy: Path, marker: str) -> None:
     own = {k: v for k, v in dst.tags.items() if _GAIN_TAG_RE.match(k) and "itunsmpb" in k.lower()}
     dst.tags.clear()
     dst.tags.update(own)
+    from .master_measurements import KEY as MEASURED_KEY
+
     for key, value in (src.tags or {}).items():
-        if not _GAIN_TAG_RE.match(key):
+        # The master's measurements describe the master, not this copy.
+        if not _GAIN_TAG_RE.match(key) and key != MEASURED_KEY:
             dst.tags[key] = value
     dst.tags[MARKER_KEY] = [MP4FreeForm(marker.encode("utf-8"))]
     dst.save()
