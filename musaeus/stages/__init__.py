@@ -174,6 +174,7 @@ from .scholar import ScholarStage
 from .sentinel import SentinelStage
 from .spellcheck import SpellCheckStage  # noqa: E402
 from .tagger import TaggerStage
+from .title_complete import TitleCompleteStage
 from .transcode import TranscodeStage
 from .tribute_quarantine import TributeQuarantineStage
 from .various_artists_fix import VariousArtistsFixStage
@@ -210,6 +211,7 @@ __all__ = [
     "NearDupeStage",
     "AcousticIDStage",
     "AlbumFillStage",
+    "TitleCompleteStage",
     "IdentityTagStage",
     "AcoustIDNameStage",
     "TranscodeStage",
@@ -424,6 +426,8 @@ ENRICHMENT: list[type] = [
     # three album scripts of 2026-09, wired in). Before IdentityTag, so the
     # album is settled before identity is written to the files.
     AlbumFillStage,
+    # Cut-short titles finished from the MusicBrainz recording (Grey, 2026-10-06).
+    TitleCompleteStage,
     # LAST. It writes identity to the FILES, so it must run after everything
     # that resolves identity -- otherwise it writes what the run is about to
     # learn. This is the stage whose absence let ~8,074 MBIDs live only in a

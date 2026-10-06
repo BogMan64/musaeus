@@ -47,6 +47,7 @@ from musaeus.stages.scholar import ScholarStage
 from musaeus.stages.sentinel import SentinelStage
 from musaeus.stages.spellcheck import SpellCheckStage
 from musaeus.stages.tagger import TaggerStage
+from musaeus.stages.title_complete import TitleCompleteStage
 from musaeus.stages.tribute_quarantine import TributeQuarantineStage
 from musaeus.stages.various_artists_fix import VariousArtistsFixStage
 
@@ -189,6 +190,9 @@ def test_full_default_pipeline_order_matches_current_design():
         # Grey, 2026-10-03: the 2026-09 album scripts wired in, after the
         # fingerprint they read and before identity is written to the files.
         AlbumFillStage,
+        # Grey, 2026-10-06: titles cut short at the source finished from the
+        # MusicBrainz recording, before identity is written to the files.
+        TitleCompleteStage,
         IdentityTagStage,
     ]
     assert expected == DEFAULT_PIPELINE
