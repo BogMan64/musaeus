@@ -360,6 +360,34 @@ def parse_mode(stderr: str) -> str:
 _DYNAMIC_SHORTFALL = 2.0
 
 
+#: A master's header can claim a little more than its audio holds: AAC masters
+#: whose encoder padding is counted in the header. Elvis Costello "The Monkey"
+#: claims 191.90 s and decodes to 191.71 s; its copy, 191.77 s, was refused as
+#: "length changed" on every build (2026-10-06), and so were Murray Head and
+#: Tony Bennett. More than this apart is a damaged master, not padding: Harold
+#: Faltermeyer "Axel F" claims 181.7 s and holds 109.8 s of audio.
+_CLAIMED_LENGTH_SLACK = 1.0
+
+#: Counting at 8 kHz is exact enough for seconds and cheap.
+_COUNT_RATE = 8000
+_SAMPLES_RE = re.compile(r"Number of samples:\s*(\d+)")
+
+
+def decoded_seconds(path: Path) -> float | None:
+    """The audio's length as decoded: samples counted, not the header's claim."""
+    try:
+        proc = _run(
+            [FFMPEG, "-nostdin", "-hide_banner", "-nostats", "-i", str(path), "-map", "0:a:0",
+             "-af", f"aresample={_COUNT_RATE},astats=measure_perchannel=none:"
+             "measure_overall=Number_of_samples", "-f", "null", "-"],
+            _PROBE_TIMEOUT * 10,
+        )  # fmt: skip
+    except (OSError, subprocess.SubprocessError, BakeError):
+        return None
+    found = _SAMPLES_RE.findall(proc.stderr or "")
+    return int(found[-1]) / _COUNT_RATE if found else None
+
+
 def verify(
     source_info: dict,
     output: Path,
@@ -408,7 +436,16 @@ def verify(
     sd, od = _dur(source_info), _dur(out)
     allowed = length_tolerance if length_tolerance is not None else tolerance_for(sd)
     if sd is not None and od is not None and abs(sd - od) > allowed:
-        raise BakeError(f"length changed: master {sd:.2f}s, copy {od:.2f}s")
+        # The header's claim is not the audio: measure the master before
+        # calling the copy wrong, and name a master whose claim is far off.
+        src = (source_info.get("format") or {}).get("filename")
+        real = decoded_seconds(Path(src)) if src else None
+        if real is None or abs(real - od) > allowed:
+            raise BakeError(f"length changed: master {sd:.2f}s, copy {od:.2f}s")
+        if abs(real - sd) > _CLAIMED_LENGTH_SLACK:
+            raise BakeError(
+                f"the master is damaged: it claims {sd:.2f}s but holds {real:.2f}s of audio"
+            )
 
 
 #: Freeform tags that carry a loudness GAIN. A copy already baked to -18 LUFS
