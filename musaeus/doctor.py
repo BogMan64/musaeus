@@ -704,6 +704,7 @@ def diagnose(cfg: MusicConfig) -> Report:
     _authority_disagreements(cfg, rep)
     _editions_come_from_masters(cfg, rep)
     _names_safe_on_fat(cfg, rep)
+    _one_picture_many_artists(cfg, rep)
     _artist_tag_is_natural_form(cfg, rep)
     _catalogued_tracks_reach_the_car(cfg, rep)
     _external_tools_present(cfg, rep)
@@ -1188,6 +1189,59 @@ def _editions_come_from_masters(cfg: MusicConfig, rep: Report) -> None:
             "editions from masters",
             f"all {len(rows):,} catalogued rows resolve to a master",
         )
+
+
+#: A picture on songs filed under this many artists is not one album's cover.
+_SHARED_PICTURE_ARTISTS = 4
+
+
+def _one_picture_many_artists(cfg: MusicConfig, rep: Report) -> None:
+    """Is one embedded picture worn by many artists' songs? (Grey, 2026-10-06)
+
+    On 2026-10-06 one picture ("nskm unsorted vol.1") sat on 159 songs by 108
+    artists, another ("The 2 Live Crew") on 38: 223 songs wore other albums'
+    covers. 182 arrived that way inside the source files, so no rule at intake
+    catches them all -- this says so whenever it happens. Counted by the
+    artist FOLDER, so one album of duets (Delerium & four singers) is not
+    flagged.
+    """
+    import hashlib
+
+    from mutagen.mp4 import MP4
+
+    root = getattr(cfg, "alac_archive", None)
+    if not root or not Path(root).is_dir():
+        return
+    root = Path(root)
+    worn_by: dict[str, set[str]] = {}
+    songs: dict[str, int] = {}
+    for p in root.rglob("*.m4a"):
+        try:
+            tags = MP4(p).tags
+            cover = tags.get("covr") if tags is not None else None
+        except Exception:  # noqa: BLE001 -- a file mutagen cannot read is another check's finding
+            continue
+        if not cover:
+            continue
+        key = hashlib.sha1(bytes(cover[0])).hexdigest()
+        rel = p.relative_to(root).parts
+        artist = rel[1] if len(rel) > 2 else rel[0]  # Genre/Artist/Album/Track
+        worn_by.setdefault(key, set()).add(artist)
+        songs[key] = songs.get(key, 0) + 1
+    shared = {k: v for k, v in worn_by.items() if len(v) >= _SHARED_PICTURE_ARTISTS}
+    check = "one cover per album"
+    if shared:
+        worst = max(shared, key=lambda k: songs[k])
+        rep.add(
+            "warn",
+            check,
+            f"{len(shared)} picture(s) are each on songs by {_SHARED_PICTURE_ARTISTS}+ artists "
+            f"({sum(songs[k] for k in shared):,} songs); the worst is on {songs[worst]} songs "
+            f"by {len(shared[worst])} artists, e.g. {', '.join(sorted(shared[worst])[:3])}",
+            sum(songs[k] for k in shared),
+        )
+    else:
+        rep.add("ok", check, f"no picture is shared by {_SHARED_PICTURE_ARTISTS} or more artists")
 
 
 def _names_safe_on_fat(cfg: MusicConfig, rep: Report) -> None:

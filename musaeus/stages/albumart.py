@@ -135,6 +135,36 @@ def _find_sidecar(folder: Path) -> Path | None:
     return None
 
 
+#: A cover fetched for one song in a folder of many albums is saved under this
+#: name beside that song alone, and removed once embedded (Grey, 2026-10-06).
+_PRIVATE_COVER_SUFFIX = ".musaeus_cover.jpg"
+
+
+def _one_album_folder(ctx: RunContext, folder: Path) -> bool:
+    """True when every song filed in *folder* is one artist's one album.
+
+    A cover.jpg is an ALBUM's picture. The USB1 inbox is one flat folder of
+    every artist's songs, and a cover fetched there for one song was saved as
+    the folder's cover.jpg -- "so the next file in the same album reuses it" --
+    and then went onto every song after it with no art: 41 songs carried
+    other albums' pictures, among 223 found wrong on 2026-10-06 (one picture
+    on 159 songs by 108 artists).
+    """
+    from ..artist_form import folder_artist
+
+    prefix = str(folder) + "/"
+    rows = ctx.conn.execute(
+        "SELECT artist, album, file_path FROM archive WHERE substr(file_path, 1, ?) = ?",
+        (len(prefix), prefix),
+    ).fetchall()
+    pairs = {
+        (folder_artist(str(r["artist"] or "")).casefold(), str(r["album"] or "").strip().casefold())
+        for r in rows
+        if Path(r["file_path"]).parent == folder
+    }
+    return len(pairs) <= 1
+
+
 def _embed_art(audio_path: str, art_path: Path) -> bool:
     """
     Embed art_path into audio_path using ffmpeg (in-place via temp file).
@@ -193,7 +223,9 @@ def _embed_art(audio_path: str, art_path: Path) -> bool:
 # ── Stage ─────────────────────────────────────────────────────────────────────
 
 
-def _fetch_sidecar(ctx: RunContext, fp: str, result: StageResult) -> Path | None:
+def _fetch_sidecar(
+    ctx: RunContext, fp: str, result: StageResult, private: bool = False
+) -> Path | None:
     """Fetch cover art from the network and drop it beside the file.
 
     Returns the sidecar path, or None when no art exists or nothing could
@@ -220,7 +252,12 @@ def _fetch_sidecar(ctx: RunContext, fp: str, result: StageResult) -> Path | None
         return None
 
     blob, source = got
-    target = Path(fp).parent / "cover.jpg"
+    # In a folder of many albums the picture is this song's alone.
+    target = (
+        Path(fp).with_name(Path(fp).stem + _PRIVATE_COVER_SUFFIX)
+        if private
+        else Path(fp).parent / "cover.jpg"
+    )
     try:
         target.write_bytes(blob)
     except OSError as exc:
@@ -412,9 +449,13 @@ class AlbumArtStage(BaseStage):
         undersized: list[str] = []
         upgraded_count = 0
 
+        one_album: dict[Path, bool] = {}
         for row in rows:
             result.files_processed += 1
             fp = row["file_path"]
+            folder = Path(fp).parent
+            if folder not in one_album:
+                one_album[folder] = _one_album_folder(ctx, folder)
 
             if not Path(fp).exists():
                 result.files_skipped += 1
@@ -438,7 +479,11 @@ class AlbumArtStage(BaseStage):
                     undersized.append(fp)
                     blob = _replace_undersized(ctx, fp, art_px, result)
                     if blob:
-                        target = Path(fp).parent / "cover.jpg"
+                        target = (
+                            folder / "cover.jpg"
+                            if one_album[folder]
+                            else Path(fp).with_name(Path(fp).stem + _PRIVATE_COVER_SUFFIX)
+                        )
                         try:
                             target.write_bytes(blob)
                         except OSError as exc:
@@ -454,11 +499,15 @@ class AlbumArtStage(BaseStage):
                             else:
                                 embed_failed.append(fp)
                                 logger.warning("[albumart] upgrade embed failed: %s", Path(fp).name)
+                            if target.name.endswith(_PRIVATE_COVER_SUFFIX):
+                                target.unlink(missing_ok=True)
             else:
                 missing_art.append(fp)
                 # Try sidecar embed
                 if embed:
-                    sidecar = _find_sidecar(Path(fp).parent)
+                    # A folder's cover.jpg is used only when the folder is one
+                    # album; in a folder of many, it is some other album's.
+                    sidecar = _find_sidecar(folder) if one_album[folder] else None
 
                     # No sidecar on disk used to end it -- this stage made
                     # zero network calls, so a folder without a cover.jpg
@@ -469,7 +518,7 @@ class AlbumArtStage(BaseStage):
                     # place that mutates audio, and so the next file in the
                     # same album reuses it instead of asking again.
                     if sidecar is None and fetched_ok is not None:
-                        sidecar = fetched_ok(ctx, fp, result)
+                        sidecar = fetched_ok(ctx, fp, result, private=not one_album[folder])
 
                     if sidecar:
                         logger.info(
@@ -494,6 +543,8 @@ class AlbumArtStage(BaseStage):
                         else:
                             embed_failed.append(fp)
                             logger.warning("[albumart] embed failed: %s", Path(fp).name)
+                        if sidecar.name.endswith(_PRIVATE_COVER_SUFFIX):
+                            sidecar.unlink(missing_ok=True)
                     else:
                         result.files_changed += 1
 
