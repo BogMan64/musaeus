@@ -32,6 +32,7 @@ import re
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from ..album_spelling import unify_album_spelling
 from ..canon import ArtistCanon
 from ..context import StageResult, elision
 from .base import BaseStage
@@ -375,6 +376,7 @@ class ArtistConsolidateStage(BaseStage):
 
         if not changes:
             result.notes.append("✓ No artist name variants found")
+            self._album_spelling(ctx, result, dry_run)
             ctx.record_stage(result)
             return result
 
@@ -405,8 +407,19 @@ class ArtistConsolidateStage(BaseStage):
         if len(changes) > 10:
             result.notes.append(f"  {elision(len(changes) - 10)}")
 
+        self._album_spelling(ctx, result, dry_run)
         ctx.record_stage(result)
         return result
+
+    def _album_spelling(self, ctx: RunContext, result: StageResult, dry_run: bool) -> None:
+        """After the artists are settled: one spelling per album per artist."""
+        done = unify_album_spelling(ctx.conn, ctx.log_event, self.NAME, dry_run)
+        if done:
+            result.files_changed += len(done)
+            verb = "would take" if dry_run else "took"
+            result.notes.append(f"{len(done)} song(s) {verb} the album spelling already filed")
+            for _fp, old, new in done[:5]:
+                result.notes.append(f"  album '{old}' → '{new}'")
 
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._consolidate(ctx, dry_run=True)

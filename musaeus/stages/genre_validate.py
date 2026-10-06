@@ -382,11 +382,23 @@ class GenreValidateStage(BaseStage):
                 illegal_stuck[genre] += 1
                 continue
 
+            # A credit with no ruling of its own takes its lead artist's even
+            # when it arrived WITH a genre (Grey, 2026-10-06: "one genre per
+            # artist"). Only empty genres were filled from the lead, so
+            # "Stevie Ray Vaughan & Double Trouble" kept its source tag
+            # "Southern Rock" for ever while Stevie Ray Vaughan is Blues --
+            # 23 songs under a second genre, and 10 artists split in all.
+            via_lead = None
+            if law_genre is None:
+                lead = folder_artist(artist, row["mb_artist_name"])
+                if lead and lead != artist:
+                    law_genre = law.genre_for(lead)
+                    via_lead = lead if law_genre else None
             if law_genre is None:
                 unknown += 1
                 continue
 
-            if law.agrees(artist, genre):
+            if law.agrees(via_lead or artist, genre):
                 agreed += 1
             elif not (row["genre_ruled_at"] or "").strip() and allowed and law_genre in allowed:
                 # NO RULING RECORDED -- there is no owner decision to protect.
@@ -409,9 +421,11 @@ class GenreValidateStage(BaseStage):
                 # value nothing can check.
                 law_wins += 1
                 if not dry_run:
+                    # Borrowed from the lead, it is not a ruling on this credit:
+                    # a MasterLaw entry for the exact credit, added later, wins.
+                    ruled = "NULL" if via_lead else "datetime('now')"
                     ctx.conn.execute(
-                        "UPDATE archive SET genre = ?, genre_ruled_at = datetime('now') "
-                        "WHERE rowid = ?",
+                        f"UPDATE archive SET genre = ?, genre_ruled_at = {ruled} WHERE rowid = ?",
                         (law_genre, row["rid"]),
                     )
                     ctx.log_event(
@@ -422,7 +436,8 @@ class GenreValidateStage(BaseStage):
                         stage=self.NAME,
                         note=(
                             f"no ruling recorded for {artist!r}; source tag "
-                            f"{genre!r} corrected to MasterLaw {law_genre!r}. "
+                            f"{genre!r} corrected to MasterLaw {law_genre!r}"
+                            f"{f' via the lead artist {via_lead!r}' if via_lead else ''}. "
                             "TaggerStage must write the tag before Scholar "
                             "reads this file again, or the upsert restores it."
                         ),
