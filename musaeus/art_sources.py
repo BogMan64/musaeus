@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import urllib.error
 import urllib.request
@@ -295,4 +296,89 @@ def fetch_album_art(
         return best
     if unavailable == attempts:
         raise ArtUnavailable("no art source answered")
+    return None
+
+
+# ── artist picture: when no album cover can be found ──────────────────────────
+#
+# Grey, 2026-10-06: "search the web and Wikipedia for pictures if album art
+# search is unsuccessful". Picking by hand that day showed what goes wrong:
+# Deezer's first exact-name match was a rap act for Bad Company, a DJ for
+# Fergie, album art for Handel. So Wikipedia comes first and only a page that
+# says it is about music counts; Deezer second, the exact name with the most
+# fans, never its blank placeholder.
+
+_MUSIC_WORDS = re.compile(
+    r"\b(band|singer|musician|composer|songwriter|rapper|group|duo|trio|quartet|"
+    r"orchestra|ensemble|guitarist|pianist|violinist|cellist|drummer|bassist|vocalist|"
+    r"dj|conductor|music|choir|soprano|mezzo|tenor|baritone|bandleader)\b",
+    re.IGNORECASE,
+)
+_WIKI_SUFFIXES = ("", " (band)", " (musician)", " (singer)")
+
+
+def _lead_artist(artist: str) -> str:
+    """The first artist of a credit: "Linda Ronstadt, James Ingram" -> "Linda Ronstadt"."""
+    return re.split(r"\s*(?:,|&|\bfeat\.?|\bfeaturing\b|\bwith\b)\s*", artist, flags=re.I)[
+        0
+    ].strip()
+
+
+def fetch_wikipedia_artist(artist: str) -> bytes | None:
+    """The lead picture of the artist's English Wikipedia page, if the page is about music."""
+    for suffix in _WIKI_SUFFIXES:
+        title = quote((artist + suffix).replace(" ", "_"))
+        data = _get_json(f"https://en.wikipedia.org/api/rest_v1/page/summary/{title}")
+        if not data or data.get("type") != "standard":
+            continue  # missing, or a disambiguation page
+        if not _MUSIC_WORDS.search(data.get("description") or ""):
+            continue  # an actor, a footballer, a place
+        url = (data.get("originalimage") or data.get("thumbnail") or {}).get("source")
+        blob = _get(url) if url else None
+        if _looks_like_image(blob):
+            return blob
+    return None
+
+
+def fetch_deezer_artist(artist: str) -> bytes | None:
+    """Deezer's picture of the artist: the exact name with the most fans."""
+    data = _get_json(
+        "https://api.deezer.com/search/artist?" + urlencode({"q": artist, "limit": 10})
+    )
+    if not data:
+        return None
+    want = _norm(artist)
+    named = [
+        r for r in data.get("data", [])
+        if _norm(r.get("name", "")) == want and r.get("picture_xl") and "/artist//" not in r["picture_xl"]
+    ]  # fmt: skip
+    if not named:
+        return None
+    best = max(named, key=lambda r: int(r.get("nb_fan") or 0))
+    blob = _get(best["picture_xl"])
+    return blob if _looks_like_image(blob) else None
+
+
+def fetch_artist_picture(artist: str) -> tuple[bytes, str] | None:
+    """A picture of the artist or group, with its source; None when none is found.
+
+    Raises ArtUnavailable only when nothing could be asked at all.
+    """
+    lead = _lead_artist(artist)
+    if not lead:
+        return None
+    asked = unavailable = 0
+    for name, fn in (("wikipedia", fetch_wikipedia_artist), ("deezer", fetch_deezer_artist)):
+        asked += 1
+        try:
+            blob = fn(lead)
+        except ArtUnavailable as exc:
+            unavailable += 1
+            logger.debug("[art] %s unavailable for artist %r: %s", name, lead, exc)
+            continue
+        if blob:
+            logger.info("[art] %s supplied a picture of %r (%s)", name, lead, describe(blob))
+            return blob, f"artist picture ({name})"
+    if unavailable == asked:
+        raise ArtUnavailable(f"no source could be asked for a picture of {lead!r}")
     return None

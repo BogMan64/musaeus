@@ -232,7 +232,8 @@ def _fetch_sidecar(
     be asked. Network failure is never fatal to the stage: art is a nicety
     and the run has audio to finish processing.
     """
-    from ..art_sources import ArtUnavailable, fetch_album_art
+    from ..art_sources import ArtUnavailable, fetch_album_art, fetch_artist_picture
+    from ..artist_form import folder_artist
 
     row = ctx.conn.execute("SELECT artist, album FROM archive WHERE file_path=?", (fp,)).fetchone()
     if row is None:
@@ -249,7 +250,16 @@ def _fetch_sidecar(
         result.notes.append(f"art lookup unavailable for {artist} — {album}")
         return None
     if not got:
-        return None
+        # No album cover anywhere: a picture of the artist or group instead
+        # (Grey, 2026-10-06). It is this song's alone, never a folder's cover.
+        try:
+            got = fetch_artist_picture(folder_artist(artist))
+        except ArtUnavailable as exc:
+            logger.debug("[albumart] could not ask for a picture of %r: %s", artist, exc)
+            return None
+        if not got:
+            return None
+        private = True
 
     blob, source = got
     # In a folder of many albums the picture is this song's alone.
