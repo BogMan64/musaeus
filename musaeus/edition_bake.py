@@ -661,7 +661,12 @@ AAC_BANDWIDTH_HZ = 20000
 #: now and then overshoots with the band full to 20 kHz (Donna Summer's "Bad
 #: Girls": -5.6 dBFS in, -1.7 out at 20 kHz, -5.2 at 19). Part of the same
 #: rule, so copies made at 20 kHz are not made again for it.
-_BANDWIDTHS_HZ = (AAC_BANDWIDTH_HZ, 19000)
+#: 18 kHz added 2026-10-06: Crosby, Stills, Nash & Young's "Horses Through A
+#: Rainstorm" clicked at 20 and 19 kHz (+4.9 dB at 198.4 s) and not at 18 or
+#: 17; it was missing from the iPhone library. Muddy Waters' "You Need Love"
+#: and Smokey Robinson's "Going To A Go Go" are flagged at every width down
+#: to 16 kHz, so narrowing further would not save them.
+_BANDWIDTHS_HZ = (AAC_BANDWIDTH_HZ, 19000, 18000)
 
 # History of the encoder: ffmpeg's own AAC encoder, with perceptual noise
 # substitution (its default) turned off in version 4 -- it synthesised noise

@@ -497,6 +497,28 @@ def test_a_copy_that_clicks_at_20_khz_is_encoded_again_at_19(tmp_path, monkeypat
     assert widths == [20000, 19000], widths
 
 
+def test_a_copy_that_clicks_at_20_and_19_khz_is_encoded_again_at_18(tmp_path, monkeypatch):
+    # Crosby, Stills, Nash & Young's "Horses Through A Rainstorm", 2026-10-06:
+    # +4.9 dB at 20 and 19 kHz, clean at 18.
+    widths = []
+    real_pipe = eb._run_pipeline
+
+    def spy(first, second, timeout):
+        widths.append(int(second[second.index("-w") + 1]))
+        return real_pipe(first, second, timeout)
+
+    real_click = eb._click_in
+    clicks = iter([(10, 4.9), (10, 4.9)])
+
+    def click_twice(went_in, came_out):
+        return next(clicks, None) or real_click(went_in, came_out)
+
+    monkeypatch.setattr(eb, "_run_pipeline", spy)
+    monkeypatch.setattr(eb, "_click_in", click_twice)
+    eb.bake_aac(_master(tmp_path / "m.m4a"), tmp_path / "phone.m4a", noise=False)
+    assert widths == [20000, 19000, 18000], widths
+
+
 def test_a_copy_that_clicks_at_every_width_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(eb, "_click_in", lambda went_in, came_out: (10, 3.9))
     with pytest.raises(eb.BakeError, match="click"):
