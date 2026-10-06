@@ -247,7 +247,9 @@ def test_a_truncated_master_is_refused_not_padded(tmp_path):
     data = master.read_bytes()
     master.write_bytes(data[: int(len(data) * 0.94)])
     assert float(eb.probe(master)["format"]["duration"]) == pytest.approx(30.0, abs=0.1)
-    with pytest.raises(eb.BakeError, match="length changed"):
+    # Since 2026-10-06 the master is measured and the refusal names it: a
+    # header claiming 30 s over 28 s of audio is a damaged master.
+    with pytest.raises(eb.BakeError, match="the master is damaged"):
         eb.bake_aac(master, tmp_path / "car.m4a", noise=True)
 
 
