@@ -47,7 +47,15 @@ KIND_TAGGED_AUDIO = "tagged_audio"
 #:
 #: This does NOT cover a stage that rewrites the audio stream. Anything
 #: that re-encodes must checkpoint its inputs by copy.
-TAG_CAPTURE_SUFFIXES: frozenset[str] = frozenset({".m4a", ".mp3", ".flac", ".m4b", ".aac"})
+#:
+#: Only formats whose tags are plain values a rollback can write back: MP4
+#: and FLAC. MP3 and raw AAC carry ID3, whose frames are objects, not
+#: values; capturing them as text and writing them back crashed (September
+#: review, F1), so they are checkpointed by copy like any other file.
+TAG_CAPTURE_SUFFIXES: frozenset[str] = frozenset({".m4a", ".m4b", ".flac"})
+
+#: Marks a tag-captured entry's identity, so it is never read as a digest.
+TAGGED_PREFIX = "tagged:"
 
 
 def sha256_file(path: Path) -> str:
@@ -62,7 +70,18 @@ def tagged_identity(size: int, mtime_ns: int, metadata: str | None, artwork: str
     """Cheap identity for a tag-captured entry. Deliberately not a content
     digest, and prefixed so it cannot be read as one."""
     material = f"{size}|{mtime_ns}|{metadata or ''}|{artwork or ''}"
-    return "tagged:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:40]
+    return TAGGED_PREFIX + hashlib.sha256(material.encode("utf-8")).hexdigest()[:40]
+
+
+def current_tagged_identity(path: Path) -> str:
+    """The identity *path* has now, to compare with a tag-captured entry.
+
+    A tag-captured entry records this rather than a SHA-256, so checking a
+    file against it with a SHA-256 can never match (September review, A).
+    """
+    stat = path.stat()
+    metadata, artwork = _tag_digests(path)
+    return tagged_identity(stat.st_size, stat.st_mtime_ns, metadata, artwork)
 
 
 def item_ref_for(relative_path: str) -> str:
@@ -91,15 +110,22 @@ def read_tags(path: Path) -> dict[str, list] | None:
     """
     try:
         import mutagen  # type: ignore[import-untyped]
+        from mutagen._vorbis import VCommentDict  # type: ignore[import-untyped]
+        from mutagen.mp4 import MP4Tags  # type: ignore[import-untyped]
 
         audio = mutagen.File(str(path))
         if audio is None or audio.tags is None:
             return None
+        if not isinstance(audio.tags, (MP4Tags, VCommentDict)):
+            return None  # ID3 and others: no value-level round trip
         out: dict[str, list] = {}
-        for key, value in audio.tags.items():
+        # keys() and getitem, not items(): a Vorbis comment can repeat a
+        # key, and getitem returns every value of it.
+        for key in audio.tags.keys():  # noqa: SIM118 -- iterating a VComment yields pairs
             k = str(key)
             if k.startswith("covr"):
                 continue
+            value = audio.tags[key]
             values = value if isinstance(value, list) else [value]
             encoded = []
             for v in values:

@@ -838,24 +838,29 @@ class CanonicalizeStage(BaseStage):
         this stage's own output area, empty or near-empty at entry, so the
         copy is cheap -- and serves as the quarantine container and journal
         anchor. Rolling back therefore means restoring each original from
-        quarantine and clearing what was staged, which the journal alone
-        supports.
+        quarantine, which the journal alone supports: each quarantine entry
+        records where the bytes went and their SHA-256, and rollback puts
+        them back through restore_quarantined, refusing to overwrite
+        anything that has arrived at the path since. (Until 2026-10-07 it
+        did not: rollback looked for a checkpoint copy, found none, left
+        the original in quarantine and reported success -- September
+        review, B.)
 
         source_root spans the vault because the paths being disposed of
         live under INBOX while the quarantine area lives under RUNS, and
         both ends must validate.
 
         WEAKER THAN FINALIZE'S, DELIBERATELY. Do not read this as parity.
-        MutationBoundary._expected_digest falls back to the checkpoint
-        manifest and returns None for an item the manifest does not hold,
-        so _check_precondition passes such an item straight through. The
-        originals disposed of here live under INBOX and are therefore NOT
-        in a STAGING checkpoint, which means they get no digest
-        verification -- nothing here detects that an original changed
-        underneath the run. What the boundary supplies for this stage is
-        journaling and recoverability: the operation is durably recorded
-        and the bytes are retrievable. finalize, whose sources ARE its
-        checkpointed root, additionally gets the precondition check.
+        MutationBoundary._expected_digest returns None for an item the
+        checkpoint does not hold, so _check_precondition passes such an
+        item straight through. The originals disposed of here live under
+        INBOX and are therefore NOT in a STAGING checkpoint, which means
+        they get no digest verification -- nothing here detects that an
+        original changed underneath the run. What the boundary supplies
+        for this stage is journaling and recoverability: the operation is
+        durably recorded and the bytes are retrievable. finalize, whose
+        converted sources ARE in its checkpointed root, additionally gets
+        the precondition check.
 
         Returns None when disabled or unavailable, and says which in the
         result -- a run with no boundary must announce itself rather than
