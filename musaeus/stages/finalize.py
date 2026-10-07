@@ -1,0 +1,826 @@
+#!/usr/bin/env python3
+"""
+MUSAEUS — Finalize Stage (Act 3)
+
+Physically moves a canonicalized (ALAC-in-.m4a or AAC-in-.m4a) file from
+the mutable INBOX into the MASTERS tier, ALAC-Archival, at
+Genre/Artist/Album/"Artist - Title" -- organize.library_relpath(), the one
+rule Organize files by too. The catalogue row points at the master from then
+on; the -18 LUFS ALAC_Library is an edition built from the masters.
+
+(This used to say ALAC-Library and "matching organize.py's naming rules
+exactly"; neither held. Grey decided 2026-08-18 that new work lands in the
+masters tier, and on 2026-09-25 that the row stays on its master -- one file
+per track -- after a review of the two-file design found five ways the pair
+drifted apart.)
+
+Why this matters (Grey's explicit design decision, 2026-08-09/10
+session): INBOX is working state, expected to trend toward empty.
+ALAC-Library is the trusted result — the only thing downstream export
+stages should ever read from. Physical presence of a file in
+ALAC-Library is meant to be a DB-independent signal that processing is
+actually complete, since a prior incident had an agent claim "100% done"
+when nothing had physically moved. Nothing else in the pipeline gets to
+call a file "finished" until it has actually arrived here.
+
+What it does:
+  - Processes CATALOGUED rows with canonicalized_at set and finalized_at
+    NOT set (skips anything Canonicalize hasn't reached yet, or that's
+    already finalized, unless --force). The source for a row is wherever
+    archive.file_path currently points: STAGING for a CONVERTED/
+    TRANSCODED row (Canonicalize's verified output), or still INBOX for
+    a PASSTHROUGH row (nothing to stage, codec/container was already
+    canonical). Finalize doesn't care which -- it just moves whatever is
+    there into ALAC-Library.
+  - Copies to a same-directory temp name at the destination, verifies
+    size, then renames into place (same-filesystem atomic rename).
+    Deleting the source is deliberately a SEPARATE, later step (see
+    below) — safer than a raw shutil.move()/os.rename() if ALAC-Library
+    lives on a different filesystem than the source and a cross-device
+    copy is interrupted partway: nothing removes the source until both
+    the destination copy AND the DB row are confirmed, so a crash
+    anywhere in between leaves the source untouched rather than losing
+    the only copy.
+  - DB update is by rowid, disk-change-first (organize.py's
+    _apply_rename pattern): if UPDATE ... WHERE id=? hits a
+    sqlite3.IntegrityError (archive.file_path is UNIQUE; another row
+    already claims that exact target path), the just-created
+    ALAC-Library copy is deleted and the source is left completely
+    untouched — the row is skipped, not the whole stage.
+  - Uses organize.py's unique_path() to avoid clobbering an unrelated
+    file that happens to sanitize to the same target filename (with the
+    same self-is-not-a-collision guard organize.py needed, for the
+    --force-on-an-already-finalized-file edge case)
+  - Records archive.audio_hash (computed by Sentinel, unaffected by a
+    lossless codec swap — see note below) into the persistent
+    cross-batch hash index at config.hash_index_path, so a LATER batch
+    (after this one's musaeus.db has been wiped) can still detect that
+    this exact audio content already exists in ALAC-Library
+  - Cleans up any directories left empty in INBOX after the run
+    (ORPHEUS organize_only.py pattern: deepest-first, bare rmdir() in
+    try/except OSError — rmdir() itself is the "is this actually empty"
+    check, no separate scan needed)
+  - dry_run() reports every move without copying/moving/writing anything
+
+What it deliberately does NOT do:
+  - Resolve duplicates. A same-batch exact/near duplicate (staged by
+    Sentinel/NearDupe in the `duplicates` table) or a cross-batch
+    duplicate (flagged separately by the early cross-batch dedupe check
+    that runs in Act 2, before Canonicalize) is a human-review decision,
+    not something Finalize decides on its own. Finalize only cares
+    whether a file is ready to be physically archived, not whether it's
+    a duplicate of something else.
+
+Note on audio_hash validity after Canonicalize: Sentinel's audio_hash is
+computed once, before Canonicalize runs, and is never recomputed. For a
+CONVERTED file (lossless -> ALAC, a straight codec swap with no
+resampling), the decoded PCM is unchanged, so the pre-conversion hash
+still correctly identifies the audio content. For a TRANSCODED file
+(lossy source -> lossy AAC), decoding two different lossy encodings of
+the same source produces different PCM regardless — but using the
+ORIGINAL source's hash is actually the semantically useful choice for
+cross-batch dedup here: it identifies "the same underlying song",
+independent of which lossy container it happened to arrive in.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import shutil
+import sqlite3
+from pathlib import Path
+
+from ..context import RunContext, StageResult, elision
+from ..db import open_hash_index, record_finalized_hash
+from ..filing import load as filing_load
+from ..hasher import audio_hash_safe
+from ..safety.mutation import MutationBoundary, PreconditionError, UnmanagedPathError
+from ..safety.recovery import (
+    JOURNAL_FILENAME,
+    CollisionError,
+    OperationJournal,
+    create_checkpoint,
+)
+from .base import BaseStage
+from .organize import _is_collision_name_for, library_relpath, sanitize_path_component, unique_path
+
+logger = logging.getLogger(__name__)
+
+
+def _batch_folders_enabled() -> bool:
+    """Whether finalized files go under a dated batch folder.
+
+    Off unless MUSAEUS_BATCH_FOLDERS is set to one of 1/true/yes/on. Read
+    at call time rather than at import so a test (or a single run) can set
+    it without reloading the module -- the same reason the CAR builder
+    reads its flags the same way.
+    """
+    return os.environ.get("MUSAEUS_BATCH_FOLDERS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+_COMMIT_EVERY = 25
+
+
+class FinalizeError(Exception):
+    """Raised internally when a move or its verification fails."""
+
+
+def _copy_then_verify_then_swap(source: Path, target: Path) -> None:
+    """
+    Copy source -> a same-directory temp name at target's destination,
+    verify the copy landed intact (size match), rename into place (same
+    filesystem, atomic). Deliberately does NOT remove source -- the
+    caller only does that after the DB row has been safely updated by
+    rowid, so a DB-write collision can still be reverted (by deleting
+    this freshly-created target) while the source is completely intact.
+    If anything fails before target exists, the source is left
+    completely untouched — only the temp file (if any) is cleaned up.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_target = target.with_name(target.name + ".finalize_tmp")
+
+    try:
+        shutil.copy2(str(source), str(tmp_target))
+
+        src_size = source.stat().st_size
+        tmp_size = tmp_target.stat().st_size
+        if src_size != tmp_size:
+            raise FinalizeError(
+                f"size mismatch after copy: source={src_size} bytes, copy={tmp_size} bytes"
+            )
+
+        # Force the copy to disk BEFORE the rename, and the rename itself
+        # before the caller deletes the source.
+        #
+        # P0-C, 2026-09-09. shutil.copy2 returns once the bytes are in the
+        # page cache, not once they are on the platter. The caller then
+        # renames and, at finalize.py:540, unlinks the original. A power loss
+        # anywhere in that window left a target whose data had never been
+        # written and a source that no longer existed -- and for a CONVERTED
+        # row, STAGING holds the only copy, so the recording was simply gone.
+        # The database, at PRAGMA synchronous=NORMAL, could not be relied on
+        # to remember what had happened either.
+        #
+        # The directory fsync is the half people forget: without it the
+        # rename can be lost even when the file's own data is safe, leaving
+        # the bytes on disk under a name nothing points to.
+        with open(tmp_target, "rb") as fh:
+            os.fsync(fh.fileno())
+
+        tmp_target.rename(target)  # tmp_target and target share a parent -> atomic
+
+        dir_fd = os.open(str(target.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
+    except Exception:
+        if tmp_target.exists():
+            tmp_target.unlink(missing_ok=True)
+        raise
+
+
+def _cleanup_empty_dirs(root: Path) -> int:
+    """
+    Remove any now-empty directories under *root*, deepest first.
+    rmdir() itself is the emptiness check — it raises OSError on a
+    non-empty directory, which is caught and treated as expected, not
+    an error. Returns the number of directories removed.
+    """
+    if not root.exists():
+        return 0
+    removed = 0
+    dirs = sorted(
+        (p for p in root.rglob("*") if p.is_dir()),
+        key=lambda d: len(d.parts),
+        reverse=True,
+    )
+    for d in dirs:
+        if not d.exists():
+            continue
+        try:
+            d.rmdir()
+            removed += 1
+        except OSError:
+            pass  # not empty — expected, not a failure
+    return removed
+
+
+def genre_folder(genre: str | None) -> str:
+    """The top folder an artist files under. Grey's ruling, 2026-09-18.
+
+    Measured before the change, against 9,049 catalogued tracks:
+
+        artists whose tracks span more than one genre : 0
+        albums that would be split across genres      : 0
+        genre folders created                         : 42
+
+    Zero, because MasterLaw rules genre per ARTIST, not per track -- so an
+    artist lands in exactly one genre folder and no album is torn in half.
+    That is the property that makes this layout safe; if genre ever becomes a
+    per-track field, this function is where it stops being safe.
+
+    A track with no genre goes to "Unsorted", never to a folder named after
+    whatever `str(None)` produces. Today that case is empty, but a fresh
+    ingest arrives before MasterLaw has ruled on the artist, so it is the
+    normal state for new material rather than an error.
+
+    Only the first genre is used when a row carries several, matching the
+    playlist stage's `_primary_genre` -- one file cannot live in two folders,
+    and picking the first is the same choice made in the same order there.
+    """
+    first = (genre or "").split(",")[0].strip()
+    return sanitize_path_component(first) if first else "Unsorted"
+
+
+class FinalizeStage(BaseStage):
+    """
+    Finalize — move canonicalized files from INBOX into ALAC-Library,
+    the trusted, physically-verifiable canonical library.
+    """
+
+    NAME = "finalize"
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A file this stage claims to have moved must be AT the new path.
+
+        Moves are the costliest thing to get silently wrong: a stage that
+        reports "moved 6,480 files" while the DB and disk disagree leaves
+        rows pointing at nothing, and that is precisely how a file ended up
+        treated as its own duplicate (scope doc section 4.17). Sampling a
+        few is enough to catch a wholesale failure.
+        """
+        rows = ctx.conn.execute(
+            "SELECT file_path FROM archive WHERE status = ? ORDER BY last_seen DESC LIMIT 5",
+            ("CATALOGUED",),
+        ).fetchall()
+        missing = [r["file_path"] for r in rows if not Path(r["file_path"]).exists()]
+        if not rows or not missing:
+            return []
+        return [
+            f"reported {result.files_changed} change(s) but {len(missing)} of "
+            f"{len(rows)} sampled CATALOGUED rows name a file that is not on disk"
+        ]
+
+    def validate(self, ctx: RunContext) -> None:
+        """Report the work set, not the table.
+
+        This used to count every canonicalized row and announce it as "ready
+        to finalize" -- on a settled library that printed 10,746 when the
+        actual work was a handful of new files, which reads as though the
+        whole library is about to be re-normalised. _get_pending() has always
+        filtered on finalized_at, so nothing was ever re-baked; the number was
+        simply describing a different set than the one that gets processed.
+        Same shape as the ingest planner reporting 0 with 20 files waiting:
+        a count is only useful if it counts what the stage will actually do.
+        """
+        canonicalized, pending = ctx.conn.execute(
+            """
+            SELECT COUNT(*),
+                   COUNT(*) FILTER (WHERE finalized_at IS NULL OR finalized_at = '')
+              FROM archive
+             WHERE status='CATALOGUED' AND canonicalized_at IS NOT NULL
+            """
+        ).fetchone()
+        logger.info(
+            "[finalize] %d file(s) awaiting finalize (%d already finalized, skipped)",
+            pending,
+            canonicalized - pending,
+        )
+
+    def _get_pending(self, ctx: RunContext, force: bool) -> list[dict]:
+        # mb_artist_name is added by mb_enrich, lazily -- a database that has
+        # never been enriched (every fresh vault before its first enrichment)
+        # has no such column, and selecting it would take the stage down.
+        # Same guard OrganizeStage uses; NULL is exactly "not enriched".
+        has_mb = "mb_artist_name" in {
+            r[1] for r in ctx.conn.execute("PRAGMA table_info(archive)").fetchall()
+        }
+        mb = "mb_artist_name" if has_mb else "NULL AS mb_artist_name"
+        if force:
+            rows = ctx.conn.execute(
+                f"""
+                SELECT id, file_path, artist, album, title, audio_hash, genre, {mb}
+                  FROM archive
+                 WHERE status='CATALOGUED' AND canonicalized_at IS NOT NULL
+                 ORDER BY file_path
+                """
+            ).fetchall()
+        else:
+            rows = ctx.conn.execute(
+                f"""
+                SELECT id, file_path, artist, album, title, audio_hash, genre, {mb}
+                  FROM archive
+                 WHERE status='CATALOGUED'
+                   AND canonicalized_at IS NOT NULL
+                   AND (finalized_at IS NULL OR finalized_at = '')
+                 ORDER BY file_path
+                """
+            ).fetchall()
+        # Never a file in ALAC_Library. Since 2026-09-25 a row points at its
+        # MASTER; ALAC_Library is an edition built from the masters. A forced
+        # run selects every canonicalized row, and without this it moved each
+        # library file into ALAC-Archival -- beside a real master as " (2)", or
+        # as a fake "master" holding -18 LUFS audio. Legacy rows still on a
+        # library file (the 389 of 2026-09-24) are moved into the new layout
+        # deliberately, by a migration, never by a re-finalize.
+        lib = ctx.alac_library
+        return [dict(r) for r in rows if not Path(r["file_path"]).is_relative_to(lib)]
+
+    def _batch_date(self, ctx: RunContext) -> str:
+        """
+        YYYY-MM-DD stamp for this batch's top-level ALAC-Library folder.
+
+        Grey's original request, and it earned its place: a dated folder
+        above everything lets a whole batch be copied to cold storage in
+        one shot. Overridable via ctx.set("finalize_batch_date", ...) for
+        tests -- without an override every file finalized in one run gets
+        the same stamp (computed once, not per-file, so a run spanning
+        midnight does not split one batch across two date folders).
+
+        OFF BY DEFAULT since 2026-09-09, and the reason is measurement
+        rather than taste. 1,493 of 2,773 catalogued artists sat in more
+        than one folder; 1,466 of those were split by this layer alone,
+        with a correct name in every copy. Elvis Presley was in four
+        folders. That defeats Grey's standing rule -- "when I look for a
+        song it will be first by artist, so group them into one folder" --
+        and no amount of name-fixing can touch it.
+
+        The layer is kept rather than deleted because its purpose is real:
+        Grey wants it back for the RC. Set MUSAEUS_BATCH_FOLDERS=1 and it
+        returns exactly as it was. What changed is only the default, so
+        the beta files flat and nothing has to be migrated later.
+        """
+        override = ctx.get("finalize_batch_date")
+        if override:
+            return str(override)
+        if not _batch_folders_enabled():
+            return ""
+        from datetime import datetime, timezone
+
+        return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+
+    def _filing(self, ctx: RunContext) -> dict[str, str]:
+        """MetaData/artist_filing.tsv, loaded once per run.
+
+        Cached on the context rather than the stage: a stage instance is
+        cheap and short-lived, and re-reading the file per track would make
+        a 16,000-file run do 16,000 opens for a map that cannot change
+        mid-run.
+        """
+        cached = ctx.get("_artist_filing")
+        if cached is None:
+            loaded: dict[str, str] = filing_load(ctx.config.meta_dir)
+            ctx.set("_artist_filing", loaded)
+            return loaded
+        return dict(cached)
+
+    def _target_path(self, ctx: RunContext, row: dict, source: Path) -> Path:
+        # One rule with OrganizeStage: organize.library_relpath(), which also
+        # honours MetaData/artist_filing.tsv. Finalize used to build its own
+        # path -- a folder from the filing map, the full credit in the file
+        # name, and a genre it never SELECTed -- so every track landed under
+        # "Unsorted/" and organize moved all of them on the same run (389 of
+        # 389 on 2026-09-24). Filed once, where organize would put it.
+        #
+        # The file name now uses the folder's artist, as organize, the old
+        # library and consolidate_artist_folders all do; the full credit is
+        # still in the tag.
+        rel = library_relpath(
+            row.get("artist"),
+            row.get("mb_artist_name"),
+            row.get("genre"),
+            row.get("album"),
+            row.get("title"),
+            source.suffix,
+            self._filing(ctx),
+        )
+        batch = self._batch_date(ctx)
+        # The MASTER, in ALAC-Archival (Grey 2026-08-18, confirmed 2026-09-25);
+        # the row points at it for good. The -18 LUFS ALAC_Library is an
+        # edition built from the masters, not a second file this row tracks.
+        root = ctx.config.alac_archive
+        base = root / batch if batch else root
+        candidate = base / rel
+
+        # Same self-is-not-a-collision guard organize.py needed: if the
+        # file is already exactly where it belongs (e.g. --force on an
+        # already-finalized row), unique_path()'s disk-existence check
+        # would otherwise see the file's OWN current location as "taken"
+        # and wrongly bump it to " (2)".
+        if candidate == source or _is_collision_name_for(source, candidate):
+            return source
+        return unique_path(candidate)
+
+    def _moved_by_earlier_runs(self, ctx: RunContext) -> dict[str, str]:
+        """relative source -> relative destination, from earlier Finalize journals.
+
+        A Finalize interrupted after moving a file but before saving its row
+        leaves the file at its destination and the row pointing at a source
+        that no longer exists (2026-09-25: Ctrl-C in Finalize, 9 George
+        Thorogood files). The journal of that run records the move. Read
+        once per run.
+        """
+        cached: dict[str, str] | None = getattr(self, "_journal_moves", None)
+        if cached is not None:
+            return cached
+        moves: dict[str, str] = {}
+        root = Path(ctx.config.runs_root) / "recovery"
+        for journal in sorted(root.glob("finalize_*/journal.jsonl")) if root.is_dir() else []:
+            try:
+                lines = journal.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                detail = entry.get("detail") or {}
+                if entry.get("operation_kind") == "move" and detail.get("moved_to"):
+                    moves[str(detail.get("relative_path"))] = str(detail["moved_to"])
+        self._journal_moves = moves
+        return moves
+
+    def _adopt_moved(
+        self, ctx: RunContext, row: dict, source: Path, hash_conn: sqlite3.Connection
+    ) -> Path | None:
+        """Point the row at a file an interrupted Finalize already moved, or None.
+
+        Only when the journal names the destination, the file is there, no
+        other row claims it, and its AUDIO is the row's own -- a path alone is
+        not identity. Anything less stays "missing on disk" for a human.
+        """
+        vault = Path(ctx.config.vault_root)
+        try:
+            rel = str(source.relative_to(vault))
+        except ValueError:
+            return None
+        dest_rel = self._moved_by_earlier_runs(ctx).get(rel)
+        if not dest_rel:
+            return None
+        dest = vault / dest_rel
+        if not dest.is_file() or not row.get("audio_hash"):
+            return None
+        taken = ctx.conn.execute(
+            "SELECT 1 FROM archive WHERE file_path = ? AND id != ?", (str(dest), row["id"])
+        ).fetchone()
+        if taken:
+            return None
+        found, _err = audio_hash_safe(dest)
+        if found != row["audio_hash"]:
+            return None
+        self._index_hash_before_finalizing(hash_conn, row, dest)
+        ctx.conn.execute(
+            "UPDATE archive SET file_path = ?, finalized_at = datetime('now') WHERE id = ?",
+            (str(dest), row["id"]),
+        )
+        ctx.log_event(
+            "FINALIZE_ADOPTED",
+            file_path=str(dest),
+            old_value=str(source),
+            new_value=str(dest),
+            stage=self.NAME,
+            note="moved by an interrupted Finalize (journal); same audio; row pointed at it",
+        )
+        ctx.conn.commit()
+        logger.info("[finalize] adopted %s (moved by an interrupted run)", dest.name)
+        return dest
+
+    def _index_hash_before_finalizing(
+        self, hash_conn: sqlite3.Connection, row: dict, target: Path
+    ) -> None:
+        """
+        Write + commit the hash-index entry, synchronously, before the
+        caller marks this row finalized_at. 2026-08-18 fix: previously
+        this write happened AFTER finalized_at was set (and only batched
+        into hash_conn.commit() every _COMMIT_EVERY rows, or skipped
+        outright if audio_hash was somehow falsy) -- a crash between the
+        two, or a genuinely missing audio_hash, meant "a row can be
+        marked finalized without this write completing," exactly the gap
+        MUSAEUS_OPEN_ITEMS.md tracked. Reversing the order means the
+        worst case is now the safe direction: an indexed hash for a row
+        not yet marked finalized (harmless -- record_finalized_hash is
+        INSERT OR IGNORE, so a retry next run is a no-op), never a
+        finalized row missing its index entry.
+
+        A missing audio_hash is logged loudly rather than silently
+        skipped -- Sentinel is expected to have hashed every row that
+        reaches Finalize, so this would itself be worth investigating,
+        not just a routine skip.
+        """
+        audio_hash = row.get("audio_hash")
+        if not audio_hash:
+            logger.warning(
+                "[finalize] %s has no audio_hash at finalize time -- "
+                "will NOT be in the cross-batch hash index",
+                target,
+            )
+            return
+        record_finalized_hash(hash_conn, audio_hash, str(target))
+        hash_conn.commit()
+
+    # ── run ───────────────────────────────────────────────────────────────────
+
+    #: Set MUSAEUS_FINALIZE_CHECKPOINT=0 to run without a recovery
+    #: boundary. Kept as an escape hatch, not a default: a finalize with no
+    #: journal is a finalize nobody can undo.
+    CHECKPOINT_ENV = "MUSAEUS_FINALIZE_CHECKPOINT"
+
+    def _open_boundary(self, ctx: RunContext, result: StageResult):
+        """Checkpoint the sources and open a journalled mutation boundary.
+
+        Scope is deliberate. The SOURCES (STAGING) are what finalize can
+        destroy, so those are checkpointed. The DESTINATION -- ALAC-Library,
+        468 GB against a 100 GB cap -- is not, and does not need to be:
+        finalize only adds to it, so undoing a finalize means moving the
+        file back out, which the journal alone supports.
+
+        source_root spans the vault because a move crosses from STAGING to
+        ALAC-Library and both ends must validate; the checkpoint stays
+        narrow regardless. The boundary looks each file up relative to the
+        checkpoint's own root (STAGING), so a staged file is checked against
+        its record before it moves; until 2026-10-07 it looked up the
+        vault-relative path, found nothing, and checked nothing (September
+        review, B). A passthrough source still in INBOX is outside the
+        checkpoint: its move is undone from the journal, never from a copy.
+
+        Returns None when disabled or when no checkpoint can be made, and
+        says which in the result -- a run with no boundary must announce
+        itself rather than look identical to one that has it.
+        """
+        if os.environ.get(self.CHECKPOINT_ENV, "1").strip().lower() in ("0", "false", "no"):
+            result.notes.append("recovery boundary: DISABLED by " + self.CHECKPOINT_ENV)
+            return None
+        try:
+            recovery_root = ctx.config.runs_root / "recovery"
+            recovery_root.mkdir(parents=True, exist_ok=True)
+            checkpoint = create_checkpoint(
+                ctx.config.staging,
+                recovery_root,
+                checkpoint_id=f"finalize_{ctx.run_id}",
+                capture_tags=True,
+            )
+            journal = OperationJournal(checkpoint.root / JOURNAL_FILENAME)
+            boundary = MutationBoundary(
+                checkpoint,
+                journal,
+                run_id=ctx.run_id,
+                source_root=ctx.config.vault_root,
+            )
+            coverage = checkpoint.coverage()
+            result.notes.append(
+                f"recovery boundary: checkpoint {checkpoint.checkpoint_id} "
+                f"({coverage['items']} item(s), journal at {journal.path})"
+            )
+            return boundary
+        except Exception as exc:
+            result.notes.append(f"recovery boundary: UNAVAILABLE ({exc})")
+            logger.warning("[finalize] no recovery boundary: %s", exc)
+            return None
+
+    def run(self, ctx: RunContext) -> StageResult:
+        result = self._make_result(dry_run=False)
+        force: bool = ctx.get("finalize_force", False)
+        pending = self._get_pending(ctx, force)
+
+        total = len(pending)
+        result.notes.append(f"files to finalize: {total}")
+        if not total:
+            result.notes.append("nothing to do — no canonicalized files pending finalize")
+            ctx.record_stage(result)
+            return result
+
+        hash_conn = open_hash_index(ctx.config.hash_index_path)
+        indexed = 0
+        boundary = self._open_boundary(ctx, result)
+        move_ops: dict[str, str] = {}  # source path -> journal operation id
+
+        try:
+            for i, row in enumerate(pending, 1):
+                source = Path(row["file_path"])
+                result.files_processed += 1
+
+                if not source.exists():
+                    adopted = self._adopt_moved(ctx, row, source, hash_conn)
+                    if adopted is not None:
+                        result.files_changed += 1
+                        indexed += 1
+                        continue
+                    result.files_errored += 1
+                    result.errors.append(f"{source}: file missing on disk")
+                    logger.warning("[finalize] missing: %s", source)
+                    continue
+
+                target = self._target_path(ctx, row, source)
+
+                if target == source:
+                    try:
+                        self._index_hash_before_finalizing(hash_conn, row, target)
+                    except sqlite3.Error as exc:
+                        result.files_errored += 1
+                        result.errors.append(f"{source.name}: hash-index write failed: {exc}")
+                        logger.warning("[finalize] %s: hash-index write failed: %s", source, exc)
+                        continue
+                    result.files_skipped += 1
+                    if row.get("audio_hash"):
+                        indexed += 1
+                    ctx.conn.execute(
+                        "UPDATE archive SET finalized_at = datetime('now') WHERE id = ?",
+                        (row["id"],),
+                    )
+                    continue
+
+                try:
+                    if boundary is not None:
+                        # Same copy -> verify -> atomic rename this stage has
+                        # always done; the boundary adopted it. The gain is
+                        # the journal: without it a finalize is unrecoverable
+                        # once the source is gone. release_source is deferred
+                        # until the archive row lands, because that UPDATE can
+                        # still hit a UNIQUE collision.
+                        move_ops[str(source)] = boundary.move(source, target, release_source=False)
+                    else:
+                        _copy_then_verify_then_swap(source, target)
+                except (
+                    FinalizeError,
+                    OSError,
+                    UnmanagedPathError,
+                    PreconditionError,
+                    CollisionError,
+                ) as exc:
+                    # The boundary's refusals are per-ROW facts, not stage
+                    # facts. Learned on 2026-08-25: exactly one of 10,873 rows
+                    # sits outside the vault (a stray Projects/<Artist>/INBOX/
+                    # directory), the boundary correctly refused to move what
+                    # it could not restore, UnmanagedPathError was in neither
+                    # arm of this tuple, and the escape took the whole stage
+                    # down -- four good files left unfinalized because of one
+                    # bad one. The refusal was right; letting it escape wasn't.
+                    #
+                    # RollbackFailedError is deliberately NOT caught. It cannot
+                    # arise from move(), and if it ever did it would mean the
+                    # world is inconsistent -- that must stop the stage, not
+                    # scroll past as one row's error.
+                    result.files_errored += 1
+                    result.errors.append(f"{source.name}: {exc}")
+                    logger.warning("[finalize] %s: %s", source, exc)
+                    continue
+
+                # Hash-index write happens BEFORE the row is marked
+                # finalized, not after (2026-08-18 fix -- see
+                # _index_hash_before_finalizing's docstring): a row must
+                # never be able to reach finalized_at without its
+                # cross-batch hash entry already durably committed. A
+                # write failure here is a per-row error (file already
+                # copied, but not yet finalized -- safe to retry next
+                # run), not a whole-stage crash.
+                try:
+                    self._index_hash_before_finalizing(hash_conn, row, target)
+                except sqlite3.Error as exc:
+                    result.files_errored += 1
+                    result.errors.append(f"{source.name}: hash-index write failed: {exc}")
+                    logger.warning("[finalize] %s: hash-index write failed: %s", source, exc)
+                    continue
+                if row.get("audio_hash"):
+                    indexed += 1
+
+                # organize.py's _apply_rename pattern: disk change (the
+                # copy into ALAC-Library) already happened above; the DB
+                # write is the only thing that can still fail (a UNIQUE
+                # collision on archive.file_path). If it does, delete the
+                # just-created ALAC-Library copy and leave source
+                # completely untouched, instead of losing track of it.
+                try:
+                    ctx.conn.execute(
+                        """
+                        UPDATE archive
+                           SET file_path = ?, finalized_at = datetime('now')
+                         WHERE id = ?
+                        """,
+                        (str(target), row["id"]),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    logger.error(
+                        "[finalize] DB collision for row %s -> %s (%s); "
+                        "reverting ALAC-Library copy, source untouched",
+                        row["id"],
+                        target,
+                        exc,
+                    )
+                    move_ops.pop(str(source), None)
+                    try:
+                        target.unlink(missing_ok=True)
+                    except OSError as revert_exc:
+                        logger.error(
+                            "[finalize] COULD NOT REVERT %s -- disk/DB now out of "
+                            "sync, needs manual fix: %s",
+                            target,
+                            revert_exc,
+                        )
+                    result.files_errored += 1
+                    result.errors.append(f"{source.name}: DB collision on {target}: {exc}")
+                    ctx.log_event(
+                        "FINALIZE_DB_COLLISION",
+                        file_path=str(target),
+                        old_value=str(source),
+                        new_value=None,
+                        stage=self.NAME,
+                        note=str(exc),
+                    )
+                    continue
+
+                ctx.log_event(
+                    "FINALIZE_MOVE",
+                    file_path=str(target),
+                    old_value=str(source),
+                    new_value=str(target),
+                    stage=self.NAME,
+                )
+
+                # Only now, with the DB row safely pointing at the
+                # ALAC-Library copy, is it safe to remove the source --
+                # STAGING for a converted/transcoded row, or INBOX for a
+                # passthrough row. Either way this is what keeps STAGING
+                # trending back to empty.
+                try:
+                    op = move_ops.pop(str(source), None)
+                    if boundary is not None and op is not None:
+                        # Journals that the source went, so recovery can tell
+                        # "destination exists, source gone" from "destination
+                        # exists, source still there" -- different situations
+                        # that must not be inferred from one record.
+                        boundary.release_source(op, source)
+                    else:
+                        source.unlink()
+                except OSError as exc:
+                    logger.warning(
+                        "[finalize] %s finalized to %s but source could not be removed: %s",
+                        source,
+                        target,
+                        exc,
+                    )
+                    result.notes.append(f"  WARNING: {source} not removed after finalize: {exc}")
+
+                result.files_changed += 1
+                logger.info("[finalize] %s -> %s", source, target)
+
+                if i % _COMMIT_EVERY == 0:
+                    ctx.conn.commit()
+                    hash_conn.commit()
+                    logger.info("finalize: checkpoint %d/%d", i, total)
+
+            ctx.conn.commit()
+            hash_conn.commit()
+        finally:
+            hash_conn.close()
+
+        removed_dirs = _cleanup_empty_dirs(ctx.inbox)
+
+        result.notes.append(f"  moved: {result.files_changed}")
+        result.notes.append(f"  hash-indexed: {indexed}")
+        if removed_dirs:
+            result.notes.append(f"  removed {removed_dirs} now-empty INBOX folder(s)")
+        if result.files_errored:
+            result.notes.append(f"  errors: {result.files_errored}")
+            result.success = False
+
+        ctx.record_stage(result)
+        return result
+
+    # ── dry_run ───────────────────────────────────────────────────────────────
+
+    def dry_run(self, ctx: RunContext) -> StageResult:
+        result = self._make_result(dry_run=True)
+        force: bool = ctx.get("finalize_force", False)
+        pending = self._get_pending(ctx, force)
+        total = len(pending)
+
+        result.files_processed = total
+        result.files_changed = total
+        result.notes.append(f"[DRY RUN] would finalize {total} file(s)")
+
+        shown = 0
+        for row in pending:
+            source = Path(row["file_path"])
+            if not source.exists():
+                continue
+            target = self._target_path(ctx, row, source)
+            if shown < 10:
+                result.notes.append(f"  {source.name} -> {target}")
+                shown += 1
+        if total > shown:
+            result.notes.append(f"  {elision(total - shown)}")
+
+        result.notes.append("  no files will be written, no DB changes")
+
+        ctx.record_stage(result)
+        return result
