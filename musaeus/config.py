@@ -1,0 +1,362 @@
+#!/usr/bin/env python3
+"""
+MUSAEUS — Configuration
+All paths and API keys resolved from env vars / config files.
+Zero hardcoded paths. Move the vault → change one env var.
+
+Loading priority (later wins):
+  1. ~/.config/musaeus/settings.env
+  2. ~/.config/musaeus/credentials.env
+  3. {MUSAEUS_ROOT}/.env
+  4. Process environment variables (always highest priority)
+
+Key env vars:
+  MUSAEUS_VAULT_ROOT   — root of the music vault (required)
+  MUSAEUS_DB_PATH      — override DB location (default: VAULT_ROOT/musaeus.db)
+  MUSAEUS_INBOX        — where new files arrive (default: VAULT_ROOT/INBOX)
+  MUSAEUS_RUNS_ROOT    — where run logs/reports go (default: VAULT_ROOT/RUNS)
+  MUSAEUS_STAGING      — staging area before vault (default: VAULT_ROOT/STAGING)
+  MUSAEUS_QUARANTINE   — quarantine for bad files (default: VAULT_ROOT/QUARANTINE)
+  MUSAEUS_META_DIR     — canon CSVs location (default: VAULT_ROOT/MetaData)
+  MUSAEUS_ALAC_LIBRARY — canonical finalized library
+                         (default: VAULT_ROOT/Libraries/ALAC_Library)
+  MUSAEUS_ALAC_ARCHIVE — the masters, never baked
+                         (default: VAULT_ROOT/Libraries/ALAC-Archival)
+
+Mind the two spellings; they are not a typo and they are not interchangeable.
+The library directory is **ALAC_Library** (underscore) and the masters
+directory is **ALAC-Archival** (hyphen), which is what exists on disk. Prose
+in this codebase — including the paragraph below — calls the *tier*
+"ALAC-Library", and that name matches no directory. When the two disagree,
+the assignments in from_env() are authoritative; this docstring previously
+claimed a default of VAULT_ROOT/ALAC-Library, which was wrong about both the
+separator and the parent directory.
+
+ALAC-Library is the canonical, finalized output of the pipeline — distinct
+from INBOX (mutable working area). Physical presence of a file in
+ALAC-Library is meant to be a trustworthy, DB-independent signal that
+processing is actually complete for that file, not just that a DB row
+claims so. musaeus.db itself is treated as transient per-batch working
+state and is expected to be wiped after each batch finalizes; anything
+that must survive across batches (the audio-hash index used for
+cross-batch dedup, the TuneMyMusic.csv sub-lossless log, DB snapshots)
+lives under ALAC-Library itself, not in the wipeable vault DB.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+_USER_CONFIG_DIR = Path.home() / ".config" / "musaeus"
+_SETTINGS_FILE = _USER_CONFIG_DIR / "settings.env"
+_CREDENTIALS_FILE = _USER_CONFIG_DIR / "credentials.env"
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    """Parse a simple KEY=VALUE env file. Strips quotes. Ignores comments.
+
+    Read as utf-8-sig, not utf-8. An editor that writes a UTF-8 byte-order
+    mark puts it before the FIRST key, so that key parses as
+    '\ufeffACOUSTICID_API_KEY' and never matches the name anything looks up.
+    The credential is present, readable, and correct -- and silently absent as
+    far as the pipeline is concerned, with `console` reporting "not set".
+    Cost 2026-09-21: the AcousticID key had been invisible for as long as the
+    file had a BOM. Only the first key in a file is affected, which is why it
+    looks like one broken credential rather than a parsing bug.
+    """
+    result: dict[str, str] = {}
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                result[key.strip()] = val.strip().strip("\"'")
+    except OSError:
+        pass
+    return result
+
+
+def _load_env() -> None:
+    """Load config files into os.environ (env vars always take precedence)."""
+    for fpath in (_SETTINGS_FILE, _CREDENTIALS_FILE):
+        for k, v in _parse_env_file(fpath).items():
+            os.environ.setdefault(k, v)
+    # Project-local .env (beside musaeus package or wherever MUSAEUS_ROOT points)
+    project_env = Path(__file__).resolve().parent.parent / ".env"
+    for k, v in _parse_env_file(project_env).items():
+        os.environ.setdefault(k, v)
+
+
+_load_env()
+
+
+@dataclass
+class MusicConfig:
+    """All resolved paths for a Musaeus run. No hardcodes."""
+
+    # Core vault
+    vault_root: Path
+    inbox: Path
+    staging: Path
+    quarantine: Path
+    runs_root: Path
+    meta_dir: Path
+
+    # Canonical finalized library — see module docstring
+    alac_library: Path
+
+    # Database
+    db_path: Path
+    libraries: Path = None  # type: ignore[assignment]
+    alac_archive: Path = None  # type: ignore[assignment]
+    car_library: Path = None  # type: ignore[assignment]
+    iphone_library: Path = None  # type: ignore[assignment]
+    playlists: Path = None  # type: ignore[assignment]
+
+    # Curator export target (exports.curator.root). None means "not
+    # configured", and Curator refuses rather than inventing a path.
+    #
+    # This field did not exist. CuratorStage._get_export_root has always
+    # ended in `getattr(ctx.config, "car_export_root", None)`, so its
+    # "fall back to config" branch could never return anything: the
+    # attribute was never declared here, and getattr's default hid that
+    # completely. Anyone who set a configuration value watched it be
+    # ignored in silence, and --export-root was in practice mandatory on
+    # every invocation.
+    curator_export_root: Path | None = None
+
+    # API keys (may be None if not configured)
+    lastfm_api_key: str | None = field(default=None, repr=False)
+    acousticid_api_key: str | None = field(default=None, repr=False)
+    discogs_consumer_key: str | None = field(default=None, repr=False)
+    discogs_consumer_secret: str | None = field(default=None, repr=False)
+
+    @classmethod
+    def from_env(cls) -> MusicConfig:
+        """Build MusicConfig from environment. Raises ValueError if vault_root missing."""
+        vault_str = os.environ.get("MUSAEUS_VAULT_ROOT", "")
+        if not vault_str:
+            raise ValueError(
+                "MUSAEUS_VAULT_ROOT is not set.\n"
+                "Set it in ~/.config/musaeus/settings.env or export it:\n"
+                "  export MUSAEUS_VAULT_ROOT=/path/to/your/vault"
+            )
+        vault_root = Path(vault_str).resolve()
+
+        def _p(env_key: str, default: Path) -> Path:
+            val = os.environ.get(env_key, "")
+            return Path(val).resolve() if val else default
+
+        db_path = _p("MUSAEUS_DB_PATH", vault_root / "musaeus.db")
+        inbox = _p("MUSAEUS_INBOX", vault_root / "INBOX")
+        staging = _p("MUSAEUS_STAGING", vault_root / "STAGING")
+        quarantine = _p("MUSAEUS_QUARANTINE", vault_root / "QUARANTINE")
+        runs_root = _p("MUSAEUS_RUNS_ROOT", vault_root / "RUNS")
+        meta_dir = _p("MUSAEUS_META_DIR", vault_root / "MetaData")
+        # The four library trees live under one parent as of 2026-08-31 (Grey's
+        # call) so the vault root lists as workflow folders + one Libraries/.
+        # Each keeps its own env override, so an existing deployment that sets
+        # MUSAEUS_ALAC_LIBRARY is unaffected by the move.
+        libraries = _p("MUSAEUS_LIBRARIES", vault_root / "Libraries")
+        alac_library = _p("MUSAEUS_ALAC_LIBRARY", libraries / "ALAC_Library")
+        alac_archive = _p("MUSAEUS_ALAC_ARCHIVE", libraries / "ALAC-Archival")
+        car_library = _p("MUSAEUS_CAR_LIBRARY", libraries / "CAR_Library")
+        iphone_library = _p("MUSAEUS_IPHONE_LIBRARY", libraries / "iPHONE_Library")
+        playlists = _p("MUSAEUS_PLAYLISTS", libraries / "Playlists")
+
+        curator_export_root_raw = os.environ.get("MUSAEUS_CURATOR_EXPORT_ROOT", "")
+
+        return cls(
+            vault_root=vault_root,
+            inbox=inbox,
+            staging=staging,
+            quarantine=quarantine,
+            runs_root=runs_root,
+            meta_dir=meta_dir,
+            libraries=libraries,
+            alac_library=alac_library,
+            alac_archive=alac_archive,
+            car_library=car_library,
+            iphone_library=iphone_library,
+            playlists=playlists,
+            db_path=db_path,
+            curator_export_root=(
+                Path(curator_export_root_raw).expanduser() if curator_export_root_raw else None
+            ),
+            lastfm_api_key=os.environ.get("LASTFM_API_KEY") or None,
+            acousticid_api_key=os.environ.get("ACOUSTICID_API_KEY") or None,
+            discogs_consumer_key=os.environ.get("DISCOGS_CONSUMER_KEY") or None,
+            discogs_consumer_secret=os.environ.get("DISCOGS_CONSUMER_SECRET") or None,
+        )
+
+    def __post_init__(self) -> None:
+        # from_env() fills these, but Config is also constructed directly
+        # (tests, tooling). Derive the same layout from vault_root rather
+        # than leaving None for a caller to trip over at use time.
+        if self.libraries is None:
+            self.libraries = self.vault_root / "Libraries"
+        if self.alac_archive is None:
+            self.alac_archive = self.libraries / "ALAC-Archival"
+        if self.car_library is None:
+            self.car_library = self.libraries / "CAR_Library"
+        if self.iphone_library is None:
+            self.iphone_library = self.libraries / "iPHONE_Library"
+        if self.playlists is None:
+            self.playlists = self.libraries / "Playlists"
+
+    # ── ALAC-Library derived paths ───────────────────────────────────────────
+    # Everything here lives under alac_archive itself (not the vault DB) so
+    # it survives a DB wipe between batches.
+    #
+    # Moved from alac_library to alac_archive 2026-08-31 with the masters.
+    # All three hold or describe MASTER files: two are review folders full
+    # of masters set aside rather than deleted, and the third is the
+    # re-sourcing list for masters that could not be archived losslessly.
+    # An edition is derived and disposable -- parking the only copy of a
+    # removed master inside one would lose it on the next rebuild.
+
+    @property
+    def dupes_review_dir(self) -> Path:
+        """Losing duplicates land here, never deleted. ORPHEUS
+        LESSER_DUPES_MOVED_FOR_REVIEW convention.
+
+        Lives OUTSIDE Libraries/: a review queue is work awaiting Grey's
+        judgement and cannot be rebuilt from Curated.RAW.Files, so a wipe
+        of Libraries/ must not be able to reach it."""
+        return self.vault_root / "REVIEW" / "DUPES_MOVED"
+
+    @property
+    def tribute_review_dir(self) -> Path:
+        """Quarantined tribute/karaoke/meditation tracks land here, never
+        deleted -- same reversible convention as dupes_review_dir. Reuses
+        the exact folder name the 2026-08-12 one-off tribute-removal
+        script already used (TRIBUTE_REMOVED_FOR_REVIEW), for consistency
+        with that precedent rather than introducing a second name for the
+        same concept."""
+        return self.vault_root / "REVIEW" / "TRIBUTE_REMOVED"
+
+    @property
+    def hash_index_path(self) -> Path:
+        """Persistent audio-hash index of everything already finalized into
+        ALAC-Library, used for cross-batch dedup once musaeus.db has been
+        wiped. A plain SQLite file, separate from the transient vault DB.
+
+        Lives OUTSIDE alac_library as of 2026-08-21 -- see db_history_dir
+        for why."""
+        return self.db_history_dir / "hash_index.db"
+
+    @property
+    def mb_cache_path(self) -> Path:
+        """Persistent MusicBrainz lookup cache.
+
+        Same reasoning as hash_index_path: musaeus.db is transient
+        per-batch state, so a cache kept there is thrown away between
+        batches and every batch re-asks MusicBrainz about the same
+        artists. At ~3.9 tracks per artist that is most of a run's wall
+        clock -- an observed 10-file run spent its time on HTTP 503s and
+        repeated 5-second rate-limit backoffs, not on ffmpeg.
+
+        Answers are cached across runs so a given artist is asked once,
+        not once per batch."""
+        return self.db_history_dir / "mb_cache.db"
+
+    @property
+    def db_history_dir(self) -> Path:
+        """Where a musaeus.db snapshot is copied before it's wiped at the
+        end of a completed batch, and where the hash ledger lives.
+
+        Moved out of ALAC-Library/_history/ on 2026-08-21 after a
+        third-party duplicate-finder (PerfectTunes), pointed at the music
+        library, emptied it: the snapshots are ~464 MB near-identical
+        SQLite files, which is exactly what such a tool is built to find
+        and delete. It took the hash ledger with them, and the next audit
+        failed on 18,405 rows.
+
+        Nothing was lost that time -- the ledger rebuilds from the archive
+        table -- but a directory of backups sitting inside the directory
+        being scanned is a standing invitation. Anything that is not audio
+        now lives beside the library rather than within it."""
+        return self.vault_root / "_db_backups"
+
+    @property
+    def tunemymusic_csv_path(self) -> Path:
+        """The wanted list: tracks to find or replace, in the Title,Artist,Album
+        form TuneMyMusic imports. Appended across batches by canonicalize,
+        sentinel and bpm, and by hand.
+
+        It lives in MetaData, NOT in Libraries/. It used to sit in
+        Libraries/ALAC-Archival "so it survives a DB wipe" -- and on
+        2026-09-18 the wipe was of Libraries/ itself, and it went with it;
+        305 rows came back off a NUC backup by luck, not design. By
+        2026-09-23 three copies had drifted apart (363, 520 and 60 rows,
+        each holding songs the others did not). Libraries/ is for what
+        MUSAEUS can rebuild; this list is Grey's, and cannot be rebuilt.
+        tests/test_tunemymusic_has_one_home.py keeps it that way."""
+        return self.meta_dir / "TuneMyMusic.csv"
+
+    def ensure_dirs(self) -> None:
+        """Create all required directories if they don't exist."""
+        for d in (
+            self.vault_root,
+            self.inbox,
+            self.staging,
+            self.quarantine,
+            self.runs_root,
+            self.meta_dir,
+            self.alac_library,
+            self.dupes_review_dir,
+            self.tribute_review_dir,
+            self.db_history_dir,
+            self.db_path.parent,
+        ):
+            d.mkdir(parents=True, exist_ok=True)
+
+    def describe(self) -> str:
+        """Human-readable summary for console display."""
+        lines = [
+            "  MUSAEUS Configuration",
+            f"  Vault      : {self.vault_root}",
+            f"  Inbox      : {self.inbox}",
+            f"  Staging    : {self.staging}",
+            f"  Quarantine : {self.quarantine}",
+            f"  Runs       : {self.runs_root}",
+            f"  MetaData   : {self.meta_dir}",
+            f"  ALAC-Library: {self.alac_library}",
+            f"  DB         : {self.db_path}",
+            f"  Last.fm    : {'✓ set' if self.lastfm_api_key else '✗ not set'}",
+            f"  AcousticID : {'✓ set' if self.acousticid_api_key else '✗ not set'}",
+            f"  Discogs    : {'✓ set' if (self.discogs_consumer_key and self.discogs_consumer_secret) else '✗ not set'}",
+        ]
+        return "\n".join(lines)
+
+
+# Convenience: load once at import time for scripts that just want paths
+_cached_config: MusicConfig | None = None
+
+
+def get_config() -> MusicConfig:
+    """Return the singleton MusicConfig (loaded once, cached)."""
+    global _cached_config
+    if _cached_config is None:
+        _cached_config = MusicConfig.from_env()
+    return _cached_config
+
+
+# Audio extensions recognised by Musaeus
+AUDIO_EXTENSIONS: frozenset[str] = frozenset(
+    {".mp3", ".flac", ".m4a", ".alac", ".aac", ".wav", ".aiff", ".aif", ".ogg"}
+)
+LOSSLESS_EXTENSIONS: frozenset[str] = frozenset({".flac", ".alac", ".wav", ".aiff", ".aif"})
+LOSSY_EXTENSIONS: frozenset[str] = frozenset({".mp3", ".aac", ".m4a", ".ogg"})
+
+# Real, codec-based (not extension-based) lossless check -- the sets above
+# are known-broken for this purpose: .m4a can hold either ALAC (lossless)
+# or AAC (lossy), so an extension-only check misclassifies the entire
+# ALAC-in-.m4a case. Use this against archive.codec (Scholar's real
+# ffprobe codec_name) wherever "is this file actually lossless" matters,
+# e.g. picking a keeper between duplicate candidates of different codecs.
+LOSSLESS_CODECS: frozenset[str] = frozenset({"flac", "alac", "pcm_s16le", "pcm_s24le", "pcm_s32le"})
