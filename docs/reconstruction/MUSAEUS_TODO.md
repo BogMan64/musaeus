@@ -10,7 +10,7 @@ bug found this week. One file now. MUSAEUS_OPEN_ITEMS.md is archived.
 
 Counts in the body below were verified against the live vault on
 **2026-09-07** and have NOT been re-verified since. Where a number matters,
-read "State on 2026-10-03" immediately below — it supersedes them,
+read "State on 2026-10-07" immediately below — it supersedes them,
 and every count in the older "State on …" sections below it. (The file name
 still says 2026-09-23 so links to it keep working; the 09-23 copy is kept in
 `~/Desktop/MUSAEUS_HANDOVER_2026-10-03/doc_backups/`.)
@@ -31,6 +31,64 @@ as still correct.
 line is: a TODO item has a cost if left undone — something is unprotected or
 a check is lying. A wishlist item has none; the library is correct without
 it. Given limited time, take the TODO.
+
+---
+
+## State on 2026-10-07 — library settled, backups and bit-rot repair automatic; v1 nearly done
+
+**Measured against the live vault on 2026-10-07, morning.** It supersedes every count below it. Working notes: `~/Desktop/MUSAEUS_HANDOVER_2026-10-03/HANDOVER.md`, sections 40–45 and after.
+
+| | |
+|---|---|
+| CATALOGUED (one row per master) | **8,898**; no other statuses (review folder empty) |
+| distinct artists | 1,592 |
+| CATALOGUED with no album name | 266 (each with its own picture; Grey: leave) |
+| CATALOGUED with no genre | 5 |
+| CATALOGUED lossy masters | 258 (all on the wanted list) |
+| bit-rot baselines | **8,905** (2026-10-06; 7 since deleted read as "missing" until the delete tool drops them) |
+| `TuneMyMusic.csv` (wanted list) | 635 songs, brackets removed, duplicates (classical by catalogue number) removed |
+
+| edition | files |
+|---|---|
+| `ALAC-Archival` (masters) | 8,898 |
+| `ALAC_Library` (Lossless) | 8,640 (lossy masters left out) |
+| `CAR_Library` | 8,898 |
+| `iPHONE_Library` | 8,896 (Muddy Waters "You Need Love", Smokey Robinson "Going To A Go Go": flagged as encoder clicks at every width; Grey: leave) |
+
+**Backups:** dated copies `2.-MUSAEUS_ALAC_Archive_20261006` on NUC8TB and USB2 (0 differences; USB2 has `BACKUP_MANIFEST.sha256` for `verify_backup.py`). The nightly `backup-tiers/nuc_backup.sh` covers /home and /etc only (music excluded); its retention is now daily 14 / weekly 6 / monthly 1 / yearly 1.
+
+### What happened, 4 to 7 October (PRs #55–#77)
+
+- **Duplicates:** dupeGuru's reports showed three gaps in the finder (credits with a collaborator, same-take live copies, "at the" read as live) — fixed (#66). The resolver now ranks by Grey's keep rule (#67): format, an original over an old −18 LUFS copy, studio then remaster then live, sample rate, the longer copy (≥ 2 s), the copy in place. Grey's 53-group sheet applied; the review folder deleted (607 + later batches); 3 better review copies swapped in.
+- **Names:** the 36-character cut in the USB1 source tags found and 14 titles completed; artist names repaired (Kool, Little Feat, Sam & Dave, Ray Parker Jr, The Jacksons, Del-Vikings, Spinners, Payolas …) with `scripts/consolidate_artist_folders.py` — `artist_canon.tsv` alone only acts in Act 1. 51 album folders split by capital letters made one; one genre per artist (Stevie Ray Vaughan: Blues).
+- **Covers:** 223 songs wore other albums' pictures (one on 159 songs by 108 artists): 182 arrived that way, 41 came from AlbumArtStage reusing a flat inbox folder's cover.jpg. All replaced (album cover, then song search, then a picture of the artist); 61 compilation pictures on songs with no album replaced by artist photos.
+- **Loudness:** every master's `replaygain_track_gain` held the −23 LUFS gain (5 dB too quiet in ReplayGain players) — fixed in the writer and on all 8,905 masters (#73); the edition ledger's measurements now also live in each master (`MUSAEUS_LOUDNESS_MEASURED`), never in the copies.
+- **Damaged Faltermeyer "Axel F" masters** (header 181.7 s, audio 109.8 s) found by the measured length check (#69) and deleted; the good ALAC copy stays.
+
+### Rules now in the program (so they hold for new music)
+
+- One genre per artist: a credit takes its lead artist's MasterLaw ruling (#71).
+- One album spelling per artist: the one already filed, else the official style (#71).
+- A folder's cover.jpg only for a one-album folder; `musaeus doctor` warns on a picture shared by 4+ artists (#72).
+- No album cover found → a picture of the artist: Wikipedia music page first, then Deezer's exact name with the most fans (#74).
+- A title cut short at the source is finished from its MusicBrainz recording (TitleCompleteStage, enrichment, #75).
+- `musaeus bitrot` repairs rot from the newest backup copy whose audio still matches (#76); monthly user timer `musaeus-bitrot.timer` (the 15th, 04:00).
+- The masters back themselves up to NUC8TB monthly, checked, keeping the newest two (#77; `musaeus-music-backup.timer`, the 1st, 03:30).
+- USB stick: `transfer_to_usb.py --no-format --sync` (#68), dry run first.
+
+### Open, in the order I'd take them
+
+1. The delete tool should drop the deleted masters' bit-rot baselines (else the monthly check lists them as missing).
+2. Ultra review of the whole program (Grey, this week), then its fixes.
+3. Stick sync when the stick is back from the car (dry run first).
+4. One enrichment pass (TitleCompleteStage asks ~8,300 songs once, ~2.5 h unattended).
+5. Confirm the iPhone holds the iPhone edition.
+
+After these, MUSAEUS is upkeep: new music through the acts, the monthly bit-rot check and music backup, the nightly home backup.
+
+### The lesson, again
+
+Two things that must agree, quietly ceasing to: the ReplayGain tag and the R128 tag written from one number; `artist_canon.tsv` and the songs already filed; a folder's cover.jpg and the songs in the folder; the network gate refusing and a lookup reporting "no cover". Each was found by checking the files, not the report.
 
 ---
 
