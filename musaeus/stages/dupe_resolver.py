@@ -511,16 +511,22 @@ class DupeResolverStage(BaseStage):
         treated as its own duplicate (scope doc section 4.17). Sampling a
         few is enough to catch a wholesale failure.
         """
-        rows = ctx.conn.execute(
-            "SELECT file_path FROM archive WHERE status = ? ORDER BY last_seen DESC LIMIT 5",
-            ("DUPE_REVIEW",),
+        # This run's own moves, not whichever rows happen to be in review: a
+        # check that sampled nothing used to answer "nothing wrong" (R4).
+        moves = ctx.conn.execute(
+            "SELECT new_value FROM events WHERE run_id = ? AND event_type = 'DUPE_MOVED_FOR_REVIEW' "
+            "ORDER BY id DESC LIMIT 5",
+            (ctx.run_id,),
         ).fetchall()
-        missing = [r["file_path"] for r in rows if not Path(r["file_path"]).exists()]
-        if not rows or not missing:
+        # Every real move writes this event, and a change here IS a move.
+        if result.files_changed and not moves and not result.dry_run:
+            return [f"reported {result.files_changed} move(s) but recorded none in this run"]
+        missing = [r["new_value"] for r in moves if not Path(r["new_value"]).exists()]
+        if not missing:
             return []
         return [
             f"reported {result.files_changed} change(s) but {len(missing)} of "
-            f"{len(rows)} sampled DUPE_REVIEW rows name a file that is not on disk"
+            f"{len(moves)} files this run moved for review are not on disk"
         ]
 
     @classmethod
@@ -693,13 +699,20 @@ class DupeResolverStage(BaseStage):
                 # and equally not missing. Measured 2026-08-25: five such
                 # rows failed the whole stage (rc=1) when every one of the
                 # files was safely on disk under a new path.
-                relocated = ctx.conn.execute(
-                    "SELECT file_path FROM archive WHERE file_path != ? AND rowid IN "
-                    "(SELECT rowid FROM archive WHERE file_path = ?) LIMIT 1",
-                    (source_key, source_key),
-                ).fetchone()
+                # By its recording, not by path: the path is exactly what
+                # changed. The old query compared a path with itself and could
+                # never match, and its result was never used (R5, 2026-09-23).
                 moved_elsewhere = None
-                if relocated is None:
+                recorded = loser.get("recorded_hash") or loser.get("current_hash")
+                if recorded:
+                    for r in ctx.conn.execute(
+                        "SELECT file_path FROM archive WHERE audio_hash = ? AND file_path != ?",
+                        (recorded, source_key),
+                    ):
+                        if Path(r["file_path"]).exists():
+                            moved_elsewhere = r["file_path"]
+                            break
+                if moved_elsewhere is None:
                     ev = ctx.conn.execute(
                         "SELECT file_path FROM events WHERE old_value = ? "
                         "AND file_path IS NOT NULL ORDER BY id DESC LIMIT 1",
@@ -977,6 +990,23 @@ class DupeResolverStage(BaseStage):
             _share_loudness(members)
             _rank(members)
             keeper, losers = _pick_keeper_and_losers(members)
+            # An incoming CROSS_BATCH duplicate always moves, also when its
+            # group was merged with a NEAR group: the library already holds
+            # it. Ranked with the rest it could be kept and an unrelated song
+            # moved instead (R1 of the 2026-09-23 review, still true 2026-10-07).
+            qs = ",".join("?" * len(component))
+            cross = {
+                r[0]
+                for r in ctx.conn.execute(
+                    f"SELECT file_path FROM duplicates WHERE duplicate_type = 'CROSS_BATCH' "
+                    f"AND group_id IN ({qs})",
+                    list(component),
+                )
+            }
+            if cross and len(members) > 1:
+                rest = [m for m in members if m["file_path"] not in cross]
+                keeper = rest[0] if rest else None
+                losers = [m for m in members if m is not keeper]
             self._move_losers(
                 ctx,
                 result,
