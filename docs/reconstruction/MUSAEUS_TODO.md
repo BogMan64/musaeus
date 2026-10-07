@@ -83,24 +83,24 @@ Each was re-run against the code of 2026-10-07 with the triage's own reproductio
 
 | # | Finding | 2026-10-07 |
 |---|---|---|
-| R1 | A CROSS_BATCH group merged with a NEAR group: the incoming duplicate is kept and another song moves | **open** |
+| R1 | A CROSS_BATCH group merged with a NEAR group: the incoming duplicate is kept and another song moves | fixed (#81) |
 | R2 | Organize and Finalize name paths differently | fixed (agree on all four cases) |
 | R3 | Merged groups update only the first group's rows | fixed |
-| R4 | `DupeResolverStage.verify_effect` returns "nothing wrong" when it sampled nothing | **open** |
-| R5 | The resolver's "relocated" query can never match (`dupe_resolver.py`, `rowid IN`) | **open** |
-| A | `musaeus/safety`: tag-captured files can never pass the boundary's precondition (`tagged:` identity vs SHA-256) | **open**, hidden by B |
-| B | Finalize and canonicalize root the boundary at the vault, the checkpoint at STAGING: the checkpoint is never consulted; rollback can lose files | **open, live** |
-| F1 | `_restore_tags` crashes on MP3 and FLAC | **open**, latent |
-| F2 | A quarantine journals no result digest, so rollback overwrites newer content | **open**, latent |
-| F3 | `write_bytes` treats a vanished checkpointed file as new | **open**, low |
-| F4 | Rollback catches only `CollisionError`; any other error aborts the rest | **open**, latent |
+| R4 | `DupeResolverStage.verify_effect` returns "nothing wrong" when it sampled nothing | fixed (#81) |
+| R5 | The resolver's "relocated" query can never match (`dupe_resolver.py`, `rowid IN`) | fixed (#81) |
+| A | `musaeus/safety`: tag-captured files can never pass the boundary's precondition (`tagged:` identity vs SHA-256) | fixed (safety PR) |
+| B | Finalize and canonicalize root the boundary at the vault, the checkpoint at STAGING: the checkpoint is never consulted; rollback can lose files | fixed (safety PR); also: undoing a move whose copy was removed no longer quarantines its origin |
+| F1 | `_restore_tags` crashes on MP3 and FLAC | fixed: FLAC restores; MP3 is checkpointed by copy |
+| F2 | A quarantine journals no result digest, so rollback overwrites newer content | fixed: rollback goes through `restore_quarantined` |
+| F3 | `write_bytes` treats a vanished checkpointed file as new | fixed |
+| F4 | Rollback catches only `CollisionError`; any other error aborts the rest | fixed |
 | F5 | `sha256_file` duplicates `hasher.file_hash` | nit |
-| F6 | The operation journal re-reads itself on every append (4,000 appends: 44 s) | **open, live** |
+| F6 | The operation journal re-reads itself on every append (4,000 appends: 44 s) | fixed: linear (4,000 appends: 3.5 s, the fsyncs) |
 
 ### Open, in the order I'd take them
 
 1. ~~The delete tool should drop the deleted masters' bit-rot baselines~~ (done, #79).
-1a. Fix the findings above still open: R1, R4, R5 (resolver); A and B together, then F6, F1-F4 (safety layer). Before the ultra review.
+1a. ~~Fix the findings above still open~~ (done: R1, R4, R5 in #81; A, B, F1-F4, F6 in the safety PR; F5 left as a nit).
 2. Ultra review of the whole program (Grey, this week), then its fixes.
 3. Stick sync when the stick is back from the car (dry run first).
 4. One enrichment pass (TitleCompleteStage asks ~8,300 songs once, ~2.5 h unattended).

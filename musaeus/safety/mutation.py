@@ -48,7 +48,11 @@ from pathlib import Path
 from typing import Any
 
 from musaeus.safety.manifest import (
+    KIND_FILE,
     KIND_TAGGED_AUDIO,
+    TAGGED_PREFIX,
+    ManifestEntry,
+    current_tagged_identity,
     decode_tag_values,
     item_ref_for,
     sha256_file,
@@ -68,6 +72,7 @@ from musaeus.safety.recovery import (
     OperationJournal,
     QuarantineRecord,
     quarantine_item,
+    restore_quarantined,
 )
 from musaeus.state.cancellation import CancellationGate
 from musaeus.state.schema import StateError, utc_now_iso
@@ -137,12 +142,23 @@ class MutationBoundary:
                 f"checkpoint {checkpoint.checkpoint_id} is not verified; refusing to grant "
                 f"mutation capability against it"
             )
+        # The checkpoint may cover less than the boundary: finalize and
+        # canonicalize checkpoint STAGING but move files across the vault.
+        # It must at least lie inside it, or its record is never consulted.
+        checkpoint_root = Path(checkpoint.manifest.source_root)
+        if checkpoint_root != source_root and source_root not in checkpoint_root.parents:
+            raise StateError(
+                f"checkpoint {checkpoint.checkpoint_id} covers {checkpoint_root}, which is not "
+                f"inside the boundary's root {source_root}; its record would never be consulted"
+            )
         self.checkpoint = checkpoint
         self.journal = journal
         self.run_id = run_id
         self.source_root = source_root
         self.gate = gate
         self._quarantines: dict[str, QuarantineRecord] = {}
+        self._checkpoint_root = checkpoint_root
+        self._manifest_index = {e.item_ref: e for e in checkpoint.manifest.entries}
 
     # ── Internal helpers ──────────────────────────────────────────────────
 
@@ -156,6 +172,28 @@ class MutationBoundary:
                 source_root=str(self.source_root),
             ) from exc
 
+    def _manifest_entry(self, path: Path) -> ManifestEntry | None:
+        """The checkpoint's record of *path*, or None if it holds none.
+
+        Looked up by the path relative to the CHECKPOINT's root, not the
+        boundary's. The two differ for finalize and canonicalize (STAGING
+        against the vault), and looking up the vault-relative path found
+        nothing, so the checkpoint was never consulted (September review, B).
+        """
+        try:
+            relative = str(path.relative_to(self._checkpoint_root))
+        except ValueError:
+            return None
+        return self._manifest_index.get(item_ref_for(relative))
+
+    def _payload_copy(self, path: Path) -> Path | None:
+        """The checkpoint's byte copy of *path*, if it made one."""
+        entry = self._manifest_entry(path)
+        if entry is None or entry.kind != KIND_FILE:
+            return None
+        copy = self.checkpoint.payload_root / entry.relative_path
+        return copy if copy.is_file() else None
+
     def _guard(self) -> None:
         if self.gate is not None:
             self.gate.guard_mutation()
@@ -164,7 +202,7 @@ class MutationBoundary:
         if self.gate is not None:
             self.gate.record_mutation()
 
-    def _expected_digest(self, item_ref: str) -> str | None:
+    def _expected_digest(self, path: Path, relative: str) -> str | None:
         """What this item should currently hold, per the record.
 
         The most recent digest THIS RUN left there, and only the
@@ -180,13 +218,11 @@ class MutationBoundary:
         a resumed run, re-introducing the same bug in a harder-to-see
         form.
         """
-        for entry in reversed(self.journal.entries()):
-            if entry.item_ref == item_ref and entry.status == STATUS_APPLIED:
-                return entry.result_digest
-        try:
-            return self.checkpoint.manifest.entry(item_ref).sha256
-        except KeyError:
-            return None
+        last = self.journal.last_applied(item_ref_for(relative))
+        if last is not None:
+            return last.result_digest
+        entry = self._manifest_entry(path)
+        return entry.sha256 if entry is not None else None
 
     def _check_precondition(self, path: Path, relative: str) -> str | None:
         """Confirm the item still holds what the record says, and return
@@ -195,20 +231,60 @@ class MutationBoundary:
         A file that has changed underneath the run is a file whose restore
         target is no longer what was recorded. Continuing would mean the
         rollback silently reverts someone else's work."""
+        expected = self._expected_digest(path, relative)
         if not path.exists():
+            if expected is not None:
+                # Recorded as holding something, now gone: a concurrent
+                # removal, not a new file (September review, F3).
+                raise PreconditionError(
+                    f"{relative} is recorded as present but has vanished; refusing to treat "
+                    f"it as a new item",
+                    path=str(path),
+                    expected=expected,
+                )
             return None
         current = sha256_file(path)
-        expected = self._expected_digest(item_ref_for(relative))
-        if expected is not None and expected != current:
+        # A tag-captured entry records a tagged identity, not a SHA-256, so
+        # compare like with like (September review, A). What is returned,
+        # and journalled, is always the SHA-256.
+        found = (
+            current_tagged_identity(path)
+            if expected is not None and expected.startswith(TAGGED_PREFIX)
+            else current
+        )
+        if expected is not None and expected != found:
             raise PreconditionError(
                 f"{relative} has changed since it was last recorded "
-                f"(expected {expected[:12]}..., found {current[:12]}...); refusing to "
+                f"(expected {expected[:12]}..., found {found[:12]}...); refusing to "
                 f"mutate an item the rollback could no longer restore correctly",
                 path=str(path),
                 expected=expected,
-                found=current,
+                found=found,
             )
         return current
+
+    def _require_byte_restorable(self, path: Path, relative: str) -> None:
+        """Refuse a byte write over a file the rollback could not put back.
+
+        Rollback restores overwritten bytes from the checkpoint's copy. A
+        file the checkpoint did not copy -- outside it, or tag-captured --
+        and that this run did not create has nothing to restore from.
+        """
+        if not path.exists():
+            return  # a creation; rollback clears it out of the way
+        entry = self._manifest_entry(path)
+        if entry is not None and entry.kind == KIND_TAGGED_AUDIO:
+            raise UnmanagedPathError(
+                f"{relative} is tag-captured: the checkpoint holds its tags, not its bytes, "
+                f"so a byte write could not be rolled back",
+                path=str(path),
+            )
+        if entry is None and self.journal.last_applied(item_ref_for(relative)) is None:
+            raise UnmanagedPathError(
+                f"{relative} is not in checkpoint {self.checkpoint.checkpoint_id}; a byte "
+                f"write over it could not be rolled back",
+                path=str(path),
+            )
 
     # ── Capabilities ──────────────────────────────────────────────────────
 
@@ -217,6 +293,7 @@ class MutationBoundary:
         self._guard()
         relative = self._relative(path)
         before = self._check_precondition(path, relative)
+        self._require_byte_restorable(path, relative)
 
         quarantine_ref = None
         if path.exists():
@@ -266,6 +343,7 @@ class MutationBoundary:
         self._guard()
         relative = self._relative(path)
         before = self._check_precondition(path, relative)
+        self._require_byte_restorable(path, relative)
         record = quarantine_item(
             path, self.checkpoint, reason=f"tag write by {self.run_id}", run_id=self.run_id
         )
@@ -294,6 +372,7 @@ class MutationBoundary:
         self._guard()
         relative = self._relative(path)
         before = self._check_precondition(path, relative)
+        self._require_byte_restorable(path, relative)
         record = quarantine_item(
             path, self.checkpoint, reason=f"artwork write by {self.run_id}", run_id=self.run_id
         )
@@ -421,7 +500,14 @@ class MutationBoundary:
             precondition_digest=before,
             result_digest=None,
             quarantine_ref=record.quarantine_ref,
-            detail={"relative_path": relative, "reason": reason},
+            # Enough to put it back from the journal alone, for a rollback
+            # run by a fresh boundary that never saw this one's memory.
+            detail={
+                "relative_path": relative,
+                "reason": reason,
+                "quarantine_path": record.quarantine_path,
+                "quarantined_sha256": record.sha256,
+            },
         )
         return entry.operation_id
 
@@ -459,24 +545,20 @@ class MutationBoundary:
         already: list[str] = []
         failures: list[dict[str, Any]] = []
 
-        applied = [e for e in self.journal.entries() if e.status == STATUS_APPLIED]
-        superseded = {e.operation_id for e in self.journal.entries() if e.status == STATUS_RESTORED}
+        entries = self.journal.entries()
+        superseded = {e.operation_id for e in entries if e.status == STATUS_RESTORED}
         # One operation can produce several journal entries -- a move writes
         # a second when its source is released. Undo each OPERATION once,
         # using the entry that carries the paths; the release record is
         # bookkeeping, not a separate thing to reverse.
-        pending: list = []
-        _seen: set[str] = set()
-        for _e in applied:
-            if _e.operation_id in superseded or _e.operation_id in _seen:
+        chosen: dict[str, Any] = {}
+        for e in entries:
+            if e.status != STATUS_APPLIED or e.operation_id in superseded:
                 continue
-            _seen.add(_e.operation_id)
-            pending.append(
-                max(
-                    (x for x in applied if x.operation_id == _e.operation_id),
-                    key=lambda x: len(x.detail or {}),
-                )
-            )
+            best = chosen.get(e.operation_id)
+            if best is None or len(e.detail or {}) > len(best.detail or {}):
+                chosen[e.operation_id] = e
+        pending = list(chosen.values())
 
         for entry in reversed(pending):
             try:
@@ -486,16 +568,24 @@ class MutationBoundary:
                 elif entry.operation_kind == OP_MOVE:
                     self._undo_move(entry)
                     restored.append(entry.operation_id)
+                elif entry.operation_kind == OP_QUARANTINE:
+                    self._undo_quarantine(entry)
+                    restored.append(entry.operation_id)
                 else:
                     self._restore_item(entry)
                     restored.append(entry.operation_id)
                 self.journal.mark(entry.operation_id, STATUS_RESTORED, now=timestamp)
-            except CollisionError as exc:
+            except Exception as exc:
+                # Any failure is this operation's, not the rollback's: record
+                # it and go on to the rest. Catching only CollisionError let
+                # one PermissionError abandon every operation after it
+                # (September review, F4).
                 failures.append(
                     {
                         "operation_id": entry.operation_id,
                         "operation_kind": entry.operation_kind,
-                        "reason_code": exc.reason_code,
+                        "reason_code": getattr(exc, "reason_code", "unexpected_error"),
+                        "error_type": type(exc).__name__,
                         "message": str(exc),
                     }
                 )
@@ -525,13 +615,23 @@ class MutationBoundary:
         never copied. This is what makes a 468 GB library rollback-able for
         ForgeStage and TaggerStage, which change tags and nothing else."""
         import mutagen  # type: ignore[import-untyped]
+        from mutagen._vorbis import VCommentDict  # type: ignore[import-untyped]
+        from mutagen.mp4 import MP4Tags  # type: ignore[import-untyped]
 
         audio = mutagen.File(str(target))
         if audio is None:
             raise CollisionError(f"{target} cannot be opened to restore its tags", path=str(target))
         if audio.tags is None:
             audio.add_tags()
-        for key in [k for k in audio.tags if not str(k).startswith("covr")]:
+        if not isinstance(audio.tags, (MP4Tags, VCommentDict)):
+            # read_tags captures only these; anything else is copied instead.
+            raise CollisionError(
+                f"{target}: tags of this format cannot be put back from a capture",
+                path=str(target),
+            )
+        # keys(), not iteration: iterating a Vorbis comment yields
+        # (key, value) pairs, which crashed the restore (September review, F1).
+        for key in [k for k in audio.tags.keys() if not str(k).startswith("covr")]:  # noqa: SIM118
             del audio.tags[key]
         for key, values in tags.items():
             audio.tags[key] = decode_tag_values(values)
@@ -545,21 +645,23 @@ class MutationBoundary:
 
         # A tag-captured entry has no copied bytes to put back -- its
         # restorable state is the tag values in the manifest.
-        try:
-            manifest_entry = self.checkpoint.manifest.entry(item_ref_for(relative))
-        except KeyError:
-            manifest_entry = None
+        manifest_entry = self._manifest_entry(target)
         if manifest_entry is not None and manifest_entry.kind == KIND_TAGGED_AUDIO:
             if manifest_entry.tags is None:
                 raise CollisionError(
                     f"{relative} was tag-captured but no tags were recorded; it cannot be restored",
                     relative_path=relative,
                 )
-            if target.exists():
-                self._restore_tags(target, manifest_entry.tags)
+            if not target.exists():
+                raise CollisionError(
+                    f"{relative} is gone, and the checkpoint holds its tags, not its bytes; "
+                    f"it cannot be restored",
+                    relative_path=relative,
+                )
+            self._restore_tags(target, manifest_entry.tags)
             return
 
-        checkpointed = self.checkpoint.payload_root / relative
+        checkpointed = self._payload_copy(target)
 
         if target.exists():
             current = sha256_file(target)
@@ -570,9 +672,9 @@ class MutationBoundary:
                     f"restoring would destroy a change made since",
                     relative_path=relative,
                 )
-            if checkpointed.is_file() and current == sha256_file(checkpointed):
+            if checkpointed is not None and current == sha256_file(checkpointed):
                 return  # already back to the checkpointed state
-        if not checkpointed.is_file():
+        if checkpointed is None:
             # Nothing checkpointed means the run created this item; clear it
             # out of the way rather than deleting it.
             if target.exists():
@@ -596,7 +698,7 @@ class MutationBoundary:
         destination = self.source_root / moved_to
 
         if not destination.exists():
-            self._restore_item(entry)
+            self._undo_move_without_destination(entry, origin, relative, moved_to)
             return
         current = sha256_file(destination)
         if entry.result_digest is not None and current != entry.result_digest:
@@ -615,6 +717,77 @@ class MutationBoundary:
             )
         origin.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(destination), str(origin))
+
+    def _undo_move_without_destination(
+        self, entry: Any, origin: Path, relative: str, moved_to: str
+    ) -> None:
+        """The move's copy is already gone -- finalize removes its own copy
+        when the archive update collides.
+
+        A move never creates its origin, so this must never take the "run
+        created this" route: that route quarantined the origin, which for
+        an INBOX passthrough is the only copy.
+        """
+        if origin.exists():
+            if (
+                entry.precondition_digest is None
+                or sha256_file(origin) == entry.precondition_digest
+            ):
+                return  # the origin is as it was; nothing left to undo
+            raise CollisionError(
+                f"{moved_to} is gone and {relative} holds different content than when it was "
+                f"moved; leaving it alone",
+                relative_path=relative,
+            )
+        copy = self._payload_copy(origin)
+        if copy is None:
+            raise CollisionError(
+                f"neither {relative} nor {moved_to} exists, and the checkpoint holds no copy "
+                f"of {relative}; it cannot be restored",
+                relative_path=relative,
+            )
+        origin.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(copy, origin)
+
+    def _undo_quarantine(self, entry: Any) -> None:
+        """Put a quarantined item back, from what the journal recorded.
+
+        Through restore_quarantined, which refuses to overwrite anything
+        that has arrived at the path since. Copying the checkpoint over the
+        path did overwrite it (September review, F2), and found nothing for
+        an item outside the checkpoint, such as canonicalize's INBOX
+        originals, which then stayed in quarantine while the rollback
+        reported success.
+        """
+        detail = entry.detail or {}
+        relative = detail.get("relative_path")
+        if not relative or not entry.quarantine_ref:
+            raise CollisionError(
+                f"journal entry {entry.operation_id} does not say what it quarantined",
+                operation_id=entry.operation_id,
+            )
+        # Journals written before quarantined_sha256 existed: the
+        # precondition digest is the same SHA-256 of the same bytes.
+        digest = detail.get("quarantined_sha256") or entry.precondition_digest
+        if not digest or str(digest).startswith(TAGGED_PREFIX):
+            raise CollisionError(
+                f"no content digest recorded for quarantined {relative}; cannot restore it safely",
+                relative_path=relative,
+            )
+        quarantine_path = detail.get("quarantine_path") or str(
+            self.checkpoint.quarantine_root / entry.quarantine_ref / Path(str(relative)).name
+        )
+        restore_quarantined(
+            QuarantineRecord(
+                quarantine_ref=entry.quarantine_ref,
+                source_path=str(self.source_root / str(relative)),
+                quarantine_path=str(quarantine_path),
+                reason=str(detail.get("reason", "")),
+                run_id=self.run_id,
+                sha256=str(digest),
+                quarantined_at=entry.recorded_at,
+            )
+        )
 
     def _restore_database(self, database_path: Path | None) -> None:
         if database_path is None:

@@ -336,6 +336,41 @@ class OperationJournal:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.touch(exist_ok=True)
+        # What has been parsed so far, and where in the file it ends. The
+        # file stays the record: every read starts with a look at what has
+        # been added since, so lines another instance appended are seen.
+        # Re-reading the whole file on every append and every precondition
+        # check cost 44 s for 4,000 operations (September review, F6).
+        self._entries: list[JournalEntry] = []
+        self._offset = 0
+        self._last_applied: dict[str, JournalEntry] = {}
+        self._first_by_operation: dict[str, JournalEntry] = {}
+
+    def _catch_up(self) -> None:
+        """Parse the complete lines added to the file since the last read."""
+        if not self.path.is_file():
+            return
+        if self.path.stat().st_size < self._offset:
+            # Shorter than what was read: not this journal any more.
+            self._entries, self._offset = [], 0
+            self._last_applied, self._first_by_operation = {}, {}
+        with self.path.open("rb") as handle:
+            handle.seek(self._offset)
+            data = handle.read()
+        end = data.rfind(b"\n") + 1  # a torn last line waits for its newline
+        for line in data[:end].decode("utf-8").splitlines():
+            if not line.strip():
+                continue
+            entry = JournalEntry(**json.loads(line))
+            self._entries.append(entry)
+            if entry.status == STATUS_APPLIED:
+                self._last_applied[entry.item_ref] = entry
+            self._first_by_operation.setdefault(entry.operation_id, entry)
+        self._offset += end
+
+    def _count(self) -> int:
+        self._catch_up()
+        return len(self._entries)
 
     def append(
         self,
@@ -357,7 +392,7 @@ class OperationJournal:
                 known=sorted(OPERATION_KINDS),
             )
         entry = JournalEntry(
-            sequence=len(self.entries()),
+            sequence=self._count(),
             operation_id=operation_id or f"op_{uuid.uuid4().hex[:12]}",
             operation_kind=operation_kind,
             item_ref=item_ref,
@@ -375,14 +410,13 @@ class OperationJournal:
         return entry
 
     def entries(self) -> tuple[JournalEntry, ...]:
-        if not self.path.is_file():
-            return ()
-        rows: list[JournalEntry] = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            rows.append(JournalEntry(**json.loads(line)))
-        return tuple(rows)
+        self._catch_up()
+        return tuple(self._entries)
+
+    def last_applied(self, item_ref: str) -> JournalEntry | None:
+        """The most recent APPLIED entry for *item_ref*, or None."""
+        self._catch_up()
+        return self._last_applied.get(item_ref)
 
     def applied(self) -> tuple[JournalEntry, ...]:
         return tuple(e for e in self.entries() if e.status == STATUS_APPLIED)
@@ -393,7 +427,8 @@ class OperationJournal:
         Append-only: the original record of what was applied is never
         edited. A journal you can rewrite is a journal that can be made to
         agree with any story."""
-        original = next((e for e in self.entries() if e.operation_id == operation_id), None)
+        self._catch_up()
+        original = self._first_by_operation.get(operation_id)
         if original is None:
             raise JournalError(f"unknown operation_id {operation_id}", operation_id=operation_id)
         return self.append(

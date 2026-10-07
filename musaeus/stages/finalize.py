@@ -546,7 +546,12 @@ class FinalizeStage(BaseStage):
 
         source_root spans the vault because a move crosses from STAGING to
         ALAC-Library and both ends must validate; the checkpoint stays
-        narrow regardless.
+        narrow regardless. The boundary looks each file up relative to the
+        checkpoint's own root (STAGING), so a staged file is checked against
+        its record before it moves; until 2026-10-07 it looked up the
+        vault-relative path, found nothing, and checked nothing (September
+        review, B). A passthrough source still in INBOX is outside the
+        checkpoint: its move is undone from the journal, never from a copy.
 
         Returns None when disabled or when no checkpoint can be made, and
         says which in the result -- a run with no boundary must announce
