@@ -76,9 +76,31 @@ it. Given limited time, take the TODO.
 - The masters back themselves up to NUC8TB monthly, checked, keeping the newest two (#77; `musaeus-music-backup.timer`, the 1st, 03:30).
 - USB stick: `transfer_to_usb.py --no-format --sync` (#68), dry run first.
 
+### Findings carried from the September ultrareview (PRs #21, #22), re-checked 2026-10-07
+
+Each was re-run against the code of 2026-10-07 with the triage's own reproduction scripts
+(the duplicates script given audio identities and the masters' root, which today's resolver needs).
+
+| # | Finding | 2026-10-07 |
+|---|---|---|
+| R1 | A CROSS_BATCH group merged with a NEAR group: the incoming duplicate is kept and another song moves | **open** |
+| R2 | Organize and Finalize name paths differently | fixed (agree on all four cases) |
+| R3 | Merged groups update only the first group's rows | fixed |
+| R4 | `DupeResolverStage.verify_effect` returns "nothing wrong" when it sampled nothing | **open** |
+| R5 | The resolver's "relocated" query can never match (`dupe_resolver.py`, `rowid IN`) | **open** |
+| A | `musaeus/safety`: tag-captured files can never pass the boundary's precondition (`tagged:` identity vs SHA-256) | **open**, hidden by B |
+| B | Finalize and canonicalize root the boundary at the vault, the checkpoint at STAGING: the checkpoint is never consulted; rollback can lose files | **open, live** |
+| F1 | `_restore_tags` crashes on MP3 and FLAC | **open**, latent |
+| F2 | A quarantine journals no result digest, so rollback overwrites newer content | **open**, latent |
+| F3 | `write_bytes` treats a vanished checkpointed file as new | **open**, low |
+| F4 | Rollback catches only `CollisionError`; any other error aborts the rest | **open**, latent |
+| F5 | `sha256_file` duplicates `hasher.file_hash` | nit |
+| F6 | The operation journal re-reads itself on every append (4,000 appends: 44 s) | **open, live** |
+
 ### Open, in the order I'd take them
 
-1. The delete tool should drop the deleted masters' bit-rot baselines (else the monthly check lists them as missing).
+1. ~~The delete tool should drop the deleted masters' bit-rot baselines~~ (done, #79).
+1a. Fix the findings above still open: R1, R4, R5 (resolver); A and B together, then F6, F1-F4 (safety layer). Before the ultra review.
 2. Ultra review of the whole program (Grey, this week), then its fixes.
 3. Stick sync when the stick is back from the car (dry run first).
 4. One enrichment pass (TitleCompleteStage asks ~8,300 songs once, ~2.5 h unattended).
