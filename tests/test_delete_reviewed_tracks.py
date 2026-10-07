@@ -458,3 +458,40 @@ def test_deleting_the_last_iphone_copy_keeps_the_iphone_folder(vault):
     assert r.returncode == 0, r.stderr
     assert not copy.exists()
     assert (libs / "iPHONE_Library").is_dir(), "the iPhone edition's folder was removed"
+
+
+class TestTheBitRotBaselineGoesWithTheMaster:
+    """Seven songs deleted on 2026-10-07 stayed in the bit-rot baseline, so the monthly
+    check would have listed them as "missing from disk" every month."""
+
+    def _baseline(self, vault, rows):
+        conn = sqlite3.connect(vault / "musaeus.db")
+        conn.execute(
+            "CREATE TABLE archive_tier_hashes (path TEXT PRIMARY KEY, sha256 TEXT, audio_hash TEXT)"
+        )
+        conn.executemany("INSERT INTO archive_tier_hashes VALUES (?,?,?)", rows)
+        conn.commit()
+        conn.close()
+
+    def _left(self, vault):
+        conn = sqlite3.connect(vault / "musaeus.db")
+        return sorted(r[0] for r in conn.execute("SELECT path FROM archive_tier_hashes"))
+
+    def test_by_path_and_by_audio_after_a_move(self, vault):
+        _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
+        _add(vault, 2, "Blur", "Tender", "Blur/13/y.m4a")
+        here = str(vault / "Libraries" / "ALAC_Library" / "Blur/Parklife/x.m4a")
+        self._baseline(
+            vault,
+            [(here, "s1", "h1"), ("/old/place/y.m4a", "s2", "h2"), ("/keep/z.m4a", "s3", "h9")],
+        )
+        assert _run(vault, [1, 2]).returncode == 0
+        assert self._left(vault) == ["/keep/z.m4a"]
+
+    def test_never_the_baseline_of_audio_a_survivor_carries(self, vault):
+        _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a", h="same")
+        _add(vault, 2, "Blur", "Song 2", "Blur/Best Of/x.m4a", h="same")
+        survivor = str(vault / "Libraries" / "ALAC_Library" / "Blur/Best Of/x.m4a")
+        self._baseline(vault, [(survivor, "s2", "same")])
+        assert _run(vault, [1]).returncode == 0
+        assert self._left(vault) == [survivor]

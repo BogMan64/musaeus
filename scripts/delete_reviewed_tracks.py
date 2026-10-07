@@ -260,6 +260,20 @@ def main() -> int:
                     "new_value, note) VALUES (?,?,?,?,?,?,?)",
                     (run_id, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                      "DELETED_BY_REVIEW", row["file_path"], row["file_path"], "", note))
+            # The master's bit-rot baseline goes with it, or the monthly check
+            # lists every deleted song as "missing from disk" (2026-10-07). By
+            # path, or by its audio when it moved since the baseline -- never by
+            # audio another row still carries: that baseline is the survivor's.
+            try:
+                if h and not audio_kept:
+                    conn.execute(
+                        "DELETE FROM archive_tier_hashes WHERE path = ? OR audio_hash = ?",
+                        (row["file_path"], h),
+                    )
+                else:
+                    conn.execute("DELETE FROM archive_tier_hashes WHERE path = ?", (row["file_path"],))
+            except sqlite3.OperationalError:
+                pass  # a vault with no bit-rot baseline yet
             conn.execute("DELETE FROM archive WHERE id=?", (i,))
         n_rows += 1
 
