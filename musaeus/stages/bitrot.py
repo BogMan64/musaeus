@@ -111,6 +111,33 @@ def _scan_archive_files(alac_archive: Path) -> list[Path]:
     )
 
 
+def _notify(repaired: list, unrepaired: list) -> None:
+    """One notification at the end of the run: what was repaired, and what could not be.
+
+    Best effort, through scripts/musaeus_notify.py (ntfy): a failed notice never
+    fails the check -- the run report says the same.
+    """
+    import subprocess
+    import sys
+
+    names = lambda rs: ", ".join(Path(r.path).stem for r in rs[:3]) + ("…" if len(rs) > 3 else "")  # noqa: E731
+    parts = []
+    if repaired:
+        parts.append(f"repaired {len(repaired)} damaged song(s) from a backup: {names(repaired)}")
+    if unrepaired:
+        parts.append(
+            f"{len(unrepaired)} damaged song(s) had no good backup copy: {names(unrepaired)}"
+        )
+    script = Path(__file__).resolve().parents[2] / "scripts" / "musaeus_notify.py"
+    try:
+        subprocess.run(
+            [sys.executable, str(script), "--title", "MUSAEUS bit-rot check", "--message", "; ".join(parts)],
+            capture_output=True, timeout=60, check=False,
+        )  # fmt: skip
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("[bitrot] notification not sent: %s", exc)
+
+
 class BitRotStage(BaseStage):
     """
     Detect silent corruption in ALAC_Archive by comparing current
@@ -356,6 +383,9 @@ class BitRotStage(BaseStage):
         unclassified = 0
         matched_paths: set[str] = set()
         corrupt: list[tuple[str, str, str]] = []
+        # (current path, baseline key, baseline PCM, current PCM): the rot that
+        # can be told from a re-tag, and so can be repaired from a backup.
+        rotted: list[tuple[str, str, str, str | None]] = []
 
         for i, path in enumerate(files, 1):
             result.files_processed += 1
@@ -419,6 +449,7 @@ class BitRotStage(BaseStage):
                     logger.warning("[bitrot] UNCLASSIFIED CHANGE: %s", path.name)
                 else:
                     corrupt.append((path_str, baseline[key], current_hash))
+                    rotted.append((path_str, key, stored_pcm, pcm))
                     ctx.log_event(
                         "BITROT_DETECTED",
                         file_path=path_str,
@@ -432,6 +463,10 @@ class BitRotStage(BaseStage):
 
             if i % _COMMIT_EVERY == 0:
                 logger.info("bitrot: verify checkpoint %d/%d", i, len(files))
+
+        replaced, repaired, unrepaired = self._repair(ctx, alac_archive, rotted)
+        if replaced:
+            corrupt = [c for c in corrupt if c[0] not in replaced]
 
         # A baselined row is only missing if nothing on disk claimed it --
         # a moved file claims its origin row, so it must not count as gone.
@@ -467,6 +502,17 @@ class BitRotStage(BaseStage):
                 f"baseline, so this run verified almost nothing. Run "
                 f"--rebaseline before trusting a pass."
             )
+        if replaced:
+            result.notes.append(
+                f"replaced on purpose by MUSAEUS (catalogued audio; baseline updated): {len(replaced)}"
+            )
+        if repaired or unrepaired:
+            result.notes.append(f"REPAIRED from a backup: {len(repaired)}")
+            for r in repaired[:20]:
+                result.notes.append(f"  repaired {r.path}  from {r.detail}")
+            for r in unrepaired[:20]:
+                result.notes.append(f"  NOT repaired {r.path}: {r.detail}")
+            corrupt = [c for c in corrupt if c[0] not in {r.path for r in repaired}]
         if corrupt:
             result.success = False
             for fp, stored, current in corrupt[:20]:
@@ -476,8 +522,47 @@ class BitRotStage(BaseStage):
             if len(corrupt) > 20:
                 result.notes.append(f"  {elision(len(corrupt) - 20)}")
 
+        if not dry_run and (repaired or unrepaired):
+            _notify(repaired, unrepaired)
         ctx.record_stage(result)
         return result
+
+    def _repair(self, ctx: RunContext, archive_root: Path, rotted: list) -> tuple[set, list, list]:
+        """Repair rot from a backup; a deliberate replacement only moves the baseline."""
+        from ..bitrot_repair import backup_copies, backup_roots, is_rot, repair
+
+        replaced: set[str] = set()
+        repaired: list = []
+        unrepaired: list = []
+        if not rotted or not ctx.get("bitrot_repair", True):
+            return replaced, repaired, unrepaired
+        copies = backup_copies(backup_roots())
+        for path_str, key, stored_pcm, current_pcm in rotted:
+            if not is_rot(ctx.conn, current_pcm):
+                replaced.add(path_str)
+                ctx.conn.execute(
+                    "UPDATE archive_tier_hashes SET sha256 = ?, audio_hash = ? WHERE path = ?",
+                    (file_hash(Path(path_str)), current_pcm, key),
+                )
+                continue
+            r = repair(
+                Path(path_str), archive_root, stored_pcm, copies, ctx.config.vault_root / "REVIEW"
+            )
+            if r.repaired:
+                repaired.append(r)
+                ctx.conn.execute(
+                    "UPDATE archive_tier_hashes SET sha256 = ? WHERE path = ?",
+                    (file_hash(Path(path_str)), key),
+                )
+                ctx.log_event("BITROT_REPAIRED", file_path=path_str, new_value=r.detail,
+                              stage=self.NAME, note="damaged file set aside in REVIEW/BITROT_DAMAGED")  # fmt: skip
+            else:
+                unrepaired.append(r)
+                ctx.log_event(
+                    "BITROT_NOT_REPAIRED", file_path=path_str, stage=self.NAME, note=r.detail
+                )
+        ctx.conn.commit()
+        return replaced, repaired, unrepaired
 
     def verify_effect(self, ctx: RunContext, result: StageResult) -> VerifyResult:
         """A file this stage baselined must have a hash recorded for it.
