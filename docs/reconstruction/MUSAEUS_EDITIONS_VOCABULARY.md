@@ -33,6 +33,12 @@ before any code, because the naming is the part that has to survive.
 > rebuilt from the masters once the library is complete, which is the
 > vocabulary working exactly as written.
 
+> **Checked 2026-10-07 — still current.** One addition: an Edition's loudness
+> measurement is also kept in its master, in the tag
+> `MUSAEUS_LOUDNESS_MEASURED` (#73), and never in an edition copy. A master's
+> ReplayGain gain is its R128 gain plus 5 dB, because ReplayGain refers to
+> −18 LUFS and R128 to −23: the two tags differing by 5 dB is correct.
+
 > **Reviewed 2026-09-23 — the Car Edition exists again, and was seeded rather
 > than re-encoded.** 7,856 car files were copied from two copies of the same
 > 16–17 September build — the NUC's pre-rebuild backup and the car USB stick —

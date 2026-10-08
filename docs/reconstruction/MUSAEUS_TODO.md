@@ -107,7 +107,7 @@ reviewer wrote "confirmed" when it ran something.
 |---|---|---|
 | 86-1 | TributeQuarantine (Act 1) rescanned filed masters; would have moved Dean Martin "Sleep Warm" | **fixed #89** (checked on the live library) |
 | 86-2 | `cross_dupe.py:104`: any file at a ledger path counts as the master's twin, audio never checked | reported (confirmed in a test vault) |
-| 86-3 | `dupe_resolver.py:1008`: a group whose members are all CROSS_BATCH gets no keeper; all move | **open: my regression from #81 (R1)**; fix next |
+| 86-3 | `dupe_resolver.py:1008`: a group whose members are all CROSS_BATCH gets no keeper; all move | **fixed #92** (my regression from #81's R1) |
 | 86-4 | Restore scripts put raw paths in double quotes; `$` stops them, `$(...)` would run | **fixed #89** |
 | 86-5 | NearDupe's "is this live?" reads the title only, the resolver title and album | reported (confirmed in a test vault) |
 | 86-6 | The resolver never checks that the keeper's file exists | reported |
@@ -122,7 +122,7 @@ reviewer wrote "confirmed" when it ran something.
 | 86-15 | Canonicalize's truncation check compares two metadata durations | reported |
 | 87-1 | `scripts/merge_case_duplicate_albums.py` deletes on a name collision with no audio check | reported (confirmed in a scratch vault); **do not run it** |
 | 87-2 | Undoing a move whose source was kept leaves the copy and reports success (`mutation.py:710`) | reported (confirmed) |
-| 87-3 | Music backup rotation counts copies that never verified; bit-rot repair may use one | reported (confirmed); **before 1 Nov** |
+| 87-3 | Music backup rotation counts copies that never verified; bit-rot repair may use one | **fixed #94** |
 | 87-4 | Bit-rot "replaced on purpose" used the arrival hash; transcoded masters never match | **fixed #90** (live: 5 masters) |
 | 87-5 | A decode timeout returned a whole-file hash: false rot, wrong rebaseline | **fixed #90** |
 | 87-6 | The hasher's ffmpeg ran without `-nostdin` | **fixed #90** |
@@ -132,13 +132,13 @@ reviewer wrote "confirmed" when it ran something.
 | 87-10 | The monthly wrappers' `busy()` and `musaeus_running.sh` each miss cases; no real lock | reported (confirmed) |
 | 87-11 | An unreadable master still gave an all-clear | **fixed #90** |
 | 87-12 | After a rebaseline, `verify_effect` said "nothing wrong" without looking | **fixed #90** |
-| 87-13 | Backup verification compares size and mtime only; `hash_index.db` is copied raw | reported; **before 1 Nov** |
+| 87-13 | Backup verification compares size and mtime only; `hash_index.db` is copied raw | **fixed #94** |
 | 87-14 | `scripts/merge_artist_folders.py` moves Lossless copies, not masters | reported |
 | 87-15 | `scripts/consolidate_artist_folders.py` creates the alias chain it says it prevents | reported (confirmed) |
 | 87-m1 | Rollback of a file overwritten twice reports a failure though it restored (`mutation.py:666-676`) | reported, minor |
 | 87-m2 | Releasing the lock can delete the next holder's record (`lock.py:249-254`) | reported, minor |
 | 88-1 | `transfer_to_usb.py --no-format --dest` checks nothing about the destination (protected folder, the source itself); it empties the destination file before reading the source | reported (confirmed in scratch); **do not use without `--sync`** |
-| 88-2 | `loudness.py`: no `-nostdin`, a failed run trusted, every stream measured; forge writes it into master tags | **fixed (this PR)** |
+| 88-2 | `loudness.py`: no `-nostdin`, a failed run trusted, every stream measured; forge writes it into master tags | **fixed #93** |
 | 88-3 | `scripts/write_master_loudness_tags.py` rewrites every master in place and never checks for a running build | reported |
 | 88-4 | `edition_build.py:865`: retag/adopt/move save tags in place on the final copy; a kill leaves a damaged copy | reported |
 | 88-5 | `--sync` treats a same-size file as unchanged, so retags never reach the stick (`test_usb_sync.py` fakes a size change) | reported (confirmed); **stick sync on hold** |
