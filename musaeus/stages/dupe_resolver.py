@@ -84,6 +84,7 @@ import csv
 import logging
 import os
 import re
+import shlex
 import shutil
 import stat
 from collections.abc import Sequence
@@ -603,8 +604,10 @@ class DupeResolverStage(BaseStage):
         for m in moves:
             src, dst = m["source"], m["destination"]
             src_dir = os.path.dirname(src)
-            lines.append(f'mkdir -p "{src_dir}"')
-            lines.append(f'mv -n "{dst}" "{src}"')
+            # shlex.quote: a path is data, never shell (review of #86,
+            # finding 4; same fix in tribute_quarantine.py).
+            lines.append(f"mkdir -p {shlex.quote(src_dir)}")
+            lines.append(f"mv -n {shlex.quote(dst)} {shlex.quote(src)}")
         restore_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         restore_path.chmod(restore_path.stat().st_mode | stat.S_IEXEC)
 
