@@ -240,12 +240,15 @@ def test_run_pipeline_actually_calls_write_handoff_doc() -> None:
     project. Source-level rather than a full pipeline run: _run_pipeline
     needs a real vault, DB, and stage list to execute end to end, which
     is what test_p0_01_characterization.py etc. already cover; this only
-    needs to prove the call site exists."""
+    needs to prove the call site exists. The body moved into
+    _run_pipeline_inner when the masters lock wrapped it (#104); the
+    wrapper must still call that body."""
     import inspect
 
     import musaeus.cli as cli_mod
 
-    source = inspect.getsource(cli_mod._run_pipeline)
+    assert "_run_pipeline_inner(" in inspect.getsource(cli_mod._run_pipeline)
+    source = inspect.getsource(cli_mod._run_pipeline_inner)
     assert "write_handoff_doc(ctx)" in source
 
 
