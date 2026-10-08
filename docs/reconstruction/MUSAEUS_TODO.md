@@ -113,11 +113,11 @@ reviewer wrote "confirmed" when it ran something.
 | 86-6 | The resolver never checks that the keeper's file exists | **fixed #98** |
 | 86-7 | `keep_rule.decide` skips the shared-loudness check (the 2026-09-26 swap incident shape) | **fixed #110** |
 | 86-8 | `keep_rule.LOSSY` misses wmav1, ac3, eac3, musepack, amrnb | **fixed #110** |
-| 86-9 | A 'keep' set in `musaeus dedupe` is ignored by the resolver; 'a' is lowercased into auto-resolve | **in part #114** (keys; auto uses the keep rule). Open: the resolver honouring a person's keep needs its own status value |
+| 86-9 | A 'keep' set in `musaeus dedupe` is ignored by the resolver; 'a' is lowercased into auto-resolve | **fixed #114, #123**: keys are case-sensitive and auto uses the keep rule (#114); the console writes `keep_user`/`archive_user` and the resolver carries them out: a kept copy is the keeper, archived ones move (#123) |
 | 86-10 | An interrupted resolver run: files moved, rows rolled back, no log or restore script | **fixed #102** |
 | 86-11 | An interrupted Finalize: the re-run makes a "(2)" copy and the first is untracked (also 87-2) | **fixed #101** (rollback half #100) |
 | 86-12 | Organize renames before updating rows; a kill can strand up to 49 masters | **fixed #103** |
-| 86-13 | Transcode writes the final file directly, no `-nostdin`, sample rate and channels unset | open, low: the legacy `musaeus transcode` export, which no act uses |
+| 86-13 | Transcode writes the final file directly, no `-nostdin`, sample rate and channels unset | **fixed #124**: `-nostdin`, written to `.part` then renamed, stereo at 44.1 or 48 kHz |
 | 86-14 | Finalize's `verify_effect` samples the newest rows, not this run's | **fixed #115** |
 | 86-15 | Canonicalize's truncation check compares two metadata durations | **fixed #116** |
 | 87-1 | `scripts/merge_case_duplicate_albums.py` deletes on a name collision with no audio check | **retired #105** (refuses to run) |
@@ -139,8 +139,8 @@ reviewer wrote "confirmed" when it ran something.
 | 87-m2 | Releasing the lock can delete the next holder's record (`lock.py:249-254`) | **fixed #121** |
 | 88-1 | `transfer_to_usb.py --no-format --dest` checks nothing about the destination (protected folder, the source itself); it empties the destination file before reading the source | **fixed #96** |
 | 88-2 | `loudness.py`: no `-nostdin`, a failed run trusted, every stream measured; forge writes it into master tags | **fixed #93** |
-| 88-3 | `scripts/write_master_loudness_tags.py` rewrites every master in place and never checks for a running build | **in part #104** (holds the masters lock); open: it still rewrites masters in place (a kill mid-save damages one; the backups and the bit-rot repair can put it back). Do not rerun it without need |
-| 88-4 | `edition_build.py:865`: retag/adopt/move save tags in place on the final copy; a kill leaves a damaged copy | open: a kill while a copy's tags are saved in place can leave a damaged copy; the safe fix is in the build planner (recognise and remake a damaged copy), not yet done |
+| 88-3 | `scripts/write_master_loudness_tags.py` rewrites every master in place and never checks for a running build | **fixed #104, #126**: holds the masters lock (#104); the tags go on a copy beside the master, which replaces it in one rename, so a kill leaves the master whole (#126) |
+| 88-4 | `edition_build.py:865`: retag/adopt/move save tags in place on the final copy; a kill leaves a damaged copy | **fixed #127**: a copy damaged by a killed retag, adopt or move (an MP4 that no longer parses) is made again; the new copy replaces it only if the file is unchanged since the plan. The in-place save stays: a damaged copy costs one bake |
 | 88-5 | `--sync` treats a same-size file as unchanged, so retags never reach the stick (`test_usb_sync.py` fakes a size change) | **fixed #96** |
 | 88-6 | The vault's old playlists overwrite the edition's checked ones on the stick ("Holiday.m3u8 -> Honey") | **fixed #96** |
 | 88-7 | A copy that fails its hash check stays on the stick and is "already right" next time; the check hashes the page cache | **fixed #96** |
@@ -151,7 +151,7 @@ reviewer wrote "confirmed" when it ran something.
 | 88-12 | `master_measurements.restore_ledger` has no caller: measurements in masters are never read back | **fixed #119** |
 | 88-13 | `scripts/iphone_transfer.py` prints a paste block with no `&&` and no quoting; a path with spaces could `rm -rf` the wrong place | **fixed #111** |
 | 88-14 | The ReplayGain-from-R128 formula exists twice (`write_master_loudness_tags.py:55`, `forge.py:108`) | **fixed #117** |
-| 88-15 | `edition_bake.decoded_seconds` is another duration reader, with its own 600 s timeout | low: the 600 s is the decode's wall-clock limit, not a track length (the review's reading was off); it bites only when ffmpeg is paused, e.g. by the idle throttle |
+| 88-15 | `edition_bake.decoded_seconds` is another duration reader, with its own 600 s timeout | **#125**: the message now says when the master's length could not be decoded. The 600 s limit counts working time, not time paused by the idle throttle, so it is not a track length and pauses do not trip it (the review's reading was off) |
 | B-2 | `stages/albumart.py:476-479` marks a song checked before fetching; a refused lookup never retries | **fixed #109** |
 | B-4 | With the recovery boundary UNAVAILABLE, canonicalize deletes INBOX originals outright and finalize copies with no journal | **fixed #108** |
 | B-12 | Edition tests read the machine's real process table | **fixed in-process** (autouse fixture); subprocess tests still do |
