@@ -286,6 +286,10 @@ def main() -> int:
         help="--promote at most N (a one-song trial before the rest: --limit 1)",
     )
     args = ap.parse_args()
+    if args.execute:  # the masters lock (review of #87, findings 9 and 10)
+        from musaeus.masters_lock import hold_for_process
+
+        hold_for_process(exclusive=True, what="scripts/swap_review_copies.py")
 
     cfg = MusicConfig.from_env()
     conn = sqlite3.connect(cfg.db_path)
