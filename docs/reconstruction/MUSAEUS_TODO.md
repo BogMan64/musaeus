@@ -106,54 +106,54 @@ reviewer wrote "confirmed" when it ran something.
 | # | Finding | Status |
 |---|---|---|
 | 86-1 | TributeQuarantine (Act 1) rescanned filed masters; would have moved Dean Martin "Sleep Warm" | **fixed #89** (checked on the live library) |
-| 86-2 | `cross_dupe.py:104`: any file at a ledger path counts as the master's twin, audio never checked | reported (confirmed in a test vault) |
+| 86-2 | `cross_dupe.py:104`: any file at a ledger path counts as the master's twin, audio never checked | **fixed #97** |
 | 86-3 | `dupe_resolver.py:1008`: a group whose members are all CROSS_BATCH gets no keeper; all move | **fixed #92** (my regression from #81's R1) |
 | 86-4 | Restore scripts put raw paths in double quotes; `$` stops them, `$(...)` would run | **fixed #89** |
-| 86-5 | NearDupe's "is this live?" reads the title only, the resolver title and album | reported (confirmed in a test vault) |
-| 86-6 | The resolver never checks that the keeper's file exists | reported |
-| 86-7 | `keep_rule.decide` skips the shared-loudness check (the 2026-09-26 swap incident shape) | reported (confirmed) |
-| 86-8 | `keep_rule.LOSSY` misses wmav1, ac3, eac3, musepack, amrnb | reported (confirmed) |
-| 86-9 | A 'keep' set in `musaeus dedupe` is ignored by the resolver; 'a' is lowercased into auto-resolve | reported |
-| 86-10 | An interrupted resolver run: files moved, rows rolled back, no log or restore script | reported |
-| 86-11 | An interrupted Finalize: the re-run makes a "(2)" copy and the first is untracked (also 87-2) | reported (87-2 confirmed) |
-| 86-12 | Organize renames before updating rows; a kill can strand up to 49 masters | reported |
-| 86-13 | Transcode writes the final file directly, no `-nostdin`, sample rate and channels unset | reported |
-| 86-14 | Finalize's `verify_effect` samples the newest rows, not this run's | reported |
-| 86-15 | Canonicalize's truncation check compares two metadata durations | reported |
-| 87-1 | `scripts/merge_case_duplicate_albums.py` deletes on a name collision with no audio check | reported (confirmed in a scratch vault); **do not run it** |
-| 87-2 | Undoing a move whose source was kept leaves the copy and reports success (`mutation.py:710`) | reported (confirmed) |
+| 86-5 | NearDupe's "is this live?" reads the title only, the resolver title and album | **fixed #113** |
+| 86-6 | The resolver never checks that the keeper's file exists | **fixed #98** |
+| 86-7 | `keep_rule.decide` skips the shared-loudness check (the 2026-09-26 swap incident shape) | **fixed #110** |
+| 86-8 | `keep_rule.LOSSY` misses wmav1, ac3, eac3, musepack, amrnb | **fixed #110** |
+| 86-9 | A 'keep' set in `musaeus dedupe` is ignored by the resolver; 'a' is lowercased into auto-resolve | **in part #114** (keys; auto uses the keep rule). Open: the resolver honouring a person's keep needs its own status value |
+| 86-10 | An interrupted resolver run: files moved, rows rolled back, no log or restore script | **fixed #102** |
+| 86-11 | An interrupted Finalize: the re-run makes a "(2)" copy and the first is untracked (also 87-2) | **fixed #101** (rollback half #100) |
+| 86-12 | Organize renames before updating rows; a kill can strand up to 49 masters | **fixed #103** |
+| 86-13 | Transcode writes the final file directly, no `-nostdin`, sample rate and channels unset | open, low: the legacy `musaeus transcode` export, which no act uses |
+| 86-14 | Finalize's `verify_effect` samples the newest rows, not this run's | **fixed #115** |
+| 86-15 | Canonicalize's truncation check compares two metadata durations | **fixed #116** |
+| 87-1 | `scripts/merge_case_duplicate_albums.py` deletes on a name collision with no audio check | **retired #105** (refuses to run) |
+| 87-2 | Undoing a move whose source was kept leaves the copy and reports success (`mutation.py:710`) | **fixed #100** |
 | 87-3 | Music backup rotation counts copies that never verified; bit-rot repair may use one | **fixed #94** |
 | 87-4 | Bit-rot "replaced on purpose" used the arrival hash; transcoded masters never match | **fixed #90** (live: 5 masters) |
 | 87-5 | A decode timeout returned a whole-file hash: false rot, wrong rebaseline | **fixed #90** |
 | 87-6 | The hasher's ffmpeg ran without `-nostdin` | **fixed #90** |
 | 87-7 | A repair moved the master aside before the good copy was in place; one failure ended the run | **fixed #90** |
-| 87-8 | `MutationBoundary.move` compares sizes, not hashes, before releasing the source | reported |
-| 87-9 | The single-run lock can never be taken on the live vault (`lock.py:323`) | reported (confirmed) |
-| 87-10 | The monthly wrappers' `busy()` and `musaeus_running.sh` each miss cases; no real lock | reported (confirmed) |
+| 87-8 | `MutationBoundary.move` compares sizes, not hashes, before releasing the source | **fixed #99** |
+| 87-9 | The single-run lock can never be taken on the live vault (`lock.py:323`) | **fixed #104** (one masters lock) |
+| 87-10 | The monthly wrappers' `busy()` and `musaeus_running.sh` each miss cases; no real lock | **fixed #104** |
 | 87-11 | An unreadable master still gave an all-clear | **fixed #90** |
 | 87-12 | After a rebaseline, `verify_effect` said "nothing wrong" without looking | **fixed #90** |
 | 87-13 | Backup verification compares size and mtime only; `hash_index.db` is copied raw | **fixed #94** |
-| 87-14 | `scripts/merge_artist_folders.py` moves Lossless copies, not masters | reported |
-| 87-15 | `scripts/consolidate_artist_folders.py` creates the alias chain it says it prevents | reported (confirmed) |
+| 87-14 | `scripts/merge_artist_folders.py` moves Lossless copies, not masters | **retired #105** (refuses to run) |
+| 87-15 | `scripts/consolidate_artist_folders.py` creates the alias chain it says it prevents | **fixed #112** |
 | 87-m1 | Rollback of a file overwritten twice reports a failure though it restored (`mutation.py:666-676`) | reported, minor |
 | 87-m2 | Releasing the lock can delete the next holder's record (`lock.py:249-254`) | reported, minor |
-| 88-1 | `transfer_to_usb.py --no-format --dest` checks nothing about the destination (protected folder, the source itself); it empties the destination file before reading the source | reported (confirmed in scratch); **do not use without `--sync`** |
+| 88-1 | `transfer_to_usb.py --no-format --dest` checks nothing about the destination (protected folder, the source itself); it empties the destination file before reading the source | **fixed #96** |
 | 88-2 | `loudness.py`: no `-nostdin`, a failed run trusted, every stream measured; forge writes it into master tags | **fixed #93** |
-| 88-3 | `scripts/write_master_loudness_tags.py` rewrites every master in place and never checks for a running build | reported |
+| 88-3 | `scripts/write_master_loudness_tags.py` rewrites every master in place and never checks for a running build | **in part #104** (holds the masters lock); the in-place rewrite stays open |
 | 88-4 | `edition_build.py:865`: retag/adopt/move save tags in place on the final copy; a kill leaves a damaged copy | reported |
-| 88-5 | `--sync` treats a same-size file as unchanged, so retags never reach the stick (`test_usb_sync.py` fakes a size change) | reported (confirmed); **stick sync on hold** |
-| 88-6 | The vault's old playlists overwrite the edition's checked ones on the stick ("Holiday.m3u8 -> Honey") | reported (confirmed); **stick sync on hold** |
-| 88-7 | A copy that fails its hash check stays on the stick and is "already right" next time; the check hashes the page cache | reported (confirmed); **stick sync on hold** |
-| 88-8 | FAT folds letter case; `--sync` compares case-sensitively (the dry run's 181 case renames) | reported (confirmed with plan_sync); **stick sync on hold** |
-| 88-9 | The transfer takes no edition build lock | reported |
-| 88-10 | `edition_ledger.py:260`: "database is locked" reads as "no entry"; car and iPhone builds can run at once | reported |
-| 88-11 | Ctrl-C in a build's move phase: finished copies are deleted and baked again next build | reported (confirmed) |
+| 88-5 | `--sync` treats a same-size file as unchanged, so retags never reach the stick (`test_usb_sync.py` fakes a size change) | **fixed #96** |
+| 88-6 | The vault's old playlists overwrite the edition's checked ones on the stick ("Holiday.m3u8 -> Honey") | **fixed #96** |
+| 88-7 | A copy that fails its hash check stays on the stick and is "already right" next time; the check hashes the page cache | **fixed #96** |
+| 88-8 | FAT folds letter case; `--sync` compares case-sensitively (the dry run's 181 case renames) | **fixed #96** |
+| 88-9 | The transfer takes no edition build lock | **fixed #96** |
+| 88-10 | `edition_ledger.py:260`: "database is locked" reads as "no entry"; car and iPhone builds can run at once | **fixed #106** |
+| 88-11 | Ctrl-C in a build's move phase: finished copies are deleted and baked again next build | **fixed #107** |
 | 88-12 | `master_measurements.restore_ledger` has no caller: measurements in masters are never read back | reported (confirmed) |
-| 88-13 | `scripts/iphone_transfer.py` prints a paste block with no `&&` and no quoting; a path with spaces could `rm -rf` the wrong place | reported; **do not paste its block** |
-| 88-14 | The ReplayGain-from-R128 formula exists twice (`write_master_loudness_tags.py:55`, `forge.py:108`) | reported |
-| 88-15 | `edition_bake.decoded_seconds` is another duration reader, with its own 600 s timeout | reported |
-| B-2 | `stages/albumart.py:476-479` marks a song checked before fetching; a refused lookup never retries | reported (confirmed by a probe) |
-| B-4 | With the recovery boundary UNAVAILABLE, canonicalize deletes INBOX originals outright and finalize copies with no journal | open |
+| 88-13 | `scripts/iphone_transfer.py` prints a paste block with no `&&` and no quoting; a path with spaces could `rm -rf` the wrong place | **fixed #111** |
+| 88-14 | The ReplayGain-from-R128 formula exists twice (`write_master_loudness_tags.py:55`, `forge.py:108`) | **fixed #117** |
+| 88-15 | `edition_bake.decoded_seconds` is another duration reader, with its own 600 s timeout | low: the 600 s is the decode's wall-clock limit, not a track length (the review's reading was off); it bites only when ffmpeg is paused, e.g. by the idle throttle |
+| B-2 | `stages/albumart.py:476-479` marks a song checked before fetching; a refused lookup never retries | **fixed #109** |
+| B-4 | With the recovery boundary UNAVAILABLE, canonicalize deletes INBOX originals outright and finalize copies with no journal | **fixed #108** |
 | B-12 | Edition tests read the machine's real process table | **fixed in-process** (autouse fixture); subprocess tests still do |
 | B-1,3,5-11 | Errors and gaps in `docs/REVIEW_BRIEF.md` (coverage; the ReplayGain sentence backwards; the accepted list) | **fixed** in the same PR as this table |
 
