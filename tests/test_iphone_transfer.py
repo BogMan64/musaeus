@@ -132,9 +132,11 @@ class TestItPrintsUsableSteps:
         assert "rm -rf" not in run(vault=vault).stdout
 
     def test_wipe_adds_the_clear_line_when_asked(self, vault):
+        # Cleared with find -delete inside the mount, after it is confirmed a
+        # mount point -- not rm -rf (review of #88, finding 13).
         out = run("--wipe", vault=vault).stdout
-        assert "rm -rf" in out
-        assert out.index("ifuse --documents") < out.index("rm -rf") < out.index("rsync -a"), (
+        assert "-mindepth 1 -delete" in out
+        assert out.index("ifuse --documents") < out.index("-delete") < out.index("rsync -a"), (
             "the clear must happen after the mount and before the copy"
         )
 
@@ -164,3 +166,19 @@ class TestTheChecks:
         assert r.returncode == 1
         assert "does not exist yet" in r.stdout
         assert "musaeus edition-build iphone" in r.stdout, "it should say how to make one"
+
+
+class TestThePasteIsSafe:
+    """Review of #88, finding 13 (2026-10-07): the paste had no && between its
+    commands and no quoting. If ifuse failed, rsync filled the plain folder on
+    the PC with tens of GB; with --mount '/media/grey/My Phone' the wipe would
+    have been rm -rf on the wrong paths."""
+
+    def test_a_failed_step_stops_the_rest_and_paths_are_quoted(self, vault):
+        out = run("--wipe", "--mount", "/tmp/My Phone", vault=vault).stdout
+        chain = out[out.index("Copy and paste") : out.index("If it stops")]  # the paste only
+
+        assert "'/tmp/My Phone'" in chain, "a mount path with a space is not quoted"
+        assert chain.count("&&") >= 5, "the commands are not chained"
+        assert chain.index("mountpoint -q") < chain.index("-delete") < chain.index("rsync -a")
+        assert "rm -rf" not in out

@@ -389,29 +389,46 @@ def _write_canon_entry(canon: Path, old: str, new: str) -> int:
     text = canon.read_text(encoding="utf-8")
     lines = text.splitlines()
 
-    repointed = 0
-    for i, ln in enumerate(lines):
-        parts = ln.split("\t", 1)
-        if len(parts) == 2 and parts[1].strip() == old:
-            lines[i] = f"{parts[0]}\t{new}"
-            repointed += 1
+    def _key(ln: str) -> str | None:
+        if "\t" not in ln or ln.startswith("#"):
+            return None
+        return ln.split("\t", 1)[0].strip().lower()
 
-    # And never write a row whose canonical is itself a key -- the same
-    # chain, created in the other direction.
-    keys = {ln.split("\t", 1)[0].strip().lower()
-            for ln in lines if "\t" in ln and not ln.startswith("#")}
-    if new.lower() in keys:
-        dest = next(ln.split("\t", 1)[1].strip() for ln in lines
-                    if "\t" in ln and ln.split("\t", 1)[0].strip().lower() == new.lower())
+    # Resolve `new` to its final name FIRST: re-pointing to `new` and only then
+    # noticing it is itself a key built the chain this function exists to
+    # prevent (review of #87, finding 15). Follow it to a name that is not a
+    # key, with a guard against a loop.
+    targets = {k: ln.split("\t", 1)[1].strip() for ln in lines if (k := _key(ln))}
+    seen = {old.lower()}
+    while new.lower() in targets and new.lower() not in seen:
+        seen.add(new.lower())
+        dest = targets[new.lower()]
         print(f"  note: {new!r} is itself a canon key pointing at {dest!r}; "
               f"writing {old!r} -> {dest!r} instead")
         new = dest
+
+    # Every entry that lands on `old`, in any letter case, now lands on `new`;
+    # an existing entry FOR `old` follows the merge instead of staying behind.
+    repointed = 0
+    has_old = False
+    for i, ln in enumerate(lines):
+        k = _key(ln)
+        if k is None:
+            continue
+        if k == old.lower():
+            has_old = True
+            if ln.split("\t", 1)[1].strip() != new:
+                lines[i] = f"{ln.split(chr(9), 1)[0]}\t{new}"
+            continue
+        if ln.split("\t", 1)[1].strip().lower() == old.lower():
+            lines[i] = f"{ln.split(chr(9), 1)[0]}\t{new}"
+            repointed += 1
 
     # Whole-key comparison, not `f"{old}\t" in text`. That substring test
     # reports a match when `old` is merely the TAIL of another key:
     # "Jeff Lynne's ELO\tELO" contains "ELO\t", so adding ELO was silently
     # skipped and the merge left no canon entry at all.
-    if old.lower() not in keys:
+    if not has_old:
         lines.append(f"{old}\t{new}")
         print(f"  artist_canon.tsv: added {old!r} -> {new!r}")
 

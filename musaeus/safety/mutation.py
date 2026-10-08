@@ -688,6 +688,12 @@ class MutationBoundary:
 
         if target.exists():
             current = sha256_file(target)
+            # Already back first: a file written twice is restored by undoing
+            # the second write, and the first write's undo then found it
+            # "changed since" and reported a failure for a restore that had
+            # worked (review of #87, minor finding 1).
+            if checkpointed is not None and current == sha256_file(checkpointed):
+                return  # already back to the checkpointed state
             if entry.result_digest is not None and current != entry.result_digest:
                 raise CollisionError(
                     f"{relative} no longer holds what this run left there "
@@ -695,8 +701,6 @@ class MutationBoundary:
                     f"restoring would destroy a change made since",
                     relative_path=relative,
                 )
-            if checkpointed is not None and current == sha256_file(checkpointed):
-                return  # already back to the checkpointed state
         if checkpointed is None:
             # Nothing checkpointed means the run created this item; clear it
             # out of the way rather than deleting it.

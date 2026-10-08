@@ -440,7 +440,14 @@ def verify(
         # calling the copy wrong, and name a master whose claim is far off.
         src = (source_info.get("format") or {}).get("filename")
         real = decoded_seconds(Path(src)) if src else None
-        if real is None or abs(real - od) > allowed:
+        if real is None:
+            # Still refused, but said plainly: "length changed" alone read as
+            # a verdict on the copy (review of #88, finding 15).
+            raise BakeError(
+                f"length changed: master {sd:.2f}s, copy {od:.2f}s (the master's real length "
+                f"could not be decoded to check)"
+            )
+        if abs(real - od) > allowed:
             raise BakeError(f"length changed: master {sd:.2f}s, copy {od:.2f}s")
         if abs(real - sd) > _CLAIMED_LENGTH_SLACK:
             raise BakeError(
