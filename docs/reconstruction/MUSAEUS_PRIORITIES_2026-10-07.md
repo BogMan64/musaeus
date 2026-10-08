@@ -32,10 +32,9 @@ The stick sync ran on 2026-10-07 and the stick matches the car library (8,938 fi
 
 ## P1 — what is left
 
-1. **The low October findings left:** 86-9 (in part: the resolver honouring a person's keep
-   from `musaeus dedupe` needs its own status value -- Grey to decide), 86-13 (the legacy
-   `musaeus transcode` export, which no act uses), 88-3 (the tag script rewrites masters in
-   place), 88-4 (a kill mid-retag can damage an edition copy), 88-15 (low).
+1. **The October findings are all fixed** (2026-10-08, #89 to #127; statuses in the TODO
+   table). `write_master_loudness_tags.py` is safe to run again once #126 and #127 are
+   installed; its run changes every master, so the next edition build retags every copy.
 2. **Review the ~32,800 lines no review has read yet** (`cli.py`, `db.py`, `state/`,
    `canon/`, art, forge, doctor, the intake and enrichment stages), as five slices with a
    local `/code-review`, after Grey's weekly usage resets on Saturday.
