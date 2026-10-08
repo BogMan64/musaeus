@@ -13,17 +13,19 @@ mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/music_backup_$(date +%Y%m%d_%H%M).log"
 notify() { python3 "$REPO/scripts/musaeus_notify.py" --title "MUSAEUS music backup" --message "$1" >/dev/null 2>&1 || true; }
 
-busy() { ps -eo args | awk '$1 ~ /python/ && $2 ~ /\/musaeus$/' | grep -q .; }
+# The backup holds the masters lock (shared) and exits 75 while a job that
+# changes masters holds it: retry every 10 minutes, for up to 12 hours. The
+# lock replaced a guess from the process list (review of #87, finding 10).
 waited=0
-while busy; do
+while :; do
+    python3 "$REPO/scripts/music_backup.py" --execute > "$LOG" 2>&1
+    rc=$?
+    [ "$rc" -ne 75 ] && break
     if [ "$waited" -ge 720 ]; then
-        notify "not run: other MUSAEUS work was running for 12 hours; run by hand: python3 $REPO/scripts/music_backup.py --execute"
+        notify "not run: other MUSAEUS work held the masters for 12 hours; run by hand: python3 $REPO/scripts/music_backup.py --execute"
         exit 0
     fi
     sleep 600; waited=$((waited + 10))
 done
-
-python3 "$REPO/scripts/music_backup.py" --execute > "$LOG" 2>&1
-rc=$?
 notify "$(grep -E '^(BACKUP|NOT RUN)' "$LOG" | head -2 | paste -sd ' ' -) (log: $LOG)"
 exit $rc

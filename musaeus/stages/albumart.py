@@ -223,6 +223,16 @@ def _embed_art(audio_path: str, art_path: Path) -> bool:
 # ── Stage ─────────────────────────────────────────────────────────────────────
 
 
+def _ask_again(ctx: RunContext, fp: str) -> None:
+    """Leave *fp* unchecked: nothing could be asked, which is not "no cover".
+
+    The song is marked checked before its cover is fetched, and the next run
+    selects only unchecked songs, so a refused or timed-out lookup meant no
+    cover for good unless someone passed --force (review of the brief, B-2).
+    """
+    ctx.conn.execute("UPDATE archive SET art_checked_at = NULL WHERE file_path = ?", (fp,))
+
+
 def _fetch_sidecar(
     ctx: RunContext, fp: str, result: StageResult, private: bool = False
 ) -> Path | None:
@@ -248,6 +258,7 @@ def _fetch_sidecar(
     except ArtUnavailable as exc:
         logger.debug("[albumart] could not ask for %r/%r: %s", artist, album, exc)
         result.notes.append(f"art lookup unavailable for {artist} — {album}")
+        _ask_again(ctx, fp)
         return None
     if not got:
         # No album cover anywhere: a picture of the artist or group instead
@@ -256,6 +267,7 @@ def _fetch_sidecar(
             got = fetch_artist_picture(folder_artist(artist))
         except ArtUnavailable as exc:
             logger.debug("[albumart] could not ask for a picture of %r: %s", artist, exc)
+            _ask_again(ctx, fp)
             return None
         if not got:
             return None
