@@ -604,6 +604,13 @@ class TestVerifyEffectChecksTheClaim:
     discarded as fast as one that lies. Each outcome now answers for its
     own contract."""
 
+    @pytest.fixture(autouse=True)
+    def _stand_ins_decode(self, monkeypatch):
+        # These rows are one-byte stand-ins with a faked probe: each outcome's
+        # contract is under test here, not the decode, which has its own test
+        # (test_review86_canonicalize_truncation.py).
+        monkeypatch.setattr("musaeus.stages.canonicalize.decodes_cleanly", lambda p: (True, None))
+
     def _row(self, ctx, path: Path, claimed: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"x")

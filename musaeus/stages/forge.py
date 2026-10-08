@@ -45,6 +45,7 @@ from ..loudness import (
     dbtp_to_linear,
     lufs_to_rg,
     measure_loudness,
+    replaygain_from_r128,
 )
 from .base import BaseStage, StageError
 
@@ -105,7 +106,7 @@ def _write_tags_m4a(path: Path, rg_gain: float, rg_peak: float) -> bool:
         # same loudness needs a gain 5 dB higher here. Both were written from
         # the -23 gain until 2026-10-06, so every player reading ReplayGain
         # played the masters 5 dB too quietly.
-        replaygain = rg_gain + (R128_REFERENCE - R128_APPLE_REFERENCE)
+        replaygain = replaygain_from_r128(rg_gain)
         tags["----:com.apple.iTunes:replaygain_track_gain"] = [
             MP4FreeForm(f"{replaygain:+.2f} dB".encode())
         ]
