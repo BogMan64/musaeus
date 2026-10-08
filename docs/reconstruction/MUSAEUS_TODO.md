@@ -97,6 +97,51 @@ Each was re-run against the code of 2026-10-07 with the triage's own reproductio
 | F5 | `sha256_file` duplicates `hasher.file_hash` | nit |
 | F6 | The operation journal re-reads itself on every append (4,000 appends: 44 s) | fixed: linear (4,000 appends: 3.5 s, the fsyncs) |
 
+### Findings of the October reviews (2026-10-07)
+
+Local `/code-review` runs on the review slices #86 (masters) and #87 (protection), and one on
+`docs/REVIEW_BRIEF.md` (B-). "Reported" is the reviewer's claim, not yet re-checked here; the
+reviewer wrote "confirmed" when it ran something.
+
+| # | Finding | Status |
+|---|---|---|
+| 86-1 | TributeQuarantine (Act 1) rescanned filed masters; would have moved Dean Martin "Sleep Warm" | **fixed #89** (checked on the live library) |
+| 86-2 | `cross_dupe.py:104`: any file at a ledger path counts as the master's twin, audio never checked | reported (confirmed in a test vault) |
+| 86-3 | `dupe_resolver.py:1008`: a group whose members are all CROSS_BATCH gets no keeper; all move | **open: my regression from #81 (R1)**; fix next |
+| 86-4 | Restore scripts put raw paths in double quotes; `$` stops them, `$(...)` would run | **fixed #89** |
+| 86-5 | NearDupe's "is this live?" reads the title only, the resolver title and album | reported (confirmed in a test vault) |
+| 86-6 | The resolver never checks that the keeper's file exists | reported |
+| 86-7 | `keep_rule.decide` skips the shared-loudness check (the 2026-09-26 swap incident shape) | reported (confirmed) |
+| 86-8 | `keep_rule.LOSSY` misses wmav1, ac3, eac3, musepack, amrnb | reported (confirmed) |
+| 86-9 | A 'keep' set in `musaeus dedupe` is ignored by the resolver; 'a' is lowercased into auto-resolve | reported |
+| 86-10 | An interrupted resolver run: files moved, rows rolled back, no log or restore script | reported |
+| 86-11 | An interrupted Finalize: the re-run makes a "(2)" copy and the first is untracked (also 87-2) | reported (87-2 confirmed) |
+| 86-12 | Organize renames before updating rows; a kill can strand up to 49 masters | reported |
+| 86-13 | Transcode writes the final file directly, no `-nostdin`, sample rate and channels unset | reported |
+| 86-14 | Finalize's `verify_effect` samples the newest rows, not this run's | reported |
+| 86-15 | Canonicalize's truncation check compares two metadata durations | reported |
+| 87-1 | `scripts/merge_case_duplicate_albums.py` deletes on a name collision with no audio check | reported (confirmed in a scratch vault); **do not run it** |
+| 87-2 | Undoing a move whose source was kept leaves the copy and reports success (`mutation.py:710`) | reported (confirmed) |
+| 87-3 | Music backup rotation counts copies that never verified; bit-rot repair may use one | reported (confirmed); **before 1 Nov** |
+| 87-4 | Bit-rot "replaced on purpose" used the arrival hash; transcoded masters never match | **fixed #90** (live: 5 masters) |
+| 87-5 | A decode timeout returned a whole-file hash: false rot, wrong rebaseline | **fixed #90** |
+| 87-6 | The hasher's ffmpeg ran without `-nostdin` | **fixed #90** |
+| 87-7 | A repair moved the master aside before the good copy was in place; one failure ended the run | **fixed #90** |
+| 87-8 | `MutationBoundary.move` compares sizes, not hashes, before releasing the source | reported |
+| 87-9 | The single-run lock can never be taken on the live vault (`lock.py:323`) | reported (confirmed) |
+| 87-10 | The monthly wrappers' `busy()` and `musaeus_running.sh` each miss cases; no real lock | reported (confirmed) |
+| 87-11 | An unreadable master still gave an all-clear | **fixed #90** |
+| 87-12 | After a rebaseline, `verify_effect` said "nothing wrong" without looking | **fixed #90** |
+| 87-13 | Backup verification compares size and mtime only; `hash_index.db` is copied raw | reported; **before 1 Nov** |
+| 87-14 | `scripts/merge_artist_folders.py` moves Lossless copies, not masters | reported |
+| 87-15 | `scripts/consolidate_artist_folders.py` creates the alias chain it says it prevents | reported (confirmed) |
+| 87-m1 | Rollback of a file overwritten twice reports a failure though it restored (`mutation.py:666-676`) | reported, minor |
+| 87-m2 | Releasing the lock can delete the next holder's record (`lock.py:249-254`) | reported, minor |
+| B-2 | `stages/albumart.py:476-479` marks a song checked before fetching; a refused lookup never retries | reported (confirmed by a probe) |
+| B-4 | With the recovery boundary UNAVAILABLE, canonicalize deletes INBOX originals outright and finalize copies with no journal | open |
+| B-12 | Edition tests read the machine's real process table | **fixed in-process** (autouse fixture); subprocess tests still do |
+| B-1,3,5-11 | Errors and gaps in `docs/REVIEW_BRIEF.md` (coverage; the ReplayGain sentence backwards; the accepted list) | **fixed** in the same PR as this table |
+
 ### Open, in the order I'd take them
 
 1. ~~The delete tool should drop the deleted masters' bit-rot baselines~~ (done, #79).
