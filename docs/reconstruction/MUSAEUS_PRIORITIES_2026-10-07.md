@@ -1,6 +1,6 @@
 # MUSAEUS — what is left, in priority order
 
-**Rewritten 2026-10-07, evening.** Measured against the live vault the same evening. This is the short list.
+**Rewritten 2026-10-07, evening; P0/P1 updated 2026-10-08.** Measured against the live vault the same evening. This is the short list.
 
 - The detail is in `MUSAEUS_TODO.md`: the September and October findings tables, each finding with its status.
 - The working notes for the next session are in `~/Desktop/MUSAEUS_HANDOVER_2026-10-03/HANDOVER.md`.
@@ -23,23 +23,22 @@ The Lossless edition was moved to `~/Music` by mistake on 2026-10-07 and copied 
 
 ## P0 — unsafe right now
 
-**Nothing is running, and nothing unsafe runs on its own.** These must not be run by hand until their findings are fixed:
-
-- `scripts/merge_case_duplicate_albums.py` (finding 87-1: it can delete a master).
-- `scripts/usb_transfer/transfer_to_usb.py --no-format --dest` without `--sync` (88-1).
-- The commands `scripts/iphone_transfer.py` prints for pasting (88-13).
-- `scripts/write_master_loudness_tags.py` again (88-3).
+**Nothing.** Updated 2026-10-08: the October findings that could lose or damage a master
+are fixed (#89 to #117; statuses in the TODO table). Two scripts that could are retired
+and refuse to run: `merge_case_duplicate_albums.py`, `merge_artist_folders.py` (#105).
+The stick sync ran on 2026-10-07 and the stick matches the car library (8,938 files).
 
 ---
 
-## P1 — fixes from the October reviews, in the order agreed with Grey
+## P1 — what is left
 
-1. **The stick sync** (88-1, 5, 6, 7, 8, 9), then the sync itself. The stick is back from the car; the dry run on 2026-10-07 found 53 new, 360 changed, 181 letter-case renames, 353 to delete and 8,344 already right.
-2. **The findings that can move or lose a master:** 86-2, 86-6, 86-10, 86-11 (with 87-2), 86-12, 87-8.
-3. **The rest of the October table.**
-4. **Review the ~32,800 lines no review has read yet** (`cli.py`, `db.py`, `state/`, `canon/`, art, forge, doctor, the intake and enrichment stages), as five slices with a local `/code-review`, after Grey's weekly usage resets on Saturday.
-
-Fixed and merged on 2026-10-07: the September findings (#81, #82), and from October 86-1, 86-3 (my own regression), 86-4, 87-3 to 87-7, 87-11 to 87-13, 88-2 (#89 to #94).
+1. **The low October findings left:** 86-9 (in part: the resolver honouring a person's keep
+   from `musaeus dedupe` needs its own status value -- Grey to decide), 86-13 (the legacy
+   `musaeus transcode` export, which no act uses), 88-3 (the tag script rewrites masters in
+   place), 88-4 (a kill mid-retag can damage an edition copy), 88-15 (low).
+2. **Review the ~32,800 lines no review has read yet** (`cli.py`, `db.py`, `state/`,
+   `canon/`, art, forge, doctor, the intake and enrichment stages), as five slices with a
+   local `/code-review`, after Grey's weekly usage resets on Saturday.
 
 ---
 
