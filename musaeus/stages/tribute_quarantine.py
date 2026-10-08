@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MUSAEUS — Tribute Quarantine Stage (standalone, not wired into DEFAULT_PIPELINE)
+MUSAEUS — Tribute Quarantine Stage (in Act 1 since 2026-09-01; arrivals only)
 
 Detects and quarantines tribute-band/karaoke/meditation/ASMR-type content.
 Ported from ORPHEUS's orpheus_junk_quarantine.py, per tonight's ORPHEUS
@@ -34,6 +34,7 @@ import csv
 import logging
 import os
 import re
+import shlex
 import shutil
 import sqlite3
 import stat
@@ -98,7 +99,9 @@ JUNK_ALBUM_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\bmeditation\b", re.IGNORECASE),
     re.compile(r"\bsleep\b", re.IGNORECASE),
     re.compile(r"\bhypnos", re.IGNORECASE),
-    re.compile(r"\brelax", re.IGNORECASE),
+    # Word-ended: a bare \brelax matched "Relaxin' with the Miles Davis
+    # Quintet" (review of #86, 2026-10-07).
+    re.compile(r"\brelax(es|ed|ing|ation)?\b", re.IGNORECASE),
 ]
 
 KNOWN_JUNK_ARTISTS: frozenset[str] = frozenset(
@@ -233,8 +236,19 @@ class TributeQuarantineStage(BaseStage):
         against already-populated archive columns."""
 
     def _get_candidates(self, ctx: RunContext) -> list[dict]:
+        """Arrivals only: rows not yet filed as masters.
+
+        This stage runs in Act 1, and it rescanned every CATALOGUED row --
+        the filed masters too. On the library of 2026-10-07 that would have
+        moved Dean Martin's "I've Grown Accustomed To Her Face" out (album
+        "Sleep Warm"), and a master put back by hand was caught again on
+        the next Act 1 (review of #86, finding 1). A filed master has been
+        through intake already; removing one is a human decision, made
+        with scripts/delete_reviewed_tracks.py.
+        """
         rows = ctx.conn.execute(
-            "SELECT id, file_path, artist, title, album FROM archive WHERE status='CATALOGUED'"
+            "SELECT id, file_path, artist, title, album FROM archive "
+            "WHERE status='CATALOGUED' AND finalized_at IS NULL"
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -286,8 +300,11 @@ class TributeQuarantineStage(BaseStage):
         for m in moved:
             src, dst = m["source"], m["destination"]
             src_dir = os.path.dirname(src)
-            lines.append(f'mkdir -p "{src_dir}"')
-            lines.append(f'mv -n "{dst}" "{src}"')
+            # shlex.quote: a path is data, never shell. Raw double quotes let
+            # "If I Had $1,000,000" stop the script under set -u, and would
+            # have run a $(...) in a name (review of #86, finding 4).
+            lines.append(f"mkdir -p {shlex.quote(src_dir)}")
+            lines.append(f"mv -n {shlex.quote(dst)} {shlex.quote(src)}")
         restore_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         restore_path.chmod(restore_path.stat().st_mode | stat.S_IEXEC)
 
