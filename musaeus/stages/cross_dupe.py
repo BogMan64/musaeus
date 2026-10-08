@@ -48,6 +48,7 @@ from pathlib import Path
 
 from ..context import RunContext, StageResult
 from ..db import SET_ASIDE_STATUSES, lookup_finalized_hash, open_hash_index
+from ..hasher import audio_hash as hasher_audio_hash
 from .base import BaseStage
 
 logger = logging.getLogger(__name__)
@@ -94,14 +95,24 @@ def _still_that_recording(conn: sqlite3.Connection, file_path: str, audio_hash: 
     chain hands a freed path to another file: Act 3 of 2026-09-27 renamed
     "Copacabana (2)" -> plain and "(3)" -> "(2)", so the ledger's "(2)" for
     the first recording held the second one, and the only copy of the first
-    was flagged as a duplicate of it. With no catalogue row (the database is
-    wiped between batches; the ledger is not) the file's presence is all
-    there is to go on, as before.
+    was flagged as a duplicate of it.
+
+    With no catalogue row, or one without an audio hash, the file's own audio
+    decides. Its presence alone counted as a twin, so a different recording
+    left at the path (an untracked "(2)" from an interrupted Finalize) made
+    the incoming file a duplicate, and the resolver moved the only copy of it
+    (review of #86, finding 2). A file that cannot be decoded is not a twin:
+    not flagging lets a duplicate in, flagging wrongly loses a song.
     """
     row = conn.execute(
         "SELECT audio_hash FROM archive WHERE file_path = ?", (file_path,)
     ).fetchone()
-    return row is None or not row["audio_hash"] or row["audio_hash"] == audio_hash
+    if row is not None and row["audio_hash"]:
+        return bool(row["audio_hash"] == audio_hash)
+    try:
+        return hasher_audio_hash(Path(file_path), strict=True) == audio_hash
+    except Exception:  # noqa: BLE001 -- undecodable: unconfirmed, so not a twin
+        return False
 
 
 class CrossDupeStage(BaseStage):
