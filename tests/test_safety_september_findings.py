@@ -466,3 +466,25 @@ class TestF6_JournalCost:
 
         assert [e.item_ref for e in first.entries()] == ["a", "b", "c"]
         assert third.sequence == 2
+
+
+# ── Review of #87, finding 2: undoing a move clears the copy it made ──────
+
+
+def test_undoing_a_move_whose_source_was_kept_clears_the_copy(tmp_path):
+    """Finalize keeps the source until the archive row lands. Undoing such a
+    move left the copy at the destination and called it restored, so a re-run
+    made a "(2)" second copy beside an untracked first one."""
+    vault = tmp_path / "vault"
+    source = vault / "STAGING" / "song.m4a"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"the song")
+    boundary, _ = _boundary(vault / "STAGING", tmp_path / "rec", vault)
+    destination = vault / "ALAC-Archival" / "song.m4a"
+
+    boundary.move(source, destination, release_source=False)
+    result = boundary.rollback()
+
+    assert source.read_bytes() == b"the song"
+    assert not destination.exists(), "the copy was left behind"
+    assert result.outcome == "completed"

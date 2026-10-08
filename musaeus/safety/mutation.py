@@ -709,6 +709,18 @@ class MutationBoundary:
             )
         if origin.exists():
             if sha256_file(origin) == current:
+                # The source was kept (finalize releases it only once the
+                # archive row lands). The move's effect is the copy: clear it
+                # away -- quarantined, rollback never deletes. Returning here
+                # left it behind as an untracked file, and a re-run made a
+                # "(2)" beside it (review of #87, finding 2).
+                record = quarantine_item(
+                    destination,
+                    self.checkpoint,
+                    reason=f"rolled back the copy made by {self.run_id}",
+                    run_id=self.run_id,
+                )
+                self._quarantines[record.quarantine_ref] = record
                 return
             raise CollisionError(
                 f"move origin {relative} is occupied by different content; refusing to "
