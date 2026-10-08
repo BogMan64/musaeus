@@ -247,11 +247,19 @@ class LockHandle:
         return refreshed
 
     def release(self) -> None:
+        # Our record goes while the lock is still ours. Unlocking first let
+        # the next job take the lock and write its record, which this then
+        # deleted (review of #87, minor finding 2).
+        try:
+            current = LockOwner.from_json(self.meta_path.read_text(encoding="utf-8"))
+        except OSError:
+            current = None
+        if current is not None and current.run_id == self.owner.run_id:
+            self.meta_path.unlink(missing_ok=True)
         try:
             fcntl.flock(self._fd, fcntl.LOCK_UN)
         finally:
             os.close(self._fd)
-            self.meta_path.unlink(missing_ok=True)
 
     def __enter__(self) -> LockHandle:
         return self

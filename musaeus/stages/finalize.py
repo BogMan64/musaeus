@@ -103,7 +103,7 @@ from ..safety.recovery import (
     OperationJournal,
     create_checkpoint,
 )
-from .base import BaseStage
+from .base import NO_VERIFICATION, BaseStage, VerifyResult
 from .organize import _is_collision_name_for, library_relpath, sanitize_path_component, unique_path
 
 logger = logging.getLogger(__name__)
@@ -249,7 +249,7 @@ class FinalizeStage(BaseStage):
 
     NAME = "finalize"
 
-    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> VerifyResult:
         """A file this stage claims to have moved must be AT the new path.
 
         Moves are the costliest thing to get silently wrong: a stage that
@@ -258,17 +258,31 @@ class FinalizeStage(BaseStage):
         treated as its own duplicate (scope doc section 4.17). Sampling a
         few is enough to catch a wholesale failure.
         """
-        rows = ctx.conn.execute(
-            "SELECT file_path FROM archive WHERE status = ? ORDER BY last_seen DESC LIMIT 5",
-            ("CATALOGUED",),
-        ).fetchall()
-        missing = [r["file_path"] for r in rows if not Path(r["file_path"]).exists()]
-        if not rows or not missing:
-            return []
-        return [
-            f"reported {result.files_changed} change(s) but {len(missing)} of "
-            f"{len(rows)} sampled CATALOGUED rows name a file that is not on disk"
+        # This run's own moves. The five newest CATALOGUED rows could be any
+        # batch's, so a run could pass without one of its files being looked
+        # at (review of #86, finding 14).
+        moved = [
+            r["new_value"]
+            for r in ctx.conn.execute(
+                "SELECT new_value FROM events WHERE run_id = ? AND event_type = 'FINALIZE_MOVE' "
+                "ORDER BY id DESC LIMIT 20",
+                (ctx.run_id,),
+            )
+            if r["new_value"]
         ]
+        if not moved:
+            if result.files_changed and not result.dry_run:
+                return [f"reported {result.files_changed} move(s) but recorded none in this run"]
+            return NO_VERIFICATION
+        problems = []
+        for path in moved:
+            if not Path(path).exists():
+                problems.append(f"moved to {path}, but nothing is there")
+            elif not ctx.conn.execute(
+                "SELECT 1 FROM archive WHERE file_path = ?", (path,)
+            ).fetchone():
+                problems.append(f"moved to {path}, but no catalogue row points there")
+        return problems
 
     def validate(self, ctx: RunContext) -> None:
         """Report the work set, not the table.

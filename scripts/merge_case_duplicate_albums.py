@@ -88,6 +88,14 @@ def groups_for(root: Path) -> dict[tuple[str, str], list[Path]]:
 
 
 def main() -> int:
+    # RETIRED 2026-10-08 (review of #87, findings 1 and 14). The code below is
+    # kept for reference only; it predates the masters (ALAC-Archival) layout.
+    print(
+        "RETIRED: merge_case_duplicate_albums.py predates the masters layout -- it deletes a file on a name collision with no audio check (in a scratch vault, a different, longer recording) and still expects the old folder layout. "
+        "Use scripts/consolidate_artist_folders.py OLD NEW (dry run first).",
+        file=sys.stderr,
+    )
+    return 2
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--execute", action="store_true")
