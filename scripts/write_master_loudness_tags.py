@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from musaeus.config import get_config  # noqa: E402
 from musaeus.edition_ledger import ledger_path, measurements_of, open_for_reading  # noqa: E402
-from musaeus.loudness import R128_APPLE_REFERENCE, R128_REFERENCE  # noqa: E402
+from musaeus.loudness import R128_APPLE_REFERENCE, replaygain_from_r128  # noqa: E402
 from musaeus.master_measurements import KEY, encode  # noqa: E402
 
 R128_KEY = "----:com.apple.iTunes:R128_TRACK_GAIN"
@@ -52,7 +52,7 @@ def wanted(tags: Any, lufs: float | None, measured: dict) -> dict[str, bytes]:
     else:
         r128_db = None
     if r128_db is not None:
-        rg = f"{r128_db + (R128_REFERENCE - R128_APPLE_REFERENCE):+.2f} dB"
+        rg = f"{replaygain_from_r128(r128_db):+.2f} dB"
         if _text(tags, RG_KEY) != rg:
             out[RG_KEY] = rg.encode()
     if measured:
