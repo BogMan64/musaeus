@@ -1008,8 +1008,12 @@ class DupeResolverStage(BaseStage):
             }
             if cross and len(members) > 1:
                 rest = [m for m in members if m["file_path"] not in cross]
-                keeper = rest[0] if rest else None
-                losers = [m for m in members if m is not keeper]
+                # Every member flagged: keep the ranked keeper. Choosing none
+                # moved the whole group, library copies too (review of #86,
+                # finding 3, a regression from the R1 fix).
+                if rest:
+                    keeper = rest[0]
+                    losers = [m for m in members if m is not keeper]
             self._move_losers(
                 ctx,
                 result,

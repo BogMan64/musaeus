@@ -124,3 +124,23 @@ def test_R5_a_duplicate_another_stage_moved_is_recognised_by_its_recording(ctx):
     assert new.exists()
     assert any("relocated by another stage" in n for n in result.notes), result.notes
     assert result.files_errored == 0
+
+
+def test_a_group_flagged_cross_batch_throughout_keeps_one_copy(ctx):
+    """Review of #86, finding 3, a regression from the R1 fix: when every member
+    of a component was CROSS_BATCH-flagged, R1 chose no keeper and moved them
+    all -- library copies too, since CrossDupe can flag a file at a ledger path
+    (finding 2). Never move a whole group: keep the ranked keeper."""
+    a = _row(ctx, ctx.alac_library / "A" / "a.m4a", artist="A", album="B", title="T",
+             codec="alac", bitrate=900_000)  # fmt: skip
+    b = _row(ctx, ctx.alac_library / "A" / "b.m4a", artist="A", album="B", title="T",
+             codec="aac", bitrate=256_000)  # fmt: skip
+    for path, gid in ((a, "crossdupe_aaaaaaaaaaaa"), (b, "crossdupe_bbbbbbbbbbbb")):
+        _dup(ctx, gid, path, "CROSS_BATCH")
+    _dup(ctx, "near_cccccccc", a, "NEAR")
+    _dup(ctx, "near_cccccccc", b, "NEAR")
+
+    DupeResolverStage().execute(ctx)
+
+    assert a.exists() or b.exists(), "every copy of the song was moved"
+    assert a.exists() and not b.exists(), "the better copy stays"
