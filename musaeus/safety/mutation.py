@@ -42,6 +42,7 @@ a quiet vault and a review, and is not done here.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -79,6 +80,18 @@ from musaeus.state.schema import StateError, utc_now_iso
 
 ROLLBACK_COMPLETED = "completed"
 ROLLBACK_FAILED = "failed"
+
+
+def _digest_from_disk(path: Path) -> str:
+    """SHA-256 of what the disk holds: flush and drop the cached pages first,
+    or the check reads back the copy still in memory."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+    finally:
+        os.close(fd)
+    return sha256_file(path)
 
 
 class PreconditionError(StateError):
@@ -434,6 +447,16 @@ class MutationBoundary:
             if src_size != copy_size:
                 raise CollisionError(
                     f"size mismatch after copy: source={src_size} bytes, copy={copy_size}",
+                    source=str(source),
+                )
+            # Content, not just size: a damaged copy of the right size was
+            # accepted and the source then released (review of #87, finding
+            # 8). Read back from the disk, not from the pages just written.
+            copied = _digest_from_disk(staged)
+            if before is not None and copied != before:
+                raise CollisionError(
+                    f"the copy of {source_rel} does not match it "
+                    f"({before[:12]}... vs {copied[:12]}...); source kept",
                     source=str(source),
                 )
             staged.rename(destination)  # same parent -> atomic

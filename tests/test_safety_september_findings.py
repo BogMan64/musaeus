@@ -41,6 +41,7 @@ from musaeus.safety.recovery import (
     OP_TAG_WRITE,
     STATUS_RESTORED,
     Checkpoint,
+    CollisionError,
     OperationJournal,
     create_checkpoint,
 )
@@ -488,3 +489,29 @@ def test_undoing_a_move_whose_source_was_kept_clears_the_copy(tmp_path):
     assert source.read_bytes() == b"the song"
     assert not destination.exists(), "the copy was left behind"
     assert result.outcome == "completed"
+
+
+# ── Review of #87, finding 8: a move checks content, not size ──────────────
+
+
+def test_a_damaged_copy_of_the_same_size_never_releases_the_source(tmp_path, monkeypatch):
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    source = lib / "song.bin"
+    source.write_bytes(b"the real song" * 100)
+    boundary, _ = _boundary(lib, tmp_path / "rec", lib)
+    real_copy2 = shutil.copy2
+
+    def damaging_copy2(src, dst, *a, **kw):
+        real_copy2(src, dst, *a, **kw)
+        data = bytearray(Path(dst).read_bytes())
+        data[10] ^= 0xFF  # one flipped byte, same size
+        Path(dst).write_bytes(bytes(data))
+
+    monkeypatch.setattr("musaeus.safety.mutation.shutil.copy2", damaging_copy2)
+
+    with pytest.raises(CollisionError):
+        boundary.move(source, lib / "moved" / "song.bin")
+
+    assert source.read_bytes() == b"the real song" * 100
+    assert not (lib / "moved" / "song.bin").exists()
