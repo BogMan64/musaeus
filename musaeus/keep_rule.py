@@ -35,6 +35,13 @@ from collections.abc import Mapping
 from typing import Any
 
 LOSSY = frozenset({"aac", "mp3", "vorbis", "opus", "wma", "wmav2", "mp2"})
+#: Codecs that rank as lossless (step 1 "any other lossless"), with any
+#: "pcm_*". Named rather than inferred: a lossy codec missing from LOSSY --
+#: ac3, eac3, wmav1, musepack, amr -- ranked as lossless and beat a real AAC
+#: master, which canonicalize then re-encoded (review of #86, finding 8). An
+#: unknown codec is never taken for lossless, as the rule already said.
+LOSSLESS = frozenset({"alac", "flac", "wavpack", "ape", "tta", "mlp", "truehd", "shorten",
+                      "mp4als", "als", "wmalossless", "tak", "ralf"})  # fmt: skip
 STEPS = ("format", "original/baked", "studio/live", "original/remaster", "quality", "length")
 #: Lengths closer than this are the same length (a fade, a gap of silence).
 LENGTH_SLACK_S = 2.0
@@ -48,7 +55,7 @@ def _format_rank(codec: str | None) -> int:
         return 0
     if c == "flac":
         return 1
-    return 3 if c in LOSSY else 2
+    return 2 if c in LOSSLESS or c.startswith("pcm_") else 3
 
 
 def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int]:
@@ -75,7 +82,16 @@ def decide(review: Mapping[str, Any], library: Mapping[str, Any]) -> tuple[str, 
 
     "tie" means keep the library copy: a swap moves a master and remakes
     every edition copy of it, which is not worth doing for nothing.
+
+    The two first share their loudness the way the resolver's members do: an
+    unmeasured copy with the same audio as a master measured at -18 LUFS is
+    that baked copy, not an original. Without it the swap tool judged an
+    identical copy "original" (review of #86, finding 7; the 2026-09-26 shape).
     """
+    from .stages.dupe_resolver import _share_loudness
+
+    review, library = dict(review), dict(library)
+    _share_loudness([review, library])
     for step, r, lib in zip(STEPS, keep_key(review), keep_key(library), strict=False):
         if r != lib:
             return ("review" if r < lib else "library"), step
