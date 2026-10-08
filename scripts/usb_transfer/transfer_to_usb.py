@@ -97,6 +97,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -599,14 +600,37 @@ class CopyResult:
     cooldowns_triggered: int = 0
 
 
+#: A copy is written beside its final name and renamed only once it checks out,
+#: so a failed or interrupted copy never sits under a song's name (review of
+#: #88, findings 1 and 7).
+_PART_SUFFIX = ".part"
+
+
+def _part(dst: Path) -> Path:
+    return dst.with_name(dst.name + _PART_SUFFIX)
+
+
 def _copy_one(src: Path, dst: Path) -> float:
-    """Copy src -> dst in chunks. Returns elapsed seconds."""
+    """Copy src -> dst's .part in chunks, to disk. Returns elapsed seconds."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
-    with open(src, "rb") as rf, open(dst, "wb") as wf:
+    with open(src, "rb") as rf, open(_part(dst), "wb") as wf:
         while chunk := rf.read(_COPY_CHUNK_BYTES):
             wf.write(chunk)
+        wf.flush()
+        os.fsync(wf.fileno())
     return time.monotonic() - start
+
+
+def _hash_from_device(path: Path) -> str:
+    """Hash what the device holds. The pages just written are still cached, and
+    hashing them checks RAM, not the stick: drop them first (review of #88, 7)."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+    finally:
+        os.close(fd)
+    return file_hash(path)
 
 
 def copy_with_verification(
@@ -640,6 +664,7 @@ def copy_with_verification(
                 elapsed = _copy_one(src, dst)
                 break
             except OSError as exc:
+                _part(dst).unlink(missing_ok=True)
                 attempt += 1
                 if attempt > _MAX_RETRIES_PER_FILE:
                     result.failed.append((str(src), f"I/O error after retry: {exc}"))
@@ -660,10 +685,13 @@ def copy_with_verification(
                 time.sleep(cooldown_seconds)
         recent_speeds.append(mbps)
 
-        if file_hash(src) != file_hash(dst):
+        if file_hash(src) != _hash_from_device(_part(dst)):
+            # The bad copy goes; whatever was at dst before stays untouched.
+            _part(dst).unlink(missing_ok=True)
             result.failed.append((str(src), "post-copy hash mismatch"))
             continue
 
+        os.replace(_part(dst), dst)
         result.ok.append(str(src))
 
     return result
@@ -793,6 +821,11 @@ def copy_playlists(vault_root: Path, source_root: Path, dest_root: Path) -> list
     playlist_dir = vault_root / "Playlists"
     if not playlist_dir.exists():
         return []
+    if (source_root / "Playlists").is_dir():
+        # The edition carries its own playlists, checked against its files and
+        # copied with them. The vault's are older: written over them they put
+        # dead entries back on the stick (review of #88, finding 6).
+        return []
 
     written: list[str] = []
     dest_playlists = dest_root / "Playlists"
@@ -829,10 +862,83 @@ class SyncPlan:
     delete: list[Path] = field(default_factory=list)  # files on the target to remove
     new: int = 0
     changed: int = 0
-    case_only: int = 0
+    case_only: int = 0  # deleted and copied again to fix the case (case-sensitive target)
+    case_left: int = 0  # case differs on a FAT target, which cannot tell: left as is
     unchanged: int = 0
     target_library_files: int = 0
     replaced_bytes: int = 0  # old size of target files a changed copy overwrites
+    current: list[Path] = field(default_factory=list)  # source files already right on the target
+
+
+#: On the stick: which version of each song it holds -- (size, mtime_ns) of the
+#: source file each copy was made from. Hidden, so a sync never treats it as a song.
+_SYNC_MANIFEST = ".musaeus_sync.tsv"
+#: FAT keeps modification times to 2 seconds.
+_FAT_MTIME_SLACK_S = 2
+
+
+def _case_insensitive(root: Path) -> bool:
+    """FAT and exFAT -- what a stick carries -- cannot tell "USHER" from "Usher"."""
+    try:
+        fstype = subprocess.run(
+            ["findmnt", "-no", "FSTYPE", "-T", str(root)],
+            capture_output=True, text=True, timeout=10, check=False,
+        ).stdout.strip().lower()  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return fstype in {"vfat", "msdos", "fat", "exfat", "fuseblk", "ntfs", "ntfs3"}
+
+
+def read_sync_manifest(dest_root: Path) -> dict[str, tuple[int, int]]:
+    """casefolded path -> (size, mtime_ns) of the source file the stick copy came from."""
+    out: dict[str, tuple[int, int]] = {}
+    try:
+        for line in (dest_root / _SYNC_MANIFEST).read_text(encoding="utf-8").splitlines():
+            rel, size, mtime = line.rsplit("\t", 2)
+            out[rel.casefold()] = (int(size), int(mtime))
+    except (OSError, ValueError):
+        return {}
+    return out
+
+
+def update_sync_manifest(dest_root: Path, source_root: Path, done: list[Path]) -> None:
+    """Record the source version of every file now right on the stick."""
+    entries = {k: v for k, v in read_sync_manifest(dest_root).items()}
+    names: dict[str, str] = {}
+    for src in done:
+        rel = src.relative_to(source_root).as_posix()
+        st = src.stat()
+        entries[rel.casefold()] = (st.st_size, st.st_mtime_ns)
+        names[rel.casefold()] = rel
+    tmp = dest_root / (_SYNC_MANIFEST + _PART_SUFFIX)
+    tmp.write_text(
+        "".join(f"{names.get(k, k)}\t{size}\t{mtime}\n" for k, (size, mtime) in sorted(entries.items())),
+        encoding="utf-8",
+    )
+    os.replace(tmp, dest_root / _SYNC_MANIFEST)
+
+
+def _stick_copy_is_current(src: Path, dst: Path, recorded: tuple[int, int] | None) -> bool:
+    """Whether the stick already holds this version of the song.
+
+    Same size alone said yes to a re-tag, which keeps the size, so artist and
+    genre fixes never reached the stick (review of #88, finding 5). With a
+    manifest entry the answer is exact. Without one (a stick copied before the
+    manifest existed), the copy is current if it was written after the source
+    last changed -- copies do not keep the source's time, so the stick file's
+    time is when it was written -- or, when the source changed since, if the
+    two still hold the same bytes. That reads both sides, once: a re-tag that
+    rewrote identical tags would otherwise send the whole library down a slow
+    stick again. The manifest written after the sync makes the next one exact.
+    """
+    st, dt = src.stat(), dst.stat()
+    if st.st_size != dt.st_size:
+        return False
+    if recorded is not None:
+        return recorded == (st.st_size, st.st_mtime_ns)
+    if st.st_mtime <= dt.st_mtime + _FAT_MTIME_SLACK_S:
+        return True
+    return file_hash(src) == file_hash(dst)
 
 
 def _is_hidden(rel: Path) -> bool:
@@ -857,11 +963,18 @@ def plan_sync(
     keep = {k.casefold() for k in (keep_names or set())}
     source = {f.relative_to(source_root).as_posix().casefold(): f for f in files}
     kinds = {f.suffix.lower() for f in files}
+    manifest = read_sync_manifest(dest_root)
+    folds_case = _case_insensitive(dest_root)
 
     on_target: dict[str, Path] = {}
     for p in dest_root.rglob("*"):
         rel = p.relative_to(dest_root)
-        if _is_hidden(rel) or not p.is_file() or p.suffix.lower() not in kinds:
+        if _is_hidden(rel) or not p.is_file():
+            continue
+        if p.name.endswith(_PART_SUFFIX) and Path(p.name[: -len(_PART_SUFFIX)]).suffix.lower() in kinds:
+            plan.delete.append(p)  # an interrupted copy
+            continue
+        if p.suffix.lower() not in kinds:
             continue
         on_target[rel.as_posix().casefold()] = p
     plan.target_library_files = len(on_target)
@@ -872,16 +985,23 @@ def plan_sync(
         src = source.get(key)
         if src is None:
             plan.delete.append(dst)
-        elif dst.relative_to(dest_root).as_posix() != src.relative_to(source_root).as_posix():
-            plan.delete.append(dst)
-            plan.copy.append(src)
-            plan.case_only += 1
-        elif dst.stat().st_size != src.stat().st_size:
+            continue
+        if dst.relative_to(dest_root).as_posix() != src.relative_to(source_root).as_posix():
+            if not folds_case:
+                plan.delete.append(dst)
+                plan.copy.append(src)
+                plan.case_only += 1
+                continue
+            # FAT cannot rename by case alone; deleting and copying again did
+            # it on every run (review of #88, finding 8). Leave the name.
+            plan.case_left += 1
+        if _stick_copy_is_current(src, dst, manifest.get(key)):
+            plan.unchanged += 1
+            plan.current.append(src)
+        else:
             plan.copy.append(src)
             plan.changed += 1
             plan.replaced_bytes += dst.stat().st_size
-        else:
-            plan.unchanged += 1
     for key, src in source.items():
         if key not in on_target:
             plan.copy.append(src)
@@ -958,6 +1078,62 @@ def check_sync_target(
         )
 
 
+def check_copy_target(
+    dest_root: Path, source_root: Path, vault_root: Path, extra_mounts: list[Path]
+) -> None:
+    """Raises UsbTargetError unless *dest_root* is a safe place to copy onto.
+
+    --no-format --dest checked nothing: pointed at the masters it replaced a
+    master with its edition copy, and pointed at its own source it emptied
+    every file, reporting each one "copied+verified" (review of #88, finding
+    1). It must not overlap the library being copied or the vault, and it must
+    sit on a removable device that backs none of /, /home or the vault.
+    """
+    dest = dest_root.resolve()
+    for what, other in (("the library being copied", source_root), ("the vault", vault_root)):
+        o = other.resolve()
+        if dest == o or o in dest.parents or dest in o.parents:
+            raise UsbTargetError(f"{dest_root} overlaps {what} ({other}) -- refusing")
+    disk = _backing_disk_for_path(dest_root)
+    if disk is None:
+        raise UsbTargetError(f"could not tell which device {dest_root} is on -- refusing")
+    try:
+        denylist = critical_backing_disks(vault_root, extra_mounts)
+    except DenylistResolutionError as exc:
+        raise UsbTargetError(str(exc)) from exc
+    if is_denylisted(disk, denylist):
+        raise UsbTargetError(f"{dest_root} is on {disk}, which backs /, /home or the vault")
+    if disk not in {d.path for d in list_removable_devices()}:
+        raise UsbTargetError(f"{dest_root} is on {disk}, which is not a removable device")
+
+
+#: The edition build each --library reads from.
+_BUILD_FOR_LIBRARY = {"car": "car", "alac": "lossless"}
+
+
+def _hold_build_lock(stack: contextlib.ExitStack, cfg, library: str) -> bool:
+    """Hold the edition build's own lock for the copy, or say why not.
+
+    A copy taken while the build runs takes half a build, and a sync then
+    deletes from the stick what the build has not finished (review of #88, 9).
+    """
+    from musaeus.edition_build import build_lock
+
+    name = _BUILD_FOR_LIBRARY.get(library, library)
+    lock_dir = Path(cfg.runs_root) / "locks"
+    os.makedirs(lock_dir, exist_ok=True)
+    try:
+        stack.enter_context(build_lock(lock_dir, name))
+    except RuntimeError:
+        print(
+            f"ERROR: the {name} edition build is running; copying now would take half a "
+            f"build -- refusing. Try again when it has finished.",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 # ── main ───────────────────────────────────────────────────────────────────────
 
 
@@ -982,13 +1158,14 @@ def _run_sync(
     playlist_dir = cfg.vault_root / "Playlists"
     keep_names = (
         {f"Playlists/{m.name}" for m in playlist_dir.glob("*.m3u8")}
-        if playlist_dir.exists()
+        if playlist_dir.exists() and not (source_root / "Playlists").is_dir()
         else set()
     )
     plan = plan_sync(files, source_root, dest_root, keep_names)
     print(
         f"Sync: {plan.new} new, {plan.changed} changed, {plan.case_only} letter-case renames, "
         f"{len(plan.delete) - plan.case_only} to delete, {plan.unchanged} already right"
+        + (f" ({plan.case_left} differ only in letter case, left as they are: FAT)" if plan.case_left else "")
     )
     for label, paths, root in (
         ("copy", plan.copy, source_root),
@@ -1012,12 +1189,18 @@ def _run_sync(
         plan.copy, source_root, dest_root, cooldown_seconds=args.cooldown_seconds
     )
     playlists_written = copy_playlists(cfg.vault_root, source_root, dest_root)
+    update_sync_manifest(dest_root, source_root, plan.current + [Path(p) for p in result.ok])
     print(f"\n{removed} file(s) deleted from the target")
     _report(result, playlists_written)
     return 1 if result.failed else 0
 
 
 def main() -> int:
+    with contextlib.ExitStack() as stack:  # holds the build lock until the run ends
+        return _main(stack)
+
+
+def _main(stack: contextlib.ExitStack) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "MUSAEUS Phase 3 -- transfer a library to USB, either onto a freshly "
@@ -1229,6 +1412,13 @@ def main() -> int:
                 return 1
 
         print(f"Target: {dest_root} (existing filesystem — nothing will be formatted)")
+        try:
+            check_copy_target(dest_root, source_root, cfg.vault_root, extra_mounts)
+        except UsbTargetError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        if args.execute and not _hold_build_lock(stack, cfg, args.library):
+            return 1
         if args.sync:
             return _run_sync(args, cfg, files, source_root, dest_root, extra_mounts)
         try:
@@ -1247,6 +1437,7 @@ def main() -> int:
             files, source_root, dest_root, cooldown_seconds=args.cooldown_seconds
         )
         playlists_written = copy_playlists(cfg.vault_root, source_root, dest_root)
+        update_sync_manifest(dest_root, source_root, [Path(p) for p in result.ok])
         _report(result, playlists_written)
         return 1 if result.failed else 0
 
@@ -1294,6 +1485,8 @@ def main() -> int:
         )
         return 0
 
+    if not _hold_build_lock(stack, cfg, args.library):
+        return 1
     if not confirm_wipe(device):
         return 1
     try:
