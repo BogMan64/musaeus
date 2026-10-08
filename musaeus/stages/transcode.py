@@ -45,6 +45,7 @@ ORPHEUS equivalent: SCRIPTS/build_aac_library.py
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -129,14 +130,28 @@ def _transcode_file(
     dst.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        has_art = _has_attached_picture(_probe_streams(src))
+        probe = _probe_streams(src)
+        has_art = _has_attached_picture(probe)
     except Exception:
         # Probe failure shouldn't block the transcode -- fall back to
         # audio-only, same as if the source genuinely had no art.
-        has_art = False
+        probe, has_art = {}, False
+    # Stated, not inherited: the input decided both, so a 96 kHz or 5.1
+    # source made a 96 kHz or 5.1 export (review of #86, finding 13).
+    rate = next(
+        (
+            int(s2.get("sample_rate") or 0)
+            for s2 in probe.get("streams", [])
+            if s2.get("codec_type") == "audio"
+        ),
+        0,
+    )
+    rate = rate if rate in (44100, 48000) else 44100
+    part = dst.with_name(dst.name + ".part")
 
     cmd = [
         ffmpeg,
+        "-nostdin",  # a keypress ended the encode early: a short file "done"
         "-y",
         "-hide_banner",
         "-nostats",
@@ -152,6 +167,10 @@ def _transcode_file(
         encoder,
         "-b:a",
         _TARGET_BITRATE,
+        "-ac",
+        "2",
+        "-ar",
+        str(rate),
     ]
     if has_art:
         cmd += ["-c:v", "copy", "-disposition:v:0", "attached_pic"]
@@ -171,16 +190,27 @@ def _transcode_file(
         f"track={track}",
         "-metadata",
         f"genre={genre}",
-        str(dst),
+        "-f",
+        "mp4",
+        str(part),  # renamed to dst only once ffmpeg succeeded
     ]
 
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=_FFMPEG_TIMEOUT)
+        res = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=_FFMPEG_TIMEOUT,
+        )
     except subprocess.TimeoutExpired as exc:
+        part.unlink(missing_ok=True)
         raise ValueError(f"ffmpeg timed out after {_FFMPEG_TIMEOUT}s for {src.name}") from exc
 
     if res.returncode != 0:
+        part.unlink(missing_ok=True)
         raise ValueError(f"ffmpeg failed (rc={res.returncode}): {res.stderr[-300:]}")
+    os.replace(part, dst)
 
 
 # ── Stage ─────────────────────────────────────────────────────────────────────
