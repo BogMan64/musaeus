@@ -84,7 +84,10 @@ def test_a_copy_that_does_not_check_out_removes_nothing(vault, tmp_path, monkeyp
     )
     r = mb.run(vault, root, today="20261101")
     assert r.problems and r.removed == []
-    assert len(mb.dated_copies(root)) == 3
+    # The failed copy is kept, as .partial: never counted, never removed by
+    # rotation (review of #87, finding 3).
+    assert len(mb.dated_copies(root)) == 2
+    assert r.dest.name.endswith(mb.PARTIAL) and r.dest.is_dir()
     assert not (r.dest / "BACKUP_VERIFIED_AT.txt").exists()
 
 

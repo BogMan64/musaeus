@@ -49,6 +49,11 @@ def main() -> int:
             + "; ".join(report.problems)
         )
         return 1
+    if report.unverified:
+        print(
+            "NOTE: copies left unverified by earlier runs (not counted, not removed): "
+            + ", ".join(p.name for p in report.unverified)
+        )
     removed = ", ".join(p.name for p in report.removed) or "none"
     print(
         f"BACKUP OK: {report.dest.name}, {report.files:,} files, checked; removed older: {removed}"
