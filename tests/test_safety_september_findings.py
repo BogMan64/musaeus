@@ -515,3 +515,21 @@ def test_a_damaged_copy_of_the_same_size_never_releases_the_source(tmp_path, mon
 
     assert source.read_bytes() == b"the real song" * 100
     assert not (lib / "moved" / "song.bin").exists()
+
+
+# ── Review of #87, minor finding 1: a file written twice rolls back clean ──
+
+
+def test_a_file_written_twice_rolls_back_without_a_false_failure(tmp_path):
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    path = lib / "a.txt"
+    path.write_text("original\n")
+    boundary, _ = _boundary(lib, tmp_path / "rec", lib)
+    boundary.write_bytes(path, b"first\n")
+    boundary.write_bytes(path, b"second\n")
+
+    result = boundary.rollback()
+
+    assert path.read_text() == "original\n"
+    assert result.outcome == "completed", "the restore worked but was reported as failed"
