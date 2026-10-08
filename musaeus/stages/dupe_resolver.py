@@ -691,6 +691,19 @@ class DupeResolverStage(BaseStage):
         """
         keeper_desc = keeper["file_path"] if keeper else "(no keeper on record)"
         gids = tuple(group_ids) or (group_id,)
+        if losers and keeper is not None and not Path(keeper["file_path"]).exists():
+            # Moving the losers would leave the library with no copy: the one
+            # to keep is not on disk. Nobody checked, so a keeper whose file
+            # had gone meant every real copy was moved out (review of #86,
+            # finding 6). The group stays pending for a person to look at.
+            # (No keeper at all is the lone CROSS_BATCH member, whose twin is
+            # the master CrossDupe found in the library.)
+            result.files_skipped += len(losers)
+            result.notes.append(
+                f"group {group_id}: the copy to keep ({keeper_desc}) is not on disk -- "
+                f"nothing moved"
+            )
+            return
         for item_index, loser in enumerate(losers):
             result.files_processed += 1
             source = Path(loser["file_path"])
