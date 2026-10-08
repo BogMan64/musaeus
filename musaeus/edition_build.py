@@ -224,6 +224,9 @@ class Plan:
     same_audio: list[Master] = field(default_factory=list)
     outside_masters: list[str] = field(default_factory=list)
     blocked: list[tuple[Master, str]] = field(default_factory=list)
+    #: Damaged copies in the way of a bake, made again over: path -> (size,
+    #: mtime_ns) when planned, so a file changed since is never replaced.
+    damaged: dict[str, tuple[int, int]] = field(default_factory=dict)
     unrecorded: list[Path] = field(default_factory=list)
     kind_name: str = EDITION
     target_lufs: float = TARGET_LUFS
@@ -503,6 +506,13 @@ def make_plan(
             plan.forget.append(c)
         if ours(target, h):
             plan.adopt.append((m, target))
+        elif taken(target) and edition_bake.is_damaged(target):
+            # A copy whose retag, adopt or move was killed mid-save: it reads
+            # as no MP4 at all, so its marker cannot say whose it is, and it
+            # blocked every build after (review of #88, finding 4). Made again;
+            # the verified new copy replaces it in one rename.
+            plan.damaged[str(target)] = _signature(target)
+            plan.bake.append((m, target))
         elif taken(target):
             plan.blocked.append((m, f"a file with no record is in the way: {target}"))
             plan.makeable.discard(str(m.path))  # the budget must not go to it
@@ -747,6 +757,11 @@ def _copy(
     )
 
 
+def _signature(p: Path) -> tuple[int, int]:
+    st = p.stat()
+    return st.st_size, st.st_mtime_ns
+
+
 def _prune_empty(start: Path, root: Path) -> None:
     d = start
     while d != root and d.is_relative_to(root):
@@ -891,6 +906,18 @@ def execute(
     # (its own marked file) in one rename -- never a moment without a copy.
     replaceable = {c.output_path for c in plan.rebake}
 
+    def may_replace(target: Path, h: str) -> bool:
+        key = str(target)
+        if key in replaceable:
+            # This copy, at the place its record names: marked as this
+            # master's, or damaged by a kill since (review of #88, finding 4).
+            mine = edition_bake.read_marker(target) == marker_for(h, kind)
+            return mine or edition_bake.is_damaged(target)
+        if key in plan.damaged:
+            # Damaged when planned, and untouched since.
+            return _signature(target) == plan.damaged[key] and edition_bake.is_damaged(target)
+        return False
+
     from .idle_throttle import IdleThrottle
 
     started = time.monotonic()
@@ -915,10 +942,7 @@ def execute(
                 done += 1
                 try:
                     tmp, result = fut.result()
-                    if target.exists() and not (
-                        str(target) in replaceable
-                        and edition_bake.read_marker(target) == marker_for(m.audio_hash, kind)
-                    ):
+                    if target.exists() and not may_replace(target, m.audio_hash):
                         tmp.unlink(missing_ok=True)
                         raise edition_bake.BakeError(f"something appeared at {target}")
                     os.replace(tmp, target)
@@ -1017,6 +1041,7 @@ def plan_lines(plan: Plan, *, workers: int, free: int | None = None) -> list[str
         ("Adopt", len(plan.adopt)),
         ("Move/rename", len(plan.move)),
         ("Re-tag only", len(plan.retag)),
+        ("Remake damaged", len(plan.damaged)),
         ("Remove", len(plan.remove)),
         ("Stale records", len(plan.forget)),
     ):
