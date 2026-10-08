@@ -135,12 +135,12 @@ reviewer wrote "confirmed" when it ran something.
 | 87-13 | Backup verification compares size and mtime only; `hash_index.db` is copied raw | **fixed #94** |
 | 87-14 | `scripts/merge_artist_folders.py` moves Lossless copies, not masters | **retired #105** (refuses to run) |
 | 87-15 | `scripts/consolidate_artist_folders.py` creates the alias chain it says it prevents | **fixed #112** |
-| 87-m1 | Rollback of a file overwritten twice reports a failure though it restored (`mutation.py:666-676`) | reported, minor |
-| 87-m2 | Releasing the lock can delete the next holder's record (`lock.py:249-254`) | reported, minor |
+| 87-m1 | Rollback of a file overwritten twice reports a failure though it restored (`mutation.py:666-676`) | **fixed #120** |
+| 87-m2 | Releasing the lock can delete the next holder's record (`lock.py:249-254`) | **fixed #121** |
 | 88-1 | `transfer_to_usb.py --no-format --dest` checks nothing about the destination (protected folder, the source itself); it empties the destination file before reading the source | **fixed #96** |
 | 88-2 | `loudness.py`: no `-nostdin`, a failed run trusted, every stream measured; forge writes it into master tags | **fixed #93** |
-| 88-3 | `scripts/write_master_loudness_tags.py` rewrites every master in place and never checks for a running build | **in part #104** (holds the masters lock); the in-place rewrite stays open |
-| 88-4 | `edition_build.py:865`: retag/adopt/move save tags in place on the final copy; a kill leaves a damaged copy | reported |
+| 88-3 | `scripts/write_master_loudness_tags.py` rewrites every master in place and never checks for a running build | **in part #104** (holds the masters lock); open: it still rewrites masters in place (a kill mid-save damages one; the backups and the bit-rot repair can put it back). Do not rerun it without need |
+| 88-4 | `edition_build.py:865`: retag/adopt/move save tags in place on the final copy; a kill leaves a damaged copy | open: a kill while a copy's tags are saved in place can leave a damaged copy; the safe fix is in the build planner (recognise and remake a damaged copy), not yet done |
 | 88-5 | `--sync` treats a same-size file as unchanged, so retags never reach the stick (`test_usb_sync.py` fakes a size change) | **fixed #96** |
 | 88-6 | The vault's old playlists overwrite the edition's checked ones on the stick ("Holiday.m3u8 -> Honey") | **fixed #96** |
 | 88-7 | A copy that fails its hash check stays on the stick and is "already right" next time; the check hashes the page cache | **fixed #96** |
@@ -148,7 +148,7 @@ reviewer wrote "confirmed" when it ran something.
 | 88-9 | The transfer takes no edition build lock | **fixed #96** |
 | 88-10 | `edition_ledger.py:260`: "database is locked" reads as "no entry"; car and iPhone builds can run at once | **fixed #106** |
 | 88-11 | Ctrl-C in a build's move phase: finished copies are deleted and baked again next build | **fixed #107** |
-| 88-12 | `master_measurements.restore_ledger` has no caller: measurements in masters are never read back | reported (confirmed) |
+| 88-12 | `master_measurements.restore_ledger` has no caller: measurements in masters are never read back | **fixed #119** |
 | 88-13 | `scripts/iphone_transfer.py` prints a paste block with no `&&` and no quoting; a path with spaces could `rm -rf` the wrong place | **fixed #111** |
 | 88-14 | The ReplayGain-from-R128 formula exists twice (`write_master_loudness_tags.py:55`, `forge.py:108`) | **fixed #117** |
 | 88-15 | `edition_bake.decoded_seconds` is another duration reader, with its own 600 s timeout | low: the 600 s is the decode's wall-clock limit, not a track length (the review's reading was off); it bites only when ffmpeg is paused, e.g. by the idle throttle |

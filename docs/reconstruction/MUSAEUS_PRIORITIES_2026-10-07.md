@@ -32,9 +32,10 @@ The stick sync ran on 2026-10-07 and the stick matches the car library (8,938 fi
 
 ## P1 — what is left
 
-1. **The low October findings:** 86-9 (in part: the resolver honouring a person's keep from
-   `musaeus dedupe` needs its own status value), 86-13 (the legacy `musaeus transcode`
-   export), 87-m1, 87-m2, 88-3 (in-place rewrite), 88-4, 88-12, 88-15.
+1. **The low October findings left:** 86-9 (in part: the resolver honouring a person's keep
+   from `musaeus dedupe` needs its own status value -- Grey to decide), 86-13 (the legacy
+   `musaeus transcode` export, which no act uses), 88-3 (the tag script rewrites masters in
+   place), 88-4 (a kill mid-retag can damage an edition copy), 88-15 (low).
 2. **Review the ~32,800 lines no review has read yet** (`cli.py`, `db.py`, `state/`,
    `canon/`, art, forge, doctor, the intake and enrichment stages), as five slices with a
    local `/code-review`, after Grey's weekly usage resets on Saturday.
