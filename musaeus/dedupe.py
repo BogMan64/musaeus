@@ -26,6 +26,14 @@ from .config import LOSSLESS_CODECS
 
 logger = logging.getLogger(__name__)
 
+#: A person's decisions, told apart from the resolver's own bookkeeping
+#: ('keep', 'archive' = already moved). Written as plain 'keep'/'archive' they
+#: were read as the resolver's: an archived copy was never moved, and a group a
+#: person decided whole was skipped (review of #86, finding 9). The resolver
+#: carries these out -- the kept copy is the keeper, archived ones move.
+KEEP_USER = "keep_user"
+ARCHIVE_USER = "archive_user"
+
 
 # ── Formatting helpers ────────────────────────────────────────────────────────
 
@@ -128,9 +136,9 @@ def _auto_keep_best(conn, group_id: str, members: list[dict]) -> None:
     keep = members[0]  # already sorted: lossless-first, then bitrate/size DESC
     for m in members:
         if m["file_path"] == keep["file_path"]:
-            _set_status(conn, group_id, m["file_path"], "keep")
+            _set_status(conn, group_id, m["file_path"], KEEP_USER)
         else:
-            _set_status(conn, group_id, m["file_path"], "archive")
+            _set_status(conn, group_id, m["file_path"], ARCHIVE_USER)
 
 
 # ── Interactive review ────────────────────────────────────────────────────────
@@ -230,9 +238,9 @@ def run_dedupe_console(conn, *, auto_mode: bool = False) -> None:
                     action = cmd[-1]
                     if 0 <= idx < len(members) and action in ("k", "a"):
                         fp = members[idx]["file_path"]
-                        st = "keep" if action == "k" else "archive"
+                        st = KEEP_USER if action == "k" else ARCHIVE_USER
                         _set_status(conn, group_id, fp, st)
-                        icon = "✓ KEEP" if st == "keep" else "✗ ARCHIVE"
+                        icon = "✓ KEEP" if st == KEEP_USER else "✗ ARCHIVE"
                         print(f"  → {icon}: {fp}")
                         # Refresh members
                         members = _get_group_members(conn, group_id)
@@ -258,8 +266,8 @@ def print_dedupe_report(conn) -> None:
         """
         SELECT group_id,
                COUNT(*) as total,
-               SUM(CASE WHEN status='keep'    THEN 1 ELSE 0 END) AS keep_count,
-               SUM(CASE WHEN status='archive' THEN 1 ELSE 0 END) AS archive_count,
+               SUM(CASE WHEN status IN ('keep', 'keep_user') THEN 1 ELSE 0 END) AS keep_count,
+               SUM(CASE WHEN status IN ('archive', 'archive_user') THEN 1 ELSE 0 END) AS archive_count,
                SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending_count,
                MAX(duplicate_type) AS dup_type
           FROM duplicates
