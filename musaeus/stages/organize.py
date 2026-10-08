@@ -707,6 +707,10 @@ class OrganizeStage(BaseStage):
             new_value=str(target_path),
             stage=self.NAME,
         )
+        # Committed as each rename completes. Every 50 files left a killed run
+        # with up to 49 renamed masters whose rows named the old paths (review
+        # of #86, finding 12); now at most the one in flight.
+        ctx.conn.commit()
         return True
 
     def validate(self, ctx: RunContext) -> None:

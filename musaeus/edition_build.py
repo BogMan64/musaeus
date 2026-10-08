@@ -843,6 +843,35 @@ def _move_all(
         _prune_empty(old.parent, edition_root)
 
 
+def _put_back_stepped_aside(stale: Path, ledger: sqlite3.Connection, kind: Kind) -> bool:
+    """Put a finished copy a killed move left stepped aside back in its place.
+
+    The move phase renames each moving copy to <name>.<hash12><TMP_SUFFIX>
+    before it moves any to its target. Ctrl-C between the two left finished
+    copies under that name, and they were deleted with the half-made encodes:
+    hours of baking again, and a stick sync in between dropped those songs
+    (review of #88, finding 11). Back only when the ledger still records that
+    copy at the old place, the place is free, and the file's marker says it is
+    that copy. True when put back.
+    """
+    stem = stale.name[: -len(TMP_SUFFIX)]
+    name, dot, short = stem.rpartition(".")
+    if not dot or len(short) != 12:
+        return False
+    old = stale.with_name(name)
+    if old.exists():
+        return False
+    for master_hash, c in copies(ledger, kind.name).items():
+        if (
+            c.output_path == str(old)
+            and master_hash.startswith(short)
+            and edition_bake.read_marker(stale) == marker_for(master_hash, kind)
+        ):
+            stale.rename(old)
+            return True
+    return False
+
+
 def execute(
     plan: Plan,
     ledger: sqlite3.Connection,
@@ -864,7 +893,8 @@ def execute(
     out = Outcome()
 
     for stale in edition_root.rglob(f"*{TMP_SUFFIX}") if edition_root.exists() else []:
-        stale.unlink(missing_ok=True)
+        if not _put_back_stepped_aside(stale, ledger, kind):
+            stale.unlink(missing_ok=True)
 
     for c in plan.forget:
         forget(ledger, kind.name, c.master_hash)

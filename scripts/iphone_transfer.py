@@ -30,6 +30,7 @@ shown.
 from __future__ import annotations
 
 import argparse
+import shlex
 import shutil
 import subprocess
 import sys
@@ -122,20 +123,28 @@ def main() -> int:
     # ── the paste ───────────────────────────────────────────────────────────
     print("\n  Copy and paste this into a terminal:\n")
     print("  " + "-" * 58)
+    # One chain: each step runs only if the one before worked, every path is
+    # quoted, and nothing writes into or clears the folder unless the phone is
+    # really mounted there. As loose lines, a failed ifuse let rsync fill the
+    # plain folder on this PC with tens of GB, and a mount path with a space
+    # made the wipe an rm -rf of the wrong paths (review of #88, finding 13).
+    q = shlex.quote(str(mount))
     lines = [
-        "idevicepair pair",
-        f"mkdir -p {mount}",
-        f"ifuse --documents {APP_ID} {mount}",
+        "{ idevicepair validate || idevicepair pair; }",
+        f"mkdir -p {q}",
+        f"ifuse --documents {shlex.quote(APP_ID)} {q}",
+        f"mountpoint -q {q}",
     ]
     if args.wipe:
-        lines.append(f"rm -rf {mount}/*")
+        lines.append(f"find {q} -mindepth 1 -delete")
     lines += [
-        f"rsync -a --info=progress2 --exclude='*{TMP_SUFFIX}' '{src}/' '{mount}/'",
-        f"fusermount -u {mount}",
+        f"rsync -a --info=progress2 --exclude={shlex.quote('*' + TMP_SUFFIX)} "
+        f"{shlex.quote(str(src) + '/')} {shlex.quote(str(mount) + '/')}",
+        f"fusermount -u {q}",
     ]
-    for ln in lines:
-        print(f"    {ln}")
+    print("    " + " && \\\n    ".join(lines))
     print("  " + "-" * 58)
+    print(f"  If it stops partway, unmount with:  fusermount -u {q}")
 
     print(f"""
   Notes
