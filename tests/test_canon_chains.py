@@ -118,3 +118,27 @@ class TestTheFileStaysReadable:
         text = canon.read_text(encoding="utf-8")
         assert text.endswith("\n")
         assert rows(canon) == {"A": "B", "C": "D"}
+
+
+class TestReviewOf87Finding15:
+    """The re-pointing ran before `new` was resolved to its final name, compared
+    names case-sensitively, and left an existing `old` entry pointing where it
+    did -- each building the chain the function says it prevents."""
+
+    def test_both_sides_resolve_to_the_final_name(self, canon):
+        canon.write_text("X\told\nnew\tdest\n", encoding="utf-8")
+        _write_canon_entry(canon, "old", "new")
+        r = rows(canon)
+        assert r["X"] == "dest", "X now chains through 'new'"
+        assert r["old"] == "dest"
+        assert not set(r.values()) & set(r.keys()), "a canonical is still a key"
+
+    def test_an_entry_pointing_at_old_in_another_case_is_repointed(self, canon):
+        canon.write_text("X\tOLD\n", encoding="utf-8")
+        _write_canon_entry(canon, "old", "new")
+        assert rows(canon)["X"] == "new"
+
+    def test_an_existing_entry_for_old_follows_the_merge(self, canon):
+        canon.write_text("old\tsomething else\n", encoding="utf-8")
+        _write_canon_entry(canon, "old", "new")
+        assert rows(canon)["old"] == "new"
