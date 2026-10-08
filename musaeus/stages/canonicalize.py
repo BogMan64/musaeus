@@ -87,7 +87,7 @@ from pathlib import Path
 
 from ..config import LOSSLESS_CODECS as _LOSSLESS_CODECS
 from ..context import RunContext, StageResult
-from ..duration import TOLERANCE_SEC, tolerance_for
+from ..duration import TOLERANCE_SEC, decodes_cleanly, tolerance_for
 from ..safety.mutation import MutationBoundary, PreconditionError, UnmanagedPathError
 from ..safety.recovery import (
     JOURNAL_FILENAME,
@@ -614,6 +614,17 @@ class CanonicalizeStage(BaseStage):
                         f"{p.name}: {actual:.1f}s after canonicalize but "
                         f"{recorded:.1f}s recorded — conversion truncated the audio"
                     )
+
+            # The check above compares two numbers that both come from the
+            # MP4 header (moov), written before the audio: a file cut to a
+            # third still claims its full length. Only a decode knows
+            # (review of #86, finding 15).
+            ok, first_error = decodes_cleanly(p)
+            if not ok:
+                problems.append(
+                    f"{p.name}: does not decode cleanly after canonicalize ({first_error}) — "
+                    f"truncated or damaged"
+                )
         return problems
 
     def validate(self, ctx: RunContext) -> None:
