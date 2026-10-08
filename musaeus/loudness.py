@@ -115,12 +115,16 @@ def _run_loudnorm(path: Path, linear: bool, duration: float | None) -> tuple[int
 
     cmd = [
         "ffmpeg",
+        # Never read the terminal: in the console a keypress ("q") ended the
+        # measurement early, and a two-second reading went into the master's
+        # tags as "ok" (review of #88, finding 2).
+        "-nostdin",
         "-hide_banner",
         "-nostats",
         "-i",
         str(path),
         "-map",
-        "0:a",
+        "0:a:0",  # the first audio stream, as the bake measures
         "-af",
         af,
         "-f",
@@ -131,6 +135,7 @@ def _run_loudnorm(path: Path, linear: bool, duration: float | None) -> tuple[int
 
     proc = subprocess.Popen(
         cmd,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
@@ -163,16 +168,21 @@ def measure_loudness(path: Path) -> tuple[float | None, float | None, str]:
     try:
         duration = _get_duration(path)
 
-        # Attempt 1: dynamic mode
+        # Attempt 1: dynamic mode. A run that did not exit 0 measured
+        # something other than the whole file, even if it printed its JSON;
+        # the bake refuses it too (review of #88, finding 2).
         rc, stderr = _run_loudnorm(path, linear=False, duration=duration)
-        data = _extract_loudnorm_json(stderr)
+        data = _extract_loudnorm_json(stderr) if rc == 0 else None
 
         # Attempt 2: linear mode (more tolerant of short/odd files)
         if data is None:
             logger.debug("loudnorm dynamic attempt failed (rc=%d), retrying linear: %s", rc, path)
             rc, stderr = _run_loudnorm(path, linear=True, duration=duration)
-            data = _extract_loudnorm_json(stderr)
+            data = _extract_loudnorm_json(stderr) if rc == 0 else None
 
+        if data is None and rc != 0:
+            logger.warning("loudnorm exited %d: %s", rc, path)
+            return None, None, "ffmpeg_fail"
         if data is None:
             logger.warning("loudnorm JSON parse failed: %s", path)
             return None, None, "json_fail"

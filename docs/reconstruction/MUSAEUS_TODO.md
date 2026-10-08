@@ -99,7 +99,7 @@ Each was re-run against the code of 2026-10-07 with the triage's own reproductio
 
 ### Findings of the October reviews (2026-10-07)
 
-Local `/code-review` runs on the review slices #86 (masters) and #87 (protection), and one on
+Local `/code-review` runs on the review slices #86 (masters), #87 (protection) and #88 (editions), and one on
 `docs/REVIEW_BRIEF.md` (B-). "Reported" is the reviewer's claim, not yet re-checked here; the
 reviewer wrote "confirmed" when it ran something.
 
@@ -137,6 +137,21 @@ reviewer wrote "confirmed" when it ran something.
 | 87-15 | `scripts/consolidate_artist_folders.py` creates the alias chain it says it prevents | reported (confirmed) |
 | 87-m1 | Rollback of a file overwritten twice reports a failure though it restored (`mutation.py:666-676`) | reported, minor |
 | 87-m2 | Releasing the lock can delete the next holder's record (`lock.py:249-254`) | reported, minor |
+| 88-1 | `transfer_to_usb.py --no-format --dest` checks nothing about the destination (protected folder, the source itself); it empties the destination file before reading the source | reported (confirmed in scratch); **do not use without `--sync`** |
+| 88-2 | `loudness.py`: no `-nostdin`, a failed run trusted, every stream measured; forge writes it into master tags | **fixed (this PR)** |
+| 88-3 | `scripts/write_master_loudness_tags.py` rewrites every master in place and never checks for a running build | reported |
+| 88-4 | `edition_build.py:865`: retag/adopt/move save tags in place on the final copy; a kill leaves a damaged copy | reported |
+| 88-5 | `--sync` treats a same-size file as unchanged, so retags never reach the stick (`test_usb_sync.py` fakes a size change) | reported (confirmed); **stick sync on hold** |
+| 88-6 | The vault's old playlists overwrite the edition's checked ones on the stick ("Holiday.m3u8 -> Honey") | reported (confirmed); **stick sync on hold** |
+| 88-7 | A copy that fails its hash check stays on the stick and is "already right" next time; the check hashes the page cache | reported (confirmed); **stick sync on hold** |
+| 88-8 | FAT folds letter case; `--sync` compares case-sensitively (the dry run's 181 case renames) | reported (confirmed with plan_sync); **stick sync on hold** |
+| 88-9 | The transfer takes no edition build lock | reported |
+| 88-10 | `edition_ledger.py:260`: "database is locked" reads as "no entry"; car and iPhone builds can run at once | reported |
+| 88-11 | Ctrl-C in a build's move phase: finished copies are deleted and baked again next build | reported (confirmed) |
+| 88-12 | `master_measurements.restore_ledger` has no caller: measurements in masters are never read back | reported (confirmed) |
+| 88-13 | `scripts/iphone_transfer.py` prints a paste block with no `&&` and no quoting; a path with spaces could `rm -rf` the wrong place | reported; **do not paste its block** |
+| 88-14 | The ReplayGain-from-R128 formula exists twice (`write_master_loudness_tags.py:55`, `forge.py:108`) | reported |
+| 88-15 | `edition_bake.decoded_seconds` is another duration reader, with its own 600 s timeout | reported |
 | B-2 | `stages/albumart.py:476-479` marks a song checked before fetching; a refused lookup never retries | reported (confirmed by a probe) |
 | B-4 | With the recovery boundary UNAVAILABLE, canonicalize deletes INBOX originals outright and finalize copies with no journal | open |
 | B-12 | Edition tests read the machine's real process table | **fixed in-process** (autouse fixture); subprocess tests still do |
