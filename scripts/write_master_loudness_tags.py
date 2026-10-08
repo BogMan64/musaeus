@@ -19,6 +19,9 @@ resume. Dry run unless --execute. Run only while no musaeus process runs.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import os
+import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -63,6 +66,42 @@ def wanted(tags: Any, lufs: float | None, measured: dict) -> dict[str, bytes]:
     return out
 
 
+def write_tags(fp: str, todo: dict[str, bytes]) -> None:
+    """Give the master at fp the tags in todo, without ever saving the master itself.
+
+    mutagen rewrites the file it saves, so a run killed or a disk filled part way
+    through left a damaged master (review of #88, finding 3). The tags go on a copy
+    beside the master; the copy is flushed to disk and only then takes the master's
+    place, in one rename. A kill leaves the master whole, and at most a
+    <name>.tagging copy beside it that the next run starts afresh.
+    """
+    from mutagen.mp4 import MP4, MP4FreeForm
+
+    tmp = fp + ".tagging"
+    shutil.copy2(fp, tmp)  # replaces a copy a killed run left
+    try:
+        audio = MP4(tmp)
+        if audio.tags is None:
+            audio.add_tags()
+        tags = audio.tags
+        assert tags is not None
+        for key, value in todo.items():
+            tags[key] = [MP4FreeForm(value)]
+        audio.save()
+        with open(tmp, "rb") as fh:
+            os.fsync(fh.fileno())
+        os.replace(tmp, fp)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
+        raise
+    dir_fd = os.open(os.path.dirname(fp) or ".", os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -76,7 +115,7 @@ def main() -> int:
 
         hold_for_process(exclusive=True, what="scripts/write_master_loudness_tags.py")
 
-    from mutagen.mp4 import MP4, MP4FreeForm
+    from mutagen.mp4 import MP4
 
     cfg = get_config()
     db = sqlite3.connect(cfg.db_path)
@@ -103,11 +142,7 @@ def main() -> int:
         if _text(audio.tags, R128_KEY) is None and r["lufs"] is None:
             no_loudness += 1
         if args.execute:
-            if audio.tags is None:
-                audio.add_tags()
-            for key, value in todo.items():
-                audio.tags[key] = [MP4FreeForm(value)]
-            audio.save()
+            write_tags(fp, todo)
         changed += 1
         if args.limit and changed >= args.limit:
             break
