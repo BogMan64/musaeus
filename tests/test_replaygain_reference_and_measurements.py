@@ -18,10 +18,11 @@ from mutagen.mp4 import MP4, MP4FreeForm
 
 from musaeus import edition_bake, master_measurements
 from musaeus.edition_ledger import keep_measurement, measurements_of, open_ledger
+from musaeus.hasher import audio_hash
 from musaeus.stages.forge import _write_tags_m4a, write_rg_tags
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.write_master_loudness_tags import RG_KEY, wanted  # noqa: E402
+from scripts.write_master_loudness_tags import RG_KEY, wanted, write_tags  # noqa: E402
 
 needs_ffmpeg = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="requires ffmpeg")
 M = {"input_i": "-13.62", "input_lra": "2.80", "input_tp": "-0.99", "input_thresh": "-23.89"}
@@ -115,3 +116,44 @@ def test_no_loudness_known_means_no_gain_written():
 def test_the_ledger_tables_exist_in_a_new_ledger(tmp_path):
     conn = open_ledger(tmp_path / "e.db")
     assert isinstance(conn, sqlite3.Connection)
+
+
+@needs_ffmpeg
+def test_a_save_cut_short_leaves_the_master_as_it_was(tmp_path, monkeypatch):
+    """mutagen rewrites the file it saves. Saving the master itself, a run killed or
+    a disk filled part way through left a damaged master (review of #88, finding 3).
+    The save cut short here truncates whatever file it is writing, then fails."""
+    master = _m4a(tmp_path / "song.m4a")
+    before = master.read_bytes()
+
+    def save_cut_short(self, *args, **kwargs):
+        with open(self.filename, "r+b") as fh:
+            fh.truncate(100)
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(MP4, "save", save_cut_short)
+    with pytest.raises(OSError):
+        write_tags(str(master), {RG_KEY: b"+1.00 dB"})
+    assert master.read_bytes() == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["song.m4a"]
+
+
+@needs_ffmpeg
+def test_tags_written_and_the_audio_untouched(tmp_path):
+    master = _m4a(tmp_path / "song.m4a")
+    audio_before = audio_hash(master, strict=True)
+    write_tags(str(master), {RG_KEY: b"+1.00 dB"})
+    assert _tag(master, RG_KEY) == "+1.00 dB"
+    assert audio_hash(master, strict=True) == audio_before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["song.m4a"]
+
+
+@needs_ffmpeg
+def test_a_copy_left_by_a_killed_run_is_replaced(tmp_path):
+    """A kill between the copy and the swap leaves song.m4a.tagging beside the
+    master. The next run starts that copy afresh rather than finishing it."""
+    master = _m4a(tmp_path / "song.m4a")
+    (tmp_path / "song.m4a.tagging").write_bytes(b"half a file")
+    write_tags(str(master), {RG_KEY: b"+1.00 dB"})
+    assert _tag(master, RG_KEY) == "+1.00 dB"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["song.m4a"]
