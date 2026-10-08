@@ -121,13 +121,28 @@ def car_copy_count(config: object, conn: sqlite3.Connection) -> int:
 # iPhone share one; the Lossless edition's is its own.
 
 
+#: How long a read-only look at the ledger waits for a build that is writing.
+_READ_TIMEOUT_S = 30
+
+
+def _missing_table(exc: sqlite3.OperationalError) -> bool:
+    """A record from before a table or column existed -- the only error that
+    means "none". A locked ledger read as empty: every measurement taken again,
+    every copy baked again, the audit calling every copy a stray (review of
+    #88, finding 10)."""
+    text = str(exc)
+    return "no such table" in text or "no such column" in text
+
+
 def measurements_of(conn: sqlite3.Connection, master_hash: str) -> dict[str, dict]:
     """Every kept measurement of *master_hash*, by recipe."""
     try:
         rows = conn.execute(
             "SELECT recipe, measured FROM measurements WHERE master_hash = ?", (master_hash,)
         ).fetchall()
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        if not _missing_table(exc):
+            raise
         return {}  # a record from before measurements, opened read-only
     return {r[0]: json.loads(r[1]) for r in rows}
 
@@ -152,7 +167,9 @@ def measured_hashes(conn: sqlite3.Connection, family: str) -> set[str]:
             "SELECT DISTINCT master_hash FROM measurements WHERE substr(recipe, 1, ?) = ?",
             (len(family), family),
         ).fetchall()
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        if not _missing_table(exc):
+            raise
         return set()  # a record from before measurements, opened read-only
     return {r[0] for r in rows}
 
@@ -165,7 +182,9 @@ def copies(conn: sqlite3.Connection, edition: str) -> dict[str, Copy]:
                 "SELECT master_hash, settings FROM copy_settings WHERE edition = ?", (edition,)
             ).fetchall()
         )
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        if not _missing_table(exc):
+            raise
         settings = {}  # a record from before settings, opened read-only
     return {
         r["master_hash"]: Copy(**dict(r), settings=settings.get(r["master_hash"], ""))
@@ -248,7 +267,7 @@ def recorded_copies(config: object, edition: str) -> dict[str, str] | None:
     path = ledger_path(config)
     if not path.exists():
         return None
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=_READ_TIMEOUT_S)
     try:
         return {
             r[0]: r[1]
@@ -257,7 +276,9 @@ def recorded_copies(config: object, edition: str) -> dict[str, str] | None:
                 (edition,),
             )
         }
-    except sqlite3.Error:
+    except sqlite3.OperationalError as exc:
+        if not _missing_table(exc):
+            raise  # locked, damaged: not the same as "no ledger"
         return None
     finally:
         conn.close()
