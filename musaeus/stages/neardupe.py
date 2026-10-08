@@ -342,7 +342,7 @@ class NearDupeStage(BaseStage):
             frozenset(r["audio_hash"] for r in rs)
             for rs in decided.values()
             if len(rs) > 1
-            and all(r["status"] == "keep" and r["audio_hash"] for r in rs)
+            and all(r["status"] in ("keep", "keep_user") and r["audio_hash"] for r in rs)
             and len({r["audio_hash"] for r in rs}) == 2
         }
 

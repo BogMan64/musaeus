@@ -180,7 +180,8 @@ def _connected_groups(conn, group_ids: list[str]) -> list[list[str]]:
 
 def _get_pending_groups(conn) -> list[str]:
     rows = conn.execute(
-        "SELECT DISTINCT group_id FROM duplicates WHERE status = 'pending' ORDER BY group_id"
+        "SELECT DISTINCT group_id FROM duplicates "
+        "WHERE status IN ('pending', 'archive_user') ORDER BY group_id"
     ).fetchall()
     return [r[0] for r in rows]
 
@@ -321,8 +322,9 @@ def _keeper_sort_key(m: dict) -> tuple[int, ...]:
         #
         # A member with no catalogue row at its path is not there either: the
         # file was filed, moved or removed since the group was found.
+        # A copy a person archived in `musaeus dedupe` is never the keeper.
         1
-        if (m.get("dup_status") or "") in _ALREADY_RESOLVED
+        if (m.get("dup_status") or "") in (*_ALREADY_RESOLVED, "archive_user")
         or ("current_row" in m and m["current_row"] is None)
         else 0,
         *keep_key(m),
@@ -1078,6 +1080,13 @@ class DupeResolverStage(BaseStage):
                 if rest:
                     keeper = rest[0]
                     losers = [m for m in members if m is not keeper]
+            # A person's decision in `musaeus dedupe` wins over the ranking: the
+            # copy they kept is the keeper, and every copy they kept stays
+            # (review of #86, finding 9).
+            user_kept = [m for m in members if m.get("dup_status") == "keep_user"]
+            if user_kept:
+                keeper = user_kept[0]
+                losers = [m for m in members if m.get("dup_status") != "keep_user"]
             self._move_losers(
                 ctx,
                 result,
@@ -1091,7 +1100,7 @@ class DupeResolverStage(BaseStage):
                 already_moved=already_moved,
                 group_ids=component,
             )
-            if keeper and not dry_run:
+            if keeper and not dry_run and keeper.get("dup_status") != "keep_user":
                 _mark(ctx, component, keeper["file_path"], "keep")
 
         # ── Source 2: live EXACT-hash clusters, derived directly from
@@ -1099,6 +1108,10 @@ class DupeResolverStage(BaseStage):
         # behind by a stale duplicates.status decision, and any future
         # recurrence, without trying to reconcile a path that may no
         # longer be reliable. See _get_live_exact_clusters' docstring. ──
+        user_kept_paths = {
+            r[0]
+            for r in ctx.conn.execute("SELECT file_path FROM duplicates WHERE status = 'keep_user'")
+        }
         for idx, members in enumerate(live_exact_clusters):
             # These lists were made before the groups above moved anything.
             # A member moved there is gone, and where the two sources ranked
@@ -1110,6 +1123,10 @@ class DupeResolverStage(BaseStage):
             for m in members:
                 m["duplicate_type"] = "EXACT"
             keeper, losers = members[0], members[1:]
+            kept_by_person = [m for m in members if m["file_path"] in user_kept_paths]
+            if kept_by_person:  # a person's keep in `musaeus dedupe` wins here too
+                keeper = kept_by_person[0]
+                losers = [m for m in members if m["file_path"] not in user_kept_paths]
             synthetic_group_id = f"exacthash_{idx:06d}"
             self._move_losers(
                 ctx,
