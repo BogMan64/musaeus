@@ -19,7 +19,18 @@ things stand right now"; this covers "what this project actually is, and
 what its standing rules are." Grey to review, correct, and extend —
 anything missing here is fair game to add.
 
-*Last folded in: 2026-10-03 (Claude Code): one file per track, the three
+*Last folded in: 2026-10-07 (Claude Code): the rulings of that week, which
+are now code -- one keep rule for duplicates (format; an original over a
+baked copy; studio > remaster > live; sample rate; longer by 2 s; the copy in
+place), one genre per artist, an artist's picture when no album cover is
+found, the loudness measurements kept in each master (ReplayGain = R128 +
+5 dB), a monthly bit-rot check that repairs from the newest good backup and
+says what it did, a monthly checked backup of the masters (newest 2 kept),
+and "delete means delete" through one tool (`scripts/delete_reviewed_tracks.py`:
+every copy, the deny list, the bit-rot baseline). The October reviews and
+their findings are in `MUSAEUS_TODO.md`.*
+
+*Before that: 2026-10-03 (Claude Code): one file per track, the three
 editions, the USB1 batch, and rules 1–14 (see §9). The file name still says
 2026-09-23 so links keep working. Before that, 2026-09-22/23 and
 2026-09-19 (Claude Code). Before that,
