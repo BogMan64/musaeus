@@ -13,11 +13,17 @@ month costs only what changed. Linked copies share disk blocks: they protect
 against a damaged or deleted master on FORGE2TB, not against NUC8TB itself
 failing -- that is what the USB2 copy in the drawer is for.
 
-A new copy is checked before anything old is removed: rsync must find no
-difference from the masters, the counts must match, and the database copies
-must pass integrity_check. Only then are copies beyond the newest KEEP removed,
-and only folders named exactly 2.-MUSAEUS_ALAC_Archive_YYYYMMDD; nothing else on
-the drive is ever touched.
+A new copy is made under <name>.partial and checked before anything old is
+removed: rsync, comparing checksums, must find no difference from the masters,
+the counts must match, and the database copies must pass integrity_check. Only
+then is it renamed to its dated name, and only then are copies beyond the newest
+KEEP removed -- only folders named exactly 2.-MUSAEUS_ALAC_Archive_YYYYMMDD;
+nothing else on the drive is ever touched.
+
+A copy that fails its check keeps the .partial name, so it is never counted as
+one of the KEEP and never used by the bit-rot repair. Written under the final
+name, it once would have been both: the next month's rotation deleted the last
+good copy to keep it (review of #87, finding 3).
 """
 
 from __future__ import annotations
@@ -35,6 +41,7 @@ from .edition_ledger import LEDGER_FILENAME
 PREFIX = "2.-MUSAEUS_ALAC_Archive_"
 _NAME_RE = re.compile(r"^2\.-MUSAEUS_ALAC_Archive_(\d{8})$")
 KEEP = 2
+PARTIAL = ".partial"
 
 
 @dataclass
@@ -43,6 +50,21 @@ class Report:
     problems: list[str] = field(default_factory=list)
     removed: list[Path] = field(default_factory=list)
     files: int = 0
+    #: Copies left under .partial by earlier failed runs: never counted, never
+    #: removed by rotation, reported so a person can look.
+    unverified: list[Path] = field(default_factory=list)
+
+
+def _databases(vault: Path) -> tuple[tuple[str, Path], ...]:
+    """The SQLite files a copy must carry consistently, by name in vault_state/.
+
+    hash_index.db is the deny list: copied raw it could be caught mid-write and
+    was never checked (review of #87, finding 13)."""
+    return (
+        ("musaeus.db", vault / "musaeus.db"),
+        (LEDGER_FILENAME, vault / "_db_backups" / LEDGER_FILENAME),
+        ("hash_index.db", vault / "_db_backups" / "hash_index.db"),
+    )
 
 
 def dated_copies(root: Path) -> list[Path]:
@@ -64,9 +86,16 @@ def _rsync(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def make_copy(vault: Path, root: Path, today: str) -> tuple[Path, list[str]]:
-    """Copy the masters and the vault's state into <root>/<PREFIX><today>."""
-    dest = root / f"{PREFIX}{today}"
-    previous = next((c for c in dated_copies(root) if c != dest), None)
+    """Copy the masters and the vault's state into <root>/<PREFIX><today>.partial.
+
+    A second run the same day takes the day's copy back under .partial first,
+    so it is never counted while it is being changed.
+    """
+    final = root / f"{PREFIX}{today}"
+    dest = root / f"{PREFIX}{today}{PARTIAL}"
+    if final.is_dir() and not dest.exists():
+        final.rename(dest)
+    previous = next((c for c in dated_copies(root) if c != final), None)
     (dest / "vault_state").mkdir(parents=True, exist_ok=True)
     problems: list[str] = []
     link = [f"--link-dest={previous / 'ALAC-Archival'}"] if previous else []
@@ -75,10 +104,7 @@ def make_copy(vault: Path, root: Path, today: str) -> tuple[Path, list[str]]:
         problems.append(
             f"copying the masters failed (rsync {r.returncode}): {r.stderr.strip()[:200]}"
         )
-    for name, src in (
-        ("musaeus.db", vault / "musaeus.db"),
-        (LEDGER_FILENAME, vault / "_db_backups" / LEDGER_FILENAME),
-    ):
+    for name, src in _databases(vault):
         if src.is_file():
             s = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
             t = sqlite3.connect(dest / "vault_state" / name)
@@ -95,7 +121,11 @@ def verify_copy(vault: Path, dest: Path) -> tuple[int, list[str]]:
     """(files in the copy, problems). No problems means the copy is complete."""
     problems: list[str] = []
     src = vault / "Libraries" / "ALAC-Archival"
-    r = _rsync("--dry-run", "--itemize-changes", f"{src}/", f"{dest / 'ALAC-Archival'}/")
+    # --checksum: size and modification time alone passed a damaged copy that
+    # kept both (review of #87, finding 13). This reads both sides in full.
+    r = _rsync(
+        "--dry-run", "--checksum", "--itemize-changes", f"{src}/", f"{dest / 'ALAC-Archival'}/"
+    )
     left = [line for line in r.stdout.splitlines() if line.strip()]
     if r.returncode or left:
         problems.append(
@@ -105,10 +135,7 @@ def verify_copy(vault: Path, dest: Path) -> tuple[int, list[str]]:
     n_dst = sum(1 for p in (dest / "ALAC-Archival").rglob("*") if p.is_file())
     if n_src != n_dst:
         problems.append(f"{n_dst} files in the copy, {n_src} in the masters")
-    for name, src_db in (
-        ("musaeus.db", vault / "musaeus.db"),
-        (LEDGER_FILENAME, vault / "_db_backups" / LEDGER_FILENAME),
-    ):
+    for name, src_db in _databases(vault):
         if not src_db.is_file():
             continue
         try:
@@ -124,12 +151,18 @@ def verify_copy(vault: Path, dest: Path) -> tuple[int, list[str]]:
 def run(vault: Path, root: Path, keep: int = KEEP, today: str | None = None) -> Report:
     """Make, check, and only then rotate. Never removes anything after a problem."""
     today = today or date.today().strftime("%Y%m%d")
-    dest, problems = make_copy(vault, root, today)
-    files, more = verify_copy(vault, dest)
-    report = Report(dest, problems + more, files=files)
+    work, problems = make_copy(vault, root, today)
+    files, more = verify_copy(vault, work)
+    report = Report(work, problems + more, files=files)
+    report.unverified = sorted(
+        d for d in root.iterdir() if d.is_dir() and d.name.endswith(PARTIAL) and d != work
+    )
     if report.problems:
-        return report  # an old copy is the only good one; keep them all
-    (dest / "BACKUP_VERIFIED_AT.txt").write_text(f"{date.today().isoformat()}\n", encoding="utf-8")
+        return report  # stays .partial: an old copy is the only good one; keep them all
+    (work / "BACKUP_VERIFIED_AT.txt").write_text(f"{date.today().isoformat()}\n", encoding="utf-8")
+    dest = root / f"{PREFIX}{today}"
+    work.rename(dest)
+    report.dest = dest
     for old in to_remove(dated_copies(root), keep):
         if old != dest and _NAME_RE.match(old.name):
             shutil.rmtree(old)
