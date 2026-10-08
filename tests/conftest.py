@@ -153,6 +153,23 @@ def path_guard() -> PathGuard:
 
 
 @pytest.fixture(autouse=True)
+def _no_real_musaeus_processes(monkeypatch):
+    """Tests never see the machine's real MUSAEUS processes.
+
+    The edition build refuses to start while other MUSAEUS work runs, and it
+    asks the real process table (edition_build.pipeline_pids). Read from a
+    test, that made results depend on what happened to be running: with a
+    stand-in `musaeus run` alive, 6 edition tests failed (review of the brief,
+    2026-10-07). A test that wants the guard to see work patches this itself.
+    A test that runs the build as a subprocess is not covered: it reads the
+    real table in its own process (3 still fail with a stand-in run alive).
+    """
+    from musaeus import edition_build
+
+    monkeypatch.setattr(edition_build, "pipeline_pids", lambda: [])
+
+
+@pytest.fixture(autouse=True)
 def _restore_network_policy():
     """Put the process-wide network policy back after every test.
 
