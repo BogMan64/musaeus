@@ -200,6 +200,17 @@ def measure_loudness(path: Path) -> tuple[float | None, float | None, str]:
         return None, None, "ffmpeg_fail"
 
 
+def replaygain_from_r128(r128_gain: float) -> float:
+    """The ReplayGain gain for an R128_TRACK_GAIN of *r128_gain* dB.
+
+    ReplayGain refers to -18 LUFS and R128 to -23, so the same loudness needs a
+    gain 5 dB higher. Both tags written from one number were what made every
+    master play 5 dB too quiet (#73). The one place this relation is written
+    (review of #88, finding 14).
+    """
+    return r128_gain + (R128_REFERENCE - R128_APPLE_REFERENCE)
+
+
 def lufs_to_rg(lufs: float, reference: float = R128_REFERENCE) -> float:
     """Convert measured LUFS to a ReplayGain track gain (dB)."""
     return reference - lufs

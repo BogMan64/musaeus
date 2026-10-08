@@ -55,6 +55,7 @@ from ..brackets import CLOSE, OPEN
 from ..canon import ArtistCanon
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
+from .dupe_resolver import _is_live
 
 logger = logging.getLogger(__name__)
 
@@ -285,7 +286,7 @@ class NearDupeStage(BaseStage):
         # Load all catalogued rows
         rows = ctx.conn.execute(
             """
-            SELECT file_path, artist, title, bitrate, size_bytes, duration, audio_hash
+            SELECT file_path, artist, title, album, bitrate, size_bytes, duration, audio_hash
             FROM archive
             WHERE status = 'CATALOGUED'
               AND artist IS NOT NULL AND trim(artist) != ''
@@ -389,11 +390,10 @@ class NearDupeStage(BaseStage):
             # without this guard they'd look identical and collapse
             # into one group. Studio-vs-live still matches fine
             # (only one side carries the marker).
-            if (
-                _has_live_marker(a["title"])
-                and _has_live_marker(b["title"])
-                and not _same_take(a, b)
-            ):
+            # The resolver's own rule, title AND album: read from the title
+            # alone, "Unplugged" and "24 Nights (Live)" were one song, and one
+            # live recording moved to review (review of #86, finding 5).
+            if _is_live(dict(a)) and _is_live(dict(b)) and not _same_take(a, b):
                 continue
 
             if frozenset((a["audio_hash"], b["audio_hash"])) in keep_both:

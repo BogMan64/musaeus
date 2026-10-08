@@ -119,6 +119,10 @@ def main() -> int:
     ap.add_argument("--reason", required=True, help="recorded on every event and deny entry")
     ap.add_argument("--execute", action="store_true", help="actually delete (default: dry run)")
     args = ap.parse_args()
+    if args.execute:  # the masters lock (review of #87, findings 9 and 10)
+        from musaeus.masters_lock import hold_for_process
+
+        hold_for_process(exclusive=True, what="scripts/delete_reviewed_tracks.py")
 
     ids = [int(x) for x in args.ids.read_text().split() if x.strip().isdigit()]
     if not ids:
