@@ -71,6 +71,10 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--ids", type=Path, help="only these catalogue ids (one per line)")
     args = ap.parse_args()
+    if args.execute:  # the masters lock (review of #87, findings 9 and 10)
+        from musaeus.masters_lock import hold_for_process
+
+        hold_for_process(exclusive=True, what="scripts/write_master_loudness_tags.py")
 
     from mutagen.mp4 import MP4, MP4FreeForm
 
