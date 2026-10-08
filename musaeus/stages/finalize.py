@@ -95,7 +95,7 @@ from pathlib import Path
 from ..context import RunContext, StageResult, elision
 from ..db import open_hash_index, record_finalized_hash
 from ..filing import load as filing_load
-from ..hasher import audio_hash_safe
+from ..hasher import audio_hash_safe, file_hash
 from ..safety.mutation import MutationBoundary, PreconditionError, UnmanagedPathError
 from ..safety.recovery import (
     JOURNAL_FILENAME,
@@ -418,7 +418,30 @@ class FinalizeStage(BaseStage):
         # and wrongly bump it to " (2)".
         if candidate == source or _is_collision_name_for(source, candidate):
             return source
+        if candidate.exists() and self._own_interrupted_copy(ctx, row, source, candidate):
+            return candidate
         return unique_path(candidate)
+
+    @staticmethod
+    def _own_interrupted_copy(ctx: RunContext, row: dict, source: Path, candidate: Path) -> bool:
+        """Whether *candidate* is this row's own copy, left by a run killed
+        after the copy landed but before the row was updated.
+
+        Only when no other row claims it and its bytes are the source's: the
+        re-run made a "(2)" beside it and left it untracked (review of #86,
+        finding 11). Anything else at the path is never touched.
+        """
+        if ctx.conn.execute(
+            "SELECT 1 FROM archive WHERE file_path = ? AND id != ?",
+            (str(candidate), row.get("id")),
+        ).fetchone():
+            return False
+        try:
+            if candidate.stat().st_size != source.stat().st_size:
+                return False
+            return file_hash(candidate) == file_hash(source)
+        except OSError:
+            return False
 
     def _moved_by_earlier_runs(self, ctx: RunContext) -> dict[str, str]:
         """relative source -> relative destination, from earlier Finalize journals.
@@ -640,7 +663,13 @@ class FinalizeStage(BaseStage):
                     continue
 
                 try:
-                    if boundary is not None:
+                    if target.exists():
+                        # This row's own copy from a run killed before its row
+                        # was updated: _target_path checked the bytes and that
+                        # no row claims it. Nothing to copy; the row moves to it
+                        # and the source goes below (review of #86, finding 11).
+                        logger.info("[finalize] adopting %s, left by an interrupted run", target)
+                    elif boundary is not None:
                         # Same copy -> verify -> atomic rename this stage has
                         # always done; the boundary adopted it. The gain is
                         # the journal: without it a finalize is unrecoverable

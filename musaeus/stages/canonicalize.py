@@ -892,8 +892,11 @@ class CanonicalizeStage(BaseStage):
             )
             return boundary
         except Exception as exc:
-            result.notes.append(f"recovery boundary: UNAVAILABLE ({exc})")
+            result.notes.append(
+                f"recovery boundary: UNAVAILABLE ({exc}) -- originals are kept in place"
+            )
             logger.warning("[canonicalize] no recovery boundary: %s", exc)
+            self._boundary_unavailable = True
             return None
 
     # ── run ───────────────────────────────────────────────────────────────────
@@ -911,7 +914,9 @@ class CanonicalizeStage(BaseStage):
             return result
 
         counters: dict[str, int] = {"PASSTHROUGH": 0, "CONVERTED": 0, "TRANSCODED": 0, "ERROR": 0}
+        self._boundary_unavailable = False
         boundary = self._open_boundary(ctx, result)
+        kept_originals = 0
 
         for i, row in enumerate(pending, 1):
             outcome, detail = self._process_one(ctx, row, dry_run=False)
@@ -1009,6 +1014,12 @@ class CanonicalizeStage(BaseStage):
                         # disk is unchanged from the pre-canonicalize state,
                         # it just isn't reclaimed until the run is released.
                         boundary.quarantine(Path(old_path), reason=f"canonicalized to {new_path}")
+                    elif self._boundary_unavailable:
+                        # The checkpoint could not be made: without it the
+                        # original was deleted outright, with no copy and no
+                        # way back (review of the brief, B-4). It stays in
+                        # INBOX; switched off on purpose, it still goes.
+                        kept_originals += 1
                     else:
                         Path(old_path).unlink(missing_ok=True)
                 except (
@@ -1038,6 +1049,11 @@ class CanonicalizeStage(BaseStage):
         for k, v in counters.items():
             if v:
                 result.notes.append(f"  {k}: {v}")
+        if kept_originals:
+            result.notes.append(
+                f"  originals kept in INBOX (no recovery boundary): {kept_originals} -- "
+                f"remove them once the run is checked"
+            )
 
         if counters["ERROR"] > 0:
             result.success = False
