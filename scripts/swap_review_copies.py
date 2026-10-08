@@ -118,7 +118,7 @@ def library_copy(conn: sqlite3.Connection, review: sqlite3.Row) -> sqlite3.Row |
         "SELECT audio_hash FROM duplicates WHERE file_path=? AND audio_hash IS NOT NULL LIMIT 1",
         (kept,),
     ).fetchone() or conn.execute(
-        "SELECT audio_hash FROM duplicates WHERE group_id=? AND status='keep' "
+        "SELECT audio_hash FROM duplicates WHERE group_id=? AND status IN ('keep', 'keep_user') "
         "AND audio_hash IS NOT NULL LIMIT 1",
         (group,),
     ).fetchone()

@@ -53,5 +53,8 @@ def test_auto_keeps_what_the_keep_rule_keeps(conn, monkeypatch):
     monkeypatch.setattr("sys.stdin", io.StringIO("A\n"))
     dedupe.run_dedupe_console(conn)
     s = _statuses(conn)
-    assert s["/m/studio.m4a"] == "keep", "auto kept the bigger live copy over the studio one"
-    assert s["/m/live.m4a"] == "archive"
+    # A person's auto is still a person's decision, for the resolver to carry out (#123).
+    assert s["/m/studio.m4a"] == dedupe.KEEP_USER, (
+        "auto kept the bigger live copy over the studio one"
+    )
+    assert s["/m/live.m4a"] == dedupe.ARCHIVE_USER
