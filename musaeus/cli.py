@@ -378,6 +378,35 @@ def _run_pipeline(
     dry_run: bool,
     stash: dict | None = None,
 ) -> int:
+    """Run a sequence of stages, holding the masters lock for a real run.
+
+    A pipeline can change masters, so it holds the lock exclusively: no build,
+    backup, repair or second run reads or changes them meanwhile (review of
+    #87, findings 9 and 10). A dry run changes nothing and takes no lock.
+    Returns EXIT_BUSY (75) when another job holds it.
+    """
+    if dry_run:
+        return _run_pipeline_inner(stages, dry_run, stash)
+    try:
+        runs_root = get_config().runs_root
+    except ValueError:
+        return _run_pipeline_inner(stages, dry_run, stash)  # it reports the error
+    from .masters_lock import EXIT_BUSY, MastersBusy, masters_lock
+
+    names = ", ".join(cls.__name__ for cls in stages)
+    try:
+        with masters_lock(runs_root, exclusive=True, what=f"musaeus pipeline ({names})"):
+            return _run_pipeline_inner(stages, dry_run, stash)
+    except MastersBusy as exc:
+        print(f"  NOT RUN: {exc}", file=sys.stderr)
+        return EXIT_BUSY
+
+
+def _run_pipeline_inner(
+    stages: list[type[BaseStage]],
+    dry_run: bool,
+    stash: dict | None = None,
+) -> int:
     """
     Run a sequence of stages.
     stash: optional dict of key→value to pre-load into ctx before running.
@@ -1049,6 +1078,30 @@ def _cmd_deep_scan(args) -> int:
 
 
 def _cmd_edition_build(args) -> int:
+    """Build an edition, holding the masters lock shared for a real build.
+
+    Builds read masters, so they share the lock with each other and wait for
+    nothing but a job that changes masters (review of #87, findings 9, 10).
+    """
+    if getattr(args, "dry_run", False):
+        return _cmd_edition_build_inner(args)
+    try:
+        runs_root = get_config().runs_root
+    except ValueError:
+        return _cmd_edition_build_inner(args)
+    from .masters_lock import EXIT_BUSY, MastersBusy, masters_lock
+
+    try:
+        with masters_lock(
+            runs_root, exclusive=False, what=f"edition-build {getattr(args, 'name', '?')}"
+        ):
+            return _cmd_edition_build_inner(args)
+    except MastersBusy as exc:
+        print(f"NOT RUN: {exc}", file=sys.stderr)
+        return EXIT_BUSY
+
+
+def _cmd_edition_build_inner(args) -> int:
     """Build an edition from the masters. See musaeus/edition_build.py.
 
     The catalogue is opened READ-ONLY: building an edition must never change
