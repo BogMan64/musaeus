@@ -43,6 +43,11 @@ class HasherError(Exception):
     """Raised when hashing fails unrecoverably."""
 
 
+class HasherTimeout(HasherError):
+    """The decode was killed for taking too long: nothing is known about the
+    audio. Raised only by a strict audio_hash, which must not fall back."""
+
+
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 
@@ -98,7 +103,7 @@ def _audio_hash_timeout(sample_rate: int, duration: float) -> int:
 # ── Audio-stream hash ─────────────────────────────────────────────────────────
 
 
-def _audio_hash_and_stderr(path: Path) -> tuple[str, str]:
+def _audio_hash_and_stderr(path: Path, *, allow_fallback: bool = True) -> tuple[str, str]:
     """
     Compute a SHA-256 hash of the raw audio stream only (no tags/container).
 
@@ -111,6 +116,10 @@ def _audio_hash_and_stderr(path: Path) -> tuple[str, str]:
     """
     cmd = [
         _FFMPEG_CMD,
+        # Never read the terminal: run by hand, a keypress ("q") ends the
+        # decode early and a truncated stream hashes as different audio
+        # (review of #87, finding 6).
+        "-nostdin",
         "-v",
         "error",  # suppress info noise
         "-i",
@@ -157,6 +166,7 @@ def _audio_hash_and_stderr(path: Path) -> tuple[str, str]:
     try:
         proc = subprocess.Popen(
             cmd,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -230,6 +240,12 @@ def _audio_hash_and_stderr(path: Path) -> tuple[str, str]:
 
     if rc != 0:
         stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace").strip()
+        if rc == -9 and not allow_fallback:
+            # A strict caller (the bit-rot check) compares this against a
+            # stored audio identity. A whole-file hash there reads as changed
+            # audio, so a healthy re-tagged master looked rotted and a
+            # rebaseline stored the wrong kind of hash (review of #87, 5).
+            raise HasherTimeout(f"audio decode timed out (>{_TIMEOUT_SECS}s) for {path}")
         if rc == -9:  # SIGKILL from the timeout thread
             # An ACTUAL timeout, which is the only thing that now justifies
             # the container-hash fallback. Predicting one from the sample
@@ -261,10 +277,14 @@ def _audio_hash_and_stderr(path: Path) -> tuple[str, str]:
     return h.hexdigest(), b"".join(stderr_chunks).decode("utf-8", errors="replace").strip()
 
 
-def audio_hash(path: Path) -> str:
+def audio_hash(path: Path, *, strict: bool = False) -> str:
     """SHA-256 of the raw audio stream only (no tags/container). See
-    _audio_hash_and_stderr. Raises HasherError on subprocess failure."""
-    return _audio_hash_and_stderr(path)[0]
+    _audio_hash_and_stderr. Raises HasherError on subprocess failure.
+
+    strict: never fall back to a whole-file hash on a timeout; raise
+    HasherTimeout instead. For callers that compare against a stored audio
+    identity, where a container hash would read as different audio."""
+    return _audio_hash_and_stderr(path, allow_fallback=not strict)[0]
 
 
 def audio_hash_safe(path: Path) -> tuple[str | None, str | None]:

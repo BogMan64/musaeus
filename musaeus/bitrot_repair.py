@@ -5,9 +5,10 @@ for a better one and copy it over on its own, with a notification at the end of
 the run saying what I did?"
 
 A master is repaired only when it really rotted: its audio (PCM identity) no
-longer matches its baseline, and its current audio matches no catalogued song.
-A master MUSAEUS replaced on purpose -- the swap tool putting a better copy in
-place -- has audio the catalogue knows, so it is never "repaired" back.
+longer matches its baseline, and MUSAEUS did not replace it on purpose. A master
+MUSAEUS replaced -- the swap tool putting a better copy in place -- either has
+audio the catalogue knows, or was filed after its baseline was taken; it is
+never "repaired" back.
 
 The good copy is the first backup copy (newest first) holding the same relative
 path whose audio matches the baseline -- a backup that rotted too is never used.
@@ -15,6 +16,10 @@ The damaged file is set aside, not deleted, in REVIEW/BITROT_DAMAGED/<date>/.
 The restored file gets the damaged file's tags when they can still be read (a
 backup can be older than this week's tags), and its byte hash becomes the new
 baseline.
+
+The master's path is never empty: the backup copy is made and verified beside
+it first, the damaged file is kept by a hard link, and one atomic rename puts
+the good copy in place (review of #87, finding 7).
 """
 
 from __future__ import annotations
@@ -69,26 +74,41 @@ def good_copy(rel: Path, want_audio: str, copies: list[Path]) -> Path | None:
         if not candidate.is_file():
             continue
         try:
-            if audio_hash(candidate) == want_audio:
+            if audio_hash(candidate, strict=True) == want_audio:
                 return candidate
         except Exception:  # noqa: BLE001 -- an unreadable backup copy is just not a good one
             continue
     return None
 
 
-def is_rot(conn, current_audio: str | None) -> bool:
-    """Rot unless the file's current audio is a catalogued song.
+def is_rot(
+    conn, current_audio: str | None, *, path: str | None = None, baselined_at: str | None = None
+) -> bool:
+    """Rot unless MUSAEUS replaced the file on purpose.
 
-    MUSAEUS replaces a master on purpose only with audio it catalogues (the swap
-    tool's better copy); audio no catalogued song has is damage.
+    On purpose means either of two things. The file's current audio is a
+    catalogued song's (the swap tool's better copy). Or a catalogued song was
+    filed at this path after the baseline was taken: the catalogue's
+    audio_hash is the audio as it ARRIVED, which a transcoded master never
+    matches, so the first test alone reverted a deliberate replacement of one
+    (review of #87, finding 4). Rot changes the bytes, never finalized_at.
     """
-    if not current_audio:
-        return True
-    known = conn.execute(
-        "SELECT 1 FROM archive WHERE audio_hash = ? AND status = 'CATALOGUED' LIMIT 1",
-        (current_audio,),
-    ).fetchone()
-    return known is None
+    if current_audio:
+        known = conn.execute(
+            "SELECT 1 FROM archive WHERE audio_hash = ? AND status = 'CATALOGUED' LIMIT 1",
+            (current_audio,),
+        ).fetchone()
+        if known is not None:
+            return False
+    if path and baselined_at:
+        refiled = conn.execute(
+            "SELECT 1 FROM archive WHERE file_path = ? AND status = 'CATALOGUED' "
+            "AND julianday(finalized_at) > julianday(?) LIMIT 1",
+            (path, baselined_at),
+        ).fetchone()
+        if refiled is not None:
+            return False
+    return True
 
 
 def _copy_tags(src: Path, dst: Path) -> bool:
@@ -110,26 +130,48 @@ def _copy_tags(src: Path, dst: Path) -> bool:
     return True
 
 
+def _keep_aside(path: Path, aside: Path) -> Path:
+    """Keep the damaged file at *aside* without moving it off *path*.
+
+    A hard link first: it reads none of the data, so a file too damaged to read
+    can still be kept. A copy if the link is refused (another filesystem).
+    """
+    aside.parent.mkdir(parents=True, exist_ok=True)
+    n = 1
+    while aside.exists():  # a second repair of the same song the same day
+        aside = aside.with_name(f"{aside.stem}.{n}{aside.suffix}")
+        n += 1
+    try:
+        os.link(path, aside)
+    except OSError:
+        shutil.copy2(path, aside)
+    return aside
+
+
 def repair(path: Path, archive_root: Path, baseline_audio: str, copies: list[Path],
            aside_root: Path) -> Repair:  # fmt: skip
-    """Put a good backup copy in place of the rotted master at *path*."""
+    """Put a good backup copy in place of the rotted master at *path*.
+
+    Order is the contract: copy and verify beside the master, keep the damaged
+    file, then one atomic rename. A kill at any point leaves a master at *path*.
+    """
     rel = path.relative_to(archive_root)
     source = good_copy(rel, baseline_audio, copies)
     if source is None:
         where = ", ".join(str(c) for c in copies) or "no backup drive mounted"
         return Repair(str(path), False, f"no backup copy with the original audio ({where})")
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    aside = aside_root / "BITROT_DAMAGED" / day / rel
-    aside.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".restoring")
-    shutil.copy2(source, tmp)
-    shutil.move(str(path), str(aside))
-    tmp.replace(path)
-    tags = _copy_tags(aside, path)
-    if audio_hash(path) != baseline_audio:  # never leave a wrong file in place
-        shutil.move(str(path), str(path.with_name(path.name + ".failed_restore")))
-        shutil.copy2(aside, path)
-        return Repair(
-            str(path), False, f"the copy from {source} did not verify; damaged file left in place"
-        )
+    try:
+        shutil.copy2(source, tmp)
+        tags = _copy_tags(path, tmp)  # the damaged file's tags, while it is still in place
+        if audio_hash(tmp, strict=True) != baseline_audio:  # never put a wrong file in place
+            tmp.unlink(missing_ok=True)
+            return Repair(
+                str(path), False, f"the copy from {source} did not verify; master left as it was"
+            )
+        _keep_aside(path, aside_root / "BITROT_DAMAGED" / day / rel)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)  # gone already after a successful rename
     return Repair(str(path), True, f"{source}" + ("" if tags else " (its own, older tags)"))
