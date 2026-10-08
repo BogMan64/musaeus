@@ -757,6 +757,27 @@ def _prune_empty(start: Path, root: Path) -> None:
         d = d.parent
 
 
+def _known_measurements(ledger: sqlite3.Connection, m: Master) -> dict[str, dict]:
+    """The kept measurements of *m*, restored from the master when the ledger
+    lacks them.
+
+    Each master keeps its measurements in its own tag (#73), so a lost or new
+    ledger need not measure everything again -- but nothing called
+    restore_ledger, so a build did exactly that (review of #88, finding 12).
+    """
+    have = measurements_of(ledger, m.audio_hash)
+    if have:
+        return have
+    from . import master_measurements
+
+    try:
+        if master_measurements.restore_ledger(ledger, m.audio_hash, m.path):
+            return measurements_of(ledger, m.audio_hash)
+    except Exception:  # noqa: BLE001, S110 -- unreadable tag: the bake measures it, as before
+        pass
+    return have
+
+
 def _bake_one(
     m: Master, target: Path, kind: Kind, known: Mapping[str, dict]
 ) -> tuple[Path, edition_bake.BakeResult]:
@@ -905,7 +926,7 @@ def execute(
             edition_bake.ACTIVE_THROTTLE = throttle
             # Kept measurements are read here, in this thread: the workers
             # never touch the record.
-            known = {m.audio_hash: measurements_of(ledger, m.audio_hash) for m, _ in todo}
+            known = {m.audio_hash: _known_measurements(ledger, m) for m, _ in todo}
             for m, target in todo:
                 fut = pool.submit(_bake_one, m, target, kind, known[m.audio_hash])
                 futures[fut] = (m, target)
