@@ -462,7 +462,7 @@ class TestCopyWithVerification:
 
         def _fake_copy_one(src, dst):
             dst.parent.mkdir(parents=True, exist_ok=True)
-            dst.write_bytes(src.read_bytes())
+            mod._part(dst).write_bytes(src.read_bytes())  # where _copy_one writes
             return next(elapsed_sequence)
 
         sleep_calls = []
@@ -1479,6 +1479,12 @@ def _no_format_env(tmp_path, monkeypatch, dev=None):
         usb_mod, "list_removable_devices", lambda: [dev or _device(path="/dev/sdz")]
     )
     monkeypatch.setattr(usb_mod, "critical_backing_disks", lambda *a, **k: set())
+    # The stick directory stands for a folder on that removable device: the
+    # destination is now checked like --sync's (review of #88, finding 1).
+    monkeypatch.setattr(
+        usb_mod, "_backing_disk_for_path", lambda p: (dev or _device(path="/dev/sdz")).path
+    )
+    monkeypatch.setattr(usb_mod, "_case_insensitive", lambda root: False)
 
     def _boom(*a, **k):
         raise AssertionError("--no-format reached a gate it must never reach")
