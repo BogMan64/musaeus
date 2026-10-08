@@ -446,6 +446,10 @@ def main() -> int:
                     help='a destination taken by a different recording gets " (N)" instead of refusing')
     ap.add_argument("--execute", action="store_true")
     args = ap.parse_args()
+    if args.execute:  # the masters lock (review of #87, findings 9 and 10)
+        from musaeus.masters_lock import hold_for_process
+
+        hold_for_process(exclusive=True, what="scripts/consolidate_artist_folders.py")
     if args.old == args.new and not args.genre:
         ap.error("OLD and NEW are the same name; that is only a refile, which needs --genre")
 
