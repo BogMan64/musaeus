@@ -496,6 +496,73 @@ def _pick_keeper_and_losers(members: list[dict]) -> tuple[dict | None, list[dict
     return keep, losers
 
 
+_MANIFEST_FIELDS = [
+    "source",
+    "destination",
+    "group_id",
+    "duplicate_type",
+    "moved_codec",
+    "moved_bitrate",
+    "kept_path",
+    "kept_codec",
+    "kept_bitrate",
+]
+
+
+class _MoveLog:
+    """The run's manifest and restore script, written as each move happens.
+
+    Both were written once, at the end: a killed run left files moved with no
+    record of where they came from (review of #86, finding 10). A move's
+    restore line is on disk before the file moves, and only acts if the file
+    is where the move put it, so the script is right after a kill at any point.
+    The files appear with the first move; a run that moves nothing writes none.
+    """
+
+    def __init__(self, review_dir: Path) -> None:
+        self.review_dir = review_dir
+        self.stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self.manifest_path: Path | None = None
+        self.restore_path: Path | None = None
+
+    def _open(self) -> None:
+        if self.restore_path is not None:
+            return
+        self.review_dir.mkdir(parents=True, exist_ok=True)
+        self.manifest_path = self.review_dir / f"moved_manifest_{self.stamp}.csv"
+        with open(self.manifest_path, "w", newline="", encoding="utf-8") as fh:
+            csv.DictWriter(fh, fieldnames=_MANIFEST_FIELDS).writeheader()
+        self.restore_path = self.review_dir / f"restore_{self.stamp}.sh"
+        self.restore_path.write_text("#!/usr/bin/env bash\nset -euo pipefail\n\n", encoding="utf-8")
+        self.restore_path.chmod(self.restore_path.stat().st_mode | stat.S_IEXEC)
+
+    @staticmethod
+    def _append(path: Path, text: str) -> None:
+        with open(path, "a", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+
+    def before_move(self, source: str, destination: str) -> None:
+        self._open()
+        assert self.restore_path is not None
+        # shlex.quote: a path is data, never shell (review of #86, finding 4).
+        src, dst = shlex.quote(source), shlex.quote(destination)
+        self._append(
+            self.restore_path,
+            f"if [ -e {dst} ]; then mkdir -p {shlex.quote(os.path.dirname(source))}; "
+            f"mv -n {dst} {src}; fi\n",
+        )
+
+    def after_move(self, row: dict) -> None:
+        self._open()
+        assert self.manifest_path is not None
+        with open(self.manifest_path, "a", newline="", encoding="utf-8") as fh:
+            csv.DictWriter(fh, fieldnames=_MANIFEST_FIELDS, extrasaction="ignore").writerow(row)
+            fh.flush()
+            os.fsync(fh.fileno())
+
+
 class DupeResolverStage(BaseStage):
     """
     DupeResolver — physically relocate duplicate-group losers into
@@ -578,40 +645,15 @@ class DupeResolverStage(BaseStage):
         workable across thousands of rows.
         Returns (manifest_path, restore_script_path).
         """
-        review_dir = ctx.config.dupes_review_dir / batch_date
-        review_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-        fieldnames = [
-            "source",
-            "destination",
-            "group_id",
-            "duplicate_type",
-            "moved_codec",
-            "moved_bitrate",
-            "kept_path",
-            "kept_codec",
-            "kept_bitrate",
-        ]
-        manifest_path = review_dir / f"moved_manifest_{stamp}.csv"
-        with open(manifest_path, "w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(moves)
-
-        restore_path = review_dir / f"restore_{stamp}.sh"
-        lines = ["#!/usr/bin/env bash", "set -euo pipefail", ""]
+        log = _MoveLog(ctx.config.dupes_review_dir / batch_date)
         for m in moves:
-            src, dst = m["source"], m["destination"]
-            src_dir = os.path.dirname(src)
-            # shlex.quote: a path is data, never shell (review of #86,
-            # finding 4; same fix in tribute_quarantine.py).
-            lines.append(f"mkdir -p {shlex.quote(src_dir)}")
-            lines.append(f"mv -n {shlex.quote(dst)} {shlex.quote(src)}")
-        restore_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        restore_path.chmod(restore_path.stat().st_mode | stat.S_IEXEC)
+            log.before_move(m["source"], m["destination"])
+            log.after_move(m)
+        assert log.manifest_path is not None and log.restore_path is not None
+        return log.manifest_path, log.restore_path
 
-        return manifest_path, restore_path
+    #: The run's move log; None in a dry run.
+    _log: _MoveLog | None = None
 
     def _move_losers(
         self,
@@ -649,6 +691,19 @@ class DupeResolverStage(BaseStage):
         """
         keeper_desc = keeper["file_path"] if keeper else "(no keeper on record)"
         gids = tuple(group_ids) or (group_id,)
+        if losers and keeper is not None and not Path(keeper["file_path"]).exists():
+            # Moving the losers would leave the library with no copy: the one
+            # to keep is not on disk. Nobody checked, so a keeper whose file
+            # had gone meant every real copy was moved out (review of #86,
+            # finding 6). The group stays pending for a person to look at.
+            # (No keeper at all is the lone CROSS_BATCH member, whose twin is
+            # the master CrossDupe found in the library.)
+            result.files_skipped += len(losers)
+            result.notes.append(
+                f"group {group_id}: the copy to keep ({keeper_desc}) is not on disk -- "
+                f"nothing moved"
+            )
+            return
         for item_index, loser in enumerate(losers):
             result.files_processed += 1
             source = Path(loser["file_path"])
@@ -819,6 +874,8 @@ class DupeResolverStage(BaseStage):
             )
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
+                if self._log is not None:
+                    self._log.before_move(str(source), str(target))  # on disk first
                 shutil.move(str(source), str(target))
             except OSError as exc:
                 # ROLLBACK TO does not release; without the RELEASE these
@@ -881,6 +938,12 @@ class DupeResolverStage(BaseStage):
             # Releasing here rather than straight after the move keeps the
             # bookkeeping inside the same unwind unit as the move itself.
             ctx.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            # Committed as each move completes: a single commit at the end let
+            # a killed run keep its files moved and roll their rows back
+            # (review of #86, finding 10).
+            ctx.conn.commit()
+            if self._log is not None:
+                self._log.after_move(moved[-1])
             result.files_changed += 1
             already_moved[source_key] = group_id
             logger.info("[dupe-resolver] moved %s -> %s", source, target)
@@ -906,6 +969,7 @@ class DupeResolverStage(BaseStage):
 
         batch_date = _batch_date(ctx)
         moved: list[dict] = []
+        self._log = None if dry_run else _MoveLog(ctx.config.dupes_review_dir / batch_date)
         # Source-path -> group_id, accumulated across every group processed
         # in this _resolve() call. See _move_losers' docstring: a single
         # physical file often gets staged into more than one group, and
@@ -1063,13 +1127,10 @@ class DupeResolverStage(BaseStage):
         if not dry_run:
             ctx.conn.commit()
 
-        if moved:
-            manifest_path, restore_path = self._write_manifest_and_restore_script(
-                ctx, batch_date, moved
-            )
+        if moved and self._log is not None:
             result.notes.append(f"moved {len(moved)} file(s) to review")
-            result.notes.append(f"manifest: {manifest_path}")
-            result.notes.append(f"restore script: {restore_path}")
+            result.notes.append(f"manifest: {self._log.manifest_path}")
+            result.notes.append(f"restore script: {self._log.restore_path}")
         elif dry_run and result.files_changed:
             result.notes.append(
                 f"[DRY RUN] would move {result.files_changed} file(s) — no manifest written"

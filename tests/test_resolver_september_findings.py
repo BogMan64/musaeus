@@ -144,3 +144,19 @@ def test_a_group_flagged_cross_batch_throughout_keeps_one_copy(ctx):
 
     assert a.exists() or b.exists(), "every copy of the song was moved"
     assert a.exists() and not b.exists(), "the better copy stays"
+
+
+def test_nothing_moves_when_the_keepers_file_is_missing(ctx):
+    """Review of #86, finding 6: nobody checked the keeper's file exists. A
+    keeper whose file is gone meant every real copy was moved out."""
+    a = _row(ctx, ctx.alac_library / "A" / "a.m4a", artist="A", album="B", title="T",
+             codec="alac", bitrate=900_000)  # fmt: skip
+    b = _row(ctx, ctx.alac_library / "A" / "b.m4a", artist="A", album="B", title="T",
+             codec="aac", bitrate=256_000)  # fmt: skip
+    _dup(ctx, "near_dddddddd", a, "NEAR")
+    _dup(ctx, "near_dddddddd", b, "NEAR")
+    a.unlink()  # the better copy's file is gone; its row is not
+
+    DupeResolverStage().execute(ctx)
+
+    assert b.exists(), "the only remaining copy was moved out"
