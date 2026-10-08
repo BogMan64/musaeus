@@ -516,6 +516,33 @@ def read_marker(path: Path) -> str | None:
     return bytes(values[0]).decode("utf-8", "replace")
 
 
+def is_damaged(path: Path) -> bool:
+    """True only for an MP4 that no longer reads as one: what a tag save cut
+    short leaves (review of #88, finding 4). mutagen rewrites the file it saves;
+    the start (ftyp) stays and what follows is half written.
+
+    Not damaged: a file that cannot be opened (that says nothing about it), a
+    file that does not start as an MP4 (not a copy), or one that reads.
+    """
+    from mutagen.mp4 import MP4
+    from mutagen.mp4 import error as MP4Error
+
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(12)
+    except OSError:
+        return False
+    if head[4:8] != b"ftyp":
+        return False
+    try:
+        MP4(path)
+    except MP4Error:
+        return True
+    except Exception:  # noqa: BLE001 -- unreadable for another reason: not known damaged
+        return False
+    return False
+
+
 #: The Lossless bake's measurement: loudnorm's targets, no filters before it.
 LOSSLESS_RECIPE = f"alac I={TARGET_I} TP={TARGET_TP} LRA={TARGET_LRA}"
 
