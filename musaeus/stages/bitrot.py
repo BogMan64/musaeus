@@ -95,7 +95,7 @@ from pathlib import Path
 
 from ..config import AUDIO_EXTENSIONS
 from ..context import RunContext, StageResult, elision
-from ..hasher import audio_hash, file_hash
+from ..hasher import HasherTimeout, audio_hash, file_hash
 from .base import NO_VERIFICATION, BaseStage, VerifyResult
 
 logger = logging.getLogger(__name__)
@@ -243,7 +243,7 @@ class BitRotStage(BaseStage):
                 gone += 1
                 continue
             try:
-                ah = audio_hash(path)
+                ah = audio_hash(path, strict=True)
             except Exception as exc:  # noqa: BLE001 -- hasher raises its own type
                 result.files_errored += 1
                 result.errors.append(f"{path.name}: {exc}")
@@ -301,11 +301,15 @@ class BitRotStage(BaseStage):
             # fatal -- the byte baseline is still worth having -- but it
             # costs this row its move-resistance, so it is counted.
             try:
-                ah = audio_hash(path)
+                # strict: never record a whole-file hash as the audio identity
+                # (review of #87, finding 5)
+                ah = audio_hash(path, strict=True)
             except Exception as exc:  # noqa: BLE001 -- hasher raises its own type
                 ah = None
                 unhashable.append(f"{path.name}: {exc}")
 
+            # An identity that could not be computed this time keeps the one
+            # recorded before, rather than erasing it.
             ctx.conn.execute(
                 """
                 INSERT INTO archive_tier_hashes
@@ -313,7 +317,7 @@ class BitRotStage(BaseStage):
                 VALUES (?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(path) DO UPDATE SET
                     sha256       = excluded.sha256,
-                    audio_hash   = excluded.audio_hash,
+                    audio_hash   = COALESCE(excluded.audio_hash, archive_tier_hashes.audio_hash),
                     size_bytes   = excluded.size_bytes,
                     baselined_at = excluded.baselined_at
                 """,
@@ -354,10 +358,11 @@ class BitRotStage(BaseStage):
         result.notes.append(f"files to verify: {len(files)}")
 
         rows = ctx.conn.execute(
-            "SELECT path, sha256, audio_hash FROM archive_tier_hashes"
+            "SELECT path, sha256, audio_hash, baselined_at FROM archive_tier_hashes"
         ).fetchall()
         baseline = {r["path"]: r["sha256"] for r in rows}
         baseline_audio = {r["path"]: r["audio_hash"] for r in rows}
+        baselined_at = {r["path"]: r["baselined_at"] for r in rows}
         # The reverse index is what makes a moved file recognisable. PCM
         # identity survives a move; a path does not.
         by_audio = {r["audio_hash"]: r["path"] for r in rows if r["audio_hash"]}
@@ -386,6 +391,10 @@ class BitRotStage(BaseStage):
         # (current path, baseline key, baseline PCM, current PCM): the rot that
         # can be told from a re-tag, and so can be repaired from a backup.
         rotted: list[tuple[str, str, str, str | None]] = []
+        # Could not be read, or could not be decoded in time: nothing is known
+        # about these, which is not the same as "all clear" (review of #87, 11).
+        unreadable: list[str] = []
+        unchecked: list[str] = []
 
         for i, path in enumerate(files, 1):
             result.files_processed += 1
@@ -399,7 +408,7 @@ class BitRotStage(BaseStage):
                 # whether it is the same recording somewhere else. Costs a
                 # decode, and only for files that actually moved.
                 try:
-                    pcm = audio_hash(path)
+                    pcm = audio_hash(path, strict=True)
                 except Exception:  # noqa: BLE001 -- undecodable is not rot; CorruptStage owns that
                     pcm = None
                 origin = by_audio.get(pcm) if pcm else None
@@ -417,6 +426,7 @@ class BitRotStage(BaseStage):
             except OSError as exc:
                 result.files_errored += 1
                 result.errors.append(f"{path.name}: could not read file: {exc}")
+                unreadable.append(path_str)
                 continue
 
             if current_hash == baseline[key]:
@@ -427,13 +437,21 @@ class BitRotStage(BaseStage):
                 # identity the two cannot be told apart, and an unclassified
                 # change is reported loudly rather than assumed benign.
                 stored_pcm = baseline_audio.get(key)
+                timed_out = False
                 if pcm is None:
                     try:
-                        pcm = audio_hash(path)
+                        # strict: a whole-file fallback hash would read as
+                        # changed audio (review of #87, finding 5)
+                        pcm = audio_hash(path, strict=True)
+                    except HasherTimeout:
+                        pcm, timed_out = None, True
                     except Exception:  # noqa: BLE001
                         pcm = None
                 if stored_pcm and pcm and pcm == stored_pcm:
                     retagged += 1
+                elif timed_out:
+                    unchecked.append(path_str)
+                    logger.warning("[bitrot] COULD NOT CHECK (decode timed out): %s", path.name)
                 elif not stored_pcm:
                     unclassified += 1
                     corrupt.append((path_str, baseline[key], current_hash))
@@ -464,7 +482,7 @@ class BitRotStage(BaseStage):
             if i % _COMMIT_EVERY == 0:
                 logger.info("bitrot: verify checkpoint %d/%d", i, len(files))
 
-        replaced, repaired, unrepaired = self._repair(ctx, alac_archive, rotted)
+        replaced, repaired, unrepaired = self._repair(ctx, alac_archive, rotted, baselined_at)
         if replaced:
             corrupt = [c for c in corrupt if c[0] not in replaced]
 
@@ -513,6 +531,19 @@ class BitRotStage(BaseStage):
             for r in unrepaired[:20]:
                 result.notes.append(f"  NOT repaired {r.path}: {r.detail}")
             corrupt = [c for c in corrupt if c[0] not in {r.path for r in repaired}]
+        if unreadable:
+            result.success = False
+            result.notes.append(f"COULD NOT READ: {len(unreadable)} file(s)")
+            for fp in unreadable[:20]:
+                result.notes.append(f"  could not read {fp}")
+        if unchecked:
+            result.success = False
+            result.notes.append(
+                f"COULD NOT CHECK (decode timed out): {len(unchecked)} file(s) -- bytes "
+                f"changed, audio unknown; nothing was repaired"
+            )
+            for fp in unchecked[:20]:
+                result.notes.append(f"  not checked {fp}")
         if corrupt:
             result.success = False
             for fp, stored, current in corrupt[:20]:
@@ -527,9 +558,11 @@ class BitRotStage(BaseStage):
         ctx.record_stage(result)
         return result
 
-    def _repair(self, ctx: RunContext, archive_root: Path, rotted: list) -> tuple[set, list, list]:
+    def _repair(
+        self, ctx: RunContext, archive_root: Path, rotted: list, baselined_at: dict | None = None
+    ) -> tuple[set, list, list]:
         """Repair rot from a backup; a deliberate replacement only moves the baseline."""
-        from ..bitrot_repair import backup_copies, backup_roots, is_rot, repair
+        from ..bitrot_repair import Repair, backup_copies, backup_roots, is_rot, repair
 
         replaced: set[str] = set()
         repaired: list = []
@@ -538,16 +571,25 @@ class BitRotStage(BaseStage):
             return replaced, repaired, unrepaired
         copies = backup_copies(backup_roots())
         for path_str, key, stored_pcm, current_pcm in rotted:
-            if not is_rot(ctx.conn, current_pcm):
+            when = (baselined_at or {}).get(key)
+            if not is_rot(ctx.conn, current_pcm, path=path_str, baselined_at=when):
                 replaced.add(path_str)
                 ctx.conn.execute(
-                    "UPDATE archive_tier_hashes SET sha256 = ?, audio_hash = ? WHERE path = ?",
+                    "UPDATE archive_tier_hashes SET sha256 = ?, audio_hash = ?, "
+                    "baselined_at = datetime('now') WHERE path = ?",
                     (file_hash(Path(path_str)), current_pcm, key),
                 )
                 continue
-            r = repair(
-                Path(path_str), archive_root, stored_pcm, copies, ctx.config.vault_root / "REVIEW"
-            )
+            try:
+                r = repair(
+                    Path(path_str),
+                    archive_root,
+                    stored_pcm,
+                    copies,
+                    ctx.config.vault_root / "REVIEW",
+                )
+            except Exception as exc:  # noqa: BLE001 -- one failed repair must not end the run
+                r = Repair(path_str, False, f"repair failed: {exc}")
             if r.repaired:
                 repaired.append(r)
                 ctx.conn.execute(
@@ -578,6 +620,8 @@ class BitRotStage(BaseStage):
         }
         if "archive_tier_hashes" not in tables:
             return NO_VERIFICATION
+        if ctx.get("bitrot_rebaseline", False):
+            return self._verify_rebaseline(ctx, result)
         rows = ctx.conn.execute(
             "SELECT file_path FROM events WHERE run_id = ? "
             " AND event_type = 'BITROT_DETECTED' ORDER BY id DESC LIMIT 10",
@@ -598,6 +642,33 @@ class BitRotStage(BaseStage):
             f"{len(unbaselined)} of {len(rows)} file(s) were checked but have no "
             f"stored hash to compare against later: {', '.join(unbaselined[:3])}"
         ]
+
+    def _verify_rebaseline(self, ctx: RunContext, result: StageResult) -> VerifyResult:
+        """A rebaseline claims a row for each file it hashed: look at some.
+
+        Returning [] here without looking said "checked, nothing wrong" about
+        a run that checked nothing (review of #87, finding 12).
+        """
+        if not result.files_changed:
+            return NO_VERIFICATION
+        files = _scan_archive_files(ctx.config.alac_archive)[:: max(1, result.files_changed // 20)]
+        missing = [
+            p.name
+            for p in files[:20]
+            if not ctx.conn.execute(
+                "SELECT 1 FROM archive_tier_hashes WHERE path = ? AND sha256 IS NOT NULL",
+                (str(p),),
+            ).fetchone()
+        ]
+        if not files:
+            return NO_VERIFICATION
+        if missing:
+            return [
+                f"{len(missing)} of {min(len(files), 20)} sampled file(s) have no baseline "
+                f"after a rebaseline that reported {result.files_changed}: "
+                f"{', '.join(missing[:3])}"
+            ]
+        return []
 
     def _dispatch(self, ctx: RunContext, dry_run: bool) -> StageResult:
         if ctx.get("bitrot_backfill_pcm", False):

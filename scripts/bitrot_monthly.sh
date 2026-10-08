@@ -27,6 +27,6 @@ done
 
 "$MUSAEUS" bitrot > "$LOG" 2>&1
 rc=$?
-summary="$(grep -E "^\s*(ok:|corrupt|REPAIRED|NOT repaired|replaced on purpose|missing from disk|NOT A CLEAN)" "$LOG" | sed 's/^\s*//' | head -6 | paste -sd ';' -)"
+summary="$(grep -E "^\s*(ok:|corrupt|REPAIRED|NOT repaired|COULD NOT|replaced on purpose|missing from disk|NOT A CLEAN)" "$LOG" | sed 's/^\s*//' | head -8 | paste -sd ';' -)"
 notify "${summary:-finished (exit $rc)} -- log: $LOG"
 exit $rc
