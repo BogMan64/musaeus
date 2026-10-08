@@ -118,7 +118,7 @@ def library_copy(conn: sqlite3.Connection, review: sqlite3.Row) -> sqlite3.Row |
         "SELECT audio_hash FROM duplicates WHERE file_path=? AND audio_hash IS NOT NULL LIMIT 1",
         (kept,),
     ).fetchone() or conn.execute(
-        "SELECT audio_hash FROM duplicates WHERE group_id=? AND status='keep' "
+        "SELECT audio_hash FROM duplicates WHERE group_id=? AND status IN ('keep', 'keep_user') "
         "AND audio_hash IS NOT NULL LIMIT 1",
         (group,),
     ).fetchone()
@@ -286,6 +286,10 @@ def main() -> int:
         help="--promote at most N (a one-song trial before the rest: --limit 1)",
     )
     args = ap.parse_args()
+    if args.execute:  # the masters lock (review of #87, findings 9 and 10)
+        from musaeus.masters_lock import hold_for_process
+
+        hold_for_process(exclusive=True, what="scripts/swap_review_copies.py")
 
     cfg = MusicConfig.from_env()
     conn = sqlite3.connect(cfg.db_path)

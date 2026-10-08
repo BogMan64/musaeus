@@ -29,6 +29,10 @@ def main() -> int:
     ap.add_argument("--keep", type=int, default=KEEP)
     ap.add_argument("--execute", action="store_true")
     args = ap.parse_args()
+    if args.execute:  # the masters lock (review of #87, findings 9 and 10)
+        from musaeus.masters_lock import hold_for_process
+
+        hold_for_process(exclusive=False, what="scripts/music_backup.py")
     vault = Path(get_config().vault_root)
     if not args.root.is_dir() or not any(args.root.iterdir()):
         print(f"NOT RUN: {args.root} is not mounted")

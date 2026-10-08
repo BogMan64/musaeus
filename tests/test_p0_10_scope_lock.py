@@ -379,3 +379,26 @@ class TestStaleLockHandling:
         _plant_owner(lock_dir, scope, pid=os.getpid(), boot_id="a-previous-boot")
         with acquire(scope, lock_dir, run_id="successor") as handle:
             assert handle.owner.run_id == "successor"
+
+
+def test_releasing_never_deletes_the_next_holders_record(tmp_path, lock_dir, monkeypatch):
+    """Review of #87, minor finding 2: release unlocked first and deleted the
+    owner record second. A job taking the lock in between wrote its record,
+    and the release then deleted it -- the lock held, its owner invisible."""
+    import fcntl
+
+    from musaeus.safety import lock as lock_mod
+
+    handle = acquire(_scope(tmp_path), lock_dir, run_id="run-A")
+    real_flock = fcntl.flock
+
+    def flock(fd, op):
+        real_flock(fd, op)
+        if op == fcntl.LOCK_UN:  # the next job gets in right here
+            handle.meta_path.write_text('{"run_id": "run-B"}', encoding="utf-8")
+
+    monkeypatch.setattr(lock_mod.fcntl, "flock", flock)
+    handle.release()
+
+    assert handle.meta_path.exists(), "the next holder's record was deleted"
+    assert "run-B" in handle.meta_path.read_text(encoding="utf-8")

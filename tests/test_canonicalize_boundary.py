@@ -197,3 +197,25 @@ class TestEscapeHatch:
         )
         assert not source.exists()
         assert not _quarantined_files(cfg), "disabled boundary should not hold anything"
+
+
+class TestUnavailableBoundaryKeepsOriginals:
+    def test_no_checkpoint_means_the_original_stays(self, cfg: MusicConfig, monkeypatch):
+        """Review of the brief (B-4, 2026-10-07): when the checkpoint could not
+        be made, the boundary was UNAVAILABLE and canonicalize deleted INBOX
+        originals outright -- no quarantine copy, no way back. Switched off on
+        purpose it still does; failing to open, it keeps them."""
+        import musaeus.stages.canonicalize as canon
+
+        def no_room(*a, **k):
+            raise OSError("no room for a checkpoint")
+
+        monkeypatch.setattr(canon, "create_checkpoint", no_room)
+        conn, ctx, source = _setup(cfg)
+
+        result = CanonicalizeStage().run(ctx)
+        conn.close()
+
+        assert any("UNAVAILABLE" in n for n in result.notes)
+        assert source.exists(), "an original was deleted with no recovery boundary"
+        assert any("kept" in n for n in result.notes)
