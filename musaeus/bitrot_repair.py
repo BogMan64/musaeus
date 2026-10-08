@@ -60,8 +60,11 @@ def backup_copies(roots: list[Path]) -> list[Path]:
         if not root.is_dir():
             continue  # unplugged: normal
         for d in root.glob("*MUSAEUS_ALAC_Archive_*/ALAC-Archival"):
-            if d.is_dir():
-                dated.append((d.parent.name.rsplit("_", 1)[-1], d))
+            stamp = d.parent.name.rsplit("_", 1)[-1]
+            # Exactly a date: a copy that failed its check is left as
+            # <name>.partial and is never a repair source (review of #87, 3).
+            if d.is_dir() and len(stamp) == 8 and stamp.isdigit():
+                dated.append((stamp, d))
         if (root / "ALAC-Archival").is_dir():
             plain.append(root / "ALAC-Archival")
     return [d for _, d in sorted(dated, reverse=True)] + plain
