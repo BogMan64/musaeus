@@ -22,8 +22,6 @@ import logging
 import sys
 from pathlib import Path
 
-from .config import LOSSLESS_CODECS
-
 logger = logging.getLogger(__name__)
 
 #: A person's decisions, told apart from the resolver's own bookkeeping
@@ -101,7 +99,8 @@ def _get_group_members(conn, group_id: str) -> list[dict]:
                d.confidence,
                d.status AS dup_status,
                a.artist, a.album, a.title, a.ext,
-               a.bitrate, a.size_bytes, a.duration, a.lufs, a.codec
+               a.bitrate, a.size_bytes, a.duration, a.lufs, a.codec,
+               a.sample_rate, a.audio_hash
           FROM duplicates d
           LEFT JOIN archive a USING (file_path)
          WHERE d.group_id = ?
@@ -109,13 +108,13 @@ def _get_group_members(conn, group_id: str) -> list[dict]:
         (group_id,),
     ).fetchall()
     members = [dict(r) for r in rows]
-    members.sort(
-        key=lambda m: (
-            0 if (m.get("codec") or "").lower() in LOSSLESS_CODECS else 1,
-            -(m.get("bitrate") or 0),
-            -(m.get("size_bytes") or 0),
-        )
-    )
+    # Grey's keep rule, ranked exactly as the resolver ranks: this console's
+    # own order (lossless first, then bitrate and size) kept a bigger live
+    # copy over the studio one (review of #86, finding 9).
+    from .stages.dupe_resolver import _rank, _share_loudness
+
+    _share_loudness(members)
+    _rank(members)
     return members
 
 
@@ -128,12 +127,11 @@ def _set_status(conn, group_id: str, file_path: str, status: str) -> None:
 
 
 def _auto_keep_best(conn, group_id: str, members: list[dict]) -> None:
-    """Auto-select the best file as KEEP, rest as ARCHIVE. See
-    _get_group_members() for the actual ordering rule (lossless-first,
-    then bitrate/size)."""
+    """Auto-select the best file as KEEP, rest as ARCHIVE: the first by
+    _get_group_members(), which ranks by Grey's keep rule (keep_rule.py)."""
     if not members:
         return
-    keep = members[0]  # already sorted: lossless-first, then bitrate/size DESC
+    keep = members[0]  # already ranked by the keep rule
     for m in members:
         if m["file_path"] == keep["file_path"]:
             _set_status(conn, group_id, m["file_path"], KEEP_USER)
@@ -148,7 +146,9 @@ def _read_key(prompt: str) -> str:
     try:
         sys.stdout.write(prompt)
         sys.stdout.flush()
-        return sys.stdin.readline().strip().lower()
+        # Not lowercased: "A" (auto) and "a" (archive) are different keys,
+        # and lowercasing made "a" resolve the whole group (review of #86, 9).
+        return sys.stdin.readline().strip()
     except (EOFError, KeyboardInterrupt):
         return "q"
 
@@ -210,6 +210,9 @@ def run_dedupe_console(conn, *, auto_mode: bool = False) -> None:
         while True:
             cmd = _read_key("\n  Action ([#]k/[#]a/A/s/q/?) > ")
 
+            if cmd.lower() in ("?", "q", "s"):
+                cmd = cmd.lower()
+
             if cmd == "?":
                 print(HELP)
                 continue
@@ -224,7 +227,11 @@ def run_dedupe_console(conn, *, auto_mode: bool = False) -> None:
                 skipped += 1
                 break
 
-            if cmd == "a" and len(members) > 1:
+            if cmd in ("a", "k"):
+                print("  Which file? Put its number first, e.g. 2a or 1k.")
+                continue
+
+            if cmd == "A" and len(members) > 1:
                 # Auto mode shortcut
                 _auto_keep_best(conn, group_id, members)
                 resolved += 1
@@ -235,7 +242,7 @@ def run_dedupe_console(conn, *, auto_mode: bool = False) -> None:
             if len(cmd) >= 2:
                 try:
                     idx = int(cmd[:-1]) - 1
-                    action = cmd[-1]
+                    action = cmd[-1].lower()
                     if 0 <= idx < len(members) and action in ("k", "a"):
                         fp = members[idx]["file_path"]
                         st = KEEP_USER if action == "k" else ARCHIVE_USER
