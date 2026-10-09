@@ -156,7 +156,7 @@ reviewer wrote "confirmed" when it ran something.
 | B-4 | With the recovery boundary UNAVAILABLE, canonicalize deletes INBOX originals outright and finalize copies with no journal | **fixed #108** |
 | B-12 | Edition tests read the machine's real process table | **fixed in-process** (autouse fixture); subprocess tests still do |
 | B-1,3,5-11 | Errors and gaps in `docs/REVIEW_BRIEF.md` (coverage; the ReplayGain sentence backwards; the accepted list) | **fixed** in the same PR as this table |
-| R-1 | Review of #123-#127 (2026-10-08, Grey's `/code-review`): `edition_bake.is_damaged` misses a tag save stopped after the audio moved -- the copy still parses and keeps its marker, and plays broken (verified by running) | **fixed #129**: each in-place tag save is journalled in the ledger (RETAGGING) before it starts; a stopped one is made again |
+| R-1 | Review of #123-#127 (2026-10-08, Grey's `/code-review`): `edition_bake.is_damaged` misses a tag save stopped after the audio moved -- the copy still parses and keeps its marker, and plays broken (verified by running) | **fixed #129**: each in-place tag save is journalled in the ledger (RETAGGING) before it starts; a stopped one is made again; the journal had gaps of its own (S-5 to S-8) and gave way to a retag beside the copy in #137 |
 | R-2 | The console's auto ranked without `finalized_at`/`current_row`, and since #123 the resolver obeys it: it could keep a new arrival and move the filed master | **fixed #130**: auto writes nothing; the resolver applies the keep rule (Grey, 2026-10-09: "leave it to the resolver") |
 | R-3 | A kept copy no longer at its path was made keeper, so nothing ever moved | **fixed #131**: the keep rule chooses, and the run says so |
 | R-4 | The stale and set-aside close-outs changed only 'pending' rows: a group with an 'archive_user' row came back, with an error, every run | **fixed #131** |
@@ -170,6 +170,21 @@ reviewer wrote "confirmed" when it ran something.
 | R-12 | A damaged target removed mid-check failed the bake and left its temporary file | **fixed #129** |
 | R-13 | The tag script copies each changed master whole: a full run writes about the archive's size | **#133**: the dry run says how much; the safe save stays. On 2026-10-09 only 3 masters needed a change (0.1 GB) |
 | R-14 | The two person statuses were spelled by hand in eight places | **fixed #131**: shared names |
+| S-1 | Review of #129-#134 (2026-10-09, Grey's `/code-review`; S-1 to S-5 reproduced): `musaeus dedupe` re-sorted a group after each choice without showing it again, so the next number acted on another file | **fixed #135**: the order shown is kept, and the group is shown again |
+| S-2 | A kept copy refiled since the choice read as gone; the keep rule kept the archived copy and both choices were overwritten | **fixed #136**: `duplicates.archive_id` records the row a choice was made on; the resolver follows it (same recording) |
+| S-3 | Source 2 matched keeps by path: a refiled kept master was moved with a new identical arrival | **fixed #136**: kept files are catalogue rows |
+| S-4 | Keeps were counted by row: one file kept in two groups shielded an identical arrival | **fixed #136**: counted as files |
+| S-5 | A stopped retag whose master moved left the unparseable copy behind | **fixed #137**: no journal; a copy is retagged beside itself |
+| S-6 | A RETAGGING record of an unselected master was never acted on | **fixed #137** (journal removed; none was ever written) |
+| S-7 | The done-record was committed before the save reached the disk | **fixed #137**: fsync and rename, then the record |
+| S-8 | A stopped copy that parsed without its marker was refused every build | **fixed #137** |
+| S-9 | The transcode export was not checked against the source's length; the audio stream was assumed to be input 0 | **fixed #138**: as long as the catalogue recorded; the index from the probe |
+| S-10 | The dedupe console listed only 'pending' groups while `musaeus status` counted decided ones | **fixed #136** |
+| S-11 | The set-aside close-out marked the live copy left 'archive' ("already moved"), never a keeper again | **fixed #136**: closed as 'stale' |
+| S-12 | The report spelled the statuses by hand; the condition lived in the stage module | **fixed #136**: `ACTED_ON_SQL` in dedupe.py, imported everywhere |
+| S-13 | README, the CLI usage and a docstring still described the old dedupe auto | **fixed #139** |
+| S-14 | Two maps for one rule ("replace only if unchanged since the plan"); a duplicate unlink | **fixed #137**: one map, one branch |
+| S-15 | The in-place save was not verified, and each caller had its own safe-save | **fixed #137**: `musaeus/safe_save.change_beside` (copy, change, check, fsync, rename), used by the edition build and the tag script |
 
 ### Open, in the order I'd take them
 

@@ -60,7 +60,7 @@ Options:
     --force          Re-process already-done files (forge, curator, transcode)
     --full           Include Forge + Tagger in `run` pipeline
     --maintain       Run Ghost + Health + Enrich + NearDupe in `run`
-    --auto           Auto-resolve duplicates (dedupe command)
+    --auto           Leave every duplicate group to the keep rule (dedupe command)
     --export-root    Target path for curator/transcode export. Overrides
                      MUSAEUS_CURATOR_EXPORT_ROOT for one invocation. Must be an
                      existing, writable directory outside ALAC-Library; it is

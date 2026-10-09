@@ -486,9 +486,8 @@ def _mismatch(m: dict) -> bool:
 
 def _pick_keeper_and_losers(members: list[dict]) -> tuple[dict | None, list[dict]]:
     """
-    Same rule as dedupe.py's _auto_keep_best: members are already sorted
-    bitrate DESC, size_bytes DESC by the query above, so the first row is
-    the keeper. CROSS_BATCH groups only ever have one member in THIS
+    Members are already ranked by Grey's keep rule (_rank, keep_rule.py),
+    so the first row is the keeper. CROSS_BATCH groups only ever have one member in THIS
     batch's duplicates table (the incoming file -- the prior-batch copy
     isn't a row here at all), so that lone member is always the "loser"
     relative to the untouched, already-safe library copy.
