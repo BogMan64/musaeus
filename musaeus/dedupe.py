@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 #: carries these out -- the kept copy is the keeper, archived ones move.
 KEEP_USER = "keep_user"
 ARCHIVE_USER = "archive_user"
+#: The groups still to be resolved: undecided, or with a person's archive not yet
+#: carried out. The resolver acts on these, and every count of them uses this.
+ACTED_ON_SQL = f"status IN ('pending', '{ARCHIVE_USER}')"
 
 
 # ── Formatting helpers ────────────────────────────────────────────────────────
@@ -72,14 +75,11 @@ def _fmt_row(idx: int, row: dict) -> str:
 
 
 def _get_pending_groups(conn) -> list[str]:
-    """Return group_ids with at least one 'pending' member, ordered."""
+    """The groups still to be resolved, ordered: the same groups `musaeus
+    status` counts, so a group decided but not yet resolved is listed here too
+    (review of #129-#134, finding 10)."""
     rows = conn.execute(
-        """
-        SELECT DISTINCT group_id
-          FROM duplicates
-         WHERE status = 'pending'
-         ORDER BY group_id
-        """
+        f"SELECT DISTINCT group_id FROM duplicates WHERE {ACTED_ON_SQL} ORDER BY group_id"
     ).fetchall()
     return [r[0] for r in rows]
 
@@ -119,10 +119,15 @@ def _get_group_members(conn, group_id: str) -> list[dict]:
     return members
 
 
-def _set_status(conn, group_id: str, file_path: str, status: str) -> None:
+def _set_status(
+    conn, group_id: str, file_path: str, status: str, archive_id: int | None = None
+) -> None:
+    """A person's choice, with the catalogue row it was made on, so the
+    resolver can follow the file when it is refiled before Act 2."""
     conn.execute(
-        "UPDATE duplicates SET status = ? WHERE group_id = ? AND file_path = ?",
-        (status, group_id, file_path),
+        "UPDATE duplicates SET status = ?, archive_id = COALESCE(?, archive_id) "
+        "WHERE group_id = ? AND file_path = ?",
+        (status, archive_id, group_id, file_path),
     )
     conn.commit()
 
@@ -234,7 +239,7 @@ def run_dedupe_console(conn, *, auto_mode: bool = False) -> None:
                     if 0 <= idx < len(members) and action in ("k", "a"):
                         fp = members[idx]["file_path"]
                         st = KEEP_USER if action == "k" else ARCHIVE_USER
-                        _set_status(conn, group_id, fp, st)
+                        _set_status(conn, group_id, fp, st, members[idx].get("current_row"))
                         icon = "✓ KEEP" if st == KEEP_USER else "✗ ARCHIVE"
                         print(f"  → {icon}: {fp}")
                         # Fresh statuses, in the order shown: re-ranked, an
