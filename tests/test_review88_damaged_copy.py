@@ -208,7 +208,10 @@ def _moov_first(cfg, master: Path, rel: Path, h: str) -> None:
     tmp.replace(copy)
 
 
-def test_a_retag_stopped_mid_save_is_made_again_though_it_still_reads(cfg, monkeypatch):
+def test_a_retag_stopped_mid_save_leaves_the_copy_whole(cfg, monkeypatch):
+    """The reviewer's case (reviews of #127 and #129-#134): a save stopped after
+    mutagen moved the audio and before it fixed the offsets. The save is now
+    made on a copy beside the file, so the copy itself is never half saved."""
     from mutagen.mp4 import MP4, MP4Tags
 
     from musaeus.duration import decodes_cleanly
@@ -229,37 +232,64 @@ def test_a_retag_stopped_mid_save_is_made_again_though_it_still_reads(cfg, monke
         mp.setattr(MP4Tags, "_MP4Tags__update_offsets", stopped)
         with pytest.raises(KeyboardInterrupt):
             _build(cfg)
-    assert edition_bake.read_marker(copy) == eb.marker_for("h1"), "still reads as the copy"
-    assert not decodes_cleanly(copy)[0], "the setup must leave the audio broken"
+    assert edition_bake.read_marker(copy) == eb.marker_for("h1")
+    assert decodes_cleanly(copy)[0], "the copy itself was half saved"
 
     plan, out, recorded = _build(cfg)
-    assert out.baked == 1 and out.retagged == 0 and not out.failed, (out, out.failed)
+    assert out.retagged == 1 and out.baked == 0 and not out.failed, (out, out.failed)
     assert decodes_cleanly(copy)[0]
-    _whole_copy_of(cfg, REL, "h1")
-    assert recorded["h1"].mode != eb.RETAGGING
+    assert MP4(copy).tags["\xa9lyr"] == ["la " * 20000]
+    assert not list(copy.parent.glob(f"*{eb.TMP_SUFFIX}"))
 
 
-def test_a_stopped_retag_whose_master_moved_since_is_made_at_its_new_place(cfg):
+def test_a_retag_that_does_not_read_back_leaves_the_copy_as_it_was(cfg, monkeypatch):
+    """Review of #129-#134, finding 15: the saved copy is checked before it is
+    renamed into place and recorded."""
+    from mutagen.mp4 import MP4
+
     master = _master(cfg, REL, "h1")
     _build(cfg)
-    ledger = open_ledger(ledger_path(cfg))
-    ledger.execute("UPDATE edition_copies SET mode = ?, master_mtime_ns = 0", (eb.RETAGGING,))
-    ledger.commit()
-    ledger.close()
-    new_rel = Path("Rock") / "Rolling Stones" / "Sticky Fingers" / REL.name
-    new_master = cfg.alac_archive / new_rel
-    new_master.parent.mkdir(parents=True, exist_ok=True)
-    master.rename(new_master)
-    _sql(cfg, "UPDATE archive SET file_path = ?", str(new_master))
+    copy = cfg.alac_library / REL
+    before = copy.read_bytes()
+    f = MP4(master)
+    f.tags["\xa9nam"] = ["Brown Sugar (2009 Remaster)"]
+    f.save()
+    real = edition_bake.copy_tags
+
+    def loses_the_marker(src, dst, marker):
+        real(src, dst, marker)
+        tags = MP4(dst)
+        del tags.tags[edition_bake.MARKER_KEY]
+        tags.save()
+
+    monkeypatch.setattr(edition_bake, "copy_tags", loses_the_marker)
     plan, out, recorded = _build(cfg)
-    assert plan.unfinished == 1 and not plan.move, plan.move
-    assert any(
-        "Stopped retag" in line and line.endswith(": 1") for line in eb.plan_lines(plan, workers=2)
+    assert out.retagged == 0 and len(out.failed) == 1, out.failed
+    assert copy.read_bytes() == before
+    assert not list(copy.parent.glob(f"*{eb.TMP_SUFFIX}"))
+
+
+def test_a_retag_is_on_disk_before_it_is_recorded(cfg, monkeypatch):
+    """Review of #129-#134, finding 7: the record said done while the save was
+    still in the page cache; a power cut then left a broken copy recorded."""
+    import os
+
+    from musaeus import safe_save
+
+    master = _master(cfg, REL, "h1")
+    _build(cfg)
+    master.touch()
+    events: list[str] = []
+    real_fsync, real_record = os.fsync, eb.record
+    monkeypatch.setattr(
+        safe_save.os, "fsync", lambda fd: (events.append("fsync"), real_fsync(fd))[1]
     )
-    assert out.removed == 1 and out.baked == 1 and not out.failed, out.failed
-    assert not (cfg.alac_library / REL).exists()
-    _whole_copy_of(cfg, new_rel, "h1")
-    assert recorded["h1"].output_path == str(cfg.alac_library / new_rel)
+    monkeypatch.setattr(
+        eb, "record", lambda *a, **k: (events.append("record"), real_record(*a, **k))[1]
+    )
+    plan, out, _ = _build(cfg)
+    assert out.retagged == 1, out.failed
+    assert "fsync" in events and events.index("fsync") < events.index("record"), events
 
 
 def test_a_rebake_does_not_replace_a_damaged_copy_changed_since_the_plan(cfg):

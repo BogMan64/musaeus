@@ -290,7 +290,7 @@ class Console:
             catalogued = conn.execute(
                 "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'"
             ).fetchone()[0]
-            from .stages.dupe_resolver import ACTED_ON_SQL
+            from .dedupe import ACTED_ON_SQL
 
             dupes = conn.execute(
                 f"SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE {ACTED_ON_SQL}"
@@ -653,7 +653,7 @@ class Console:
         if conn is None:
             return
         try:
-            from .stages.dupe_resolver import ACTED_ON_SQL
+            from .dedupe import ACTED_ON_SQL
 
             rows = conn.execute(
                 f"""
