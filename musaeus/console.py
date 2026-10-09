@@ -868,7 +868,7 @@ class Console:
         try:
             opts = [
                 "Interactive review  (manual keep/archive per group)",
-                "Auto-resolve        (keep highest quality, archive rest)",
+                "Auto                (leave every group to the keep rule)",
                 "Report only         (show summary, no changes)",
                 "Back",
             ]

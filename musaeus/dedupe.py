@@ -98,6 +98,7 @@ def _get_group_members(conn, group_id: str) -> list[dict]:
                d.duplicate_type,
                d.confidence,
                d.status AS dup_status,
+               a.id AS current_row, a.status AS current_status, a.finalized_at,
                a.artist, a.album, a.title, a.ext,
                a.bitrate, a.size_bytes, a.duration, a.lufs, a.codec,
                a.sample_rate, a.audio_hash
@@ -126,17 +127,12 @@ def _set_status(conn, group_id: str, file_path: str, status: str) -> None:
     conn.commit()
 
 
-def _auto_keep_best(conn, group_id: str, members: list[dict]) -> None:
-    """Auto-select the best file as KEEP, rest as ARCHIVE: the first by
-    _get_group_members(), which ranks by Grey's keep rule (keep_rule.py)."""
-    if not members:
-        return
-    keep = members[0]  # already ranked by the keep rule
-    for m in members:
-        if m["file_path"] == keep["file_path"]:
-            _set_status(conn, group_id, m["file_path"], KEEP_USER)
-        else:
-            _set_status(conn, group_id, m["file_path"], ARCHIVE_USER)
+#: What auto says. Auto writes nothing: the resolver obeys a person's keep and
+#: archive, and auto wrote them from this console's own ranking, which lacked
+#: what the resolver ranks by -- it could keep a new arrival and move the filed
+#: master (review of #123). The resolver applies the keep rule itself to every
+#: group nobody decided (Grey, 2026-10-09: "leave it to the resolver").
+LEFT_TO_KEEP_RULE = "left to the keep rule: the resolver decides it at the next Act 2"
 
 
 # ── Interactive review ────────────────────────────────────────────────────────
@@ -156,7 +152,7 @@ def _read_key(prompt: str) -> str:
 HELP = """
   k  — keep this file
   a  — archive/discard this file
-  A  — auto: keep highest quality, archive rest
+  A  — auto: leave this group to the keep rule (the resolver decides it)
   s  — skip group (leave pending)
   q  — quit
 
@@ -169,8 +165,8 @@ def run_dedupe_console(conn, *, auto_mode: bool = False) -> None:
     """
     Launch the interactive dedupe review session.
 
-    auto_mode=True: no user prompts — auto-resolve all pending groups by
-    keeping the highest bitrate member and archiving the rest.
+    auto_mode=True: no user prompts, and nothing written: every pending group
+    is left to the keep rule, which the resolver applies at the next Act 2.
     """
     pending = _get_pending_groups(conn)
 
@@ -180,13 +176,7 @@ def run_dedupe_console(conn, *, auto_mode: bool = False) -> None:
 
     print(f"\n  Dedupe Review — {len(pending)} group(s) pending")
     if auto_mode:
-        print("  AUTO MODE: keeping highest quality, archiving rest\n")
-        for group_id in pending:
-            members = _get_group_members(conn, group_id)
-            _auto_keep_best(conn, group_id, members)
-            keep = members[0] if members else {}
-            print(f"  ✓ {group_id}  KEEP: {keep.get('file_path', '?')}")
-        print(f"\n  Auto-resolved {len(pending)} group(s).")
+        print(f"  AUTO: {len(pending)} group(s) {LEFT_TO_KEEP_RULE}. Nothing changed here.")
         return
 
     print("  Type ? for help.\n")
@@ -231,11 +221,9 @@ def run_dedupe_console(conn, *, auto_mode: bool = False) -> None:
                 print("  Which file? Put its number first, e.g. 2a or 1k.")
                 continue
 
-            if cmd == "A" and len(members) > 1:
-                # Auto mode shortcut
-                _auto_keep_best(conn, group_id, members)
-                resolved += 1
-                print(f"  → Auto: KEEP {members[0]['file_path']}")
+            if cmd == "A":
+                skipped += 1
+                print(f"  → Auto: {LEFT_TO_KEEP_RULE}")
                 break
 
             # Parse "[index][action]" e.g. "1k", "2a"

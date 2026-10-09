@@ -536,8 +536,13 @@ def is_damaged(path: Path) -> bool:
         return False
     try:
         MP4(path)
-    except MP4Error:
-        return True
+    except MP4Error as exc:
+        # mutagen raises the same error for an I/O error while reading: that
+        # says nothing about the file (review of #127).
+        read_failed = isinstance(exc.__context__, OSError) or any(
+            isinstance(arg, OSError) for arg in exc.args
+        )
+        return not read_failed
     except Exception:  # noqa: BLE001 -- unreadable for another reason: not known damaged
         return False
     return False

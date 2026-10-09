@@ -190,3 +190,149 @@ def test_a_dry_run_says_how_many_are_made_again(cfg):
         conn.close()
         ledger.close()
     assert any("Remake damaged: 1" in line for line in eb.plan_lines(plan, workers=2))
+
+
+# ── Review of #127 (2026-10-08): a save stopped after mutagen moved the audio
+# but before it fixed the offsets that point into it. The copy still parses
+# and keeps its marker, so it was trusted -- and its audio is broken. Car and
+# iPhone copies keep moov before mdat, so a growing tag block moves the audio.
+
+
+def _moov_first(cfg, master: Path, rel: Path, h: str) -> None:
+    """Rewrite the built copy with moov before mdat, as the car copies are."""
+    copy = cfg.alac_library / rel
+    tmp = copy.with_name("faststart.m4a")
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(copy),
+                    "-c", "copy", "-movflags", "+faststart", str(tmp)], check=True)  # fmt: skip
+    edition_bake.copy_tags(master, tmp, eb.marker_for(h))
+    tmp.replace(copy)
+
+
+def test_a_retag_stopped_mid_save_is_made_again_though_it_still_reads(cfg, monkeypatch):
+    from mutagen.mp4 import MP4, MP4Tags
+
+    from musaeus.duration import decodes_cleanly
+
+    master = _master(cfg, REL, "h1")
+    _build(cfg)
+    _moov_first(cfg, master, REL, "h1")
+    copy = cfg.alac_library / REL
+    assert decodes_cleanly(copy)[0]
+    f = MP4(master)
+    f.tags["\xa9lyr"] = ["la " * 20000]  # the copy's tag block must grow
+    f.save()
+
+    def stopped(*args, **kwargs):
+        raise KeyboardInterrupt  # the build is killed inside the save
+
+    with monkeypatch.context() as mp:
+        mp.setattr(MP4Tags, "_MP4Tags__update_offsets", stopped)
+        with pytest.raises(KeyboardInterrupt):
+            _build(cfg)
+    assert edition_bake.read_marker(copy) == eb.marker_for("h1"), "still reads as the copy"
+    assert not decodes_cleanly(copy)[0], "the setup must leave the audio broken"
+
+    plan, out, recorded = _build(cfg)
+    assert out.baked == 1 and out.retagged == 0 and not out.failed, (out, out.failed)
+    assert decodes_cleanly(copy)[0]
+    _whole_copy_of(cfg, REL, "h1")
+    assert recorded["h1"].mode != eb.RETAGGING
+
+
+def test_a_stopped_retag_whose_master_moved_since_is_made_at_its_new_place(cfg):
+    master = _master(cfg, REL, "h1")
+    _build(cfg)
+    ledger = open_ledger(ledger_path(cfg))
+    ledger.execute("UPDATE edition_copies SET mode = ?, master_mtime_ns = 0", (eb.RETAGGING,))
+    ledger.commit()
+    ledger.close()
+    new_rel = Path("Rock") / "Rolling Stones" / "Sticky Fingers" / REL.name
+    new_master = cfg.alac_archive / new_rel
+    new_master.parent.mkdir(parents=True, exist_ok=True)
+    master.rename(new_master)
+    _sql(cfg, "UPDATE archive SET file_path = ?", str(new_master))
+    plan, out, recorded = _build(cfg)
+    assert plan.unfinished == 1 and not plan.move, plan.move
+    assert any(
+        "Stopped retag" in line and line.endswith(": 1") for line in eb.plan_lines(plan, workers=2)
+    )
+    assert out.removed == 1 and out.baked == 1 and not out.failed, out.failed
+    assert not (cfg.alac_library / REL).exists()
+    _whole_copy_of(cfg, new_rel, "h1")
+    assert recorded["h1"].output_path == str(cfg.alac_library / new_rel)
+
+
+def test_a_rebake_does_not_replace_a_damaged_copy_changed_since_the_plan(cfg):
+    _master(cfg, REL, "h1")
+    _build(cfg)
+    ledger = open_ledger(ledger_path(cfg))
+    ledger.execute("UPDATE edition_copies SET mode = 'dynamic'")
+    ledger.commit()
+    target = cfg.alac_library / REL
+    _cut_short(target)
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        plan = eb.make_plan(
+            conn, ledger, cfg.alac_archive, cfg.alac_library, rebake_compressed=True
+        )
+        with open(target, "ab") as fh:
+            fh.write(b"written after the plan")  # still damaged, but not the same file
+        out = eb.execute(plan, ledger, cfg.alac_library, progress=lambda s: None)
+    finally:
+        conn.close()
+        ledger.close()
+    assert out.baked == 0 and len(out.failed) == 1, out.failed
+    assert target.read_bytes().endswith(b"written after the plan")
+    assert not list(target.parent.glob(f"*{eb.TMP_SUFFIX}"))
+
+
+@pytest.mark.parametrize("form", ["plain OSError", "wrapped in mutagen's MP4 error"])
+def test_an_io_error_while_reading_is_not_damage(tmp_path, monkeypatch, form):
+    """mutagen 1.46 lets a read error out as OSError; newer releases may wrap
+    it in mp4.error, the error a real parse failure raises (review of #127)."""
+    import mutagen.mp4
+
+    path = tmp_path / "a.m4a"
+    _plain_m4a(path)
+    _cut_short(path)
+    assert edition_bake.is_damaged(path)
+
+    def eio(*args, **kwargs):
+        try:
+            raise OSError(5, "Input/output error")
+        except OSError as err:
+            if form == "plain OSError":
+                raise
+            raise mutagen.mp4.error(err)  # noqa: B904 -- as mutagen's reraise does
+
+    monkeypatch.setattr(mutagen.mp4, "Atoms", eio)
+    assert not edition_bake.is_damaged(path)
+
+
+def test_a_damaged_copy_removed_during_the_bake_is_made_and_no_tmp_left(cfg, monkeypatch):
+    master = _master(cfg, REL, "h1")
+    target = cfg.alac_library / REL
+    target.parent.mkdir(parents=True, exist_ok=True)
+    edition_bake.bake(master, target)
+    _cut_short(target)
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    ledger = open_ledger(ledger_path(cfg))
+    try:
+        plan = eb.make_plan(conn, ledger, cfg.alac_archive, cfg.alac_library)
+        assert str(target) in plan.damaged
+        real = eb._signature
+
+        def removed_then_stat(p):
+            Path(p).unlink(missing_ok=True)  # removed between the check and the stat
+            return real(p)
+
+        monkeypatch.setattr(eb, "_signature", removed_then_stat)
+        out = eb.execute(plan, ledger, cfg.alac_library, progress=lambda s: None)
+    finally:
+        conn.close()
+        ledger.close()
+    assert out.baked == 1 and not out.failed, out.failed
+    _whole_copy_of(cfg, REL, "h1")
+    assert not list(target.parent.glob(f"*{eb.TMP_SUFFIX}"))
