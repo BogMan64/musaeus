@@ -2088,7 +2088,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # dedupe
     dedupe_p = sub.add_parser("dedupe", help="Interactive duplicate review console")
-    dedupe_p.add_argument("--auto", action="store_true", help="Auto-resolve: keep highest quality")
+    dedupe_p.add_argument(
+        "--auto",
+        action="store_true",
+        help="Leave every pending group to the keep rule (the resolver decides)",
+    )
     dedupe_p.add_argument(
         "--report", action="store_true", help="Show report only, no interactive review"
     )

@@ -26,11 +26,9 @@ turns out NOT to be a duplicate after human review lands at exactly the
 same path Finalize would have produced for it).
 
 Keeper selection:
-  - EXACT / NEAR groups (multiple files WITHIN this batch): reuses
-    dedupe.py's existing highest-bitrate-then-largest-size rule
-    (_auto_keep_best's logic, applied here directly rather than
-    reimplemented) -- this is not a new policy, it's the same rule
-    already used by the interactive `musaeus dedupe --auto` console.
+  - EXACT / NEAR groups (multiple files WITHIN this batch): Grey's keep
+    rule (keep_rule.py, via _keeper_sort_key and _rank) -- the one rule.
+    `musaeus dedupe`'s auto writes nothing and leaves groups to it.
   - CROSS_BATCH groups (this batch's file vs. something already in
     ALAC-Library from a prior batch): there is nothing to choose
     between -- the prior-batch copy is untouched and already safe, so
