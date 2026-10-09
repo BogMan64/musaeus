@@ -22,7 +22,12 @@ from musaeus.hasher import audio_hash
 from musaeus.stages.forge import _write_tags_m4a, write_rg_tags
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.write_master_loudness_tags import RG_KEY, wanted, write_tags  # noqa: E402
+from scripts.write_master_loudness_tags import (  # noqa: E402
+    RG_KEY,
+    rewrite_note,
+    wanted,
+    write_tags,
+)
 
 needs_ffmpeg = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="requires ffmpeg")
 M = {"input_i": "-13.62", "input_lra": "2.80", "input_tp": "-0.99", "input_thresh": "-23.89"}
@@ -157,3 +162,11 @@ def test_a_copy_left_by_a_killed_run_is_replaced(tmp_path):
     write_tags(str(master), {RG_KEY: b"+1.00 dB"})
     assert _tag(master, RG_KEY) == "+1.00 dB"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["song.m4a"]
+
+
+def test_the_dry_run_says_how_much_a_run_would_write():
+    """Review of #126: each changed master is copied whole, so a full run writes
+    about the archive's size; the dry run says so before anyone runs it."""
+    note = rewrite_note(8_900, 290_000_000_000, executed=False)
+    assert "8,900 master(s)" in note and "290.0 GB" in note and "--execute" in note
+    assert "290.0 GB written" in rewrite_note(8_900, 290_000_000_000, executed=True)

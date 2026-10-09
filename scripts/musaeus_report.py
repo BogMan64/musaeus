@@ -160,16 +160,19 @@ def _gather(conn, cfg=None) -> dict:  # type: ignore[type-arg]
     # substitutes zero for an error is worse than one that fails outright:
     # zero is the answer that makes a reader stop looking.
     for key, sql in (
-        ("dupe_pending", "SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE status='pending'"),
+        (
+            "dupe_pending",
+            "SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE status IN ('pending', 'archive_user')",
+        ),
         (
             "dupe_exact",
             "SELECT COUNT(DISTINCT group_id) FROM duplicates "
-            "WHERE duplicate_type='EXACT' AND status='pending'",
+            "WHERE duplicate_type='EXACT' AND status IN ('pending', 'archive_user')",
         ),
         (
             "dupe_near",
             "SELECT COUNT(DISTINCT group_id) FROM duplicates "
-            "WHERE duplicate_type='NEAR' AND status='pending'",
+            "WHERE duplicate_type='NEAR' AND status IN ('pending', 'archive_user')",
         ),
     ):
         try:

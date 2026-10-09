@@ -54,8 +54,10 @@ from pathlib import Path
 from ..config import LOSSLESS_CODECS as _LOSSLESS_CODECS
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
+from ..duration import decodes_cleanly
 from .base import NO_VERIFICATION, BaseStage, StageError, VerifyResult
 from .canonicalize import _has_attached_picture, _probe_streams
+from .corrupt import audio_relevant_stderr
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +157,8 @@ def _transcode_file(
         "-y",
         "-hide_banner",
         "-nostats",
+        "-v",
+        "error",  # stderr holds errors only: read below, as exit 0 is not enough
         "-i",
         str(src),
     ]
@@ -210,6 +214,16 @@ def _transcode_file(
     if res.returncode != 0:
         part.unlink(missing_ok=True)
         raise ValueError(f"ffmpeg failed (rc={res.returncode}): {res.stderr[-300:]}")
+    # Exit 0 is not success: a truncated source exits 0 with "partial file" on
+    # stderr, and the short export was renamed into place and then skipped for
+    # ever (review of #124; CLAUDE.md: .part, verify, then rename).
+    problem = audio_relevant_stderr(res.stderr, 0)
+    if not problem:
+        ok, err = decodes_cleanly(part)
+        problem = "" if ok else f"the export does not decode: {err}"
+    if problem:
+        part.unlink(missing_ok=True)
+        raise ValueError(f"ffmpeg reported a problem with {src.name}: {problem[-300:]}")
     os.replace(part, dst)
 
 
