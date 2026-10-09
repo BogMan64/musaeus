@@ -49,12 +49,39 @@ def test_a_bare_a_does_not_auto_resolve_the_group(conn, monkeypatch):
     assert set(_statuses(conn).values()) == {"pending"}, "'a' auto-resolved the group"
 
 
-def test_auto_keeps_what_the_keep_rule_keeps(conn, monkeypatch):
+def test_auto_leaves_the_group_to_the_resolver(conn, monkeypatch):
+    """Review of #123 (2026-10-08): the resolver obeys a person's keep and
+    archive, and auto wrote them from the console's own ranking, which lacked
+    what the resolver ranks by. Auto now writes nothing: the resolver applies
+    the keep rule itself (Grey, 2026-10-09: "leave it to the resolver")."""
     monkeypatch.setattr("sys.stdin", io.StringIO("A\n"))
     dedupe.run_dedupe_console(conn)
-    s = _statuses(conn)
-    # A person's auto is still a person's decision, for the resolver to carry out (#123).
-    assert s["/m/studio.m4a"] == dedupe.KEEP_USER, (
-        "auto kept the bigger live copy over the studio one"
-    )
-    assert s["/m/live.m4a"] == dedupe.ARCHIVE_USER
+    assert set(_statuses(conn).values()) == {"pending"}
+
+
+def test_auto_mode_leaves_every_group_to_the_resolver(conn, capsys):
+    dedupe.run_dedupe_console(conn, auto_mode=True)
+    assert set(_statuses(conn).values()) == {"pending"}
+    assert "keep rule" in capsys.readouterr().out
+
+
+def test_the_console_ranks_the_filed_copy_first_as_the_resolver_does(conn):
+    """Equally good copies: the one already filed stays. Without finalized_at
+    the console ranked a new arrival with a few more bytes first."""
+    for path in ("/m/filed.m4a", "/m/arrival.m4a"):
+        upsert_archive(conn, {"file_path": path, "status": "CATALOGUED", "artist": "A",
+                              "title": "Other", "album": "Album", "codec": "alac",
+                              "bitrate": 900_000, "duration": 200.0, "sample_rate": 44100,
+                              "size_bytes": 30_000_000 + (500 if path == "/m/arrival.m4a" else 0),
+                              "audio_hash": "same"})  # fmt: skip
+        conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id) "
+            "VALUES ('dup_same', ?, 'EXACT', 1.0, 'r')", (path,))  # fmt: skip
+    conn.execute("UPDATE archive SET finalized_at = '2026-10-01' WHERE file_path = '/m/filed.m4a'")
+    conn.commit()
+    from musaeus.stages import dupe_resolver
+
+    console = [m["file_path"] for m in dedupe._get_group_members(conn, "dup_same")]
+    resolver = [m["file_path"] for m in dupe_resolver._get_group_members(conn, "dup_same")]
+    assert console[0] == "/m/filed.m4a"
+    assert console == resolver
