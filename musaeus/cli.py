@@ -788,8 +788,10 @@ def _cmd_status() -> int:
         from .edition_ledger import car_copy_count
 
         tagged_car = car_copy_count(cfg, conn)
+        from .stages.dupe_resolver import ACTED_ON_SQL
+
         dupes = conn.execute(
-            "SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE status='pending'"
+            f"SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE {ACTED_ON_SQL}"
         ).fetchone()[0]
         last_run = conn.execute(
             "SELECT MAX(ts) FROM events WHERE event_type='RUN_START'"
