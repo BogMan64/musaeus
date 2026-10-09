@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from musaeus.config import get_config
 from musaeus.db import open_db
+from musaeus.dedupe import ACTED_ON_SQL
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -162,17 +163,17 @@ def _gather(conn, cfg=None) -> dict:  # type: ignore[type-arg]
     for key, sql in (
         (
             "dupe_pending",
-            "SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE status IN ('pending', 'archive_user')",
+            f"SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE {ACTED_ON_SQL}",
         ),
         (
             "dupe_exact",
             "SELECT COUNT(DISTINCT group_id) FROM duplicates "
-            "WHERE duplicate_type='EXACT' AND status IN ('pending', 'archive_user')",
+            f"WHERE duplicate_type='EXACT' AND {ACTED_ON_SQL}",
         ),
         (
             "dupe_near",
             "SELECT COUNT(DISTINCT group_id) FROM duplicates "
-            "WHERE duplicate_type='NEAR' AND status IN ('pending', 'archive_user')",
+            f"WHERE duplicate_type='NEAR' AND {ACTED_ON_SQL}",
         ),
     ):
         try:

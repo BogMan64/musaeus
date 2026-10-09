@@ -84,6 +84,7 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3
 import stat
 from collections.abc import Sequence
 from datetime import datetime, timezone
@@ -91,7 +92,7 @@ from pathlib import Path
 
 from ..context import RunContext, StageResult
 from ..db import SET_ASIDE_STATUSES
-from ..dedupe import ARCHIVE_USER, KEEP_USER
+from ..dedupe import ACTED_ON_SQL, ARCHIVE_USER, KEEP_USER
 from ..keep_rule import LENGTH_SLACK_S, keep_key
 from .base import BaseStage
 from .organize import (
@@ -263,7 +264,6 @@ _NEVER_KEEPER: frozenset[str] = _ALREADY_RESOLVED | {ARCHIVE_USER}
 #: The statuses the resolver acts on, and that the plan and status counts count:
 #: a group a person decided whole has no 'pending' row and still moves files
 #: (review of #123, finding 7).
-ACTED_ON_SQL = f"status IN ('pending', '{ARCHIVE_USER}')"
 
 
 #: The retired bake's target. A copy measured here (within the tolerance) was
@@ -371,7 +371,7 @@ def _get_group_members(conn, group_id: str) -> list[dict]:
                d.audio_hash AS recorded_hash, a.audio_hash AS current_hash, a.id AS current_row,
                a.status AS current_status, a.finalized_at, a.lufs,
                a.artist, a.album, a.title, a.ext, a.codec, a.bitrate, a.size_bytes,
-               a.sample_rate, a.duration
+               a.sample_rate, a.duration, d.archive_id AS decided_row
           FROM duplicates d
           LEFT JOIN archive a USING (file_path)
          WHERE d.group_id = ?
@@ -379,8 +379,70 @@ def _get_group_members(conn, group_id: str) -> list[dict]:
         (group_id,),
     ).fetchall()
     members = [dict(r) for r in rows]
+    for m in members:
+        _follow_decision(conn, m)
     _rank(members)
     return members
+
+
+_DECIDED = (KEEP_USER, ARCHIVE_USER)
+
+
+def _where_decided_file_is(conn, m: dict) -> sqlite3.Row | None:
+    """The catalogue row a person's keep or archive now names, when the file was
+    refiled since the choice: the row it was made on (organize and finalize
+    keep a row's id when they move its file), still holding the same recording.
+    None when the file is where the choice left it, or cannot be found."""
+    if m.get("dup_status") not in _DECIDED or m.get("decided_row") is None:
+        return None
+    recorded = m.get("recorded_hash")
+    if not recorded or (m.get("current_row") is not None and m.get("current_hash") == recorded):
+        return None
+    row: sqlite3.Row | None = conn.execute(
+        "SELECT id, file_path, audio_hash, status, finalized_at, lufs, artist, album, title, "
+        "ext, codec, bitrate, size_bytes, sample_rate, duration FROM archive WHERE id = ?",
+        (m["decided_row"],),
+    ).fetchone()
+    if row is None or row["audio_hash"] != recorded or row["file_path"] == m["file_path"]:
+        return None
+    return row
+
+
+def _follow_decision(conn, m: dict) -> None:
+    """Point a member a person decided on at its file's place now (in memory;
+    _follow_decisions records it). A refiled kept copy otherwise read as gone,
+    and the keep rule overrode both of the person's choices (review of
+    #129-#134, findings 2 and 3)."""
+    row = _where_decided_file_is(conn, m)
+    if row is None:
+        return
+    m.update(dict(row))
+    m["current_row"], m["current_hash"], m["current_status"] = (
+        row["id"],
+        row["audio_hash"],
+        row["status"],
+    )
+    del m["id"]
+
+
+def _follow_decisions(conn) -> int:
+    """Record each refiled decision at its file's path now. Returns how many."""
+    moved = 0
+    rows = conn.execute(
+        "SELECT d.id AS dup_id, d.file_path, d.status AS dup_status, d.archive_id AS decided_row, "
+        "d.audio_hash AS recorded_hash, a.id AS current_row, a.audio_hash AS current_hash "
+        "FROM duplicates d LEFT JOIN archive a USING (file_path) "
+        "WHERE d.status IN (?, ?) AND d.archive_id IS NOT NULL",
+        _DECIDED,
+    ).fetchall()
+    for r in rows:
+        row = _where_decided_file_is(conn, dict(r))
+        if row is not None:
+            conn.execute(
+                "UPDATE duplicates SET file_path = ? WHERE id = ?", (row["file_path"], r["dup_id"])
+            )
+            moved += 1
+    return moved
 
 
 def _get_live_exact_clusters(conn) -> list[list[dict]]:
@@ -431,8 +493,8 @@ def _get_live_exact_clusters(conn) -> list[list[dict]]:
     for row in rows:
         members = conn.execute(
             """
-            SELECT file_path, artist, album, title, ext, codec, bitrate, size_bytes, finalized_at,
-                   lufs, audio_hash, sample_rate, duration
+            SELECT id, file_path, artist, album, title, ext, codec, bitrate, size_bytes,
+                   finalized_at, lufs, audio_hash, sample_rate, duration
               FROM archive
              WHERE audio_hash = ? AND status = 'CATALOGUED'
             """,
@@ -956,6 +1018,13 @@ class DupeResolverStage(BaseStage):
 
     def _resolve(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
+        if not dry_run:
+            followed = _follow_decisions(ctx.conn)
+            if followed:
+                ctx.conn.commit()
+                result.notes.append(
+                    f"{followed} choice(s) made in `musaeus dedupe` followed to a refiled file"
+                )
         groups = _get_pending_groups(ctx.conn)
         live_exact_clusters = _get_live_exact_clusters(ctx.conn)
         result.notes.append(f"pending duplicate group(s): {len(groups)}")
@@ -1051,8 +1120,13 @@ class DupeResolverStage(BaseStage):
                 if len(members) < 2:
                     result.files_skipped += len(members) + len(aside)
                     if not dry_run:
+                        # Closed as 'stale', not 'archive': 'archive' says
+                        # "already moved", and a live copy so marked could
+                        # never be a keeper again -- an identical arrival in
+                        # its group was kept and it was moved (review of
+                        # #129-#134, finding 11).
                         ctx.conn.executemany(
-                            "UPDATE duplicates SET status = 'archive' "
+                            "UPDATE duplicates SET status = 'stale' "
                             f"WHERE group_id = ? AND {ACTED_ON_SQL}",
                             [(gid,) for gid in component],
                         )
@@ -1132,14 +1206,28 @@ class DupeResolverStage(BaseStage):
         # is at that path now; and when they kept as many copies of a recording
         # as there are, none moves, filed under new paths or not (review of
         # #123, finding 6).
-        kept_recording: dict[str, str] = {}
-        kept_per_recording: dict[str, int] = {}
-        for path, recorded in ctx.conn.execute(
-            "SELECT file_path, audio_hash FROM duplicates WHERE status = ?", (KEEP_USER,)
+        # The files a person kept, as catalogue rows: by the row the choice was
+        # made on, or the row at its path, holding the recording kept. Rows,
+        # not paths, so a kept copy refiled since is still kept; and counted
+        # as files, so one file kept in two groups is one (review of
+        # #129-#134, findings 3 and 4).
+        kept_rows: set[int] = set()
+        unfound: set[str] = set()  # recordings with a keep that cannot be found
+        for r in ctx.conn.execute(
+            "SELECT d.audio_hash AS recorded, a.id AS at_path, a.audio_hash AS at_path_hash, "
+            "k.id AS decided, k.audio_hash AS decided_hash FROM duplicates d "
+            "LEFT JOIN archive a ON a.file_path = d.file_path "
+            "LEFT JOIN archive k ON k.id = d.archive_id WHERE d.status = ?",
+            (KEEP_USER,),
         ):
-            kept_recording[path] = recorded or ""
-            if recorded:
-                kept_per_recording[recorded] = kept_per_recording.get(recorded, 0) + 1
+            if not r["recorded"]:
+                continue
+            if r["decided"] is not None and r["decided_hash"] == r["recorded"]:
+                kept_rows.add(r["decided"])
+            elif r["at_path"] is not None and r["at_path_hash"] == r["recorded"]:
+                kept_rows.add(r["at_path"])
+            else:
+                unfound.add(r["recorded"])
         for idx, members in enumerate(live_exact_clusters):
             # These lists were made before the groups above moved anything.
             # A member moved there is gone, and where the two sources ranked
@@ -1151,15 +1239,20 @@ class DupeResolverStage(BaseStage):
             for m in members:
                 m["duplicate_type"] = "EXACT"
             keeper, losers = members[0], members[1:]
-            recording = members[0].get("audio_hash") or ""
-            if recording and kept_per_recording.get(recording, 0) >= len(members):
+            if members[0].get("audio_hash") in unfound:
+                # A keep made without its row (before 2026-10-09) on a copy
+                # since refiled: which copy it was is not known, so none moves.
+                result.notes.append(
+                    f"{len(members)} identical copies: one was kept in `musaeus dedupe` and "
+                    "cannot be found now; left alone"
+                )
+                continue
+            kept_by_person = [m for m in members if m.get("id") in kept_rows]
+            if len(kept_by_person) == len(members):
                 result.notes.append(
                     f"{len(members)} identical copies all kept in `musaeus dedupe`: left alone"
                 )
                 continue
-            kept_by_person = [
-                m for m in members if recording and kept_recording.get(m["file_path"]) == recording
-            ]
             if kept_by_person:  # a person's keep in `musaeus dedupe` wins here too
                 keeper = kept_by_person[0]
                 losers = [m for m in members if m not in kept_by_person]
