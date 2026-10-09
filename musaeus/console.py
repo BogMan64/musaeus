@@ -290,8 +290,10 @@ class Console:
             catalogued = conn.execute(
                 "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'"
             ).fetchone()[0]
+            from .stages.dupe_resolver import ACTED_ON_SQL
+
             dupes = conn.execute(
-                "SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE status='pending'"
+                f"SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE {ACTED_ON_SQL}"
             ).fetchone()[0]
             issues = conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
             last_run = conn.execute(
@@ -651,11 +653,13 @@ class Console:
         if conn is None:
             return
         try:
+            from .stages.dupe_resolver import ACTED_ON_SQL
+
             rows = conn.execute(
-                """
+                f"""
                 SELECT group_id, file_path, duplicate_type, confidence
                 FROM duplicates
-                WHERE status='pending'
+                WHERE {ACTED_ON_SQL}
                 ORDER BY group_id, file_path
                 LIMIT 100
                 """
@@ -864,7 +868,7 @@ class Console:
         try:
             opts = [
                 "Interactive review  (manual keep/archive per group)",
-                "Auto-resolve        (keep highest quality, archive rest)",
+                "Auto                (leave every group to the keep rule)",
                 "Report only         (show summary, no changes)",
                 "Back",
             ]

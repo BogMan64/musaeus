@@ -26,11 +26,9 @@ turns out NOT to be a duplicate after human review lands at exactly the
 same path Finalize would have produced for it).
 
 Keeper selection:
-  - EXACT / NEAR groups (multiple files WITHIN this batch): reuses
-    dedupe.py's existing highest-bitrate-then-largest-size rule
-    (_auto_keep_best's logic, applied here directly rather than
-    reimplemented) -- this is not a new policy, it's the same rule
-    already used by the interactive `musaeus dedupe --auto` console.
+  - EXACT / NEAR groups (multiple files WITHIN this batch): Grey's keep
+    rule (keep_rule.py, via _keeper_sort_key and _rank) -- the one rule.
+    `musaeus dedupe`'s auto writes nothing and leaves groups to it.
   - CROSS_BATCH groups (this batch's file vs. something already in
     ALAC-Library from a prior batch): there is nothing to choose
     between -- the prior-batch copy is untouched and already safe, so
@@ -93,6 +91,7 @@ from pathlib import Path
 
 from ..context import RunContext, StageResult
 from ..db import SET_ASIDE_STATUSES
+from ..dedupe import ARCHIVE_USER, KEEP_USER
 from ..keep_rule import LENGTH_SLACK_S, keep_key
 from .base import BaseStage
 from .organize import (
@@ -180,8 +179,7 @@ def _connected_groups(conn, group_ids: list[str]) -> list[list[str]]:
 
 def _get_pending_groups(conn) -> list[str]:
     rows = conn.execute(
-        "SELECT DISTINCT group_id FROM duplicates "
-        "WHERE status IN ('pending', 'archive_user') ORDER BY group_id"
+        f"SELECT DISTINCT group_id FROM duplicates WHERE {ACTED_ON_SQL} ORDER BY group_id"
     ).fetchall()
     return [r[0] for r in rows]
 
@@ -260,6 +258,12 @@ def _is_reissue(m: dict) -> bool:
 # where the master is still marked 'keep'. Ranked as already dealt with, the
 # master lost to its own copy (P!nk, Pointer Sisters, SRV, 2026-09-26).
 _ALREADY_RESOLVED: frozenset[str] = frozenset({"archive", "review"})
+#: Never the keeper: moved away already, or archived by a person.
+_NEVER_KEEPER: frozenset[str] = _ALREADY_RESOLVED | {ARCHIVE_USER}
+#: The statuses the resolver acts on, and that the plan and status counts count:
+#: a group a person decided whole has no 'pending' row and still moves files
+#: (review of #123, finding 7).
+ACTED_ON_SQL = f"status IN ('pending', '{ARCHIVE_USER}')"
 
 
 #: The retired bake's target. A copy measured here (within the tolerance) was
@@ -324,7 +328,7 @@ def _keeper_sort_key(m: dict) -> tuple[int, ...]:
         # file was filed, moved or removed since the group was found.
         # A copy a person archived in `musaeus dedupe` is never the keeper.
         1
-        if (m.get("dup_status") or "") in (*_ALREADY_RESOLVED, "archive_user")
+        if (m.get("dup_status") or "") in _NEVER_KEEPER
         or ("current_row" in m and m["current_row"] is None)
         else 0,
         *keep_key(m),
@@ -603,7 +607,7 @@ class DupeResolverStage(BaseStage):
     def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
         """Rows this stage would act on. Read-only; see planner.py."""
         n = conn.execute(
-            "SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE status='pending'"
+            f"SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE {ACTED_ON_SQL}"
         ).fetchone()[0]
         return int(n), "duplicate groups awaiting resolution"
 
@@ -1009,7 +1013,7 @@ class DupeResolverStage(BaseStage):
             result.files_skipped += len(group_members)
             if not dry_run:
                 ctx.conn.execute(
-                    "UPDATE duplicates SET status = 'stale' WHERE group_id = ? AND status = 'pending'",
+                    f"UPDATE duplicates SET status = 'stale' WHERE group_id = ? AND {ACTED_ON_SQL}",
                     (gid,),
                 )
 
@@ -1049,7 +1053,7 @@ class DupeResolverStage(BaseStage):
                     if not dry_run:
                         ctx.conn.executemany(
                             "UPDATE duplicates SET status = 'archive' "
-                            "WHERE group_id = ? AND status = 'pending'",
+                            f"WHERE group_id = ? AND {ACTED_ON_SQL}",
                             [(gid,) for gid in component],
                         )
                     continue
@@ -1083,10 +1087,26 @@ class DupeResolverStage(BaseStage):
             # A person's decision in `musaeus dedupe` wins over the ranking: the
             # copy they kept is the keeper, and every copy they kept stays
             # (review of #86, finding 9).
-            user_kept = [m for m in members if m.get("dup_status") == "keep_user"]
+            # A kept copy no longer at its path cannot be the keeper: nothing
+            # would ever move (review of #123, finding 3).
+            kept = [m for m in members if m.get("dup_status") == KEEP_USER]
+            user_kept = [m for m in kept if m.get("current_row") is not None]
+            for m in kept:
+                if m not in user_kept:
+                    result.notes.append(
+                        f"group {group_id}: a copy kept in `musaeus dedupe` is no longer at "
+                        f"{m['file_path']}; the keep rule chose the keeper"
+                    )
             if user_kept:
                 keeper = user_kept[0]
-                losers = [m for m in members if m.get("dup_status") != "keep_user"]
+                losers = [m for m in members if m.get("dup_status") != KEEP_USER]
+            elif members and all(m.get("dup_status") == ARCHIVE_USER for m in members):
+                # Every copy archived: one stays, so the library keeps the song
+                # -- said, not done silently (review of #123, finding 11).
+                result.notes.append(
+                    f"group {group_id}: every copy was archived in `musaeus dedupe`; "
+                    f"one is kept so the song stays: {keeper['file_path'] if keeper else '?'}"
+                )
             self._move_losers(
                 ctx,
                 result,
@@ -1100,7 +1120,7 @@ class DupeResolverStage(BaseStage):
                 already_moved=already_moved,
                 group_ids=component,
             )
-            if keeper and not dry_run and keeper.get("dup_status") != "keep_user":
+            if keeper and not dry_run and keeper.get("dup_status") != KEEP_USER:
                 _mark(ctx, component, keeper["file_path"], "keep")
 
         # ── Source 2: live EXACT-hash clusters, derived directly from
@@ -1108,10 +1128,18 @@ class DupeResolverStage(BaseStage):
         # behind by a stale duplicates.status decision, and any future
         # recurrence, without trying to reconcile a path that may no
         # longer be reliable. See _get_live_exact_clusters' docstring. ──
-        user_kept_paths = {
-            r[0]
-            for r in ctx.conn.execute("SELECT file_path FROM duplicates WHERE status = 'keep_user'")
-        }
+        # A person's keep counts for the recording they kept, not for whatever
+        # is at that path now; and when they kept as many copies of a recording
+        # as there are, none moves, filed under new paths or not (review of
+        # #123, finding 6).
+        kept_recording: dict[str, str] = {}
+        kept_per_recording: dict[str, int] = {}
+        for path, recorded in ctx.conn.execute(
+            "SELECT file_path, audio_hash FROM duplicates WHERE status = ?", (KEEP_USER,)
+        ):
+            kept_recording[path] = recorded or ""
+            if recorded:
+                kept_per_recording[recorded] = kept_per_recording.get(recorded, 0) + 1
         for idx, members in enumerate(live_exact_clusters):
             # These lists were made before the groups above moved anything.
             # A member moved there is gone, and where the two sources ranked
@@ -1123,10 +1151,18 @@ class DupeResolverStage(BaseStage):
             for m in members:
                 m["duplicate_type"] = "EXACT"
             keeper, losers = members[0], members[1:]
-            kept_by_person = [m for m in members if m["file_path"] in user_kept_paths]
+            recording = members[0].get("audio_hash") or ""
+            if recording and kept_per_recording.get(recording, 0) >= len(members):
+                result.notes.append(
+                    f"{len(members)} identical copies all kept in `musaeus dedupe`: left alone"
+                )
+                continue
+            kept_by_person = [
+                m for m in members if recording and kept_recording.get(m["file_path"]) == recording
+            ]
             if kept_by_person:  # a person's keep in `musaeus dedupe` wins here too
                 keeper = kept_by_person[0]
-                losers = [m for m in members if m["file_path"] not in user_kept_paths]
+                losers = [m for m in members if m not in kept_by_person]
             synthetic_group_id = f"exacthash_{idx:06d}"
             self._move_losers(
                 ctx,
