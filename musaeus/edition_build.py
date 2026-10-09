@@ -227,6 +227,10 @@ class Plan:
     #: Damaged copies in the way of a bake, made again over: path -> (size,
     #: mtime_ns) when planned, so a file changed since is never replaced.
     damaged: dict[str, tuple[int, int]] = field(default_factory=dict)
+    #: Copies a stopped build left mid tag save (RETAGGING): made again.
+    #: Copies baked again in place: path -> (size, mtime_ns) when planned.
+    replace_sig: dict[str, tuple[int, int]] = field(default_factory=dict)
+    unfinished: int = 0
     unrecorded: list[Path] = field(default_factory=list)
     kind_name: str = EDITION
     target_lufs: float = TARGET_LUFS
@@ -456,6 +460,22 @@ def make_plan(
     settings_now = kind.settings() if kind.settings is not None else None
     for h, (m, target) in selected.items():
         c = recorded.get(h)
+        if c is not None and c.mode == RETAGGING:
+            # A build stopped while this copy's tags were saved in place. The
+            # save may have moved the audio and not fixed the offsets into it:
+            # such a copy still reads, marker and all, and plays broken
+            # (review of #127). Made again; the new copy replaces it.
+            plan.unfinished += 1
+            if c.output_path == str(target) and target.exists():
+                plan.rebake.append(c)
+                plan.replace_sig[str(target)] = _signature(target)
+                plan.bake.append((m, target))
+                continue
+            if Path(c.output_path).exists():
+                plan.remove.append(c)  # the suspect copy goes; one is made at target
+            else:
+                plan.forget.append(c)
+            c = None
         if (
             settings_now is not None
             and c is not None
@@ -466,6 +486,7 @@ def make_plan(
             # Made with other settings (Grey, 2026-09-29): made again, and the
             # verified new copy replaces it (execute), as a re-bake does.
             plan.rebake.append(c)
+            plan.replace_sig[str(target)] = _signature(target)
             plan.resettled += 1
             plan.bake.append((m, target))
             continue
@@ -479,6 +500,7 @@ def make_plan(
             # Baked again under today's rules; the new copy replaces this one
             # only once it is verified (execute).
             plan.rebake.append(c)
+            plan.replace_sig[str(target)] = _signature(target)
             plan.bake.append((m, target))
             continue
         if (
@@ -739,22 +761,50 @@ def _copy(
     mode: str,
     kind: Kind,
     settings: str | None = None,
+    mtime_ns: int | None = None,
 ) -> Copy:
     """The record of a copy. *settings*: what it was made with -- today's by
-    default; a move or a retag keeps the copy's own."""
+    default; a move or a retag keeps the copy's own. *mtime_ns*: the master's
+    mtime to record, its own by default."""
     if settings is None:
         settings = kind.settings() if kind.settings is not None else ""
     return Copy(
         edition=kind.name,
         master_hash=m.audio_hash,
         master_path=str(m.path),
-        master_mtime_ns=m.mtime_ns,
+        master_mtime_ns=m.mtime_ns if mtime_ns is None else mtime_ns,
         output_path=str(output),
         built_at=_now(),
         achieved_lufs=achieved,
         mode=mode,
         settings=settings,
     )
+
+
+#: The record of a copy whose tags are being saved in place (retag, adopt,
+#: move), committed before the save; the save's own record replaces it. A
+#: record still saying so means a build stopped mid-save (review of #127).
+RETAGGING = "retagging"
+
+
+def _tag_in_place(
+    ledger: sqlite3.Connection,
+    m: Master,
+    path: Path,
+    kind: Kind,
+    achieved: float | None,
+    mode: str,
+    settings: str | None,
+) -> None:
+    """Give the copy at *path* the master's tags, in place, journalled.
+
+    The save is in place: copying every file to retag it would copy whole
+    editions after a mass master retag. Instead the record says RETAGGING
+    until the save is done, so a copy a kill left half saved is made again.
+    """
+    record(ledger, _copy(m, path, achieved, RETAGGING, kind, settings, mtime_ns=0))
+    edition_bake.copy_tags(m.path, path, marker_for(m.audio_hash, kind))
+    record(ledger, _copy(m, path, achieved, mode, kind, settings))
 
 
 def _signature(p: Path) -> tuple[int, int]:
@@ -848,8 +898,7 @@ def _move_all(
                 raise OSError(f"its new place is taken: {target}")
             target.parent.mkdir(parents=True, exist_ok=True)
             aside.rename(target)
-            edition_bake.copy_tags(m.path, target, marker_for(m.audio_hash, kind))
-            record(ledger, _copy(m, target, c.achieved_lufs, c.mode, kind, c.settings))
+            _tag_in_place(ledger, m, target, kind, c.achieved_lufs, c.mode, c.settings)
             out.moved += 1
         except Exception as exc:  # noqa: BLE001 -- one copy, not the build
             if aside.exists() and not old.exists():
@@ -930,8 +979,7 @@ def execute(
 
     for m, c in plan.retag:
         try:
-            edition_bake.copy_tags(m.path, Path(c.output_path), marker_for(m.audio_hash, kind))
-            record(ledger, _copy(m, Path(c.output_path), c.achieved_lufs, c.mode, kind, c.settings))
+            _tag_in_place(ledger, m, Path(c.output_path), kind, c.achieved_lufs, c.mode, c.settings)
             out.retagged += 1
         except Exception as exc:  # noqa: BLE001
             out.failed.append((str(m.path), f"{type(exc).__name__}: {exc}"))
@@ -941,11 +989,10 @@ def execute(
         # retag between the stopped build and this one would never reach the
         # copy otherwise (second review of #49).
         try:
-            edition_bake.copy_tags(m.path, target, marker_for(m.audio_hash, kind))
             # Its make is unknown (the marker names the master, not the
             # settings): recorded as such, so a copy from before a settings
             # change is made again (second review of #53).
-            record(ledger, _copy(m, target, None, "adopted", kind, settings=""))
+            _tag_in_place(ledger, m, target, kind, None, "adopted", "")
             out.adopted += 1
         except Exception as exc:  # noqa: BLE001
             out.failed.append((str(m.path), f"{type(exc).__name__}: {exc}"))
@@ -959,14 +1006,20 @@ def execute(
 
     def may_replace(target: Path, h: str) -> bool:
         key = str(target)
-        if key in replaceable:
-            # This copy, at the place its record names: marked as this
-            # master's, or damaged by a kill since (review of #88, finding 4).
-            mine = edition_bake.read_marker(target) == marker_for(h, kind)
-            return mine or edition_bake.is_damaged(target)
-        if key in plan.damaged:
-            # Damaged when planned, and untouched since.
-            return _signature(target) == plan.damaged[key] and edition_bake.is_damaged(target)
+        try:
+            if key in replaceable:
+                # This copy, at the place its record names: marked as this
+                # master's, or damaged and untouched since the plan (reviews
+                # of #88, finding 4, and of #127).
+                if edition_bake.read_marker(target) == marker_for(h, kind):
+                    return True
+                unchanged = plan.replace_sig.get(key) == _signature(target)
+                return unchanged and edition_bake.is_damaged(target)
+            if key in plan.damaged:
+                # Damaged when planned, and untouched since.
+                return _signature(target) == plan.damaged[key] and edition_bake.is_damaged(target)
+        except FileNotFoundError:
+            return True  # gone since the check: the place is free
         return False
 
     from .idle_throttle import IdleThrottle
@@ -991,6 +1044,7 @@ def execute(
             for fut in as_completed(futures):
                 m, target = futures[fut]
                 done += 1
+                tmp: Path | None = None
                 try:
                     tmp, result = fut.result()
                     if target.exists() and not may_replace(target, m.audio_hash):
@@ -1005,6 +1059,8 @@ def execute(
                     ):
                         keep_measurement(ledger, m.audio_hash, result.recipe, result.measured)
                 except Exception as exc:  # noqa: BLE001 -- one track, not the build
+                    if tmp is not None:
+                        tmp.unlink(missing_ok=True)  # never left in the edition
                     reason = (
                         str(exc)
                         if isinstance(exc, edition_bake.BakeError)
@@ -1093,6 +1149,7 @@ def plan_lines(plan: Plan, *, workers: int, free: int | None = None) -> list[str
         ("Move/rename", len(plan.move)),
         ("Re-tag only", len(plan.retag)),
         ("Remake damaged", len(plan.damaged)),
+        ("Stopped retag", plan.unfinished),
         ("Remove", len(plan.remove)),
         ("Stale records", len(plan.forget)),
     ):
