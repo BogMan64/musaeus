@@ -54,7 +54,7 @@ from pathlib import Path
 from ..config import LOSSLESS_CODECS as _LOSSLESS_CODECS
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
-from ..duration import decodes_cleanly
+from ..duration import decodes_cleanly, stream_seconds, tolerance_for
 from .base import NO_VERIFICATION, BaseStage, StageError, VerifyResult
 from .canonicalize import _has_attached_picture, _probe_streams
 from .corrupt import audio_relevant_stderr
@@ -115,9 +115,11 @@ def _transcode_file(
     year: str,
     track: str,
     genre: str,
+    recorded_seconds: float | None = None,
 ) -> None:
     """
-    Transcode src → dst using ffmpeg.
+    Transcode src → dst using ffmpeg. *recorded_seconds*: the length the
+    catalogue recorded at intake, which the export must match.
     Raises ValueError on failure or timeout.
 
     Art handling mirrors canonicalize.py's _convert_to_alac()/
@@ -217,13 +219,31 @@ def _transcode_file(
     # Exit 0 is not success: a truncated source exits 0 with "partial file" on
     # stderr, and the short export was renamed into place and then skipped for
     # ever (review of #124; CLAUDE.md: .part, verify, then rename).
-    problem = audio_relevant_stderr(res.stderr, 0)
+    # The audio's own input index: with cover art first it is not 0, and its
+    # decode errors were dropped as if about the picture (review of
+    # #129-#134, finding 9).
+    audio_index = next(
+        (
+            int(st.get("index", 0))
+            for st in probe.get("streams", [])
+            if st.get("codec_type") == "audio"
+        ),
+        0,
+    )
+    problem = audio_relevant_stderr(res.stderr, audio_index)
     if not problem:
         ok, err = decodes_cleanly(part)
         problem = "" if ok else f"the export does not decode: {err}"
+    if not problem:
+        # A source cut on a frame boundary exports short with no error at all,
+        # and reads as a whole shorter file: the export must be as long as the
+        # catalogue recorded at intake, or the source says (same finding).
+        want, got = recorded_seconds or stream_seconds(src), stream_seconds(part)
+        if want and (got is None or got < want - tolerance_for(want)):
+            problem = f"the export is {got or 0:.1f}s, the source {want:.1f}s"
     if problem:
         part.unlink(missing_ok=True)
-        raise ValueError(f"ffmpeg reported a problem with {src.name}: {problem[-300:]}")
+        raise ValueError(f"{src.name} not exported: {problem[-300:]}")
     os.replace(part, dst)
 
 
@@ -270,7 +290,7 @@ class TranscodeStage(BaseStage):
             where_extra = "" if force else "AND transcode_path IS NULL"
             rows = ctx.conn.execute(
                 f"""
-                SELECT file_path, artist, album, title, year, track, genre, codec
+                SELECT file_path, artist, album, title, year, track, genre, codec, duration
                 FROM archive
                 WHERE status = 'CATALOGUED'
                   {where_extra}
@@ -280,7 +300,7 @@ class TranscodeStage(BaseStage):
         except Exception:
             rows = ctx.conn.execute(
                 """
-                SELECT file_path, artist, album, title, year, track, genre, codec
+                SELECT file_path, artist, album, title, year, track, genre, codec, duration
                 FROM archive
                 WHERE status = 'CATALOGUED'
                 ORDER BY artist, album, track
@@ -340,6 +360,7 @@ class TranscodeStage(BaseStage):
                         year,
                         track,
                         genre,
+                        recorded_seconds=row["duration"],
                     )
                     ctx.conn.execute(
                         "UPDATE archive SET transcode_path=?, transcode_at=? WHERE file_path=?",

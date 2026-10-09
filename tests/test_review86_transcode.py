@@ -90,3 +90,47 @@ def test_a_clean_export_is_renamed_into_place(tmp_path, monkeypatch):
     dst = tmp_path / "out" / "song.m4a"
     transcode._transcode_file(tmp_path / "src.flac", dst, "aac", "A", "B", "T", "", "", "")
     assert dst.read_bytes() == b"an export"
+
+
+# ── Review of #129-#134, finding 9: a source cut on a frame boundary exports
+# short with no error at all, and the audio stream is not always input 0. ──
+
+
+def test_an_export_shorter_than_its_source_is_refused(tmp_path, monkeypatch):
+    _ffmpeg_exits_0(monkeypatch, "")
+    monkeypatch.setattr(transcode, "decodes_cleanly", lambda p: (True, None))
+    monkeypatch.setattr(
+        transcode,
+        "stream_seconds",
+        lambda p: 9.6 if p.name.endswith(".part") else 20.0,
+        raising=False,
+    )
+    dst = tmp_path / "out" / "song.m4a"
+    with pytest.raises(ValueError, match="9.6"):
+        transcode._transcode_file(tmp_path / "src.flac", dst, "aac", "A", "B", "T", "", "", "")
+    assert not dst.exists() and not list(dst.parent.iterdir())
+
+
+def test_an_audio_error_on_the_real_audio_stream_is_read(tmp_path, monkeypatch):
+    """Cover art first: the audio is input stream 1, and its decode errors
+    were dropped as if they were about the picture."""
+    _ffmpeg_exits_0(monkeypatch, "Error while decoding stream #0:1: Invalid data found\n")
+    monkeypatch.setattr(transcode, "_probe_streams", lambda p: {"streams": [
+        {"index": 0, "codec_type": "video"}, {"index": 1, "codec_type": "audio"}]})  # fmt: skip
+    monkeypatch.setattr(transcode, "decodes_cleanly", lambda p: (True, None))
+    dst = tmp_path / "out" / "song.m4a"
+    with pytest.raises(ValueError, match="Invalid data"):
+        transcode._transcode_file(tmp_path / "src.flac", dst, "aac", "A", "B", "T", "", "", "")
+
+
+def test_an_export_shorter_than_the_catalogue_recorded_is_refused(tmp_path, monkeypatch):
+    """A source cut on a sample boundary reads as a whole, shorter file; only the
+    length recorded at intake shows it is short."""
+    _ffmpeg_exits_0(monkeypatch, "")
+    monkeypatch.setattr(transcode, "decodes_cleanly", lambda p: (True, None))
+    monkeypatch.setattr(transcode, "stream_seconds", lambda p: 10.0, raising=False)
+    dst = tmp_path / "out" / "song.m4a"
+    with pytest.raises(ValueError, match="10.0"):
+        transcode._transcode_file(tmp_path / "src.wav", dst, "aac", "A", "B", "T", "", "", "",
+                                  recorded_seconds=20.0)  # fmt: skip
+    assert not dst.exists()
