@@ -242,8 +242,16 @@ def run_dedupe_console(conn, *, auto_mode: bool = False) -> None:
                         _set_status(conn, group_id, fp, st, members[idx].get("current_row"))
                         icon = "✓ KEEP" if st == KEEP_USER else "✗ ARCHIVE"
                         print(f"  → {icon}: {fp}")
-                        # Refresh members
-                        members = _get_group_members(conn, group_id)
+                        # Fresh statuses, in the order shown: re-ranked, an
+                        # archived copy moved last, and the next number typed
+                        # acted on another file (review of #129-#134, finding
+                        # 1). Shown again, so the numbers are always on screen.
+                        fresh = {m["file_path"]: m for m in _get_group_members(conn, group_id)}
+                        members = [
+                            fresh[m["file_path"]] for m in members if m["file_path"] in fresh
+                        ]
+                        for i, m in enumerate(members, 1):
+                            print(_fmt_row(i, m))
                         # Check if all resolved
                         if all(m["dup_status"] != "pending" for m in members):
                             resolved += 1
