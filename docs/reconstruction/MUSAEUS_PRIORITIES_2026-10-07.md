@@ -32,9 +32,11 @@ The stick sync ran on 2026-10-07 and the stick matches the car library (8,938 fi
 
 ## P1 — what is left
 
-1. **The October findings are all fixed** (2026-10-08, #89 to #127; statuses in the TODO
-   table). `write_master_loudness_tags.py` is safe to run again once #126 and #127 are
-   installed; its run changes every master, so the next edition build retags every copy.
+1. **The October findings are all fixed** (2026-10-08, #89 to #128), and so are the 14
+   from Grey's review of #123-#127 (2026-10-09, #129 to #133; rows R-1 to R-14 in the TODO
+   table). `write_master_loudness_tags.py` is safe to run once #129 is installed; on
+   2026-10-09 it would change 3 masters (0.1 GB). In `musaeus dedupe`, auto now leaves
+   every group to the keep rule (#130).
 2. **Review the ~32,800 lines no review has read yet** (`cli.py`, `db.py`, `state/`,
    `canon/`, art, forge, doctor, the intake and enrichment stages), as five slices with a
    local `/code-review`, after Grey's weekly usage resets on Saturday.
