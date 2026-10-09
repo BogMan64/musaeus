@@ -47,3 +47,46 @@ def test_a_failed_export_leaves_nothing_under_the_final_name(tmp_path, captured)
         transcode._transcode_file(tmp_path / "src.flac", dst, "aac", "A", "B", "T", "", "", "")
 
     assert not dst.exists() and not list(dst.parent.glob("*.part"))
+
+
+# ── Review of #124 (2026-10-08): .part then rename, but nothing verified in
+# between. ffmpeg exits 0 on a truncated source ("partial file" on stderr),
+# and the short export was renamed into place and skipped for ever after.
+
+
+def _ffmpeg_exits_0(monkeypatch, stderr: str) -> None:
+    def run(cmd, **kwargs):
+        from pathlib import Path
+
+        Path(cmd[-1]).write_bytes(b"an export")  # the .part ffmpeg wrote
+        return subprocess.CompletedProcess(cmd, 0, "", stderr)
+
+    monkeypatch.setattr(transcode.subprocess, "run", run)
+    monkeypatch.setattr(transcode, "_probe_streams", lambda p: {"streams": []})
+
+
+def test_a_source_ffmpeg_calls_partial_is_not_exported(tmp_path, monkeypatch):
+    _ffmpeg_exits_0(monkeypatch, "[aac @ 0x55] Input buffer exhausted before END element found\n")
+    monkeypatch.setattr(transcode, "decodes_cleanly", lambda p: (True, None), raising=False)
+    dst = tmp_path / "out" / "song.m4a"
+    with pytest.raises(ValueError, match="Input buffer exhausted"):
+        transcode._transcode_file(tmp_path / "src.flac", dst, "aac", "A", "B", "T", "", "", "")
+    assert not dst.exists() and not list(dst.parent.iterdir())
+
+
+def test_an_export_that_does_not_decode_is_not_renamed(tmp_path, monkeypatch):
+    _ffmpeg_exits_0(monkeypatch, "")
+    monkeypatch.setattr(transcode, "decodes_cleanly", lambda p: (False, "Invalid data found"),
+                        raising=False)  # fmt: skip
+    dst = tmp_path / "out" / "song.m4a"
+    with pytest.raises(ValueError, match="Invalid data found"):
+        transcode._transcode_file(tmp_path / "src.flac", dst, "aac", "A", "B", "T", "", "", "")
+    assert not dst.exists() and not list(dst.parent.iterdir())
+
+
+def test_a_clean_export_is_renamed_into_place(tmp_path, monkeypatch):
+    _ffmpeg_exits_0(monkeypatch, "")
+    monkeypatch.setattr(transcode, "decodes_cleanly", lambda p: (True, None), raising=False)
+    dst = tmp_path / "out" / "song.m4a"
+    transcode._transcode_file(tmp_path / "src.flac", dst, "aac", "A", "B", "T", "", "", "")
+    assert dst.read_bytes() == b"an export"
