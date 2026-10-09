@@ -19,9 +19,7 @@ resume. Dry run unless --execute. Run only while no musaeus process runs.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import os
-import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -71,15 +69,15 @@ def write_tags(fp: str, todo: dict[str, bytes]) -> None:
 
     mutagen rewrites the file it saves, so a run killed or a disk filled part way
     through left a damaged master (review of #88, finding 3). The tags go on a copy
-    beside the master; the copy is flushed to disk and only then takes the master's
-    place, in one rename. A kill leaves the master whole, and at most a
-    <name>.tagging copy beside it that the next run starts afresh.
+    beside the master (<name>.tagging), which takes its place in one rename once on
+    disk (musaeus.safe_save, shared with the edition build). A kill leaves the master
+    whole, and at most the copy, which the next run replaces.
     """
     from mutagen.mp4 import MP4, MP4FreeForm
 
-    tmp = fp + ".tagging"
-    shutil.copy2(fp, tmp)  # replaces a copy a killed run left
-    try:
+    from musaeus.safe_save import change_beside
+
+    def tag(tmp: Path) -> None:
         audio = MP4(tmp)
         if audio.tags is None:
             audio.add_tags()
@@ -88,18 +86,8 @@ def write_tags(fp: str, todo: dict[str, bytes]) -> None:
         for key, value in todo.items():
             tags[key] = [MP4FreeForm(value)]
         audio.save()
-        with open(tmp, "rb") as fh:
-            os.fsync(fh.fileno())
-        os.replace(tmp, fp)
-    except BaseException:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(tmp)
-        raise
-    dir_fd = os.open(os.path.dirname(fp) or ".", os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+
+    change_beside(Path(fp), tag, suffix=".tagging")
 
 
 def main() -> int:
