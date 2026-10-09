@@ -788,7 +788,7 @@ def _cmd_status() -> int:
         from .edition_ledger import car_copy_count
 
         tagged_car = car_copy_count(cfg, conn)
-        from .stages.dupe_resolver import ACTED_ON_SQL
+        from .dedupe import ACTED_ON_SQL
 
         dupes = conn.execute(
             f"SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE {ACTED_ON_SQL}"
