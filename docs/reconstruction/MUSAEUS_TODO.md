@@ -113,7 +113,7 @@ reviewer wrote "confirmed" when it ran something.
 | 86-6 | The resolver never checks that the keeper's file exists | **fixed #98** |
 | 86-7 | `keep_rule.decide` skips the shared-loudness check (the 2026-09-26 swap incident shape) | **fixed #110** |
 | 86-8 | `keep_rule.LOSSY` misses wmav1, ac3, eac3, musepack, amrnb | **fixed #110** |
-| 86-9 | A 'keep' set in `musaeus dedupe` is ignored by the resolver; 'a' is lowercased into auto-resolve | **fixed #114, #123**: keys are case-sensitive and auto uses the keep rule (#114); the console writes `keep_user`/`archive_user` and the resolver carries them out: a kept copy is the keeper, archived ones move (#123) |
+| 86-9 | A 'keep' set in `musaeus dedupe` is ignored by the resolver; 'a' is lowercased into auto-resolve | **fixed #114, #123**: keys are case-sensitive and auto uses the keep rule (#114); the console writes `keep_user`/`archive_user` and the resolver carries them out: a kept copy is the keeper, archived ones move (#123). Follow-ups from the review of #123: #130, #131 (R-2 to R-7, R-11, R-14) |
 | 86-10 | An interrupted resolver run: files moved, rows rolled back, no log or restore script | **fixed #102** |
 | 86-11 | An interrupted Finalize: the re-run makes a "(2)" copy and the first is untracked (also 87-2) | **fixed #101** (rollback half #100) |
 | 86-12 | Organize renames before updating rows; a kill can strand up to 49 masters | **fixed #103** |
@@ -140,7 +140,7 @@ reviewer wrote "confirmed" when it ran something.
 | 88-1 | `transfer_to_usb.py --no-format --dest` checks nothing about the destination (protected folder, the source itself); it empties the destination file before reading the source | **fixed #96** |
 | 88-2 | `loudness.py`: no `-nostdin`, a failed run trusted, every stream measured; forge writes it into master tags | **fixed #93** |
 | 88-3 | `scripts/write_master_loudness_tags.py` rewrites every master in place and never checks for a running build | **fixed #104, #126**: holds the masters lock (#104); the tags go on a copy beside the master, which replaces it in one rename, so a kill leaves the master whole (#126) |
-| 88-4 | `edition_build.py:865`: retag/adopt/move save tags in place on the final copy; a kill leaves a damaged copy | **fixed #127**: a copy damaged by a killed retag, adopt or move (an MP4 that no longer parses) is made again; the new copy replaces it only if the file is unchanged since the plan. The in-place save stays: a damaged copy costs one bake |
+| 88-4 | `edition_build.py:865`: retag/adopt/move save tags in place on the final copy; a kill leaves a damaged copy | **fixed #127**: a copy damaged by a killed retag, adopt or move (an MP4 that no longer parses) is made again; the new copy replaces it only if the file is unchanged since the plan. The in-place save stays: a damaged copy costs one bake. A save stopped after the audio moved still parsed and was trusted: journalled in #129 (R-1) |
 | 88-5 | `--sync` treats a same-size file as unchanged, so retags never reach the stick (`test_usb_sync.py` fakes a size change) | **fixed #96** |
 | 88-6 | The vault's old playlists overwrite the edition's checked ones on the stick ("Holiday.m3u8 -> Honey") | **fixed #96** |
 | 88-7 | A copy that fails its hash check stays on the stick and is "already right" next time; the check hashes the page cache | **fixed #96** |
@@ -156,6 +156,20 @@ reviewer wrote "confirmed" when it ran something.
 | B-4 | With the recovery boundary UNAVAILABLE, canonicalize deletes INBOX originals outright and finalize copies with no journal | **fixed #108** |
 | B-12 | Edition tests read the machine's real process table | **fixed in-process** (autouse fixture); subprocess tests still do |
 | B-1,3,5-11 | Errors and gaps in `docs/REVIEW_BRIEF.md` (coverage; the ReplayGain sentence backwards; the accepted list) | **fixed** in the same PR as this table |
+| R-1 | Review of #123-#127 (2026-10-08, Grey's `/code-review`): `edition_bake.is_damaged` misses a tag save stopped after the audio moved -- the copy still parses and keeps its marker, and plays broken (verified by running) | **fixed #129**: each in-place tag save is journalled in the ledger (RETAGGING) before it starts; a stopped one is made again |
+| R-2 | The console's auto ranked without `finalized_at`/`current_row`, and since #123 the resolver obeys it: it could keep a new arrival and move the filed master | **fixed #130**: auto writes nothing; the resolver applies the keep rule (Grey, 2026-10-09: "leave it to the resolver") |
+| R-3 | A kept copy no longer at its path was made keeper, so nothing ever moved | **fixed #131**: the keep rule chooses, and the run says so |
+| R-4 | The stale and set-aside close-outs changed only 'pending' rows: a group with an 'archive_user' row came back, with an error, every run | **fixed #131** |
+| R-5 | Auto marked a lone CROSS_BATCH arrival 'keep_user', so it was never moved | **fixed #130** (auto writes nothing) |
+| R-6 | Source 2 honoured 'keep_user' by path, not by recording; a kept copy filed under a new path lost its keep | **fixed #131**: path and recorded hash; a recording whose copies were all kept is left alone |
+| R-7 | The plan, the console, `musaeus status` and the report counted only 'pending' groups | **fixed #131**: 'archive_user' groups count as awaiting |
+| R-8 | A re-bake replaced a damaged copy without checking it was unchanged since the plan | **fixed #129** |
+| R-9 | `is_damaged` would call an I/O error damage where mutagen wraps it in its MP4 error | **fixed #129** |
+| R-10 | The transcode export renamed its `.part` without reading stderr or decoding it | **fixed #132**: `-v error` stderr checked, the `.part` decoded before the rename |
+| R-11 | Archiving every copy kept one and overwrote the person's archive, silently | **fixed #131**: one is still kept (the song stays), and the run says so |
+| R-12 | A damaged target removed mid-check failed the bake and left its temporary file | **fixed #129** |
+| R-13 | The tag script copies each changed master whole: a full run writes about the archive's size | **#133**: the dry run says how much; the safe save stays. On 2026-10-09 only 3 masters needed a change (0.1 GB) |
+| R-14 | The two person statuses were spelled by hand in eight places | **fixed #131**: shared names |
 
 ### Open, in the order I'd take them
 
