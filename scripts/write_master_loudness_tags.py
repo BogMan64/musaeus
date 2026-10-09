@@ -129,6 +129,7 @@ def main() -> int:
         keep = {int(x) for x in args.ids.read_text().split()}
         rows = [r for r in rows if r["id"] in keep]
     changed = right = no_loudness = not_master = 0
+    rewrite_bytes = 0
     for r in rows:
         fp = r["file_path"]
         if not fp.startswith(root) or not fp.lower().endswith(".m4a"):
@@ -143,6 +144,7 @@ def main() -> int:
             no_loudness += 1
         if args.execute:
             write_tags(fp, todo)
+        rewrite_bytes += os.path.getsize(fp)
         changed += 1
         if args.limit and changed >= args.limit:
             break
@@ -151,7 +153,21 @@ def main() -> int:
     verb = "changed" if args.execute else "would change"
     print(f"{verb} {changed:,}; already right {right:,}; no loudness known {no_loudness:,}; "
           f"not a master .m4a {not_master:,}")  # fmt: skip
+    print(rewrite_note(changed, rewrite_bytes, executed=args.execute))
     return 0
+
+
+def rewrite_note(changed: int, rewrite_bytes: int, *, executed: bool) -> str:
+    """What the safe save costs: each changed master is copied whole, tagged and
+    renamed (#126), so a full run writes about the size of the archive (review
+    of #126: hundreds of GB, said up front rather than found out)."""
+    gb = rewrite_bytes / 1_000_000_000
+    if executed:
+        return f"rewrote {changed:,} master(s), about {gb:,.1f} GB written"
+    return (
+        f"--execute would rewrite {changed:,} master(s), about {gb:,.1f} GB: each is "
+        "copied whole, tagged and renamed, so a kill never leaves a master half-saved"
+    )
 
 
 if __name__ == "__main__":
