@@ -537,7 +537,10 @@ class _MoveLog:
 
     def __init__(self, review_dir: Path) -> None:
         self.review_dir = review_dir
-        self.stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        # Microseconds: each carry-out in `musaeus dedupe` writes its own log, and
+        # two in one second overwrote each other's restore script (review of
+        # #140-#142, finding 6).
+        self.stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         self.manifest_path: Path | None = None
         self.restore_path: Path | None = None
 
@@ -744,6 +747,9 @@ class DupeResolverStage(BaseStage):
             [*groups, *chosen],
         )
         ctx.conn.commit()
+        # The moves checked on disk, as an Act 2's are (review of #140-#142,
+        # finding 11).
+        result.errors.extend(self.verify_effect(ctx, result))
         result.success = not result.errors
         if moved and self._log is not None:
             result.notes.append(f"moved {len(moved)} file(s) to review")
@@ -1148,8 +1154,6 @@ class DupeResolverStage(BaseStage):
 
             # One keeper for the whole component, so a file kept by one of
             # its groups can no longer be moved as another's loser.
-            _share_loudness(members)
-            _rank(members)
             keeper, losers = _pick_keeper_and_losers(members)
             # An incoming CROSS_BATCH duplicate always moves, also when its
             # group was merged with a NEAR group: the library already holds
@@ -1172,18 +1176,19 @@ class DupeResolverStage(BaseStage):
                 if rest:
                     keeper = rest[0]
                     losers = [m for m in members if m is not keeper]
-            # A copy a person kept in `musaeus dedupe` stays, wherever it has
-            # been refiled since: the mark is on its catalogue row, which keeps
-            # its id when organize or finalize move the file (Grey, 2026-10-09:
-            # choices are carried out at once; reviews of #123 to #139).
-            person_kept = [
-                m
-                for m in members
-                if m.get("kept_by_person_at") and m.get("current_row") is not None
-            ]
-            if person_kept:
-                keeper = person_kept[0]
-                losers = [m for m in members if m not in person_kept]
+            # A keep in `musaeus dedupe` settles the copies the person saw; a
+            # copy that arrives later is ranked with it by the keep rule, which
+            # may move the kept one (Grey, 2026-10-10). Copies all kept by a
+            # person are theirs: left alone, and closed (review of #140-#142,
+            # findings 2, 5, 8, 12).
+            if all(m.get("kept_by_person_at") for m in members):
+                if not dry_run:
+                    for m in members:
+                        _mark(ctx, component, m["file_path"], "keep")
+                result.notes.append(
+                    f"group {group_id}: every copy kept in `musaeus dedupe`: left alone"
+                )
+                continue
             self._move_losers(
                 ctx,
                 result,
@@ -1216,17 +1221,14 @@ class DupeResolverStage(BaseStage):
             for m in members:
                 m["duplicate_type"] = "EXACT"
             keeper, losers = members[0], members[1:]
-            # Copies a person kept never move; when they kept them all, the
-            # cluster is theirs (the same song on an album and a compilation).
-            person_kept = [m for m in members if m.get("kept_by_person_at")]
-            if len(person_kept) == len(members):
+            # Copies all kept by a person are theirs (the same song on an album
+            # and a compilation); otherwise the keep rule ranks them all,
+            # a kept one included (Grey, 2026-10-10).
+            if all(m.get("kept_by_person_at") for m in members):
                 result.notes.append(
                     f"{len(members)} identical copies all kept in `musaeus dedupe`: left alone"
                 )
                 continue
-            if person_kept:
-                keeper = person_kept[0]
-                losers = [m for m in members if m not in person_kept]
             synthetic_group_id = f"exacthash_{idx:06d}"
             self._move_losers(
                 ctx,
