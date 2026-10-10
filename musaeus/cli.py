@@ -870,12 +870,12 @@ def _cmd_dedupe(auto: bool = False, report_only: bool = False) -> int:
 
     conn = open_db(cfg.db_path)
     try:
-        from .dedupe import print_dedupe_report, run_dedupe_console
+        from .dedupe import carry_out_with, print_dedupe_report, run_dedupe_console
 
         if report_only:
             print_dedupe_report(conn)
         else:
-            run_dedupe_console(conn, auto_mode=auto)
+            run_dedupe_console(conn, auto_mode=auto, carry_out=carry_out_with(cfg))
     finally:
         conn.close()
     return 0
