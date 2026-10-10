@@ -1,0 +1,489 @@
+#!/usr/bin/env python3
+"""
+MUSAEUS — Rebuild the archive table from disk + embedded file tags.
+
+The real replacement for `rebuild-db`, which was disabled 2026-08-21 after
+being confirmed unable to work: it replayed the events table, but that table
+is a human-readable audit trail and is lossy by design (hashes stored
+truncated to 16 chars plus an ellipsis; album/genre/year/track/duration/codec
+never recorded at all). See musaeus/rebuild.py for the full evidence.
+
+This module inverts the question. Instead of asking "what happened?", it asks
+"what is actually on disk right now?" -- which is answerable, because MUSAEUS
+deliberately writes its work back into the files themselves. That principle
+("store as much as possible on the m4a so future runs don't redo it", Grey,
+2026-08-20) was built for resumability, and it is exactly what makes real
+recovery possible.
+
+What is recovered, and from where:
+
+  filesystem   file_path, filename, ext, size_bytes, last_modified
+  file tags    artist, albumartist, album, title, genre, year, track
+  file tags    bpm, musical_key, energy, danceability   (written by BPMStage)
+  file tags    lufs, rg_gain                            (decoded from Forge's
+                                                          R128_TRACK_GAIN, the
+                                                          same read its own
+                                                          tag-shortcut uses)
+  ffprobe      duration, bitrate, sample_rate, channels, codec
+  recomputed   audio_hash, full_hash
+  location     status, finalized_at, canonicalized_at
+
+What is NOT recovered, and must be re-derived by re-running the relevant
+stage rather than guessed at here:
+
+  mb_artist_id / mb_artist_name / mb_release_id / mb_enriched_at  -> MBEnrich
+  car_export_path / noise_profile                                 -> Curator
+  bitrot_checked_at / bitrot_ok                                   -> BitRot
+  lufs_tp / rg_peak       (Forge's R128 atom carries gain only, not true peak)
+  exact original date_added / rg_tagged_at / bpm_analyzed_at timestamps
+
+Safety: this NEVER deletes. It writes into a fresh table and leaves the
+existing archive untouched unless --replace is passed, and even then only
+after the rebuild has completed successfully and the old table has been
+renamed aside rather than dropped. That is the opposite of the old
+rebuild-db, whose fatal flaw was issuing DELETE FROM archive *first* and
+discovering it could not repopulate afterwards.
+"""
+
+from __future__ import annotations
+
+import logging
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .config import AUDIO_EXTENSIONS, MusicConfig
+from .hasher import audio_hash_safe, file_hash
+from .identity_tags import read_identity
+from .stages.bpm import read_existing_tags as _read_bpm_tags
+from .stages.forge import read_existing_rg_tags as _read_rg_tags
+from .stages.scholar import _extract_meta, _probe
+
+logger = logging.getLogger(__name__)
+
+_ARCHIVE = "archive"
+
+_COMMIT_EVERY = 50
+
+# Directory names under ALAC-Library that carry a status other than the
+# ordinary "this is live library content" meaning.
+_STATUS_BY_DIR = {
+    # Current names (REVIEW/ lives outside Libraries/ since 2026-09-20).
+    "DUPES_MOVED": "DUPE_REVIEW",
+    "TRIBUTE_REMOVED": "TRIBUTE_REVIEW",
+    # Pre-move names, still present in historical paths and manifests.
+    "DUPES_MOVED_FOR_REVIEW": "DUPE_REVIEW",
+    "TRIBUTE_REMOVED_FOR_REVIEW": "TRIBUTE_REVIEW",
+}
+
+
+def _read_all_tags(path: Path, known_duration: float | str | None = None) -> dict[str, Any]:
+    """Read every tag-derived field MUSAEUS knows how to recover.
+
+    Reuses the exact readers the pipeline stages use, rather than a second
+    implementation -- duplicated tag handling is what let the article bug
+    regress three times (scope doc §5).
+    """
+    out: dict[str, Any] = {}
+
+    try:
+        from mutagen import File as MutagenFile  # type: ignore[import-untyped]
+
+        mf = MutagenFile(str(path), easy=True)
+        if mf is not None and mf.tags:
+
+            def _t(*keys: str) -> str:
+                for k in keys:
+                    v = mf.tags.get(k)
+                    if v:
+                        return str(v[0]).strip()
+                return ""
+
+            out["albumartist"] = _t("albumartist")
+    except Exception as exc:
+        logger.debug("albumartist read failed for %s: %s", path, exc)
+
+    # BPM/key/energy/danceability -- BPMStage writes these back to the file
+    # specifically so they never need recomputing.
+    try:
+        bpm = _read_bpm_tags(path)
+        if bpm:
+            out["bpm"] = bpm.get("bpm")
+            out["musical_key"] = bpm.get("musical_key") or None
+            out["energy"] = bpm.get("energy")
+            out["danceability"] = bpm.get("danceability")
+    except Exception as exc:
+        logger.debug("bpm tag read failed for %s: %s", path, exc)
+
+    # Loudness -- recovered from the embedded ReplayGain/R128 tags. lufs is a
+    # physical property of the audio, so it survives the round-trip; lufs_tp
+    # and rg_peak do not, because Apple's R128 atom stores gain only.
+    try:
+        rg = _read_rg_tags(path)
+        if rg:
+            out["lufs"] = rg.get("lufs")
+            out["rg_gain"] = rg.get("rg_gain")
+            out["rg_peak"] = rg.get("rg_peak")
+    except Exception as exc:
+        logger.debug("rg tag read failed for %s: %s", path, exc)
+
+    # Recording identity -- MusicBrainz and AcoustID. IdentityTagStage
+    # writes these precisely so a rebuild never has to re-acquire them: an
+    # MBID costs a rate-limited second and a fingerprint ~0.8 s of fpcalc,
+    # so 10,000 files is hours either way. Without this read half the write
+    # half was pointless for rebuild, which is the shape of a round trip
+    # only half built.
+    try:
+        ident = read_identity(path)
+        for col in ("mb_artist_id", "mb_release_id", "acousticid_recording"):
+            if ident.get(col):
+                out[col] = ident[col]
+
+        # The fingerprint is trusted only when its recorded duration still
+        # matches the audio. A fingerprint describes the PCM: canonicalize's
+        # FLAC->ALAC is lossless so it survives, but a transcode to a lossy
+        # codec changes the samples. chromaprint tolerates that well -- which
+        # is a property to depend on deliberately, not by accident. A
+        # mismatch means the tag outlived the audio it described.
+        fp = ident.get("chromaprint")
+        recorded = ident.get("chromaprint_duration")
+        if fp:
+            # Probe only if the duration is not already known. scan_and_rebuild
+            # has already run _probe on this file before calling us, so an
+            # unconditional second probe costs ~50-100ms per fingerprinted
+            # file -- 10-15 minutes across a 10,000-file rebuild, against a
+            # commit whose entire purpose is saving rebuild time. _probe
+            # RAISES on failure rather than returning falsy, so it is guarded
+            # rather than `or {}`-ed.
+            actual = known_duration
+            if not actual:
+                # Only probe when the caller could not tell us. scan_and_rebuild
+                # has already run _probe on this file, so probing again cost
+                # ~50-100ms per fingerprinted file -- 10-15 minutes across a
+                # 10,000-file rebuild, against a commit whose whole purpose is
+                # saving rebuild time. _probe RAISES rather than returning
+                # falsy, so it is guarded rather than `or {}`-ed.
+                try:
+                    probed = _probe(path)
+                except Exception:
+                    probed = {}
+                actual = (probed.get("format", {}) or {}).get("duration")
+
+            # Trust the fingerprint ONLY on positive evidence that it still
+            # describes this audio.
+            #
+            # The earlier form said `if recorded and actual and mismatch:
+            # distrust / else: trust`, which trusts whenever there is nothing
+            # to compare -- a file tagged before chromaprint_duration existed
+            # carries a fingerprint and no duration, so it fell straight into
+            # the trusting branch. That is the same check-that-cannot-fire
+            # this guard was written to remove, one step along.
+            #
+            # The costs are not symmetric: refusing to trust costs ~0.8s of
+            # fpcalc, while wrongly trusting yields an AcoustID recording ID
+            # for audio the file no longer holds.
+            if not (recorded and actual):
+                logger.debug(
+                    "chromaprint for %s cannot be checked (recorded=%r actual=%r) -- not trusted",
+                    path,
+                    recorded,
+                    actual,
+                )
+            elif abs(float(recorded) - float(actual)) > 2.0:
+                logger.debug(
+                    "chromaprint for %s describes %.1fs but the audio is %.1fs -- not trusted",
+                    path,
+                    float(recorded),
+                    float(actual),
+                )
+            else:
+                out["chromaprint"] = fp
+                out["chromaprint_duration"] = float(recorded)
+    except Exception as exc:
+        logger.debug("identity tag read failed for %s: %s", path, exc)
+
+    return out
+
+
+def _archive_twin(path: Path, cfg: MusicConfig) -> Path | None:
+    """The pristine ALAC_Archive counterpart of a library file, if present.
+
+    ALAC_Archive mirrors ALAC-Library's relative layout, so the twin is the
+    same relative path under the archive root. Deliberately re-derived from
+    the path rather than stored in a DB column -- build_alac_library.py's own
+    docstring explains why: a second path column would drift out of sync with
+    real filesystem state.
+    """
+    archive_root = cfg.alac_archive
+    if not archive_root.exists():
+        return None
+    try:
+        rel = path.relative_to(cfg.alac_library)
+    except ValueError:
+        return None
+    twin = archive_root / rel
+    return twin if twin.exists() else None
+
+
+def _status_for(path: Path, alac_library: Path, cfg: MusicConfig | None = None) -> str:
+    """Infer status from where the file actually sits.
+
+    Location is the honest signal: DupeResolver physically relocates a loser
+    into the dupes review queue, TributeQuarantine into the tribute one.
+    Anything else under the library is live content, which by definition
+    reached Finalize.
+
+    Since 2026-09-20 those queues live OUTSIDE Libraries/, so they are checked
+    against the configured review directories FIRST. Without that, a review
+    file falls through `relative_to(alac_library)` -> ValueError and would be
+    reported CATALOGUED -- a wrong answer in the dangerous direction.
+    """
+    if cfg is not None:
+        for review_dir, status in (
+            (cfg.dupes_review_dir, "DUPE_REVIEW"),
+            (cfg.tribute_review_dir, "TRIBUTE_REVIEW"),
+        ):
+            try:
+                path.relative_to(review_dir)
+                return status
+            except ValueError:
+                pass
+    try:
+        parts = path.relative_to(alac_library).parts
+    except ValueError:
+        return "CATALOGUED"
+    for part in parts:
+        mapped = _STATUS_BY_DIR.get(part)
+        if mapped:
+            return mapped
+    return "CATALOGUED"
+
+
+def create_rebuild_table(conn: sqlite3.Connection, table: str) -> None:
+    # Mirror archive's shape so the result is directly comparable, and so a
+    # later --replace is a rename rather than a schema translation.
+    #
+    # NOT `CREATE TABLE ... AS SELECT`. That copies column names and types
+    # and NOTHING else -- no PRIMARY KEY, no AUTOINCREMENT, no
+    # UNIQUE(file_path), no NOT NULL, no DEFAULTs. promote() then renames
+    # that constraint-less table over `archive`, after which every
+    # upsert_archive() dies on "ON CONFLICT clause does not match any PRIMARY
+    # KEY or UNIQUE constraint", rows insert with id=NULL and status=NULL,
+    # and duplicate file_paths become possible. Observed on the live vault
+    # 2026-08-30: ingest and sentinel both failed on their first row.
+    #
+    # The real DDL is taken from sqlite_master and re-pointed at the new
+    # name, so the rebuild is the same table in every respect but its name.
+    ddl_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='archive'"
+    ).fetchone()
+    if ddl_row is None or not ddl_row[0]:
+        raise RuntimeError("cannot read archive's schema; refusing to rebuild")
+    ddl = ddl_row[0]
+    # `CREATE TABLE archive(` or `CREATE TABLE "archive"(`
+    for pattern in (f'CREATE TABLE "{_ARCHIVE}"', f"CREATE TABLE {_ARCHIVE}"):
+        if ddl.startswith(pattern):
+            ddl = f'CREATE TABLE "{table}"' + ddl[len(pattern) :]
+            break
+    else:
+        raise RuntimeError(f"unrecognised archive DDL, refusing to rebuild: {ddl[:60]}")
+
+    conn.execute(f"DROP TABLE IF EXISTS {table}")
+    conn.execute(ddl)
+
+
+def scan_and_rebuild(
+    conn: sqlite3.Connection,
+    cfg: MusicConfig,
+    *,
+    table: str = "archive_rebuilt",
+    limit: int = 0,
+    compute_hashes: bool = True,
+    progress_every: int = _COMMIT_EVERY,
+) -> dict[str, Any]:
+    """Walk the MASTERS (ALAC-Archival) and rebuild rows into *table*.
+
+    Never touches the existing `archive` table. Returns a summary dict.
+
+    It walked ALAC_Library, where finalize filed before 2026-09-25. Masters
+    live in ALAC-Archival now and ALAC_Library holds the Lossless edition,
+    so walking it would make every -18 LUFS copy a row and lose every
+    master -- the retired bake's drift, all at once.
+    """
+    lib = cfg.alac_archive
+    summary: dict[str, Any] = {
+        "scanned": 0,
+        "rebuilt": 0,
+        "hashed_from_archive": 0,
+        "errors": [],
+        "table": table,
+    }
+
+    if not lib.exists():
+        summary["errors"].append(f"library not found: {lib}")
+        return summary
+
+    # The review queues moved outside Libraries/ on 2026-09-20. Walk them
+    # explicitly, or a rebuild-from-disk silently loses every file awaiting
+    # Grey's judgement -- 1,831 of them at the time of the move.
+    scan_roots = [lib]
+    for review_dir in (cfg.dupes_review_dir, cfg.tribute_review_dir):
+        try:
+            review_dir.relative_to(lib)
+        except ValueError:
+            if review_dir.exists():
+                scan_roots.append(review_dir)
+
+    files = sorted(
+        p
+        for root in scan_roots
+        for p in root.rglob("*")
+        if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS and "_history" not in p.parts
+    )
+    if limit:
+        files = files[:limit]
+    summary["scanned"] = len(files)
+
+    create_rebuild_table(conn, table)
+
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+
+    for i, path in enumerate(files, 1):
+        row: dict[str, Any] = {}
+        try:
+            st = path.stat()
+            row.update(
+                file_path=str(path),
+                filename=path.name,
+                ext=path.suffix.lower(),
+                size_bytes=st.st_size,
+                last_modified=datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(
+                    timespec="seconds"
+                ),
+                status=_status_for(path, lib, cfg),
+                date_added=now,
+                last_seen=now,
+            )
+
+            try:
+                row.update(_extract_meta(_probe(path)))
+            except Exception as exc:
+                summary["errors"].append(f"{path.name}: probe failed: {exc}")
+
+            row.update(_read_all_tags(path, row.get("duration")))
+
+            if compute_hashes:
+                # Hash the PRISTINE archive copy when one exists, not the
+                # library copy.
+                #
+                # audio_hash is a PCM hash and is genuinely stable across
+                # re-tagging and container re-muxing (both verified). What it
+                # does not survive -- correctly -- is a deliberate change to
+                # the audio itself, and Phase 2A's build_alac_library.py bakes
+                # -18 LUFS into the ALAC-Library copy by re-encoding it.
+                # 91.8% of CATALOGUED rows carry lufs_baked_at.
+                #
+                # So hashing the library copy yields a value that is perfectly
+                # correct for that file and matches nothing in hash_index.db,
+                # silently breaking cross-batch dedup continuity on a rebuild.
+                # ALAC_Archive holds the un-baked original the stored hash was
+                # taken from -- verified 6/6 against the live DB. Prefer it.
+                archive_copy = _archive_twin(path, cfg)
+                hash_src = archive_copy if archive_copy is not None else path
+
+                ah, err = audio_hash_safe(hash_src)
+                if ah:
+                    row["audio_hash"] = ah
+                    # Only claim archive provenance once a hash actually came
+                    # back from it. The count is what tells an operator how
+                    # much of a rebuild's hash continuity is real, so it must
+                    # never include a file whose hashing failed.
+                    if archive_copy is not None:
+                        row["_hashed_from_archive"] = True
+                elif err:
+                    summary["errors"].append(f"{path.name}: audio_hash: {err}")
+                try:
+                    # full_hash describes the actual file at file_path, so it
+                    # is always taken from the library copy, never the twin.
+                    row["full_hash"] = file_hash(path)
+                except OSError as exc:
+                    summary["errors"].append(f"{path.name}: full_hash: {exc}")
+
+            # Live library content necessarily passed Finalize/Canonicalize.
+            # The timestamp is not recoverable, so record the file's own mtime
+            # rather than inventing "now" and implying it just happened.
+            if row["status"] == "CATALOGUED":
+                row["finalized_at"] = row["last_modified"]
+                row["canonicalized_at"] = row["last_modified"]
+
+            from_archive = row.pop("_hashed_from_archive", False)
+
+            usable = {k: v for k, v in row.items() if k in cols}
+            placeholders = ", ".join("?" for _ in usable)
+            conn.execute(
+                f"INSERT INTO {table} ({', '.join(usable)}) VALUES ({placeholders})",
+                list(usable.values()),
+            )
+            summary["rebuilt"] += 1
+            # Counted only now: a row that failed to insert is not part of the
+            # rebuild, so its provenance should not be claimed either.
+            if from_archive:
+                summary["hashed_from_archive"] += 1
+
+        except Exception as exc:  # one bad file must not end the rebuild
+            summary["errors"].append(f"{path}: {exc}")
+
+        if i % progress_every == 0:
+            conn.commit()
+            logger.info("rebuild-from-disk: %d/%d", i, len(files))
+
+    conn.commit()
+    return summary
+
+
+def promote(conn: sqlite3.Connection, *, table: str = "archive_rebuilt") -> str:
+    """Swap *table* into place as `archive`, keeping the old one aside.
+
+    The previous archive is RENAMED, never dropped. The whole reason
+    rebuild-db was dangerous is that it destroyed the old data before
+    knowing it could produce new data; nothing here repeats that.
+    Returns the name the old table was preserved under.
+    """
+    stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup = f"archive_pre_rebuild_{stamp}"
+
+    # SQLite carries a table's INDEXES along with an ALTER TABLE RENAME, so
+    # `idx_archive_hash/artist/status` follow the old table to the backup
+    # name and the promoted table has none. Worse, the names are then TAKEN,
+    # so db.py's `CREATE INDEX IF NOT EXISTS` on the next open finds them and
+    # silently no-ops -- the live archive is left permanently unindexed.
+    # Observed on the vault 2026-08-30: 1 index on archive, 4 on the backup.
+    #
+    # So capture the index DDL first, drop the indexes off the old table
+    # before renaming, and recreate them on the promoted one.
+    index_ddl = [
+        row[0]
+        for row in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='archive' "
+            "AND sql IS NOT NULL"
+        )
+    ]
+    index_names = [
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='archive' "
+            "AND sql IS NOT NULL"
+        )
+    ]
+    for name in index_names:
+        conn.execute(f"DROP INDEX IF EXISTS {name}")
+
+    conn.execute(f"ALTER TABLE archive RENAME TO {backup}")
+    conn.execute(f"ALTER TABLE {table} RENAME TO archive")
+    for ddl in index_ddl:
+        conn.execute(ddl)
+    conn.commit()
+    logger.info("promoted; restored %d index(es)", len(index_ddl))
+    return backup
