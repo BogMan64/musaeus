@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any
 
 from ..context import RunContext, StageResult
+from ..safe_save import write_beside
 from .base import BaseStage, StageError
 from .canonicalize import _append_tunemymusic_row
 
@@ -237,7 +238,7 @@ def read_existing_tags(path: Path) -> dict[str, float | str] | None:
 # ── Tag writers ───────────────────────────────────────────────────────────────
 
 
-def _write_tags_m4a(path: Path, features: dict[str, float | str]) -> bool:
+def _write_tags_m4a_in_place(path: Path, features: dict[str, float | str]) -> bool:
     try:
         from mutagen.mp4 import MP4, MP4FreeForm  # type: ignore[import-untyped]
 
@@ -260,7 +261,7 @@ def _write_tags_m4a(path: Path, features: dict[str, float | str]) -> bool:
         return False
 
 
-def _write_tags_flac(path: Path, features: dict[str, float | str]) -> bool:
+def _write_tags_flac_in_place(path: Path, features: dict[str, float | str]) -> bool:
     try:
         from mutagen.flac import FLAC  # type: ignore[import-untyped]
 
@@ -661,3 +662,21 @@ class BPMStage(BaseStage):
 
         ctx.record_stage(result)
         return result
+
+
+def _write_tags_m4a(path: Path, *args: Any, **kwargs: Any) -> bool:
+    """_write_tags_m4a_in_place, run on a copy beside the master that replaces it only
+    once written and checked (musaeus.safe_save.write_beside): saved in place,
+    a kill or full disk mid-save damaged the master (review of slice A)."""
+    return write_beside(
+        path, lambda tmp: _write_tags_m4a_in_place(tmp, *args, **kwargs), failed=False
+    )
+
+
+def _write_tags_flac(path: Path, *args: Any, **kwargs: Any) -> bool:
+    """_write_tags_flac_in_place, run on a copy beside the master that replaces it only
+    once written and checked (musaeus.safe_save.write_beside): saved in place,
+    a kill or full disk mid-save damaged the master (review of slice A)."""
+    return write_beside(
+        path, lambda tmp: _write_tags_flac_in_place(tmp, *args, **kwargs), failed=False
+    )

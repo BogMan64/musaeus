@@ -35,6 +35,7 @@ from typing import Any
 from ..artist_form import has_article, natural_form, sort_form
 from ..context import RunContext, StageResult
 from ..playlist_album import is_playlist_album
+from ..safe_save import write_beside
 from .base import NO_VERIFICATION, BaseStage, StageError, VerifyResult
 from .normalize import _move_article_to_suffix
 
@@ -278,11 +279,12 @@ def _read_tags(path: Path) -> dict[str, str]:
     return {}
 
 
-def _write_tags(path: Path, changes: dict[str, str]) -> bool:
-    """Write *changes* dict to file tags. Returns True on success."""
+def _write_tags_in_place(path: Path, changes: dict[str, str], ext: str | None = None) -> bool:
+    """Write *changes* dict to file tags. Returns True on success. *ext*: the
+    master's extension when *path* is a copy beside it (name.m4a.tagging)."""
     if not changes:
         return True
-    ext = path.suffix.lower()
+    ext = (ext or path.suffix).lower()
     try:
         if ext in (".m4a", ".alac", ".mp4"):
             from mutagen.mp4 import MP4  # type: ignore[import-untyped]
@@ -679,3 +681,16 @@ class TaggerStage(BaseStage):
 
         ctx.record_stage(result)
         return result
+
+
+def _write_tags(path: Path, changes: dict[str, str]) -> bool:
+    """_write_tags_in_place, run on a copy beside the master that replaces it only
+    once written and checked (musaeus.safe_save.write_beside): saved in place,
+    a kill or full disk mid-save damaged the master (review of slice A)."""
+    if not changes or path.suffix.lower() not in (".m4a", ".alac", ".mp4", ".flac", ".mp3"):
+        return _write_tags_in_place(path, changes)  # nothing to write: no copy
+    # The master's extension, not the copy's (.tagging): the format is chosen
+    # from it, and a copy read as "unsupported" was reported written.
+    return write_beside(
+        path, lambda tmp: _write_tags_in_place(tmp, changes, ext=path.suffix), failed=False
+    )
