@@ -33,6 +33,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from .safe_save import write_beside
+
 logger = logging.getLogger(__name__)
 
 # db column -> Picard tag name
@@ -95,7 +97,7 @@ def write_identity(path: Path, values: dict[str, str]) -> tuple[bool, str]:
     return False, f"unsupported container {suffix}"
 
 
-def _write_m4a(path: Path, values: dict[str, str]) -> tuple[bool, str]:
+def _write_m4a_in_place(path: Path, values: dict[str, str]) -> tuple[bool, str]:
     from mutagen.mp4 import MP4, MP4FreeForm  # type: ignore[import-untyped]
 
     audio: Any = MP4(str(path))
@@ -115,7 +117,7 @@ def _write_m4a(path: Path, values: dict[str, str]) -> tuple[bool, str]:
     return True, f"{len(values)} tag(s) verified on disk"
 
 
-def _write_flac(path: Path, values: dict[str, str]) -> tuple[bool, str]:
+def _write_flac_in_place(path: Path, values: dict[str, str]) -> tuple[bool, str]:
     from mutagen.flac import FLAC  # type: ignore[import-untyped]
 
     audio = FLAC(str(path))
@@ -155,3 +157,27 @@ def read_identity(path: Path) -> dict[str, str]:
     except Exception as exc:
         logger.debug("identity tag read failed %s: %s", path, exc)
     return out
+
+
+def _write_m4a(path: Path, *args: Any, **kwargs: Any) -> tuple[bool, str]:
+    """_write_m4a_in_place, run on a copy beside the master that replaces it only
+    once written and checked (musaeus.safe_save.write_beside): saved in place,
+    a kill or full disk mid-save damaged the master (review of slice A)."""
+    return write_beside(
+        path,
+        lambda tmp: _write_m4a_in_place(tmp, *args, **kwargs),
+        failed=(False, "the tagged copy could not replace the file; the file is as it was"),
+        ok=lambda r: r[0],
+    )
+
+
+def _write_flac(path: Path, *args: Any, **kwargs: Any) -> tuple[bool, str]:
+    """_write_flac_in_place, run on a copy beside the master that replaces it only
+    once written and checked (musaeus.safe_save.write_beside): saved in place,
+    a kill or full disk mid-save damaged the master (review of slice A)."""
+    return write_beside(
+        path,
+        lambda tmp: _write_flac_in_place(tmp, *args, **kwargs),
+        failed=(False, "the tagged copy could not replace the file; the file is as it was"),
+        ok=lambda r: r[0],
+    )
