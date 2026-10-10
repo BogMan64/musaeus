@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.write_master_loudness_tags import (  # noqa: E402
     RG_KEY,
     rewrite_note,
+    try_write_tags,
     wanted,
     write_tags,
 )
@@ -204,3 +205,13 @@ def test_a_tagged_copy_whose_audio_is_not_the_masters_never_replaces_it(tmp_path
     assert sorted(p.name for p in tmp_path.iterdir()) == ["song.m4a"]
     write_tags(str(master), {RG_KEY: b"+1.00 dB"}, audio_hash=audio_hash(master, strict=True))
     assert _tag(master, RG_KEY) == "+1.00 dB"
+
+
+@needs_ffmpeg
+def test_a_master_that_fails_its_check_is_reported_not_raised(tmp_path):
+    """Review of #140-#142, finding 13: one bad master stopped the whole run."""
+    master = _m4a(tmp_path / "song.m4a")
+    before = master.read_bytes()
+    why = try_write_tags(str(master), {RG_KEY: b"+1.00 dB"}, "not-this-audio")
+    assert why and "audio is not the master" in why
+    assert master.read_bytes() == before

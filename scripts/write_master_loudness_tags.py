@@ -138,7 +138,7 @@ def main() -> int:
     if args.ids:
         keep = {int(x) for x in args.ids.read_text().split()}
         rows = [r for r in rows if r["id"] in keep]
-    changed = right = no_loudness = not_master = 0
+    changed = right = no_loudness = not_master = refused = 0
     rewrite_bytes = 0
     for r in rows:
         fp = r["file_path"]
@@ -153,7 +153,14 @@ def main() -> int:
         if _text(audio.tags, R128_KEY) is None and r["lufs"] is None:
             no_loudness += 1
         if args.execute:
-            write_tags(fp, todo, r["audio_hash"])
+            # One master that fails its check is reported and left as it was;
+            # it stopped the whole run, at the same id on every rerun (review
+            # of #140-#142, finding 13).
+            why = try_write_tags(fp, todo, r["audio_hash"])
+            if why:
+                refused += 1
+                print(f"  NOT changed: {fp}: {why}", flush=True)
+                continue
         rewrite_bytes += os.path.getsize(fp)
         changed += 1
         if args.limit and changed >= args.limit:
@@ -164,7 +171,18 @@ def main() -> int:
     print(f"{verb} {changed:,}; already right {right:,}; no loudness known {no_loudness:,}; "
           f"not a master .m4a {not_master:,}")  # fmt: skip
     print(rewrite_note(changed, rewrite_bytes, executed=args.execute))
-    return 0
+    if refused:
+        print(f"{refused:,} master(s) NOT changed (each listed above, left as it was)")
+    return 1 if refused else 0
+
+
+def try_write_tags(fp: str, todo: dict[str, bytes], audio_hash: str | None) -> str | None:
+    """write_tags, with any failure returned as a reason instead of raised."""
+    try:
+        write_tags(fp, todo, audio_hash)
+    except Exception as exc:  # noqa: BLE001 -- one master, not the run
+        return f"{type(exc).__name__}: {exc}"
+    return None
 
 
 def rewrite_note(changed: int, rewrite_bytes: int, *, executed: bool) -> str:
