@@ -40,7 +40,10 @@ The stick sync ran on 2026-10-07 and the stick matches the car library (8,938 fi
    fixed in #135-#139: a person's choice now follows its file by catalogue row, and edition
    copies and masters are retagged beside themselves, never in place. Three reviews in a row
    found defects in the previous round's fixes; a `/code-review` of #135-#139 after the
-   Saturday reset is worth the usage.
+   Saturday reset is worth the usage. It was run on 2026-10-09 and found 15 (T-1 to
+   T-15). The saved keep/archive was the source of four rounds of findings: since #140,
+   `musaeus dedupe` carries a choice out at once (archived copies to review, kept copies
+   marked on their catalogue rows), Grey's choice on 2026-10-09.
 2. **Review the ~32,800 lines no review has read yet** (`cli.py`, `db.py`, `state/`,
    `canon/`, art, forge, doctor, the intake and enrichment stages), as five slices with a
    local `/code-review`, after Grey's weekly usage resets on Saturday. Include forge, tagger and

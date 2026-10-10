@@ -171,9 +171,9 @@ reviewer wrote "confirmed" when it ran something.
 | R-13 | The tag script copies each changed master whole: a full run writes about the archive's size | **#133**: the dry run says how much; the safe save stays. On 2026-10-09 only 3 masters needed a change (0.1 GB) |
 | R-14 | The two person statuses were spelled by hand in eight places | **fixed #131**: shared names |
 | S-1 | Review of #129-#134 (2026-10-09, Grey's `/code-review`; S-1 to S-5 reproduced): `musaeus dedupe` re-sorted a group after each choice without showing it again, so the next number acted on another file | **fixed #135**: the order shown is kept, and the group is shown again |
-| S-2 | A kept copy refiled since the choice read as gone; the keep rule kept the archived copy and both choices were overwritten | **fixed #136**: `duplicates.archive_id` records the row a choice was made on; the resolver follows it (same recording) |
-| S-3 | Source 2 matched keeps by path: a refiled kept master was moved with a new identical arrival | **fixed #136**: kept files are catalogue rows |
-| S-4 | Keeps were counted by row: one file kept in two groups shielded an identical arrival | **fixed #136**: counted as files |
+| S-2 | A kept copy refiled since the choice read as gone; the keep rule kept the archived copy and both choices were overwritten | **fixed #136**: `duplicates.archive_id` records the row a choice was made on; the resolver follows it (same recording). Not complete: sentinel's twin rows and keeps across groups still misapplied it (review of #135-#139); the saved choice was removed in #140 |
+| S-3 | Source 2 matched keeps by path: a refiled kept master was moved with a new identical arrival | **fixed #136**: kept files are catalogue rows. Not complete: sentinel's twin rows and keeps across groups still misapplied it (review of #135-#139); the saved choice was removed in #140 |
+| S-4 | Keeps were counted by row: one file kept in two groups shielded an identical arrival | **fixed #136**: counted as files. Not complete: sentinel's twin rows and keeps across groups still misapplied it (review of #135-#139); the saved choice was removed in #140 |
 | S-5 | A stopped retag whose master moved left the unparseable copy behind | **fixed #137**: no journal; a copy is retagged beside itself |
 | S-6 | A RETAGGING record of an unselected master was never acted on | **fixed #137** (journal removed; none was ever written) |
 | S-7 | The done-record was committed before the save reached the disk | **fixed #137**: fsync and rename, then the record |
@@ -185,6 +185,21 @@ reviewer wrote "confirmed" when it ran something.
 | S-13 | README, the CLI usage and a docstring still described the old dedupe auto | **fixed #139** |
 | S-14 | Two maps for one rule ("replace only if unchanged since the plan"); a duplicate unlink | **fixed #137**: one map, one branch |
 | S-15 | The in-place save was not verified, and each caller had its own safe-save | **fixed #137**: `musaeus/safe_save.change_beside` (copy, change, check, fsync, rename), used by the edition build and the tag script |
+| T-1 | Review of #135-#139 (2026-10-09, `/code-review`; five resolver findings verified with sentinel's rows): a keep in one group did not hold in another sharing the file | **fixed #140**: the console shows groups that share a file as one set; a kept copy is marked on its catalogue row and never moved |
+| T-2 | Source 1 and Source 2 disagreed on which file a keep named | **fixed #140** (no saved choices) |
+| T-3 | Following a refiled choice made a twin row beside sentinel's pending row | **fixed #140** (no saved choices) |
+| T-4 | A followed keep's twin kept its group open for ever (regression from #136) | **fixed #140** |
+| T-5 | Any keep that could not be found blocked its recording in Source 2 for good (regression from #136) | **fixed #140** |
+| T-6 | `change_beside` made its copy outside the try: a copy cut short stayed; nothing swept the masters' `.tagging` copies | **fixed #141** |
+| T-7 | The masters' tagged copy was renamed in unchecked | **fixed #141**: its tags read back and its audio hash is the master's |
+| T-8 | The transcode's audio index fell back to 0, not None | **fixed #141** |
+| T-9 | 2 s / 2 % let a cut export through | **fixed #141**: `REENCODE_TOLERANCE_SEC`; ten real exports measured within 0.001 s |
+| T-10 | `musaeus dedupe --report` counted differently from `musaeus status` | **fixed #140**: one condition, plain statuses |
+| T-11 | The console ranked and showed members differently from the resolver | **fixed #140**: the console uses the resolver's members and order |
+| T-12 | The clean-export test never ran the length check | **fixed #141** |
+| T-13 | The dry run's retag size undercounts copies written twice | left as is: a floor, stated as "about" |
+| T-14 | An extra ffprobe per export | **fixed #141**: the length from the probe already made |
+| T-15 | A dead comment in the resolver | **fixed #140** |
 
 ### Open, in the order I'd take them
 
