@@ -769,3 +769,18 @@ def test_a_build_whose_copies_have_gone_missing_stops_and_asks(cfg, monkeypatch,
     args = cli._build_parser().parse_args(["edition-build", "car", "--rebuild-missing"])
     assert cli._cmd_edition_build(args) == 0
     assert len(list(cfg.car_library.rglob("*.m4a"))) == 2
+
+
+def test_copies_stepped_aside_by_a_stopped_move_do_not_look_moved(cfg):
+    """Review of #152: an interrupted mass refile leaves copies under their
+    temporary names, which the next build puts back; they are not missing."""
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    _build(cfg, eb.CAR_KIND)
+    ledger = open_ledger(ledger_path(cfg))
+    try:
+        for h, c in copies(ledger, "car").items():
+            out = Path(c.output_path)
+            out.rename(out.with_name(f"{out.name}.{h[:12]}{eb.TMP_SUFFIX}"))
+        assert eb.missing_copies(ledger, eb.CAR_KIND) == (0, 1)
+    finally:
+        ledger.close()

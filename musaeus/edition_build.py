@@ -1150,9 +1150,18 @@ MOVED_SHARE = 0.10
 
 
 def missing_copies(ledger: sqlite3.Connection, kind: Kind) -> tuple[int, int]:
-    """(copies the ledger records that are not on disk, copies it records)."""
+    """(copies the ledger records that are not on disk, copies it records).
+
+    A copy a stopped move left stepped aside (<name>.<hash12><TMP_SUFFIX>) is
+    not missing: the build puts it back (#107), and counting it made an
+    interrupted mass refile look like a moved folder (review of #152)."""
     recorded = copies(ledger, kind.name)
-    missing = sum(1 for c in recorded.values() if not Path(c.output_path).exists())
+    missing = 0
+    for h, c in recorded.items():
+        out = Path(c.output_path)
+        if out.exists() or out.with_name(f"{out.name}.{h[:12]}{TMP_SUFFIX}").exists():
+            continue
+        missing += 1
     return missing, len(recorded)
 
 
