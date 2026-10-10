@@ -147,3 +147,70 @@ def test_embed_art_preserves_original_when_ffmpeg_fails(tmp_path: Path) -> None:
     assert _embed_art(str(audio), not_an_image) is False
     assert audio.read_bytes() == before, "original audio was modified by a failed embed"
     assert [p.name for p in tmp_path.iterdir() if ".artmp" in p.name] == []
+
+
+# ── Review of slice A (#143), findings 1 and 2, both verified by running: the
+# embed remuxed the whole master through ffmpeg, which read the terminal (a
+# "q" typed during a run replaced a 10 MB master with a 258-byte file) and
+# dropped every freeform tag on the way. Now mutagen adds the cover to a copy
+# beside the file (musaeus.safe_save), and the copy replaces it once checked. ──
+
+
+@needs_ffmpeg
+def test_embedding_a_cover_keeps_every_other_tag(tmp_path: Path) -> None:
+    from mutagen.mp4 import MP4, MP4FreeForm
+
+    audio = tmp_path / "track.m4a"
+    art = tmp_path / "cover.jpg"
+    _make_alac(audio)
+    _make_jpeg(art)
+    f = MP4(audio)
+    f.tags["----:com.apple.iTunes:R128_TRACK_GAIN"] = [MP4FreeForm(b"-1280")]
+    f.tags["----:com.apple.iTunes:MusicBrainz Track Id"] = [MP4FreeForm(b"abc-123")]
+    f.tags["tmpo"] = [120]
+    f.tags["soar"] = ["Stones, The"]
+    f.save()
+    before = dict(MP4(audio).tags)
+
+    assert _embed_art(str(audio), art) is True
+
+    after = MP4(audio).tags
+    assert after.get("covr"), "no cover"
+    for key, value in before.items():
+        assert after.get(key) == value, f"{key} lost or changed by the embed"
+
+
+@needs_ffmpeg
+def test_embedding_never_runs_ffmpeg_on_the_master(tmp_path: Path, monkeypatch) -> None:
+    """No subprocess: nothing can read the terminal, and nothing remuxes."""
+    import musaeus.stages.albumart as albumart
+
+    audio = tmp_path / "track.m4a"
+    art = tmp_path / "cover.jpg"
+    _make_alac(audio)
+    _make_jpeg(art)
+
+    def no_subprocess(*args, **kwargs):
+        raise AssertionError("ffmpeg was run on the master")
+
+    monkeypatch.setattr(albumart.subprocess, "run", no_subprocess)
+    assert _embed_art(str(audio), art) is True
+
+
+@needs_ffmpeg
+def test_a_save_that_fails_leaves_the_master_as_it_was(tmp_path: Path, monkeypatch) -> None:
+    from mutagen.mp4 import MP4
+
+    audio = tmp_path / "track.m4a"
+    art = tmp_path / "cover.jpg"
+    _make_alac(audio)
+    _make_jpeg(art)
+    before = audio.read_bytes()
+
+    def cut_short(self, *args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(MP4, "save", cut_short)
+    assert _embed_art(str(audio), art) is False
+    assert audio.read_bytes() == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["cover.jpg", "track.m4a"]
