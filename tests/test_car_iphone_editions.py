@@ -745,3 +745,27 @@ def test_an_odd_temp_folder_name_does_not_break_the_encode(tmp_path, monkeypatch
         check=True,
     )  # fmt: skip
     edition_bake.bake_aac(master, tmp_path / "c.m4a", noise=True)
+
+
+def test_a_build_whose_copies_have_gone_missing_stops_and_asks(cfg, monkeypatch, capsys):
+    """2026-10-10: the editions were moved out of the vault by hand; the next car
+    build planned to make all 8,822 copies again (about 24 h)."""
+    import shutil as _shutil
+
+    from musaeus import cli
+
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Brown Sugar.m4a", "h2")
+    _build(cfg, eb.CAR_KIND)
+    moved_to = cfg.vault_root / "moved_by_hand"
+    _shutil.move(str(cfg.car_library), str(moved_to))
+    monkeypatch.setattr(cli, "get_config", lambda: cfg)
+    monkeypatch.setenv("MUSAEUS_NO_SLEEP_INHIBIT", "1")
+    monkeypatch.setattr(eb, "MOVED_FLOOR", 1, raising=False)
+    args = cli._build_parser().parse_args(["edition-build", "car"])
+    assert cli._cmd_edition_build(args) == 1
+    assert "Was the folder moved?" in capsys.readouterr().err
+    assert not cfg.car_library.exists() or not list(cfg.car_library.rglob("*.m4a")), "it rebuilt"
+    args = cli._build_parser().parse_args(["edition-build", "car", "--rebuild-missing"])
+    assert cli._cmd_edition_build(args) == 0
+    assert len(list(cfg.car_library.rglob("*.m4a"))) == 2
