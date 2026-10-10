@@ -1,0 +1,2642 @@
+#!/usr/bin/env python3
+"""
+MUSAEUS — CLI entry point.
+
+Usage:
+    musaeus [command] [options]
+
+Pipeline commands:
+    preflight        Environment checks (commands, packages, disk, DB) — report-only
+    run              Run the default pipeline (Preflight → Ingest → Sentinel → Scholar)
+    run --full       Run the full pipeline  (+ Normalize → Forge → Tagger)
+    run --maintain   Run the maintenance pipeline (Ghost→Health→Normalize→Enrich→MBEnrich→NearDupe)
+    dry-run          Preview the default pipeline without any mutations
+    ingest           Run Ingest stage only
+    sentinel         Run Sentinel stage only
+    scholar          Run Scholar stage only
+    normalize        Article-suffix fix + ALL-CAPS repair on archived metadata
+    canonicalize     Lossless→ALAC / sub-lossless→AAC, both as .m4a (Act 3)
+    finalize         Move canonicalized files INBOX → ALAC-Library (Act 3)
+    audit            Physical-presence gate before DB snapshot+wipe (Act 3)
+    dupe-resolver    Physically relocate duplicate losers to review folder (Act 2)
+    cross-dupe       Flag files already in ALAC-Library from a prior batch (Act 2)
+    deep-scan        Decode-verify masters for silent truncation (idle-only)
+    edition          Preview what would go into an edition (lossless/car/
+                     iphone) with an optional --budget-gb; selection only,
+                     encodes nothing
+    edition-build    Build an edition from the masters: lossless (-18 LUFS ALAC),
+                     car (-14 AAC, noise under), iphone (-14 AAC, --budget-gb);
+                     rows untouched (--dry-run)
+    forge            Measure EBU R128 loudness + write ReplayGain tags
+    tagger           Write normalised DB metadata back to file tags
+    auditor          Pre-forge LUFS audit (flags out-of-window files)
+    curator          Build car-library export (--export-root, or set
+                     MUSAEUS_CURATOR_EXPORT_ROOT / exports.curator.root)
+    ghost            Sweep for archive entries missing from disk
+    health           Run library consistency + quality checks
+    bpm              Extract + tag BPM/key/energy/danceability (requires 'bpm' extra)
+    tribute-quarantine  Detect + quarantine tribute-band/karaoke/meditation content
+    various-artists-fix Resolve real artist for 'Various Artists' tagged rows
+    bitrot           Verify ALAC_Archive against a baseline (silent corruption)
+    enrich           Last.fm genre enrichment for tracks with missing genre
+    mb-enrich        MusicBrainz artist + release MBID enrichment
+    original-year    recover each recording's first release year from MusicBrainz
+    neardupe         Metadata-based near-duplicate detection
+    acousticid       Acoustic fingerprint dedup via fpcalc + AcousticID API
+    transcode        Lossless → 256k AAC export via ffmpeg
+    report           Dashboard: library stats, genre/bitrate breakdown
+    convergence      Did the last pass change less than the one before?
+    upgrade-check    Find lossy tracks where a lossless version exists
+
+Review commands:
+    dedupe           Interactive duplicate review console
+    health-report    Show validation issues summary
+    status           Show library status
+    runs             List recent pipeline runs
+
+Options:
+    --dry-run        Preview mode (no mutations)
+    --verbose / -v   Enable DEBUG logging
+    --force          Re-process already-done files (forge, curator, transcode)
+    --full           Include Forge + Tagger in `run` pipeline
+    --maintain       Run Ghost + Health + Enrich + NearDupe in `run`
+    --auto           Leave every duplicate group to the keep rule (dedupe command)
+    --export-root    Target path for curator/transcode export. Overrides
+                     MUSAEUS_CURATOR_EXPORT_ROOT for one invocation. Must be an
+                     existing, writable directory outside ALAC-Library; it is
+                     never created for you.
+    --noise          Noise profile for curator: clean|pink|brown|white|dual
+    --max-files      Cap files processed per run (auditor)
+    --safety-gate    Run the P0 preflight/authority gate before executing
+                     (also MUSAEUS_P0_SAFETY_GATE=1). OFF by default. It gates
+                     AUTHORITY only -- stages still write directly, so a run is
+                     not yet covered by checkpoint or rollback.
+
+Examples:
+    musaeus run
+    musaeus run --full
+    musaeus run --maintain
+    musaeus run --enrich
+    musaeus forge --dry-run
+    musaeus tagger
+    musaeus curator --export-root /mnt/USB --noise dual
+    musaeus ghost
+    musaeus health
+    musaeus normalize --dry-run
+    musaeus auditor --dry-run
+    musaeus enrich --dry-run
+    musaeus mb-enrich --dry-run
+    musaeus neardupe --dry-run
+    musaeus acousticid --dry-run
+    musaeus transcode --dry-run
+    musaeus transcode --export-root /mnt/USB/AAC
+    musaeus report
+    musaeus report --json
+    musaeus convergence
+    musaeus convergence --runs 10
+    musaeus convergence --oscillations
+    musaeus upgrade-check
+    musaeus upgrade-check --csv
+    musaeus dedupe
+    musaeus dedupe --auto
+    musaeus health-report
+    musaeus status
+"""
+
+from __future__ import annotations
+
+import argparse
+import atexit
+import contextlib
+import json
+import logging
+import sys
+import traceback
+from pathlib import Path
+
+from . import __version__
+from .config import get_config
+from .context import RunContext, elision, head_with_remainder
+from .db import open_db, snapshot_db_before_wipe
+from .handoff import act_of, write_act_handoff, write_handoff_doc
+from .run_records import RunLog, count_problems, filed_this_run, write_problems_tsv
+from .run_records import prune_all as prune_run_records
+from .run_records import publish as publish_run_records
+from .stages import (
+    ARCHIVE_PIPELINE,
+    DEFAULT_PIPELINE,
+    ENRICH_PIPELINE,
+    FULL_PIPELINE,
+    MAINTAIN_PIPELINE,
+    AcousticIDStage,
+    AlbumArtStage,
+    AuditorStage,
+    AuditStage,
+    CanonicalizeStage,
+    CrossDupeStage,
+    CuratorStage,
+    DupeResolverStage,
+    EnrichStage,
+    FinalizeStage,
+    ForgeStage,
+    GenreValidateStage,
+    GhostStage,
+    HealthStage,
+    IngestStage,
+    IntegrityStage,
+    MBEnrichStage,
+    NearDupeStage,
+    NormalizeStage,
+    OrganizeStage,
+    OriginalYearStage,
+    PlaylistStage,
+    PreflightStage,
+    SanitizeStage,
+    ScholarStage,
+    SentinelStage,
+    SpellCheckStage,
+    TaggerStage,
+    TranscodeStage,
+)
+from .stages.base import BaseStage
+
+# ── Logging setup ─────────────────────────────────────────────────────────────
+
+logger = logging.getLogger(__name__)
+
+
+def _setup_logging(verbose: bool) -> None:
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+
+# ── Module pinning ────────────────────────────────────────────────────────────
+
+
+def _pin_modules() -> tuple[int, list[tuple[str, str]]]:
+    """Import every musaeus module now, so a mid-run edit cannot reach this process.
+
+    **A long-running process runs the code it imported at startup** — except
+    where it does not, and that exception is the hazard this closes. Python
+    caches modules in ``sys.modules``, so a *deferred* import inside a function
+    body is resolved the first time that function is called, which may be hours
+    after launch. The module then arrives fresh from disk and binds against
+    dependencies loaded at startup. That is a mixture of two versions, not a
+    rollback to either.
+
+    It has already cost a day's work. On 2026-09-05 ``cli.py`` imported
+    ``handoff.py`` inside a function, and a 42-hour-old process loaded *fresh*
+    handoff code against a *stale* ``musaeus.context``; the handoff document
+    was lost. Eager-importing ``handoff`` fixed that one call site, and left
+    every other deferred import as the same trap unsprung.
+
+    Importing everything up front makes a later ``.py`` edit inert for this
+    process, because Python never re-reads a module it already holds. That is
+    the whole mechanism.
+
+    This is belt-and-braces with ``musaeus_pipeline_guard.sh``, deliberately.
+    The hook warns a human who is about to edit during a run; the pin makes the
+    edit harmless if they do it anyway. A warning that depends on somebody
+    reading it is not a guarantee.
+
+    Measured 2026-09-05: 97 modules, 0.15 s, zero failures.
+
+    Returns (modules_imported, [(module_name, error), ...]).
+    """
+    import importlib
+    import pkgutil
+
+    import musaeus
+
+    imported = 0
+    failed: list[tuple[str, str]] = []
+
+    for mi in pkgutil.walk_packages(musaeus.__path__, "musaeus."):
+        if mi.name.rsplit(".", 1)[-1] == "__main__":
+            # Importing __main__ RUNS the CLI: it opens the interactive console
+            # and blocks forever. Verified, not guessed — and it is also the
+            # proof that a module in this package can carry import-time side
+            # effects, which is why the handler below never aborts.
+            continue
+        try:
+            importlib.import_module(mi.name)
+            imported += 1
+        except Exception as exc:
+            # Report and continue. A module that cannot be imported is a real
+            # problem, but it is not a reason to take down every run of every
+            # command — and a pin that can refuse to start is worse than the
+            # staleness it prevents.
+            failed.append((mi.name, f"{type(exc).__name__}: {exc}"))
+
+    return imported, failed
+
+
+# ── Resume state ──────────────────────────────────────────────────────────────
+_RESUME_FILE = Path.home() / ".config" / "musaeus" / "resume_state.json"
+
+
+def _save_resume(completed: list[str], all_stages: list[str]) -> None:
+    _RESUME_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _RESUME_FILE.write_text(
+        json.dumps({"completed": completed, "all_stages": all_stages}, indent=2)
+    )
+
+
+def _load_resume(all_stages: list[str]) -> list[str] | None:
+    if not _RESUME_FILE.exists():
+        return None
+    try:
+        state = json.loads(_RESUME_FILE.read_text())
+        if state.get("all_stages") != all_stages:
+            return None
+        completed = state.get("completed", [])
+        return completed if completed else None
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _clear_resume() -> None:
+    with contextlib.suppress(OSError):
+        _RESUME_FILE.unlink(missing_ok=True)
+
+
+def _resume_would_skip_new_work(completed: list[str], inbox: Path) -> bool:
+    """True when resuming would silently ignore files waiting in the INBOX.
+
+    The marker survives a FAILED run, not just an interrupted one. On
+    2026-09-20 a run ended `sentinel: FAILED` on a single undecodable file,
+    leaving "28 stages done" behind. The next run found it, saw no TTY,
+    auto-resumed, printed
+
+        ⏭  IngestStage (already done)
+
+    and walked past **2,061 freshly staged files**. It reported success and
+    did nothing. Nothing errored, nothing was lost, and nothing was ingested;
+    the only symptom was a library that did not grow.
+
+    Auto-resume is right for its purpose -- an interrupted overnight run
+    should not restart from zero. It is wrong the moment new work has arrived
+    since, and INBOX holding audio is exactly that signal: the inbox exists
+    to be drained by IngestStage, so a resume that skips ingest while the
+    inbox is occupied cannot be what anyone meant.
+    """
+    if "IngestStage" not in completed:
+        return False
+    try:
+        return any(inbox.rglob("*.m4a"))
+    except OSError:
+        return False
+
+
+# ── Pipeline runner ───────────────────────────────────────────────────────────
+
+# P0-02 (musaeus-consumer-readiness spec): temporary, blunt, fail-closed
+# guard for --dry-run / preview.
+#
+# This is a compatibility patch, NOT the real preview fix -- the real fix
+# (a typed RunMode.PREVIEW with a pure in-memory planner, MCR-001/DR-01) is
+# P0-04/P0-05 and does not exist in this repository yet. Until it does,
+# dry_run=True is REJECTED outright rather than allowed to keep doing the
+# two confirmed-unsafe things below (see tests/test_p0_01_characterization.py
+# for the live reproduction each of these is based on):
+#
+#   1. Every dry_run=True call into _run_pipeline() unconditionally runs
+#      cfg.ensure_dirs() (creates the real vault directory skeleton) and
+#      RunContext.new()/record_stage() (creates/writes the real SQLite DB
+#      and commits RUN_START/STAGE_COMPLETE/RUN_END events) before any
+#      stage executes. None of that is gated behind dry_run at this layer
+#      -- only each individual stage's own archive/duplicates/
+#      validation_issues writes are.
+#   2. EnrichStage/MBEnrichStage/AcousticIDStage make their Last.fm/
+#      MusicBrainz/AcoustID network calls unconditionally inside their
+#      shared _enrich()/_run() methods -- only the DB write *after* the
+#      network call is gated behind dry_run, not the network call itself.
+#
+# This guard fires before get_config()/cfg.ensure_dirs()/open_db() -- i.e.
+# before ANY configuration, directory, database, or network initialisation
+# -- so a rejected invocation touches nothing. It applies uniformly to
+# every command that routes through _run_pipeline() (see tasks.md's P0-02
+# completion evidence for the exact command list); it does not apply when
+# dry_run is False, and it does not touch the separate rebuild-db/review/
+# canon-review commands or musaeus/console.py's own interactive pipeline
+# runner, none of which call this function.
+_NETWORK_STAGES: frozenset[type[BaseStage]] = frozenset(
+    {EnrichStage, MBEnrichStage, AcousticIDStage, OriginalYearStage}
+)
+
+_DRY_RUN_REASON_DIRS_DB = (
+    "dry-run unconditionally creates real directories (cfg.ensure_dirs()) and "
+    "writes real database/event records (RunContext.new()/record_stage()) "
+    "before any stage runs -- this is not a safe, side-effect-free preview today."
+)
+_DRY_RUN_REASON_NETWORK = (
+    "{stages} make live network call(s) unconditionally even under --dry-run "
+    "-- only the database write afterwards is currently skipped, not the "
+    "network request itself."
+)
+
+
+def _dry_run_guard_message(reasons: list[str]) -> str:
+    reason_lines = "\n".join(f"  Reason: {r}" for r in reasons)
+    return (
+        "ERROR: --dry-run / preview is temporarily disabled -- this command "
+        "was refused and did not run.\n"
+        f"{reason_lines}\n"
+        "  This is a temporary compatibility patch (musaeus-consumer-readiness "
+        "spec, task P0-02), not the real preview fix -- see tasks P0-04/P0-05.\n"
+        "  Run the same command without --dry-run for a real run, or wait for "
+        "the safety fix that restores a truthful preview mode."
+    )
+
+
+def _reject_unsafe_dry_run(stages: list[type[BaseStage]], dry_run: bool) -> int | None:
+    """
+    P0-02 fail-closed guard. Returns exit code 2 if *dry_run* must be
+    rejected, or None if the caller should proceed normally.
+
+    Must be called before get_config()/cfg.ensure_dirs()/open_db() in
+    _run_pipeline() -- see the module comment above for why.
+    """
+    if not dry_run:
+        return None
+
+    reasons = [_DRY_RUN_REASON_DIRS_DB]
+    offending_network = [cls.__name__ for cls in stages if cls in _NETWORK_STAGES]
+    if offending_network:
+        reasons.append(_DRY_RUN_REASON_NETWORK.format(stages=", ".join(offending_network)))
+
+    print(_dry_run_guard_message(reasons), file=sys.stderr)
+    return 2
+
+
+def _run_pipeline(
+    stages: list[type[BaseStage]],
+    dry_run: bool,
+    stash: dict | None = None,
+) -> int:
+    """Run a sequence of stages, holding the masters lock for a real run.
+
+    A pipeline can change masters, so it holds the lock exclusively: no build,
+    backup, repair or second run reads or changes them meanwhile (review of
+    #87, findings 9 and 10). A dry run changes nothing and takes no lock.
+    Returns EXIT_BUSY (75) when another job holds it.
+    """
+    if dry_run:
+        return _run_pipeline_inner(stages, dry_run, stash)
+    try:
+        runs_root = get_config().runs_root
+    except ValueError:
+        return _run_pipeline_inner(stages, dry_run, stash)  # it reports the error
+    from .masters_lock import EXIT_BUSY, MastersBusy, masters_lock
+
+    names = ", ".join(cls.__name__ for cls in stages)
+    try:
+        with masters_lock(runs_root, exclusive=True, what=f"musaeus pipeline ({names})"):
+            return _run_pipeline_inner(stages, dry_run, stash)
+    except MastersBusy as exc:
+        print(f"  NOT RUN: {exc}", file=sys.stderr)
+        return EXIT_BUSY
+
+
+def _run_pipeline_inner(
+    stages: list[type[BaseStage]],
+    dry_run: bool,
+    stash: dict | None = None,
+) -> int:
+    """
+    Run a sequence of stages.
+    stash: optional dict of key→value to pre-load into ctx before running.
+    Returns 0 on success, 1 on any stage failure, 2 if dry_run is rejected
+    by the P0-02 fail-closed guard (see _reject_unsafe_dry_run above).
+    """
+    if dry_run:
+        # P0-02's blanket refusal is lifted here, and only here, because the
+        # condition the spec set for lifting it is now met: P0-04 (typed
+        # RunMode + pure planner) and P0-05 (zero-side-effect and
+        # transport-denial evidence) are both implemented and fixture-proven.
+        #
+        # --dry-run no longer means "execute with a flag set", which is what
+        # made it unsafe -- it routes to the planner, which never calls
+        # ensure_dirs(), never opens a writable connection, and never
+        # instantiates a stage. _reject_unsafe_dry_run is kept for any caller
+        # that still reaches it directly.
+        from .planner import RunMode, build_plan
+
+        cfg = get_config()
+        plan = build_plan(cfg, list(stages), RunMode.PREVIEW)
+        print("\n  MUSAEUS — plan (--dry-run)\n")
+        print(plan.render())
+        print()
+        return 0
+
+    # Execution has network authority; preview never does. The gateway
+    # defaults to LOCAL_ONLY so that anything which forgets to declare its
+    # mode is safe by omission rather than dangerous by omission -- which
+    # means the EXECUTE path has to grant it explicitly, here, at the one
+    # place a real run begins.
+    from .network_policy import NetworkPolicy, set_policy
+
+    set_policy(NetworkPolicy.ALLOWED)
+
+    try:
+        cfg = get_config()
+        cfg.ensure_dirs()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    # P0-11 execution-authority gate. OFF unless MUSAEUS_P0_SAFETY_GATE=1
+    # or --safety-gate: enabling it by default would make every run stop
+    # to ask, and would correctly make the unattended overnight script do
+    # nothing every night. Both are the right behaviours and both need to
+    # be adopted deliberately, not arrive with a merge.
+    from .cli_gate import enforce_execution_gate
+
+    gate_exit = enforce_execution_gate(cfg, dry_run=dry_run)
+    if gate_exit is not None:
+        return gate_exit
+
+    conn = open_db(cfg.db_path)
+    ctx = RunContext.new(cfg, conn, dry_run=dry_run)
+    # The run keeps its own log from here on (RUNS/LOGS/run_<run_id>.log) --
+    # see run_records.py. Not a finally around the rest of the run: this
+    # function has several returns, and each closes it; atexit is the net
+    # for an exception, whose log is exactly the one worth keeping.
+    run_log = RunLog(cfg.runs_root, ctx.run_id)
+    atexit.register(run_log.close)
+    if stash:
+        for k, v in stash.items():
+            ctx.set(k, v)
+
+    mode = " [DRY RUN]" if dry_run else ""
+    print(f"\nMusaeus pipeline{mode}  —  run_id={ctx.run_id}")
+
+    # Show API key status hint
+    missing_keys = []
+    if not cfg.lastfm_api_key:
+        missing_keys.append("Last.fm")
+    if not cfg.acousticid_api_key:
+        missing_keys.append("AcousticID")
+    if missing_keys:
+        print(f"  ⚠ Missing API keys: {', '.join(missing_keys)} (run 'musaeus setup' to configure)")
+    print()
+
+    stage_names = [cls.__name__ for cls in stages]
+    completed_names: list[str] = []
+
+    # Check for resume
+    resume_from = _load_resume(stage_names)
+    if resume_from and _resume_would_skip_new_work(resume_from, cfg.inbox):
+        n = sum(1 for _ in cfg.inbox.rglob("*.m4a"))
+        print(f"  ⚠  Incomplete run detected, but {n:,} file(s) are waiting in the INBOX.")
+        print("     Resuming would skip IngestStage and leave them unprocessed.")
+        print("     Starting a fresh run instead.")
+        _clear_resume()
+        resume_from = None
+    if resume_from:
+        print(f"  ⚠  Incomplete run detected — {len(resume_from)} stage(s) done.")
+        if not sys.stdin.isatty():
+            # No TTY (cron, background process, piped/redirected shell) —
+            # a bare input() here would block forever with no way to answer.
+            # Auto-resume is the safe default: it's exactly what the [Y]
+            # default in the interactive prompt below would do anyway.
+            print("  ⚠  No TTY detected — auto-resuming non-interactively.")
+            completed_names = list(resume_from)
+        else:
+            try:
+                answer = input("  Resume from next stage? [Y/n]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                run_log.close()
+                return 0
+            if answer == "n":
+                _clear_resume()
+            else:
+                completed_names = list(resume_from)
+
+    exit_code = 0
+    for idx, cls in enumerate(stages):
+        stage_name = cls.__name__
+        if stage_name in completed_names:
+            print(f"  ⏭  {stage_name} (already done)")
+            continue
+
+        stage = cls()
+        try:
+            result = stage.execute(ctx)
+        except KeyboardInterrupt:
+            print(f"\n\n  ⚠  Interrupted during {stage_name}.")
+            print("  Progress saved — run 'musaeus run' again to resume.\n")
+            _save_resume(completed_names, stage_names)
+            # A run cut short after Finalize has still added tracks, and its
+            # records are copied beside the library at the END of a run --
+            # which this one never reaches. 2026-09-25: Act 3 was interrupted
+            # in Forge after filing 178 tracks, and the run that finished the
+            # job filed none itself, so neither was kept (Grey's rule of
+            # 2026-09-24). Bookkeeping: it may not change the exit code.
+            #
+            # A second Ctrl-C while this copies is caught too: it must not
+            # leave the log open and the run unfinished. The keep-10 rule
+            # applies to interrupted runs as to any other.
+            try:
+                added = filed_this_run(ctx)
+                if added:
+                    run_log.close()
+                    dest = publish_run_records(
+                        cfg.libraries,
+                        cfg.runs_root,
+                        ctx.run_id,
+                        [run_log.path, write_problems_tsv(ctx)],
+                    )
+                    print(f"  Run records ({added} track(s) added to the library): {dest}")
+                    prune_run_records(cfg.runs_root, cfg.libraries, cfg.meta_dir)
+            except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001 - see comment above
+                print(
+                    f"  WARNING: run records not published: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+            run_log.close()
+            return 1
+
+        status = "✓" if result.success else "✗"
+        print(f"  {status}  {result.summarise()}")
+        head_notes, tail_notes, more_notes = head_with_remainder(result.notes)
+        for note in head_notes:
+            print(f"       {note}")
+        if more_notes:
+            print(f"       {elision(more_notes)}")
+        # The tail carries the stage's summary -- dupe_resolver's manifest and
+        # restore-script paths land here, and they are the only undo record.
+        for note in tail_notes:
+            print(f"       {note}")
+        # Bounded for the same reason handoff.py bounds its own render:
+        # one entry per file makes this as long as the batch. Every entry
+        # is still in the run log -- the stages log each one themselves.
+        head_errs, tail_errs, more_errors = head_with_remainder(result.errors)
+        for err in head_errs:
+            print(f"       ERROR: {err}", file=sys.stderr)
+        if more_errors:
+            print(
+                f"       {elision(more_errors, suffix='(full list in the run log)')}",
+                file=sys.stderr,
+            )
+        for err in tail_errs:
+            print(f"       ERROR: {err}", file=sys.stderr)
+
+        # Only a genuinely successful stage counts as "done" for resume
+        # purposes (2026-08-18 fix). Previously this ran unconditionally,
+        # so a stage that completed but reported failure (result.success
+        # is False -- no exception, just an internal error) got marked
+        # "completed" anyway: a resumed run would silently skip it instead
+        # of retrying it. The pipeline still continues to the next stage
+        # either way (unchanged -- matches musaeus_overnight.sh's own
+        # "each top-level stage runs independently" philosophy); only
+        # what counts as resumable-skip changes.
+        if result.success:
+            completed_names.append(stage_name)
+            _save_resume(completed_names, stage_names)
+        else:
+            exit_code = 1
+
+        # An Act's report, written the moment that Act ends rather than at
+        # the end of the run. A run that dies in Act 2 otherwise hands Grey
+        # nothing at all -- including nothing about the Act 1 that finished
+        # perfectly well first, which is exactly when an account of what DID
+        # happen is worth most. (Grey, 2026-09-14.)
+        this_act = act_of(stage_name)
+        next_act = act_of(stages[idx + 1].__name__) if idx + 1 < len(stages) else None
+        if this_act and this_act != next_act:
+            act_path = write_act_handoff(ctx, this_act)
+            mine = [r for r in ctx.stage_results if act_of(r.stage_name) == this_act]
+            n_problems = count_problems(mine)
+            problems_path = write_problems_tsv(ctx)
+            print(
+                f"  {this_act} finished — "
+                + (f"{n_problems} problem(s) to look at" if n_problems else "no problems")
+                + (f".  Report: {act_path}" if act_path else "")
+            )
+            if n_problems and problems_path:
+                print(f"  Full problem list (spreadsheet): {problems_path}")
+
+    print()
+    all_ok = all(r.success for r in ctx.stage_results)
+    if all_ok:
+        _clear_resume()
+        print(f"  Pipeline complete.  run_id={ctx.run_id}")
+    else:
+        print(f"  Pipeline finished with errors.  run_id={ctx.run_id}", file=sys.stderr)
+
+    # One self-contained doc per run -- see handoff.py. ALWAYS written now,
+    # including for a clean run: since 2026-09-14 it carries what the run DID
+    # as well as what went wrong, because a successful unattended run is
+    # exactly when there is no other window into it. (It used to return None
+    # and write nothing here.) The point is that NOTHING extra has to
+    # be remembered to get this, it falls out of stage results and
+    # FAILURES/ reports that already exist.
+    #
+    # Imported at MODULE level, not here. It used to be deferred, and on
+    # 2026-09-05 that lost the doc for a 42-hour run: handoff.py did not
+    # exist when the process started, so the deferred import read it fresh
+    # off disk -- against a musaeus.context that had been in sys.modules
+    # since startup and predated head_with_remainder. New module, stale
+    # dependency, a mixture neither version would have produced alone.
+    #
+    # An eager import cannot do that. Whatever the run gets is what it had
+    # at startup: possibly old, but always COHERENT. The standing hazard is
+    # usually stated as "a long-running process runs the code it imported at
+    # startup"; the sharper form is that it can run a MIXTURE, and no test
+    # catches that because no test runs one file's HEAD against another
+    # file's two-day-old copy.
+    #
+    # The guard is the other half. That failure was silent -- no doc, no
+    # traceback, nothing in the log -- and a run that loses its handoff
+    # while reporting success is exactly what this document exists to
+    # prevent. Never let bookkeeping fail quietly.
+    try:
+        handoff_path = write_handoff_doc(ctx)
+    except Exception as exc:  # noqa: BLE001 - deliberately broad; see above
+        handoff_path = None
+        exit_code = 1
+        print(
+            f"  WARNING: could not write the ForClaudeHandoff doc: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        traceback.print_exc()
+    if handoff_path is not None:
+        # "needs attention" only when something does: it was printed after
+        # every run, clean ones included, and a warning that always shows is
+        # one nobody reads (Grey, 2026-09-25).
+        n_problems = count_problems(ctx.stage_results)
+        if n_problems:
+            print(
+                f"  ForClaudeHandoff doc (needs attention, {n_problems} problem(s)): "
+                f"{handoff_path}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"  ForClaudeHandoff doc: {handoff_path}")
+
+    # Grey, 2026-09-24: a run that adds tracks to ALAC_Library keeps a copy of
+    # its log and reports BESIDE the library; and 10 of each kind are kept.
+    # Bookkeeping, so it may not sink the run -- but it may not fail quietly.
+    try:
+        problems_path = write_problems_tsv(ctx)
+        added = filed_this_run(ctx)
+        if added:
+            dest = publish_run_records(
+                cfg.libraries,
+                cfg.runs_root,
+                ctx.run_id,
+                [run_log.path, handoff_path, problems_path],
+            )
+            print(f"  Run records ({added} track(s) added to the library): {dest}")
+        pruned = prune_run_records(cfg.runs_root, cfg.libraries, cfg.meta_dir)
+        if pruned:
+            print(f"  Kept the newest 10 of each kind of run record; removed {pruned} older.")
+    except Exception as exc:  # noqa: BLE001 - see comment above
+        exit_code = 1
+        print(
+            f"  WARNING: run records not published/pruned: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
+    ctx.finish()
+    run_log.close()
+    return exit_code
+
+
+# ── Reset command ─────────────────────────────────────────────────────────────
+
+
+def _cmd_reset() -> None:
+    """Wipe the MUSAEUS database for a completely fresh start."""
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return
+
+    db = cfg.db_path
+    print("\n  MUSAEUS — Database Reset")
+    print(f"  DB: {db}")
+    print("  This will DELETE the database and all pipeline state.")
+    print("  Your music files in the vault are NOT affected.")
+    print()
+
+    if not sys.stdin.isatty():
+        # No TTY (cron, background process, piped/redirected shell) —
+        # a bare input() here would block forever. Unlike the resume
+        # prompt, this is destructive (wipes the DB), so the safe default
+        # is to refuse, not to auto-confirm.
+        print("  ⚠  No TTY detected — refusing to reset non-interactively.")
+        print("  Run this command from an interactive shell to confirm.")
+        return
+
+    try:
+        confirm = input("  Type RESET to confirm: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Cancelled.")
+        return
+
+    if confirm != "RESET":
+        print("  Cancelled.")
+        return
+
+    snapshot_path = snapshot_db_before_wipe(db, cfg.db_history_dir)
+    if snapshot_path is not None:
+        print(f"  ✓ Snapshotted to: {snapshot_path}")
+
+    for suffix in ("", "-wal", "-shm"):
+        p = Path(str(db) + suffix)
+        if p.exists():
+            p.unlink()
+            print(f"  ✓ Deleted: {p.name}")
+
+    # Also clear resume state
+    _clear_resume()
+
+    print("\n  ✓ Database reset complete.")
+    print("  Run 'musaeus run' to re-ingest your library from the inbox.")
+    print()
+
+
+# ── Status command ────────────────────────────────────────────────────────────
+
+
+def _cmd_status() -> int:
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    conn = open_db(cfg.db_path)
+    try:
+        total = conn.execute("SELECT COUNT(*) FROM archive").fetchone()[0]
+        pending = conn.execute("SELECT COUNT(*) FROM archive WHERE status='PENDING'").fetchone()[0]
+        hashed = conn.execute("SELECT COUNT(*) FROM archive WHERE status='HASHED'").fetchone()[0]
+        catalogued = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'"
+        ).fetchone()[0]
+        forged = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE rg_tagged_at IS NOT NULL"
+        ).fetchone()[0]
+        from .edition_ledger import car_copy_count
+
+        tagged_car = car_copy_count(cfg, conn)
+        from .dedupe import ACTED_ON_SQL
+
+        dupes = conn.execute(
+            f"SELECT COUNT(DISTINCT group_id) FROM duplicates WHERE {ACTED_ON_SQL}"
+        ).fetchone()[0]
+        last_run = conn.execute(
+            "SELECT MAX(ts) FROM events WHERE event_type='RUN_START'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    print("\nMusaeus Library Status")
+    print(f"  Vault       : {cfg.vault_root}")
+    print(f"  DB          : {cfg.db_path}")
+    print(f"  Total       : {total:,}")
+    print(f"    PENDING   : {pending:,}")
+    print(f"    HASHED    : {hashed:,}")
+    print(f"    CATALOGUED: {catalogued:,}")
+    print(f"    FORGED    : {forged:,}  (RG tagged)")
+    print(f"    CAR EXPORT: {tagged_car:,}")
+    print(f"  Dupes       : {dupes} group(s) pending")
+    print(f"  Last run    : {last_run or 'never'}")
+
+    from .config import AUDIO_EXTENSIONS
+
+    inbox = cfg.inbox
+    if inbox.exists():
+        n = sum(1 for f in inbox.rglob("*") if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS)
+        print(f"  Inbox       : {n} audio file(s) in {inbox}")
+    else:
+        print(f"  Inbox       : NOT FOUND ({inbox})")
+    print()
+    return 0
+
+
+# ── Runs command ──────────────────────────────────────────────────────────────
+
+
+def _cmd_runs() -> int:
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    conn = open_db(cfg.db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT run_id, ts, note FROM events
+            WHERE event_type='RUN_START'
+            ORDER BY id DESC LIMIT 20
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        print("No runs recorded yet.")
+        return 0
+
+    print(f"\nRecent Runs (last {len(rows)})")
+    for row in rows:
+        note = row["note"] or ""
+        mode = " [DRY]" if "dry_run=True" in note else ""
+        print(f"  {row['run_id']}{mode}  {row['ts']}")
+    print()
+    return 0
+
+
+# ── Dedupe command ────────────────────────────────────────────────────────────
+
+
+def _cmd_dedupe(auto: bool = False, report_only: bool = False) -> int:
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    conn = open_db(cfg.db_path)
+    try:
+        from .dedupe import carry_out_with, print_dedupe_report, run_dedupe_console
+
+        if report_only:
+            print_dedupe_report(conn)
+        else:
+            run_dedupe_console(conn, auto_mode=auto, carry_out=carry_out_with(cfg))
+    finally:
+        conn.close()
+    return 0
+
+
+# ── Health report command ─────────────────────────────────────────────────────
+
+
+def _cmd_health_report() -> int:
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    conn = open_db(cfg.db_path)
+    try:
+        # Overall counts
+        total_issues = conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
+        error_count = conn.execute(
+            "SELECT COUNT(*) FROM validation_issues WHERE severity='error'"
+        ).fetchone()[0]
+        warn_count = conn.execute(
+            "SELECT COUNT(*) FROM validation_issues WHERE severity='warning'"
+        ).fetchone()[0]
+
+        # Issue breakdown
+        rows = conn.execute(
+            """
+            SELECT issue, severity, COUNT(*) as cnt
+            FROM validation_issues
+            GROUP BY issue, severity
+            ORDER BY severity DESC, cnt DESC
+            """
+        ).fetchall()
+
+        # Files with most issues
+        bad_files = conn.execute(
+            """
+            SELECT file_path, COUNT(*) as cnt
+            FROM validation_issues
+            GROUP BY file_path
+            ORDER BY cnt DESC
+            LIMIT 10
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    print("\nMusaeus Health Report")
+    print(f"  Total issues : {total_issues:,}")
+    print(f"    Errors     : {error_count:,}")
+    print(f"    Warnings   : {warn_count:,}")
+
+    if rows:
+        print("\n  Issue breakdown:")
+        for row in rows:
+            sev_icon = "✗" if row["severity"] == "error" else "⚠"
+            print(f"    {sev_icon} {row['issue']:<28} {row['cnt']:>6}")
+
+    if bad_files:
+        print("\n  Files with most issues (top 10):")
+        for row in bad_files:
+            from pathlib import Path
+
+            print(f"    [{row['cnt']}] {Path(row['file_path']).name}")
+
+    print()
+    return 0
+
+
+# ── Review report command ─────────────────────────────────────────────────────
+
+
+def _cmd_db_tune() -> int:
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    import os
+
+    conn = open_db(cfg.db_path)
+    try:
+        # Enable WAL mode
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA mmap_size=268435456")  # 256 MB
+        conn.commit()
+
+        # Stats before
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+        freelist = conn.execute("PRAGMA freelist_count").fetchone()[0]
+        wal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+
+        print("\nMusaeus DB Tune")
+        print(f"  DB        : {cfg.db_path}")
+        print(f"  Size      : {os.path.getsize(cfg.db_path) / 1024 / 1024:.1f} MB")
+        print(f"  Pages     : {page_count:,}  (page size: {page_size})")
+        print(
+            f"  Freelist  : {freelist:,} pages ({freelist * page_size / 1024:.0f} KB recoverable)"
+        )
+        print(f"  WAL mode  : {wal_mode}")
+
+        print("\n  Running ANALYZE... ", end="", flush=True)
+        conn.execute("ANALYZE")
+        conn.commit()
+        print("done.")
+
+        if freelist > 100:
+            print(f"  Running VACUUM ({freelist} free pages)... ", end="", flush=True)
+            conn.execute("VACUUM")
+            conn.commit()
+            new_size = os.path.getsize(cfg.db_path)
+            print(f"done.  New size: {new_size / 1024 / 1024:.1f} MB")
+        else:
+            print("  VACUUM skipped (freelist < 100 pages — DB is clean).")
+
+        # Archive row count
+        total = conn.execute("SELECT COUNT(*) FROM archive").fetchone()[0]
+        print(f"\n  Archive rows: {total:,}")
+        print("  DB tuning complete.\n")
+    finally:
+        conn.close()
+    return 0
+
+
+# ── Upgrade check command ─────────────────────────────────────────────────────
+
+
+def _cmd_deep_scan(args) -> int:
+    """Decode every master and report the ones that no longer play.
+
+    Two masters were found truncated on 2026-09-01 -- intact container
+    header, missing audio -- by the Car encoder refusing to ship a
+    55-second version of a 5-minute song. Nothing was looking for them.
+    """
+    from .deep_scan import ensure_columns, pending_rows, scan
+
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    conn = open_db(cfg.db_path)
+    try:
+        ensure_columns(conn)
+        if args.reset:
+            conn.execute(
+                "UPDATE archive SET decode_checked_at=NULL, decode_ok=NULL, decode_errors=NULL"
+            )
+            conn.commit()
+            print("  previous results cleared.")
+
+        total = conn.execute("SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'").fetchone()[0]
+        done = conn.execute(
+            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' "
+            "AND decode_checked_at IS NOT NULL"
+        ).fetchone()[0]
+        pending = len(pending_rows(conn))
+        print(f"\n  Deep integrity scan — {done:,} of {total:,} checked, {pending:,} pending")
+        if not args.now:
+            print("  Idle-only: runs while the machine is untouched, yields on input.")
+            print("  Interruptible and resumable — Ctrl-C loses nothing.\n")
+        else:
+            print("  Running at full speed (--now).\n")
+
+        def report(row, ok, n_err):
+            if not ok:
+                print(
+                    f"    CORRUPT  {(row['artist'] or '')[:24]:24} — "
+                    f"{(row['title'] or '')[:34]}  ({n_err} error(s))"
+                )
+
+        prog = scan(
+            conn,
+            limit=args.limit,
+            idle_only=not args.now,
+            decode_seconds=args.seconds,
+            on_result=report,
+        )
+
+        print(f"\n  Checked {prog.checked:,} file(s). Corrupt: {len(prog.corrupt)}.")
+        if prog.yielded_to_user:
+            print(f"  Yielded to you {prog.yielded_to_user} time(s).")
+        bad = conn.execute("SELECT COUNT(*) FROM archive WHERE decode_ok = 0").fetchone()[0]
+        if bad:
+            print(
+                f"  {bad} master(s) fail to decode overall — "
+                "candidates for TuneMyMusic.csv re-sourcing."
+            )
+    except KeyboardInterrupt:
+        print("\n  Interrupted. Progress is saved; re-run to continue.")
+        return 0
+    finally:
+        conn.close()
+    return 0
+
+
+def _cmd_edition_build(args) -> int:
+    """Build an edition, holding the masters lock shared for a real build.
+
+    Builds read masters, so they share the lock with each other and wait for
+    nothing but a job that changes masters (review of #87, findings 9, 10).
+    """
+    if getattr(args, "dry_run", False):
+        return _cmd_edition_build_inner(args)
+    try:
+        runs_root = get_config().runs_root
+    except ValueError:
+        return _cmd_edition_build_inner(args)
+    from .masters_lock import EXIT_BUSY, MastersBusy, masters_lock
+
+    try:
+        with masters_lock(
+            runs_root, exclusive=False, what=f"edition-build {getattr(args, 'name', '?')}"
+        ):
+            return _cmd_edition_build_inner(args)
+    except MastersBusy as exc:
+        print(f"NOT RUN: {exc}", file=sys.stderr)
+        return EXIT_BUSY
+
+
+def _cmd_edition_build_inner(args) -> int:
+    """Build an edition from the masters. See musaeus/edition_build.py.
+
+    The catalogue is opened READ-ONLY: building an edition must never change
+    a row (the retired build_alac_library.py pointed rows at its copies), and
+    a read-only connection makes that a property of SQLite, not of care.
+    """
+    import sqlite3
+    from datetime import datetime
+
+    from . import edition_build as eb
+    from .edition_ledger import ledger_path, open_for_reading, open_ledger
+
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    kind = eb.KINDS[args.name]
+    # An option the edition has no use for is refused, not ignored: `car
+    # --budget-gb 30` ran the whole 19-hour build (cloud review of #53).
+    if args.budget_gb is not None and kind.name != "iphone":
+        print("ERROR: --budget-gb is for the iphone edition only.", file=sys.stderr)
+        return 2
+    try:
+        budget = _budget_bytes(args.budget_gb)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if args.rebake_compressed and kind.name != "lossless":
+        # At range 11 compression is normal in the car and on the iPhone: the
+        # flag would re-make about 7 in 10 copies for nothing (cloud review
+        # of #53). It is for the Lossless edition's rule changes.
+        print("ERROR: --rebake-compressed is for the lossless edition only.", file=sys.stderr)
+        return 2
+    if args.lossy is not None and kind.name != "lossless":
+        print(
+            "ERROR: --lossy is for the lossless edition only "
+            "(car and iphone always include the lossy masters).",
+            file=sys.stderr,
+        )
+        return 2
+    label = kind.label
+    masters_root, edition_root = Path(cfg.alac_archive), kind.root(cfg)
+    running = eb.pipeline_pids()
+    if running and not args.dry_run:
+        print(
+            f"ERROR: other MUSAEUS work is running: {eb.describe_work(running)}. Masters "
+            "can move under a build, so finish or close it first -- or build from the "
+            "console's menu 6.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if kind.name in ("car", "iphone") and not args.dry_run:
+        import shutil
+
+        from . import edition_bake
+
+        if not shutil.which(edition_bake.FDKAAC):
+            # Without it every song is measured and then fails (second
+            # review of #53).
+            print(
+                "ERROR: fdkaac is not installed -- the car and iPhone editions encode with "
+                "it. Install it: sudo apt install fdkaac",
+                file=sys.stderr,
+            )
+            return 2
+    if not args.dry_run:
+        # Hours of work: keep the machine awake (cloud review of #53 -- the
+        # retired builder held this, and the idle throttle needs the
+        # screen-saver's keep-awake off). Re-runs this command inhibited.
+        from .sleep_inhibit import reexec_under_inhibitor
+
+        reexec_under_inhibitor(f"{label} edition build in progress")
+
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    lpath = ledger_path(cfg)
+    ledger = open_for_reading(lpath) if args.dry_run else open_ledger(lpath)
+    try:
+        if budget is not None:
+            plan, _ = eb.budgeted(
+                conn, ledger, masters_root, edition_root, kind,
+                budget, rebake_compressed=args.rebake_compressed,
+            )  # fmt: skip
+        else:
+            plan = eb.make_plan(
+                conn,
+                ledger,
+                masters_root,
+                edition_root,
+                kind=kind,
+                include_lossy=(args.lossy == "alac") if kind.name == "lossless" else None,
+                rebake_compressed=args.rebake_compressed,
+            )
+        free = eb.free_bytes(edition_root)
+        print()
+        print(f"  {label} edition: {edition_root}")
+        print(f"  From the masters: {masters_root}")
+        for line in eb.plan_lines(plan, workers=args.workers, free=free):
+            print(line)
+        if args.limit is not None and len(plan.bake) > args.limit:
+            print(f"  --limit {args.limit}: only the first {args.limit} will be baked this time")
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log = cfg.runs_root / "LOGS" / f"edition_{kind.name}_{stamp}.log"
+
+        def _write_log(outcome=None) -> None:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with open(log, "w", encoding="utf-8") as fh:
+                fh.write(f"{label} edition -- {'dry run' if args.dry_run else 'build'} {stamp}\n")
+                fh.write("\n".join(eb.plan_lines(plan, workers=args.workers, free=free)) + "\n")
+                for title, items in (
+                    ("NOT POSSIBLE", [f"{m.path}\t{why}" for m, why in plan.blocked]),
+                    ("UNKNOWN FILES (left alone)", [str(p) for p in plan.unrecorded]),
+                    ("LOSSY, LEFT OUT", [str(m.path) for m in plan.lossy_left_out]),
+                    ("OVER BUDGET, LEFT OUT", [str(m.path) for m in plan.over_budget]),
+                    (
+                        "WILL BE COMPRESSED",
+                        [
+                            str(m.path)
+                            for m, _ in plan.bake
+                            if m.may_compress(plan.target_lufs) is True
+                        ],
+                    ),
+                    ("FAILED", [f"{p}\t{why}" for p, why in (outcome.failed if outcome else [])]),
+                    ("COMPRESSED (dynamic mode)", list(outcome.dynamic) if outcome else []),
+                ):
+                    if items:
+                        fh.write(f"\n{title} ({len(items)})\n" + "\n".join(items) + "\n")
+
+        if args.dry_run:
+            _write_log()
+            print(f"\n  Dry run -- nothing was written. List: {log}\n")
+            return 0
+
+        need = eb.space_needed(plan if args.limit is None else _limited(plan, args.limit))
+        if need > free:
+            print(
+                f"ERROR: about {need / 1e9:.0f} GB needed, {free / 1e9:.0f} GB free.",
+                file=sys.stderr,
+            )
+            return 1
+
+        try:
+            with eb.build_lock(cfg.runs_root / "locks", kind.name):
+                outcome = eb.execute(
+                    plan,
+                    ledger,
+                    edition_root,
+                    workers=args.workers,
+                    limit=args.limit,
+                    wanted_csv=cfg.tunemymusic_csv_path,
+                    kind=kind,
+                )
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        _write_log(outcome)
+        print()
+        print(
+            f"  Baked {outcome.baked:,}, adopted {outcome.adopted:,}, moved {outcome.moved:,}, "
+            f"re-tagged {outcome.retagged:,}, removed {outcome.removed:,}."
+        )
+        if outcome.dynamic:
+            listed = (
+                f"; {outcome.wanted:,} newly added to TuneMyMusic.csv"
+                if kind.list_compressed
+                else ""
+            )
+            print(
+                f"  {len(outcome.dynamic):,} copy(ies) were compressed to reach "
+                f"{kind.target_i} LUFS{listed}."
+            )
+        if outcome.failed:
+            print(f"  {len(outcome.failed):,} failed -- see the log; the next build retries them.")
+        if outcome.stopped:
+            print("  Stopped. Finished copies are kept; run it again to carry on.")
+        index_failed = False
+        if kind.name in ("car", "iphone") and not outcome.stopped:
+            # The playlists travel with the edition (Grey, 2026-09-17), so
+            # they are written after every build, as the retired builder did
+            # (cloud review of #53: a stale index went to the USB). Its
+            # entries are resolved against the disk; a dead one fails.
+            from .edition_index import write_index
+
+            notes, problems = write_index(cfg, edition_root, apply=True)
+            problems = [p for p in problems if not p.startswith("no playlists were written")]
+            playlists = sorted((edition_root / "Playlists").glob("*.m3u8"))
+            print(f"  Playlists: {len(playlists):,} in {edition_root / 'Playlists'}")
+            for note in notes:
+                if note.startswith(("nothing was written", "removed stale", "left out")):
+                    print(f"  Playlists: {note}")
+            for problem in problems[:10]:
+                print(f"  PLAYLIST PROBLEM: {problem}")
+            index_failed = bool(problems)
+        print(f"  Log: {log}\n")
+        return 1 if outcome.failed or outcome.stopped or index_failed else 0
+    finally:
+        conn.close()
+        ledger.close()
+
+
+def _limited(plan, limit: int):
+    """The plan with only the first *limit* bakes, for the space check."""
+    from dataclasses import replace
+
+    return replace(plan, bake=plan.bake[:limit])
+
+
+def _print_lossless_plan(cfg) -> int:
+    """The Lossless edition's build plan, read-only, writing nothing."""
+    import sqlite3
+
+    from . import edition_build as eb
+    from .edition_ledger import ledger_path, open_for_reading
+
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    ledger = open_for_reading(ledger_path(cfg))
+    try:
+        plan = eb.make_plan(conn, ledger, Path(cfg.alac_archive), Path(cfg.alac_library))
+    finally:
+        conn.close()
+        ledger.close()
+    print()
+    for line in eb.plan_lines(plan, workers=2, free=eb.free_bytes(Path(cfg.alac_library))):
+        print(line)
+    print()
+    return 0
+
+
+def _budget_bytes(gb: float | None) -> int | None:
+    """--budget-gb in bytes. Raises ValueError unless it is a real size:
+    0 read as "no budget" and nan or inf crashed (cloud review of #53)."""
+    import math
+
+    if gb is None:
+        return None
+    if not math.isfinite(gb) or gb <= 0:
+        raise ValueError("a budget must be more than 0 GB.")
+    return int(gb * 1_000_000_000)
+
+
+def _cmd_edition(args) -> int:
+    """Preview an edition's selection. Reads only -- encodes nothing.
+
+    Exists because the expensive half of building an edition is the encode,
+    and until now there was no way to see WHAT would be encoded without
+    running it. A 32 GB device budget has to be checked before six hours of
+    ffmpeg, not after.
+    """
+    from .editions import EDITIONS, select_edition
+
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    spec = EDITIONS[args.name]
+    if spec.name == "lossless" and not (args.genre or args.artist or args.budget_gb):
+        # One selection for the Lossless edition: what its build would do.
+        print("\n  The Lossless edition is built by `musaeus edition-build lossless`;")
+        print("  this is its plan (a dry run -- nothing is written):")
+        return _print_lossless_plan(cfg)
+    try:
+        budget = _budget_bytes(args.budget_gb)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+    genres = set(args.genre) if args.genre else None
+    artists = set(args.artist) if args.artist else None
+    conn = open_db(cfg.db_path)
+    try:
+        if spec.name in ("car", "iphone"):
+            # The build's own selection: only masters it can make (cloud
+            # review of #53 -- this listed tracks the build then blocked).
+            from . import edition_build as eb
+            from .edition_ledger import ledger_path, open_for_reading
+
+            kind = eb.KINDS[spec.name]
+            ledger = open_for_reading(ledger_path(cfg))
+            try:
+                sel = eb.selection(
+                    conn, ledger, Path(cfg.alac_archive), kind.root(cfg), kind, budget,
+                    genres=genres, artists=artists,
+                )  # fmt: skip
+            finally:
+                ledger.close()
+        else:
+            sel = select_edition(conn, spec, genres=genres, artists=artists, budget_bytes=budget)
+    finally:
+        conn.close()
+
+    print()
+    print(f"  Edition : {spec.name}")
+    print(
+        f"  Format  : {spec.codec.upper()}"
+        + (f" {spec.bitrate_kbps}k" if spec.bitrate_kbps else " (lossless)")
+        + f", {spec.lufs_target} LUFS"
+        + (f", capped at {spec.max_sample_rate} Hz" if spec.max_sample_rate else "")
+    )
+    print(f"  {sel.summary()}")
+
+    if sel.skipped_for_budget:
+        print(
+            f"\n  {len(sel.skipped_for_budget):,} track(s) did not fit. "
+            f"Lowest-priority genres are dropped first."
+        )
+
+    if args.list:
+        print()
+        for t in sel.included:
+            print(f"    [{t.genre or '-'}] {t.artist} — {t.title}")
+    else:
+        by_genre: dict[str, int] = {}
+        for t in sel.included:
+            by_genre[t.genre or "(none)"] = by_genre.get(t.genre or "(none)", 0) + 1
+        print()
+        for g, n in sorted(by_genre.items(), key=lambda kv: (-kv[1], kv[0]))[:12]:
+            print(f"    {n:>6,}  {g}")
+        if len(by_genre) > 12:
+            print(f"    {'':>6}  {elision(len(by_genre) - 12, unit='genre(s)')}")
+
+    print("\n  Selection only — nothing was encoded or written.\n")
+    return 0
+
+
+def _cmd_upgrade_check(write_csv: bool = False, min_gap: int = 0) -> int:
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    conn = open_db(cfg.db_path)
+    try:
+        from scripts.musaeus_upgrade_check import _analyse, _gather, _print_report
+
+        rows = _gather(conn)
+    finally:
+        conn.close()
+
+    candidates = _analyse(rows)
+    _print_report(candidates, cfg, write_csv=write_csv, min_gap=min_gap)
+    return 0
+
+
+# ── Spec scout command ────────────────────────────────────────────────────────
+
+
+def _cmd_spec_scout(write_csv: bool = False, min_bitrate: int = 0, max_bitrate: int = 0) -> int:
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    conn = open_db(cfg.db_path)
+    try:
+        from scripts.musaeus_spec_scout import _analyse, _gather, _print_report
+
+        rows = _gather(conn)
+    finally:
+        conn.close()
+
+    print(f"Loaded {len(rows):,} catalogued tracks.")
+    issues = _analyse(rows, min_bitrate=min_bitrate, max_bitrate=max_bitrate)
+    _print_report(issues, cfg, write_csv=write_csv)
+    return 0
+
+
+# ── Canon review command ──────────────────────────────────────────────────────
+
+
+def _cmd_canon_review(
+    mode: str,
+    csv_path: str | None = None,
+    fixes_path: str | None = None,
+    dry_run: bool = False,
+) -> int:
+    try:
+        cfg = get_config()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    conn = open_db(cfg.db_path)
+    try:
+        from scripts.musaeus_canon_review import _apply, _report
+
+        if mode == "report":
+            cp = Path(csv_path) if csv_path else None
+            _report(conn, cfg, cp)
+        elif mode == "apply":
+            if not fixes_path:
+                print("ERROR: --fixes required for apply mode", file=sys.stderr)
+                return 1
+            _apply(conn, cfg, Path(fixes_path), dry_run=dry_run)
+        else:
+            print(f"ERROR: unknown canon-review mode '{mode}'", file=sys.stderr)
+            return 1
+    finally:
+        conn.close()
+    return 0
+
+
+# ── Argument parser ───────────────────────────────────────────────────────────
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="musaeus",
+        description="Musaeus — Music Library Pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    p.add_argument("--version", action="version", version=f"musaeus {__version__}")
+    p.add_argument(
+        "--verbose", "-v", action="store_true", help="Enable DEBUG logging + detailed metrics"
+    )
+    p.add_argument(
+        "--progress",
+        action="store_true",
+        default=True,
+        help="Show progress bars (default: enabled)",
+    )
+    p.add_argument(
+        "--no-progress", dest="progress", action="store_false", help="Disable progress bars"
+    )
+
+    sub = p.add_subparsers(dest="command", metavar="command")
+
+    # ── run ──────────────────────────────────────────────────────────────────
+    run_p = sub.add_parser("run", help="Run pipeline (Ingest→Sentinel→Scholar)")
+    run_p.add_argument("--dry-run", action="store_true", help="Preview only, no mutations")
+    run_p.add_argument(
+        "--skip",
+        metavar="STAGE[,STAGE...]",
+        default="",
+        help="Drop named stages from the run, by stage NAME (e.g. 'dupe-resolver'). "
+        "Intended for unattended runs that should stage decisions but not act on them.",
+    )
+    run_p.add_argument(
+        "--act",
+        choices=["1", "2", "3", "enrichment"],
+        help="Run only this Act of the pipeline, then stop -- to check each Act's "
+        "problem list before the next (1 intake, 2 duplicates, 3 library, enrichment)",
+    )
+    run_p.add_argument("--full", action="store_true", help="Also run Forge + Tagger stages")
+    run_p.add_argument(
+        "--archive",
+        action="store_true",
+        help="Everything minus LUFS: Ingest→Scholar→Normalize→Health→Enrich→Dedup→Art→Tagger",
+    )
+    run_p.add_argument(
+        "--maintain", action="store_true", help="Run Ghost + Health + Enrich + NearDupe"
+    )
+    run_p.add_argument(
+        "--enrich",
+        action="store_true",
+        help="Run Enrich + MBEnrich + AcousticID + Reviewer pipeline",
+    )
+    run_p.add_argument(
+        "--reset",
+        action="store_true",
+        help="Clear resume state and start fresh",
+    )
+
+    # dry-run shortcut
+    sub.add_parser("dry-run", help="Alias for: run --dry-run")
+
+    # preflight
+    preflight_p = sub.add_parser(
+        "preflight", help="Environment checks (commands, packages, disk, DB) — report-only"
+    )
+    preflight_p.add_argument(
+        "--dry-run", action="store_true", help="Same as run (report-only, never mutates)"
+    )
+
+    # ── setup wizard ──────────────────────────────────────────────────────────
+    sub.add_parser("setup", help="Run the setup wizard (paths + API keys)")
+    sub.add_parser("reset", help="Wipe DB for a fresh start (confirms before deleting)")
+
+    # ── individual stages ─────────────────────────────────────────────────────
+    for name in ("ingest", "sentinel", "scholar"):
+        sp = sub.add_parser(name, help=f"Run {name} stage only")
+        sp.add_argument("--dry-run", action="store_true", help="Preview only")
+
+    # cross-dupe
+    cross_dupe_p = sub.add_parser(
+        "cross-dupe", help="Flag files matching ALAC-Library content from a prior batch"
+    )
+    cross_dupe_p.add_argument("--dry-run", action="store_true", help="Report matches, no DB writes")
+
+    # dupe-resolver
+    dupe_resolver_p = sub.add_parser(
+        "dupe-resolver",
+        help="Physically relocate duplicate-group losers to DUPES_MOVED_FOR_REVIEW/",
+    )
+    dupe_resolver_p.add_argument(
+        "--dry-run", action="store_true", help="Report moves, no files written"
+    )
+
+    # normalize
+    normalize_p = sub.add_parser("normalize", help="Article-suffix fix + ALL-CAPS repair")
+    normalize_p.add_argument("--dry-run", action="store_true", help="Preview only, no DB changes")
+
+    # organize
+    organize_p = sub.add_parser(
+        "organize", help="Rename and reorganize files into Artist/Album/ structure"
+    )
+    organize_p.add_argument("--dry-run", action="store_true", help="Preview only, no file moves")
+
+    # sanitize
+    sanitize_p = sub.add_parser("sanitize", help="Filesystem-safe metadata (Windows/ExFAT/Android)")
+    sanitize_p.add_argument("--dry-run", action="store_true", help="Preview only, no DB changes")
+
+    # canonicalize
+    canonicalize_p = sub.add_parser(
+        "canonicalize",
+        help="Lossless->ALAC / sub-lossless->AAC, both as .m4a, based on real codec",
+    )
+    canonicalize_p.add_argument(
+        "--dry-run", action="store_true", help="Report actions, no ffmpeg calls"
+    )
+    canonicalize_p.add_argument(
+        "--force", action="store_true", help="Re-process already-canonicalized files"
+    )
+
+    # finalize
+    finalize_p = sub.add_parser(
+        "finalize", help="Move canonicalized files from INBOX into vault_root/ALAC-Library"
+    )
+    finalize_p.add_argument("--dry-run", action="store_true", help="Report moves, no files written")
+    finalize_p.add_argument(
+        "--force", action="store_true", help="Re-process already-finalized files"
+    )
+
+    # audit
+    audit_p = sub.add_parser(
+        "audit", help="Physical-presence verification gate before DB snapshot+wipe"
+    )
+    audit_p.add_argument(
+        "--dry-run", action="store_true", help="Same as run -- audit is inherently read-only"
+    )
+
+    # forge
+    forge_p = sub.add_parser("forge", help="Measure LUFS + write ReplayGain tags")
+    forge_p.add_argument("--dry-run", action="store_true", help="Measure but don't write tags")
+    forge_p.add_argument("--force", action="store_true", help="Re-tag already-forged files")
+    forge_p.add_argument(
+        "--retag",
+        action="store_true",
+        help="Skip the existing-tag shortcut; always re-measure via ffmpeg",
+    )
+    forge_p.add_argument(
+        "--embed-from-db",
+        action="store_true",
+        help=(
+            "Repair path: embed loudness tags from values already stored in the DB, "
+            "with no ffmpeg re-measurement. Use after the 2026-08-21 silent-write fix."
+        ),
+    )
+    forge_p.add_argument(
+        "--target-lufs",
+        type=float,
+        default=None,
+        metavar="LUFS",
+        help="ReplayGain reference level in LUFS (default: -18.0). "
+        "Common values: -18 (home), -16 (Apple Music), -14 (car/Spotify).",
+    )
+
+    # tagger
+    tagger_p = sub.add_parser("tagger", help="Write normalised DB metadata back to file tags")
+    tagger_p.add_argument("--dry-run", action="store_true", help="Preview only")
+
+    # ghost
+    ghost_p = sub.add_parser("ghost", help="Sweep archive for files missing from disk")
+    ghost_p.add_argument("--dry-run", action="store_true", help="Report only, no DB changes")
+
+    # health
+    health_p = sub.add_parser("health", help="Library consistency and quality checks")
+    health_p.add_argument("--dry-run", action="store_true", help="Report only, no DB writes")
+
+    # corrupt
+    corrupt_p = sub.add_parser(
+        "corrupt", help="Detect and quarantine corrupt/truncated audio files"
+    )
+    corrupt_p.add_argument("--dry-run", action="store_true", help="Report only, no quarantine")
+
+    # bpm
+    bpm_p = sub.add_parser(
+        "bpm", help="Extract + tag BPM/key/energy/danceability (requires the 'bpm' extra)"
+    )
+    bpm_p.add_argument("--dry-run", action="store_true", help="Preview only, no analysis/writes")
+    bpm_p.add_argument("--force", action="store_true", help="Re-analyze already-analyzed files")
+    bpm_p.add_argument(
+        "--retag", action="store_true", help="Force Essentia even if BPM tags already exist"
+    )
+
+    # tribute-quarantine
+    tribute_p = sub.add_parser(
+        "tribute-quarantine", help="Detect + quarantine tribute-band/karaoke/meditation content"
+    )
+    tribute_p.add_argument("--dry-run", action="store_true", help="Report only, no moves")
+
+    # various-artists-fix
+    va_p = sub.add_parser(
+        "various-artists-fix", help="Resolve real artist for 'Various Artists' tagged rows"
+    )
+    va_p.add_argument("--dry-run", action="store_true", help="Report only, no moves/writes")
+    va_p.add_argument(
+        "--no-mb", action="store_true", help="Skip MusicBrainz lookup (faster, offline-safe)"
+    )
+
+    # bitrot
+    bitrot_p = sub.add_parser(
+        "bitrot", help="Verify ALAC_Archive against a baseline to catch silent corruption"
+    )
+    bitrot_p.add_argument("--dry-run", action="store_true", help="Count only, no hashing/writes")
+    bitrot_p.add_argument(
+        "--rebaseline",
+        action="store_true",
+        help="Establish/refresh the baseline from ALAC_Archive's current state, "
+        "instead of verifying against it",
+    )
+    bitrot_p.add_argument(
+        "--backfill-pcm",
+        action="store_true",
+        help="Fill in the PCM identity for baseline rows recorded without one, "
+        "leaving their byte hashes untouched. The migration step for baselines "
+        "taken before 2026-09-08; without it a moved file still reads as new.",
+    )
+    bitrot_p.add_argument(
+        "--limit", type=int, default=0, help="Cap how many files to process this run (0 = all)"
+    )
+
+    # rebuild-from-disk
+    rfd_p = sub.add_parser(
+        "rebuild-from-disk",
+        help="Rebuild the archive table from disk + embedded file tags (safe; never deletes)",
+    )
+    rfd_p.add_argument("--limit", type=int, default=0, help="Cap files scanned (0 = all)")
+    rfd_p.add_argument("--no-hashes", action="store_true", help="Skip re-hashing (much faster)")
+    rfd_p.add_argument(
+        "--promote",
+        action="store_true",
+        help="After a successful rebuild, swap the result into place as `archive`. "
+        "The existing archive is RENAMED aside, never dropped.",
+    )
+
+    # permissions
+    permissions_p = sub.add_parser(
+        "permissions", help="Fix file/folder permissions under inbox (644/755)"
+    )
+    permissions_p.add_argument("--dry-run", action="store_true", help="Report only, no chmod")
+
+    # artist-consolidate
+    artist_consol_p = sub.add_parser(
+        "artist-consolidate", help="Normalize artist name variants to canonical forms"
+    )
+    artist_consol_p.add_argument(
+        "--dry-run", action="store_true", help="Show what would change, no DB writes"
+    )
+
+    # auditor
+    auditor_p = sub.add_parser("auditor", help="Pre-forge LUFS audit — flag out-of-window files")
+    auditor_p.add_argument("--dry-run", action="store_true", help="Measure + report, no DB writes")
+    auditor_p.add_argument(
+        "--target-lufs",
+        type=float,
+        default=None,
+        metavar="LUFS",
+        help="Target integrated LUFS (default: -18.0)",
+    )
+    auditor_p.add_argument(
+        "--max-files",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Cap files per run (default: 200; 0 = no cap)",
+    )
+
+    # enrich
+    enrich_p = sub.add_parser("enrich", help="Last.fm genre enrichment for missing genres")
+    enrich_p.add_argument("--dry-run", action="store_true", help="Show what would change")
+
+    # mb-enrich
+    mb_p = sub.add_parser("mb-enrich", help="MusicBrainz artist + release MBID enrichment")
+    mb_p.add_argument("--dry-run", action="store_true", help="Show what would change, no DB writes")
+
+    # original-year
+    oy_p = sub.add_parser(
+        "original-year",
+        help="Recover each recording's FIRST release year from MusicBrainz "
+        "(writes original_year; never touches year)",
+    )
+    oy_p.add_argument("--dry-run", action="store_true", help="Show what would change, no DB writes")
+    oy_p.add_argument(
+        "--genre",
+        default="",
+        help="Only check tracks in this genre. A full pass is hours of "
+        "rate-limited lookups; this narrows it to what a pending decision needs.",
+    )
+    oy_p.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Only check this many tracks this pass (0 = all). One rate-limited "
+        "network call per track, so a first pass is usually worth bounding.",
+    )
+
+    # neardupe
+    genre_p = sub.add_parser(
+        "genre-validate",
+        help="Check library genres against MasterLaw.csv (fills empties, reports conflicts)",
+    )
+    genre_p.add_argument("--dry-run", action="store_true", help="Report only, fill nothing")
+    genre_p.add_argument(
+        "--consolidate",
+        action="store_true",
+        help="Enforce one genre per ARTIST: MasterLaw's answer where it has "
+        "one, else the artist's dominant genre. Ties are left alone.",
+    )
+
+    spell_p = sub.add_parser(
+        "spellcheck", help="Report artist names that look like misspellings (report-only)"
+    )
+    spell_p.add_argument(
+        "--dry-run", action="store_true", help="Same as a normal run: nothing is written"
+    )
+
+    plan_p = sub.add_parser(
+        "plan", help="Preview what a run would do. Read-only, changes nothing (P0-04)."
+    )
+    plan_p.add_argument("--json", action="store_true", help="Machine-readable plan")
+    plan_p.add_argument("--full", action="store_true", help="Plan the full pipeline")
+    plan_p.add_argument("--maintain", action="store_true", help="Plan the maintenance pipeline")
+
+    sub.add_parser("doctor", help="Read-only library integrity report (DB vs disk vs hash ledger)")
+
+    neardupe_p = sub.add_parser("neardupe", help="Metadata-based near-duplicate detection")
+    neardupe_p.add_argument("--dry-run", action="store_true", help="Show matches without staging")
+
+    # report
+    conv_p = sub.add_parser(
+        "convergence",
+        help="Did the last pass change less than the one before? (read-only)",
+    )
+    conv_p.add_argument("--runs", type=int, default=5, help="how many pipeline runs to compare")
+    conv_p.add_argument("--oscillations", action="store_true", help="only the loop detector")
+    conv_p.add_argument("--csv", metavar="PATH", help="write oscillating files to a CSV")
+
+    report_p = sub.add_parser("report", help="Dashboard: library stats, genre/bitrate breakdown")
+    report_p.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    report_p.add_argument("--wide", action="store_true", help="Use wider terminal columns (100)")
+
+    # health-report
+    sub.add_parser("health-report", help="Print validation issues summary")
+
+    # rebuild-db
+    rebuild_p = sub.add_parser("rebuild-db", help="Rebuild archive table from event log")
+    rebuild_p.add_argument("--dry-run", action="store_true", help="Preview only")
+
+    # curator
+    curator_p = sub.add_parser("curator", help="Build car-library export")
+    curator_p.add_argument("--export-root", metavar="PATH", help="Destination directory for export")
+    curator_p.add_argument(
+        "--noise",
+        choices=["clean", "pink", "brown", "white", "dual"],
+        default="dual",
+        help="Noise profile to include (default: dual = pink+brown)",
+    )
+    curator_p.add_argument("--dry-run", action="store_true", help="Preview only")
+    curator_p.add_argument("--force", action="store_true", help="Re-copy already-exported files")
+
+    # acousticid
+    acousticid_p = sub.add_parser(
+        "acousticid", help="Acoustic fingerprint dedup via fpcalc + AcousticID API"
+    )
+    acousticid_p.add_argument(
+        "--dry-run", action="store_true", help="Fingerprint + report, no DB writes"
+    )
+    acousticid_p.add_argument(
+        "--limit",
+        type=int,
+        metavar="N",
+        default=0,
+        help="Process at most N files, so the backlog can be drained in "
+        "sittings rather than one lock-holding pass (0 = no limit)",
+    )
+
+    # transcode
+    transcode_p = sub.add_parser("transcode", help="Lossless → 256k AAC export via ffmpeg")
+    transcode_p.add_argument(
+        "--dry-run", action="store_true", help="Report what would be transcoded"
+    )
+    transcode_p.add_argument("--force", action="store_true", help="Re-transcode already-done files")
+    transcode_p.add_argument(
+        "--export-root",
+        metavar="PATH",
+        help="Output directory for transcoded files (default: vault/Transcoded)",
+    )
+
+    # review-report
+    sub.add_parser("review-report", help="Show AI reviewer issues summary")
+
+    # upgrade-check
+    upgrade_p = sub.add_parser(
+        "upgrade-check", help="Find lossy tracks where a lossless version exists"
+    )
+    upgrade_p.add_argument("--csv", action="store_true", help="Also write CSV report")
+    upgrade_p.add_argument(
+        "--min-gap",
+        type=int,
+        default=0,
+        metavar="KBPS",
+        help="Only report if lossless exceeds lossy by at least N kbps",
+    )
+
+    # integrity
+    integrity_p = sub.add_parser(
+        "integrity", help="Detect corrupt/truncated files via ffprobe decode-test"
+    )
+    integrity_p.add_argument("--dry-run", action="store_true", help="Count, no DB writes")
+    integrity_p.add_argument(
+        "--max-files",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Cap files checked per run (default: no cap)",
+    )
+
+    # albumart
+    albumart_p = sub.add_parser(
+        "albumart", help="Audit missing embedded art + embed sidecar images"
+    )
+    albumart_p.add_argument("--dry-run", action="store_true", help="Audit only, no embedding")
+    albumart_p.add_argument("--force", action="store_true", help="Re-check all files")
+    albumart_p.add_argument(
+        "--no-embed", action="store_true", help="Audit only, skip sidecar embedding"
+    )
+
+    # overnight
+    overnight_p = sub.add_parser(
+        "overnight",
+        help="Automated nightly self-heal: Ghost→Health→Normalize→Enrich→MBEnrich→NearDupe→Reviewer",
+    )
+    overnight_p.add_argument("--dry-run", action="store_true", help="Preview only")
+
+    # playlist
+    # deep-scan
+    deepscan_p = sub.add_parser(
+        "deep-scan",
+        help="Decode-verify masters for silent truncation; runs only while idle",
+    )
+    deepscan_p.add_argument(
+        "--limit", type=int, metavar="N", default=None, help="Check at most N files this pass"
+    )
+    deepscan_p.add_argument(
+        "--now",
+        action="store_true",
+        help="Run immediately at full speed instead of waiting for the machine to be idle",
+    )
+    deepscan_p.add_argument(
+        "--seconds",
+        type=int,
+        metavar="S",
+        default=0,
+        help="Decode only the first S seconds (0 = whole file). "
+        "A partial decode cannot see damage later in a track",
+    )
+    deepscan_p.add_argument(
+        "--reset", action="store_true", help="Clear all previous results and start a fresh pass"
+    )
+
+    # edition
+    edition_p = sub.add_parser(
+        "edition",
+        help="Preview what would go into an edition (selection only — encodes nothing)",
+    )
+    edition_p.add_argument(
+        "name", choices=("lossless", "car", "iphone"), help="Which edition to select for"
+    )
+    edition_p.add_argument(
+        "--budget-gb",
+        type=float,
+        metavar="GB",
+        default=None,
+        help="Device budget; fills in genre-priority order and reports what did not fit",
+    )
+    edition_p.add_argument(
+        "--genre",
+        action="append",
+        metavar="NAME",
+        default=None,
+        help="Restrict to this genre (exact match; repeatable)",
+    )
+    edition_p.add_argument(
+        "--artist",
+        action="append",
+        metavar="NAME",
+        default=None,
+        help="Restrict to this artist (exact match; repeatable)",
+    )
+    edition_p.add_argument(
+        "--list", action="store_true", help="Print every selected track, not just the summary"
+    )
+
+    # edition-build
+    eb_p = sub.add_parser(
+        "edition-build",
+        help="Build an edition from the masters: lossless (-18 LUFS ALAC), car (-14 LUFS AAC, "
+        "noise under), iphone (-14 LUFS AAC, --budget-gb)",
+    )
+    eb_p.add_argument("name", choices=("lossless", "car", "iphone"), help="Which edition to build")
+    eb_p.add_argument(
+        "--budget-gb",
+        type=float,
+        metavar="GB",
+        default=None,
+        help="iphone: the device budget; genres are filled in priority order",
+    )
+    eb_p.add_argument("--dry-run", action="store_true", help="Show the plan; write nothing")
+    eb_p.add_argument("--limit", type=int, metavar="N", default=None, help="Bake at most N")
+    eb_p.add_argument(
+        "--workers", type=int, metavar="N", default=2, help="Tracks baked at once (default 2)"
+    )
+    eb_p.add_argument(
+        "--rebake-compressed",
+        action="store_true",
+        help="Bake the compressed copies again under today's rules (after a rule change)",
+    )
+    eb_p.add_argument(
+        "--lossy",
+        choices=("leave-out", "alac"),
+        default=None,
+        help="lossless only: leave lossy masters out (default) or bake them into ALAC "
+        "(car and iphone always include them)",
+    )
+
+    playlist_p = sub.add_parser(
+        "playlist",
+        help="Build M3U8 playlists (genre + All) with relative paths — works on Android & Apple",
+    )
+    playlist_p.add_argument("--dry-run", action="store_true", help="Preview only, no files written")
+
+    # db-tune
+    sub.add_parser("db-tune", help="VACUUM, ANALYZE, WAL mode + DB stats")
+
+    # spec-scout
+    spec_p = sub.add_parser(
+        "spec-scout", help="Find audio spec outliers (bitrate/codec/sample-rate)"
+    )
+    spec_p.add_argument("--csv", action="store_true", help="Also write CSV report")
+    spec_p.add_argument("--min-bitrate", type=int, default=0, metavar="KBPS")
+    spec_p.add_argument("--max-bitrate", type=int, default=0, metavar="KBPS")
+
+    # canon-review
+    canon_p = sub.add_parser(
+        "canon-review", help="Audit genre/artist/album canons and apply approved fixes"
+    )
+    canon_sub = canon_p.add_subparsers(dest="canon_mode", metavar="mode")
+    canon_rep = canon_sub.add_parser("report", help="Generate canon review report")
+    canon_rep.add_argument("--csv", metavar="PATH", help="Also write CSV")
+    canon_appl = canon_sub.add_parser("apply", help="Apply approved fixes from CSV")
+    canon_appl.add_argument("--fixes", required=True, metavar="PATH")
+    canon_appl.add_argument("--dry-run", action="store_true")
+
+    # ── review commands ───────────────────────────────────────────────────────
+
+    # review (subcommand group)
+    review_p = sub.add_parser("review", help="Album/artist review & approval workflow")
+    review_sub = review_p.add_subparsers(dest="review_command", metavar="action")
+    review_gen = review_sub.add_parser("generate", help="Generate review sheets from archive")
+    review_gen.add_argument("--dry-run", action="store_true", help="Preview only")
+    review_apply = review_sub.add_parser("apply", help="Apply approved fixes from review sheets")
+    review_apply.add_argument("--dry-run", action="store_true", help="Preview only")
+    review_sub.add_parser("status", help="Show pending review sheet status")
+
+    # dedupe
+    dedupe_p = sub.add_parser("dedupe", help="Interactive duplicate review console")
+    dedupe_p.add_argument(
+        "--auto",
+        action="store_true",
+        help="Leave every pending group to the keep rule (the resolver decides)",
+    )
+    dedupe_p.add_argument(
+        "--report", action="store_true", help="Show report only, no interactive review"
+    )
+
+    # status
+    sub.add_parser("status", help="Show library status")
+
+    # runs
+    sub.add_parser("runs", help="List recent pipeline runs")
+
+    # console (legacy interactive)
+    sub.add_parser("console", help="Launch interactive console")
+
+    # version
+    sub.add_parser("version", help="Print version and exit")
+
+    return p
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+
+def _pipeline_for_run(args) -> tuple[list, dict]:
+    """The stages `musaeus run` will execute, and the stash to preload.
+
+    Pulled out of main() so the selection -- --maintain/--full/--archive/
+    --enrich, then --skip, then --act -- can be tested without starting a run.
+    """
+    if getattr(args, "maintain", False):
+        pipeline = MAINTAIN_PIPELINE
+    elif getattr(args, "full", False):
+        pipeline = FULL_PIPELINE
+    elif getattr(args, "archive", False):
+        pipeline = ARCHIVE_PIPELINE
+    elif getattr(args, "enrich", False):
+        pipeline = ENRICH_PIPELINE
+    else:
+        pipeline = DEFAULT_PIPELINE
+    # VariousArtistsFixStage is wired into DEFAULT_PIPELINE
+    # (2026-08-19); force MB lookups off here so a network
+    # hiccup early in Act 1 can't stall an otherwise
+    # file-safety-critical automatic run. `musaeus
+    # various-artists-fix` run standalone still defaults to MB
+    # lookups on.
+    run_stash = {"various_artists_no_mb": True} if pipeline is DEFAULT_PIPELINE else {}
+
+    # --skip removes named stages from whichever pipeline was chosen.
+    #
+    # Added 2026-08-22 for the overnight cron. DupeResolver had
+    # physically relocated 6,480 files in a single unattended run,
+    # resolving 7,679 near-duplicate groups that were staged FOR
+    # REVIEW -- the documented rule is that near-duplicates are never
+    # auto-resolved, and it held for every interactive path while the
+    # scheduled one quietly did the opposite. Staging and resolving
+    # are different decisions and a cron should only ever do the
+    # first.
+    skip = {s.strip().lower() for s in (getattr(args, "skip", "") or "").split(",") if s.strip()}
+    if skip:
+        names: dict[str, str] = {
+            str(getattr(st, "NAME", st.__name__)): str(getattr(st, "NAME", st.__name__)).lower()
+            for st in pipeline
+        }
+        kept = [st for st in pipeline if names[str(getattr(st, "NAME", st.__name__))] not in skip]
+        dropped = sorted(n for n, low in names.items() if low in skip)
+        unknown = skip - set(names.values())
+        if unknown:
+            print(f"  ! --skip: no such stage in this pipeline: {', '.join(sorted(unknown))}")
+        if dropped:
+            print(f"  ↷ skipping stage(s): {', '.join(dropped)}")
+        pipeline = kept
+
+    # --act: one Act, then stop (Grey, 2026-09-24: small batches run
+    # act by act, each Act's problem list read before the next).
+    act = getattr(args, "act", None)
+    if act:
+        label = act if act == "enrichment" else f"act{act}"
+        pipeline = [st for st in pipeline if act_of(st.__name__) == label]
+        print(f"  ▸ {label} only: {len(pipeline)} stage(s)")
+    return pipeline, run_stash
+
+
+def main() -> None:
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    verbose = getattr(args, "verbose", False)
+    show_progress = getattr(args, "progress", True)  # Default to True
+
+    _setup_logging(verbose)
+
+    # Pin every module before any command runs. Deliberately here and not in
+    # PreflightStage: preflight is skippable (`musaeus run --skip ...`), and a
+    # partial run is precisely when somebody is most likely to be mid-edit. A
+    # guard living inside a skippable stage is missing exactly when it is
+    # needed. See _pin_modules for what goes wrong without it.
+    _pinned, _pin_failures = _pin_modules()
+    logger.debug("[pin] %d module(s) imported at startup", _pinned)
+    for _name, _err in _pin_failures:
+        logger.warning("[pin] %s did not import: %s", _name, _err)
+
+    # Enable progress tracking if requested
+    if verbose:
+        from .progress import enable_verbose_logging
+
+        enable_verbose_logging()
+
+    command = args.command or "console"
+    dry_run = getattr(args, "dry_run", False)
+
+    # ── First-run check: trigger wizard if no config exists ───────────────────
+    from .setup import needs_setup
+    from .setup import run_wizard as _run_wizard
+
+    if command == "setup":
+        _run_wizard(force=True)
+        return
+
+    if command == "reset":
+        _cmd_reset()
+        return
+
+    if needs_setup() and command not in ("setup", "reset", "status", "runs"):
+        print("\n  Welcome to MUSAEUS! No configuration found.")
+        print("  Running first-time setup wizard...\n")
+        if not _run_wizard():
+            return
+
+    try:
+        # Store progress settings in global state for pipeline runner
+        import os
+
+        os.environ["MUSAEUS_VERBOSE"] = "1" if verbose else "0"
+        os.environ["MUSAEUS_PROGRESS"] = "1" if show_progress else "0"
+
+        # ── pipeline commands ─────────────────────────────────────────────────
+
+        if command == "run":
+            if getattr(args, "reset", False):
+                _clear_resume()
+                print("  ✓ Resume state cleared.")
+            pipeline, run_stash = _pipeline_for_run(args)
+            sys.exit(_run_pipeline(pipeline, dry_run=dry_run, stash=run_stash))
+
+        elif command == "dry-run":
+            sys.exit(
+                _run_pipeline(DEFAULT_PIPELINE, dry_run=True, stash={"various_artists_no_mb": True})
+            )
+
+        elif command == "preflight":
+            sys.exit(_run_pipeline([PreflightStage], dry_run=dry_run))
+
+        elif command == "ingest":
+            sys.exit(_run_pipeline([IngestStage], dry_run=dry_run))
+
+        elif command == "sentinel":
+            sys.exit(_run_pipeline([SentinelStage], dry_run=dry_run))
+
+        elif command == "cross-dupe":
+            sys.exit(_run_pipeline([CrossDupeStage], dry_run=dry_run))
+
+        elif command == "dupe-resolver":
+            sys.exit(_run_pipeline([DupeResolverStage], dry_run=dry_run))
+
+        elif command == "scholar":
+            sys.exit(_run_pipeline([ScholarStage], dry_run=dry_run))
+
+        elif command == "normalize":
+            sys.exit(_run_pipeline([NormalizeStage], dry_run=dry_run))
+
+        elif command == "organize":
+            sys.exit(_run_pipeline([OrganizeStage], dry_run=dry_run))
+
+        elif command == "sanitize":
+            sys.exit(_run_pipeline([SanitizeStage], dry_run=dry_run))
+
+        elif command == "canonicalize":
+            stash: dict = {}
+            if getattr(args, "force", False):
+                stash["canonicalize_force"] = True
+            sys.exit(_run_pipeline([CanonicalizeStage], dry_run=dry_run, stash=stash))
+
+        elif command == "finalize":
+            stash = {}
+            if getattr(args, "force", False):
+                stash["finalize_force"] = True
+            sys.exit(_run_pipeline([FinalizeStage], dry_run=dry_run, stash=stash))
+
+        elif command == "audit":
+            sys.exit(_run_pipeline([AuditStage], dry_run=dry_run))
+
+        elif command == "forge":
+            stash = {}
+            if getattr(args, "force", False):
+                stash["forge_force"] = True
+            if getattr(args, "retag", False):
+                stash["forge_retag"] = True
+            if getattr(args, "embed_from_db", False):
+                stash["forge_embed_from_db"] = True
+            target_lufs = getattr(args, "target_lufs", None)
+            if target_lufs is not None:
+                stash["forge_target_lufs"] = float(target_lufs)
+            sys.exit(_run_pipeline([ForgeStage], dry_run=dry_run, stash=stash))
+
+        elif command == "tagger":
+            sys.exit(_run_pipeline([TaggerStage], dry_run=dry_run))
+
+        elif command == "ghost":
+            sys.exit(_run_pipeline([GhostStage], dry_run=dry_run))
+
+        elif command == "health":
+            sys.exit(_run_pipeline([HealthStage], dry_run=dry_run))
+
+        elif command == "corrupt":
+            from .stages import CorruptStage
+
+            sys.exit(_run_pipeline([CorruptStage], dry_run=dry_run))
+
+        elif command == "rebuild-from-disk":
+            from .rebuild_from_disk import promote, scan_and_rebuild
+
+            cfg = get_config()
+            conn = open_db(cfg.db_path)
+            summary = scan_and_rebuild(
+                conn,
+                cfg,
+                limit=getattr(args, "limit", 0),
+                compute_hashes=not getattr(args, "no_hashes", False),
+            )
+            print(f"\n  scanned : {summary['scanned']:,}")
+            print(f"  rebuilt : {summary['rebuilt']:,}  -> table '{summary['table']}'")
+            print(f"  errors  : {len(summary['errors']):,}")
+            for e in summary["errors"][:10]:
+                print(f"    {e}")
+            if getattr(args, "promote", False):
+                if summary["rebuilt"] == 0:
+                    print("\n  refusing to promote an empty rebuild.", file=sys.stderr)
+                    sys.exit(1)
+                backup = promote(conn, table=summary["table"])
+                print(f"\n  promoted. previous archive preserved as: {backup}")
+            else:
+                print("\n  review it, then re-run with --promote to swap it in.")
+            conn.close()
+            sys.exit(0)
+
+        elif command == "permissions":
+            from .stages import PermissionsStage
+
+            sys.exit(_run_pipeline([PermissionsStage], dry_run=dry_run))
+
+        elif command == "tribute-quarantine":
+            from .stages import TributeQuarantineStage
+
+            sys.exit(_run_pipeline([TributeQuarantineStage], dry_run=dry_run))
+
+        elif command == "various-artists-fix":
+            from .stages import VariousArtistsFixStage
+
+            stash = {}
+            if getattr(args, "no_mb", False):
+                stash["various_artists_no_mb"] = True
+            sys.exit(_run_pipeline([VariousArtistsFixStage], dry_run=dry_run, stash=stash))
+
+        elif command == "bitrot":
+            from .stages import BitRotStage
+
+            stash = {}
+            limit = getattr(args, "limit", 0)
+            if limit:
+                stash["bitrot_limit"] = int(limit)
+            if getattr(args, "rebaseline", False):
+                stash["bitrot_rebaseline"] = True
+            if getattr(args, "backfill_pcm", False):
+                stash["bitrot_backfill_pcm"] = True
+            sys.exit(_run_pipeline([BitRotStage], dry_run=dry_run, stash=stash))
+
+        elif command == "bpm":
+            from .stages import BPMStage
+
+            stash = {}
+            if getattr(args, "force", False):
+                stash["bpm_force"] = True
+            if getattr(args, "retag", False):
+                stash["bpm_retag"] = True
+            sys.exit(_run_pipeline([BPMStage], dry_run=dry_run, stash=stash))
+
+        elif command == "artist-consolidate":
+            from .stages import ArtistConsolidateStage
+
+            sys.exit(_run_pipeline([ArtistConsolidateStage], dry_run=dry_run))
+
+        elif command == "auditor":
+            stash = {}
+            tl = getattr(args, "target_lufs", None)
+            if tl is not None:
+                stash["auditor_target_lufs"] = float(tl)
+            mf = getattr(args, "max_files", None)
+            if mf is not None:
+                stash["auditor_max_files"] = int(mf)
+            sys.exit(_run_pipeline([AuditorStage], dry_run=dry_run, stash=stash))
+
+        elif command == "enrich":
+            sys.exit(_run_pipeline([EnrichStage], dry_run=dry_run))
+
+        elif command == "mb-enrich":
+            sys.exit(_run_pipeline([MBEnrichStage], dry_run=dry_run))
+
+        elif command == "original-year":
+            stash = {
+                "original_year_limit": getattr(args, "limit", 0),
+                "original_year_genre": getattr(args, "genre", ""),
+            }
+            sys.exit(_run_pipeline([OriginalYearStage], dry_run=dry_run, stash=stash))
+
+        elif command == "genre-validate":
+            stash = {}
+            if getattr(args, "consolidate", False):
+                stash["genre_consolidate"] = True
+            sys.exit(_run_pipeline([GenreValidateStage], dry_run=dry_run, stash=stash))
+
+        elif command == "spellcheck":
+            sys.exit(_run_pipeline([SpellCheckStage], dry_run=dry_run))
+
+        elif command == "neardupe":
+            sys.exit(_run_pipeline([NearDupeStage], dry_run=dry_run))
+
+        elif command == "convergence":
+            # The front door for Grey's run-until-it-settles plan. A script
+            # nobody remembers the path to is a script nobody runs, which is
+            # the same argument that put the iPhone build in the console.
+            import runpy
+
+            sys.argv = ["convergence_report.py", "--runs", str(args.runs)]
+            if getattr(args, "oscillations", False):
+                sys.argv.append("--oscillations")
+            if getattr(args, "csv", None):
+                sys.argv += ["--csv", args.csv]
+            runpy.run_path(
+                str(Path(__file__).resolve().parent.parent / "scripts" / "convergence_report.py"),
+                run_name="__main__",
+            )
+            sys.exit(0)
+
+        elif command == "report":
+            import json as _json
+
+            from scripts.musaeus_report import _gather, _print_report
+
+            cfg = get_config()
+            conn = open_db(cfg.db_path)
+            try:
+                data = _gather(conn)
+            finally:
+                conn.close()
+            if getattr(args, "json", False):
+                print(_json.dumps(data, indent=2, default=str))
+            else:
+                _print_report(data, cfg, wide=getattr(args, "wide", False))
+            sys.exit(0)
+
+        elif command == "health-report":
+            sys.exit(_cmd_health_report())
+
+        elif command == "rebuild-db":
+            from .rebuild import cmd_rebuild_db
+
+            sys.exit(cmd_rebuild_db(dry_run=dry_run))
+
+        elif command == "review":
+            from .approval import cmd_review_apply, cmd_review_generate, cmd_review_status
+
+            review_cmd = getattr(args, "review_command", None)
+            if review_cmd == "generate":
+                sys.exit(cmd_review_generate(dry_run=dry_run))
+            elif review_cmd == "apply":
+                sys.exit(cmd_review_apply(dry_run=dry_run))
+            elif review_cmd == "status":
+                sys.exit(cmd_review_status())
+            else:
+                print("Usage: musaeus review {generate|apply|status}")
+                sys.exit(1)
+
+        elif command == "curator":
+            stash = {}
+            export_root = getattr(args, "export_root", None)
+            if export_root:
+                stash["curator_export_root"] = Path(export_root)
+            stash["curator_noise"] = getattr(args, "noise", "dual")
+            if getattr(args, "force", False):
+                stash["curator_force"] = True
+            sys.exit(_run_pipeline([CuratorStage], dry_run=dry_run, stash=stash))
+
+        elif command == "acousticid":
+            stash = {}
+            limit = getattr(args, "limit", 0)
+            if limit:
+                stash["acousticid_limit"] = int(limit)
+            sys.exit(_run_pipeline([AcousticIDStage], dry_run=dry_run, stash=stash))
+
+        elif command == "transcode":
+            stash = {}
+            export_root = getattr(args, "export_root", None)
+            if export_root:
+                stash["transcode_root"] = Path(export_root)
+            if getattr(args, "force", False):
+                stash["transcode_force"] = True
+            sys.exit(_run_pipeline([TranscodeStage], dry_run=dry_run, stash=stash))
+
+        elif command == "upgrade-check":
+            sys.exit(
+                _cmd_upgrade_check(
+                    write_csv=getattr(args, "csv", False),
+                    min_gap=getattr(args, "min_gap", 0),
+                )
+            )
+
+        elif command == "integrity":
+            stash = {}
+            mf = getattr(args, "max_files", None)
+            if mf is not None:
+                stash["integrity_max_files"] = int(mf)
+            sys.exit(_run_pipeline([IntegrityStage], dry_run=dry_run, stash=stash))
+
+        elif command == "albumart":
+            stash = {}
+            if getattr(args, "force", False):
+                stash["albumart_force"] = True
+            if getattr(args, "no_embed", False):
+                stash["albumart_embed"] = False
+            sys.exit(_run_pipeline([AlbumArtStage], dry_run=dry_run, stash=stash))
+
+        elif command == "overnight":
+            overnight_pipeline = [
+                GhostStage,
+                HealthStage,
+                NormalizeStage,
+                EnrichStage,
+                MBEnrichStage,
+                NearDupeStage,
+            ]
+            sys.exit(_run_pipeline(overnight_pipeline, dry_run=dry_run))
+
+        elif command == "deep-scan":
+            sys.exit(_cmd_deep_scan(args))
+
+        elif command == "edition":
+            sys.exit(_cmd_edition(args))
+        elif command == "edition-build":
+            sys.exit(_cmd_edition_build(args))
+
+        elif command == "playlist":
+            sys.exit(_run_pipeline([PlaylistStage], dry_run=dry_run))
+
+        elif command == "db-tune":
+            sys.exit(_cmd_db_tune())
+
+        elif command == "spec-scout":
+            sys.exit(
+                _cmd_spec_scout(
+                    write_csv=getattr(args, "csv", False),
+                    min_bitrate=getattr(args, "min_bitrate", 0),
+                    max_bitrate=getattr(args, "max_bitrate", 0),
+                )
+            )
+
+        elif command == "canon-review":
+            canon_mode = getattr(args, "canon_mode", None)
+            if not canon_mode:
+                print("Usage: musaeus canon-review {report|apply}", file=sys.stderr)
+                sys.exit(1)
+            sys.exit(
+                _cmd_canon_review(
+                    mode=canon_mode,
+                    csv_path=getattr(args, "csv", None),
+                    fixes_path=getattr(args, "fixes", None),
+                    dry_run=getattr(args, "dry_run", False),
+                )
+            )
+
+        # ── review commands ───────────────────────────────────────────────────
+
+        elif command == "dedupe":
+            sys.exit(
+                _cmd_dedupe(
+                    auto=getattr(args, "auto", False),
+                    report_only=getattr(args, "report", False),
+                )
+            )
+
+        elif command == "plan":
+            from .planner import RunMode, build_plan, reject_persistence_flags
+
+            mode = RunMode.resolve(preview=True)
+            reject_persistence_flags(mode, args)
+            pipe = (
+                FULL_PIPELINE
+                if getattr(args, "full", False)
+                else MAINTAIN_PIPELINE
+                if getattr(args, "maintain", False)
+                else DEFAULT_PIPELINE
+            )
+            plan = build_plan(get_config(), list(pipe), mode)
+            print(
+                plan.to_json()
+                if getattr(args, "json", False)
+                else "\n  MUSAEUS — plan\n\n" + plan.render() + "\n"
+            )
+            sys.exit(0)
+
+        elif command == "doctor":
+            from .doctor import diagnose
+
+            rep = diagnose(get_config())
+            print("\n  MUSAEUS — library integrity\n")
+            print(rep.render())
+            print()
+            sys.exit(1 if rep.failed else 0)
+
+        elif command == "status":
+            sys.exit(_cmd_status())
+
+        elif command == "runs":
+            sys.exit(_cmd_runs())
+
+        elif command == "console":
+            from .console import Console
+
+            Console().run()
+
+        elif command == "version":
+            print(f"musaeus {__version__}")
+
+        else:
+            parser.print_help()
+            sys.exit(1)
+
+    except KeyboardInterrupt:
+        print("\nAborted.", file=sys.stderr)
+        sys.exit(130)
+    except Exception:
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
