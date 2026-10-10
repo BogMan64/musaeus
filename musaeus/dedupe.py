@@ -129,6 +129,11 @@ LEFT_TO_KEEP_RULE = "left to the keep rule: the resolver decides it at the next 
 CarryOut = Callable[[Sequence[str], list[str], list[str]], tuple[bool, str]]
 
 
+#: A stop pressed again this long after the first forces it: a double tap waits
+#: (stopped mid-move, a carry-out lost the keep -- review of #149), a hang does not.
+_FORCE_AFTER_S = 10.0
+
+
 @contextmanager
 def _not_interrupted() -> Iterator[None]:
     """Ctrl-C, a closed terminal or a TERM wait until the carry-out is done.
@@ -140,12 +145,17 @@ def _not_interrupted() -> Iterator[None]:
         return
     sigs = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
     old = {s: signal.getsignal(s) for s in sigs}
-    asked: list[int] = []
+    asked: list[float] = []
 
     def wait(n: int, frame: object) -> None:
-        asked.append(n)
-        if len(asked) > 1:  # asked twice: a hung move must still be stoppable
-            raise KeyboardInterrupt
+        import time
+
+        now = time.monotonic()
+        if not asked:
+            print("\n  Finishing the carry-out, then stopping. Press again in 10 s to force.")
+        elif now - asked[0] >= _FORCE_AFTER_S:
+            raise KeyboardInterrupt  # a hung move must still be stoppable
+        asked.append(now)
 
     for s in sigs:
         signal.signal(s, wait)

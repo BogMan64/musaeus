@@ -730,6 +730,12 @@ class DupeResolverStage(BaseStage):
             already_moved={},
             group_ids=list(groups),
         )
+        if archived and not result.files_changed:
+            # Nothing moved: no keep is recorded either, so the person's
+            # "choose again" starts from where it was (review of #149).
+            result.success = False
+            ctx.conn.commit()
+            return result
         now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
         for p in kept:
             ctx.conn.execute(

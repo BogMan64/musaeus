@@ -349,3 +349,35 @@ def test_a_partly_carried_out_set_counts_and_says_what_failed(ctx, monkeypatch, 
     out = capsys.readouterr().out
     assert keep.exists() and not s1.exists() and s2.exists()
     assert "Carried out=1" in out and "Input/output error" in out
+
+
+def test_a_double_tap_of_ctrl_c_still_finishes_the_carry_out(ctx, monkeypatch):
+    """Re-review of #149: a second Ctrl-C right after the first forced a stop."""
+    import os
+    import signal
+
+    studio, live = _pair(ctx)
+    real = DupeResolverStage._move_losers
+
+    def tapped_twice(self, *args, **kwargs):
+        os.kill(os.getpid(), signal.SIGINT)
+        os.kill(os.getpid(), signal.SIGINT)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(DupeResolverStage, "_move_losers", tapped_twice)
+    with pytest.raises(KeyboardInterrupt):
+        _console(ctx, monkeypatch, "2k\n1a\ny\nq\n")
+    assert live.exists() and not studio.exists()
+    assert _kept_mark(ctx, live)
+
+
+def test_no_keep_is_recorded_when_nothing_could_be_moved(ctx, monkeypatch):
+    studio, live = _pair(ctx)
+
+    def every_move_fails(src, dst, *a, **k):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr("musaeus.stages.dupe_resolver.shutil.move", every_move_fails)
+    _console(ctx, monkeypatch, "2k\n1a\ny\ns\n")
+    assert studio.exists() and not _kept_mark(ctx, live)
+    assert set(_statuses(ctx).values()) == {"pending"}
