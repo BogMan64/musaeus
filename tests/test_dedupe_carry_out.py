@@ -290,3 +290,62 @@ def test_a_refused_carry_out_is_not_counted(ctx, monkeypatch, capsys):
     with masters_lock(ctx.config.runs_root, exclusive=True, what="a backup"):
         _console(ctx, monkeypatch, "2k\n1a\ny\ns\n")
     assert "Carried out=0" in capsys.readouterr().out
+
+
+# ── Review of #149 before it merged (2026-10-10) ──
+
+
+def test_a_kept_pair_stays_after_one_is_refiled_and_flagged_again(ctx, monkeypatch):
+    """A refiled kept copy leaves its old-path row (no catalogue row, no mark)
+    and gets a new pending row at its new path: still nothing new arrived."""
+    one = _copy(ctx, "one.m4a", "near_x")
+    two = _copy(ctx, "two.m4a", "near_x", album="Live at the Fillmore", codec="aac", rate=256_000)
+    _console(ctx, monkeypatch, "1k\n2k\ny\nq\n")
+    filed = two.with_name("two (filed).m4a")
+    two.rename(filed)
+    ctx.conn.execute("UPDATE archive SET file_path = ? WHERE file_path = ?", (str(filed), str(two)))
+    ctx.conn.execute("INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, "
+                     "run_id, audio_hash) VALUES ('near_x', ?, 'NEAR', 0.9, 'r', 'pcm:two.m4a')",
+                     (str(filed),))  # fmt: skip
+    ctx.conn.commit()
+    DupeResolverStage().execute(ctx)
+    assert one.exists() and filed.exists(), "a kept copy was moved with nothing new arrived"
+    assert "pending" not in set(_statuses(ctx).values())
+
+
+def test_the_longest_live_copy_is_kept_when_a_longer_one_is_set_aside(ctx):
+    """The keep rule's length step measured against a set-aside copy."""
+    a = _copy(ctx, "a.m4a", "near_x")
+    b = _copy(ctx, "b.m4a", "near_x")
+    c = _copy(ctx, "c.m4a", "near_x")
+    for path, secs in ((a, 200.0), (b, 203.0), (c, 206.0)):
+        ctx.conn.execute("UPDATE archive SET duration = ? WHERE file_path = ?", (secs, str(path)))
+    ctx.conn.execute("UPDATE archive SET status = 'QUARANTINED' WHERE file_path = ?", (str(c),))
+    ctx.conn.commit()
+    DupeResolverStage().execute(ctx)
+    assert b.exists() and not a.exists(), "the longer live copy was moved"
+
+
+def test_a_partly_carried_out_set_counts_and_says_what_failed(ctx, monkeypatch, capsys):
+    """One archived copy's move failed: the others did move, so it is not
+    'Not carried out', and the set is not offered again."""
+    import shutil as _shutil
+
+    keep = _copy(ctx, "keep.m4a", "near_x")
+    s1 = _copy(ctx, "s1.m4a", "near_x", album="Live at the Fillmore", codec="aac", rate=256_000)
+    s2 = _copy(ctx, "s2.m4a", "near_x", album="Live at Leeds", codec="aac", rate=128_000)
+    real = _shutil.move
+
+    def fails_for_s2(src, dst, *a, **k):
+        if str(src).endswith("s2.m4a"):
+            raise OSError(5, "Input/output error")
+        return real(src, dst, *a, **k)
+
+    monkeypatch.setattr("musaeus.stages.dupe_resolver.shutil.move", fails_for_s2)
+    order = [Path(m["file_path"]).name for m in dedupe._set_members(ctx.conn, ["near_x"])]
+    keys = "".join(f"{order.index(n) + 1}{a}\n" for n, a in (("keep.m4a", "k"), ("s1.m4a", "a"),
+                                                            ("s2.m4a", "a"))) + "y\nq\n"  # fmt: skip
+    _console(ctx, monkeypatch, keys)
+    out = capsys.readouterr().out
+    assert keep.exists() and not s1.exists() and s2.exists()
+    assert "Carried out=1" in out and "Input/output error" in out

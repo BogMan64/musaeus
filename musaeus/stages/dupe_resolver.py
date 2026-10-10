@@ -1154,6 +1154,10 @@ class DupeResolverStage(BaseStage):
 
             # One keeper for the whole component, so a file kept by one of
             # its groups can no longer be moved as another's loser.
+            # Ranked again without the copies set aside: the keep rule's length
+            # step otherwise measured against a set-aside copy (review of #149).
+            _share_loudness(members)
+            _rank(members)
             keeper, losers = _pick_keeper_and_losers(members)
             # An incoming CROSS_BATCH duplicate always moves, also when its
             # group was merged with a NEAR group: the library already holds
@@ -1181,10 +1185,15 @@ class DupeResolverStage(BaseStage):
             # may move the kept one (Grey, 2026-10-10). Copies all kept by a
             # person are theirs: left alone, and closed (review of #140-#142,
             # findings 2, 5, 8, 12).
-            if all(m.get("kept_by_person_at") for m in members):
+            # Over the copies that are there: a kept copy refiled since leaves a
+            # row at its old path with no catalogue row and no mark, which made
+            # all() false and moved a kept copy with nothing new arrived
+            # (review of #149). Those gone rows close as 'stale'.
+            live = [m for m in members if m.get("current_row") is not None]
+            if live and all(m.get("kept_by_person_at") for m in live):
                 if not dry_run:
                     for m in members:
-                        _mark(ctx, component, m["file_path"], "keep")
+                        _mark(ctx, component, m["file_path"], "keep" if m in live else "stale")
                 result.notes.append(
                     f"group {group_id}: every copy kept in `musaeus dedupe`: left alone"
                 )

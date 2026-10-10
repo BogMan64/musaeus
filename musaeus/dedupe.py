@@ -141,8 +141,14 @@ def _not_interrupted() -> Iterator[None]:
     sigs = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
     old = {s: signal.getsignal(s) for s in sigs}
     asked: list[int] = []
+
+    def wait(n: int, frame: object) -> None:
+        asked.append(n)
+        if len(asked) > 1:  # asked twice: a hung move must still be stoppable
+            raise KeyboardInterrupt
+
     for s in sigs:
-        signal.signal(s, lambda n, f: asked.append(n))
+        signal.signal(s, wait)
     try:
         yield
     finally:
@@ -179,7 +185,11 @@ def carry_out_with(config) -> CarryOut:
                     conn.close()
         except MastersBusy as exc:
             return False, f"nothing moved: {exc}"
-        return result.success, "; ".join(result.errors + result.notes) or "done"
+        # Partly carried out still counts: the copies that moved are in review
+        # and the keeps are marked, and the set is not offered again as if
+        # nothing had happened (review of #149).
+        carried = result.success or result.files_changed > 0
+        return carried, "; ".join(result.errors + result.notes) or "done"
 
     return carry_out
 
