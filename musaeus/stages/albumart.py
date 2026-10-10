@@ -165,58 +165,96 @@ def _one_album_folder(ctx: RunContext, folder: Path) -> bool:
     return len(pairs) <= 1
 
 
+#: The copy a cover is added to, beside the file: not an audio extension, so a
+#: copy a kill left is never taken for a song (ingest scans audio extensions).
+_ART_SUFFIX = ".artmp"
+
+
+def _image_format(data: bytes) -> str | None:
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    return None
+
+
 def _embed_art(audio_path: str, art_path: Path) -> bool:
+    """Put the cover at *art_path* into *audio_path*. True on success; on any
+    failure the file is as it was.
+
+    The cover is added with mutagen, as a tag, to a copy beside the file; the
+    copy is checked (the cover reads back, the length is unchanged), flushed and
+    renamed over the file (musaeus.safe_save). It was an ffmpeg remux of the
+    whole file, which read the terminal -- a "q" typed during a run replaced a
+    10 MB master with a 258-byte one -- and dropped every freeform tag: the
+    loudness tags, the MusicBrainz and AcoustID ids, the key, tempo and sort
+    tags (review of slice A, findings 1 and 2, both verified by running).
     """
-    Embed art_path into audio_path using ffmpeg (in-place via temp file).
-    Returns True on success.
-    """
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        return False
+    import mutagen
+
+    from ..safe_save import change_beside
 
     src = Path(audio_path)
-    # ffmpeg picks its muxer from the output extension, so the real extension
-    # has to come last. "foo.m4a.artmp" makes it exit with "Unable to find a
-    # suitable output format" -- every embed failed that way, silently, and
-    # ART_EMBEDDED had never once been logged.
-    tmp = src.with_name(src.stem + ".artmp" + src.suffix)
+    try:
+        data = art_path.read_bytes()
+    except OSError:
+        return False
+    kind = _image_format(data)
+    ext = src.suffix.lower()
+    if kind is None or ext not in (".m4a", ".mp4", ".flac", ".mp3"):
+        return False
 
-    cmd = [
-        ffmpeg,
-        "-y",
-        "-hide_banner",
-        "-nostats",
-        "-i",
-        audio_path,
-        "-i",
-        str(art_path),
-        "-map",
-        "0:a",
-        "-map",
-        "1:v",
-        "-c:a",
-        "copy",
-        "-c:v",
-        "mjpeg",
-        "-disposition:v:0",
-        "attached_pic",
-        str(tmp),
-    ]
+    def put(tmp: Path) -> None:
+        if ext in (".m4a", ".mp4"):
+            from mutagen.mp4 import MP4, MP4Cover
+
+            f = MP4(tmp)
+            if f.tags is None:
+                f.add_tags()
+            assert f.tags is not None
+            fmt = MP4Cover.FORMAT_JPEG if kind == "jpeg" else MP4Cover.FORMAT_PNG
+            f.tags["covr"] = [MP4Cover(data, imageformat=fmt)]
+            f.save()
+        elif ext == ".flac":
+            from mutagen.flac import FLAC, Picture
+
+            fl = FLAC(tmp)
+            pic = Picture()
+            pic.type, pic.mime, pic.data = 3, f"image/{kind}", data
+            fl.clear_pictures()
+            fl.add_picture(pic)
+            fl.save()
+        else:
+            from mutagen.id3 import APIC, ID3, ID3NoHeaderError
+
+            try:
+                tags = ID3(tmp)
+            except ID3NoHeaderError:
+                tags = ID3()
+            tags.delall("APIC")
+            tags.add(APIC(encoding=3, mime=f"image/{kind}", type=3, desc="Cover", data=data))
+            tags.save(tmp)
+
+    def check(tmp: Path) -> None:
+        before, after = mutagen.File(src), mutagen.File(tmp)
+        if before is None or after is None:
+            raise ValueError("unreadable after the cover was added")
+        if abs(after.info.length - before.info.length) > 0.01:
+            raise ValueError("the length changed when the cover was added")
+        if ext in (".m4a", ".mp4"):
+            ok = bool((after.tags or {}).get("covr"))
+        elif ext == ".flac":
+            ok = bool(after.pictures)
+        else:
+            ok = bool(after.tags and after.tags.getall("APIC"))
+        if not ok:
+            raise ValueError("the cover does not read back")
 
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=_FFMPEG_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        if tmp.exists():
-            tmp.unlink()
+        change_beside(src, put, suffix=_ART_SUFFIX, check=check)
+    except Exception as exc:  # noqa: BLE001 -- art is a nicety; the file is as it was
+        logger.warning("[albumart] could not add the cover to %s: %s", src.name, exc)
         return False
-
-    if res.returncode != 0:
-        if tmp.exists():
-            tmp.unlink()
-        return False
-
-    # Atomically replace original
-    tmp.replace(src)
     return True
 
 
