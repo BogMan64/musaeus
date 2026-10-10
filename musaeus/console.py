@@ -25,7 +25,7 @@ import contextlib
 import logging
 import sys
 import traceback
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -443,7 +443,34 @@ class Console:
 
     # ── Run pipeline ──────────────────────────────────────────────────────────
 
+    def _masters_held(self, dry_run: bool, what: str, run: Callable[[], None]) -> None:
+        """Run *run* holding the masters lock exclusively, as `musaeus run` does
+        (#104): a live run here took no lock, so a carry-out in `musaeus dedupe`,
+        a build or a backup could change the masters meanwhile (review of
+        #140-#142, finding 4). A dry run changes nothing and takes no lock."""
+        if dry_run:
+            run()
+            return
+        from .masters_lock import MastersBusy, masters_lock
+
+        assert self._config is not None
+        try:
+            with masters_lock(self._config.runs_root, exclusive=True, what=f"console: {what}"):
+                run()
+        except MastersBusy as exc:
+            _err(f"Not run: {exc}")
+
     def _run_pipeline(
+        self,
+        dry_run: bool,
+        stage_classes: list[type[BaseStage]] | None = None,
+        label: str = "Pipeline",
+    ) -> None:
+        self._masters_held(
+            dry_run, label, lambda: self._run_pipeline_inner(dry_run, stage_classes, label)
+        )
+
+    def _run_pipeline_inner(
         self,
         dry_run: bool,
         stage_classes: list[type[BaseStage]] | None = None,
@@ -538,6 +565,11 @@ class Console:
     # ── Run single stage ──────────────────────────────────────────────────────
 
     def _run_stage(self, stage_cls: type[BaseStage], dry_run: bool) -> None:
+        self._masters_held(
+            dry_run, stage_cls.__name__, lambda: self._run_stage_inner(stage_cls, dry_run)
+        )
+
+    def _run_stage_inner(self, stage_cls: type[BaseStage], dry_run: bool) -> None:
         mode = "DRY RUN" if dry_run else "LIVE RUN"
         assert self._config is not None
         conn = self._open_db()
@@ -891,6 +923,15 @@ class Console:
     # ── Stage submenu ─────────────────────────────────────────────────────────
 
     def _run_stage_with_stash(
+        self, stage_cls: type, dry_run: bool, stash: dict | None = None
+    ) -> None:
+        self._masters_held(
+            dry_run,
+            stage_cls.__name__,
+            lambda: self._run_stage_with_stash_inner(stage_cls, dry_run, stash),
+        )
+
+    def _run_stage_with_stash_inner(
         self, stage_cls: type, dry_run: bool, stash: dict | None = None
     ) -> None:
         """Like _run_stage but pre-loads ctx stash keys (for curator, forge --force, etc.)."""

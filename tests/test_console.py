@@ -200,3 +200,22 @@ class TestConnectionLeakOnInterrupt:
         con._run_stage(_QuietStage, dry_run=False)
         assert tracked, "no connection was opened"
         assert tracked[-1].close_called
+
+
+def test_a_live_run_waits_for_nothing_else_using_the_masters(console, monkeypatch, capsys):
+    """Review of #140-#142, finding 4: the console's live runs took no masters
+    lock, so a carry-out in `musaeus dedupe`, a build or a backup could change
+    the masters during an Act. Busy: nothing runs, and it says why."""
+    from musaeus.masters_lock import masters_lock
+
+    con, tracked = console
+    import musaeus.console as console_mod
+
+    monkeypatch.setattr(console_mod, "DEFAULT_PIPELINE", [_CrashingStage])
+    with masters_lock(con._config.runs_root, exclusive=True, what="musaeus dedupe"):
+        con._run_pipeline(dry_run=False)
+        con._run_stage(_CrashingStage, dry_run=False)
+        con._run_stage_with_stash(_CrashingStage, dry_run=False)
+    assert not tracked, "a stage ran while the masters were in use"
+    said = capsys.readouterr()
+    assert (said.out + said.err).count("Not run") == 3
