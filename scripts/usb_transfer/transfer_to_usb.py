@@ -544,6 +544,121 @@ def _findmnt_target(source: str) -> str | None:
     return target[0].strip() if target and target[0].strip() else None
 
 
+# ── The stick's filesystem: checked before a copy, ejected after ─────────────
+#
+# Grey, 2026-10-10: the car's Android unit called the stick corrupted after a
+# sync, and Windows repaired it. A FAT stick pulled while still mounted is
+# left marked dirty, which is the usual cause. So before writing, udisks checks
+# the filesystem (fsck.vfat or fsck.exfat, as Windows' "scan and fix" does) and
+# repairs it if needed; after, everything is flushed, the stick unmounted and
+# powered off, and the run says when it is safe to pull. udisks needs no
+# password for a removable stick in the desktop session.
+
+_UDISKS = ["gdbus", "call", "--system", "--dest", "org.freedesktop.UDisks2"]
+
+
+def _mount_source(path: Path, run=subprocess.run) -> str | None:
+    r = run(["findmnt", "-no", "SOURCE", "--target", str(path)],
+            capture_output=True, text=True, check=False)  # fmt: skip
+    src = (r.stdout or "").strip()
+    return src if src.startswith("/dev/") else None
+
+
+def _udisks_says_true(out: str) -> bool:
+    return out.strip().startswith("(true")
+
+
+def _remount(partition: str, run=subprocess.run) -> Path:
+    """Mount the stick again; where it now is comes from findmnt, never from
+    udisksctl's message (a path holding " at ", or a label ending in ".", was
+    misread and the copy went elsewhere -- review of #151)."""
+    r = run(["udisksctl", "mount", "-b", partition], capture_output=True, text=True, check=False)
+    target = _findmnt_target(partition)
+    if target and Path(target).is_absolute():
+        return Path(target)
+    said = ((r.stdout or "") + (r.stderr or "")).strip()
+    raise UsbTargetError(f"the stick could not be mounted again: {said}")
+
+
+#: How long udisks may take to check or repair a stick. gdbus gives up after
+#: 25 s by default, and fsck.vfat on a 239 GB stick can take minutes.
+_FSCK_TIMEOUT_S = 3600
+
+
+class _StillBeingChecked(UsbTargetError):
+    """udisks did not answer in time: fsck may still be running, so the stick
+    is left unmounted -- mounting it mid-repair is how corruption happens."""
+
+
+def check_and_repair_filesystem(dest_root: Path, run=subprocess.run) -> tuple[Path, str]:
+    """Check the stick's filesystem, repair it if needed, mount it again.
+
+    Returns (dest_root where the stick is mounted now, what was done). Raises
+    UsbTargetError when it cannot be checked or a repair failed: nothing is
+    copied onto a filesystem that may be damaged.
+    """
+    partition = _mount_source(dest_root, run)
+    mount_root = _findmnt_target(partition) if partition else None
+    if not partition or not mount_root:
+        raise UsbTargetError(f"could not tell which partition {dest_root} is on")
+    inside = dest_root.resolve().relative_to(Path(mount_root).resolve())
+    obj = "/org/freedesktop/UDisks2/block_devices/" + Path(partition).name
+    r = run(["udisksctl", "unmount", "-b", partition], capture_output=True, text=True, check=False)
+    if r.returncode != 0:
+        raise UsbTargetError(
+            f"the stick could not be unmounted to check it ({r.stderr.strip()}). Close any "
+            "window or terminal open on the stick and try again, or add --no-check."
+        )
+
+    def udisks(method: str) -> str:
+        r = run([*_UDISKS, "--timeout", str(_FSCK_TIMEOUT_S), "--object-path", obj,
+                 "--method", "org.freedesktop.UDisks2.Filesystem." + method, "{}"],
+                capture_output=True, text=True, check=False)  # fmt: skip
+        if r.returncode != 0 and "Timeout" in (r.stderr or ""):
+            raise _StillBeingChecked(
+                f"the stick's filesystem {method.lower()} did not finish in "
+                f"{_FSCK_TIMEOUT_S // 60} min; it is left unmounted. Wait, then pull and "
+                "replug it (or check it in Windows) before trying again."
+            )
+        if r.returncode != 0:
+            raise UsbTargetError(f"the stick's filesystem could not be checked: {r.stderr.strip()}")
+        return r.stdout
+
+    try:
+        if _udisks_says_true(udisks("Check")):
+            said = "filesystem checked: no errors"
+        elif _udisks_says_true(udisks("Repair")):
+            said = "filesystem checked: errors found and repaired"
+        else:
+            raise UsbTargetError(
+                "the stick's filesystem has errors and could not be repaired; "
+                "repair it in Windows and try again"
+            )
+    except _StillBeingChecked:
+        raise
+    except UsbTargetError:
+        try:
+            _remount(partition, run)
+        except UsbTargetError:
+            pass  # the check's own error is the one to report
+        raise
+    return _remount(partition, run) / inside, said
+
+
+def safe_eject(dest_root: Path, run=subprocess.run) -> str:
+    """Flush, unmount and power off the stick: then it is safe to pull."""
+    os.sync()
+    partition = _mount_source(dest_root, run)
+    disk = _backing_disk_for_path(dest_root)
+    if not partition or not disk:
+        return "could not eject the stick: eject it from the desktop before pulling it"
+    for cmd in (["udisksctl", "unmount", "-b", partition], ["udisksctl", "power-off", "-b", disk]):
+        r = run(cmd, capture_output=True, text=True, check=False)
+        if r.returncode != 0:
+            return f"could not eject the stick ({r.stderr.strip()}): eject it from the desktop"
+    return "the stick is unmounted and powered off: safe to remove"
+
+
 def mounted_dir_for_device(device: BlockDevice) -> Path:
     """Where *device*'s mounted partition currently lives, for --no-format.
 
@@ -1234,6 +1349,16 @@ def _main(stack: contextlib.ExitStack) -> int:
         ),
     )
     parser.add_argument(
+        "--no-check",
+        action="store_true",
+        help="With --no-format --execute: do not check and repair the stick's filesystem first",
+    )
+    parser.add_argument(
+        "--no-eject",
+        action="store_true",
+        help="With --no-format --execute: leave the stick mounted when done",
+    )
+    parser.add_argument(
         "--sync",
         action="store_true",
         help=(
@@ -1419,8 +1544,20 @@ def _main(stack: contextlib.ExitStack) -> int:
             return 1
         if args.execute and not _hold_build_lock(stack, cfg, args.library):
             return 1
+        if args.execute and not args.no_check:
+            try:
+                dest_root, said = check_and_repair_filesystem(dest_root)
+            except UsbTargetError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                return 1
+            print(f"Stick: {said}")
         if args.sync:
-            return _run_sync(args, cfg, files, source_root, dest_root, extra_mounts)
+            rc = _run_sync(args, cfg, files, source_root, dest_root, extra_mounts)
+            # Ejected only after a sync that went through: refused or partly
+            # failed, the stick stays mounted for the rerun (review of #151).
+            if args.execute and not args.no_eject and rc == 0:
+                print(f"Stick: {safe_eject(dest_root)}")
+            return rc
         try:
             check_free_space(dest_root, files)
         except (UsbTargetError, OSError) as exc:
@@ -1431,6 +1568,8 @@ def _main(stack: contextlib.ExitStack) -> int:
             print("\nDRY RUN (pass --execute to actually transfer)")
             print("  no unmount, wipefs, parted or mkfs command — nothing is formatted")
             print(f"  would copy {len(files)} file(s) onto the existing filesystem at {dest_root}")
+            print("  with --execute: the stick's filesystem is checked (and repaired) first,")
+            print("  and the stick is ejected when done")
             return 0
 
         result = copy_with_verification(
@@ -1439,6 +1578,8 @@ def _main(stack: contextlib.ExitStack) -> int:
         playlists_written = copy_playlists(cfg.vault_root, source_root, dest_root)
         update_sync_manifest(dest_root, source_root, [Path(p) for p in result.ok])
         _report(result, playlists_written)
+        if not args.no_eject and not result.failed:
+            print(f"Stick: {safe_eject(dest_root)}")
         return 1 if result.failed else 0
 
     # ── Wipe + format path ───────────────────────────────────────────────────
