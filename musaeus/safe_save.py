@@ -35,8 +35,10 @@ def change_beside(
     many files say so before they run.
     """
     tmp = path.with_name(path.name + suffix)
-    shutil.copy2(path, tmp)  # replaces a copy a killed run left
     try:
+        # Inside the try: a copy cut short (disk full) is removed too
+        # (review of #135-#139, finding 6). Replaces a copy a killed run left.
+        shutil.copy2(path, tmp)
         change(tmp)
         if check is not None:
             check(tmp)

@@ -64,7 +64,7 @@ def wanted(tags: Any, lufs: float | None, measured: dict) -> dict[str, bytes]:
     return out
 
 
-def write_tags(fp: str, todo: dict[str, bytes]) -> None:
+def write_tags(fp: str, todo: dict[str, bytes], audio_hash: str | None = None) -> None:
     """Give the master at fp the tags in todo, without ever saving the master itself.
 
     mutagen rewrites the file it saves, so a run killed or a disk filled part way
@@ -72,6 +72,10 @@ def write_tags(fp: str, todo: dict[str, bytes]) -> None:
     beside the master (<name>.tagging), which takes its place in one rename once on
     disk (musaeus.safe_save, shared with the edition build). A kill leaves the master
     whole, and at most the copy, which the next run replaces.
+
+    The copy is checked before it replaces the master: every tag in todo reads
+    back, and, given the master's *audio_hash*, its audio decodes to that hash
+    (review of #135-#139, finding 7; CLAUDE.md: verify, then rename).
     """
     from mutagen.mp4 import MP4, MP4FreeForm
 
@@ -87,7 +91,19 @@ def write_tags(fp: str, todo: dict[str, bytes]) -> None:
             tags[key] = [MP4FreeForm(value)]
         audio.save()
 
-    change_beside(Path(fp), tag, suffix=".tagging")
+    def check(tmp: Path) -> None:
+        tags = MP4(tmp).tags or {}
+        for key, value in todo.items():
+            raw = tags.get(key)
+            if not raw or bytes(raw[0]) != value:
+                raise ValueError(f"{key} does not read back on the tagged copy of {fp}")
+        if audio_hash:
+            from musaeus.hasher import audio_hash as hash_of
+
+            if hash_of(tmp, strict=True) != audio_hash:
+                raise ValueError(f"the tagged copy's audio is not the master's: {fp}")
+
+    change_beside(Path(fp), tag, suffix=".tagging", check=check)
 
 
 def main() -> int:
@@ -110,6 +126,12 @@ def main() -> int:
     db.row_factory = sqlite3.Row
     ledger = open_for_reading(ledger_path(cfg))
     root = str(Path(cfg.alac_archive)) + "/"
+    if args.execute:
+        # A copy a killed run left beside a master (<name>.tagging): nothing else
+        # sweeps the archive, and the exclusive lock is held (review of
+        # #135-#139, finding 6).
+        for stale in Path(cfg.alac_archive).rglob("*.m4a.tagging"):
+            stale.unlink(missing_ok=True)
     rows = db.execute(
         "SELECT id, file_path, audio_hash, lufs FROM archive WHERE status = 'CATALOGUED' ORDER BY id"
     ).fetchall()
@@ -131,7 +153,7 @@ def main() -> int:
         if _text(audio.tags, R128_KEY) is None and r["lufs"] is None:
             no_loudness += 1
         if args.execute:
-            write_tags(fp, todo)
+            write_tags(fp, todo, r["audio_hash"])
         rewrite_bytes += os.path.getsize(fp)
         changed += 1
         if args.limit and changed >= args.limit:
@@ -154,7 +176,8 @@ def rewrite_note(changed: int, rewrite_bytes: int, *, executed: bool) -> str:
         return f"rewrote {changed:,} master(s), about {gb:,.1f} GB written"
     return (
         f"--execute would rewrite {changed:,} master(s), about {gb:,.1f} GB: each is "
-        "copied whole, tagged and renamed, so a kill never leaves a master half-saved"
+        "copied whole, tagged, checked (its tags read back, its audio decoded once) and "
+        "renamed, so a kill never leaves a master half-saved"
     )
 
 

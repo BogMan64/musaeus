@@ -85,11 +85,15 @@ def test_an_export_that_does_not_decode_is_not_renamed(tmp_path, monkeypatch):
 
 
 def test_a_clean_export_is_renamed_into_place(tmp_path, monkeypatch):
+    """With the length check run (review of #135-#139, finding 12): equal lengths."""
     _ffmpeg_exits_0(monkeypatch, "")
     monkeypatch.setattr(transcode, "decodes_cleanly", lambda p: (True, None), raising=False)
+    seen: list[str] = []
+    monkeypatch.setattr(transcode, "stream_seconds", lambda p: seen.append(p.name) or 20.0)
     dst = tmp_path / "out" / "song.m4a"
     transcode._transcode_file(tmp_path / "src.flac", dst, "aac", "A", "B", "T", "", "", "")
     assert dst.read_bytes() == b"an export"
+    assert any(n.endswith(".part") for n in seen), "the length check never ran"
 
 
 # ── Review of #129-#134, finding 9: a source cut on a frame boundary exports
@@ -134,3 +138,24 @@ def test_an_export_shorter_than_the_catalogue_recorded_is_refused(tmp_path, monk
         transcode._transcode_file(tmp_path / "src.wav", dst, "aac", "A", "B", "T", "", "", "",
                                   recorded_seconds=20.0)  # fmt: skip
     assert not dst.exists()
+
+
+def test_a_source_the_probe_cannot_read_keeps_every_stderr_line(tmp_path, monkeypatch):
+    """Review of #135-#139, finding 8: with no probe, the audio index fell back to
+    0 and the audio's decode errors on stream #0:1 were dropped."""
+    _ffmpeg_exits_0(monkeypatch, "Error while decoding stream #0:1: Invalid data found\n")
+    monkeypatch.setattr(transcode, "decodes_cleanly", lambda p: (True, None))
+    dst = tmp_path / "out" / "song.m4a"
+    with pytest.raises(ValueError, match="Invalid data"):
+        transcode._transcode_file(tmp_path / "src.flac", dst, "aac", "A", "B", "T", "", "", "")
+
+
+def test_an_export_a_second_short_is_refused(tmp_path, monkeypatch):
+    """Review of #135-#139, finding 9: 2 s / 2 % let a cut export through."""
+    _ffmpeg_exits_0(monkeypatch, "")
+    monkeypatch.setattr(transcode, "decodes_cleanly", lambda p: (True, None))
+    monkeypatch.setattr(transcode, "stream_seconds", lambda p: 239.0)
+    dst = tmp_path / "out" / "song.m4a"
+    with pytest.raises(ValueError, match="239.00s"):
+        transcode._transcode_file(tmp_path / "src.wav", dst, "aac", "A", "B", "T", "", "", "",
+                                  recorded_seconds=240.0)  # fmt: skip
