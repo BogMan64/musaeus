@@ -877,10 +877,10 @@ class Console:
                 idx = int(choice)
             except ValueError:
                 return
-            from .dedupe import print_dedupe_report, run_dedupe_console
+            from .dedupe import carry_out_with, print_dedupe_report, run_dedupe_console
 
             if idx == 0:
-                run_dedupe_console(conn, auto_mode=False)
+                run_dedupe_console(conn, carry_out=carry_out_with(self._config))
             elif idx == 1:
                 run_dedupe_console(conn, auto_mode=True)
             elif idx == 2:

@@ -54,7 +54,6 @@ except ImportError:
 from ..brackets import CLOSE, OPEN
 from ..canon import ArtistCanon
 from ..context import RunContext, StageResult
-from ..dedupe import KEEP_USER
 from .base import BaseStage, StageError
 from .dupe_resolver import _is_live
 
@@ -343,7 +342,7 @@ class NearDupeStage(BaseStage):
             frozenset(r["audio_hash"] for r in rs)
             for rs in decided.values()
             if len(rs) > 1
-            and all(r["status"] in ("keep", KEEP_USER) and r["audio_hash"] for r in rs)
+            and all(r["status"] == "keep" and r["audio_hash"] for r in rs)
             and len({r["audio_hash"] for r in rs}) == 2
         }
 
