@@ -166,11 +166,14 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # ABC "Poison Arrow", Eddie Rabbitt; 17 songs restored 2026-09-24).
     # dupe_resolver refuses to move a member whose file no longer matches.
     ("duplicates", "audio_hash", "TEXT"),
-    # The catalogue row a person's keep or archive in `musaeus dedupe` was made
-    # on. organize and finalize refile a file by updating its row in place, so
-    # the id follows the file where the path does not (review of #129-#134,
-    # findings 2-4); the recorded audio_hash proves it is still that recording.
+    # Added 2026-10-09 for choices saved for Act 2; unused since they are
+    # carried out at once (kept: columns are not dropped).
     ("duplicates", "archive_id", "INTEGER"),
+    # When a person kept this copy in `musaeus dedupe`. On the catalogue row,
+    # whose id survives organize and finalize refiling the file, so the keep
+    # follows the file; the resolver never moves a copy so marked (Grey,
+    # 2026-10-09: choices are carried out at once, not saved by path).
+    ("archive", "kept_by_person_at", "TEXT"),
     ("archive", "lufs", "REAL"),
     ("archive", "lufs_tp", "REAL"),
     ("archive", "rg_gain", "REAL"),
