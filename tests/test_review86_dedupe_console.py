@@ -85,34 +85,3 @@ def test_the_console_ranks_the_filed_copy_first_as_the_resolver_does(conn):
     resolver = [m["file_path"] for m in dupe_resolver._get_group_members(conn, "dup_same")]
     assert console[0] == "/m/filed.m4a"
     assert console == resolver
-
-
-def test_the_numbers_stay_on_the_files_shown(tmp_path, monkeypatch, capsys):
-    """Review of #129-#134, finding 1 (reproduced): after "1a" the group was
-    re-sorted (an archived copy ranks last) but not shown again, so "3k" -- meant
-    for the third file shown -- kept the copy just archived."""
-    cfg = MusicConfig(
-        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
-        quarantine=tmp_path / "Q", runs_root=tmp_path / "RUNS", meta_dir=tmp_path / "MetaData",
-        alac_library=tmp_path / "ALAC-Library", db_path=tmp_path / "musaeus.db",
-    )  # fmt: skip
-    conn = open_db(cfg.db_path)
-    for path, rate in (("/m/a.m4a", 900_000), ("/m/b.m4a", 800_000), ("/m/c.m4a", 700_000)):
-        upsert_archive(conn, {"file_path": path, "status": "CATALOGUED", "artist": "A",
-                              "title": "Song", "album": "Album", "codec": "alac", "bitrate": rate,
-                              "size_bytes": 1000, "duration": 200.0, "sample_rate": 44100,
-                              "audio_hash": path})  # fmt: skip
-        conn.execute(
-            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id) "
-            "VALUES ('near_x', ?, 'NEAR', 0.9, 'r')", (path,))  # fmt: skip
-    conn.commit()
-    shown = [m["file_path"] for m in dedupe._get_group_members(conn, "near_x")]
-    assert shown == ["/m/a.m4a", "/m/b.m4a", "/m/c.m4a"]
-    monkeypatch.setattr("sys.stdin", io.StringIO("1a\n3k\nq\n"))
-    dedupe.run_dedupe_console(conn)
-    s = _statuses(conn)
-    assert s["/m/a.m4a"] == dedupe.ARCHIVE_USER, "the copy archived first was kept"
-    assert s["/m/c.m4a"] == dedupe.KEEP_USER
-    assert s["/m/b.m4a"] == "pending"
-    out = capsys.readouterr().out
-    assert out.count("/m/c.m4a") >= 2, "the group is shown again after each choice"

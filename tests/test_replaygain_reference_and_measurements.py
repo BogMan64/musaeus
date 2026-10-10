@@ -170,3 +170,37 @@ def test_the_dry_run_says_how_much_a_run_would_write():
     note = rewrite_note(8_900, 290_000_000_000, executed=False)
     assert "8,900 master(s)" in note and "290.0 GB" in note and "--execute" in note
     assert "290.0 GB written" in rewrite_note(8_900, 290_000_000_000, executed=True)
+
+
+@needs_ffmpeg
+def test_a_copy_cut_short_by_a_full_disk_is_removed(tmp_path, monkeypatch):
+    """Review of #135-#139, finding 6: the copy was made outside the try, so a
+    copy cut short by a full disk stayed beside the master."""
+    from musaeus import safe_save
+
+    master = _m4a(tmp_path / "song.m4a")
+    before = master.read_bytes()
+
+    def disk_full(src, dst):
+        with open(dst, "wb") as fh:
+            fh.write(b"half")
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(safe_save.shutil, "copy2", disk_full)
+    with pytest.raises(OSError):
+        write_tags(str(master), {RG_KEY: b"+1.00 dB"})
+    assert master.read_bytes() == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["song.m4a"]
+
+
+@needs_ffmpeg
+def test_a_tagged_copy_whose_audio_is_not_the_masters_never_replaces_it(tmp_path):
+    """Review of #135-#139, finding 7: the masters' copy was renamed in unchecked."""
+    master = _m4a(tmp_path / "song.m4a")
+    before = master.read_bytes()
+    with pytest.raises(ValueError, match="audio is not the master"):
+        write_tags(str(master), {RG_KEY: b"+1.00 dB"}, audio_hash="not-this-audio")
+    assert master.read_bytes() == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["song.m4a"]
+    write_tags(str(master), {RG_KEY: b"+1.00 dB"}, audio_hash=audio_hash(master, strict=True))
+    assert _tag(master, RG_KEY) == "+1.00 dB"

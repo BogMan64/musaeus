@@ -2,38 +2,35 @@
 """
 MUSAEUS — Dedupe Review Console
 
-Interactive terminal UI for resolving duplicate groups detected by the Scholar stage.
+Grey chooses which copies of a song to keep. Groups that share a file are
+shown together as one set, every copy once, numbered, ranked by the keep rule
+as the resolver ranks them.
+
+A choice is carried out at once (Grey, 2026-10-09). When every copy in a set
+has a choice, and at least one is kept, the console asks once and then moves
+the archived copies to review with the resolver's own move (restore script,
+masters lock); each kept copy is marked on its catalogue row, so the resolver
+never moves it, wherever it is filed later. Nothing is saved for later: four
+reviews running found choices saved by path misapplied once files were
+refiled. Quitting or skipping part way writes nothing.
 
 Controls:
-  k  — keep this file (mark as KEEP)
-  a  — archive/discard this file (mark as ARCHIVE)
-  s  — skip group (leave pending)
-  q  — quit and save progress
-  ?  — show this help
-
-Each group shows all members with their metadata so you can pick the keeper.
-Decisions are written to the duplicates table immediately (no undo in-session,
-but the event log records everything).
+  Nk — keep copy N        Na — archive copy N
+  A  — leave this set to the keep rule (the resolver decides it at Act 2)
+  s  — skip this set      q  — quit      ?  — help
 """
 
 from __future__ import annotations
 
 import logging
-import sys
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-#: A person's decisions, told apart from the resolver's own bookkeeping
-#: ('keep', 'archive' = already moved). Written as plain 'keep'/'archive' they
-#: were read as the resolver's: an archived copy was never moved, and a group a
-#: person decided whole was skipped (review of #86, finding 9). The resolver
-#: carries these out -- the kept copy is the keeper, archived ones move.
-KEEP_USER = "keep_user"
-ARCHIVE_USER = "archive_user"
-#: The groups still to be resolved: undecided, or with a person's archive not yet
-#: carried out. The resolver acts on these, and every count of them uses this.
-ACTED_ON_SQL = f"status IN ('pending', '{ARCHIVE_USER}')"
+#: The groups still to be resolved. The resolver acts on these, and every count
+#: of them uses this one condition.
+ACTED_ON_SQL = "status = 'pending'"
 
 
 # ── Formatting helpers ────────────────────────────────────────────────────────
@@ -49,7 +46,7 @@ def _human_size(n: int | None) -> str:
     return f"{n:.1f} TB"
 
 
-def _fmt_row(idx: int, row: dict) -> str:
+def _fmt_row(idx: int, row: dict, choice: str | None = None) -> str:
     path = row.get("file_path", "?")
     ext = row.get("ext", "?") or "?"
     size = _human_size(row.get("size_bytes"))
@@ -60,209 +57,191 @@ def _fmt_row(idx: int, row: dict) -> str:
     title = row.get("title") or Path(path).stem
     artist = row.get("artist") or "?"
     album = row.get("album") or "?"
-    status = row.get("dup_status", "pending")
-
-    lines = [
-        f"  [{idx}] {path}",
-        f"       {artist} — {album}",
-        f"       {title}",
-        f"       {ext.upper()}  {br_s}  {size}  {lufs_s}  [{status}]",
-    ]
-    return "\n".join(lines)
+    mark = {"k": "KEEP", "a": "ARCHIVE"}.get(choice or "", "undecided")
+    return "\n".join(
+        [
+            f"  [{idx}] {path}",
+            f"       {artist} — {album}",
+            f"       {title}",
+            f"       {ext.upper()}  {br_s}  {size}  {lufs_s}  [{mark}]",
+        ]
+    )
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 
 def _get_pending_groups(conn) -> list[str]:
-    """The groups still to be resolved, ordered: the same groups `musaeus
-    status` counts, so a group decided but not yet resolved is listed here too
-    (review of #129-#134, finding 10)."""
+    """The groups still to be resolved, ordered: the ones `musaeus status`
+    counts."""
     rows = conn.execute(
         f"SELECT DISTINCT group_id FROM duplicates WHERE {ACTED_ON_SQL} ORDER BY group_id"
     ).fetchall()
     return [r[0] for r in rows]
 
 
+def _get_sets(conn) -> list[list[str]]:
+    """The pending groups, joined where they share a file: the resolver's
+    unit. Shown one group at a time, a copy kept here could be moved later
+    through another group (review of #135-#139, finding 1)."""
+    from .stages.dupe_resolver import _connected_groups
+
+    return _connected_groups(conn, _get_pending_groups(conn))
+
+
+def _set_members(conn, groups: Sequence[str]) -> list[dict]:
+    """The copies a person chooses among: the resolver's own members, ranked
+    as it ranks them, without those set aside or no longer in the catalogue."""
+    from .db import SET_ASIDE_STATUSES
+    from .stages.dupe_resolver import _component_members
+
+    return [
+        m
+        for m in _component_members(conn, groups)
+        if m.get("current_row") is not None and m.get("current_status") not in SET_ASIDE_STATUSES
+    ]
+
+
 def _get_group_members(conn, group_id: str) -> list[dict]:
-    """
-    Return archive info for every member of a duplicate group, ordered
-    so the best keeper candidate is first: real lossless codec beats
-    lossy UNCONDITIONALLY (a bitrate/size comparison across different
-    codecs isn't a fair quality comparison), then bitrate/size as a
-    tiebreak among files that are equally lossless or equally lossy.
-    """
-    rows = conn.execute(
-        """
-        SELECT d.file_path,
-               d.duplicate_type,
-               d.confidence,
-               d.status AS dup_status,
-               a.id AS current_row, a.status AS current_status, a.finalized_at,
-               a.artist, a.album, a.title, a.ext,
-               a.bitrate, a.size_bytes, a.duration, a.lufs, a.codec,
-               a.sample_rate, a.audio_hash
-          FROM duplicates d
-          LEFT JOIN archive a USING (file_path)
-         WHERE d.group_id = ?
-        """,
-        (group_id,),
-    ).fetchall()
-    members = [dict(r) for r in rows]
-    # Grey's keep rule, ranked exactly as the resolver ranks: this console's
-    # own order (lossless first, then bitrate and size) kept a bigger live
-    # copy over the studio one (review of #86, finding 9).
-    from .stages.dupe_resolver import _rank, _share_loudness
-
-    _share_loudness(members)
-    _rank(members)
-    return members
+    """One group's choosable copies, ranked as the resolver ranks them."""
+    return _set_members(conn, [group_id])
 
 
-def _set_status(
-    conn, group_id: str, file_path: str, status: str, archive_id: int | None = None
-) -> None:
-    """A person's choice, with the catalogue row it was made on, so the
-    resolver can follow the file when it is refiled before Act 2."""
-    conn.execute(
-        "UPDATE duplicates SET status = ?, archive_id = COALESCE(?, archive_id) "
-        "WHERE group_id = ? AND file_path = ?",
-        (status, archive_id, group_id, file_path),
-    )
-    conn.commit()
-
-
-#: What auto says. Auto writes nothing: the resolver obeys a person's keep and
-#: archive, and auto wrote them from this console's own ranking, which lacked
-#: what the resolver ranks by -- it could keep a new arrival and move the filed
-#: master (review of #123). The resolver applies the keep rule itself to every
-#: group nobody decided (Grey, 2026-10-09: "leave it to the resolver").
+#: What auto says. Auto writes nothing: the resolver applies the keep rule
+#: itself to every set nobody decided (Grey, 2026-10-09: "leave it to the
+#: resolver").
 LEFT_TO_KEEP_RULE = "left to the keep rule: the resolver decides it at the next Act 2"
 
+#: Carries a finished choice out: (groups, kept paths, archived paths) -> what
+#: happened, in one line.
+CarryOut = Callable[[Sequence[str], list[str], list[str]], str]
 
-# ── Interactive review ────────────────────────────────────────────────────────
+
+def carry_out_with(config) -> CarryOut:
+    """The real carry-out: the masters lock, held only while moving (an open
+    console must not block the backup or the bit-rot check), a run of its own,
+    and the resolver's carry_out."""
+
+    def carry_out(groups: Sequence[str], kept: list[str], archived: list[str]) -> str:
+        from .context import RunContext
+        from .db import open_db
+        from .masters_lock import MastersBusy, masters_lock
+        from .stages.dupe_resolver import DupeResolverStage
+
+        try:
+            with masters_lock(config.runs_root, exclusive=True, what="musaeus dedupe"):
+                conn = open_db(config.db_path)
+                try:
+                    ctx = RunContext.new(config, conn, dry_run=False)
+                    result = DupeResolverStage().carry_out(ctx, groups, kept, archived)
+                finally:
+                    conn.close()
+        except MastersBusy as exc:
+            return f"nothing moved: {exc}"
+        return "; ".join(result.errors + result.notes) or "done"
+
+    return carry_out
+
+
+HELP = """
+  Nk — keep copy N           e.g. 1k
+  Na — archive copy N        e.g. 2a
+  A  — leave this set to the keep rule (the resolver decides it at Act 2)
+  s  — skip this set (nothing written)
+  q  — quit (nothing written for an unfinished set)
+
+When every copy has a choice and at least one is kept, you are asked once;
+then the archived copies move to review (a restore script is written) and the
+kept copies stay -- the resolver will never move them.
+"""
 
 
 def _read_key(prompt: str) -> str:
     try:
-        sys.stdout.write(prompt)
-        sys.stdout.flush()
-        # Not lowercased: "A" (auto) and "a" (archive) are different keys,
-        # and lowercasing made "a" resolve the whole group (review of #86, 9).
-        return sys.stdin.readline().strip()
+        return input(prompt).strip()
     except (EOFError, KeyboardInterrupt):
         return "q"
 
 
-HELP = """
-  k  — keep this file
-  a  — archive/discard this file
-  A  — auto: leave this group to the keep rule (the resolver decides it)
-  s  — skip group (leave pending)
-  q  — quit
-
-When reviewing a group, enter the index number then k/a to act on that file.
-Example: "1k" keeps member 1, "2a" archives member 2.
-"""
-
-
-def run_dedupe_console(conn, *, auto_mode: bool = False) -> None:
-    """
-    Launch the interactive dedupe review session.
-
-    auto_mode=True: no user prompts, and nothing written: every pending group
-    is left to the keep rule, which the resolver applies at the next Act 2.
-    """
-    pending = _get_pending_groups(conn)
-
-    if not pending:
+def run_dedupe_console(conn, *, auto_mode: bool = False, carry_out: CarryOut | None = None) -> None:
+    """Review the duplicate sets. *carry_out*: how a finished choice is carried
+    out (carry_out_with(config) from the CLI and the console); without it,
+    choices cannot be carried out and nothing is written."""
+    sets = _get_sets(conn)
+    if not sets:
         print("\n  ✓  No pending duplicate groups. All resolved.")
         return
-
-    print(f"\n  Dedupe Review — {len(pending)} group(s) pending")
+    print(f"\n  Dedupe Review — {len(sets)} set(s) pending")
     if auto_mode:
-        print(f"  AUTO: {len(pending)} group(s) {LEFT_TO_KEEP_RULE}. Nothing changed here.")
+        print(f"  AUTO: {len(sets)} set(s) {LEFT_TO_KEEP_RULE}. Nothing changed here.")
         return
-
     print("  Type ? for help.\n")
-
-    resolved = 0
-    skipped = 0
-
-    for group_idx, group_id in enumerate(pending, 1):
-        members = _get_group_members(conn, group_id)
-        dup_type = members[0].get("duplicate_type", "?") if members else "?"
-        conf = members[0].get("confidence", 0) if members else 0
-
+    done = skipped = 0
+    for n, groups in enumerate(sets, 1):
+        members = _set_members(conn, groups)
+        if len(members) < 2:
+            skipped += 1
+            continue  # one live copy: nothing to choose; the resolver closes it
+        choices: dict[str, str] = {}
         print(f"\n{'─' * 70}")
-        print(
-            f"  Group {group_idx}/{len(pending)}  [{group_id}]  {dup_type}  confidence={conf:.0%}"
-        )
-
+        kind = members[0].get("duplicate_type", "?")
+        print(f"  Set {n}/{len(sets)}  [{', '.join(groups)}]  {kind}")
         for i, m in enumerate(members, 1):
             print(_fmt_row(i, m))
-
         while True:
             cmd = _read_key("\n  Action ([#]k/[#]a/A/s/q/?) > ")
-
-            if cmd.lower() in ("?", "q", "s"):
+            if cmd in ("?", "q", "Q", "s", "S"):
                 cmd = cmd.lower()
-
             if cmd == "?":
                 print(HELP)
                 continue
-
             if cmd == "q":
-                print(
-                    f"\n  Quit. Resolved={resolved} Skipped={skipped} Remaining={len(pending) - group_idx}"
-                )
+                left = len(sets) - n + 1
+                print(f"\n  Quit. Carried out={done} Skipped={skipped} Remaining={left}")
                 return
-
             if cmd == "s":
                 skipped += 1
                 break
-
-            if cmd in ("a", "k"):
-                print("  Which file? Put its number first, e.g. 2a or 1k.")
-                continue
-
             if cmd == "A":
                 skipped += 1
                 print(f"  → Auto: {LEFT_TO_KEEP_RULE}")
                 break
-
-            # Parse "[index][action]" e.g. "1k", "2a"
-            if len(cmd) >= 2:
-                try:
-                    idx = int(cmd[:-1]) - 1
-                    action = cmd[-1].lower()
-                    if 0 <= idx < len(members) and action in ("k", "a"):
-                        fp = members[idx]["file_path"]
-                        st = KEEP_USER if action == "k" else ARCHIVE_USER
-                        _set_status(conn, group_id, fp, st, members[idx].get("current_row"))
-                        icon = "✓ KEEP" if st == KEEP_USER else "✗ ARCHIVE"
-                        print(f"  → {icon}: {fp}")
-                        # Fresh statuses, in the order shown: re-ranked, an
-                        # archived copy moved last, and the next number typed
-                        # acted on another file (review of #129-#134, finding
-                        # 1). Shown again, so the numbers are always on screen.
-                        fresh = {m["file_path"]: m for m in _get_group_members(conn, group_id)}
-                        members = [
-                            fresh[m["file_path"]] for m in members if m["file_path"] in fresh
-                        ]
-                        for i, m in enumerate(members, 1):
-                            print(_fmt_row(i, m))
-                        # Check if all resolved
-                        if all(m["dup_status"] != "pending" for m in members):
-                            resolved += 1
-                            break
-                        continue
-                except (ValueError, IndexError):
-                    pass
-
-            print("  ? — unknown command. Type ? for help.")
-
-    print(f"\n  Session complete. Resolved={resolved} Skipped={skipped}")
+            if cmd in ("a", "k"):
+                print("  Which copy? Put its number first, e.g. 2a or 1k.")
+                continue
+            try:
+                idx, action = int(cmd[:-1]) - 1, cmd[-1].lower()
+            except (ValueError, IndexError):
+                print("  ? — unknown command. Type ? for help.")
+                continue
+            if not (0 <= idx < len(members)) or action not in ("k", "a"):
+                print("  ? — unknown command. Type ? for help.")
+                continue
+            choices[members[idx]["file_path"]] = action
+            # Shown again, in the order first shown: the numbers stay on the
+            # files (review of #129-#134, finding 1).
+            for i, m in enumerate(members, 1):
+                print(_fmt_row(i, m, choices.get(m["file_path"])))
+            if len(choices) < len(members):
+                continue
+            kept = [p for p, c in choices.items() if c == "k"]
+            archived = [p for p, c in choices.items() if c == "a"]
+            if not kept:
+                print("  Keep at least one copy: every copy archived would leave the song out.")
+                choices.clear()
+                continue
+            if carry_out is None:
+                print("  Choices cannot be carried out here; nothing written.")
+                return
+            answer = _read_key(f"  Move {len(archived)} to review and keep {len(kept)}? [y/n] > ")
+            if answer.lower() != "y":
+                print("  Not carried out. Choose again, or s to skip.")
+                choices.clear()
+                continue
+            print(f"  → {carry_out(groups, kept, archived)}")
+            done += 1
+            break
+    print(f"\n  Session complete. Carried out={done} Skipped={skipped}")
 
 
 # ── Report ────────────────────────────────────────────────────────────────────
@@ -274,9 +253,9 @@ def print_dedupe_report(conn) -> None:
         """
         SELECT group_id,
                COUNT(*) as total,
-               SUM(CASE WHEN status IN ('keep', 'keep_user') THEN 1 ELSE 0 END) AS keep_count,
-               SUM(CASE WHEN status IN ('archive', 'archive_user') THEN 1 ELSE 0 END) AS archive_count,
-               SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending_count,
+               SUM(CASE WHEN status = 'keep' THEN 1 ELSE 0 END) AS keep_count,
+               SUM(CASE WHEN status = 'archive' THEN 1 ELSE 0 END) AS archive_count,
+               SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
                MAX(duplicate_type) AS dup_type
           FROM duplicates
          GROUP BY group_id
