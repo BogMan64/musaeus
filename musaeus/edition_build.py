@@ -1141,6 +1141,34 @@ def space_needed(plan: Plan) -> int:
     return int(plan.bake_bytes * _SPACE_MARGIN)
 
 
+#: Copies missing from an edition's folder that mean "moved", not "lost a few":
+#: more than this many AND more than this share of what the ledger records.
+#: 2026-10-10: the three editions were moved out of the vault by hand, and the
+#: next car build planned 8,822 bakes, about 24 h, to make them all again.
+MOVED_FLOOR = 50
+MOVED_SHARE = 0.10
+
+
+def missing_copies(ledger: sqlite3.Connection, kind: Kind) -> tuple[int, int]:
+    """(copies the ledger records that are not on disk, copies it records).
+
+    A copy a stopped move left stepped aside (<name>.<hash12><TMP_SUFFIX>) is
+    not missing: the build puts it back (#107), and counting it made an
+    interrupted mass refile look like a moved folder (review of #152)."""
+    recorded = copies(ledger, kind.name)
+    missing = 0
+    for h, c in recorded.items():
+        out = Path(c.output_path)
+        if out.exists() or out.with_name(f"{out.name}.{h[:12]}{TMP_SUFFIX}").exists():
+            continue
+        missing += 1
+    return missing, len(recorded)
+
+
+def looks_moved(missing: int, recorded: int) -> bool:
+    return missing > MOVED_FLOOR and missing > recorded * MOVED_SHARE
+
+
 def plan_lines(plan: Plan, *, workers: int, free: int | None = None) -> list[str]:
     """The plan in plain words, for the dry run and the console."""
     gb = plan.bake_bytes / 1_000_000_000
