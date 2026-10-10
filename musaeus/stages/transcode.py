@@ -54,7 +54,7 @@ from pathlib import Path
 from ..config import LOSSLESS_CODECS as _LOSSLESS_CODECS
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
-from ..duration import decodes_cleanly, stream_seconds, tolerance_for
+from ..duration import REENCODE_TOLERANCE_SEC, decodes_cleanly, stream_seconds
 from .base import NO_VERIFICATION, BaseStage, StageError, VerifyResult
 from .canonicalize import _has_attached_picture, _probe_streams
 from .corrupt import audio_relevant_stderr
@@ -222,14 +222,10 @@ def _transcode_file(
     # The audio's own input index: with cover art first it is not 0, and its
     # decode errors were dropped as if about the picture (review of
     # #129-#134, finding 9).
-    audio_index = next(
-        (
-            int(st.get("index", 0))
-            for st in probe.get("streams", [])
-            if st.get("codec_type") == "audio"
-        ),
-        0,
-    )
+    # None when the probe could not say: then every stderr line is kept
+    # (review of #135-#139, finding 8), as corrupt.audio_stream_index does.
+    audio = next((st for st in probe.get("streams", []) if st.get("codec_type") == "audio"), None)
+    audio_index = int(audio["index"]) if audio and "index" in audio else None
     problem = audio_relevant_stderr(res.stderr, audio_index)
     if not problem:
         ok, err = decodes_cleanly(part)
@@ -238,9 +234,16 @@ def _transcode_file(
         # A source cut on a frame boundary exports short with no error at all,
         # and reads as a whole shorter file: the export must be as long as the
         # catalogue recorded at intake, or the source says (same finding).
-        want, got = recorded_seconds or stream_seconds(src), stream_seconds(part)
-        if want and (got is None or got < want - tolerance_for(want)):
-            problem = f"the export is {got or 0:.1f}s, the source {want:.1f}s"
+        # REENCODE_TOLERANCE_SEC, not tolerance_for's 2 s / 2 %: a re-encode
+        # of the same audio keeps its length -- measured 2026-10-10 on ten
+        # masters at 44.1 to 192 kHz, every export within 0.001 s -- and 2 %
+        # let a 300 s song lose 6 s (review of #135-#139, finding 9). The
+        # source's length from the probe already made, not another ffprobe.
+        probed = float(audio.get("duration") or 0) if audio else 0.0
+        want = recorded_seconds or probed or stream_seconds(src)
+        got = stream_seconds(part)
+        if want and (got is None or got < want - REENCODE_TOLERANCE_SEC):
+            problem = f"the export is {got or 0:.2f}s, the source {want:.2f}s"
     if problem:
         part.unlink(missing_ok=True)
         raise ValueError(f"{src.name} not exported: {problem[-300:]}")
