@@ -165,7 +165,7 @@ musaeus neardupe --dry-run  # Report without staging in DB
 ```bash
 musaeus status           # Library overview (+ ghost/health counts)
 musaeus runs             # List recent pipeline runs
-musaeus dedupe           # Interactive duplicate review (EXACT + NEAR)
+musaeus dedupe           # choose the copies to keep; carried out at once (archived copies to review)
 musaeus dedupe --auto    # leave every group to the keep rule (the resolver decides at Act 2)
 musaeus dedupe --report  # Show duplicate summary (no changes)
 musaeus health-report    # Print issue breakdown by type + worst files
@@ -241,7 +241,7 @@ Groups are stored in the `duplicates` table with types:
 
 **Resolve duplicates:**
 ```bash
-musaeus dedupe           # interactive: type 1k to keep item 1, 2a to archive item 2
+musaeus dedupe           # 1k keeps copy 1, 2a archives copy 2; when all are chosen, y moves the archived ones
 musaeus dedupe --auto    # writes nothing: the resolver applies the keep rule at Act 2
 musaeus dedupe --report  # summary table only
 ```
