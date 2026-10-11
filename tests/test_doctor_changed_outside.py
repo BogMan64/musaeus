@@ -110,21 +110,32 @@ def test_doctor_stays_read_only(cfg):
     assert (cfg.db_path.stat().st_mtime, f.stat().st_mtime, f.read_bytes()) == before
 
 
-def test_a_master_an_edition_build_read_since_is_fine(cfg):
-    """MUSAEUS's own loudness-tag script logged nothing on 2026-10-06; the
-    edition build that read those masters afterwards recorded their file
-    times, so they are not "changed outside"."""
-    from musaeus.edition_ledger import ledger_path, open_ledger
+def _event(cfg, etype, fp, ts_days_ago, new_value=None):
+    conn = open_db(cfg.db_path)
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - ts_days_ago * DAY))
+    conn.execute(
+        "INSERT INTO events (run_id, ts, event_type, file_path, new_value) VALUES ('r', ?, ?, ?, ?)",
+        (stamp, etype, str(fp), new_value),
+    )
+    conn.commit()
+    conn.close()
 
+
+def test_a_write_then_a_move_is_musaeus_own(cfg):
+    """Pre-merge review of #169: Tagger writes at A, Organize renames A to B
+    (the date is kept): B read as changed outside."""
     f = _master(cfg, "a.m4a", 440)
     _catalogue(cfg, f, written_days_ago=3)
-    os.utime(f, None)  # changed after the recorded write...
-    led = open_ledger(ledger_path(cfg))
-    led.execute(
-        "INSERT INTO edition_copies (edition, master_hash, master_path, master_mtime_ns, "
-        "output_path, built_at) VALUES ('car', 'h', ?, ?, '/car/a.m4a', 'now')",
-        (str(f), f.stat().st_mtime_ns),  # ...but a build read it as it is now
-    )
-    led.commit()
-    led.close()
+    os.utime(f, None)
+    old = f.with_name("old name.m4a")
+    _event(cfg, "TAGGER_WRITE", old, 0)
+    _event(cfg, "ORGANIZE_RENAME", old, 0, new_value=str(f))
     assert _finding(cfg).level == "ok"
+
+
+def test_a_database_only_event_does_not_hide_an_outside_edit(cfg):
+    f = _master(cfg, "a.m4a", 440)
+    _catalogue(cfg, f, written_days_ago=3)
+    os.utime(f, None)
+    _event(cfg, "MB_ARTIST_FOUND", f, 0)  # after the edit, but writes no file
+    assert _finding(cfg).level == "warn"

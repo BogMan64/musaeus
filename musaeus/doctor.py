@@ -1312,6 +1312,23 @@ _WRITE_STAMPS = (
     "art_checked_at",
     "title_checked_at",
 )
+#: Events that write a master's contents. A database-only event is not a
+#: write; a move keeps the file's date (its history is carried, see below).
+_WRITE_EVENTS = frozenset(
+    {
+        "FORGE_TAG",
+        "RG_TAGGED",
+        "TAGGER_WRITE",
+        "BPM_ANALYZED",
+        "IDENTITY_TAGGED",
+        "ART_EMBEDDED",
+        "ART_UPGRADED",
+        "CANONICALIZE",
+        "FINALIZE_MOVE",
+        "LOUDNESS_TAGS_WRITTEN",
+        "MASTER_WRITE_BACKFILLED",
+    }
+)
 #: How many of the changed masters have their audio re-hashed.
 _OUTSIDE_AUDIO_SAMPLE = 20
 
@@ -1333,13 +1350,14 @@ def _epoch(value: object) -> float | None:
 
 
 def _changed_outside_musaeus(cfg: MusicConfig, rep: Report) -> None:
-    """Masters whose file changed since MUSAEUS last recorded writing or reading them.
+    """Masters whose file changed since MUSAEUS last recorded writing them.
 
     Grey, 2026-10-11: "how could an end user [see this] -- read-only". About
     1,840 masters had their tags changed on 2026-10-09/10 by a tag editor, with
     no MUSAEUS record behind it; finding that took a hand comparison. This is
-    that comparison: each master's file date against the latest MUSAEUS touch
-    on record -- the event log and the row's write stamps -- and, for a sample
+    that comparison: each master's file date against the latest MUSAEUS write
+    on record -- events that write a file (followed across moves) and the
+    row's write stamps -- and, for a sample
     of the changed ones, the audio re-hashed against the catalogue, which
     tells "only the tags (or cover) changed" from "the audio changed".
 
@@ -1358,33 +1376,35 @@ def _changed_outside_musaeus(cfg: MusicConfig, rep: Report) -> None:
         rows = conn.execute(
             f"SELECT file_path, audio_hash{extra} FROM archive WHERE status = 'CATALOGUED'"
         ).fetchall()
-        last_event = dict(
-            conn.execute(
-                "SELECT file_path, MAX(ts) FROM events WHERE file_path IS NOT NULL "
-                "GROUP BY file_path"
-            ).fetchall()
-        )
+        events = conn.execute(
+            "SELECT event_type, file_path, new_value, ts FROM events "
+            "WHERE file_path IS NOT NULL ORDER BY id"
+        ).fetchall()
     finally:
         conn.close()
 
-    # An edition build records each master's file time as it read it. A
-    # master unchanged since a build read it was seen by MUSAEUS, whatever
-    # wrote it before (the 2026-10-06 loudness-tag script logged nothing).
-    seen_ns: dict[str, int] = {}
-    try:
-        from .edition_ledger import ledger_path, open_for_reading
+    # The last time MUSAEUS wrote each file. Only events that write a file
+    # count: a database-only event (MB_ARTIST_FOUND, GENRE_FILLED ...) after an
+    # outside edit hid it. A move (Organize, Finalize, a refile) keeps the
+    # file's date, so its history moves with it to the new path: a file Tagger
+    # wrote and Organize then renamed read as changed outside (pre-merge review
+    # of #169).
+    from .config import AUDIO_EXTENSIONS
 
-        led = open_for_reading(ledger_path(cfg))
-        try:
-            for path, ns in led.execute(
-                "SELECT master_path, MAX(master_mtime_ns) FROM edition_copies GROUP BY master_path"
-            ):
-                if ns:
-                    seen_ns[path] = int(ns)
-        finally:
-            led.close()
-    except Exception:  # noqa: BLE001 -- no ledger yet: events and stamps alone
-        pass
+    last_write: dict[str, float] = {}
+    for etype, fp, new_value, ts in events:
+        if etype in _WRITE_EVENTS:
+            t = _epoch(ts)
+            if t is not None and t > last_write.get(fp, 0.0):
+                last_write[fp] = t
+        if (
+            new_value
+            and new_value != fp
+            and str(new_value).startswith("/")
+            and Path(str(new_value)).suffix.lower() in AUDIO_EXTENSIONS
+            and fp in last_write
+        ):
+            last_write[new_value] = max(last_write.get(new_value, 0.0), last_write[fp])
 
     changed: list[tuple[str, float, str | None]] = []
     unjudged = 0
@@ -1395,9 +1415,7 @@ def _changed_outside_musaeus(cfg: MusicConfig, rep: Report) -> None:
         except OSError:
             continue  # a missing file is another check's finding
         mtime = st.st_mtime
-        if fp in seen_ns and st.st_mtime_ns <= seen_ns[fp] + 1_000_000_000:
-            continue  # as the last edition build read it
-        touches = [_epoch(last_event.get(fp))] + [_epoch(r[c]) for c in stamps]
+        touches = [last_write.get(fp)] + [_epoch(r[c]) for c in stamps]
         known = [t for t in touches if t is not None]
         if not known:
             unjudged += 1
@@ -1410,7 +1428,7 @@ def _changed_outside_musaeus(cfg: MusicConfig, rep: Report) -> None:
         rep.add(
             "ok",
             "changed outside MUSAEUS",
-            f"none of {len(rows):,} masters changed since MUSAEUS last wrote or read them{note}",
+            f"none of {len(rows):,} masters changed since MUSAEUS last wrote them{note}",
         )
         return
 
@@ -1440,7 +1458,7 @@ def _changed_outside_musaeus(cfg: MusicConfig, rep: Report) -> None:
     rep.add(
         "fail" if audio_changed else "warn",
         "changed outside MUSAEUS",
-        f"{len(changed):,} master(s) changed since MUSAEUS last wrote or read them "
+        f"{len(changed):,} master(s) changed since MUSAEUS last wrote them "
         f"(by day: {when}); {verdict}{note}",
         len(changed),
     )

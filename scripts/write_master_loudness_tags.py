@@ -170,8 +170,7 @@ def main() -> int:
                 "VALUES (?, 'LOUDNESS_TAGS_WRITTEN', ?, 'write_master_loudness_tags', ?)",
                 (run_id, fp, ", ".join(sorted(map(str, todo)))[:200]),
             )
-            if changed % 100 == 0:
-                db.commit()
+            db.commit()  # each write's record, so a killed run loses none
         rewrite_bytes += os.path.getsize(fp)
         changed += 1
         if args.limit and changed >= args.limit:
