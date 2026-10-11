@@ -44,8 +44,10 @@ more strictly here since a physical wipe has no DB-snapshot rollback):
 
 --no-format (added 2026-09-05) skips gates 2 and 3 -- the typed
 confirmation and the root check -- and ONLY those two, and only because
-it destroys nothing: it emits no unmount, wipefs, parted or mkfs command
-at all, and copies onto a filesystem that already exists. Gates 1, 4 and
+it destroys nothing: it emits no wipefs, parted or mkfs command at all, and
+copies onto a filesystem that already exists. (Since 2026-10-10 it unmounts
+the stick through udisks to check and repair its filesystem, mounts it again,
+and ejects it when done -- --no-check and --no-eject leave that out.) Gates 1, 4 and
 5 still apply: a denylisted --device is still refused, and --execute is
 still required before a single byte is written. This is deliberately not
 implemented by threading dry_run=True through the format helpers -- that
