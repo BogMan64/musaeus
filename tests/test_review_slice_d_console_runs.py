@@ -62,3 +62,20 @@ def test_a_console_live_run_keeps_its_log(con):
     logs = list((con._config.runs_root / "LOGS").glob("run_*.log"))
     assert logs, "the console run left no run log"
     assert "ghost" in logs[0].read_text(encoding="utf-8").lower()
+
+
+def test_an_interrupted_console_run_keeps_its_records(con, monkeypatch):
+    """Pre-merge review of #168: a console run cut short after Finalize kept
+    no records; the CLI keeps them for exactly that case (2026-09-25)."""
+    from musaeus import cli
+
+    called = []
+    monkeypatch.setattr(cli, "_end_of_run_records", lambda *a: called.append(a) or True)
+
+    class Stop(GhostStage):
+        def execute(self, ctx):
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        con._run_pipeline(dry_run=False, stage_classes=[Stop], label="Stop")
+    assert called, "the interrupted run wrote no records"

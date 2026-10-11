@@ -574,6 +574,14 @@ class Console:
                 if remaining:
                     _warn("These stages did NOT run: " + ", ".join(remaining))
                 _info("Relaunching resumes: each stage re-selects only unfinished rows.")
+                # A run cut short after Finalize has still added tracks: its
+                # records go beside the library, as the CLI does for the same
+                # case (2026-09-25; pre-merge review of #168). A second Ctrl-C
+                # here must not leave the log open.
+                with contextlib.suppress(Exception, KeyboardInterrupt):
+                    from .cli import _end_of_run_records
+
+                    _end_of_run_records(self._config, ctx, run_log)
                 with contextlib.suppress(Exception):
                     ctx.finish(interrupted=True)
                 with contextlib.suppress(Exception):
@@ -582,6 +590,10 @@ class Console:
             except Exception:
                 _err("Pipeline crashed — see traceback below")
                 traceback.print_exc()
+                with contextlib.suppress(Exception):
+                    from .cli import _end_of_run_records
+
+                    _end_of_run_records(self._config, ctx, run_log)
                 with contextlib.suppress(Exception):
                     run_log.close()  # its traceback is in the log
         finally:
