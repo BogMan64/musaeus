@@ -66,15 +66,52 @@ def _get_pending(conn) -> list[dict]:  # type: ignore[type-arg]
     QUARANTINED and DELETED are different: those files were removed from
     circulation on purpose, and nothing should be re-derived from them.
     """
-    rows = conn.execute(
-        """
-        SELECT file_path, audio_hash, status FROM archive
-        WHERE (status = 'PENDING' OR audio_hash IS NULL)
-          AND status NOT IN ('QUARANTINED', 'DELETED')
-        ORDER BY file_path
-        """
-    ).fetchall()
-    return [dict(r) for r in rows]
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT file_path, audio_hash, status FROM archive
+            WHERE (status = 'PENDING' OR audio_hash IS NULL)
+              AND status NOT IN ('QUARANTINED', 'DELETED')
+            """
+        )
+    ]
+    # A real GHOST keeps its hash -- GhostStage only changes the status -- so
+    # the query above never chose one, and the recovery promised here never
+    # happened (review of slice B, finding 6; the test that "proved" it used
+    # a NULL hash). Those whose file is back are added; those still missing
+    # are not, or every run would mark them again and fail.
+    rows += [
+        dict(r)
+        for r in conn.execute(
+            "SELECT file_path, audio_hash, status FROM archive "
+            "WHERE status = 'GHOST' AND audio_hash IS NOT NULL"
+        )
+        if r["file_path"] and Path(r["file_path"]).exists()
+    ]
+    return sorted(rows, key=lambda r: r["file_path"] or "")
+
+
+def _status_before_ghost(conn, path_str: str, stored: str | None, now: str) -> str:  # type: ignore[no-untyped-def]
+    """Where a returning GHOST goes back to.
+
+    The same sound at the same path is the same master back: it takes the
+    status it had before it went missing (GHOST_FOUND's old_value) --
+    HASHED would send a filed master through Finalize again. Anything less
+    certain -- no hash on record, different audio, no record of the status
+    -- starts again as HASHED, as an arrival would.
+    """
+    if not stored or stored != now:
+        return "HASHED"
+    r = conn.execute(
+        "SELECT old_value FROM events WHERE event_type = 'GHOST_FOUND' AND file_path = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (path_str,),
+    ).fetchone()
+    before = r[0] if r else None
+    if before and before not in ("GHOST", "QUARANTINED", "DELETED"):
+        return str(before)
+    return "HASHED"
 
 
 # Error text that means "the machine is having a bad day", not "this file is
@@ -524,8 +561,21 @@ class SentinelStage(BaseStage):
             # it a remounted drive left every row invisible to Scholar,
             # Canonicalize, Tagger, Organize and Audit for ever.
             # Anything further along keeps its position (see above).
-            if (row.get("status") or "PENDING") in ("PENDING", "GHOST"):
+            status = row.get("status") or "PENDING"
+            if status == "PENDING":
                 fields["status"] = "HASHED"
+            elif status == "GHOST":
+                fields["status"] = _status_before_ghost(
+                    ctx.conn, path_str, row.get("audio_hash"), ah
+                )
+                ctx.log_event(
+                    "GHOST_RECOVERED",
+                    file_path=path_str,
+                    old_value="GHOST",
+                    new_value=fields["status"],
+                    stage=self.NAME,
+                    note="the file is back",
+                )
             upsert_archive(ctx.conn, fields)
             ctx.log_event(
                 "HASH_COMPUTED",
