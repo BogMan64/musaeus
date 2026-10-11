@@ -114,3 +114,23 @@ def test_an_era_list_uses_the_recordings_year(ctx, tmp_path):
     eras = {p.name for p in ctx.config.playlists.rglob("Era_*.m3u8")}
     assert any("1960s" in n for n in eras), eras
     assert not any("2010s" in n for n in eras), eras
+
+
+# ── Pre-merge review of #172 ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("want", "credited"),
+    [
+        ("Elton John, Kiki Dee", ["Elton John", "Kiki Dee"]),  # the library's own form
+        ("Beyoncé, JAŸ-Z", ["Beyoncé", "JAY‐Z"]),
+        ("Beyonce", ["Beyoncé"]),
+        ("Motley Crue", ["Mötley Crüe"]),
+        ("Beatles, The", ["The Beatles"]),
+        ("Beatles", ["The Beatles"]),
+        ("Hall and Oates", ["Hall & Oates"]),
+    ],
+)
+def test_the_librarys_own_artist_forms_still_match(want, credited):
+    recs = [_rec("r", "Song", *credited)]
+    assert _pick_matching_recording(recs, want, "Song") == "r"

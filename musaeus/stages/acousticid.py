@@ -186,6 +186,32 @@ def _norm_for_match(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", value or "").lower())
 
 
+def _artist_key(name: str) -> str:
+    """An artist name with what does not tell two acts apart taken out:
+    accents, case, punctuation, a leading or trailing "The", and "&"/"+" read
+    as "and" ("Beyonce" == "Beyoncé", "Beatles" == "Beatles, The" ==
+    "The Beatles", "Hall & Oates" == "Hall and Oates")."""
+    n = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode().lower()
+    n = re.sub(r"\s*[&+]\s*", " and ", n).strip()
+    n = re.sub(r",\s*the$", "", n)
+    n = re.sub(r"^the\s+", "", n)
+    return re.sub(r"[^0-9a-z]", "", n)
+
+
+def _artist_agrees(want: str, names: list[str]) -> bool:
+    """True when the file's artist is one credited act, or the credit as a
+    whole in any of the forms the library stores it ("Elton John, Kiki Dee",
+    "Elton John & Kiki Dee"). Whole names only: "Dion" is not Celine Dion
+    (review of slice C, finding 6). Pre-merge review of #172: the library's
+    comma form and accented names were refused, and a refusal is stamped as
+    "no match" for good."""
+    w = _artist_key(want)
+    if not w:
+        return False
+    forms = [*names, ", ".join(names), " & ".join(names), " and ".join(names)]
+    return any(w == _artist_key(f) for f in forms)
+
+
 def _pick_matching_recording(
     recordings: list[dict], want_artist: str, want_title: str
 ) -> str | None:
@@ -205,8 +231,6 @@ def _pick_matching_recording(
     # containing the file's won although cluster order means nothing -- "Born
     # to Run (live at Hammersmith Odeon)" listed first became the studio
     # master's recording, and TitleComplete then retitled the master.
-    from .mb_enrich import _same_artist
-
     agreeing: list[tuple[str, str, bool]] = []  # (id, title, artist checked)
     for rec in recordings:
         rid = rec.get("id")
@@ -216,10 +240,8 @@ def _pick_matching_recording(
         if not rt or (rt not in wt and wt not in rt):
             continue
         names = [str(x.get("name", "")) for x in rec.get("artists", []) if x.get("name")]
-        if wa and names:
-            credit = " & ".join(names)
-            if not any(_same_artist(want_artist, n) for n in [*names, credit]):
-                continue  # title agrees, artist does not -- a cover
+        if wa and names and not _artist_agrees(want_artist, names):
+            continue  # title agrees, artist does not -- a cover
         agreeing.append((str(rid), rt, bool(wa and names)))
     if not agreeing:
         return None
