@@ -94,6 +94,16 @@ def _load_env() -> None:
 _load_env()
 
 
+def _expand(value: str) -> Path:
+    """A configured path, with ~ and $VARS expanded as a shell would.
+
+    settings.env is read without a shell, so "~/vault" became a folder named
+    "~" under the current directory: a second, empty vault with its own
+    database and its own masters lock (review of slice D, finding 8).
+    """
+    return Path(os.path.expandvars(os.path.expanduser(value.strip()))).resolve()
+
+
 @dataclass
 class MusicConfig:
     """All resolved paths for a Musaeus run. No hardcodes."""
@@ -145,11 +155,11 @@ class MusicConfig:
                 "Set it in ~/.config/musaeus/settings.env or export it:\n"
                 "  export MUSAEUS_VAULT_ROOT=/path/to/your/vault"
             )
-        vault_root = Path(vault_str).resolve()
+        vault_root = _expand(vault_str)
 
         def _p(env_key: str, default: Path) -> Path:
             val = os.environ.get(env_key, "")
-            return Path(val).resolve() if val else default
+            return _expand(val) if val else default
 
         db_path = _p("MUSAEUS_DB_PATH", vault_root / "musaeus.db")
         inbox = _p("MUSAEUS_INBOX", vault_root / "INBOX")

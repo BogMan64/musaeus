@@ -2197,7 +2197,12 @@ def _pipeline_for_run(args) -> tuple[list, dict]:
 
 def main() -> None:
     parser = _build_parser()
-    args = parser.parse_args()
+    # --safety-gate is read from the raw command line by cli_gate; argparse
+    # rejected it as unrecognized, so the documented flag could not be used
+    # (review of slice D, finding 10). It is taken out before parsing.
+    from .cli_gate import GATE_FLAG
+
+    args = parser.parse_args([a for a in sys.argv[1:] if a != GATE_FLAG])
 
     verbose = getattr(args, "verbose", False)
     show_progress = getattr(args, "progress", True)  # Default to True
@@ -2222,6 +2227,19 @@ def main() -> None:
 
     command = args.command or "console"
     dry_run = getattr(args, "dry_run", False)
+    # A preview counts the normal run; with --force, --retag or --embed-from-db
+    # the real run does more -- `forge --force --dry-run` said 0 while the run
+    # rewrites every master (review of slice D, finding 5). Refused, as
+    # `musaeus plan` refuses its persistence flags.
+    widening = [f for f in ("force", "retag", "embed_from_db") if getattr(args, f, False)]
+    if dry_run and widening and command != "plan":
+        flags = ", ".join("--" + f.replace("_", "-") for f in widening)
+        print(
+            f"ERROR: --dry-run cannot preview {flags}: the preview would count the normal "
+            "run, not the forced one. Drop --dry-run to run it, or drop the flag to preview.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     # ── First-run check: trigger wizard if no config exists ───────────────────
     from .setup import needs_setup

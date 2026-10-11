@@ -181,15 +181,21 @@ def build_plan(cfg: MusicConfig, pipeline: list[type], mode: RunMode = RunMode.P
 
     if not Path(cfg.db_path).exists():
         # An absent database is a fact to report, not a reason to create one.
+        # Each stage is still asked, against an empty catalogue held in
+        # memory: "zero by definition" was wrong for Ingest, which counts the
+        # INBOX from disk -- 3 files waiting read as 0 (review of slice D,
+        # finding 9). Nothing is written anywhere.
         plan.notes.append(
-            f"no database at {cfg.db_path} — nothing has been ingested yet, "
-            "so every count below is zero by definition"
+            f"no database at {cfg.db_path} — nothing has been ingested yet; "
+            "counts are against an empty catalogue"
         )
-        for st in pipeline:
-            plan.stages.append(StagePlan(_name(st), 0, "no database yet"))
-        return plan
+        from .db import _SCHEMA, _apply_migrations
 
-    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+        conn = sqlite3.connect(":memory:")
+        conn.executescript(_SCHEMA)
+        _apply_migrations(conn)
+    else:
+        conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
         for st in pipeline:
