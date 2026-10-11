@@ -47,7 +47,8 @@ from ..loudness import (
     measure_loudness,
     replaygain_from_r128,
 )
-from .base import BaseStage, StageError
+from ..safe_save import write_beside
+from .base import NO_VERIFICATION, BaseStage, StageError, VerifyResult
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ _MAX_LOUDNESS_SECONDS = 45 * 60
 # ── Tag writers ───────────────────────────────────────────────────────────────
 
 
-def _write_tags_m4a(path: Path, rg_gain: float, rg_peak: float) -> bool:
+def _write_tags_m4a_in_place(path: Path, rg_gain: float, rg_peak: float | None) -> bool:
     """Write R128 gain to M4A/ALAC using mutagen (Apple Q7.8 format).
 
     Uses the "----:mean:name" freeform atom form. The previous
@@ -106,13 +107,21 @@ def _write_tags_m4a(path: Path, rg_gain: float, rg_peak: float) -> bool:
         # same loudness needs a gain 5 dB higher here. Both were written from
         # the -23 gain until 2026-10-06, so every player reading ReplayGain
         # played the masters 5 dB too quietly.
-        replaygain = replaygain_from_r128(rg_gain)
+        # From the R128 gain as stored (Q7.8), so the pair always agrees with
+        # what a reader -- and write_master_loudness_tags.wanted() -- derives
+        # from the file: from the unrounded gain, 1 in 10 masters disagreed
+        # in the second decimal and was rewritten for it (review of slice A,
+        # finding 14).
+        replaygain = replaygain_from_r128(int(round(rg_gain * 256)) / 256.0)
         tags["----:com.apple.iTunes:replaygain_track_gain"] = [
             MP4FreeForm(f"{replaygain:+.2f} dB".encode())
         ]
-        tags["----:com.apple.iTunes:replaygain_track_peak"] = [
-            MP4FreeForm(f"{rg_peak:.8f}".encode())
-        ]
+        # An unknown peak leaves the tag as it is: 0.0 means silence, and was
+        # written over real peaks (review of slice A, finding 13).
+        if rg_peak is not None:
+            tags["----:com.apple.iTunes:replaygain_track_peak"] = [
+                MP4FreeForm(f"{rg_peak:.8f}".encode())
+            ]
         audio.save()
         return True
     except Exception as exc:
@@ -120,8 +129,8 @@ def _write_tags_m4a(path: Path, rg_gain: float, rg_peak: float) -> bool:
         return False
 
 
-def _write_tags_flac(
-    path: Path, rg_gain: float, rg_peak: float, reference: float = R128_REFERENCE
+def _write_tags_flac_in_place(
+    path: Path, rg_gain: float, rg_peak: float | None, reference: float = R128_REFERENCE
 ) -> bool:
     """Write ReplayGain tags to FLAC.
 
@@ -137,7 +146,8 @@ def _write_tags_flac(
 
         audio = FLAC(str(path))
         audio["REPLAYGAIN_TRACK_GAIN"] = [f"{rg_gain:+.2f} dB"]
-        audio["REPLAYGAIN_TRACK_PEAK"] = [f"{rg_peak:.8f}"]
+        if rg_peak is not None:
+            audio["REPLAYGAIN_TRACK_PEAK"] = [f"{rg_peak:.8f}"]
         # Stored as a positive magnitude, which is what the reader negates.
         audio["REPLAYGAIN_REFERENCE_LOUDNESS"] = [f"{-reference:.2f} LUFS"]
         audio.save()
@@ -147,8 +157,8 @@ def _write_tags_flac(
         return False
 
 
-def _write_tags_mp3(
-    path: Path, rg_gain: float, rg_peak: float, reference: float = R128_REFERENCE
+def _write_tags_mp3_in_place(
+    path: Path, rg_gain: float, rg_peak: float | None, reference: float = R128_REFERENCE
 ) -> bool:
     """Write ReplayGain tags to MP3.
 
@@ -167,7 +177,8 @@ def _write_tags_mp3(
 
             audio = ID3(str(path))
         audio["replaygain_track_gain"] = [f"{rg_gain:+.2f} dB"]
-        audio["replaygain_track_peak"] = [f"{rg_peak:.8f}"]
+        if rg_peak is not None:
+            audio["replaygain_track_peak"] = [f"{rg_peak:.8f}"]
         try:
             audio["replaygain_reference_loudness"] = [f"{-reference:.2f} LUFS"]
         except (KeyError, ValueError):
@@ -182,7 +193,7 @@ def _write_tags_mp3(
         return False
 
 
-def _write_tags_aiff(path: Path, rg_gain: float, rg_peak: float) -> bool:
+def _write_tags_aiff_in_place(path: Path, rg_gain: float, rg_peak: float | None) -> bool:
     """Write ReplayGain tags to AIFF via ID3."""
     try:
         from mutagen.aiff import AIFF  # type: ignore[import-untyped]
@@ -204,7 +215,7 @@ def _write_tags_aiff(path: Path, rg_gain: float, rg_peak: float) -> bool:
 def write_rg_tags(
     path: Path,
     rg_gain: float,
-    rg_peak: float,
+    rg_peak: float | None,
     r128_gain: float | None = None,
     reference: float = R128_REFERENCE,
 ) -> bool:
@@ -231,6 +242,33 @@ def write_rg_tags(
 
 
 # ── Tag readers (skip ffmpeg if already tagged) ─────────────────────────────
+
+
+def rg_pair_agrees(path: Path) -> bool:
+    """For an M4A: its ReplayGain tag is the one its R128 tag implies (R128 + 5
+    dB, from the stored Q7.8 value). Other containers: True. A file carrying
+    the pair as written before #73 (RG = R128) disagrees by 5 dB, and the
+    tag-read shortcut kept it so for good (review of slice A, finding 8)."""
+    if path.suffix.lower() not in (".m4a", ".alac"):
+        return True
+    try:
+        from mutagen.mp4 import MP4  # type: ignore[import-untyped]
+
+        tags: Any = MP4(str(path)).tags or {}
+    except Exception:  # noqa: BLE001 -- unreadable: read_existing_rg_tags decides
+        return True
+    r128 = tags.get("----:com.apple.iTunes:R128_TRACK_GAIN")
+    rg = tags.get("----:com.apple.iTunes:replaygain_track_gain")
+    if not r128:
+        return True  # no R128: nothing for the shortcut to trust anyway
+    if not rg:
+        return False  # R128 without its ReplayGain: measured and both written
+    try:
+        q78 = int(bytes(r128[0]).decode("utf-8", "replace").strip())
+    except ValueError:
+        return True
+    said = bytes(rg[0]).decode("utf-8", "replace").strip()
+    return said == f"{replaygain_from_r128(q78 / 256.0):+.2f} dB"
 
 
 def read_existing_rg_tags(path: Path) -> dict[str, float | None] | None:
@@ -408,7 +446,7 @@ class ForgeStage(BaseStage):
 
         if not retag:
             existing = read_existing_rg_tags(path)
-            if existing is not None:
+            if existing is not None and rg_pair_agrees(path):
                 if not dry_run:
                     lufs_v = existing["lufs"]
                     rg_gain_v = existing["rg_gain"]
@@ -532,10 +570,11 @@ class ForgeStage(BaseStage):
                 result.notes.append(f"  no lufs, cannot derive R128 gain: {path.name}")
                 continue
             r128 = lufs_to_rg(lufs, reference=R128_APPLE_REFERENCE) if lufs is not None else None
-            peak = row["rg_peak"] if row["rg_peak"] is not None else 0.0
+            peak = row["rg_peak"]  # None: the file's own peak tag is left alone
 
             if write_rg_tags(path, row["rg_gain"], peak, r128_gain=r128, reference=target_lufs):
                 written += 1
+                self._tagged.append(path)
                 # The file now genuinely carries the tag, so rg_tagged_at must
                 # say so or the next ordinary Forge run re-measures it. Stamped
                 # with a targeted UPDATE rather than via _save_loudness(), which
@@ -574,7 +613,7 @@ class ForgeStage(BaseStage):
         ctx.record_stage(result)
         return result
 
-    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> VerifyResult:
         """A tag this stage claims to have written must read back.
 
         This is the exact fault that made Forge a no-op for 12,279 files:
@@ -583,14 +622,14 @@ class ForgeStage(BaseStage):
         True, and nothing reached disk. Reading one back would have caught
         it the first time it ran.
         """
-        rows = ctx.conn.execute(
-            "SELECT file_path FROM archive WHERE status='CATALOGUED' "
-            "AND rg_gain IS NOT NULL AND rg_tagged_at IS NOT NULL "
-            "ORDER BY rg_tagged_at DESC LIMIT 3"
-        ).fetchall()
-        checked = [Path(r["file_path"]) for r in rows if Path(r["file_path"]).exists()]
+        # This run's own files, in formats that carry the tag: the newest
+        # stamped rows could be another run's, a moved file, or a WAV that can
+        # never read back -- and "none found" was reported as "looked, fine"
+        # (review of slice A, finding 15).
+        readable = (".m4a", ".alac", ".flac", ".mp3", ".aiff", ".aif")
+        checked = [p for p in self._tagged if p.suffix.lower() in readable and p.exists()][-3:]
         if not checked:
-            return []
+            return NO_VERIFICATION
         for path in checked:
             if read_existing_rg_tags(path):
                 return []
@@ -599,7 +638,13 @@ class ForgeStage(BaseStage):
             f"{len(checked)} sampled files has a readable loudness tag"
         ]
 
+    #: The files this run tagged, for verify_effect. Set before either path
+    #: runs: --embed-from-db returned before it existed, and its verification
+    #: raised (pre-merge review of #154).
+    _tagged: list[Path] = []
+
     def run(self, ctx: RunContext) -> StageResult:
+        self._tagged = []
         if ctx.get("forge_embed_from_db", False):
             return self._embed_from_db(ctx)
 
@@ -635,6 +680,7 @@ class ForgeStage(BaseStage):
 
             if status in ("ok", "tag_shortcut"):
                 result.files_changed += 1
+                self._tagged.append(Path(fp))
             elif status in ("silence", "missing", "skip_too_long"):
                 result.files_skipped += 1
             else:
@@ -678,3 +724,39 @@ class ForgeStage(BaseStage):
 
         ctx.record_stage(result)
         return result
+
+
+def _write_tags_m4a(path: Path, *args: Any, **kwargs: Any) -> bool:
+    """_write_tags_m4a_in_place, run on a copy beside the master that replaces it only
+    once written and checked (musaeus.safe_save.write_beside): saved in place,
+    a kill or full disk mid-save damaged the master (review of slice A)."""
+    return write_beside(
+        path, lambda tmp: _write_tags_m4a_in_place(tmp, *args, **kwargs), failed=False
+    )
+
+
+def _write_tags_flac(path: Path, *args: Any, **kwargs: Any) -> bool:
+    """_write_tags_flac_in_place, run on a copy beside the master that replaces it only
+    once written and checked (musaeus.safe_save.write_beside): saved in place,
+    a kill or full disk mid-save damaged the master (review of slice A)."""
+    return write_beside(
+        path, lambda tmp: _write_tags_flac_in_place(tmp, *args, **kwargs), failed=False
+    )
+
+
+def _write_tags_mp3(path: Path, *args: Any, **kwargs: Any) -> bool:
+    """_write_tags_mp3_in_place, run on a copy beside the master that replaces it only
+    once written and checked (musaeus.safe_save.write_beside): saved in place,
+    a kill or full disk mid-save damaged the master (review of slice A)."""
+    return write_beside(
+        path, lambda tmp: _write_tags_mp3_in_place(tmp, *args, **kwargs), failed=False
+    )
+
+
+def _write_tags_aiff(path: Path, *args: Any, **kwargs: Any) -> bool:
+    """_write_tags_aiff_in_place, run on a copy beside the master that replaces it only
+    once written and checked (musaeus.safe_save.write_beside): saved in place,
+    a kill or full disk mid-save damaged the master (review of slice A)."""
+    return write_beside(
+        path, lambda tmp: _write_tags_aiff_in_place(tmp, *args, **kwargs), failed=False
+    )

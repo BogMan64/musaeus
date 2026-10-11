@@ -257,6 +257,27 @@ class TestBPMStageRun:
         ).fetchone()
         assert row["bpm"] == 120.0
 
+    def test_a_failed_tag_write_is_not_stamped_and_is_retried(self, ctx):
+        """Review of slice A, finding 9: the row was stamped before the write,
+        and a failed write counted "ok"; a stamped row is never selected again."""
+        path = ctx.inbox / "track.m4a"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fake")
+        _insert_catalogued(ctx, str(path))
+
+        with (
+            patch("musaeus.stages.bpm.read_existing_tags", return_value=None),
+            patch("musaeus.stages.bpm.analyze_file", return_value=_FEATURES),
+            patch("musaeus.stages.bpm.write_bpm_tags", return_value=False),
+        ):
+            result = BPMStage().run(ctx)
+
+        assert result.files_changed == 0
+        row = ctx.conn.execute(
+            "SELECT bpm_analyzed_at FROM archive WHERE file_path = ?", (str(path),)
+        ).fetchone()
+        assert row["bpm_analyzed_at"] is None, "stamped though the tags were never written"
+
     def test_skip_error_counted_as_skipped_not_errored(self, ctx):
         path = ctx.inbox / "track.m4a"
         path.parent.mkdir(parents=True, exist_ok=True)
