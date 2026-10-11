@@ -138,10 +138,10 @@ class TestItDoesNotOverreach:
         result = GenreValidateStage().run(ctx)
         assert _genre(ctx) == "Alternative", "MasterLaw wins over an unreviewed source tag"
         assert result.files_changed == 1
-        # and the correction records itself, so the row is not re-corrected later
-        assert ctx.conn.execute("SELECT genre_ruled_at FROM archive").fetchone()[0], (
-            "the correction must stamp a ruling"
-        )
+        # ...and is NOT stamped as a ruling: a genre the law set follows the
+        # law when it changes (Grey, 2026-10-11; review of slice B, finding 4).
+        # It used to be stamped, which froze it against later law changes.
+        assert ctx.conn.execute("SELECT genre_ruled_at FROM archive").fetchone()[0] is None
 
     def test_dry_run_changes_nothing(self, ctx):
         _track(ctx, "Barenaked Ladies", "Pop, Rock")
@@ -153,3 +153,39 @@ class TestItDoesNotOverreach:
         _track(ctx, "Barenaked Ladies", "Pop, Rock")
         GenreValidateStage().run(ctx)
         assert _genre(ctx) == "Pop, Rock"
+
+
+class TestALawChangeReachesWhatTheLawSet:
+    """Grey, 2026-10-11 (review of slice B, finding 4): a genre the law filled or
+    corrected was stamped as a ruling, so a later MasterLaw change never
+    reached it -- 5 live artists split from MasterLaw (Jigsaw Rock vs law Pop).
+    Only a genre Grey chose by hand is frozen."""
+
+    def _law(self, ctx, genre):
+        (ctx.config.meta_dir / "MasterLaw.csv").write_bytes(
+            f"artist,genre\r\nBarenaked Ladies,{genre}\r\n".encode()
+        )
+
+    def test_a_corrected_genre_follows_a_later_law(self, ctx):
+        _track(ctx, "Barenaked Ladies", "Rock")
+        GenreValidateStage().run(ctx)
+        assert _genre(ctx) == "Alternative"
+        self._law(ctx, "Pop")
+        GenreValidateStage().run(ctx)
+        assert _genre(ctx) == "Pop", "the law's own earlier correction froze the genre"
+
+    def test_a_filled_genre_follows_a_later_law(self, ctx):
+        _track(ctx, "Barenaked Ladies", "")
+        GenreValidateStage().run(ctx)
+        assert _genre(ctx) == "Alternative"
+        self._law(ctx, "Pop")
+        GenreValidateStage().run(ctx)
+        assert _genre(ctx) == "Pop"
+
+    def test_a_ruling_by_hand_is_still_frozen(self, ctx):
+        _track(ctx, "Barenaked Ladies", "Rock")
+        ensure_columns(ctx.conn, (("genre_ruled_at", "TEXT"),))
+        ctx.conn.execute("UPDATE archive SET genre_ruled_at = '2026-09-01T00:00:00'")
+        ctx.conn.commit()
+        GenreValidateStage().run(ctx)
+        assert _genre(ctx) == "Rock"
