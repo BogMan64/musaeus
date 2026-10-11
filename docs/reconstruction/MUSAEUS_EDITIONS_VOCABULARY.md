@@ -343,3 +343,20 @@ plane.
 **Car Edition** gets its own root for the same reason the others do, and
 is named in the same scheme rather than as `Car_Library`. Location TBD;
 it is far smaller (256k AAC) and is the least constrained of the three.
+
+---
+
+## Update 2026-10-11
+
+- **Copies are never re-encoded for a tag or folder change.** The ledger knows a copy by
+  its master's audio; a renamed or re-genred song has its copy retagged or moved by the
+  next `musaeus edition-build`. Only new music, or a master whose audio changed, is encoded.
+- **A build refuses when many masters seem to have moved** (#152): a guard against building
+  from a half-mounted or moved tree; `--rebuild-missing` to go ahead on purpose.
+- **Deliver to the stick checks and repairs the stick first** (#151): the filesystem is
+  checked (udisks), repaired if needed, and the stick ejected only after a clean copy;
+  `--no-check` / `--no-eject` for tests. The sync still refuses to delete more than 25 % of
+  the stick.
+- **The car and iPhone editions carry their own head-unit index and playlists**
+  (`scripts/car_library/write_car_index.py --apply [--edition car|iphone]`).
+
