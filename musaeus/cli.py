@@ -1063,6 +1063,11 @@ def _cmd_deep_scan(args) -> int:
         )
 
         print(f"\n  Checked {prog.checked:,} file(s). Corrupt: {len(prog.corrupt)}.")
+        if prog.not_decoded:
+            print(
+                f"  NOT decoded (ffmpeg or the disk failed, not the file): "
+                f"{len(prog.not_decoded)}. They stay unchecked; run again."
+            )
         if prog.yielded_to_user:
             print(f"  Yielded to you {prog.yielded_to_user} time(s).")
         bad = conn.execute("SELECT COUNT(*) FROM archive WHERE decode_ok = 0").fetchone()[0]

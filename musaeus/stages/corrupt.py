@@ -332,6 +332,16 @@ def audio_relevant_stderr(stderr: str, audio_index: int | None) -> str:
     return "\n".join(kept)
 
 
+class DecodeUnavailable(RuntimeError):
+    """The decode could not be done -- ffmpeg missing or killed, a timeout, the
+    disk failing -- so nothing is known about the file.
+
+    Review of slice B, finding 1: these came back as (False, reason), the same
+    as damage, and CorruptStage moved healthy masters to QUARANTINE and
+    reported success. A machine failure is not a verdict on the file (the
+    rule Sentinel's _is_environmental already applies)."""
+
+
 def ffmpeg_decode_check(path: Path, seconds: int = 0) -> tuple[bool, str]:
     """Actually DECODE the audio and report whether ffmpeg found errors.
 
@@ -356,8 +366,14 @@ def ffmpeg_decode_check(path: Path, seconds: int = 0) -> tuple[bool, str]:
     `albumart`, so the files it sees usually carry no artwork yet and the
     distinction never arose; it surfaced when scripts/decode_audit.py became
     the first thing to decode the FINISHED library.
+
+    Returns (False, reason) only when ffmpeg decoded the file and found
+    damage. Raises DecodeUnavailable when it could not decode at all.
     """
-    cmd = ["ffmpeg", "-v", "error", "-i", str(path)]
+    # -nostdin: without it ffmpeg reads the terminal, and a 'q' typed during
+    # a run ended the decode early with exit 0 -- a damaged file read as clean
+    # (review of slice B, finding 2; the hasher learned this in 87-6).
+    cmd = ["ffmpeg", "-nostdin", "-v", "error", "-i", str(path)]
     if seconds:
         cmd += ["-t", str(seconds)]
     # -vn: decode the audio, not the cover art. Without it a file with broken
@@ -366,17 +382,28 @@ def ffmpeg_decode_check(path: Path, seconds: int = 0) -> tuple[bool, str]:
     # about the audio.
     cmd += ["-vn", "-f", "null", "-"]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_DECODE_TIMEOUT_S)
+        proc = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=_DECODE_TIMEOUT_S,
+        )
     except subprocess.TimeoutExpired:
-        return False, f"decode timed out after {_DECODE_TIMEOUT_S}s"
+        raise DecodeUnavailable(f"decode timed out after {_DECODE_TIMEOUT_S}s") from None
     except OSError as exc:
-        return False, f"ffmpeg unavailable: {exc}"
+        raise DecodeUnavailable(f"ffmpeg unavailable: {exc}") from None
     detail = (proc.stderr or "").strip()
     if detail:
         # Only pay for the extra ffprobe when there is something to classify.
         detail = audio_relevant_stderr(detail, audio_stream_index(path))
     if proc.returncode != 0 or detail:
-        return False, (detail or f"ffmpeg exited {proc.returncode}").strip()[:200]
+        verdict = (detail or f"ffmpeg exited {proc.returncode}").strip()[:200]
+        from .sentinel import _is_environmental
+
+        if _is_environmental(verdict):
+            raise DecodeUnavailable(verdict)
+        return False, verdict
     return True, ""
 
 
@@ -500,78 +527,85 @@ class CorruptStage(BaseStage):
                 result.files_skipped += 1
                 continue
 
-            # Already known undecodable -- by THIS stage on a prior run, or
-            # by deep_scan, which shares these columns rather than keeping
-            # its own. Trust it rather than paying for a second decode of
-            # a file already proven bad.
+            is_suspect, reason = check_file(
+                file_path,
+                row["codec"],
+                row["duration"],
+                _longest_sibling(row, longest_by_song),
+                title=row["title"],
+            )
+
+            # The size ratio is a PRIORITISER, not a verdict -- deep_scan.py
+            # says so and has the numbers: it flagged 418 files, of which 2
+            # were damaged and 91 were undamaged Bing Crosby / Count Basie
+            # mono recordings that genuinely compress to ~13% of PCM.
+            #
+            # This stage MOVES files to QUARANTINE. Acting on the ratio
+            # alone meant physically removing ~91 good masters on a
+            # heuristic that was right about 0.5% of the time.
+            should_decode = is_suspect
+            # Already marked undecodable -- by this stage on a prior run, or
+            # by deep_scan, which shares these columns. Decoded again before
+            # anything moves: the mark may have been the machine's failure,
+            # not the file's (review of slice B, finding 1), and this stage
+            # MOVES files.
             if row["decode_ok"] == 0:
-                is_corrupt = True
-                reason = "previously found undecodable on decode (see decode_errors)"
-                is_suspect = False
-            else:
-                is_suspect, reason = check_file(
-                    file_path,
-                    row["codec"],
-                    row["duration"],
-                    _longest_sibling(row, longest_by_song),
-                    title=row["title"],
+                should_decode = True
+                if not is_suspect:
+                    reason = "marked undecodable on an earlier decode"
+            # The class the ratio cannot see at all: right-sized files
+            # with the damage inside the stream. Decode a BOUNDED number
+            # of never-checked, non-suspect files too, so genuinely new
+            # arrivals get a real answer before dedup -- not just files
+            # the shape heuristic happened to flag.
+            if (
+                not is_suspect
+                and row["decode_checked_at"] is None
+                and new_arrival_decodes < self.NEW_ARRIVAL_DECODE_BUDGET
+            ):
+                should_decode = True
+                new_arrival_decodes += 1
+
+            if should_decode:
+                try:
+                    decoded_ok, decode_err = ffmpeg_decode_check(file_path, seconds=0)
+                except DecodeUnavailable as exc:
+                    # Not checked: nothing recorded, nothing moved, and the
+                    # run is not reported clean.
+                    result.files_skipped += 1
+                    result.errors.append(f"{file_path.name}: not decoded: {exc}")
+                    continue
+                if not dry_run:
+                    conn.execute(
+                        "UPDATE archive SET decode_checked_at = datetime('now'), "
+                        "decode_ok = ?, decode_errors = ? WHERE file_path = ?",
+                        (1 if decoded_ok else 0, 0 if decoded_ok else 1, str(file_path)),
+                    )
+                if decoded_ok:
+                    # Either flagged by shape and intact on inspection,
+                    # or a never-checked file that turned out fine.
+                    result.files_skipped += 1
+                    if is_suspect:
+                        logger.info(
+                            "[%s] cleared: %s — %s, but decodes cleanly",
+                            self.NAME,
+                            file_path.name,
+                            reason,
+                        )
+                        cleared += 1
+                    continue
+                reason = (
+                    f"{reason}; decode failed: {decode_err}"
+                    if is_suspect or row["decode_ok"] == 0
+                    else (f"decode failed: {decode_err}")
                 )
 
-                # The size ratio is a PRIORITISER, not a verdict -- deep_scan.py
-                # says so and has the numbers: it flagged 418 files, of which 2
-                # were damaged and 91 were undamaged Bing Crosby / Count Basie
-                # mono recordings that genuinely compress to ~13% of PCM.
-                #
-                # This stage MOVES files to QUARANTINE. Acting on the ratio
-                # alone meant physically removing ~91 good masters on a
-                # heuristic that was right about 0.5% of the time.
-                should_decode = is_suspect
-                # The class the ratio cannot see at all: right-sized files
-                # with the damage inside the stream. Decode a BOUNDED number
-                # of never-checked, non-suspect files too, so genuinely new
-                # arrivals get a real answer before dedup -- not just files
-                # the shape heuristic happened to flag.
-                if (
-                    not is_suspect
-                    and row["decode_checked_at"] is None
-                    and new_arrival_decodes < self.NEW_ARRIVAL_DECODE_BUDGET
-                ):
-                    should_decode = True
-                    new_arrival_decodes += 1
-
-                if should_decode:
-                    decoded_ok, decode_err = ffmpeg_decode_check(file_path, seconds=0)
-                    if not dry_run:
-                        conn.execute(
-                            "UPDATE archive SET decode_checked_at = datetime('now'), "
-                            "decode_ok = ?, decode_errors = ? WHERE file_path = ?",
-                            (1 if decoded_ok else 0, 0 if decoded_ok else 1, str(file_path)),
-                        )
-                    if decoded_ok:
-                        # Either flagged by shape and intact on inspection,
-                        # or a never-checked file that turned out fine.
-                        result.files_skipped += 1
-                        if is_suspect:
-                            logger.info(
-                                "[%s] cleared: %s — %s, but decodes cleanly",
-                                self.NAME,
-                                file_path.name,
-                                reason,
-                            )
-                            cleared += 1
-                        continue
-                    reason = (
-                        f"{reason}; decode failed: {decode_err}"
-                        if is_suspect
-                        else (f"decode failed: {decode_err}")
-                    )
-
-                # Reaching here without the "decoded cleanly" continue
-                # above means: either should_decode was True and the decode
-                # failed, or should_decode was False and nothing was
-                # attempted this row. should_decode already equals
-                # is_suspect in the second case, so this covers both.
-                is_corrupt = should_decode
+            # Reaching here without the "decoded cleanly" continue
+            # above means: either should_decode was True and the decode
+            # failed, or should_decode was False and nothing was
+            # attempted this row. should_decode already equals
+            # is_suspect in the second case, so this covers both.
+            is_corrupt = should_decode
 
             if is_corrupt:
                 result.files_changed += 1
@@ -786,7 +820,13 @@ class CorruptStage(BaseStage):
             file_path = Path(row["file_path"])
             if not file_path.is_file():
                 continue
-            decoded_ok, decode_err = ffmpeg_decode_check(file_path, seconds=0)
+            try:
+                decoded_ok, decode_err = ffmpeg_decode_check(file_path, seconds=0)
+            except DecodeUnavailable as exc:
+                # Not checked (review of slice B, finding 1): nothing recorded
+                # or moved, and the run is not reported clean.
+                result.errors.append(f"{file_path.name}: arrival not decoded: {exc}")
+                continue
             if not dry_run:
                 conn.execute(
                     "UPDATE archive SET decode_checked_at = datetime('now'), "
