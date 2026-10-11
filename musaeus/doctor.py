@@ -704,6 +704,7 @@ def diagnose(cfg: MusicConfig) -> Report:
     _authority_disagreements(cfg, rep)
     _editions_come_from_masters(cfg, rep)
     _names_safe_on_fat(cfg, rep)
+    _changed_outside_musaeus(cfg, rep)
     _one_picture_many_artists(cfg, rep)
     _artist_tag_is_natural_form(cfg, rep)
     _catalogued_tracks_reach_the_car(cfg, rep)
@@ -1295,3 +1296,151 @@ def _names_safe_on_fat(cfg: MusicConfig, rep: Report) -> None:
             rep.add("warn", check, "; ".join(problems), len(bad) + len(clashes) + len(pairs))
         else:
             rep.add("ok", check, f"all {len(files):,} file(s) safe on a FAT32 stick")
+
+
+#: Between MUSAEUS's last record of writing a master and the file's own date.
+#: Generous on purpose: some stamps are stored in local time and some in UTC,
+#: and a change hours after a run is still caught.
+_OUTSIDE_SLACK_S = 12 * 3600
+#: Row stamps that mean "MUSAEUS wrote this file" (beside the event log).
+_WRITE_STAMPS = (
+    "finalized_at",
+    "canonicalized_at",
+    "rg_tagged_at",
+    "bpm_analyzed_at",
+    "identity_tagged_at",
+    "art_checked_at",
+    "title_checked_at",
+)
+#: How many of the changed masters have their audio re-hashed.
+_OUTSIDE_AUDIO_SAMPLE = 20
+
+
+def _epoch(value: object) -> float | None:
+    """A stored time as seconds; a time with no zone is taken as UTC (SQLite's
+    datetime('now'))."""
+    from datetime import datetime, timezone
+
+    if not value:
+        return None
+    try:
+        t = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return t.timestamp()
+
+
+def _changed_outside_musaeus(cfg: MusicConfig, rep: Report) -> None:
+    """Masters whose file changed since MUSAEUS last recorded writing or reading them.
+
+    Grey, 2026-10-11: "how could an end user [see this] -- read-only". About
+    1,840 masters had their tags changed on 2026-10-09/10 by a tag editor, with
+    no MUSAEUS record behind it; finding that took a hand comparison. This is
+    that comparison: each master's file date against the latest MUSAEUS touch
+    on record -- the event log and the row's write stamps -- and, for a sample
+    of the changed ones, the audio re-hashed against the catalogue, which
+    tells "only the tags (or cover) changed" from "the audio changed".
+
+    Read-only. A master with no MUSAEUS record at all is counted as not
+    judged, never as changed.
+    """
+    from collections import Counter
+    from datetime import datetime
+
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
+        stamps = [c for c in _WRITE_STAMPS if c in cols]
+        extra = "".join(f", {c}" for c in stamps)
+        rows = conn.execute(
+            f"SELECT file_path, audio_hash{extra} FROM archive WHERE status = 'CATALOGUED'"
+        ).fetchall()
+        last_event = dict(
+            conn.execute(
+                "SELECT file_path, MAX(ts) FROM events WHERE file_path IS NOT NULL "
+                "GROUP BY file_path"
+            ).fetchall()
+        )
+    finally:
+        conn.close()
+
+    # An edition build records each master's file time as it read it. A
+    # master unchanged since a build read it was seen by MUSAEUS, whatever
+    # wrote it before (the 2026-10-06 loudness-tag script logged nothing).
+    seen_ns: dict[str, int] = {}
+    try:
+        from .edition_ledger import ledger_path, open_for_reading
+
+        led = open_for_reading(ledger_path(cfg))
+        try:
+            for path, ns in led.execute(
+                "SELECT master_path, MAX(master_mtime_ns) FROM edition_copies GROUP BY master_path"
+            ):
+                if ns:
+                    seen_ns[path] = int(ns)
+        finally:
+            led.close()
+    except Exception:  # noqa: BLE001 -- no ledger yet: events and stamps alone
+        pass
+
+    changed: list[tuple[str, float, str | None]] = []
+    unjudged = 0
+    for r in rows:
+        fp = r["file_path"]
+        try:
+            st = Path(fp).stat()
+        except OSError:
+            continue  # a missing file is another check's finding
+        mtime = st.st_mtime
+        if fp in seen_ns and st.st_mtime_ns <= seen_ns[fp] + 1_000_000_000:
+            continue  # as the last edition build read it
+        touches = [_epoch(last_event.get(fp))] + [_epoch(r[c]) for c in stamps]
+        known = [t for t in touches if t is not None]
+        if not known:
+            unjudged += 1
+            continue
+        if mtime > max(known) + _OUTSIDE_SLACK_S:
+            changed.append((fp, mtime, r["audio_hash"]))
+
+    note = f"; {unjudged:,} with no MUSAEUS record, not judged" if unjudged else ""
+    if not changed:
+        rep.add(
+            "ok",
+            "changed outside MUSAEUS",
+            f"none of {len(rows):,} masters changed since MUSAEUS last wrote or read them{note}",
+        )
+        return
+
+    days = Counter(datetime.fromtimestamp(m).strftime("%Y-%m-%d") for _, m, _ in changed)
+    when = ", ".join(f"{d} {n:,}" for d, n in sorted(days.items())[-5:])
+
+    from .hasher import audio_hash_safe
+
+    step = max(1, len(changed) // _OUTSIDE_AUDIO_SAMPLE)
+    sample = sorted(changed)[::step][:_OUTSIDE_AUDIO_SAMPLE]
+    audio_changed: list[str] = []
+    unreadable = 0
+    for fp, _, recorded in sample:
+        now, err = audio_hash_safe(Path(fp))
+        if err or not now or not recorded:
+            unreadable += 1
+        elif now != recorded:
+            audio_changed.append(fp)
+    checked = len(sample) - unreadable
+    if audio_changed:
+        verdict = (
+            f"AUDIO CHANGED on {len(audio_changed)} of {checked} re-checked, "
+            f"e.g. {Path(audio_changed[0]).name}"
+        )
+    else:
+        verdict = f"audio identical on all {checked} re-checked (tags or cover only)"
+    rep.add(
+        "fail" if audio_changed else "warn",
+        "changed outside MUSAEUS",
+        f"{len(changed):,} master(s) changed since MUSAEUS last wrote or read them "
+        f"(by day: {when}); {verdict}{note}",
+        len(changed),
+    )
