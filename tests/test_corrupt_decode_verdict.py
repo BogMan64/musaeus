@@ -260,14 +260,16 @@ def test_already_checked_intact_files_are_never_re_decoded(ctx, cfg) -> None:
     assert calls["n"] == 0, "an already-clean, already-checked file must not be re-decoded"
 
 
-def test_a_row_deep_scan_already_marked_bad_is_quarantined_without_a_new_decode(ctx, cfg) -> None:
+def test_a_row_deep_scan_already_marked_bad_is_decoded_once_then_quarantined(ctx, cfg) -> None:
     """deep_scan and CorruptStage share decode_ok/decode_checked_at rather
-    than each keeping their own. A file deep_scan already proved bad must
-    be acted on here without paying for a second decode of a file already
-    known damaged."""
+    than each keeping their own. A file deep_scan marked bad is decoded once
+    more before this stage MOVES it: the mark may have been the machine's
+    failure (ffmpeg missing, a timeout), not the file's -- review of slice B,
+    finding 1, where healthy masters were quarantined on such a mark. A mark
+    the decode confirms is still acted on."""
     f = cfg.alac_library / "D" / "E" / "already_bad.m4a"
     f.parent.mkdir(parents=True)
-    f.write_bytes(b"not real audio, but it does not matter -- decode_ok is pre-set")
+    f.write_bytes(b"not real audio: the decode confirms the mark")
     _register(ctx, f, declared_duration=200.0)
     ensure_columns(ctx.conn)
     ctx.conn.execute(
@@ -292,7 +294,7 @@ def test_a_row_deep_scan_already_marked_bad_is_quarantined_without_a_new_decode(
     finally:
         corrupt_mod.ffmpeg_decode_check = real
 
-    assert calls["n"] == 0, "must trust deep_scan's prior finding, not re-decode"
+    assert calls["n"] == 1, "decoded once more before anything moves"
     assert not f.exists(), "a row already known bad must still be quarantined"
     assert result.files_changed == 1
 

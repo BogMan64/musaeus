@@ -34,6 +34,9 @@ def _make_rebuild_table(conn: sqlite3.Connection, table: str = "archive_rebuilt"
     test could not see the code it was meant to be testing.
     """
     create_rebuild_table(conn, table)
+    # The rebuild found the one master the fixture catalogues: promote refuses
+    # to drop a catalogued row (review of slice E, finding 2).
+    conn.execute(f"INSERT INTO {table} (file_path, status) VALUES ('/x/a.m4a', 'CATALOGUED')")
     conn.commit()
 
 
