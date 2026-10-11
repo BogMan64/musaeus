@@ -134,8 +134,7 @@ class _Raced(sqlite3.Connection):
 def _raced(path, table, col, decl):
     def add():
         other = sqlite3.connect(str(path))
-        other.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
-        other.commit()
+        ensure_columns(other, [(col, decl)], table)  # the other process's own open
         other.close()
 
     conn = sqlite3.connect(str(path), factory=_Raced, timeout=5)
