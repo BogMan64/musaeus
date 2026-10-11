@@ -1524,7 +1524,17 @@ class TestNoFormatEmitsNothingDestructive:
         monkeypatch.setattr(
             sys,
             "argv",
-            ["prog", "--library", "car", "--no-format", "--dest", str(stick), "--execute"],
+            [
+                "prog",
+                "--library",
+                "car",
+                "--no-format",
+                "--dest",
+                str(stick),
+                "--execute",
+                "--no-check",
+                "--no-eject",
+            ],
         )
         calls = []
 
@@ -1559,7 +1569,17 @@ class TestNoFormatEmitsNothingDestructive:
         monkeypatch.setattr(
             sys,
             "argv",
-            ["prog", "--library", "car", "--no-format", "--dest", str(stick), "--execute"],
+            [
+                "prog",
+                "--library",
+                "car",
+                "--no-format",
+                "--dest",
+                str(stick),
+                "--execute",
+                "--no-check",
+                "--no-eject",
+            ],
         )
         assert usb_mod.main() == 0
         assert (stick / "track.m4a").exists()
@@ -1585,7 +1605,17 @@ class TestNoFormatEmitsNothingDestructive:
         monkeypatch.setattr(
             sys,
             "argv",
-            ["prog", "--library", "alac", "--no-format", "--dest", str(stick), "--execute"],
+            [
+                "prog",
+                "--library",
+                "alac",
+                "--no-format",
+                "--dest",
+                str(stick),
+                "--execute",
+                "--no-check",
+                "--no-eject",
+            ],
         )
         assert usb_mod.main() == 0
         assert (stick / "Playlists" / "Drive.m3u8").exists()
@@ -1689,7 +1719,17 @@ class TestNoFormatFreeSpace:
         monkeypatch.setattr(
             sys,
             "argv",
-            ["prog", "--library", "car", "--no-format", "--dest", str(stick), "--execute"],
+            [
+                "prog",
+                "--library",
+                "car",
+                "--no-format",
+                "--dest",
+                str(stick),
+                "--execute",
+                "--no-check",
+                "--no-eject",
+            ],
         )
         assert usb_mod.main() == 1
         assert not (stick / "track.m4a").exists()
@@ -1884,9 +1924,44 @@ class TestNamesUnsafeOnFat:
         monkeypatch.setattr(
             sys,
             "argv",
-            ["prog", "--library", "car", "--no-format", "--dest", str(stick), "--execute"],
+            [
+                "prog",
+                "--library",
+                "car",
+                "--no-format",
+                "--dest",
+                str(stick),
+                "--execute",
+                "--no-check",
+                "--no-eject",
+            ],
         )
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: _FakeCompleted())
         assert usb_mod.main() == 1
         assert list(stick.iterdir()) == [], "nothing may be copied when names would collide"
         assert "same name on a FAT32" in capsys.readouterr().err
+
+
+def test_the_stick_check_only_unmounts_checks_and_mounts_through_udisks(tmp_path, monkeypatch):
+    """With the check on (Grey, 2026-10-10), --no-format --execute unmounts the
+    stick through udisks to check and repair it, then mounts it again: still no
+    wipe, partition, format or plain umount/mount command."""
+    cfg, stick = _no_format_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["prog", "--library", "car", "--no-format", "--dest", str(stick), "--execute"],
+    )  # fmt: skip
+    monkeypatch.setattr(usb_mod, "check_and_repair_filesystem",
+                        lambda root: (root, "filesystem checked: no errors"))  # fmt: skip
+    monkeypatch.setattr(usb_mod, "safe_eject", lambda root: "safe to remove")
+    calls = []
+
+    def _record(cmd, *a, **k):
+        calls.append(cmd)
+        return _FakeCompleted()
+
+    monkeypatch.setattr(subprocess, "run", _record)
+    assert usb_mod.main() == 0
+    emitted = {c[0] for c in calls if isinstance(c, list) and c}
+    assert not (emitted & _DESTRUCTIVE), f"destructive command emitted: {emitted}"
+    assert (stick / "track.m4a").read_bytes() == b"hello"
