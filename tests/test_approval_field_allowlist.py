@@ -117,7 +117,9 @@ def test_a_column_added_lazily_at_runtime_is_accepted(conn, tmp_path: Path) -> N
     conn.commit()
 
     report = apply_approved_fixes(conn, _tsv(tmp_path, "a_late_column", "set"), "run1")
-    assert report.errors == []
+    # Accepted by the allowlist. (The sheet's current value matches no row, so
+    # apply now says "nothing matched" -- review of slice C, finding 8.)
+    assert not any("not a column" in e for e in report.errors), report.errors
 
 
 def test_a_dry_run_refuses_the_bad_row_without_writing_the_good_one(conn, tmp_path: Path) -> None:
