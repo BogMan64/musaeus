@@ -22,6 +22,7 @@ import argparse
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -138,6 +139,7 @@ def main() -> int:
     if args.ids:
         keep = {int(x) for x in args.ids.read_text().split()}
         rows = [r for r in rows if r["id"] in keep]
+    run_id = "write_master_loudness_tags_" + time.strftime("%Y%m%dT%H%M%S")
     changed = right = no_loudness = not_master = refused = 0
     rewrite_bytes = 0
     for r in rows:
@@ -161,12 +163,22 @@ def main() -> int:
                 refused += 1
                 print(f"  NOT changed: {fp}: {why}", flush=True)
                 continue
+            # Every write to a master leaves a record: `musaeus doctor` reads
+            # a master changed with none as changed outside MUSAEUS.
+            db.execute(
+                "INSERT INTO events (run_id, event_type, file_path, stage, note) "
+                "VALUES (?, 'LOUDNESS_TAGS_WRITTEN', ?, 'write_master_loudness_tags', ?)",
+                (run_id, fp, ", ".join(sorted(map(str, todo)))[:200]),
+            )
+            db.commit()  # each write's record, so a killed run loses none
         rewrite_bytes += os.path.getsize(fp)
         changed += 1
         if args.limit and changed >= args.limit:
             break
         if changed % 500 == 0:
             print(f"  {changed:,} ...", flush=True)
+    if args.execute:
+        db.commit()
     verb = "changed" if args.execute else "would change"
     print(f"{verb} {changed:,}; already right {right:,}; no loudness known {no_loudness:,}; "
           f"not a master .m4a {not_master:,}")  # fmt: skip
