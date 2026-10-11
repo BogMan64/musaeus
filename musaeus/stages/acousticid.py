@@ -191,10 +191,11 @@ def _artist_key(name: str) -> str:
     accents, case, punctuation, a leading or trailing "The", and "&"/"+" read
     as "and" ("Beyonce" == "Beyoncé", "Beatles" == "Beatles, The" ==
     "The Beatles", "Hall & Oates" == "Hall and Oates")."""
-    n = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode().lower()
-    n = re.sub(r"\s*[&+]\s*", " and ", n).strip()
-    n = re.sub(r",\s*the$", "", n)
-    n = re.sub(r"^the\s+", "", n)
+    from ..artist_form import comparison_key  # the article rule lives there
+
+    n = comparison_key(name or "")
+    n = unicodedata.normalize("NFKD", n).encode("ascii", "ignore").decode()
+    n = re.sub(r"\s*[&+]\s*", " and ", n)
     return re.sub(r"[^0-9a-z]", "", n)
 
 
