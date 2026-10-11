@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import getpass
 import os
+import stat
 import sys
+import tempfile
 from pathlib import Path
 
 _CONFIG_DIR = Path.home() / ".config" / "musaeus"
@@ -74,10 +76,16 @@ API_KEYS = {
 
 
 def _load_env(path: Path) -> dict[str, str]:
-    """Parse a KEY=VALUE env file."""
+    """Parse a KEY=VALUE env file.
+
+    utf-8-sig, as config.py reads it: with plain utf-8 a byte-order mark
+    stayed on the first key's name, the wizard showed that key "(not set)",
+    and a save sorted the marked name away from the top of the file, where
+    config.py no longer strips it -- the key was lost (pre-merge review of
+    #157)."""
     env: dict[str, str] = {}
     if path.exists():
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#") or "=" not in line:
@@ -92,22 +100,40 @@ def _save_env(path: Path, env: dict[str, str], private: bool = False) -> None:
     over it, so a kill or full disk never leaves it empty or half written --
     an emptied credentials.env lost every key and the stages that need them
     quietly did nothing. *private*: mode 600 (it was written 644, readable by
-    every user on the machine). Review of slice E, finding 7."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600 if private else 0o644)
+    every user on the machine). Review of slice E, finding 7.
+
+    Pre-merge review of #157: the copy has a name of its own (two saves at
+    once shared one and could mix their lines); a symlinked file is written
+    through to its target, as the in-place write did; an existing file keeps
+    its mode unless *private* asks for 600; the folder is synced so the
+    rename survives a power cut."""
+    target = Path(os.path.realpath(path))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if private:
+        mode = 0o600
+    else:
+        try:
+            mode = stat.S_IMODE(target.stat().st_mode)
+        except FileNotFoundError:
+            mode = 0o644
+    fd, name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")  # mode 600
+    tmp = Path(name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             for key, val in sorted(env.items()):
                 f.write(f"{key}={val}\n")
             f.flush()
             os.fsync(f.fileno())
-        if private:
-            os.chmod(tmp, 0o600)  # whatever the umask or an older file said
-        os.replace(tmp, path)
+        os.chmod(tmp, mode)
+        os.replace(tmp, target)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+    dir_fd = os.open(target.parent, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def needs_setup() -> bool:
