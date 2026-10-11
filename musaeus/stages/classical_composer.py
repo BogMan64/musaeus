@@ -136,6 +136,7 @@ def _PROTECTED_DIRS(ctx: RunContext) -> set[Path]:
             c.runs_root,
             c.meta_dir,
             c.alac_library,
+            c.alac_archive,
         )
     }
 
@@ -216,8 +217,12 @@ class ClassicalComposerStage(BaseStage):
             # `alac_library / <batch date> / <artist> / <album>` from the
             # archive row, so updating `artist` is the whole job: the file
             # gets filed under the composer by the stage whose task that
-            # is. Move only what is already in the library.
-            in_library = _is_within(src, ctx.config.alac_library)
+            # is. Move only what is already filed among the masters.
+            #
+            # It asked about alac_library, where finalize filed before
+            # 2026-09-25; that is the Lossless edition now, so no master was
+            # ever moved here (review of slice A). Organize refiled them later.
+            in_library = _is_within(src, ctx.config.alac_archive)
             album_dir: Path | None = None
             artist_dir: Path | None = None
             if in_library:

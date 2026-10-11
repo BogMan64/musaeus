@@ -118,7 +118,7 @@ def ctx(tmp_path) -> RunContext:
 
 
 def _track(ctx, artist, title, genre="Classical"):
-    p = ctx.config.alac_library / "2026-08-18" / artist / "Unsorted" / f"{artist} - {title}.m4a"
+    p = ctx.config.alac_archive / "Classical" / artist / "Unsorted" / f"{artist} - {title}.m4a"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(b"audio")
     upsert_archive(
@@ -254,4 +254,4 @@ class TestAFlatInboxTrackStaysInTheVault:
         row = ctx.conn.execute("SELECT artist, file_path FROM archive").fetchone()
         assert not src.exists()
         assert "Johann Sebastian Bach" in row["file_path"]
-        assert Path(row["file_path"]).resolve().is_relative_to(ctx.config.alac_library.resolve())
+        assert Path(row["file_path"]).resolve().is_relative_to(ctx.config.alac_archive.resolve())
