@@ -206,26 +206,6 @@ def _read_all_tags(path: Path, known_duration: float | str | None = None) -> dic
     return out
 
 
-def _archive_twin(path: Path, cfg: MusicConfig) -> Path | None:
-    """The pristine ALAC_Archive counterpart of a library file, if present.
-
-    ALAC_Archive mirrors ALAC-Library's relative layout, so the twin is the
-    same relative path under the archive root. Deliberately re-derived from
-    the path rather than stored in a DB column -- build_alac_library.py's own
-    docstring explains why: a second path column would drift out of sync with
-    real filesystem state.
-    """
-    archive_root = cfg.alac_archive
-    if not archive_root.exists():
-        return None
-    try:
-        rel = path.relative_to(cfg.alac_library)
-    except ValueError:
-        return None
-    twin = archive_root / rel
-    return twin if twin.exists() else None
-
-
 def _status_for(path: Path, alac_library: Path, cfg: MusicConfig | None = None) -> str:
     """Infer status from where the file actually sits.
 
@@ -315,7 +295,6 @@ def scan_and_rebuild(
     summary: dict[str, Any] = {
         "scanned": 0,
         "rebuilt": 0,
-        "hashed_from_archive": 0,
         "errors": [],
         "table": table,
     }
@@ -375,38 +354,18 @@ def scan_and_rebuild(
             row.update(_read_all_tags(path, row.get("duration")))
 
             if compute_hashes:
-                # Hash the PRISTINE archive copy when one exists, not the
-                # library copy.
-                #
-                # audio_hash is a PCM hash and is genuinely stable across
-                # re-tagging and container re-muxing (both verified). What it
-                # does not survive -- correctly -- is a deliberate change to
-                # the audio itself, and Phase 2A's build_alac_library.py bakes
-                # -18 LUFS into the ALAC-Library copy by re-encoding it.
-                # 91.8% of CATALOGUED rows carry lufs_baked_at.
-                #
-                # So hashing the library copy yields a value that is perfectly
-                # correct for that file and matches nothing in hash_index.db,
-                # silently breaking cross-batch dedup continuity on a rebuild.
-                # ALAC_Archive holds the un-baked original the stored hash was
-                # taken from -- verified 6/6 against the live DB. Prefer it.
-                archive_copy = _archive_twin(path, cfg)
-                hash_src = archive_copy if archive_copy is not None else path
-
-                ah, err = audio_hash_safe(hash_src)
+                # Hashed from the master itself. The masters are the un-baked
+                # originals the stored hashes were taken from, so the PCM hash
+                # matches hash_index.db. (It used to look for a "pristine
+                # twin" under ALAC_Library, from when the library held the
+                # baked copies; the scan walks the masters, so no twin was
+                # ever found -- review of slice E, finding 11.)
+                ah, err = audio_hash_safe(path)
                 if ah:
                     row["audio_hash"] = ah
-                    # Only claim archive provenance once a hash actually came
-                    # back from it. The count is what tells an operator how
-                    # much of a rebuild's hash continuity is real, so it must
-                    # never include a file whose hashing failed.
-                    if archive_copy is not None:
-                        row["_hashed_from_archive"] = True
                 elif err:
                     summary["errors"].append(f"{path.name}: audio_hash: {err}")
                 try:
-                    # full_hash describes the actual file at file_path, so it
-                    # is always taken from the library copy, never the twin.
                     row["full_hash"] = file_hash(path)
                 except OSError as exc:
                     summary["errors"].append(f"{path.name}: full_hash: {exc}")
@@ -418,8 +377,6 @@ def scan_and_rebuild(
                 row["finalized_at"] = row["last_modified"]
                 row["canonicalized_at"] = row["last_modified"]
 
-            from_archive = row.pop("_hashed_from_archive", False)
-
             usable = {k: v for k, v in row.items() if k in cols}
             placeholders = ", ".join("?" for _ in usable)
             conn.execute(
@@ -427,10 +384,6 @@ def scan_and_rebuild(
                 list(usable.values()),
             )
             summary["rebuilt"] += 1
-            # Counted only now: a row that failed to insert is not part of the
-            # rebuild, so its provenance should not be claimed either.
-            if from_archive:
-                summary["hashed_from_archive"] += 1
 
         except Exception as exc:  # one bad file must not end the rebuild
             summary["errors"].append(f"{path}: {exc}")
@@ -443,47 +396,131 @@ def scan_and_rebuild(
     return summary
 
 
-def promote(conn: sqlite3.Connection, *, table: str = "archive_rebuilt") -> str:
+#: The statuses a rebuild gives, from where a file sits. A row with any other
+#: status -- PENDING or HASHED in STAGING, QUARANTINED, GHOST, DELETED -- is
+#: one the scan of the masters cannot see, and promote keeps it as it was.
+REBUILT_STATUSES = ("CATALOGUED", "DUPE_REVIEW", "TRIBUTE_REVIEW")
+_REBUILT_SQL = "('" + "','".join(REBUILT_STATUSES) + "')"
+
+
+class PromoteRefused(RuntimeError):
+    """The rebuild would drop rows from the live catalogue."""
+
+    def __init__(self, missing: list[str]) -> None:
+        self.missing = missing
+        super().__init__(
+            f"{len(missing):,} catalogued file(s) are not in the rebuild; promoting it would "
+            "drop their rows"
+        )
+
+
+def missing_from_rebuild(conn: sqlite3.Connection, table: str = "archive_rebuilt") -> list[str]:
+    """The live rows a promote would replace whose file the rebuild did not find.
+
+    Review of slice E, finding 2: a partial rebuild (a folder or drive only
+    partly there, files that failed to read) replaced the whole catalogue,
+    and the rows it lacked were dropped without a word.
+    """
+    return [
+        r[0]
+        for r in conn.execute(
+            f"SELECT file_path FROM archive WHERE status IN {_REBUILT_SQL} "
+            f"AND file_path NOT IN (SELECT file_path FROM {table}) ORDER BY file_path"
+        )
+    ]
+
+
+def _backup_name(conn: sqlite3.Connection) -> str:
+    stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    name, n = f"archive_pre_rebuild_{stamp}", 1
+    while conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone():
+        n += 1
+        name = f"archive_pre_rebuild_{stamp}_{n}"
+    return name
+
+
+def promote(
+    conn: sqlite3.Connection, *, table: str = "archive_rebuilt", accept_missing: bool = False
+) -> str:
     """Swap *table* into place as `archive`, keeping the old one aside.
 
     The previous archive is RENAMED, never dropped. The whole reason
     rebuild-db was dangerous is that it destroyed the old data before
     knowing it could produce new data; nothing here repeats that.
     Returns the name the old table was preserved under.
+
+    Review of slice E, findings 2-5:
+      - It refuses (PromoteRefused) when live rows would be dropped because
+        the rebuild lacks their file, unless *accept_missing*.
+      - The rows the scan cannot see (any status outside REBUILT_STATUSES)
+        come across as they were, and so do the person's keeps
+        (`kept_by_person_at`), which nothing on disk records: without them
+        the next Act 2 would move copies Grey chose to keep.
+      - It is one transaction, holding the write lock from the start: a stop
+        part way leaves `archive` as it was. Each step used to commit on its
+        own, so a stop between the two renames left no `archive` table, and
+        the next open made an empty one.
     """
-    stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup = f"archive_pre_rebuild_{stamp}"
+    missing = missing_from_rebuild(conn, table)
+    if missing and not accept_missing:
+        raise PromoteRefused(missing)
+    backup = _backup_name(conn)
 
-    # SQLite carries a table's INDEXES along with an ALTER TABLE RENAME, so
-    # `idx_archive_hash/artist/status` follow the old table to the backup
-    # name and the promoted table has none. Worse, the names are then TAKEN,
-    # so db.py's `CREATE INDEX IF NOT EXISTS` on the next open finds them and
-    # silently no-ops -- the live archive is left permanently unindexed.
-    # Observed on the vault 2026-08-30: 1 index on archive, 4 on the backup.
-    #
-    # So capture the index DDL first, drop the indexes off the old table
-    # before renaming, and recreate them on the promoted one.
-    index_ddl = [
-        row[0]
-        for row in conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='archive' "
-            "AND sql IS NOT NULL"
-        )
-    ]
-    index_names = [
-        row[0]
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='archive' "
-            "AND sql IS NOT NULL"
-        )
-    ]
-    for name in index_names:
-        conn.execute(f"DROP INDEX IF EXISTS {name}")
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        old_cols = [r[1] for r in conn.execute("PRAGMA table_info(archive)")]
+        new_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if "kept_by_person_at" in new_cols and "kept_by_person_at" in old_cols:
+            conn.execute(
+                f"""
+                UPDATE {table}
+                   SET kept_by_person_at = (
+                       SELECT a.kept_by_person_at FROM archive a
+                        WHERE a.file_path = {table}.file_path)
+                 WHERE kept_by_person_at IS NULL
+                """
+            )
+        shared = ", ".join(c for c in old_cols if c in new_cols and c != "id")
+        carried = conn.execute(
+            f"""
+            INSERT INTO {table} ({shared})
+            SELECT {shared} FROM archive
+             WHERE COALESCE(status, '') NOT IN {_REBUILT_SQL}
+               AND file_path NOT IN (SELECT file_path FROM {table})
+            """
+        ).rowcount
 
-    conn.execute(f"ALTER TABLE archive RENAME TO {backup}")
-    conn.execute(f"ALTER TABLE {table} RENAME TO archive")
-    for ddl in index_ddl:
-        conn.execute(ddl)
+        # SQLite carries a table's INDEXES along with an ALTER TABLE RENAME, so
+        # `idx_archive_hash/artist/status` follow the old table to the backup
+        # name and the promoted table has none. Worse, the names are then
+        # TAKEN, so db.py's `CREATE INDEX IF NOT EXISTS` on the next open finds
+        # them and silently no-ops -- the live archive is left permanently
+        # unindexed. Observed on the vault 2026-08-30: 1 index on archive, 4 on
+        # the backup.
+        #
+        # So capture the index DDL first, drop the indexes off the old table
+        # before renaming, and recreate them on the promoted one.
+        indexes = conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='archive' "
+            "AND sql IS NOT NULL"
+        ).fetchall()
+        for name, _ in indexes:
+            conn.execute(f"DROP INDEX IF EXISTS {name}")
+        conn.execute(f"ALTER TABLE archive RENAME TO {backup}")
+        conn.execute(f"ALTER TABLE {table} RENAME TO archive")
+        for _, ddl in indexes:
+            conn.execute(ddl)
+    except BaseException:
+        conn.rollback()
+        raise
     conn.commit()
-    logger.info("promoted; restored %d index(es)", len(index_ddl))
+    logger.info(
+        "promoted; %d row(s) the scan cannot see kept; restored %d index(es)",
+        carried,
+        len(indexes),
+    )
     return backup
