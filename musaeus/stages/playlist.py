@@ -102,9 +102,17 @@ class PlaylistStage(BaseStage):
 
         playlist_dir = ctx.config.playlists
 
+        # The era is the recording's, not the copy's: "409" (1962) on a 2012
+        # compilation belongs in the 1960s list. original_year.py says every
+        # consumer reads COALESCE(original_year, year); this read `year`
+        # (review of slice C, finding 10). The column exists once
+        # OriginalYearStage has run.
+        cols = {r[1] for r in ctx.conn.execute("PRAGMA table_info(archive)")}
+        year = "COALESCE(original_year, year)" if "original_year" in cols else "year"
         rows = ctx.conn.execute(
-            """
-            SELECT file_path, car_export_path, audio_hash, genre, artist, title, year
+            f"""
+            SELECT file_path, car_export_path, audio_hash, genre, artist, title,
+                   {year} AS year
             FROM archive
             WHERE status = 'CATALOGUED'
               AND genre IS NOT NULL AND trim(genre) != ''

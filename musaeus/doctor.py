@@ -704,6 +704,9 @@ def diagnose(cfg: MusicConfig) -> Report:
     _authority_disagreements(cfg, rep)
     _editions_come_from_masters(cfg, rep)
     _names_safe_on_fat(cfg, rep)
+    _changed_outside_musaeus(cfg, rep)
+    _one_act_two_spellings(cfg, rep)
+    _sort_titles_that_disagree(cfg, rep)
     _one_picture_many_artists(cfg, rep)
     _artist_tag_is_natural_form(cfg, rep)
     _catalogued_tracks_reach_the_car(cfg, rep)
@@ -1295,3 +1298,324 @@ def _names_safe_on_fat(cfg: MusicConfig, rep: Report) -> None:
             rep.add("warn", check, "; ".join(problems), len(bad) + len(clashes) + len(pairs))
         else:
             rep.add("ok", check, f"all {len(files):,} file(s) safe on a FAT32 stick")
+
+
+#: Between MUSAEUS's last record of writing a master and the file's own date.
+#: Generous on purpose: some stamps are stored in local time and some in UTC,
+#: and a change hours after a run is still caught.
+_OUTSIDE_SLACK_S = 12 * 3600
+#: Row stamps that mean "MUSAEUS wrote this file" (beside the event log).
+_WRITE_STAMPS = (
+    "finalized_at",
+    "canonicalized_at",
+    "rg_tagged_at",
+    "bpm_analyzed_at",
+    "identity_tagged_at",
+    "art_checked_at",
+    "title_checked_at",
+)
+#: Events that write a master's contents. A database-only event is not a
+#: write; a move keeps the file's date (its history is carried, see below).
+_WRITE_EVENTS = frozenset(
+    {
+        "FORGE_TAG",
+        "RG_TAGGED",
+        "TAGGER_WRITE",
+        "BPM_ANALYZED",
+        "IDENTITY_TAGGED",
+        "ART_EMBEDDED",
+        "ART_UPGRADED",
+        "CANONICALIZE",
+        "FINALIZE_MOVE",
+        "LOUDNESS_TAGS_WRITTEN",
+        "MASTER_WRITE_BACKFILLED",
+        "BITROT_REPAIRED",  # restored from a backup, tags copied back on
+        "ART_REPLACED",  # the 2026-10-06 cover fixes
+    }
+)
+#: How many of the changed masters have their audio re-hashed.
+_OUTSIDE_AUDIO_SAMPLE = 20
+
+
+def _epoch(value: object) -> float | None:
+    """A stored time as seconds; a time with no zone is taken as UTC (SQLite's
+    datetime('now'))."""
+    from datetime import datetime, timezone
+
+    if not value:
+        return None
+    try:
+        t = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return t.timestamp()
+
+
+def _changed_outside_musaeus(cfg: MusicConfig, rep: Report) -> None:
+    """Masters whose file changed since MUSAEUS last recorded writing them.
+
+    Grey, 2026-10-11: "how could an end user [see this] -- read-only". About
+    1,840 masters had their tags changed on 2026-10-09/10 by a tag editor, with
+    no MUSAEUS record behind it; finding that took a hand comparison. This is
+    that comparison: each master's file date against the latest MUSAEUS write
+    on record -- events that write a file (followed across moves) and the
+    row's write stamps -- and, for a sample
+    of the changed ones, the audio re-hashed against the catalogue, which
+    tells "only the tags (or cover) changed" from "the audio changed".
+
+    Read-only. A master with no MUSAEUS record at all is counted as not
+    judged, never as changed.
+    """
+    from collections import Counter
+    from datetime import datetime
+
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
+        stamps = [c for c in _WRITE_STAMPS if c in cols]
+        extra = "".join(f", {c}" for c in stamps)
+        rows = conn.execute(
+            f"SELECT file_path, audio_hash{extra} FROM archive WHERE status = 'CATALOGUED'"
+        ).fetchall()
+        events = conn.execute(
+            "SELECT event_type, file_path, old_value, new_value, ts FROM events "
+            "WHERE file_path IS NOT NULL ORDER BY id"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    # The last time MUSAEUS wrote each file. Only events that write a file
+    # count: a database-only event (MB_ARTIST_FOUND, GENRE_FILLED ...) after an
+    # outside edit hid it. A move (Organize, Finalize, a refile) keeps the
+    # file's date, so its history moves with it to the new path: a file Tagger
+    # wrote and Organize then renamed read as changed outside (pre-merge review
+    # of #169).
+    from .config import AUDIO_EXTENSIONS
+
+    last_write: dict[str, float] = {}
+    for etype, fp, old_value, new_value, ts in events:
+        if etype in _WRITE_EVENTS:
+            t = _epoch(ts)
+            if t is not None and t > last_write.get(fp, 0.0):
+                last_write[fp] = t
+        # A move logged as (old -> new) under the old path (Organize), or under
+        # the new path with the old one in old_value (VA fix, dupe moves,
+        # consolidate): either way the old path's history goes to the new one.
+        for src, dst in ((fp, new_value), (old_value, fp)):
+            if (
+                src
+                and dst
+                and src != dst
+                and str(src).startswith("/")
+                and str(dst).startswith("/")
+                and Path(str(dst)).suffix.lower() in AUDIO_EXTENSIONS
+                and src in last_write
+            ):
+                last_write[dst] = max(last_write.get(dst, 0.0), last_write[src])
+
+    changed: list[tuple[str, float, str | None]] = []
+    unjudged = 0
+    for r in rows:
+        fp = r["file_path"]
+        try:
+            st = Path(fp).stat()
+        except OSError:
+            continue  # a missing file is another check's finding
+        mtime = st.st_mtime
+        touches = [last_write.get(fp)] + [_epoch(r[c]) for c in stamps]
+        known = [t for t in touches if t is not None]
+        if not known:
+            unjudged += 1
+            continue
+        if mtime > max(known) + _OUTSIDE_SLACK_S:
+            changed.append((fp, mtime, r["audio_hash"]))
+
+    note = f"; {unjudged:,} with no MUSAEUS record, not judged" if unjudged else ""
+    if not changed:
+        rep.add(
+            "ok",
+            "changed outside MUSAEUS",
+            f"none of {len(rows):,} masters changed since MUSAEUS last wrote them{note}",
+        )
+        return
+
+    days = Counter(datetime.fromtimestamp(m).strftime("%Y-%m-%d") for _, m, _ in changed)
+    when = ", ".join(f"{d} {n:,}" for d, n in sorted(days.items())[-5:])
+
+    from .hasher import audio_hash_safe
+
+    step = max(1, len(changed) // _OUTSIDE_AUDIO_SAMPLE)
+    sample = sorted(changed)[::step][:_OUTSIDE_AUDIO_SAMPLE]
+    audio_changed: list[str] = []
+    unreadable = 0
+    for fp, _, recorded in sample:
+        now, err = audio_hash_safe(Path(fp))
+        if err or not now or not recorded:
+            unreadable += 1
+        elif now != recorded:
+            audio_changed.append(fp)
+    checked = len(sample) - unreadable
+    if audio_changed:
+        verdict = (
+            f"AUDIO CHANGED on {len(audio_changed)} of {checked} re-checked, "
+            f"e.g. {Path(audio_changed[0]).name}"
+        )
+    elif checked:
+        verdict = f"audio identical on all {checked} re-checked (tags or cover only)"
+    else:
+        verdict = "audio not re-checked (no sampled file could be decoded)"
+    rep.add(
+        "fail" if audio_changed else "warn",
+        "changed outside MUSAEUS",
+        f"{len(changed):,} master(s) changed since MUSAEUS last wrote them "
+        f"(by day: {when}); {verdict}{note}",
+        len(changed),
+    )
+
+
+def _spelling_key(name: str) -> str:
+    """What two spellings of one act share: no case, accents, punctuation or
+    leading/trailing "The", and "&"/"+" read as "and"."""
+    import re
+    import unicodedata
+
+    from .artist_form import comparison_key  # the article rule lives there
+
+    n = comparison_key(name or "")
+    n = unicodedata.normalize("NFKD", n).encode("ascii", "ignore").decode()
+    n = re.sub(r"\s*[&+]\s*", " and ", n)
+    return re.sub(r"[^0-9a-z]", "", n)
+
+
+def _one_act_two_spellings(cfg: MusicConfig, rep: Report) -> None:
+    """Is one act filed under two spellings? (Grey, 2026-10-11)
+
+    "Jan & Dean" beside "Jan And Dean", "Run-DMC" beside "Run-D.M.C.": one act,
+    two artist folders, on the masters and on every edition. Found by hand on
+    2026-10-11 (six acts, from canon lines that disagreed on "&" and "and").
+    This is that search: the artist folder each catalogued song files under
+    (organize.library_artist -- the filing rulings, MusicBrainz, then
+    folder_artist), grouped by a spelling that ignores case, accents,
+    punctuation, "The" and "&"/"and". Read-only. The fix is an
+    artist_canon.tsv line, applied at the next run.
+    """
+    from collections import defaultdict
+
+    from .filing import load as filing_load
+    from .stages.organize import library_artist
+
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
+        mb = "mb_artist_name" if "mb_artist_name" in cols else "NULL"
+        rows = conn.execute(
+            f"SELECT artist, {mb}, COUNT(*) FROM archive WHERE status = 'CATALOGUED' "
+            "GROUP BY artist, 2"
+        ).fetchall()
+    finally:
+        conn.close()
+    filing = filing_load(cfg.meta_dir) if getattr(cfg, "meta_dir", None) else {}
+
+    folders: dict[str, int] = defaultdict(int)
+    for artist, mb_name, n in rows:
+        folders[library_artist(artist, mb_name, filing)] += int(n)
+    groups: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    for folder, n in folders.items():
+        key = _spelling_key(folder)
+        if key:
+            groups[key].append((folder, n))
+    split = sorted(sorted(g) for g in groups.values() if len(g) > 1)
+    if not split:
+        rep.add("ok", "one act, two spellings", f"none among {len(folders):,} artist folders")
+        return
+    shown = "; ".join(" | ".join(f"{f} ({n})" for f, n in g) for g in split[:4])
+    more = f"; and {len(split) - 4} more" if len(split) > 4 else ""
+    rep.add(
+        "warn",
+        "one act, two spellings",
+        f"{len(split)} act(s) filed under two or more spellings: {shown}{more} -- "
+        "an artist_canon.tsv line joins them",
+        len(split),
+    )
+
+
+_ARTICLE = ("the ", "a ", "an ")
+
+
+def _sort_title(path: Path) -> tuple[str, str] | None:
+    """(title, sort title) from a master's tags, or None when it has no sort
+    title (or cannot be read)."""
+    try:
+        from mutagen import File as MutagenFile  # type: ignore[import-untyped]
+
+        f = MutagenFile(str(path))
+    except Exception:  # noqa: BLE001 -- unreadable is another check's finding
+        return None
+    if f is None or not f.tags:
+        return None
+    tags = f.tags
+    pairs = (("\xa9nam", "sonm"), ("title", "titlesort"), ("TIT2", "TSOT"))
+    for title_key, sort_key in pairs:
+        try:
+            sort = tags.get(sort_key)
+            title = tags.get(title_key)
+        except Exception:  # noqa: BLE001 -- a key this format does not take
+            continue
+        if sort:
+            first = lambda v: str(v[0] if isinstance(v, list) else v)  # noqa: E731
+            return first(title) if title else "", first(sort)
+    return None
+
+
+def _sort_titles_that_disagree(cfg: MusicConfig, rep: Report) -> None:
+    """Masters whose song-title sort name is not their title. (Grey, 2026-10-11)
+
+    iTunes' "CopyNameToSortName" script set every sort title back to the title,
+    because a stale one makes a player list the song under another name.
+    MUSAEUS never writes a sort title, but one carried in from a source stays
+    in the master. A sort title that only drops a leading "The"/"A"/"An" is
+    deliberate (iTunes AutoSort) and only counted; any other difference is
+    listed with examples, for information (Grey found the live ones fine).
+    Read-only: reads every master's tags (about a minute).
+    """
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    try:
+        paths = [
+            r[0] for r in conn.execute("SELECT file_path FROM archive WHERE status='CATALOGUED'")
+        ]
+    finally:
+        conn.close()
+
+    article_only = 0
+    differ: list[tuple[str, str, str]] = []
+    for fp in paths:
+        got = _sort_title(Path(fp))
+        if got is None:
+            continue
+        title, sort = got
+        t, so = title.strip().casefold(), sort.strip().casefold()
+        if t == so:
+            continue
+        stripped = next((t[len(a) :] for a in _ARTICLE if t.startswith(a)), t)
+        if so == stripped.strip():
+            article_only += 1
+            continue
+        differ.append((Path(fp).name, title, sort))
+
+    note = f"; {article_only:,} drop only a leading The/A/An (normal)" if article_only else ""
+    if not differ:
+        rep.add("ok", "song sort names", f"none differ from the title{note}")
+        return
+    shown = "; ".join(f"{t!r} sorts as {so!r}" for _, t, so in differ[:4])
+    # Information, not a warning: Grey looked at the 79 on the live library
+    # (2026-10-11) and they are fine as they are -- mostly a remaster or a
+    # punctuation form of the same title.
+    rep.add(
+        "ok",
+        "song sort names",
+        f"{len(differ):,} master(s) sort under another name (for information): {shown}{note}",
+        len(differ),
+    )
