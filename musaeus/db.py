@@ -528,6 +528,45 @@ def get_file_history(conn: sqlite3.Connection, file_path: str) -> list[sqlite3.R
 # ── Archive helpers ───────────────────────────────────────────────────────────
 
 
+def add_duplicate_member(
+    conn: sqlite3.Connection,
+    group_id: str,
+    file_path: str,
+    duplicate_type: str,
+    run_id: str,
+    confidence: float = 1.0,
+) -> None:
+    """Put *file_path* in *group_id* as a member still to be resolved.
+
+    One row per (group, file). duplicates has no UNIQUE key, so the
+    `INSERT OR IGNORE` the stages used never ignored anything: an EXACT group
+    is named after its recording, and each new copy of a recording added the
+    first file to the old group again beside its earlier row (117 doubled
+    pairs live; review of slice B, finding 7). A file already in the group
+    now has that row opened again -- status pending, this run, the file's
+    current hash -- exactly what the second row used to say, without the
+    stale first one.
+    """
+    reopened = conn.execute(
+        """
+        UPDATE duplicates
+           SET status = 'pending', duplicate_type = ?, confidence = ?, run_id = ?,
+               audio_hash = (SELECT audio_hash FROM archive WHERE file_path = ?)
+         WHERE group_id = ? AND file_path = ?
+        """,
+        (duplicate_type, confidence, run_id, file_path, group_id, file_path),
+    ).rowcount
+    if not reopened:
+        conn.execute(
+            """
+            INSERT INTO duplicates
+                (group_id, file_path, duplicate_type, confidence, run_id, audio_hash)
+            VALUES (?, ?, ?, ?, ?, (SELECT audio_hash FROM archive WHERE file_path = ?))
+            """,
+            (group_id, file_path, duplicate_type, confidence, run_id, file_path),
+        )
+
+
 def upsert_archive(conn: sqlite3.Connection, row: dict) -> None:
     """
     Insert or update an archive row.

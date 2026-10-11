@@ -47,7 +47,12 @@ import sqlite3
 from pathlib import Path
 
 from ..context import RunContext, StageResult
-from ..db import SET_ASIDE_STATUSES, lookup_finalized_hash, open_hash_index
+from ..db import (
+    SET_ASIDE_STATUSES,
+    add_duplicate_member,
+    lookup_finalized_hash,
+    open_hash_index,
+)
 from ..hasher import audio_hash as hasher_audio_hash
 from .base import BaseStage
 
@@ -208,15 +213,7 @@ class CrossDupeStage(BaseStage):
 
                 if not dry_run:
                     group_id = f"crossdupe_{ah[:12]}"
-                    ctx.conn.execute(
-                        """
-                        INSERT OR IGNORE INTO duplicates
-                            (group_id, file_path, duplicate_type, confidence, run_id, audio_hash)
-                        VALUES (?, ?, 'CROSS_BATCH', 1.0, ?,
-                                (SELECT audio_hash FROM archive WHERE file_path = ?))
-                        """,
-                        (group_id, path_str, ctx.run_id, path_str),
-                    )
+                    add_duplicate_member(ctx.conn, group_id, path_str, "CROSS_BATCH", ctx.run_id)
                     ctx.log_event(
                         "CROSS_BATCH_DUPLICATE_FOUND",
                         file_path=path_str,
