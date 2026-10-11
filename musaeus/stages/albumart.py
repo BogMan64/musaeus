@@ -606,9 +606,13 @@ class AlbumArtStage(BaseStage):
                         if ok:
                             embedded_count += 1
                             result.files_changed += 1
+                            # The new cover's size too: a size left from an
+                            # earlier look (0, or the old cover's) hides a cover
+                            # that is really too small (Grey, 2026-10-11).
+                            new_px = max(image_dimensions(sidecar.read_bytes()) or (0, 0))
                             ctx.conn.execute(
-                                "UPDATE archive SET has_art=1 WHERE file_path=?",
-                                (fp,),
+                                "UPDATE archive SET has_art=1, art_px=? WHERE file_path=?",
+                                (new_px or None, fp),
                             )
                             ctx.log_event(
                                 "ART_EMBEDDED",

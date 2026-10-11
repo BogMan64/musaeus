@@ -705,6 +705,8 @@ def diagnose(cfg: MusicConfig) -> Report:
     _editions_come_from_masters(cfg, rep)
     _names_safe_on_fat(cfg, rep)
     _changed_outside_musaeus(cfg, rep)
+    _one_act_two_spellings(cfg, rep)
+    _sort_titles_that_disagree(cfg, rep)
     _one_picture_many_artists(cfg, rep)
     _artist_tag_is_natural_form(cfg, rep)
     _catalogued_tracks_reach_the_car(cfg, rep)
@@ -1471,4 +1473,149 @@ def _changed_outside_musaeus(cfg: MusicConfig, rep: Report) -> None:
         f"{len(changed):,} master(s) changed since MUSAEUS last wrote them "
         f"(by day: {when}); {verdict}{note}",
         len(changed),
+    )
+
+
+def _spelling_key(name: str) -> str:
+    """What two spellings of one act share: no case, accents, punctuation or
+    leading/trailing "The", and "&"/"+" read as "and"."""
+    import re
+    import unicodedata
+
+    from .artist_form import comparison_key  # the article rule lives there
+
+    n = comparison_key(name or "")
+    n = unicodedata.normalize("NFKD", n).encode("ascii", "ignore").decode()
+    n = re.sub(r"\s*[&+]\s*", " and ", n)
+    return re.sub(r"[^0-9a-z]", "", n)
+
+
+def _one_act_two_spellings(cfg: MusicConfig, rep: Report) -> None:
+    """Is one act filed under two spellings? (Grey, 2026-10-11)
+
+    "Jan & Dean" beside "Jan And Dean", "Run-DMC" beside "Run-D.M.C.": one act,
+    two artist folders, on the masters and on every edition. Found by hand on
+    2026-10-11 (six acts, from canon lines that disagreed on "&" and "and").
+    This is that search: the artist folder each catalogued song files under
+    (organize.library_artist -- the filing rulings, MusicBrainz, then
+    folder_artist), grouped by a spelling that ignores case, accents,
+    punctuation, "The" and "&"/"and". Read-only. The fix is an
+    artist_canon.tsv line, applied at the next run.
+    """
+    from collections import defaultdict
+
+    from .filing import load as filing_load
+    from .stages.organize import library_artist
+
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
+        mb = "mb_artist_name" if "mb_artist_name" in cols else "NULL"
+        rows = conn.execute(
+            f"SELECT artist, {mb}, COUNT(*) FROM archive WHERE status = 'CATALOGUED' "
+            "GROUP BY artist, 2"
+        ).fetchall()
+    finally:
+        conn.close()
+    filing = filing_load(cfg.meta_dir) if getattr(cfg, "meta_dir", None) else {}
+
+    folders: dict[str, int] = defaultdict(int)
+    for artist, mb_name, n in rows:
+        folders[library_artist(artist, mb_name, filing)] += int(n)
+    groups: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    for folder, n in folders.items():
+        key = _spelling_key(folder)
+        if key:
+            groups[key].append((folder, n))
+    split = sorted(sorted(g) for g in groups.values() if len(g) > 1)
+    if not split:
+        rep.add("ok", "one act, two spellings", f"none among {len(folders):,} artist folders")
+        return
+    shown = "; ".join(" | ".join(f"{f} ({n})" for f, n in g) for g in split[:4])
+    more = f"; and {len(split) - 4} more" if len(split) > 4 else ""
+    rep.add(
+        "warn",
+        "one act, two spellings",
+        f"{len(split)} act(s) filed under two or more spellings: {shown}{more} -- "
+        "an artist_canon.tsv line joins them",
+        len(split),
+    )
+
+
+_ARTICLE = ("the ", "a ", "an ")
+
+
+def _sort_title(path: Path) -> tuple[str, str] | None:
+    """(title, sort title) from a master's tags, or None when it has no sort
+    title (or cannot be read)."""
+    try:
+        from mutagen import File as MutagenFile  # type: ignore[import-untyped]
+
+        f = MutagenFile(str(path))
+    except Exception:  # noqa: BLE001 -- unreadable is another check's finding
+        return None
+    if f is None or not f.tags:
+        return None
+    tags = f.tags
+    pairs = (("\xa9nam", "sonm"), ("title", "titlesort"), ("TIT2", "TSOT"))
+    for title_key, sort_key in pairs:
+        try:
+            sort = tags.get(sort_key)
+            title = tags.get(title_key)
+        except Exception:  # noqa: BLE001 -- a key this format does not take
+            continue
+        if sort:
+            first = lambda v: str(v[0] if isinstance(v, list) else v)  # noqa: E731
+            return first(title) if title else "", first(sort)
+    return None
+
+
+def _sort_titles_that_disagree(cfg: MusicConfig, rep: Report) -> None:
+    """Masters whose song-title sort name is not their title. (Grey, 2026-10-11)
+
+    iTunes' "CopyNameToSortName" script set every sort title back to the title,
+    because a stale one makes a player list the song under another name.
+    MUSAEUS never writes a sort title, but one carried in from a source stays
+    in the master. A sort title that only drops a leading "The"/"A"/"An" is
+    deliberate (iTunes AutoSort) and only counted; any other difference is
+    listed with examples, for information (Grey found the live ones fine).
+    Read-only: reads every master's tags (about a minute).
+    """
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    try:
+        paths = [
+            r[0] for r in conn.execute("SELECT file_path FROM archive WHERE status='CATALOGUED'")
+        ]
+    finally:
+        conn.close()
+
+    article_only = 0
+    differ: list[tuple[str, str, str]] = []
+    for fp in paths:
+        got = _sort_title(Path(fp))
+        if got is None:
+            continue
+        title, sort = got
+        t, so = title.strip().casefold(), sort.strip().casefold()
+        if t == so:
+            continue
+        stripped = next((t[len(a) :] for a in _ARTICLE if t.startswith(a)), t)
+        if so == stripped.strip():
+            article_only += 1
+            continue
+        differ.append((Path(fp).name, title, sort))
+
+    note = f"; {article_only:,} drop only a leading The/A/An (normal)" if article_only else ""
+    if not differ:
+        rep.add("ok", "song sort names", f"none differ from the title{note}")
+        return
+    shown = "; ".join(f"{t!r} sorts as {so!r}" for _, t, so in differ[:4])
+    # Information, not a warning: Grey looked at the 79 on the live library
+    # (2026-10-11) and they are fine as they are -- mostly a remaster or a
+    # punctuation form of the same title.
+    rep.add(
+        "ok",
+        "song sort names",
+        f"{len(differ):,} master(s) sort under another name (for information): {shown}{note}",
+        len(differ),
     )
