@@ -81,7 +81,7 @@ def test_the_console_ranks_the_filed_copy_first_as_the_resolver_does(conn):
     conn.commit()
     from musaeus.stages import dupe_resolver
 
-    console = [m["file_path"] for m in dedupe._get_group_members(conn, "dup_same")]
+    console = [m["file_path"] for m in dedupe._set_members(conn, ["dup_same"])]
     resolver = [m["file_path"] for m in dupe_resolver._get_group_members(conn, "dup_same")]
     assert console[0] == "/m/filed.m4a"
     assert console == resolver
