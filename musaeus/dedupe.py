@@ -23,7 +23,10 @@ Controls:
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+import signal
+import threading
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -71,22 +74,36 @@ def _fmt_row(idx: int, row: dict, choice: str | None = None) -> str:
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 
-def _get_pending_groups(conn) -> list[str]:
-    """The groups still to be resolved, ordered: the ones `musaeus status`
-    counts."""
-    rows = conn.execute(
-        f"SELECT DISTINCT group_id FROM duplicates WHERE {ACTED_ON_SQL} ORDER BY group_id"
-    ).fetchall()
-    return [r[0] for r in rows]
-
-
 def _get_sets(conn) -> list[list[str]]:
-    """The pending groups, joined where they share a file: the resolver's
-    unit. Shown one group at a time, a copy kept here could be moved later
-    through another group (review of #135-#139, finding 1)."""
-    from .stages.dupe_resolver import _connected_groups
+    """The pending groups, joined where they share a file -- through rows of
+    any status: a file kept in one group and still pending in another was
+    shown in two sets, kept in the first and archived in the second (reviews
+    of #135-#139, finding 1, and #140-#142, finding 3)."""
+    from .stages.dupe_resolver import _get_pending_groups
 
-    return _connected_groups(conn, _get_pending_groups(conn))
+    groups = _get_pending_groups(conn)
+    parent = {g: g for g in groups}
+
+    def find(g: str) -> str:
+        while parent[g] != g:
+            parent[g] = parent[parent[g]]
+            g = parent[g]
+        return g
+
+    if groups:
+        qs = ",".join("?" * len(groups))
+        first: dict[str, str] = {}
+        for gid, path in conn.execute(
+            f"SELECT group_id, file_path FROM duplicates WHERE group_id IN ({qs})", groups
+        ):
+            if path in first:
+                parent[find(gid)] = find(first[path])
+            else:
+                first[path] = gid
+    sets: dict[str, list[str]] = {}
+    for g in groups:
+        sets.setdefault(find(g), []).append(g)
+    return [sorted(v) for v in sets.values()]
 
 
 def _set_members(conn, groups: Sequence[str]) -> list[dict]:
@@ -102,19 +119,53 @@ def _set_members(conn, groups: Sequence[str]) -> list[dict]:
     ]
 
 
-def _get_group_members(conn, group_id: str) -> list[dict]:
-    """One group's choosable copies, ranked as the resolver ranks them."""
-    return _set_members(conn, [group_id])
-
-
 #: What auto says. Auto writes nothing: the resolver applies the keep rule
 #: itself to every set nobody decided (Grey, 2026-10-09: "leave it to the
 #: resolver").
 LEFT_TO_KEEP_RULE = "left to the keep rule: the resolver decides it at the next Act 2"
 
-#: Carries a finished choice out: (groups, kept paths, archived paths) -> what
-#: happened, in one line.
-CarryOut = Callable[[Sequence[str], list[str], list[str]], str]
+#: Carries a finished choice out: (groups, kept paths, archived paths) ->
+#: (carried out, what happened in one line).
+CarryOut = Callable[[Sequence[str], list[str], list[str]], tuple[bool, str]]
+
+
+#: A stop pressed again this long after the first forces it: a double tap waits
+#: (stopped mid-move, a carry-out lost the keep -- review of #149), a hang does not.
+_FORCE_AFTER_S = 10.0
+
+
+@contextmanager
+def _not_interrupted() -> Iterator[None]:
+    """Ctrl-C, a closed terminal or a TERM wait until the carry-out is done.
+    Stopped part way, the archived copies were moved and the keep never
+    recorded, and the next Act 2 could move the copy kept (review of
+    #140-#142, finding 1). The stop comes once it is done."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    sigs = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    old = {s: signal.getsignal(s) for s in sigs}
+    asked: list[float] = []
+
+    def wait(n: int, frame: object) -> None:
+        import time
+
+        now = time.monotonic()
+        if not asked:
+            print("\n  Finishing the carry-out, then stopping. Press again in 10 s to force.")
+        elif now - asked[0] >= _FORCE_AFTER_S:
+            raise KeyboardInterrupt  # a hung move must still be stoppable
+        asked.append(now)
+
+    for s in sigs:
+        signal.signal(s, wait)
+    try:
+        yield
+    finally:
+        for s, h in old.items():
+            signal.signal(s, h)
+    if asked:
+        raise KeyboardInterrupt
 
 
 def carry_out_with(config) -> CarryOut:
@@ -122,23 +173,33 @@ def carry_out_with(config) -> CarryOut:
     console must not block the backup or the bit-rot check), a run of its own,
     and the resolver's carry_out."""
 
-    def carry_out(groups: Sequence[str], kept: list[str], archived: list[str]) -> str:
+    def carry_out(groups: Sequence[str], kept: list[str], archived: list[str]) -> tuple[bool, str]:
         from .context import RunContext
         from .db import open_db
         from .masters_lock import MastersBusy, masters_lock
         from .stages.dupe_resolver import DupeResolverStage
 
         try:
-            with masters_lock(config.runs_root, exclusive=True, what="musaeus dedupe"):
+            with (
+                _not_interrupted(),
+                masters_lock(config.runs_root, exclusive=True, what="musaeus dedupe"),
+            ):
                 conn = open_db(config.db_path)
                 try:
                     ctx = RunContext.new(config, conn, dry_run=False)
                     result = DupeResolverStage().carry_out(ctx, groups, kept, archived)
+                    # A run with a RUN_END: left open, the next pipeline warned
+                    # "Previous run did not complete" (finding 9).
+                    ctx.finish()
                 finally:
                     conn.close()
         except MastersBusy as exc:
-            return f"nothing moved: {exc}"
-        return "; ".join(result.errors + result.notes) or "done"
+            return False, f"nothing moved: {exc}"
+        # Partly carried out still counts: the copies that moved are in review
+        # and the keeps are marked, and the set is not offered again as if
+        # nothing had happened (review of #149).
+        carried = result.success or result.files_changed > 0
+        return carried, "; ".join(result.errors + result.notes) or "done"
 
     return carry_out
 
@@ -238,7 +299,13 @@ def run_dedupe_console(conn, *, auto_mode: bool = False, carry_out: CarryOut | N
                 print("  Not carried out. Choose again, or s to skip.")
                 choices.clear()
                 continue
-            print(f"  → {carry_out(groups, kept, archived)}")
+            ok, said = carry_out(groups, kept, archived)
+            print(f"  → {said}")
+            if not ok:
+                # Not counted as carried out (finding 10): choose again, or skip.
+                print("  Not carried out. Choose again, or s to skip.")
+                choices.clear()
+                continue
             done += 1
             break
     print(f"\n  Session complete. Carried out={done} Skipped={skipped}")
