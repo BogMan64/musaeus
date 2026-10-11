@@ -185,3 +185,33 @@ def test_verify_effect_sees_a_quarantine_this_run_made(ctx):
     assert stage.verify_effect(ctx, result) == []
     Path(row["file_path"]).unlink()  # the quarantined file vanishes
     assert stage.verify_effect(ctx, result), "the check never looked at the row"
+
+
+# ── Pre-merge review of #162 ──────────────────────────────────────────────────
+
+
+def test_a_long_path_does_not_hide_the_machine_failure(tmp_path):
+    gone = tmp_path / ("x" * 190) / ("y" * 60) / "song.m4a"  # never created
+    with pytest.raises(corrupt.DecodeUnavailable):
+        corrupt.ffmpeg_decode_check(gone)
+
+
+def test_a_stopped_ffmpeg_is_not_a_verdict(tmp_path, monkeypatch):
+    f = tmp_path / "a.m4a"
+    f.write_bytes(b"x")
+    real = subprocess.run
+
+    def stopped(cmd, *a, **k):
+        if cmd and cmd[0] == "ffmpeg":
+            return subprocess.CompletedProcess(cmd, 255, "", "")  # SIGTERM caught
+        return real(cmd, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", stopped)
+    with pytest.raises(corrupt.DecodeUnavailable):
+        corrupt.ffmpeg_decode_check(f)
+
+
+def test_a_file_named_like_a_machine_failure_is_still_judged(tmp_path):
+    f = _damaged(tmp_path / "Permission Denied.m4a")
+    ok, why = corrupt.ffmpeg_decode_check(f)
+    assert not ok and why

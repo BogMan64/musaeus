@@ -393,17 +393,27 @@ def ffmpeg_decode_check(path: Path, seconds: int = 0) -> tuple[bool, str]:
         raise DecodeUnavailable(f"decode timed out after {_DECODE_TIMEOUT_S}s") from None
     except OSError as exc:
         raise DecodeUnavailable(f"ffmpeg unavailable: {exc}") from None
-    detail = (proc.stderr or "").strip()
-    if detail:
-        # Only pay for the extra ffprobe when there is something to classify.
-        detail = audio_relevant_stderr(detail, audio_stream_index(path))
-    if proc.returncode != 0 or detail:
-        verdict = (detail or f"ffmpeg exited {proc.returncode}").strip()[:200]
+    raw = (proc.stderr or "").strip()
+    # Stopped, not finished: killed (negative) or SIGTERM/SIGINT, which ffmpeg
+    # catches and exits 255 from, usually silently. Asked before anything in
+    # stderr, so a line about the audio cannot hide it (pre-merge review of
+    # #162).
+    if proc.returncode < 0 or proc.returncode == 255:
+        raise DecodeUnavailable(f"ffmpeg was stopped (exit {proc.returncode})")
+    if raw:
         from .sentinel import _is_environmental
 
-        if _is_environmental(verdict):
-            raise DecodeUnavailable(verdict)
-        return False, verdict
+        # Asked of the WHOLE message, with the file's own path taken out:
+        # ffmpeg puts the path before "Input/output error", so cutting to 200
+        # characters first lost the marker on long paths, and a file NAMED
+        # "Permission Denied.m4a" must not read as the machine's failure.
+        scrubbed = raw.replace(str(path), "<file>")
+        if _is_environmental(scrubbed):
+            raise DecodeUnavailable(scrubbed[-200:])
+    # Only pay for the extra ffprobe when there is something to classify.
+    detail = audio_relevant_stderr(raw, audio_stream_index(path)) if raw else ""
+    if proc.returncode != 0 or detail:
+        return False, (detail or f"ffmpeg exited {proc.returncode}").strip()[:200]
     return True, ""
 
 
@@ -590,7 +600,7 @@ class CorruptStage(BaseStage):
                 except DecodeUnavailable as exc:
                     # Not checked: nothing recorded, nothing moved, and the
                     # run is not reported clean.
-                    result.files_skipped += 1
+                    result.files_errored += 1
                     result.errors.append(f"{file_path.name}: not decoded: {exc}")
                     continue
                 if not dry_run:
@@ -699,7 +709,7 @@ class CorruptStage(BaseStage):
                                 stage=self.NAME,
                                 note=reason,
                             )
-                        except sqlite3.IntegrityError as exc:
+                        except sqlite3.Error as exc:
                             # file_path is UNIQUE and IntegrityError is not an
                             # OSError, so the handler below never caught it:
                             # the file was already in QUARANTINE and the
@@ -847,6 +857,7 @@ class CorruptStage(BaseStage):
             except DecodeUnavailable as exc:
                 # Not checked (review of slice B, finding 1): nothing recorded
                 # or moved, and the run is not reported clean.
+                result.files_errored += 1
                 result.errors.append(f"{file_path.name}: arrival not decoded: {exc}")
                 continue
             if not dry_run:
@@ -884,7 +895,7 @@ class CorruptStage(BaseStage):
                     "UPDATE archive SET status='QUARANTINED', file_path=? WHERE file_path=?",
                     (str(dest), str(file_path)),
                 )
-            except sqlite3.IntegrityError as exc:
+            except sqlite3.Error as exc:
                 # The file moved but its row could not follow: put the file
                 # back, so disk and database agree (review of slice B,
                 # finding 5 -- this logged and carried on, leaving the row at
@@ -909,6 +920,7 @@ class CorruptStage(BaseStage):
                 note=f"arrival does not decode: {(decode_err or '')[:120]}",
             )
             logger.info("[%s] → quarantined arrival: %s", self.NAME, dest.name)
+            result.files_changed += 1  # verify_effect checks it
         if gated:
             logger.warning(
                 "[%s] %d arrival(s) refused: damaged before they reached the library",
