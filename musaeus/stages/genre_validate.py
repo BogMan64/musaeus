@@ -24,8 +24,14 @@ Three jobs, kept deliberately separate because they carry different risk:
            source tags verbatim and never consults MasterLaw, so a fresh
            row's genre is whatever iTunes or the rip said -- an opinion, not
            a decision. MasterLaw wins over an unreviewed source tag.
-           Logged as GENRE_CORRECTED_FROM_LAW. genre_ruled_at is stamped so
-           this row is protected from future auto-correction.
+           Logged as GENRE_CORRECTED_FROM_LAW. NOT stamped as a ruling: a
+           genre the law set follows the law, so a later MasterLaw change
+           reaches it (Grey, 2026-10-11: only genres Grey chose by hand are
+           frozen; review of slice B, finding 4 -- stamping froze them, and
+           MasterLaw changes stopped reaching them: Jigsaw stayed Rock with
+           the law at Pop). MasterLaw's own credit lines follow their lead
+           artist since 2026-10-11 (Grey's 10-06 one-genre-per-artist), so
+           what the law says is what Grey decided.
 
   FLAG  -- the row has a genre that disagrees with MasterLaw AND a ruling
            IS recorded (genre_ruled_at IS NOT NULL). The owner has seen this
@@ -323,13 +329,11 @@ class GenreValidateStage(BaseStage):
                 else:
                     filled += 1
                 if not dry_run:
-                    # A genre borrowed from the lead artist is NOT a ruling on
-                    # this credit, so it is not marked as one: a MasterLaw
-                    # entry for the exact credit, added later, must still win
-                    # (cloud review of #37, 2026-09-25).
-                    ruled = "NULL" if via else "datetime('now')"
+                    # A genre the law fills is not a ruling, so it is not
+                    # marked as one: a later MasterLaw change must reach it
+                    # (Grey, 2026-10-11; review of slice B, finding 4).
                     ctx.conn.execute(
-                        f"UPDATE archive SET genre = ?, genre_ruled_at = {ruled} WHERE rowid = ?",
+                        "UPDATE archive SET genre = ? WHERE rowid = ?",
                         (law_genre, row["rid"]),
                     )
                     ctx.log_event(
@@ -421,11 +425,10 @@ class GenreValidateStage(BaseStage):
                 # value nothing can check.
                 law_wins += 1
                 if not dry_run:
-                    # Borrowed from the lead, it is not a ruling on this credit:
-                    # a MasterLaw entry for the exact credit, added later, wins.
-                    ruled = "NULL" if via_lead else "datetime('now')"
+                    # Not a ruling either (see the fill above): the law's
+                    # correction follows the law when it changes.
                     ctx.conn.execute(
-                        f"UPDATE archive SET genre = ?, genre_ruled_at = {ruled} WHERE rowid = ?",
+                        "UPDATE archive SET genre = ? WHERE rowid = ?",
                         (law_genre, row["rid"]),
                     )
                     ctx.log_event(
