@@ -186,6 +186,33 @@ def _norm_for_match(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", value or "").lower())
 
 
+def _artist_key(name: str) -> str:
+    """An artist name with what does not tell two acts apart taken out:
+    accents, case, punctuation, a leading or trailing "The", and "&"/"+" read
+    as "and" ("Beyonce" == "Beyoncé", "Beatles" == "Beatles, The" ==
+    "The Beatles", "Hall & Oates" == "Hall and Oates")."""
+    from ..artist_form import comparison_key  # the article rule lives there
+
+    n = comparison_key(name or "")
+    n = unicodedata.normalize("NFKD", n).encode("ascii", "ignore").decode()
+    n = re.sub(r"\s*[&+]\s*", " and ", n)
+    return re.sub(r"[^0-9a-z]", "", n)
+
+
+def _artist_agrees(want: str, names: list[str]) -> bool:
+    """True when the file's artist is one credited act, or the credit as a
+    whole in any of the forms the library stores it ("Elton John, Kiki Dee",
+    "Elton John & Kiki Dee"). Whole names only: "Dion" is not Celine Dion
+    (review of slice C, finding 6). Pre-merge review of #172: the library's
+    comma form and accented names were refused, and a refusal is stamped as
+    "no match" for good."""
+    w = _artist_key(want)
+    if not w:
+        return False
+    forms = [*names, ", ".join(names), " & ".join(names), " and ".join(names)]
+    return any(w == _artist_key(f) for f in forms)
+
+
 def _pick_matching_recording(
     recordings: list[dict], want_artist: str, want_title: str
 ) -> str | None:
@@ -200,22 +227,32 @@ def _pick_matching_recording(
     if not wt:
         return None  # nothing to check against; refusing beats guessing
 
-    best: str | None = None
+    # Review of slice C, findings 5 and 6. The artist was a substring match
+    # either way ("Dion" took Celine Dion's recording), and the first title
+    # containing the file's won although cluster order means nothing -- "Born
+    # to Run (live at Hammersmith Odeon)" listed first became the studio
+    # master's recording, and TitleComplete then retitled the master.
+    agreeing: list[tuple[str, str, bool]] = []  # (id, title, artist checked)
     for rec in recordings:
         rid = rec.get("id")
         if not rid:
             continue
-        rid = str(rid)
         rt = _norm_for_match(rec.get("title", ""))
         if not rt or (rt not in wt and wt not in rt):
             continue
-        artists = [_norm_for_match(a.get("name", "")) for a in rec.get("artists", [])]
-        if wa and artists and not any(a and (a in wa or wa in a) for a in artists):
+        names = [str(x.get("name", "")) for x in rec.get("artists", []) if x.get("name")]
+        if wa and names and not _artist_agrees(want_artist, names):
             continue  # title agrees, artist does not -- a cover
-        if wa and artists:
-            return rid  # both agree: done
-        best = best or rid  # title agrees, no artist to check
-    return best
+        agreeing.append((str(rid), rt, bool(wa and names)))
+    if not agreeing:
+        return None
+    # The file's own title exactly, when a recording has it; otherwise the
+    # longer titles must all be one title, or it is a guess between versions.
+    pool = [x for x in agreeing if x[1] == wt] or agreeing
+    if len({x[1] for x in pool}) > 1:
+        return None
+    checked = [x for x in pool if x[2]]
+    return (checked or pool)[0][0]
 
 
 def _acousticid_query(fingerprint: str, duration: float, api_key: str) -> list[dict]:
