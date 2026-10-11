@@ -109,9 +109,9 @@ def _status_before_ghost(conn, path_str: str, stored: str | None, now: str) -> s
         (path_str,),
     ).fetchone()
     before = r[0] if r else None
-    if before and before not in ("GHOST", "QUARANTINED", "DELETED"):
+    if before and before not in ("GHOST", "QUARANTINED", "DELETED", "PENDING"):
         return str(before)
-    return "HASHED"
+    return "HASHED"  # PENDING too: it has just been hashed (review of #163)
 
 
 # Error text that means "the machine is having a bad day", not "this file is
@@ -511,6 +511,15 @@ class SentinelStage(BaseStage):
                 damage = audio_relevant_stderr(said, 0)
                 if damage:
                     ah, err = None, f"decodes with errors: {damage.splitlines()[0][:160]}"
+            if err and (row.get("status") or "") == "GHOST":
+                # A ghost whose file came back but does not decode stays a
+                # ghost. Noted, not an error: it is chosen again every run
+                # while its file is there, and failing Sentinel every run over
+                # a known ghost is the shape _get_pending's docstring warns
+                # about (review of #163). Its full_hash is kept current.
+                upsert_archive(ctx.conn, {"file_path": path_str, "full_hash": fh})
+                result.notes.append(f"returned GHOST does not decode, left GHOST: {path.name}")
+                continue
             if err:
                 # Named, so the report says WHICH file (it used to show the
                 # stage's other notes as the failure).

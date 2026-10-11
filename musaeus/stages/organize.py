@@ -373,6 +373,22 @@ def _remove_emptied_dirs(start: Path, stop: Path) -> None:
         d = d.parent
 
 
+def library_artist(
+    artist: str | None, mb_artist_name: str | None, filing: dict[str, str] | None = None
+) -> str:
+    """The artist folder a track files under, in the sort form: Grey's ruling
+    in MetaData/artist_filing.tsv first, then folder_artist (MusicBrainz
+    agreement, feat./with, "& The ...", a personal-name tail). One function,
+    used by library_relpath and by Curator's export (review of #163)."""
+    ruled = ruling_for(filing, artist)
+    if ruled:
+        # The ruled folder in the stored form, so it and the artist's other
+        # tracks land in ONE folder (cloud review of #38: "Hootie & the
+        # Blowfish" beside "Hootie & The Blowfish").
+        return sort_form(stored_artist(ruled))
+    return sort_form(folder_artist(artist or "Unknown Artist", mb_artist_name))
+
+
 def library_relpath(
     artist: str | None,
     mb_artist_name: str | None,
@@ -424,14 +440,7 @@ def library_relpath(
     # FinalizeStage alone, so finalize and organize filed the same credit in
     # different folders and organize moved every such file straight back out
     # -- R2, measured 2026-09-24: all 389 files of the first fresh batch.
-    ruled = ruling_for(filing, artist)
-    if ruled:
-        # The ruled folder in the stored form, so it and the artist's other
-        # tracks land in ONE folder (cloud review of #38: "Hootie & the
-        # Blowfish" beside "Hootie & The Blowfish").
-        path_artist = sort_form(stored_artist(ruled))
-    else:
-        path_artist = sort_form(folder_artist(artist or "Unknown Artist", mb_artist_name))
+    path_artist = library_artist(artist, mb_artist_name, filing)
 
     # The genre level MUST match FinalizeStage. On 2026-09-18 it did
     # not: finalize was changed to file under Genre/Artist/Album and

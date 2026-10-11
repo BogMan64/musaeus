@@ -86,3 +86,17 @@ def test_a_ghost_still_missing_is_left_alone(mock_fh, mock_ah, ctx, tmp_path):
     result = SentinelStage().execute(ctx)
     assert _status(ctx, master) == "GHOST"
     assert not result.errors, "a known ghost failed the run again"
+
+
+@patch("musaeus.stages.sentinel.audio_hash_checked")
+@patch("musaeus.stages.sentinel.file_hash")
+def test_a_returned_ghost_that_does_not_decode_does_not_fail_every_run(
+    mock_fh, mock_ah, ctx, tmp_path
+):
+    master = _ghosted_master(ctx, tmp_path)
+    mock_fh.return_value = "f"
+    mock_ah.return_value = (None, "ffmpeg exited 1: Invalid data found", "")
+    for _ in range(2):
+        result = SentinelStage().execute(ctx)
+        assert not result.errors, "a known ghost failed Sentinel"
+    assert _status(ctx, master) == "GHOST"

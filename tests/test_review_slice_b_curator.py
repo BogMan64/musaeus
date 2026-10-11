@@ -57,3 +57,16 @@ def test_two_songs_never_share_an_export_path(tmp_path):
     paths = [r[0] for r in ctx.conn.execute("SELECT car_export_path FROM archive")]
     assert len(set(paths)) == 2, f"two songs share one export path: {paths}"
     assert sorted(Path(p).read_bytes() for p in paths) == [b"DUET", b"SOLO-VERSION"]
+
+
+def test_the_export_folder_is_the_masters_folder():
+    from musaeus.stages.organize import library_relpath
+
+    for credit, mb in (
+        ("Ike & Tina Turner", "Ike & Tina Turner"),
+        ("England Dan & John Ford Coley", "England Dan & John Ford Coley"),
+        ("KC & The Sunshine Band", None),
+        ("Elton John & Kiki Dee", None),
+    ):
+        filed = library_relpath(credit, mb, "Rock", "Album", "Song", ".m4a").parts[1]
+        assert _primary_artist(credit, mb) == filed, credit
