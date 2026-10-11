@@ -34,6 +34,7 @@ from urllib.request import urlopen
 
 from ..canon import GenreCanon
 from ..context import RunContext, StageResult
+from ..network_policy import check as _network_check
 from .base import BaseStage
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,8 @@ def _lastfm_top_tags(artist: str, api_key: str, limit: int = 5) -> list[str]:
         "limit": str(limit),
     }
     url = _LASTFM_URL + "?" + urlencode(params)
+    # Through the gateway, as every lookup (review of slice C, finding 3).
+    _network_check(_LASTFM_URL)
     with urlopen(url, timeout=_TIMEOUT_S) as resp:
         data = json.loads(resp.read().decode("utf-8"))
 
@@ -158,10 +161,19 @@ class EnrichStage(BaseStage):
             ctx.record_stage(result)
             return result
 
-        genre_canon = GenreCanon(
-            cfg.meta_dir / "genre_allowed.txt",
-            cfg.meta_dir / "genre_map.tsv",
-        )
+        # The vault's own file names, as genre_validate.py reads them. This
+        # opened genre_allowed.txt and genre_map.tsv, which do not exist, so
+        # every Last.fm tag resolved to nothing and the stage reported "no
+        # resolvable tag" (review of slice C, finding 2).
+        allowed = cfg.meta_dir / "Genre_Allowed.txt"
+        if not allowed.is_file():
+            result.notes.append(
+                f"no {allowed.name} in {cfg.meta_dir} -- no genre can be resolved; "
+                "Last.fm not asked"
+            )
+            ctx.record_stage(result)
+            return result
+        genre_canon = GenreCanon(allowed, cfg.meta_dir / "Genre_Canonical_Map.txt")
 
         rows = ctx.conn.execute(
             """
