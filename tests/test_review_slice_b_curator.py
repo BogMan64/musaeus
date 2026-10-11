@@ -11,7 +11,7 @@ import pytest
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db, upsert_archive
-from musaeus.stages.curator import CuratorStage, _primary_artist
+from musaeus.stages.curator import CuratorStage, _dest_path, _primary_artist
 
 
 @pytest.mark.parametrize(
@@ -69,4 +69,6 @@ def test_the_export_folder_is_the_masters_folder():
         ("Elton John & Kiki Dee", None),
     ):
         filed = library_relpath(credit, mb, "Rock", "Album", "Song", ".m4a").parts[1]
-        assert _primary_artist(credit, mb) == filed, credit
+        row = {"artist": credit, "mb_artist_name": mb, "title": "Song", "file_path": "/m/a.m4a"}
+        exported = _dest_path(Path("/export"), row).relative_to("/export").parts[0]
+        assert exported == filed, credit
