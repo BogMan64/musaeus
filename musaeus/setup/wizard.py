@@ -87,12 +87,27 @@ def _load_env(path: Path) -> dict[str, str]:
     return env
 
 
-def _save_env(path: Path, env: dict[str, str]) -> None:
-    """Write a KEY=VALUE env file."""
+def _save_env(path: Path, env: dict[str, str], private: bool = False) -> None:
+    """Write a KEY=VALUE env file: to a copy beside it, flushed, then renamed
+    over it, so a kill or full disk never leaves it empty or half written --
+    an emptied credentials.env lost every key and the stages that need them
+    quietly did nothing. *private*: mode 600 (it was written 644, readable by
+    every user on the machine). Review of slice E, finding 7."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        for key, val in sorted(env.items()):
-            f.write(f"{key}={val}\n")
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600 if private else 0o644)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for key, val in sorted(env.items()):
+                f.write(f"{key}={val}\n")
+            f.flush()
+            os.fsync(f.fileno())
+        if private:
+            os.chmod(tmp, 0o600)  # whatever the umask or an older file said
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def needs_setup() -> bool:
@@ -185,15 +200,18 @@ def run_wizard(force: bool = False) -> bool:
 
     for key, info in API_KEYS.items():
         current = creds_env.get(key, "")
-        status = f"(current: {current[:8]}...)" if current else "(not set)"
-        print(f"  {info['label']} {status}")
+        # Never shown, in part or whole: the default in [brackets] printed the
+        # whole saved key, the AcoustID key included (review of slice E,
+        # finding 6). Typed without echo, as the API key manager does.
+        print(f"  {info['label']} {'(set)' if current else '(not set)'}")
         print(f"    Used by: {info['used_by']}")
         print(f"    Get key: {info['url']}")
-        val = _ask(f"  {key}", default=current)
-        if val and val != current:
+        keep = "keeps the saved key" if current else "skips it"
+        val = _read_secret(f"  {key} (Enter {keep})")
+        if val:
             creds_env[key] = val
             print("    ✓ Updated")
-        elif val:
+        elif current:
             print("    ✓ Kept existing")
         else:
             print("    ⚠ Skipped (stage will be a no-op)")
@@ -201,7 +219,7 @@ def run_wizard(force: bool = False) -> bool:
 
     # ── Save ──────────────────────────────────────────────────────────────────
     _save_env(_SETTINGS_FILE, settings_env)
-    _save_env(_CREDENTIALS_FILE, creds_env)
+    _save_env(_CREDENTIALS_FILE, creds_env, private=True)
 
     # Create directories
     for d in (
@@ -329,7 +347,7 @@ def run_api_key_manager() -> None:
             continue
 
         creds_env[key] = new_val
-        _save_env(_CREDENTIALS_FILE, creds_env)
+        _save_env(_CREDENTIALS_FILE, creds_env, private=True)
         changed = True
         print(f"    ✓ Saved to {_CREDENTIALS_FILE}")
 
