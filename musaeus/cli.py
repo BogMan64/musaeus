@@ -821,7 +821,7 @@ def _cmd_rebuild_from_disk(args) -> int:
                 for path in exc.missing[:20]:
                     print(f"    {path}", file=sys.stderr)
                 if len(exc.missing) > 20:
-                    print(f"    ... and {len(exc.missing) - 20:,} more", file=sys.stderr)
+                    print(f"    {elision(len(exc.missing) - 20)}", file=sys.stderr)
                 print("  Is every drive and folder there? If those files really are gone, "
                       "re-run with --accept-missing.", file=sys.stderr)  # fmt: skip
                 return 1
