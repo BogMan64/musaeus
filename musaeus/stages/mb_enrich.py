@@ -243,6 +243,14 @@ def _search_release(artist_mbid: str, album_name: str) -> str | None:
                 "limit": "1",
             },
         )
+    except urllib.error.HTTPError as exc:
+        if 400 <= exc.code < 500 and exc.code != 429:
+            # MusicBrainz answered: it will not find this (a query it cannot
+            # parse -- an album name with a quote, say). An answer, not an
+            # outage, or the row stays open for ever (pre-merge review of #170).
+            logger.info("[mb_enrich] release search refused (%s) for %r", exc.code, album_name)
+            return None
+        raise LookupUnavailable(str(exc)) from exc
     except Exception as exc:
         logger.warning(
             "[mb_enrich] release search error for mbid=%s album=%r: %s",
@@ -377,6 +385,7 @@ class MBEnrichStage(BaseStage):
         artist_cache: dict[str, tuple[str, str] | None] = {}
         # Per-artist+album cache: (artist_mbid, album_lower) → release_mbid | None
         release_cache: dict[tuple[str, str], str | None] = {}
+        release_unasked: set[tuple[str, str]] = set()  # MusicBrainz down for these, this run
 
         cache_hits = 0
         unavailable = 0
@@ -493,16 +502,19 @@ class MBEnrichStage(BaseStage):
 
             # ── Release lookup ─────────────────────────────────────────────
             release_key = (mb_artist_id, album.lower())
-            release_asked = True
-            if album and release_key not in release_cache:
+            release_asked = release_key not in release_unasked
+            if album and release_asked and release_key not in release_cache:
                 time.sleep(_RATE_LIMIT_S)
                 try:
                     mb_release_id = _search_release(mb_artist_id, album)
                 except LookupUnavailable:
                     # Not asked: the artist is kept but the row is left open,
                     # so the release is asked again next run (review of slice
-                    # C, finding 1 -- it was stamped closed for good).
+                    # C, finding 1 -- it was stamped closed for good). Not
+                    # asked again this run either: one outage cost a timeout
+                    # per track of the album (pre-merge review of #170).
                     release_asked = False
+                    release_unasked.add(release_key)
                     mb_release_id = None
                 else:
                     release_cache[release_key] = mb_release_id
@@ -522,13 +534,17 @@ class MBEnrichStage(BaseStage):
                     UPDATE archive
                        SET mb_artist_id=?,
                            mb_artist_name=?,
-                           mb_release_id=?,
+                           mb_release_id=CASE WHEN ? THEN ? ELSE mb_release_id END,
                            mb_enriched_at=?
                      WHERE file_path=?
                     """,
                     (
                         mb_artist_id,
                         mb_artist_name,
+                        # Not asked (an outage): a release id already known is
+                        # kept, not overwritten with NULL (pre-merge review of
+                        # #170, --force).
+                        1 if release_asked else 0,
                         mb_release_id,
                         now if release_asked else None,
                         fp,

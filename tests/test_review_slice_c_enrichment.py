@@ -95,3 +95,44 @@ def test_mbenrichs_probe_asks_the_gateway(ctx, monkeypatch):
         mb_enrich.MBEnrichStage().run(ctx)
     assert not calls, "the probe went out under LOCAL_ONLY"
     assert any("musicbrainz.org" in d for d in gateway.denials)
+
+
+# ── Pre-merge review of #170 ──────────────────────────────────────────────────
+
+
+def test_a_query_musicbrainz_refuses_is_an_answer(monkeypatch):
+    import urllib.error
+
+    def refused(kind, params):
+        raise urllib.error.HTTPError("u", 400, "Bad Request", {}, None)
+
+    monkeypatch.setattr(mb_enrich, "_mb_get", refused)
+    assert mb_enrich._search_release("9fdaa16b", 'Music From "Fiddler on the Roof"') is None
+
+
+def test_an_outage_is_asked_once_per_album_per_run(ctx, monkeypatch):
+    calls = []
+
+    def down(artist_mbid, album):
+        calls.append(album)
+        raise mb_enrich.LookupUnavailable("timed out")
+
+    for n in range(3):
+        upsert_archive(
+            ctx.conn,
+            {"file_path": f"/m/{n}.m4a", "status": "CATALOGUED", "artist": "The Who",
+             "album": "Who's Next", "title": f"T{n}"},
+        )  # fmt: skip
+    ctx.conn.commit()
+    monkeypatch.setattr(mb_enrich, "urlopen", lambda *a, **k: None)
+    monkeypatch.setattr(mb_enrich, "_search_artist", lambda *a, **k: ("mbid-who", "The Who"),
+                        raising=False)  # fmt: skip
+    monkeypatch.setattr(mb_enrich, "_search_release", down)
+    monkeypatch.setattr(mb_enrich.time, "sleep", lambda s: None)
+    with network_policy.policy(NetworkPolicy.ALLOWED):
+        mb_enrich.MBEnrichStage().run(ctx)
+    assert len(calls) == 1, calls
+    open_rows = ctx.conn.execute(
+        "SELECT COUNT(*) FROM archive WHERE mb_enriched_at IS NULL"
+    ).fetchone()[0]
+    assert open_rows == 3, "an outage closed the rows"
