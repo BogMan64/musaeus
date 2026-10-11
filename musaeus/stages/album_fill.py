@@ -64,6 +64,7 @@ from ..brackets import strip_bracketed
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
 from ..network_policy import check as _network_check
+from ..playlist_album import is_playlist_album
 from .base import BaseStage
 
 logger = logging.getLogger(__name__)
@@ -378,7 +379,17 @@ def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
 #: An album that is not an album. Grey, 2026-10-03 ("yes"): a source folder's
 #: playlist name -- "My playlist S", 1,841 songs in the USB1 batch -- counts
 #: as no album, so a real one may replace it. Nothing else is ever replaced.
-NO_ALBUM_SQL = "(album IS NULL OR TRIM(album)='' OR album LIKE 'My playlist%')"
+#: Which names are playlists is playlist_album's rule, called from SQL
+#: (_playlist_rule): this said `LIKE 'My playlist%'`, which missed a name
+#: ending in "Playlist" that the rest of MUSAEUS treats as one (review of
+#: slice A).
+NO_ALBUM_SQL = "(album IS NULL OR TRIM(album)='' OR is_playlist_album(album))"
+
+
+def _playlist_rule(conn) -> None:  # type: ignore[no-untyped-def]
+    """Make playlist_album.is_playlist_album callable from this connection's SQL."""
+    conn.create_function("is_playlist_album", 1, is_playlist_album, deterministic=True)
+
 
 _CANDIDATES = (
     f"FROM archive WHERE status='CATALOGUED' AND {NO_ALBUM_SQL} "
@@ -395,6 +406,7 @@ class AlbumFillStage(BaseStage):
     def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
         """Rows this stage would act on. Read-only; see planner.py."""
         what = "catalogued rows with no album, not yet asked"
+        _playlist_rule(conn)
         for query in (
             f"SELECT COUNT(*) {_CANDIDATES}",
             # album_fill_checked_at arrives on the first real run
@@ -423,6 +435,7 @@ class AlbumFillStage(BaseStage):
 
         _fingerprint_columns(ctx.conn)  # read below; AcoustID may never have run here
         _ensure_columns(ctx.conn)
+        _playlist_rule(ctx.conn)
         cfg = ctx.config
         aid_key = cfg.acousticid_api_key
         dg_key, dg_secret = cfg.discogs_consumer_key, cfg.discogs_consumer_secret

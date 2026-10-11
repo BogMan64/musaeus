@@ -556,11 +556,10 @@ class AlbumArtStage(BaseStage):
                     undersized.append(fp)
                     blob = _replace_undersized(ctx, fp, art_px, result)
                     if blob:
-                        target = (
-                            folder / "cover.jpg"
-                            if one_album[folder]
-                            else Path(fp).with_name(Path(fp).stem + _PRIVATE_COVER_SUFFIX)
-                        )
+                        # This song's upgrade only: never the folder's cover.jpg,
+                        # which may be a cover Grey chose by hand and which the
+                        # other songs in the folder take (review of slice A).
+                        target = Path(fp).with_name(Path(fp).stem + _PRIVATE_COVER_SUFFIX)
                         try:
                             target.write_bytes(blob)
                         except OSError as exc:

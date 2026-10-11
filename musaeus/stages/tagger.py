@@ -245,6 +245,8 @@ def _read_tags(path: Path) -> dict[str, str]:
             return {
                 "artist": _gf("artist"),
                 "albumartist": _gf("albumartist"),
+                "sort_artist": _gf("artistsort"),
+                "sort_albumartist": _gf("albumartistsort"),
                 "album": _gf("album"),
                 "title": _gf("title"),
                 "genre": _gf("genre"),
@@ -267,6 +269,8 @@ def _read_tags(path: Path) -> dict[str, str]:
             return {
                 "artist": _gm("artist"),
                 "albumartist": _gm("albumartist"),
+                "sort_artist": _gm("artistsort"),
+                "sort_albumartist": _gm("albumartistsort"),
                 "album": _gm("album"),
                 "title": _gm("title"),
                 "genre": _gm("genre"),
@@ -335,17 +339,27 @@ def _write_tags_in_place(path: Path, changes: dict[str, str], ext: str | None = 
             _map_f = {
                 "artist": "artist",
                 "albumartist": "albumartist",
+                "sort_artist": "artistsort",
+                "sort_albumartist": "albumartistsort",
                 "album": "album",
                 "title": "title",
                 "genre": "genre",
                 "year": "date",
                 "track": "tracknumber",
             }
+            # As the MP4 branch: a field this format cannot store is a
+            # failure, not a silent skip with success reported (review of
+            # slice A: sort_artist was dropped here, so FLAC and MP3 masters
+            # never converged).
+            unknown = [f for f in changes if f not in _map_f]
+            if unknown:
+                logger.warning("write_tags %s: cannot store %s", path, unknown)
+                return False
             for field, val in changes.items():
-                key = _map_f.get(field)
-                if key and val == "":
+                key = _map_f[field]
+                if val == "":
                     audio.pop(key, None)  # "" removes the tag
-                elif key:
+                else:
                     audio[key] = [val]
             audio.save()
             return True
@@ -362,17 +376,27 @@ def _write_tags_in_place(path: Path, changes: dict[str, str], ext: str | None = 
             _map_m = {
                 "artist": "artist",
                 "albumartist": "albumartist",
+                "sort_artist": "artistsort",
+                "sort_albumartist": "albumartistsort",
                 "album": "album",
                 "title": "title",
                 "genre": "genre",
                 "year": "date",
                 "track": "tracknumber",
             }
+            # As the MP4 branch: a field this format cannot store is a
+            # failure, not a silent skip with success reported (review of
+            # slice A: sort_artist was dropped here, so FLAC and MP3 masters
+            # never converged).
+            unknown = [f for f in changes if f not in _map_m]
+            if unknown:
+                logger.warning("write_tags %s: cannot store %s", path, unknown)
+                return False
             for field, val in changes.items():
-                key = _map_m.get(field)
-                if key and val == "":
+                key = _map_m[field]
+                if val == "":
                     audio.pop(key, None)  # "" removes the tag
-                elif key:
+                else:
                     audio[key] = [val]
             audio.save(str(path))
             return True

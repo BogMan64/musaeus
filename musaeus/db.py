@@ -11,7 +11,8 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -271,6 +272,37 @@ def _validation_issues_key_includes_run_id(conn: sqlite3.Connection) -> bool:
     return "unique(file_path, issue, run_id)" in sql
 
 
+@contextmanager
+def _schema_change(conn: sqlite3.Connection) -> Iterator[None]:
+    """One transaction for a schema change, holding the write lock from its
+    start (BEGIN IMMEDIATE). Review of slice E, findings 9 and 10: each step
+    used to commit on its own, so a change cut short was left half done, and
+    two processes opening the database at once could both see a column missing
+    and both add it -- the second open failed on "duplicate column name".
+    Inside a transaction already open, it joins that one."""
+    if conn.in_transaction:
+        yield
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        conn.rollback()
+        raise
+    conn.commit()
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone()
+    return row is not None
+
+
 def _rebuild_validation_issues(conn: sqlite3.Connection) -> int:
     """Drop run_id from the uniqueness key, collapsing the duplicates it bred.
 
@@ -279,36 +311,68 @@ def _rebuild_validation_issues(conn: sqlite3.Connection) -> int:
     -- `MAX(id)` rather than MIN, because the useful row is the current state
     of the file, not the first time anyone noticed.
 
+    All in one transaction: a stop part way leaves the old table as it was
+    (review of slice E, finding 9). It used to run through executescript,
+    which commits each statement on its own.
+
     Returns the number of rows removed, so a caller can report it rather than
     discovering the table silently changed size.
     """
-    before = conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
-    conn.executescript(
-        """
-        CREATE TABLE validation_issues__new (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            file_path   TEXT NOT NULL,
-            issue       TEXT NOT NULL,
-            severity    TEXT DEFAULT 'warning',
-            run_id      TEXT,
-            checked_at  TEXT DEFAULT (datetime('now')),
-            UNIQUE(file_path, issue)
-        );
-        INSERT INTO validation_issues__new (file_path, issue, severity, run_id, checked_at)
-        SELECT v.file_path, v.issue, v.severity, v.run_id, v.checked_at
-          FROM validation_issues v
-          JOIN (
-                SELECT MAX(id) AS keep_id
-                  FROM validation_issues
-                 GROUP BY file_path, issue
-               ) latest ON latest.keep_id = v.id;
-        DROP TABLE validation_issues;
-        ALTER TABLE validation_issues__new RENAME TO validation_issues;
-        """
-    )
-    after = conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
-    conn.commit()
+    with _schema_change(conn):
+        before = conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
+        conn.execute(
+            """
+            CREATE TABLE validation_issues__new (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path   TEXT NOT NULL,
+                issue       TEXT NOT NULL,
+                severity    TEXT DEFAULT 'warning',
+                run_id      TEXT,
+                checked_at  TEXT DEFAULT (datetime('now')),
+                UNIQUE(file_path, issue)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO validation_issues__new (file_path, issue, severity, run_id, checked_at)
+            SELECT v.file_path, v.issue, v.severity, v.run_id, v.checked_at
+              FROM validation_issues v
+              JOIN (
+                    SELECT MAX(id) AS keep_id
+                      FROM validation_issues
+                     GROUP BY file_path, issue
+                   ) latest ON latest.keep_id = v.id
+            """
+        )
+        conn.execute("DROP TABLE validation_issues")
+        conn.execute("ALTER TABLE validation_issues__new RENAME TO validation_issues")
+        after = conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0]
     return int(before) - int(after)
+
+
+def _finish_rekey_cut_short(conn: sqlite3.Connection) -> None:
+    """Put right a re-key the old code left half done.
+
+    It committed each statement on its own, so a stop part way could leave
+    validation_issues__new behind, and every later open failed on creating it
+    again (review of slice E, finding 9). While the old table is still there,
+    the copy is thrown away and made again. Once the old table was dropped,
+    open_db has since created an empty one and the copy is the history: it
+    goes back in, behind anything seen since.
+    """
+    if not _table_exists(conn, "validation_issues__new"):
+        return
+    if not _validation_issues_key_includes_run_id(conn):
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO validation_issues
+                   (file_path, issue, severity, run_id, checked_at)
+            SELECT file_path, issue, severity, run_id, checked_at
+              FROM validation_issues__new
+            """
+        )
+    conn.execute("DROP TABLE validation_issues__new")
 
 
 def ensure_columns(
@@ -342,34 +406,55 @@ def ensure_columns(
     the stage first runs, so a vault that never runs AcousticID never grows
     its five columns.
     """
-    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    missing = [(col, decl) for col, decl in specs if col not in _columns(conn, table)]
+    if not missing:
+        return 0
     added = 0
-    for col, decl in specs:
-        if col not in existing:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
-            added += 1
-    if added:
-        conn.commit()
+    with _schema_change(conn):
+        existing = _columns(conn, table)  # again, under the lock: another may have added it
+        for col, decl in missing:
+            if col not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+                added += 1
+    if added and conn.in_transaction:
+        conn.commit()  # a caller's transaction, joined: committed as before
     return added
 
 
+def _migrations_due(conn: sqlite3.Connection) -> bool:
+    return (
+        any(col not in _columns(conn, table) for table, col, _ in _MIGRATIONS)
+        or _validation_issues_key_includes_run_id(conn)
+        or _table_exists(conn, "validation_issues__new")
+    )
+
+
 def _apply_migrations(conn: sqlite3.Connection) -> None:
-    """Add new columns to existing tables when the schema evolves."""
-    for table, col, coltype in _MIGRATIONS:
-        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-        if col not in existing:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
+    """Add new columns to existing tables when the schema evolves.
 
-    # A constraint change, not a column addition -- the loop above cannot
-    # express it. Idempotent: once the key is rebuilt this is a no-op.
-    if _validation_issues_key_includes_run_id(conn):
-        removed = _rebuild_validation_issues(conn)
-        logger.info(
-            "[db] validation_issues re-keyed on (file_path, issue); %d duplicate row(s) collapsed",
-            removed,
-        )
+    Looked at first without a lock, so an open with nothing to do (nearly every
+    one) takes no write lock. Otherwise everything is done in one transaction
+    holding the write lock, and looked at again inside it: two processes
+    opening an older database at once no longer both add a column (review of
+    slice E, finding 10), and a stop part way leaves the database as it was.
+    """
+    if not _migrations_due(conn):
+        return
+    with _schema_change(conn):
+        for table, col, coltype in _MIGRATIONS:
+            if col not in _columns(conn, table):
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
 
-    conn.commit()
+        # A constraint change, not a column addition -- the loop above cannot
+        # express it. Idempotent: once the key is rebuilt this is a no-op.
+        _finish_rekey_cut_short(conn)
+        if _validation_issues_key_includes_run_id(conn):
+            removed = _rebuild_validation_issues(conn)
+            logger.info(
+                "[db] validation_issues re-keyed on (file_path, issue); "
+                "%d duplicate row(s) collapsed",
+                removed,
+            )
 
 
 # ── Connection factory ────────────────────────────────────────────────────────
@@ -441,6 +526,45 @@ def get_file_history(conn: sqlite3.Connection, file_path: str) -> list[sqlite3.R
 
 
 # ── Archive helpers ───────────────────────────────────────────────────────────
+
+
+def add_duplicate_member(
+    conn: sqlite3.Connection,
+    group_id: str,
+    file_path: str,
+    duplicate_type: str,
+    run_id: str,
+    confidence: float = 1.0,
+) -> None:
+    """Put *file_path* in *group_id* as a member still to be resolved.
+
+    One row per (group, file). duplicates has no UNIQUE key, so the
+    `INSERT OR IGNORE` the stages used never ignored anything: an EXACT group
+    is named after its recording, and each new copy of a recording added the
+    first file to the old group again beside its earlier row (117 doubled
+    pairs live; review of slice B, finding 7). A file already in the group
+    now has that row opened again -- status pending, this run, the file's
+    current hash -- exactly what the second row used to say, without the
+    stale first one.
+    """
+    reopened = conn.execute(
+        """
+        UPDATE duplicates
+           SET status = 'pending', duplicate_type = ?, confidence = ?, run_id = ?,
+               audio_hash = (SELECT audio_hash FROM archive WHERE file_path = ?)
+         WHERE group_id = ? AND file_path = ?
+        """,
+        (duplicate_type, confidence, run_id, file_path, group_id, file_path),
+    ).rowcount
+    if not reopened:
+        conn.execute(
+            """
+            INSERT INTO duplicates
+                (group_id, file_path, duplicate_type, confidence, run_id, audio_hash)
+            VALUES (?, ?, ?, ?, ?, (SELECT audio_hash FROM archive WHERE file_path = ?))
+            """,
+            (group_id, file_path, duplicate_type, confidence, run_id, file_path),
+        )
 
 
 def upsert_archive(conn: sqlite3.Connection, row: dict) -> None:
