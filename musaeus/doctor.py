@@ -706,6 +706,7 @@ def diagnose(cfg: MusicConfig) -> Report:
     _names_safe_on_fat(cfg, rep)
     _changed_outside_musaeus(cfg, rep)
     _one_act_two_spellings(cfg, rep)
+    _sort_titles_that_disagree(cfg, rep)
     _one_picture_many_artists(cfg, rep)
     _artist_tag_is_natural_form(cfg, rep)
     _catalogued_tracks_reach_the_car(cfg, rep)
@@ -1509,4 +1510,80 @@ def _one_act_two_spellings(cfg: MusicConfig, rep: Report) -> None:
         f"{len(split)} act(s) filed under two or more spellings: {shown}{more} -- "
         "an artist_canon.tsv line joins them",
         len(split),
+    )
+
+
+_ARTICLE = ("the ", "a ", "an ")
+
+
+def _sort_title(path: Path) -> tuple[str, str] | None:
+    """(title, sort title) from a master's tags, or None when it has no sort
+    title (or cannot be read)."""
+    try:
+        from mutagen import File as MutagenFile  # type: ignore[import-untyped]
+
+        f = MutagenFile(str(path))
+    except Exception:  # noqa: BLE001 -- unreadable is another check's finding
+        return None
+    if f is None or not f.tags:
+        return None
+    tags = f.tags
+    pairs = (("\xa9nam", "sonm"), ("title", "titlesort"), ("TIT2", "TSOT"))
+    for title_key, sort_key in pairs:
+        try:
+            sort = tags.get(sort_key)
+            title = tags.get(title_key)
+        except Exception:  # noqa: BLE001 -- a key this format does not take
+            continue
+        if sort:
+            first = lambda v: str(v[0] if isinstance(v, list) else v)  # noqa: E731
+            return first(title) if title else "", first(sort)
+    return None
+
+
+def _sort_titles_that_disagree(cfg: MusicConfig, rep: Report) -> None:
+    """Masters whose song-title sort name is not their title. (Grey, 2026-10-11)
+
+    iTunes' "CopyNameToSortName" script set every sort title back to the title,
+    because a stale one makes a player list the song under another name.
+    MUSAEUS never writes a sort title, but one carried in from a source stays
+    in the master. A sort title that only drops a leading "The"/"A"/"An" is
+    deliberate (iTunes AutoSort) and only counted; any other difference is
+    reported with examples. Read-only: reads every master's tags (a few
+    minutes on the full library).
+    """
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    try:
+        paths = [
+            r[0] for r in conn.execute("SELECT file_path FROM archive WHERE status='CATALOGUED'")
+        ]
+    finally:
+        conn.close()
+
+    article_only = 0
+    differ: list[tuple[str, str, str]] = []
+    for fp in paths:
+        got = _sort_title(Path(fp))
+        if got is None:
+            continue
+        title, sort = got
+        t, so = title.strip().casefold(), sort.strip().casefold()
+        if t == so:
+            continue
+        stripped = next((t[len(a) :] for a in _ARTICLE if t.startswith(a)), t)
+        if so == stripped.strip():
+            article_only += 1
+            continue
+        differ.append((Path(fp).name, title, sort))
+
+    note = f"; {article_only:,} drop only a leading The/A/An (normal)" if article_only else ""
+    if not differ:
+        rep.add("ok", "song sort names", f"none differ from the title{note}")
+        return
+    shown = "; ".join(f"{t!r} sorts as {so!r}" for _, t, so in differ[:4])
+    rep.add(
+        "warn",
+        "song sort names",
+        f"{len(differ):,} master(s) sort under another name: {shown}{note}",
+        len(differ),
     )
