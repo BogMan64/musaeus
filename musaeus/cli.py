@@ -1236,10 +1236,21 @@ def _cmd_edition_build_inner(args) -> int:
                     if items:
                         fh.write(f"\n{title} ({len(items)})\n" + "\n".join(items) + "\n")
 
+        missing, recorded = eb.missing_copies(ledger, kind)
+        moved = eb.looks_moved(missing, recorded) and not args.rebuild_missing
+        if moved:
+            print(
+                f"\n  {missing:,} of the {recorded:,} copies the {label} ledger records are not "
+                f"in {edition_root}.\n  Was the folder moved? Put it back: this build would "
+                f"make them all again. To make them again on purpose, add --rebuild-missing.",
+                file=sys.stderr if not args.dry_run else sys.stdout,
+            )
         if args.dry_run:
             _write_log()
             print(f"\n  Dry run -- nothing was written. List: {log}\n")
             return 0
+        if moved:
+            return 1  # nothing was written
 
         need = eb.space_needed(plan if args.limit is None else _limited(plan, args.limit))
         if need > free:
@@ -2032,6 +2043,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="iphone: the device budget; genres are filled in priority order",
     )
     eb_p.add_argument("--dry-run", action="store_true", help="Show the plan; write nothing")
+    eb_p.add_argument(
+        "--rebuild-missing",
+        action="store_true",
+        help=(
+            "Make copies again when many the ledger records are missing (refused "
+            "otherwise: the edition folder was probably moved)"
+        ),
+    )
     eb_p.add_argument("--limit", type=int, metavar="N", default=None, help="Bake at most N")
     eb_p.add_argument(
         "--workers", type=int, metavar="N", default=2, help="Tracks baked at once (default 2)"
