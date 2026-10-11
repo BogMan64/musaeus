@@ -460,6 +460,24 @@ class Console:
         except MastersBusy as exc:
             _err(f"Not run: {exc}")
 
+    def _preview(self, selected: list[type], label: str, stash: dict | None = None) -> None:
+        """A preview through the planner, as `musaeus run --dry-run` does:
+        read-only, no events, no columns, no lock needed.
+
+        It executed the stages with a flag set -- the path the CLI retired
+        (P0-02/P0-04) -- so a console Preview wrote RUN_START/STAGE_COMPLETE/
+        RUN_END events and added archive columns (review of slice D,
+        finding 7).
+        """
+        from .planner import RunMode, build_plan
+
+        assert self._config is not None
+        _section(f"{label}  [PREVIEW]  —  {len(selected)} stage(s)")
+        forced = [k for k, v in (stash or {}).items() if v and k.endswith(("force", "retag"))]
+        if forced or (stash or {}).get("forge_embed_from_db"):
+            _warn("This preview counts the normal run; the forced run would do more.")
+        print(build_plan(self._config, list(selected), RunMode.PREVIEW).render())
+
     def _run_pipeline(
         self,
         dry_run: bool,
@@ -483,6 +501,9 @@ class Console:
         warning -- instead of growing a second, subtly different runner.
         """
         selected = list(stage_classes) if stage_classes is not None else list(DEFAULT_PIPELINE)
+        if dry_run:
+            self._preview(selected, label)
+            return
         mode = "DRY RUN" if dry_run else "LIVE RUN"
         _section(f"{label}  [{mode}]  —  {len(selected)} stage(s)")
 
@@ -503,6 +524,11 @@ class Console:
         try:
             try:
                 ctx = RunContext.new(self._config, conn, dry_run=dry_run)
+                # The run's own log, as a CLI run keeps (review of slice D,
+                # finding 6); its records are written at the end.
+                from .run_records import RunLog
+
+                run_log = RunLog(self._config.runs_root, ctx.run_id)
                 stages: list[BaseStage] = [cls() for cls in selected]
 
                 with _network_authority(dry_run):
@@ -528,7 +554,12 @@ class Console:
                 else:
                     _warn(f"{label} finished with errors  run_id={ctx.run_id}")
 
+                from .cli import _end_of_run_records
+
+                if not _end_of_run_records(self._config, ctx, run_log):
+                    _warn("Some run records could not be written (see above).")
                 ctx.finish()
+                run_log.close()
 
             except KeyboardInterrupt:
                 # Ctrl-C is a BaseException, so it skipped ctx.finish()
@@ -545,10 +576,14 @@ class Console:
                 _info("Relaunching resumes: each stage re-selects only unfinished rows.")
                 with contextlib.suppress(Exception):
                     ctx.finish(interrupted=True)
+                with contextlib.suppress(Exception):
+                    run_log.close()
                 raise
             except Exception:
                 _err("Pipeline crashed — see traceback below")
                 traceback.print_exc()
+                with contextlib.suppress(Exception):
+                    run_log.close()  # its traceback is in the log
         finally:
             # Guaranteed close on every exit path -- including
             # KeyboardInterrupt, which is a BaseException and would
@@ -570,6 +605,9 @@ class Console:
         )
 
     def _run_stage_inner(self, stage_cls: type[BaseStage], dry_run: bool) -> None:
+        if dry_run:
+            self._preview([stage_cls], stage_cls.__name__)
+            return
         mode = "DRY RUN" if dry_run else "LIVE RUN"
         assert self._config is not None
         conn = self._open_db()
@@ -935,6 +973,9 @@ class Console:
         self, stage_cls: type, dry_run: bool, stash: dict | None = None
     ) -> None:
         """Like _run_stage but pre-loads ctx stash keys (for curator, forge --force, etc.)."""
+        if dry_run:
+            self._preview([stage_cls], stage_cls.__name__, stash)
+            return
         mode = "DRY RUN" if dry_run else "LIVE RUN"
         assert self._config is not None
         conn = self._open_db()
