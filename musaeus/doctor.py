@@ -1461,8 +1461,10 @@ def _changed_outside_musaeus(cfg: MusicConfig, rep: Report) -> None:
             f"AUDIO CHANGED on {len(audio_changed)} of {checked} re-checked, "
             f"e.g. {Path(audio_changed[0]).name}"
         )
-    else:
+    elif checked:
         verdict = f"audio identical on all {checked} re-checked (tags or cover only)"
+    else:
+        verdict = "audio not re-checked (no sampled file could be decoded)"
     rep.add(
         "fail" if audio_changed else "warn",
         "changed outside MUSAEUS",
