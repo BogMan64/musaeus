@@ -128,7 +128,7 @@ def test_a_copy_changed_between_screen_and_confirm_moves_nothing(ctx, monkeypatc
 
     _console(ctx, monkeypatch, "2k\n1a\ny\nq\n", carry_out=changed_then_carry_out)
     assert studio.exists() and live.exists()
-    assert "nothing moved" in out[0]
+    assert out[0][0] is False and "nothing moved" in out[0][1]
     assert set(_statuses(ctx).values()) == {"pending"}
 
 
@@ -178,20 +178,22 @@ def test_the_resolver_leaves_a_carried_out_set_alone(ctx, monkeypatch):
     assert live.exists() and not result.errors, result.errors
 
 
-def test_a_kept_copy_refiled_later_is_never_moved_by_the_resolver(ctx, monkeypatch):
-    """The keep is on the catalogue row, which keeps its id when refiled: an
-    identical arrival later is the one moved."""
+def test_a_kept_pair_is_left_alone_until_another_copy_arrives(ctx, monkeypatch):
+    """The same song on two albums, both kept: left alone, also once one is
+    refiled (the mark is on the catalogue row). A copy that arrives later is
+    ranked with them by the keep rule (Grey, 2026-10-10)."""
     one = _copy(ctx, "one.m4a", "dup_same", pcm="pcm:same")
     two = _copy(ctx, "two.m4a", "dup_same", pcm="pcm:same", finalized="2026-10-01")
-    _console(ctx, monkeypatch, "1k\n2k\ny\nq\n")  # the same song on two albums: keep both
+    _console(ctx, monkeypatch, "1k\n2k\ny\nq\n")
     filed = one.with_name("one (filed).m4a")
     one.rename(filed)
     ctx.conn.execute("UPDATE archive SET file_path = ? WHERE file_path = ?", (str(filed), str(one)))
     ctx.conn.commit()
+    DupeResolverStage().execute(ctx)
+    assert filed.exists() and two.exists(), "a pair the person kept was split"
     arrival = _copy(ctx, "arrival.m4a", None, pcm="pcm:same", rate=950_000)
     DupeResolverStage().execute(ctx)
-    assert filed.exists() and two.exists(), "a copy the person kept was moved"
-    assert not arrival.exists(), "the new identical arrival stayed"
+    assert sum(p.exists() for p in (filed, two, arrival)) == 1, "not ranked by the keep rule"
 
 
 def test_a_set_aside_close_out_does_not_call_a_live_copy_moved(ctx):
@@ -204,3 +206,178 @@ def test_a_set_aside_close_out_does_not_call_a_live_copy_moved(ctx):
     DupeResolverStage().execute(ctx)
     assert live.exists()
     assert _statuses(ctx)["live.m4a@near_x"] == "stale"
+
+
+# ── Review of #140-#142 (2026-10-10) ──
+
+
+def test_a_stop_during_a_carry_out_waits_until_it_is_done(ctx, monkeypatch):
+    """Finding 1: Ctrl-C between moves left the keep unrecorded."""
+    import os
+    import signal
+
+    studio, live = _pair(ctx)
+    real = DupeResolverStage._move_losers
+
+    def interrupted(self, *args, **kwargs):
+        os.kill(os.getpid(), signal.SIGINT)  # Ctrl-C while moving
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(DupeResolverStage, "_move_losers", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        _console(ctx, monkeypatch, "2k\n1a\ny\nq\n")
+    assert live.exists() and not studio.exists(), "the carry-out did not finish"
+    assert _kept_mark(ctx, live)
+    assert _statuses(ctx) == {"live.m4a@near_x": "keep", "studio.m4a@near_x": "archive"}
+
+
+def test_a_later_better_copy_is_ranked_with_the_kept_one(ctx, monkeypatch):
+    """Grey, 2026-10-10: a keep settles the copies the person saw; a copy that
+    arrives later is ranked with it by the keep rule (finding 2)."""
+    studio, live = _pair(ctx)
+    _console(ctx, monkeypatch, "2k\n1a\ny\nq\n")  # keep the live AAC copy
+    better = _copy(ctx, "studio96.m4a", "near_new")
+    ctx.conn.execute("INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, "
+                     "run_id, audio_hash) VALUES ('near_new', ?, 'NEAR', 0.9, 'r', 'pcm:live.m4a')",
+                     (str(live),))  # fmt: skip
+    ctx.conn.commit()
+    DupeResolverStage().execute(ctx)
+    assert better.exists() and not live.exists()
+
+
+def test_copies_all_kept_by_a_person_are_left_alone_and_closed(ctx, monkeypatch):
+    """Finding 8: a NEAR pair of two kept copies stayed pending for ever."""
+    a = _copy(ctx, "a.m4a", "near_x")
+    b = _copy(ctx, "b.m4a", "near_x", album="Live at the Fillmore", codec="aac", rate=256_000)
+    _console(ctx, monkeypatch, "1k\n2k\ny\nq\n")
+    ctx.conn.execute("UPDATE duplicates SET status = 'pending'")  # flagged again later
+    ctx.conn.commit()
+    DupeResolverStage().execute(ctx)
+    assert a.exists() and b.exists()
+    assert set(_statuses(ctx).values()) == {"keep"}
+
+
+def test_a_file_kept_in_a_closed_row_joins_the_sets_it_is_in(ctx):
+    """Finding 3: a file 'keep' in one group and pending in another was shown in
+    two sets."""
+    p = _copy(ctx, "p.m4a", ["dup_p", "near_b"])
+    _copy(ctx, "n.m4a", "dup_p")
+    _copy(ctx, "r.m4a", "near_b")
+    ctx.conn.execute("UPDATE duplicates SET status = 'keep' WHERE group_id = 'dup_p' AND file_path = ?",
+                     (str(p),))  # fmt: skip
+    ctx.conn.commit()
+    assert dedupe._get_sets(ctx.conn) == [["dup_p", "near_b"]]
+
+
+def test_two_carry_outs_keep_two_restore_scripts_and_finish_their_runs(ctx, monkeypatch):
+    """Findings 6 and 9: one-second names overwrote a restore script; a carry-out
+    left a run with no RUN_END."""
+    _pair(ctx)
+    _copy(ctx, "x.m4a", "near_y")
+    _copy(ctx, "y.m4a", "near_y", album="Live at the Fillmore", codec="aac", rate=256_000)
+    _console(ctx, monkeypatch, "2k\n1a\ny\n2k\n1a\ny\nq\n")
+    assert len(list(ctx.config.dupes_review_dir.rglob("restore_*.sh"))) == 2
+    starts, ends = (
+        ctx.conn.execute("SELECT COUNT(*) FROM events WHERE event_type = ?", (e,)).fetchone()[0]
+        for e in ("RUN_START", "RUN_END")
+    )
+    assert starts - ends == 1, "a carry-out's run was left open"  # this test's own ctx stays open
+
+
+def test_a_refused_carry_out_is_not_counted(ctx, monkeypatch, capsys):
+    """Finding 10."""
+    _pair(ctx)
+    with masters_lock(ctx.config.runs_root, exclusive=True, what="a backup"):
+        _console(ctx, monkeypatch, "2k\n1a\ny\ns\n")
+    assert "Carried out=0" in capsys.readouterr().out
+
+
+# ── Review of #149 before it merged (2026-10-10) ──
+
+
+def test_a_kept_pair_stays_after_one_is_refiled_and_flagged_again(ctx, monkeypatch):
+    """A refiled kept copy leaves its old-path row (no catalogue row, no mark)
+    and gets a new pending row at its new path: still nothing new arrived."""
+    one = _copy(ctx, "one.m4a", "near_x")
+    two = _copy(ctx, "two.m4a", "near_x", album="Live at the Fillmore", codec="aac", rate=256_000)
+    _console(ctx, monkeypatch, "1k\n2k\ny\nq\n")
+    filed = two.with_name("two (filed).m4a")
+    two.rename(filed)
+    ctx.conn.execute("UPDATE archive SET file_path = ? WHERE file_path = ?", (str(filed), str(two)))
+    ctx.conn.execute("INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, "
+                     "run_id, audio_hash) VALUES ('near_x', ?, 'NEAR', 0.9, 'r', 'pcm:two.m4a')",
+                     (str(filed),))  # fmt: skip
+    ctx.conn.commit()
+    DupeResolverStage().execute(ctx)
+    assert one.exists() and filed.exists(), "a kept copy was moved with nothing new arrived"
+    assert "pending" not in set(_statuses(ctx).values())
+
+
+def test_the_longest_live_copy_is_kept_when_a_longer_one_is_set_aside(ctx):
+    """The keep rule's length step measured against a set-aside copy."""
+    a = _copy(ctx, "a.m4a", "near_x")
+    b = _copy(ctx, "b.m4a", "near_x")
+    c = _copy(ctx, "c.m4a", "near_x")
+    for path, secs in ((a, 200.0), (b, 203.0), (c, 206.0)):
+        ctx.conn.execute("UPDATE archive SET duration = ? WHERE file_path = ?", (secs, str(path)))
+    ctx.conn.execute("UPDATE archive SET status = 'QUARANTINED' WHERE file_path = ?", (str(c),))
+    ctx.conn.commit()
+    DupeResolverStage().execute(ctx)
+    assert b.exists() and not a.exists(), "the longer live copy was moved"
+
+
+def test_a_partly_carried_out_set_counts_and_says_what_failed(ctx, monkeypatch, capsys):
+    """One archived copy's move failed: the others did move, so it is not
+    'Not carried out', and the set is not offered again."""
+    import shutil as _shutil
+
+    keep = _copy(ctx, "keep.m4a", "near_x")
+    s1 = _copy(ctx, "s1.m4a", "near_x", album="Live at the Fillmore", codec="aac", rate=256_000)
+    s2 = _copy(ctx, "s2.m4a", "near_x", album="Live at Leeds", codec="aac", rate=128_000)
+    real = _shutil.move
+
+    def fails_for_s2(src, dst, *a, **k):
+        if str(src).endswith("s2.m4a"):
+            raise OSError(5, "Input/output error")
+        return real(src, dst, *a, **k)
+
+    monkeypatch.setattr("musaeus.stages.dupe_resolver.shutil.move", fails_for_s2)
+    order = [Path(m["file_path"]).name for m in dedupe._set_members(ctx.conn, ["near_x"])]
+    keys = "".join(f"{order.index(n) + 1}{a}\n" for n, a in (("keep.m4a", "k"), ("s1.m4a", "a"),
+                                                            ("s2.m4a", "a"))) + "y\nq\n"  # fmt: skip
+    _console(ctx, monkeypatch, keys)
+    out = capsys.readouterr().out
+    assert keep.exists() and not s1.exists() and s2.exists()
+    assert "Carried out=1" in out and "Input/output error" in out
+
+
+def test_a_double_tap_of_ctrl_c_still_finishes_the_carry_out(ctx, monkeypatch):
+    """Re-review of #149: a second Ctrl-C right after the first forced a stop."""
+    import os
+    import signal
+
+    studio, live = _pair(ctx)
+    real = DupeResolverStage._move_losers
+
+    def tapped_twice(self, *args, **kwargs):
+        os.kill(os.getpid(), signal.SIGINT)
+        os.kill(os.getpid(), signal.SIGINT)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(DupeResolverStage, "_move_losers", tapped_twice)
+    with pytest.raises(KeyboardInterrupt):
+        _console(ctx, monkeypatch, "2k\n1a\ny\nq\n")
+    assert live.exists() and not studio.exists()
+    assert _kept_mark(ctx, live)
+
+
+def test_no_keep_is_recorded_when_nothing_could_be_moved(ctx, monkeypatch):
+    studio, live = _pair(ctx)
+
+    def every_move_fails(src, dst, *a, **k):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr("musaeus.stages.dupe_resolver.shutil.move", every_move_fails)
+    _console(ctx, monkeypatch, "2k\n1a\ny\ns\n")
+    assert studio.exists() and not _kept_mark(ctx, live)
+    assert set(_statuses(ctx).values()) == {"pending"}
