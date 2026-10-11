@@ -122,7 +122,11 @@ class TestSentinelRun:
         mock_ah.return_value = ("a" * 64, None, "")
 
         stage = SentinelStage()
-        result = stage.execute(ctx)
+        # The effect check re-derives the hash from the file; the file here is
+        # fake bytes, so it is mocked as the hashing above is. A failed check
+        # now fails the stage (review of slice D, finding 3).
+        with patch("musaeus.stages.sentinel.audio_hash_safe", return_value=("a" * 64, None)):
+            result = stage.execute(ctx)
 
         assert result.success is True
         assert result.files_changed == 1
