@@ -47,6 +47,7 @@ from ..loudness import (
     measure_loudness,
     replaygain_from_r128,
 )
+from ..safe_save import write_beside
 from .base import BaseStage, StageError
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,7 @@ _MAX_LOUDNESS_SECONDS = 45 * 60
 # ── Tag writers ───────────────────────────────────────────────────────────────
 
 
-def _write_tags_m4a(path: Path, rg_gain: float, rg_peak: float) -> bool:
+def _write_tags_m4a_in_place(path: Path, rg_gain: float, rg_peak: float) -> bool:
     """Write R128 gain to M4A/ALAC using mutagen (Apple Q7.8 format).
 
     Uses the "----:mean:name" freeform atom form. The previous
@@ -120,7 +121,7 @@ def _write_tags_m4a(path: Path, rg_gain: float, rg_peak: float) -> bool:
         return False
 
 
-def _write_tags_flac(
+def _write_tags_flac_in_place(
     path: Path, rg_gain: float, rg_peak: float, reference: float = R128_REFERENCE
 ) -> bool:
     """Write ReplayGain tags to FLAC.
@@ -147,7 +148,7 @@ def _write_tags_flac(
         return False
 
 
-def _write_tags_mp3(
+def _write_tags_mp3_in_place(
     path: Path, rg_gain: float, rg_peak: float, reference: float = R128_REFERENCE
 ) -> bool:
     """Write ReplayGain tags to MP3.
@@ -182,7 +183,7 @@ def _write_tags_mp3(
         return False
 
 
-def _write_tags_aiff(path: Path, rg_gain: float, rg_peak: float) -> bool:
+def _write_tags_aiff_in_place(path: Path, rg_gain: float, rg_peak: float) -> bool:
     """Write ReplayGain tags to AIFF via ID3."""
     try:
         from mutagen.aiff import AIFF  # type: ignore[import-untyped]
@@ -678,3 +679,39 @@ class ForgeStage(BaseStage):
 
         ctx.record_stage(result)
         return result
+
+
+def _write_tags_m4a(path: Path, *args: Any, **kwargs: Any) -> bool:
+    """_write_tags_m4a_in_place, run on a copy beside the master that replaces it only
+    once written and checked (musaeus.safe_save.write_beside): saved in place,
+    a kill or full disk mid-save damaged the master (review of slice A)."""
+    return write_beside(
+        path, lambda tmp: _write_tags_m4a_in_place(tmp, *args, **kwargs), failed=False
+    )
+
+
+def _write_tags_flac(path: Path, *args: Any, **kwargs: Any) -> bool:
+    """_write_tags_flac_in_place, run on a copy beside the master that replaces it only
+    once written and checked (musaeus.safe_save.write_beside): saved in place,
+    a kill or full disk mid-save damaged the master (review of slice A)."""
+    return write_beside(
+        path, lambda tmp: _write_tags_flac_in_place(tmp, *args, **kwargs), failed=False
+    )
+
+
+def _write_tags_mp3(path: Path, *args: Any, **kwargs: Any) -> bool:
+    """_write_tags_mp3_in_place, run on a copy beside the master that replaces it only
+    once written and checked (musaeus.safe_save.write_beside): saved in place,
+    a kill or full disk mid-save damaged the master (review of slice A)."""
+    return write_beside(
+        path, lambda tmp: _write_tags_mp3_in_place(tmp, *args, **kwargs), failed=False
+    )
+
+
+def _write_tags_aiff(path: Path, *args: Any, **kwargs: Any) -> bool:
+    """_write_tags_aiff_in_place, run on a copy beside the master that replaces it only
+    once written and checked (musaeus.safe_save.write_beside): saved in place,
+    a kill or full disk mid-save damaged the master (review of slice A)."""
+    return write_beside(
+        path, lambda tmp: _write_tags_aiff_in_place(tmp, *args, **kwargs), failed=False
+    )
