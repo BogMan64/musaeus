@@ -10,7 +10,7 @@ bug found this week. One file now. MUSAEUS_OPEN_ITEMS.md is archived.
 
 Counts in the body below were verified against the live vault on
 **2026-09-07** and have NOT been re-verified since. Where a number matters,
-read "State on 2026-10-07" immediately below — it supersedes them,
+read "State on 2026-10-11" immediately below — it supersedes them,
 and every count in the older "State on …" sections below it. (The file name
 still says 2026-09-23 so links to it keep working; the 09-23 copy is kept in
 `~/Desktop/MUSAEUS_HANDOVER_2026-10-03/doc_backups/`.)
@@ -31,6 +31,64 @@ as still correct.
 line is: a TODO item has a cost if left undone — something is unprotected or
 a check is lying. A wishlist item has none; the library is correct without
 it. Given limited time, take the TODO.
+
+---
+
+## State on 2026-10-11 — the whole program reviewed and fixed; genres and names settled by Grey
+
+**Measured against the live vault on 2026-10-11.** It supersedes every count below it. Working notes: `~/Desktop/MUSAEUS_HANDOVER_2026-10-03/HANDOVER.md`, from "2026-10-10" on.
+
+| | |
+|---|---|
+| CATALOGUED (one row per master) | **8,819**; no other statuses |
+| distinct artists | 1,571 (before the canon/combines below are applied) |
+| CATALOGUED with no genre | 2 |
+| CATALOGUED with no album name | 258 |
+| lossy masters | 252 (left out of the Lossless edition) |
+| `TuneMyMusic.csv` (wanted list) | 635 songs |
+
+| edition | files |
+|---|---|
+| `ALAC-Archival` (masters) | 8,819 |
+| `ALAC_Library` (Lossless) | 8,567 |
+| `CAR_Library` | 8,819 |
+| `iPHONE_Library` | 8,817 |
+
+**Backups:** `1-ALAC-Archival.2026.10.10` on NUC8TB (Grey's copy, made before the deletions of 10-10 settled). Grey's own `Complete tunage` copy is on NUC8TB; it was removed from FORGE2TB on 10-10.
+
+### What happened, 8 to 11 October (PRs #148–#176)
+
+- **The program was reviewed end to end** in five slices (review-only PRs #143–#147, never merged): A writes to masters, B intake and detection, C enrichment and network, D program core, E data. Every finding became a fix PR, and every fix PR had its own pre-merge review whose findings were fixed in the same PR. Reviews are saved in the handover folder (`code_review_2026-10-1*_slice*.output`).
+- **Masters are never saved in place** (#148, #153): Forge, Tagger, BPM, IdentityTag and AlbumArt write a copy beside the master and rename it over (`musaeus/safe_save.py`).
+- **A machine failure is not damage** (#162): ffmpeg missing, a timeout or an I/O error no longer sends a healthy master to QUARANTINE; the decode never reads the terminal.
+- **What a run counts as done** (#166): a resume skips only the stages that finished in order from the start; any audio waiting in INBOX starts a fresh run; a stage whose effect cannot be confirmed fails the run.
+- **Locks and transactions** (#158–#160): resets and `rebuild-from-disk --promote` hold the masters lock; database migrations and the promote are one transaction each.
+- **Secrets** (#157): `musaeus setup` never shows a key; `credentials.env` is mode 600 and saved atomically.
+- **Enrichment** (#170, #172): MusicBrainz releases are found by artist id (none had been, 0 of 10,713); an outage is never "not found"; AcoustID picks a recording only on the whole artist and the file's own title.
+- **Doctor, read-only, three new checks:** masters changed outside MUSAEUS (#169; live: Grey's own 1,843 tag edits of 10-09/10), one act filed under two spellings (#174), song sort names that differ from the title (#175; 79, Grey: fine as they are).
+- **Covers** (#176): a cover's size is recorded whenever it changes; 8 stale sizes re-measured.
+
+### Decided by Grey (10 and 11 October)
+
+- **Genres:** MasterLaw is the authority, and a genre the law set follows the law when it changes (#171); only a genre Grey chose by hand is frozen. Credit lines take their lead artist's genre (44 lines aligned). Grey's own changes (John Lennon Rock, Cher Pop, …) and chat2's reviewed answers for 151 artists of Folk, Folk Rock, Disco/Electronic, Psychedelic Rock and Soundtrack are in MasterLaw; 4 left as they are (Disco Fever, Laurent Aknin, Sylvia King, Ulrik Lundström).
+- **Names:** one folder per act, first artist only, "&"/"and" as MusicBrainz writes it (Jan & Dean, Question Mark & The Mysterians, Run-DMC, José Feliciano, Ricky Nelson, Bob Seger). Jazz trios/quintets and credits join their leader (Oscar Peterson, Miles Davis, Thelonious Monk, Stan Getz, Billie Holiday); Waylon Jennings & Willie Nelson keeps its credit, filed under Waylon Jennings; C & C Music Factory keeps a whole folder.
+- **Dedupe:** a choice is carried out at once; a keep settles only the copies Grey saw; auto leaves everything to the resolver.
+- **The stick** will carry the MUSAEUS car edition, with the new check-and-repair (#151), as the last job.
+
+### Open, in the order agreed
+
+1. Grey's code review of everything merged since `3e45013` (brief: `~/Desktop/NOTE_FOR_CODE_REVIEW_2026-10-11.md`).
+2. Build "genre suggestions": MusicBrainz and Wikipedia genres mapped to the allowed list, written as a review sheet to the Desktop; Grey approves; one command loads MasterLaw. Never changes a genre by itself.
+3. Grey to decide: album names every word capitalised too (tags and folders), or folders only.
+4. `scripts/clear_law_genre_stamps.py --execute` (dry run: 1,704 law-set stamps), then a full `musaeus run` over ALAC-Archival with an empty INBOX: applies the canon, MasterLaw and filing changes in place. No re-encoding.
+5. `musaeus edition-build car` (retags/moves the changed copies), then the stick, last.
+6. Next batch: USB1_Curated_RAW.
+
+Known and accepted: 117 doubled rows in the duplicates table (harmless); NearDupe and AcoustID keep their own pair checks; an MP3 with no ID3 tag cannot be tagged (every master is .m4a); MusicBrainz rows closed before #170 need reopening once to find their releases.
+
+### The lesson, again
+
+Each fix PR was reviewed alone, and the reviews kept finding that the fix of one finding broke another rule somewhere else -- a guard test, a fixture's date, the article rule. Two authorities that must agree again: MasterLaw's credit lines had never learned Grey's 10-06 one-genre-per-artist edits, and would have undone them on the next run. When a rule changes, ask which other file still holds the old one.
 
 ---
 

@@ -1389,6 +1389,35 @@ folded into §4 or §5 directly, not left here.
 
 ## 9. Update log
 
+- **2026-10-08 → 2026-10-11 sessions (Claude Code): the whole program
+  reviewed, every finding fixed, and Grey's names and genres settled.**
+
+  **What changed.** The ~33,000 lines no review had read were reviewed in five
+  slices (review-only PRs #143–#147). Every finding became a fix PR
+  (#148–#176), each with its own pre-merge review whose findings were fixed in
+  the same PR. Grey's genre and name decisions went into MasterLaw.csv,
+  artist_canon.tsv and artist_filing.tsv (backups beside each).
+
+  **Standing rules that came out of it:**
+
+  1. **No master is saved in place.** Every writer works on a copy beside the
+     master and renames it over (`musaeus/safe_save.py`).
+  2. **A machine failure is not a verdict.** ffmpeg missing, a timeout, a
+     kill or an I/O error leaves a file unchecked, never quarantined; an
+     outage is never recorded as "not found".
+  3. **A stage whose effect cannot be confirmed fails the run**, and a
+     resume skips only the stages that finished in order from the start.
+  4. **MasterLaw is the genre authority.** A genre the law set follows the law
+     when it changes; only a genre Grey chose by hand is frozen. A credit
+     takes its lead artist's genre (credit lines in MasterLaw follow too).
+  5. **One folder per act, first artist only; "&"/"and" as MusicBrainz writes
+     it.** artist_canon.tsv joins spellings; artist_filing.tsv files a credit
+     under its lead while the tag keeps the full credit.
+  6. **`musaeus doctor` watches for drift, read-only:** masters changed
+     outside MUSAEUS, one act under two spellings, sort names that differ.
+  7. **When a rule changes, ask which other authority still holds the old
+     one** (MasterLaw's credit lines had never learned 10-06).
+
 - **2026-09-24 → 2026-10-03 sessions (Claude Code): one file per track,
   three editions on one framework, the USB1 batch filed, and fourteen
   standing rules.**
