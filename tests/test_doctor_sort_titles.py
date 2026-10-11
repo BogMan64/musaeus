@@ -59,7 +59,7 @@ def test_a_stale_sort_name_is_reported(tmp_path):
     cfg = _cfg(tmp_path)
     _master(cfg, "a.m4a", "Midnight Flyer", "Midnight Flyer (2013 Remaster)")
     f = _finding(cfg)
-    assert f.level == "warn" and f.count == 1 and "2013 Remaster" in f.detail
+    assert f.count == 1 and "2013 Remaster" in f.detail and "for information" in f.detail
 
 
 def test_a_dropped_article_or_no_sort_name_is_fine(tmp_path):
@@ -68,4 +68,4 @@ def test_a_dropped_article_or_no_sort_name_is_fine(tmp_path):
     _master(cfg, "b.m4a", "Brown Sugar", None)
     _master(cfg, "c.m4a", "Angie", "angie")
     f = _finding(cfg)
-    assert f.level == "ok" and "1 drop only" in f.detail
+    assert f.count == 0 and "1 drop only" in f.detail

@@ -1549,8 +1549,8 @@ def _sort_titles_that_disagree(cfg: MusicConfig, rep: Report) -> None:
     MUSAEUS never writes a sort title, but one carried in from a source stays
     in the master. A sort title that only drops a leading "The"/"A"/"An" is
     deliberate (iTunes AutoSort) and only counted; any other difference is
-    reported with examples. Read-only: reads every master's tags (a few
-    minutes on the full library).
+    listed with examples, for information (Grey found the live ones fine).
+    Read-only: reads every master's tags (about a minute).
     """
     conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
     try:
@@ -1581,9 +1581,12 @@ def _sort_titles_that_disagree(cfg: MusicConfig, rep: Report) -> None:
         rep.add("ok", "song sort names", f"none differ from the title{note}")
         return
     shown = "; ".join(f"{t!r} sorts as {so!r}" for _, t, so in differ[:4])
+    # Information, not a warning: Grey looked at the 79 on the live library
+    # (2026-10-11) and they are fine as they are -- mostly a remaster or a
+    # punctuation form of the same title.
     rep.add(
-        "warn",
+        "ok",
         "song sort names",
-        f"{len(differ):,} master(s) sort under another name: {shown}{note}",
+        f"{len(differ):,} master(s) sort under another name (for information): {shown}{note}",
         len(differ),
     )
