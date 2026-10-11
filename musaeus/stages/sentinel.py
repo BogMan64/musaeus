@@ -25,7 +25,7 @@ import re
 from pathlib import Path
 
 from ..context import RunContext, StageResult, elision
-from ..db import upsert_archive
+from ..db import add_duplicate_member, upsert_archive
 from ..hasher import audio_hash_checked, audio_hash_safe, file_hash
 from .base import BaseStage
 
@@ -540,17 +540,9 @@ class SentinelStage(BaseStage):
                 first = seen_hashes[ah]
                 if first != path_str:
                     group_id = f"dup_{ah[:12]}"
-                    # Insert both sides (ON CONFLICT IGNORE for idempotency)
+                    # Both sides, one row each per group (add_duplicate_member).
                     for fp in (first, path_str):
-                        ctx.conn.execute(
-                            """
-                            INSERT OR IGNORE INTO duplicates
-                                (group_id, file_path, duplicate_type, confidence, run_id, audio_hash)
-                            VALUES (?, ?, 'EXACT', 1.0, ?,
-                                    (SELECT audio_hash FROM archive WHERE file_path = ?))
-                            """,
-                            (group_id, fp, ctx.run_id, fp),
-                        )
+                        add_duplicate_member(ctx.conn, group_id, fp, "EXACT", ctx.run_id)
                     ctx.log_event(
                         "DUPLICATE_FOUND",
                         file_path=path_str,
