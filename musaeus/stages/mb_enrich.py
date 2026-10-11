@@ -222,6 +222,11 @@ def _search_artist(artist_name: str) -> tuple[str, str] | None:
     return None
 
 
+def _lucene_quote(text: str) -> str:
+    """Text safe inside a quoted MusicBrainz (Lucene) phrase."""
+    return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _search_release(artist_mbid: str, album_name: str) -> str | None:
     """
     Search MusicBrainz for a release by artist MBID + album title.
@@ -239,7 +244,9 @@ def _search_release(artist_mbid: str, album_name: str) -> str | None:
             "release",
             {
                 # Not quote()d, for the same reason as _search_artist above.
-                "query": f'arid:{artist_mbid} AND release:"{album_name}"',
+                # A quote in the album name is escaped for the query syntax:
+                # 'Music From "Fiddler on the Roof"' was refused as a bad query.
+                "query": f'arid:{artist_mbid} AND release:"{_lucene_quote(album_name)}"',
                 "limit": "1",
             },
         )
@@ -522,6 +529,8 @@ class MBEnrichStage(BaseStage):
                         logger.info("[mb_enrich] release found: %r → %s", album, mb_release_id)
             if release_asked:
                 mb_release_id = release_cache.get(release_key) if album else None
+            else:
+                mb_release_id = None  # not the previous row's (final pre-merge review)
 
             if mb_release_id:
                 found_releases += 1

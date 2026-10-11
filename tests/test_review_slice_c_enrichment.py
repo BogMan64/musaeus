@@ -136,3 +136,10 @@ def test_an_outage_is_asked_once_per_album_per_run(ctx, monkeypatch):
         "SELECT COUNT(*) FROM archive WHERE mb_enriched_at IS NULL"
     ).fetchone()[0]
     assert open_rows == 3, "an outage closed the rows"
+
+
+def test_an_album_name_with_a_quote_is_escaped(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(mb_enrich, "_mb_get", lambda kind, params: seen.update(params) or {})
+    mb_enrich._search_release("9fdaa16b", 'Music From "Fiddler on the Roof"')
+    assert 'release:"Music From \\"Fiddler on the Roof\\""' in seen["query"], seen["query"]
