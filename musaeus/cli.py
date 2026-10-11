@@ -115,7 +115,7 @@ import traceback
 from pathlib import Path
 
 from . import __version__
-from .config import get_config
+from .config import AUDIO_EXTENSIONS, get_config
 from .context import RunContext, elision, head_with_remainder
 from .db import open_db, snapshot_db_before_wipe
 from .handoff import act_of, write_act_handoff, write_handoff_doc
@@ -239,22 +239,40 @@ def _pin_modules() -> tuple[int, list[tuple[str, str]]]:
 _RESUME_FILE = Path.home() / ".config" / "musaeus" / "resume_state.json"
 
 
-def _save_resume(completed: list[str], all_stages: list[str]) -> None:
+def _save_resume(completed: list[str], all_stages: list[str], vault: str = "") -> None:
     _RESUME_FILE.parent.mkdir(parents=True, exist_ok=True)
     _RESUME_FILE.write_text(
-        json.dumps({"completed": completed, "all_stages": all_stages}, indent=2)
+        json.dumps({"completed": completed, "all_stages": all_stages, "vault": vault}, indent=2)
     )
 
 
-def _load_resume(all_stages: list[str]) -> list[str] | None:
+def _load_resume(all_stages: list[str], vault: str = "") -> list[str] | None:
+    """The stages a resume may skip: the unbroken run of finished stages from
+    the start of the pipeline.
+
+    Review of slice D, finding 2. Stages were skipped by name, so when a
+    failed stage was retried, the later stages that had succeeded the first
+    time were skipped too and never saw what the retry produced: a file
+    Canonicalize converted on the retry was never filed, and the run said
+    "complete". Everything after the first stage not done now runs again.
+    The file also records its vault: one left by a test vault does not skip
+    stages on the real one.
+    """
     if not _RESUME_FILE.exists():
         return None
     try:
         state = json.loads(_RESUME_FILE.read_text())
         if state.get("all_stages") != all_stages:
             return None
-        completed = state.get("completed", [])
-        return completed if completed else None
+        if vault and state.get("vault", "") != vault:
+            return None
+        done = set(state.get("completed", []))
+        prefix: list[str] = []
+        for name in all_stages:
+            if name not in done:
+                break
+            prefix.append(name)
+        return prefix or None
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -286,10 +304,36 @@ def _resume_would_skip_new_work(completed: list[str], inbox: Path) -> bool:
     """
     if "IngestStage" not in completed:
         return False
+    return _inbox_audio_count(inbox, stop_at=1) > 0
+
+
+def _inbox_new_work(conn, cfg) -> int:  # type: ignore[no-untyped-def]
+    """INBOX audio with no catalogue row yet -- Ingest's own count. Files Ingest
+    already registered stay in INBOX until Finalize, so counting them refused
+    every resume of a batch stopped before Finalize (pre-merge review of
+    #166)."""
+    from .stages import IngestStage
+
     try:
-        return any(inbox.rglob("*.m4a"))
+        return int(IngestStage.plan_candidates(conn, cfg)[0])
+    except Exception:  # noqa: BLE001 -- unsure is "new work": start fresh
+        return _inbox_audio_count(cfg.inbox)
+
+
+def _inbox_audio_count(inbox: Path, stop_at: int = 0) -> int:
+    """Audio files waiting in the INBOX: every extension Ingest takes, in any
+    letter case. Only *.m4a was counted, so a FLAC or MP3 batch was skipped
+    by an auto-resume (review of slice D, finding 1)."""
+    n = 0
+    try:
+        for p in inbox.rglob("*"):
+            if p.suffix.lower() in AUDIO_EXTENSIONS and p.is_file():
+                n += 1
+                if stop_at and n >= stop_at:
+                    break
     except OSError:
-        return False
+        pass
+    return n
 
 
 # ── Pipeline runner ───────────────────────────────────────────────────────────
@@ -489,9 +533,15 @@ def _run_pipeline_inner(
     completed_names: list[str] = []
 
     # Check for resume
-    resume_from = _load_resume(stage_names)
-    if resume_from and _resume_would_skip_new_work(resume_from, cfg.inbox):
-        n = sum(1 for _ in cfg.inbox.rglob("*.m4a"))
+    vault_key = str(cfg.db_path)
+    resume_from = _load_resume(stage_names, vault_key)
+    new_work = (
+        _inbox_new_work(conn, cfg)
+        if resume_from and _resume_would_skip_new_work(resume_from, cfg.inbox)
+        else 0
+    )
+    if resume_from and new_work:
+        n = new_work
         print(f"  ⚠  Incomplete run detected, but {n:,} file(s) are waiting in the INBOX.")
         print("     Resuming would skip IngestStage and leave them unprocessed.")
         print("     Starting a fresh run instead.")
@@ -519,6 +569,7 @@ def _run_pipeline_inner(
                 completed_names = list(resume_from)
 
     exit_code = 0
+    failed_before = False
     for idx, cls in enumerate(stages):
         stage_name = cls.__name__
         if stage_name in completed_names:
@@ -531,7 +582,7 @@ def _run_pipeline_inner(
         except KeyboardInterrupt:
             print(f"\n\n  ⚠  Interrupted during {stage_name}.")
             print("  Progress saved — run 'musaeus run' again to resume.\n")
-            _save_resume(completed_names, stage_names)
+            _save_resume(completed_names, stage_names, vault_key)
             # A run cut short after Finalize has still added tracks, and its
             # records are copied beside the library at the END of a run --
             # which this one never reaches. 2026-09-25: Act 3 was interrupted
@@ -596,11 +647,14 @@ def _run_pipeline_inner(
         # either way (unchanged -- matches musaeus_overnight.sh's own
         # "each top-level stage runs independently" philosophy); only
         # what counts as resumable-skip changes.
-        if result.success:
+        # Only the unbroken run from the start counts (see _load_resume):
+        # after a failed stage, a later success must run again next time.
+        if result.success and not failed_before:
             completed_names.append(stage_name)
-            _save_resume(completed_names, stage_names)
-        else:
+            _save_resume(completed_names, stage_names, vault_key)
+        if not result.success:
             exit_code = 1
+            failed_before = True
 
         # An Act's report, written the moment that Act ends rather than at
         # the end of the run. A run that dies in Act 2 otherwise hands Grey
@@ -2314,7 +2368,12 @@ def _pipeline_for_run(args) -> tuple[list, dict]:
 
 def main() -> None:
     parser = _build_parser()
-    args = parser.parse_args()
+    # --safety-gate is read from the raw command line by cli_gate; argparse
+    # rejected it as unrecognized, so the documented flag could not be used
+    # (review of slice D, finding 10). It is taken out before parsing.
+    from .cli_gate import GATE_FLAG
+
+    args = parser.parse_args([a for a in sys.argv[1:] if a != GATE_FLAG])
 
     verbose = getattr(args, "verbose", False)
     show_progress = getattr(args, "progress", True)  # Default to True
@@ -2339,6 +2398,19 @@ def main() -> None:
 
     command = args.command or "console"
     dry_run = getattr(args, "dry_run", False)
+    # A preview counts the normal run; with --force, --retag or --embed-from-db
+    # the real run does more -- `forge --force --dry-run` said 0 while the run
+    # rewrites every master (review of slice D, finding 5). Refused, as
+    # `musaeus plan` refuses its persistence flags.
+    widening = [f for f in ("force", "retag", "embed_from_db") if getattr(args, f, False)]
+    if dry_run and widening and command != "plan":
+        flags = ", ".join("--" + f.replace("_", "-") for f in widening)
+        print(
+            f"ERROR: --dry-run cannot preview {flags}: the preview would count the normal "
+            "run, not the forced one. Drop --dry-run to run it, or drop the flag to preview.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     # ── First-run check: trigger wizard if no config exists ───────────────────
     from .setup import needs_setup

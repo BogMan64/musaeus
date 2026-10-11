@@ -286,9 +286,21 @@ class ScholarStage(BaseStage):
         ]
         if not blank:
             return []
+        if len(blank) < len(rows):
+            # Some files simply have no name to read -- untagged, named like
+            # "01.wav". AcoustIDNameStage runs next to name them from their
+            # sound; that is by design, not a failed read. Since a failed
+            # check now fails the stage (review of slice D, finding 3), they
+            # are reported here, and only a reader that returned nothing for
+            # EVERY sampled row is a failure (pre-merge review of #166).
+            result.notes.append(
+                f"{len(blank)} of {len(rows)} sampled row(s) carry neither artist nor "
+                f"title (left for AcoustIDName): {', '.join(blank[:3])}"
+            )
+            return []
         return [
-            f"{len(blank)} of {len(rows)} row(s) were read but carry neither "
-            f"artist nor title: {', '.join(blank[:3])}"
+            f"all {len(rows)} sampled row(s) were read but carry neither "
+            f"artist nor title -- the tag reader returned nothing: {', '.join(blank[:3])}"
         ]
 
     def run(self, ctx: RunContext) -> StageResult:
