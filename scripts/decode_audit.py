@@ -74,7 +74,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from musaeus.config import MusicConfig  # noqa: E402
 from musaeus.deep_scan import ensure_columns as deep_scan_ensure_columns  # noqa: E402
-from musaeus.stages.corrupt import ffmpeg_decode_check  # noqa: E402
+from musaeus.stages.corrupt import DecodeUnavailable, ffmpeg_decode_check  # noqa: E402
 
 COMMIT_EVERY = 25
 _stop = False
@@ -151,7 +151,7 @@ def main() -> int:
 
     run_id = "decode_audit_" + datetime.datetime.now().strftime("%Y%m%dT%H%M%SZ")
     failures: list[dict] = []
-    ok = bad = gone = 0
+    ok = bad = gone = not_decoded = 0
     started = time.time()
 
     for i, r in enumerate(rows, 1):
@@ -161,7 +161,14 @@ def main() -> int:
         if not p.exists():
             gone += 1
             continue
-        good, err = decode(p)
+        try:
+            good, err = decode(p)
+        except DecodeUnavailable as exc:
+            # The machine failed, not the file: left unchecked, never
+            # recorded as damage (review of slice B, finding 1).
+            not_decoded += 1
+            print("  ? not decoded  %s: %s" % (p.name, exc), flush=True)
+            continue
         ts = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute(
             "UPDATE archive SET decode_checked_at = ?, decode_ok = ?, decode_errors = ? "
@@ -212,6 +219,9 @@ def main() -> int:
     checked = ok + bad
     print("\ndecoded %d file(s): %d clean, %d DAMAGED%s"
           % (checked, ok, bad, ", %d missing on disk" % gone if gone else ""))
+    if not_decoded:
+        print("%d file(s) NOT decoded (ffmpeg or the disk failed, not the file): "
+              "left unchecked; re-run to check them." % not_decoded)
     if _stop:
         remaining = conn.execute(
             "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' "

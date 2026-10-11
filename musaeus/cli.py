@@ -115,7 +115,7 @@ import traceback
 from pathlib import Path
 
 from . import __version__
-from .config import get_config
+from .config import AUDIO_EXTENSIONS, get_config
 from .context import RunContext, elision, head_with_remainder
 from .db import open_db, snapshot_db_before_wipe
 from .handoff import act_of, write_act_handoff, write_handoff_doc
@@ -239,22 +239,40 @@ def _pin_modules() -> tuple[int, list[tuple[str, str]]]:
 _RESUME_FILE = Path.home() / ".config" / "musaeus" / "resume_state.json"
 
 
-def _save_resume(completed: list[str], all_stages: list[str]) -> None:
+def _save_resume(completed: list[str], all_stages: list[str], vault: str = "") -> None:
     _RESUME_FILE.parent.mkdir(parents=True, exist_ok=True)
     _RESUME_FILE.write_text(
-        json.dumps({"completed": completed, "all_stages": all_stages}, indent=2)
+        json.dumps({"completed": completed, "all_stages": all_stages, "vault": vault}, indent=2)
     )
 
 
-def _load_resume(all_stages: list[str]) -> list[str] | None:
+def _load_resume(all_stages: list[str], vault: str = "") -> list[str] | None:
+    """The stages a resume may skip: the unbroken run of finished stages from
+    the start of the pipeline.
+
+    Review of slice D, finding 2. Stages were skipped by name, so when a
+    failed stage was retried, the later stages that had succeeded the first
+    time were skipped too and never saw what the retry produced: a file
+    Canonicalize converted on the retry was never filed, and the run said
+    "complete". Everything after the first stage not done now runs again.
+    The file also records its vault: one left by a test vault does not skip
+    stages on the real one.
+    """
     if not _RESUME_FILE.exists():
         return None
     try:
         state = json.loads(_RESUME_FILE.read_text())
         if state.get("all_stages") != all_stages:
             return None
-        completed = state.get("completed", [])
-        return completed if completed else None
+        if vault and state.get("vault", "") != vault:
+            return None
+        done = set(state.get("completed", []))
+        prefix: list[str] = []
+        for name in all_stages:
+            if name not in done:
+                break
+            prefix.append(name)
+        return prefix or None
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -286,10 +304,36 @@ def _resume_would_skip_new_work(completed: list[str], inbox: Path) -> bool:
     """
     if "IngestStage" not in completed:
         return False
+    return _inbox_audio_count(inbox, stop_at=1) > 0
+
+
+def _inbox_new_work(conn, cfg) -> int:  # type: ignore[no-untyped-def]
+    """INBOX audio with no catalogue row yet -- Ingest's own count. Files Ingest
+    already registered stay in INBOX until Finalize, so counting them refused
+    every resume of a batch stopped before Finalize (pre-merge review of
+    #166)."""
+    from .stages import IngestStage
+
     try:
-        return any(inbox.rglob("*.m4a"))
+        return int(IngestStage.plan_candidates(conn, cfg)[0])
+    except Exception:  # noqa: BLE001 -- unsure is "new work": start fresh
+        return _inbox_audio_count(cfg.inbox)
+
+
+def _inbox_audio_count(inbox: Path, stop_at: int = 0) -> int:
+    """Audio files waiting in the INBOX: every extension Ingest takes, in any
+    letter case. Only *.m4a was counted, so a FLAC or MP3 batch was skipped
+    by an auto-resume (review of slice D, finding 1)."""
+    n = 0
+    try:
+        for p in inbox.rglob("*"):
+            if p.suffix.lower() in AUDIO_EXTENSIONS and p.is_file():
+                n += 1
+                if stop_at and n >= stop_at:
+                    break
     except OSError:
-        return False
+        pass
+    return n
 
 
 # ── Pipeline runner ───────────────────────────────────────────────────────────
@@ -489,9 +533,15 @@ def _run_pipeline_inner(
     completed_names: list[str] = []
 
     # Check for resume
-    resume_from = _load_resume(stage_names)
-    if resume_from and _resume_would_skip_new_work(resume_from, cfg.inbox):
-        n = sum(1 for _ in cfg.inbox.rglob("*.m4a"))
+    vault_key = str(cfg.db_path)
+    resume_from = _load_resume(stage_names, vault_key)
+    new_work = (
+        _inbox_new_work(conn, cfg)
+        if resume_from and _resume_would_skip_new_work(resume_from, cfg.inbox)
+        else 0
+    )
+    if resume_from and new_work:
+        n = new_work
         print(f"  ⚠  Incomplete run detected, but {n:,} file(s) are waiting in the INBOX.")
         print("     Resuming would skip IngestStage and leave them unprocessed.")
         print("     Starting a fresh run instead.")
@@ -519,6 +569,7 @@ def _run_pipeline_inner(
                 completed_names = list(resume_from)
 
     exit_code = 0
+    failed_before = False
     for idx, cls in enumerate(stages):
         stage_name = cls.__name__
         if stage_name in completed_names:
@@ -531,7 +582,7 @@ def _run_pipeline_inner(
         except KeyboardInterrupt:
             print(f"\n\n  ⚠  Interrupted during {stage_name}.")
             print("  Progress saved — run 'musaeus run' again to resume.\n")
-            _save_resume(completed_names, stage_names)
+            _save_resume(completed_names, stage_names, vault_key)
             # A run cut short after Finalize has still added tracks, and its
             # records are copied beside the library at the END of a run --
             # which this one never reaches. 2026-09-25: Act 3 was interrupted
@@ -596,11 +647,14 @@ def _run_pipeline_inner(
         # either way (unchanged -- matches musaeus_overnight.sh's own
         # "each top-level stage runs independently" philosophy); only
         # what counts as resumable-skip changes.
-        if result.success:
+        # Only the unbroken run from the start counts (see _load_resume):
+        # after a failed stage, a later success must run again next time.
+        if result.success and not failed_before:
             completed_names.append(stage_name)
-            _save_resume(completed_names, stage_names)
-        else:
+            _save_resume(completed_names, stage_names, vault_key)
+        if not result.success:
             exit_code = 1
+            failed_before = True
 
         # An Act's report, written the moment that Act ends rather than at
         # the end of the run. A run that dies in Act 2 otherwise hands Grey
@@ -712,13 +766,13 @@ def _run_pipeline_inner(
 # ── Reset command ─────────────────────────────────────────────────────────────
 
 
-def _cmd_reset() -> None:
+def _cmd_reset() -> int:
     """Wipe the MUSAEUS database for a completely fresh start."""
     try:
         cfg = get_config()
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
-        return
+        return 1
 
     db = cfg.db_path
     print("\n  MUSAEUS — Database Reset")
@@ -734,34 +788,123 @@ def _cmd_reset() -> None:
         # is to refuse, not to auto-confirm.
         print("  ⚠  No TTY detected — refusing to reset non-interactively.")
         print("  Run this command from an interactive shell to confirm.")
-        return
+        return 1
 
     try:
         confirm = input("  Type RESET to confirm: ").strip()
     except (EOFError, KeyboardInterrupt):
         print("\n  Cancelled.")
-        return
+        return 0
 
     if confirm != "RESET":
         print("  Cancelled.")
-        return
+        return 0
 
-    snapshot_path = snapshot_db_before_wipe(db, cfg.db_history_dir)
-    if snapshot_path is not None:
-        print(f"  ✓ Snapshotted to: {snapshot_path}")
+    # Under the masters lock: a run, build or carry-out holding the database
+    # open would go on writing into the deleted file, and everything after the
+    # snapshot would be lost (review of slice E, finding 8).
+    from .masters_lock import EXIT_BUSY, MastersBusy, masters_lock
 
-    for suffix in ("", "-wal", "-shm"):
-        p = Path(str(db) + suffix)
-        if p.exists():
-            p.unlink()
-            print(f"  ✓ Deleted: {p.name}")
+    try:
+        with masters_lock(cfg.runs_root, exclusive=True, what="musaeus reset"):
+            snapshot_path = snapshot_db_before_wipe(db, cfg.db_history_dir)
+            if snapshot_path is not None:
+                print(f"  ✓ Snapshotted to: {snapshot_path}")
 
-    # Also clear resume state
-    _clear_resume()
+            for suffix in ("", "-wal", "-shm"):
+                p = Path(str(db) + suffix)
+                if p.exists():
+                    p.unlink()
+                    print(f"  ✓ Deleted: {p.name}")
+
+            # Also clear resume state
+            _clear_resume()
+    except MastersBusy as exc:
+        print(f"  NOT RESET: {exc}", file=sys.stderr)
+        return EXIT_BUSY
 
     print("\n  ✓ Database reset complete.")
     print("  Run 'musaeus run' to re-ingest your library from the inbox.")
     print()
+    return 0
+
+
+# ── Rebuild-from-disk command ─────────────────────────────────────────────────
+
+
+def _cmd_rebuild_from_disk(args) -> int:
+    """Rebuild the catalogue from the masters into a side table; with
+    --promote, swap it in.
+
+    Review of slice E, findings 1 and 2. --promote held no lock, so a run in
+    progress went on writing by row id into a renumbered table -- one song's
+    title or composer onto another; it now holds the masters lock throughout,
+    as a run does. And its only check was "more than 0 rows": a --limit
+    rebuild, or one of a drive only partly there, replaced the whole
+    catalogue. --limit is now refused, and promote refuses when catalogued
+    files are missing from the rebuild.
+    """
+    from .masters_lock import EXIT_BUSY, MastersBusy, masters_lock
+    from .rebuild_from_disk import PromoteRefused, promote, scan_and_rebuild
+
+    cfg = get_config()
+    promoting = getattr(args, "promote", False)
+    limit = getattr(args, "limit", 0)
+    if promoting and limit:
+        print("  refusing to promote a --limit rebuild: it holds only part of the masters.",
+              file=sys.stderr)  # fmt: skip
+        return 1
+
+    def rebuild() -> int:
+        conn = open_db(cfg.db_path)
+        try:
+            summary = scan_and_rebuild(
+                conn,
+                cfg,
+                limit=limit,
+                compute_hashes=not getattr(args, "no_hashes", False),
+            )
+            print(f"\n  scanned : {summary['scanned']:,}")
+            print(f"  rebuilt : {summary['rebuilt']:,}  -> table '{summary['table']}'")
+            print(f"  errors  : {len(summary['errors']):,}")
+            for e in summary["errors"][:10]:
+                print(f"    {e}")
+            if not promoting:
+                print("\n  review it; --promote rebuilds again and swaps that in.")
+                return 0
+            if summary["rebuilt"] == 0:
+                print("\n  refusing to promote an empty rebuild.", file=sys.stderr)
+                return 1
+            try:
+                backup = promote(
+                    conn,
+                    table=summary["table"],
+                    accept_missing=getattr(args, "accept_missing", False),
+                )
+            except PromoteRefused as exc:
+                print(f"\n  NOT PROMOTED: {exc}:", file=sys.stderr)
+                for path in exc.missing[:20]:
+                    print(f"    {path}", file=sys.stderr)
+                if len(exc.missing) > 20:
+                    print(f"    {elision(len(exc.missing) - 20)}", file=sys.stderr)
+                print("  Is every drive and folder there? If those files really are gone, "
+                      "re-run with --accept-missing.", file=sys.stderr)  # fmt: skip
+                return 1
+            print(f"\n  promoted. previous archive preserved as: {backup}")
+            return 0
+        finally:
+            conn.close()
+
+    # Shared without --promote: it only reads the masters, but it rebuilds the
+    # one archive_rebuilt table, so it must not run under a promote's scan
+    # (pre-merge review of #160).
+    what = "musaeus rebuild-from-disk" + (" --promote" if promoting else "")
+    try:
+        with masters_lock(cfg.runs_root, exclusive=promoting, what=what):
+            return rebuild()
+    except MastersBusy as exc:
+        print(f"  NOT RUN: {exc}", file=sys.stderr)
+        return EXIT_BUSY
 
 
 # ── Status command ────────────────────────────────────────────────────────────
@@ -1063,6 +1206,11 @@ def _cmd_deep_scan(args) -> int:
         )
 
         print(f"\n  Checked {prog.checked:,} file(s). Corrupt: {len(prog.corrupt)}.")
+        if prog.not_decoded:
+            print(
+                f"  NOT decoded (ffmpeg or the disk failed, not the file): "
+                f"{len(prog.not_decoded)}. They stay unchecked; run again."
+            )
         if prog.yielded_to_user:
             print(f"  Yielded to you {prog.yielded_to_user} time(s).")
         bad = conn.execute("SELECT COUNT(*) FROM archive WHERE decode_ok = 0").fetchone()[0]
@@ -1767,7 +1915,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--promote",
         action="store_true",
         help="After a successful rebuild, swap the result into place as `archive`. "
-        "The existing archive is RENAMED aside, never dropped.",
+        "The existing archive is RENAMED aside, never dropped. Holds the masters lock; "
+        "refuses with --limit, or when catalogued files are missing from the rebuild.",
+    )
+    rfd_p.add_argument(
+        "--accept-missing",
+        action="store_true",
+        help="With --promote: drop the rows of catalogued files the rebuild did not find "
+        "(the old table is still kept aside).",
     )
 
     # permissions
@@ -2250,8 +2405,7 @@ def main() -> None:
         return
 
     if command == "reset":
-        _cmd_reset()
-        return
+        sys.exit(_cmd_reset())
 
     if needs_setup() and command not in ("setup", "reset", "status", "runs"):
         print("\n  Welcome to MUSAEUS! No configuration found.")
@@ -2350,31 +2504,7 @@ def main() -> None:
             sys.exit(_run_pipeline([CorruptStage], dry_run=dry_run))
 
         elif command == "rebuild-from-disk":
-            from .rebuild_from_disk import promote, scan_and_rebuild
-
-            cfg = get_config()
-            conn = open_db(cfg.db_path)
-            summary = scan_and_rebuild(
-                conn,
-                cfg,
-                limit=getattr(args, "limit", 0),
-                compute_hashes=not getattr(args, "no_hashes", False),
-            )
-            print(f"\n  scanned : {summary['scanned']:,}")
-            print(f"  rebuilt : {summary['rebuilt']:,}  -> table '{summary['table']}'")
-            print(f"  errors  : {len(summary['errors']):,}")
-            for e in summary["errors"][:10]:
-                print(f"    {e}")
-            if getattr(args, "promote", False):
-                if summary["rebuilt"] == 0:
-                    print("\n  refusing to promote an empty rebuild.", file=sys.stderr)
-                    sys.exit(1)
-                backup = promote(conn, table=summary["table"])
-                print(f"\n  promoted. previous archive preserved as: {backup}")
-            else:
-                print("\n  review it, then re-run with --promote to swap it in.")
-            conn.close()
-            sys.exit(0)
+            sys.exit(_cmd_rebuild_from_disk(args))
 
         elif command == "permissions":
             from .stages import PermissionsStage

@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -447,6 +448,10 @@ def _save_features(ctx: RunContext, file_path: str, features: dict[str, float | 
 # ── BPM Stage ─────────────────────────────────────────────────────────────────
 
 
+#: The rows a run analyses, and the count its preview gives: one condition.
+_PENDING_WHERE = "status='CATALOGUED' AND (bpm_analyzed_at IS NULL OR bpm_analyzed_at = '')"
+
+
 class BPMStage(BaseStage):
     """
     BPM/key/energy/danceability extraction for every CATALOGUED file.
@@ -458,9 +463,14 @@ class BPMStage(BaseStage):
     @classmethod
     def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
         """Rows this stage would act on. Read-only; see planner.py."""
-        n = conn.execute(
-            "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' AND bpm IS NULL"
-        ).fetchone()[0]
+        # The run's own condition (_PENDING_WHERE). This counted `bpm IS NULL`
+        # while the run selects on bpm_analyzed_at, so the preview and the run
+        # disagreed about the same stage (review of slice A).
+        try:
+            n = conn.execute(f"SELECT COUNT(*) FROM archive WHERE {_PENDING_WHERE}").fetchone()[0]
+        except sqlite3.OperationalError:
+            # A catalogue without the column has analysed nothing yet.
+            n = conn.execute("SELECT COUNT(*) FROM archive WHERE status='CATALOGUED'").fetchone()[0]
         return int(n), "files needing BPM analysis"
 
     NAME = "bpm"
@@ -482,10 +492,9 @@ class BPMStage(BaseStage):
             ).fetchall()
         else:
             rows = ctx.conn.execute(
-                """
+                f"""
                 SELECT file_path FROM archive
-                 WHERE status='CATALOGUED'
-                   AND (bpm_analyzed_at IS NULL OR bpm_analyzed_at = '')
+                 WHERE {_PENDING_WHERE}
                  ORDER BY artist, album, track
                 """
             ).fetchall()
