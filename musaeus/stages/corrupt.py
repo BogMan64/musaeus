@@ -709,7 +709,7 @@ class CorruptStage(BaseStage):
                                 stage=self.NAME,
                                 note=reason,
                             )
-                        except sqlite3.Error as exc:
+                        except (sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
                             # file_path is UNIQUE and IntegrityError is not an
                             # OSError, so the handler below never caught it:
                             # the file was already in QUARANTINE and the
@@ -895,7 +895,7 @@ class CorruptStage(BaseStage):
                     "UPDATE archive SET status='QUARANTINED', file_path=? WHERE file_path=?",
                     (str(dest), str(file_path)),
                 )
-            except sqlite3.Error as exc:
+            except (sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
                 # The file moved but its row could not follow: put the file
                 # back, so disk and database agree (review of slice B,
                 # finding 5 -- this logged and carried on, leaving the row at
