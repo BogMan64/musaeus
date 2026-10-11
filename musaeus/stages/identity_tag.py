@@ -82,13 +82,16 @@ class IdentityTagStage(BaseStage):
             return []
         cols = ", ".join(present)
         identity_any = " OR ".join(f"{c} IS NOT NULL" for c in present)
-        where = "" if force else f" AND ({_MARKER} IS NULL OR {_MARKER}='')"
+        # Every row with an identity, stamped or not: a stamped row whose
+        # identity changed since (an AcoustID id found a run later, an artist
+        # id corrected) was never selected again, so ~15% of masters lacked
+        # ids the catalogue holds (review of slice A, finding 7). _process
+        # rewrites a stamped file only when it no longer says what the row says.
         return ctx.conn.execute(
             f"""
-            SELECT id, file_path, {cols} FROM archive
+            SELECT id, file_path, {_MARKER}, {cols} FROM archive
              WHERE status='CATALOGUED'
                AND ({identity_any})
-               {where}
              ORDER BY file_path
             """
         ).fetchall()
@@ -106,16 +109,21 @@ class IdentityTagStage(BaseStage):
             result.notes.append("no identity columns in this database yet — nothing to do")
             ctx.record_stage(result)
             return result
-        rows = self._rows(ctx, force=bool(ctx.get("identity_tag_force", False)))
+        force = bool(ctx.get("identity_tag_force", False))
+        rows = self._rows(ctx, force=force)
 
         result.notes.append(f"files with identity to persist: {len(rows)}")
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         unverified = 0
 
         for row in rows:
-            result.files_processed += 1
             path = Path(row["file_path"])
             values = {c: row[c] for c in present if row[c]}
+            if row[_MARKER] and not force and values and path.exists():
+                on_file = read_identity(path)
+                if all(on_file.get(c) == str(v) for c, v in values.items()):
+                    continue  # already says what the catalogue says: not in the queue
+            result.files_processed += 1
             if not values:
                 result.files_skipped += 1
                 continue
