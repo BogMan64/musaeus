@@ -241,6 +241,9 @@ _RECORDING_WORDS = frozenset(
 )
 _NOT_AN_ARTIST_FIRST = frozenset({"live", "remaster", "remastered", "bonus", "from"})
 _WORD_RE = re.compile(r"[\w'-]+", re.UNICODE)
+#: A year, a number, a decade ("60s", "60's") or an ordinal ("50th") -- not
+#: a band whose name starts with digits ("10cc"; review of #161).
+_NUMBER_WORD = re.compile(r"\d+|\d+'?s|\d+(?:st|nd|rd|th)")
 
 
 def _describes_the_recording(content: str) -> bool:
@@ -249,7 +252,7 @@ def _describes_the_recording(content: str) -> bool:
         return True
     if words[0] in _NOT_AN_ARTIST_FIRST:
         return True
-    return all(w in _RECORDING_WORDS or w.rstrip("s").isdigit() or w[:-2].isdigit() for w in words)
+    return all(w in _RECORDING_WORDS or _NUMBER_WORD.fullmatch(w) for w in words)
 
 
 def extract_from_brackets(filename: str) -> str:

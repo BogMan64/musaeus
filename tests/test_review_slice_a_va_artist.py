@@ -64,3 +64,7 @@ def test_the_musicbrainz_lookup_asks_the_gateway(monkeypatch):
     with network_policy.policy(NetworkPolicy.LOCAL_ONLY) as gateway:
         assert va._lookup_musicbrainz("Be My Baby") == ""
     assert gateway.denials, "the lookup never asked the gateway"
+
+
+def test_a_band_named_with_digits_is_read():
+    assert _artist("Various Artists - Song [10cc].m4a") == ("10cc", "bracket")

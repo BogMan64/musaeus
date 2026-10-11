@@ -53,9 +53,10 @@ import shutil
 from pathlib import Path
 
 from ..context import RunContext, StageResult
+from ..filing import load as filing_load
 from .base import BaseStage
 from .normalize import stored_artist
-from .organize import build_track_filename, sanitize_path_component, unique_path
+from .organize import library_relpath, unique_path
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +157,7 @@ class ClassicalComposerStage(BaseStage):
     def _plan(self, ctx: RunContext) -> tuple[list[tuple[dict, str, str]], int]:
         canon = load_composer_canon(ctx.config.meta_dir / CANON_FILENAME)
         rows = ctx.conn.execute(
-            "SELECT id, artist, title, file_path FROM archive "
+            "SELECT id, artist, title, album, genre, file_path FROM archive "
             "WHERE status='CATALOGUED' AND genre='Classical' ORDER BY artist, title"
         ).fetchall()
         plan, unresolved = [], 0
@@ -181,6 +182,7 @@ class ClassicalComposerStage(BaseStage):
         result.notes.append(f"classical tracks to refile: {len(plan)}")
         result.notes.append(f"composer unresolved, left as-is: {unresolved}")
 
+        filing = filing_load(ctx.config.meta_dir)
         for row, composer, how in plan:
             result.files_processed += 1
             src = Path(row["file_path"])
@@ -226,12 +228,24 @@ class ClassicalComposerStage(BaseStage):
             album_dir: Path | None = None
             artist_dir: Path | None = None
             if in_library:
+                # Where Organize would file it (organize.library_relpath, the
+                # one path rule), not a sibling of src's grandparent: a master
+                # not at Genre/Artist/Album/file depth was carried out of
+                # ALAC-Archival that way (pre-merge review of #161).
+                archive = ctx.config.alac_archive
+                rel = library_relpath(
+                    composer, None, row["genre"], row["album"],
+                    row["title"] or src.stem, src.suffix, filing,
+                )  # fmt: skip
+                dst = unique_path(archive / rel)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                # Emptied folders go, but only below a genre folder: never
+                # ALAC-Archival itself or a genre folder.
                 album_dir, artist_dir = src.parent, src.parent.parent
-                dst_dir = artist_dir.with_name(sanitize_path_component(composer)) / album_dir.name
-                dst = unique_path(
-                    dst_dir / build_track_filename(composer, row["title"] or src.stem, src.suffix)
-                )
-                dst_dir.mkdir(parents=True, exist_ok=True)
+                if len(album_dir.relative_to(archive).parts) < 3:
+                    album_dir = None
+                if len(artist_dir.relative_to(archive).parts) < 2:
+                    artist_dir = None
             else:
                 dst = src
 
