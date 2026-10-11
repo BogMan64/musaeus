@@ -187,3 +187,26 @@ def test_dry_run_works_on_a_database_lacking_the_marker_column(tmp_path):
     ctx = RunContext.new(cfg, conn, dry_run=True)
     result = IdentityTagStage().dry_run(ctx)  # must not raise
     assert result is not None
+
+
+class TestAnIdentityLearnedLaterReachesTheFile:
+    """Review of slice A (#143), finding 7: a row stamped once was never
+    selected again, so an id the catalogue learned later (an AcoustID id a run
+    later, a corrected artist id) never reached the file -- ~15% of masters."""
+
+    def test_a_changed_id_is_written_to_a_stamped_file(self, ctx):
+        p = _track(ctx)
+        IdentityTagStage().run(ctx)
+        new = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a"
+        ctx.conn.execute("UPDATE archive SET mb_artist_id=?", (new,))
+        ctx.conn.commit()
+        again = IdentityTagStage().run(ctx)
+        assert read_identity(p).get("mb_artist_id") == new
+        assert again.files_changed == 1
+
+    def test_a_stamped_file_that_already_matches_is_not_rewritten(self, ctx):
+        p = _track(ctx)
+        IdentityTagStage().run(ctx)
+        before = p.stat().st_ino, p.stat().st_mtime_ns
+        IdentityTagStage().run(ctx)
+        assert (p.stat().st_ino, p.stat().st_mtime_ns) == before
