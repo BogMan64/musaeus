@@ -573,6 +573,7 @@ class ForgeStage(BaseStage):
 
             if write_rg_tags(path, row["rg_gain"], peak, r128_gain=r128, reference=target_lufs):
                 written += 1
+                self._tagged.append(path)
                 # The file now genuinely carries the tag, so rg_tagged_at must
                 # say so or the next ordinary Forge run re-measures it. Stamped
                 # with a targeted UPDATE rather than via _save_loudness(), which
@@ -636,12 +637,17 @@ class ForgeStage(BaseStage):
             f"{len(checked)} sampled files has a readable loudness tag"
         ]
 
+    #: The files this run tagged, for verify_effect. Set before either path
+    #: runs: --embed-from-db returned before it existed, and its verification
+    #: raised (pre-merge review of #154).
+    _tagged: list[Path] = []
+
     def run(self, ctx: RunContext) -> StageResult:
+        self._tagged = []
         if ctx.get("forge_embed_from_db", False):
             return self._embed_from_db(ctx)
 
         result = self._make_result(dry_run=False)
-        self._tagged: list[Path] = []
         force: bool = ctx.get("forge_force", False)
         retag: bool = ctx.get("forge_retag", False)
         target_lufs: float = ctx.get("forge_target_lufs", R128_REFERENCE)

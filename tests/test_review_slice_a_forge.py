@@ -79,3 +79,32 @@ def test_verify_reads_back_this_runs_files(tmp_path):
     stage = forge.ForgeStage()
     stage._tagged = [master]
     assert stage.verify_effect(None, None) == []  # type: ignore[arg-type]
+
+
+@needs_ffmpeg
+def test_an_embed_from_db_run_is_verified_not_crashed(tmp_path):
+    """Pre-merge review of #154: verify_effect read a list only run()'s
+    ordinary path set, so an --embed-from-db run's verification raised."""
+    import sqlite3
+    from types import SimpleNamespace
+
+    master = _m4a(tmp_path / "song.m4a")
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        "CREATE TABLE archive (file_path TEXT, status TEXT, artist TEXT, album TEXT, "
+        "track INT, lufs REAL, rg_gain REAL, rg_peak REAL, lufs_tp REAL, rg_tagged_at TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO archive VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (str(master), "CATALOGUED", "A", "B", 1, -12.5, -5.5, 0.98, -1.2, None),
+    )
+    ctx = SimpleNamespace(
+        conn=conn,
+        get=lambda k, d=None: {"forge_embed_from_db": True}.get(k, d),
+        record_stage=lambda _r: None,
+    )
+    stage = forge.ForgeStage()
+    result = stage.run(ctx)  # type: ignore[arg-type]
+    assert result.files_changed == 1
+    assert stage.verify_effect(ctx, result) == []  # type: ignore[arg-type]
