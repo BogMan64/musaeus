@@ -81,7 +81,7 @@ class AcoustIDNameStage(BaseStage):
             return result
 
         acousticid._ensure_columns(ctx.conn)
-        named = refused = no_hint = unavailable = 0
+        named = refused = no_hint = unavailable = unreadable = 0
         for row in rows:
             result.files_processed += 1
             path = Path(row["file_path"])
@@ -91,9 +91,16 @@ class AcoustIDNameStage(BaseStage):
                 continue
             try:
                 duration, fingerprint = acousticid._fpcalc(str(path))
-            except (RuntimeError, ValueError, OSError) as exc:
+            except RuntimeError as exc:  # no fpcalc at all: nothing can be named
                 result.notes.append(f"{len(rows)} nameless file(s) left for you: {exc}")
                 break
+            except (ValueError, OSError) as exc:
+                # This file only: it used to stop the loop, so one unreadable
+                # file (rows go in path order) blocked every later nameless
+                # file on every Act 1 (review of slice C, finding 9).
+                unreadable += 1
+                logger.warning("[acoustid-name] could not fingerprint %s: %s", path.name, exc)
+                continue
             ctx.conn.execute(
                 "UPDATE archive SET chromaprint = ?, chromaprint_duration = ? WHERE id = ?",
                 (fingerprint, duration, row["id"]),
@@ -137,5 +144,7 @@ class AcoustIDNameStage(BaseStage):
             )
         if unavailable:
             result.notes.append(f"  AcoustID could not be reached, left for you: {unavailable}")
+        if unreadable:
+            result.notes.append(f"  could not be fingerprinted, left for you: {unreadable}")
         ctx.record_stage(result)
         return result

@@ -226,9 +226,14 @@ class BaseStage(ABC):
             return
         try:
             problems = self.verify_effect(ctx, result)
-        except Exception as exc:  # verification must never break a good run
-            logger.warning("[%s] effect verification errored: %s", self.NAME, exc)
+        except Exception as exc:  # a checker's bug must not fail a good run
+            logger.error("[%s] effect verification errored: %s", self.NAME, exc)
             result.verify_notes.append(f"verification errored: {exc}")
+            # ...but a check that crashed is not a check that passed. It read
+            # as "no claim", and the run's report as "nothing went wrong"
+            # (review of slice D, finding 4): it is now one of the stage's
+            # errors, which every report counts.
+            result.errors.append(f"the effect check failed to run: {type(exc).__name__}: {exc}")
             return
         # isinstance, not `is`: both are exact here -- _NoVerification has
         # __slots__ and exactly one instance -- but only isinstance narrows the
@@ -248,6 +253,18 @@ class BaseStage(ABC):
                 f"stage reported {result.files_changed} change(s) but the effect "
                 f"could not be confirmed on disk"
             )
+            # Not done: the run neither exits 0 nor lets a resume skip this
+            # stage (review of slice D, finding 3 -- it stayed a success). The
+            # stage logged STAGE_COMPLETE before this check, so the log is
+            # corrected here rather than left saying OK.
+            result.success = False
+            log_event = getattr(ctx, "log_event", None)
+            if log_event is not None:
+                log_event(
+                    "STAGE_UNVERIFIED",
+                    stage=result.stage_name,
+                    note="; ".join(str(x) for x in problems)[:500],
+                )
 
     def execute(self, ctx: RunContext) -> StageResult:
         """

@@ -17,6 +17,7 @@ Two of these pin traps that were rediscovered the hard way on
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -101,7 +102,18 @@ def _add(
     conn = sqlite3.connect(vault.db_path)
     conn.execute(
         "INSERT INTO archive VALUES (?,?,?,?,?,?,?,?)",
-        (str(p), artist, title, status, h, genre, "2026-01-01", duration),
+        # Finalized when its file was written, as a real row is: an older stamp
+        # makes doctor's "changed outside MUSAEUS" check (rightly) warn.
+        (
+            str(p),
+            artist,
+            title,
+            status,
+            h,
+            genre,
+            datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            duration,
+        ),  # fmt: skip
     )
     conn.commit()
     conn.close()
@@ -118,7 +130,7 @@ class TestDiagnose:
         _add(vault, "a.m4a", artist="Queen", title="Bicycle Race")
         rep = diagnose(vault)
         assert not rep.failed
-        assert "OK" in rep.render()
+        assert "library integrity: OK" in rep.render()
 
     def test_a_missing_file_with_no_other_copy_is_a_failure(self, vault):
         _add(vault, "gone.m4a", artist="Aretha Franklin", title="Respect", on_disk=False)
@@ -268,7 +280,7 @@ class TestLedgerStalenessIsReportedNotWarned:
         rep = diagnose(vault)
 
         assert not rep.failed
-        assert "OK" in rep.render()
+        assert "library integrity: OK" in rep.render()
 
     def test_the_count_is_still_reported_so_drift_stays_visible(self, vault):
         import sqlite3

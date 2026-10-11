@@ -3,12 +3,14 @@
 MUSAEUS — Album & Artist Review/Approval Workflow
 
 Generates TSV approval sheets from uncertain/changed metadata in the archive,
-then applies human-approved fixes back to the DB and file tags.
+then applies human-approved fixes to the catalogue; Tagger writes them into
+the files' tags at the next Act 3.
 
 Workflow:
   1. `musaeus review generate`  — Scan archive for fixable issues, write TSV sheets
   2. Human edits the TSV        — Mark approve=yes or approve=no per row
-  3. `musaeus review apply`     — Read approved rows and update DB + file tags
+  3. `musaeus review apply`     — Read approved rows and update the catalogue
+                                  (the tags follow at the next Act 3)
 
 TSV sheets live in: <vault>/MetaData/review/
   - artist_review.tsv    — Artist name corrections (misspellings, variants, canon)
@@ -66,9 +68,49 @@ _FIELDS = [
 ]
 
 
+#: Rows about one file, filled in by hand (year, genre): the file is the key,
+#: and the value Grey typed is kept. Other rows are about a name (artist,
+#: album) and keyed by the change they propose.
+_PER_FILE_FIELDS = frozenset({"year", "genre"})
+
+
+def _sheet_key(e: ReviewEntry) -> tuple[str, ...]:
+    # Never the notes: Grey may type one, and a typed note lost the mark on the
+    # next regenerate (pre-merge review of #173). An album variant is per
+    # artist, so its sample file (picked in a fixed order) stands for it.
+    if e.field_name in _PER_FILE_FIELDS:
+        return (e.field_name, e.file_path)
+    if e.field_name == "album":
+        return (e.field_name, e.file_path, e.current_value, e.suggested_value)
+    return (e.field_name, e.current_value, e.suggested_value)
+
+
+def _keep_marks(path: Path, entries: list[ReviewEntry]) -> None:
+    """Carry Grey's marks from the sheet already there onto the new one.
+
+    Review of slice C, finding 7: generate wrote the sheets from scratch with
+    approve blank, so running it again before apply wiped every decision.
+    """
+    old = {_sheet_key(e): e for e in read_review_tsv(path)}
+    for e in entries:
+        was = old.get(_sheet_key(e))
+        if was is None:
+            continue
+        # Only what the new row leaves empty: a row written WITH a mark (or a
+        # value) keeps its own.
+        if not e.approve:
+            e.approve = was.approve
+        if e.field_name in _PER_FILE_FIELDS and was.suggested_value and not e.suggested_value:
+            e.suggested_value = was.suggested_value  # typed by hand
+        if was.notes and was.notes != e.notes:
+            e.notes = was.notes  # a note Grey typed is kept
+
+
 def write_review_tsv(path: Path, entries: list[ReviewEntry]) -> int:
-    """Write review entries to a TSV file. Returns count written."""
+    """Write review entries to a TSV file, keeping the marks of the sheet
+    already there. Returns count written."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    _keep_marks(path, entries)
     with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=_FIELDS, delimiter="\t")
         writer.writeheader()
@@ -253,7 +295,8 @@ def generate_album_review(
                     if v != canonical:
                         # Find a file with this album
                         sample = conn.execute(
-                            "SELECT file_path FROM archive WHERE artist=? AND album=? LIMIT 1",
+                            "SELECT file_path FROM archive WHERE artist=? AND album=? "
+                            "ORDER BY file_path LIMIT 1",
                             (artist, v),
                         ).fetchone()
                         if sample:
@@ -320,10 +363,44 @@ def apply_approved_fixes(
                 # Update archive. field_name is interpolated because SQLite
                 # cannot bind an identifier; it is checked against the live
                 # schema above, and the VALUE is still bound.
-                conn.execute(
-                    f"UPDATE archive SET {entry.field_name} = ? WHERE file_path = ?",
-                    (entry.suggested_value, entry.file_path),
-                )
+                #
+                # What the row is about (review of slice C, finding 8): it
+                # updated only the one sample file the sheet named, counted it
+                # applied whether or not any row changed, and never checked
+                # current_value. An artist correction now reaches every row
+                # with that artist; an album variant, that artist's rows with
+                # that album; a year or genre fill, its one file -- each only
+                # while the value is still the one the sheet saw.
+                col = entry.field_name
+                if col in _PER_FILE_FIELDS:
+                    changed = conn.execute(
+                        f"UPDATE archive SET {col} = ? WHERE file_path = ? "
+                        f"AND COALESCE({col}, '') = ?",
+                        (entry.suggested_value, entry.file_path, entry.current_value),
+                    ).rowcount
+                elif col == "album":
+                    owner = conn.execute(
+                        "SELECT artist FROM archive WHERE file_path = ?", (entry.file_path,)
+                    ).fetchone()
+                    changed = 0
+                    if owner is not None:
+                        changed = conn.execute(
+                            "UPDATE archive SET album = ? WHERE album = ? AND artist = ?",
+                            (entry.suggested_value, entry.current_value, owner[0]),
+                        ).rowcount
+                else:
+                    changed = conn.execute(
+                        f"UPDATE archive SET {col} = ? WHERE {col} = ? "
+                        "AND status NOT IN ('GHOST', 'DELETED')",
+                        (entry.suggested_value, entry.current_value),
+                    ).rowcount
+                if not changed:
+                    report.errors.append(
+                        f"{entry.field_name} {entry.current_value!r} -> "
+                        f"{entry.suggested_value!r}: nothing matched (already changed, "
+                        "or the file was refiled) -- run `musaeus review generate` again"
+                    )
+                    continue
                 log_event(
                     conn,
                     run_id,
@@ -332,7 +409,7 @@ def apply_approved_fixes(
                     old_value=entry.current_value,
                     new_value=entry.suggested_value,
                     stage="approval",
-                    note=f"{entry.field_name} ({entry.source})",
+                    note=f"{entry.field_name} ({entry.source}): {changed} row(s)",
                 )
                 report.applied += 1
         elif entry.approve == "no":
@@ -425,6 +502,8 @@ def cmd_review_apply(dry_run: bool = False) -> int:
         print(f"  Source: {review_dir}")
         print()
 
+        total_errors = 0
+
         total_applied = 0
         total_approved = 0
         total_rejected = 0
@@ -443,6 +522,11 @@ def cmd_review_apply(dry_run: bool = False) -> int:
             print(f"    Pending  : {report.pending}")
             if not dry_run:
                 print(f"    Applied  : {report.applied}")
+            # Shown, or "nothing matched" and "not a column" were invisible and
+            # the command said "Applied 0" with exit 0 (pre-merge review of #173).
+            for err in report.errors:
+                print(f"    NOT APPLIED: {err}", file=sys.stderr)
+            total_errors += len(report.errors)
 
             total_applied += report.applied
             total_approved += report.approved
@@ -459,9 +543,11 @@ def cmd_review_apply(dry_run: bool = False) -> int:
             if total_pending > 0:
                 print(f"    {total_pending} entries still pending review.")
 
+        if total_errors:
+            print(f"  {total_errors} approved row(s) were NOT applied (listed above).")
         ctx.finish()
         print()
-        return 0
+        return 1 if total_errors else 0
     finally:
         conn.close()
 
