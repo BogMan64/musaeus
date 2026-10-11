@@ -139,3 +139,29 @@ def test_a_database_only_event_does_not_hide_an_outside_edit(cfg):
     os.utime(f, None)
     _event(cfg, "MB_ARTIST_FOUND", f, 0)  # after the edit, but writes no file
     assert _finding(cfg).level == "warn"
+
+
+def test_a_move_logged_under_its_destination_keeps_the_history(cfg):
+    """VA fix, dupe moves and consolidate log (file_path=new, old_value=old)."""
+    f = _master(cfg, "a.m4a", 440)
+    _catalogue(cfg, f, written_days_ago=3)
+    os.utime(f, None)
+    old = f.with_name("old name.m4a")
+    _event(cfg, "TAGGER_WRITE", old, 0)
+    conn = open_db(cfg.db_path)
+    conn.execute(
+        "INSERT INTO events (run_id, event_type, file_path, old_value) "
+        "VALUES ('r', 'VARIOUS_ARTISTS_FIXED', ?, ?)",
+        (str(f), str(old)),
+    )
+    conn.commit()
+    conn.close()
+    assert _finding(cfg).level == "ok"
+
+
+def test_a_bitrot_repair_is_musaeus_own(cfg):
+    f = _master(cfg, "a.m4a", 440)
+    _catalogue(cfg, f, written_days_ago=3)
+    os.utime(f, None)
+    _event(cfg, "BITROT_REPAIRED", f, 0)
+    assert _finding(cfg).level == "ok"

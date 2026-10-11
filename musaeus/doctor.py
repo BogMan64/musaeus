@@ -1327,6 +1327,8 @@ _WRITE_EVENTS = frozenset(
         "FINALIZE_MOVE",
         "LOUDNESS_TAGS_WRITTEN",
         "MASTER_WRITE_BACKFILLED",
+        "BITROT_REPAIRED",  # restored from a backup, tags copied back on
+        "ART_REPLACED",  # the 2026-10-06 cover fixes
     }
 )
 #: How many of the changed masters have their audio re-hashed.
@@ -1377,7 +1379,7 @@ def _changed_outside_musaeus(cfg: MusicConfig, rep: Report) -> None:
             f"SELECT file_path, audio_hash{extra} FROM archive WHERE status = 'CATALOGUED'"
         ).fetchall()
         events = conn.execute(
-            "SELECT event_type, file_path, new_value, ts FROM events "
+            "SELECT event_type, file_path, old_value, new_value, ts FROM events "
             "WHERE file_path IS NOT NULL ORDER BY id"
         ).fetchall()
     finally:
@@ -1392,19 +1394,25 @@ def _changed_outside_musaeus(cfg: MusicConfig, rep: Report) -> None:
     from .config import AUDIO_EXTENSIONS
 
     last_write: dict[str, float] = {}
-    for etype, fp, new_value, ts in events:
+    for etype, fp, old_value, new_value, ts in events:
         if etype in _WRITE_EVENTS:
             t = _epoch(ts)
             if t is not None and t > last_write.get(fp, 0.0):
                 last_write[fp] = t
-        if (
-            new_value
-            and new_value != fp
-            and str(new_value).startswith("/")
-            and Path(str(new_value)).suffix.lower() in AUDIO_EXTENSIONS
-            and fp in last_write
-        ):
-            last_write[new_value] = max(last_write.get(new_value, 0.0), last_write[fp])
+        # A move logged as (old -> new) under the old path (Organize), or under
+        # the new path with the old one in old_value (VA fix, dupe moves,
+        # consolidate): either way the old path's history goes to the new one.
+        for src, dst in ((fp, new_value), (old_value, fp)):
+            if (
+                src
+                and dst
+                and src != dst
+                and str(src).startswith("/")
+                and str(dst).startswith("/")
+                and Path(str(dst)).suffix.lower() in AUDIO_EXTENSIONS
+                and src in last_write
+            ):
+                last_write[dst] = max(last_write.get(dst, 0.0), last_write[src])
 
     changed: list[tuple[str, float, str | None]] = []
     unjudged = 0
