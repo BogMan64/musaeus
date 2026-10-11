@@ -775,6 +775,84 @@ def _cmd_reset() -> int:
     return 0
 
 
+# ── Rebuild-from-disk command ─────────────────────────────────────────────────
+
+
+def _cmd_rebuild_from_disk(args) -> int:
+    """Rebuild the catalogue from the masters into a side table; with
+    --promote, swap it in.
+
+    Review of slice E, findings 1 and 2. --promote held no lock, so a run in
+    progress went on writing by row id into a renumbered table -- one song's
+    title or composer onto another; it now holds the masters lock throughout,
+    as a run does. And its only check was "more than 0 rows": a --limit
+    rebuild, or one of a drive only partly there, replaced the whole
+    catalogue. --limit is now refused, and promote refuses when catalogued
+    files are missing from the rebuild.
+    """
+    from .masters_lock import EXIT_BUSY, MastersBusy, masters_lock
+    from .rebuild_from_disk import PromoteRefused, promote, scan_and_rebuild
+
+    cfg = get_config()
+    promoting = getattr(args, "promote", False)
+    limit = getattr(args, "limit", 0)
+    if promoting and limit:
+        print("  refusing to promote a --limit rebuild: it holds only part of the masters.",
+              file=sys.stderr)  # fmt: skip
+        return 1
+
+    def rebuild() -> int:
+        conn = open_db(cfg.db_path)
+        try:
+            summary = scan_and_rebuild(
+                conn,
+                cfg,
+                limit=limit,
+                compute_hashes=not getattr(args, "no_hashes", False),
+            )
+            print(f"\n  scanned : {summary['scanned']:,}")
+            print(f"  rebuilt : {summary['rebuilt']:,}  -> table '{summary['table']}'")
+            print(f"  errors  : {len(summary['errors']):,}")
+            for e in summary["errors"][:10]:
+                print(f"    {e}")
+            if not promoting:
+                print("\n  review it; --promote rebuilds again and swaps that in.")
+                return 0
+            if summary["rebuilt"] == 0:
+                print("\n  refusing to promote an empty rebuild.", file=sys.stderr)
+                return 1
+            try:
+                backup = promote(
+                    conn,
+                    table=summary["table"],
+                    accept_missing=getattr(args, "accept_missing", False),
+                )
+            except PromoteRefused as exc:
+                print(f"\n  NOT PROMOTED: {exc}:", file=sys.stderr)
+                for path in exc.missing[:20]:
+                    print(f"    {path}", file=sys.stderr)
+                if len(exc.missing) > 20:
+                    print(f"    {elision(len(exc.missing) - 20)}", file=sys.stderr)
+                print("  Is every drive and folder there? If those files really are gone, "
+                      "re-run with --accept-missing.", file=sys.stderr)  # fmt: skip
+                return 1
+            print(f"\n  promoted. previous archive preserved as: {backup}")
+            return 0
+        finally:
+            conn.close()
+
+    # Shared without --promote: it only reads the masters, but it rebuilds the
+    # one archive_rebuilt table, so it must not run under a promote's scan
+    # (pre-merge review of #160).
+    what = "musaeus rebuild-from-disk" + (" --promote" if promoting else "")
+    try:
+        with masters_lock(cfg.runs_root, exclusive=promoting, what=what):
+            return rebuild()
+    except MastersBusy as exc:
+        print(f"  NOT RUN: {exc}", file=sys.stderr)
+        return EXIT_BUSY
+
+
 # ── Status command ────────────────────────────────────────────────────────────
 
 
@@ -1778,7 +1856,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--promote",
         action="store_true",
         help="After a successful rebuild, swap the result into place as `archive`. "
-        "The existing archive is RENAMED aside, never dropped.",
+        "The existing archive is RENAMED aside, never dropped. Holds the masters lock; "
+        "refuses with --limit, or when catalogued files are missing from the rebuild.",
+    )
+    rfd_p.add_argument(
+        "--accept-missing",
+        action="store_true",
+        help="With --promote: drop the rows of catalogued files the rebuild did not find "
+        "(the old table is still kept aside).",
     )
 
     # permissions
@@ -2342,31 +2427,7 @@ def main() -> None:
             sys.exit(_run_pipeline([CorruptStage], dry_run=dry_run))
 
         elif command == "rebuild-from-disk":
-            from .rebuild_from_disk import promote, scan_and_rebuild
-
-            cfg = get_config()
-            conn = open_db(cfg.db_path)
-            summary = scan_and_rebuild(
-                conn,
-                cfg,
-                limit=getattr(args, "limit", 0),
-                compute_hashes=not getattr(args, "no_hashes", False),
-            )
-            print(f"\n  scanned : {summary['scanned']:,}")
-            print(f"  rebuilt : {summary['rebuilt']:,}  -> table '{summary['table']}'")
-            print(f"  errors  : {len(summary['errors']):,}")
-            for e in summary["errors"][:10]:
-                print(f"    {e}")
-            if getattr(args, "promote", False):
-                if summary["rebuilt"] == 0:
-                    print("\n  refusing to promote an empty rebuild.", file=sys.stderr)
-                    sys.exit(1)
-                backup = promote(conn, table=summary["table"])
-                print(f"\n  promoted. previous archive preserved as: {backup}")
-            else:
-                print("\n  review it, then re-run with --promote to swap it in.")
-            conn.close()
-            sys.exit(0)
+            sys.exit(_cmd_rebuild_from_disk(args))
 
         elif command == "permissions":
             from .stages import PermissionsStage
