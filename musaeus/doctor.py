@@ -705,6 +705,7 @@ def diagnose(cfg: MusicConfig) -> Report:
     _editions_come_from_masters(cfg, rep)
     _names_safe_on_fat(cfg, rep)
     _changed_outside_musaeus(cfg, rep)
+    _one_act_two_spellings(cfg, rep)
     _one_picture_many_artists(cfg, rep)
     _artist_tag_is_natural_form(cfg, rep)
     _catalogued_tracks_reach_the_car(cfg, rep)
@@ -1471,4 +1472,70 @@ def _changed_outside_musaeus(cfg: MusicConfig, rep: Report) -> None:
         f"{len(changed):,} master(s) changed since MUSAEUS last wrote them "
         f"(by day: {when}); {verdict}{note}",
         len(changed),
+    )
+
+
+def _spelling_key(name: str) -> str:
+    """What two spellings of one act share: no case, accents, punctuation or
+    leading/trailing "The", and "&"/"+" read as "and"."""
+    import re
+    import unicodedata
+
+    from .artist_form import comparison_key  # the article rule lives there
+
+    n = comparison_key(name or "")
+    n = unicodedata.normalize("NFKD", n).encode("ascii", "ignore").decode()
+    n = re.sub(r"\s*[&+]\s*", " and ", n)
+    return re.sub(r"[^0-9a-z]", "", n)
+
+
+def _one_act_two_spellings(cfg: MusicConfig, rep: Report) -> None:
+    """Is one act filed under two spellings? (Grey, 2026-10-11)
+
+    "Jan & Dean" beside "Jan And Dean", "Run-DMC" beside "Run-D.M.C.": one act,
+    two artist folders, on the masters and on every edition. Found by hand on
+    2026-10-11 (six acts, from canon lines that disagreed on "&" and "and").
+    This is that search: the artist folder each catalogued song files under
+    (organize.library_artist -- the filing rulings, MusicBrainz, then
+    folder_artist), grouped by a spelling that ignores case, accents,
+    punctuation, "The" and "&"/"and". Read-only. The fix is an
+    artist_canon.tsv line, applied at the next run.
+    """
+    from collections import defaultdict
+
+    from .filing import load as filing_load
+    from .stages.organize import library_artist
+
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
+        mb = "mb_artist_name" if "mb_artist_name" in cols else "NULL"
+        rows = conn.execute(
+            f"SELECT artist, {mb}, COUNT(*) FROM archive WHERE status = 'CATALOGUED' "
+            "GROUP BY artist, 2"
+        ).fetchall()
+    finally:
+        conn.close()
+    filing = filing_load(cfg.meta_dir) if getattr(cfg, "meta_dir", None) else {}
+
+    folders: dict[str, int] = defaultdict(int)
+    for artist, mb_name, n in rows:
+        folders[library_artist(artist, mb_name, filing)] += int(n)
+    groups: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    for folder, n in folders.items():
+        key = _spelling_key(folder)
+        if key:
+            groups[key].append((folder, n))
+    split = sorted(sorted(g) for g in groups.values() if len(g) > 1)
+    if not split:
+        rep.add("ok", "one act, two spellings", f"none among {len(folders):,} artist folders")
+        return
+    shown = "; ".join(" | ".join(f"{f} ({n})" for f, n in g) for g in split[:4])
+    more = f"; and {len(split) - 4} more" if len(split) > 4 else ""
+    rep.add(
+        "warn",
+        "one act, two spellings",
+        f"{len(split)} act(s) filed under two or more spellings: {shown}{more} -- "
+        "an artist_canon.tsv line joins them",
+        len(split),
     )
