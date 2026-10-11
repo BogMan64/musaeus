@@ -99,6 +99,9 @@ def looks_suspicious(row) -> bool:
 class ScanProgress:
     checked: int = 0
     corrupt: list[tuple[str, int]] = field(default_factory=list)
+    #: Could not be decoded at all (ffmpeg missing or killed, a timeout, the
+    #: disk failing): left unchecked, never recorded as damage.
+    not_decoded: list[tuple[str, str]] = field(default_factory=list)
     yielded_to_user: int = 0
     stopped_reason: str = ""
 
@@ -141,7 +144,7 @@ def scan(
     first 10 seconds, which cannot see damage later in a track -- and both
     files found on 2026-09-01 were damaged well past the 10-second mark.
     """
-    from .stages.corrupt import ffmpeg_decode_check
+    from .stages.corrupt import DecodeUnavailable, ffmpeg_decode_check
 
     ensure_columns(conn)
     conn.execute("PRAGMA busy_timeout = 60000")
@@ -159,7 +162,15 @@ def scan(
         if not path.is_file():
             continue
 
-        ok, detail = ffmpeg_decode_check(path, seconds=decode_seconds)
+        try:
+            ok, detail = ffmpeg_decode_check(path, seconds=decode_seconds)
+        except DecodeUnavailable as exc:
+            # Review of slice B, finding 1: recorded as decode_ok=0, a timeout
+            # or a missing ffmpeg became "damaged", and CorruptStage then
+            # quarantined the master without decoding it again.
+            prog.not_decoded.append((str(path), str(exc)))
+            logger.warning("[deep-scan] not decoded %s — %s", path.name, exc)
+            continue
         n_err = 0 if ok else max(1, detail.count("\n") + 1)
         conn.execute(
             "UPDATE archive SET decode_checked_at = datetime('now'), "

@@ -72,7 +72,7 @@ def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
     )
 
 
-def _embedded_art(path: str) -> tuple[bool, int]:
+def _embedded_art(path: str) -> tuple[bool, int] | None:
     """(has_art, longest_edge_px) for the file's embedded cover.
 
     The stage used to ask only "is there art?", which reported 99.9% coverage
@@ -83,7 +83,7 @@ def _embedded_art(path: str) -> tuple[bool, int]:
     """
     ffprobe = shutil.which("ffprobe")
     if not ffprobe:
-        return False, 0
+        return None
     try:
         res = subprocess.run(
             [
@@ -103,7 +103,12 @@ def _embedded_art(path: str) -> tuple[bool, int]:
             timeout=_FFPROBE_TIMEOUT,
         )
     except Exception:
-        return False, 0
+        # Not "no art": a timeout on a slow or spun-down disk, recorded as no
+        # cover, had a fetched cover remuxed over the one the file had
+        # (review of slice A, finding 10). None: could not tell.
+        return None
+    if res.returncode != 0:
+        return None
 
     line = res.stdout.strip().splitlines()[0] if res.stdout.strip() else ""
     if not line:
@@ -118,7 +123,8 @@ def _embedded_art(path: str) -> tuple[bool, int]:
 def _has_embedded_art(path: str) -> bool:
     """Kept as the plain yes/no question -- used by tests and callers that
     only care whether art exists."""
-    return _embedded_art(path)[0]
+    seen = _embedded_art(path)
+    return bool(seen and seen[0])
 
 
 def _find_sidecar(folder: Path) -> Path | None:
@@ -364,6 +370,11 @@ def _replace_undersized(
         )
     except ArtUnavailable as exc:
         logger.debug("[albumart] could not ask for %r/%r: %s", artist, album, exc)
+        # Asked again next run, as the missing-art path does (#109): the row
+        # was stamped checked, and a refusal read as "nothing better exists"
+        # left its small cover for good (review of slice A, finding 11).
+        if not ctx.dry_run:
+            _ask_again(ctx, fp)
         return None
     if not got:
         return None
@@ -521,7 +532,13 @@ class AlbumArtStage(BaseStage):
                 result.files_skipped += 1
                 continue
 
-            has, art_px = _embedded_art(fp)
+            seen = _embedded_art(fp)
+            if seen is None:
+                # Could not tell: left unchecked, asked again next run.
+                result.files_skipped += 1
+                result.notes.append(f"could not read the cover of {Path(fp).name}: asked again")
+                continue
+            has, art_px = seen
 
             if not dry_run:
                 ctx.conn.execute(
