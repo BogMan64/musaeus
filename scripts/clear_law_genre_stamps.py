@@ -4,9 +4,14 @@
 Grey, 2026-10-11 (review of slice B, finding 4): a MasterLaw change wins over
 a genre the law itself filled or corrected; only a genre Grey chose by hand
 is frozen. GenreValidate used to stamp genre_ruled_at on every genre it
-filled or corrected, which froze them: 5 artists ended up split from
-MasterLaw (Jigsaw Rock vs law Pop, Derek & The Dominos, Stevie Ray Vaughan &
-Double Trouble ...). It no longer stamps.
+filled or corrected, which froze them: later MasterLaw changes stopped
+reaching them (Jigsaw stayed Rock with the law at Pop; Derek & The Dominos).
+It no longer stamps.
+
+Run it only with MasterLaw's credit lines following their lead artist (done
+2026-10-11): otherwise the next GenreValidate turns credits Grey set to the
+lead's genre on 2026-10-06 back to the old credit lines (SRV & Double Trouble
+to Southern Rock).
 
 Every stamp on record was written by GenreValidate -- nothing else in MUSAEUS
 has ever written genre_ruled_at (checked through the whole git history) -- so

@@ -28,7 +28,10 @@ Three jobs, kept deliberately separate because they carry different risk:
            genre the law set follows the law, so a later MasterLaw change
            reaches it (Grey, 2026-10-11: only genres Grey chose by hand are
            frozen; review of slice B, finding 4 -- stamping froze them, and
-           5 artists ended up split from MasterLaw).
+           MasterLaw changes stopped reaching them: Jigsaw stayed Rock with
+           the law at Pop). MasterLaw's own credit lines follow their lead
+           artist since 2026-10-11 (Grey's 10-06 one-genre-per-artist), so
+           what the law says is what Grey decided.
 
   FLAG  -- the row has a genre that disagrees with MasterLaw AND a ruling
            IS recorded (genre_ruled_at IS NOT NULL). The owner has seen this
