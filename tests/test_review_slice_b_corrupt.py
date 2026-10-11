@@ -138,3 +138,50 @@ def test_the_decode_never_reads_the_terminal(ctx, monkeypatch):
     corrupt.ffmpeg_decode_check(f)
     assert "-nostdin" in seen["cmd"]
     assert seen["stdin"] is subprocess.DEVNULL
+
+
+# ── Findings 3 and 5 ──────────────────────────────────────────────────────────
+
+
+def _damaged(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=30",
+         "-c:a", "aac", "-movflags", "+faststart", str(path), "-y"],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    data = path.read_bytes()
+    path.write_bytes(data[: len(data) // 3])  # header intact, audio cut
+    return path
+
+
+def test_a_quarantine_name_held_by_an_old_row_is_not_reused(ctx):
+    deep_scan.ensure_columns(ctx.conn)  # as CorruptStage.run does first
+    taken = ctx.vault_root / "QUARANTINE" / "corrupted" / "Bad.m4a"  # no file there
+    upsert_archive(ctx.conn, {"file_path": str(taken), "status": "DELETED", "title": "old"})
+    arrival = _damaged(ctx.config.inbox / "Bad.m4a")
+    upsert_archive(ctx.conn, {"file_path": str(arrival), "status": "HASHED", "title": "new"})
+    ctx.conn.commit()
+    CorruptStage()._gate_new_arrivals(ctx, CorruptStage()._make_result(dry_run=False), False)
+    rows = dict(ctx.conn.execute("SELECT title, file_path FROM archive").fetchall())
+    status = dict(ctx.conn.execute("SELECT title, status FROM archive").fetchall())
+    assert rows["old"] == str(taken) and not taken.exists(), "the old row now names a real file"
+    assert status["new"] == "QUARANTINED", "the arrival's row did not follow its file"
+    assert Path(rows["new"]).exists() and Path(rows["new"]) != taken
+
+
+def test_verify_effect_sees_a_quarantine_this_run_made(ctx):
+    bad = _damaged(ctx.config.alac_archive / "Rock" / "X" / "Y" / "broken.m4a")
+    upsert_archive(
+        ctx.conn,
+        {"file_path": str(bad), "status": "CATALOGUED", "codec": "aac",
+         "duration": 30.0, "title": "broken"},
+    )  # fmt: skip
+    ctx.conn.commit()
+    stage = CorruptStage()
+    result = stage._scan(ctx, dry_run=False)
+    row = ctx.conn.execute("SELECT status, file_path FROM archive").fetchone()
+    assert row["status"] == "QUARANTINED"
+    assert stage.verify_effect(ctx, result) == []
+    Path(row["file_path"]).unlink()  # the quarantined file vanishes
+    assert stage.verify_effect(ctx, result), "the check never looked at the row"

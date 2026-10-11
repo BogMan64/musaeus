@@ -407,6 +407,24 @@ def ffmpeg_decode_check(path: Path, seconds: int = 0) -> tuple[bool, str]:
     return True, ""
 
 
+def _quarantine_dest(conn: sqlite3.Connection, quarantine_dir: Path, src: Path) -> Path:
+    """A name in quarantine that is free on disk AND in the catalogue.
+
+    Review of slice B, finding 5: only the disk was asked, so an old DELETED
+    or QUARANTINED row still holding the name made the row's UPDATE fail
+    (file_path is UNIQUE) after the file had already moved.
+    """
+    dest = quarantine_dir / src.name
+    n = 1
+    while (
+        dest.exists()
+        or conn.execute("SELECT 1 FROM archive WHERE file_path = ?", (str(dest),)).fetchone()
+    ):
+        dest = quarantine_dir / f"{src.stem}_{n}{src.suffix}"
+        n += 1
+    return dest
+
+
 class CorruptStage(BaseStage):
     """Detect and quarantine corrupt/truncated audio files."""
 
@@ -648,14 +666,7 @@ class CorruptStage(BaseStage):
 
                     # Quarantine file
                     quarantine_dir.mkdir(parents=True, exist_ok=True)
-                    dest = quarantine_dir / file_path.name
-
-                    # Handle name collisions
-                    if dest.exists():
-                        counter = 1
-                        while dest.exists():
-                            dest = quarantine_dir / f"{file_path.stem}_{counter}{file_path.suffix}"
-                            counter += 1
+                    dest = _quarantine_dest(conn, quarantine_dir, file_path)
 
                     try:
                         import shutil
@@ -676,6 +687,17 @@ class CorruptStage(BaseStage):
                                 "UPDATE archive SET status='QUARANTINED', "
                                 "file_path=? WHERE file_path=?",
                                 (str(dest), str(file_path)),
+                            )
+                            # Under the NEW path, where the row now is:
+                            # verify_effect joins on it (review of slice B,
+                            # finding 3 -- CORRUPT_DETECTED names the old path,
+                            # so the check never found a row).
+                            ctx.log_event(
+                                "QUARANTINE",
+                                file_path=str(dest),
+                                old_value=str(file_path),
+                                stage=self.NAME,
+                                note=reason,
                             )
                         except sqlite3.IntegrityError as exc:
                             # file_path is UNIQUE and IntegrityError is not an
@@ -848,24 +870,45 @@ class CorruptStage(BaseStage):
                 continue
 
             quarantine_dir.mkdir(parents=True, exist_ok=True)
-            dest = quarantine_dir / file_path.name
-            counter = 1
-            while dest.exists():
-                dest = quarantine_dir / f"{file_path.stem}_{counter}{file_path.suffix}"
-                counter += 1
-            try:
-                import shutil
+            dest = _quarantine_dest(conn, quarantine_dir, file_path)
+            import shutil
 
+            try:
                 shutil.move(str(file_path), str(dest))
+            except OSError as exc:
+                logger.error("[%s] could not quarantine %s: %s", self.NAME, file_path.name, exc)
+                result.errors.append(f"{file_path.name}: not quarantined: {exc}")
+                continue
+            try:
                 conn.execute(
                     "UPDATE archive SET status='QUARANTINED', file_path=? WHERE file_path=?",
                     (str(dest), str(file_path)),
                 )
-                logger.info("[%s] → quarantined arrival: %s", self.NAME, dest.name)
-            except (OSError, sqlite3.IntegrityError) as exc:
-                # Leave the row where it is rather than let disk and database
-                # disagree; _scan's own quarantine path documents this trap.
-                logger.error("[%s] could not quarantine %s: %s", self.NAME, file_path.name, exc)
+            except sqlite3.IntegrityError as exc:
+                # The file moved but its row could not follow: put the file
+                # back, so disk and database agree (review of slice B,
+                # finding 5 -- this logged and carried on, leaving the row at
+                # an INBOX path holding nothing).
+                try:
+                    shutil.move(str(dest), str(file_path))
+                    note = "move reverted"
+                except OSError as revert_exc:
+                    note = (
+                        f"COULD NOT REVERT -- the file is at {dest} while its row "
+                        f"still points at {file_path}; needs a manual fix ({revert_exc})"
+                    )
+                logger.error("[%s] DB collision quarantining %s (%s); %s",
+                             self.NAME, file_path, exc, note)  # fmt: skip
+                result.errors.append(f"{file_path.name}: DB collision, {note}")
+                continue
+            ctx.log_event(
+                "QUARANTINE",
+                file_path=str(dest),
+                old_value=str(file_path),
+                stage=self.NAME,
+                note=f"arrival does not decode: {(decode_err or '')[:120]}",
+            )
+            logger.info("[%s] → quarantined arrival: %s", self.NAME, dest.name)
         if gated:
             logger.warning(
                 "[%s] %d arrival(s) refused: damaged before they reached the library",
