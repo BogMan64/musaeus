@@ -710,11 +710,30 @@ def _run_pipeline_inner(
     # traceback, nothing in the log -- and a run that loses its handoff
     # while reporting success is exactly what this document exists to
     # prevent. Never let bookkeeping fail quietly.
+    if not _end_of_run_records(cfg, ctx, run_log):
+        exit_code = 1
+
+    ctx.finish()
+    run_log.close()
+    return exit_code
+
+
+def _end_of_run_records(cfg, ctx: RunContext, run_log: RunLog) -> bool:  # type: ignore[no-untyped-def]
+    """The handoff doc, the problem list, and -- when the run added tracks --
+    the run's records copied beside the library; then the keep-10 pruning.
+    False when any of it failed (the run must not then exit 0).
+
+    Shared by the CLI and the console's live runs: the console kept none of
+    these, so Grey's 2026-09-24 rule (a run that adds tracks keeps its log
+    and reports beside the library) held only for runs started from the CLI
+    (review of slice D, finding 6).
+    """
+    ok = True
     try:
         handoff_path = write_handoff_doc(ctx)
     except Exception as exc:  # noqa: BLE001 - deliberately broad; see above
         handoff_path = None
-        exit_code = 1
+        ok = False
         print(
             f"  WARNING: could not write the ForClaudeHandoff doc: {type(exc).__name__}: {exc}",
             file=sys.stderr,
@@ -752,15 +771,12 @@ def _run_pipeline_inner(
         if pruned:
             print(f"  Kept the newest 10 of each kind of run record; removed {pruned} older.")
     except Exception as exc:  # noqa: BLE001 - see comment above
-        exit_code = 1
+        ok = False
         print(
             f"  WARNING: run records not published/pruned: {type(exc).__name__}: {exc}",
             file=sys.stderr,
         )
-
-    ctx.finish()
-    run_log.close()
-    return exit_code
+    return ok
 
 
 # ── Reset command ─────────────────────────────────────────────────────────────

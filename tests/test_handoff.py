@@ -249,7 +249,10 @@ def test_run_pipeline_actually_calls_write_handoff_doc() -> None:
 
     assert "_run_pipeline_inner(" in inspect.getsource(cli_mod._run_pipeline)
     source = inspect.getsource(cli_mod._run_pipeline_inner)
-    assert "write_handoff_doc(ctx)" in source
+    # The end-of-run records moved into _end_of_run_records so the console's
+    # live runs keep them too (review of slice D, finding 6).
+    assert "_end_of_run_records(cfg, ctx, run_log)" in source
+    assert "write_handoff_doc(ctx)" in inspect.getsource(cli_mod._end_of_run_records)
 
 
 def test_a_stage_with_thousands_of_errors_stays_pasteable(tmp_path: Path) -> None:
@@ -357,10 +360,13 @@ def test_a_handoff_failure_is_loud_not_silent() -> None:
 
     # guarded: a raising write_handoff_doc must not escape, must warn, must
     # mark the run failed
-    body = source[source.index("handoff_path = write_handoff_doc(ctx)") - 400 :]
+    body = inspect.getsource(cli_mod._end_of_run_records)
     assert "try:" in body
     assert "could not write the ForClaudeHandoff doc" in body
-    assert "exit_code = 1" in body
+    assert "ok = False" in body and "return ok" in body
+    assert "if not _end_of_run_records(cfg, ctx, run_log):\n        exit_code = 1" in (
+        inspect.getsource(cli_mod._run_pipeline_inner)
+    )
 
 
 # ── Per-Act reports (Grey, 2026-09-14) ───────────────────────────────────────
