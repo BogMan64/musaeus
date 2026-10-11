@@ -123,13 +123,15 @@ def test_no_source_reaches_the_network_under_local_only(monkeypatch):
         A.urllib.request, "urlopen", lambda *a, **k: pytest.fail("reached the network")
     )
     with policy(NetworkPolicy.LOCAL_ONLY):
-        # No art, and -- the point -- no urlopen. With a Last.fm key every
-        # source is refused, so the three-state rule applies and it raises;
-        # without one Last.fm is SKIPPED rather than refused, which is not
-        # the same thing, and the call simply yields nothing.
+        # No art, and -- the point -- no urlopen. Every source that could be
+        # asked was refused, so it raises, with a Last.fm key or without: a
+        # source that could not be asked (no key) is not an answer, and
+        # counting it as one made a total refusal read as "no art exists"
+        # (review of slice A, finding 12).
         with pytest.raises(A.ArtUnavailable):
             A.fetch_album_art("Artist", "Album", lastfm_key="a-key")
-        assert A.fetch_album_art("Artist", "Album") is None
+        with pytest.raises(A.ArtUnavailable):
+            A.fetch_album_art("Artist", "Album")
 
 
 def test_an_error_page_is_not_mistaken_for_an_image(monkeypatch):

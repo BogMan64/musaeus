@@ -86,7 +86,7 @@ from musaeus.deep_scan import ensure_columns as _deep_scan_ensure_columns  # noq
 from musaeus.handoff import write_tool_handoff  # noqa: E402
 from musaeus.idle_throttle import IdleThrottle  # noqa: E402
 from musaeus.sleep_inhibit import reexec_under_inhibitor  # noqa: E402
-from musaeus.stages.corrupt import ffmpeg_decode_check  # noqa: E402
+from musaeus.stages.corrupt import DecodeUnavailable, ffmpeg_decode_check  # noqa: E402
 
 FFMPEG = "ffmpeg"
 FFPROBE = "ffprobe"
@@ -523,7 +523,11 @@ def _decode_gate(conn, row_id: int, source: Path, execute: bool) -> str:
     if checked["decode_checked_at"]:
         return ""
 
-    good, detail = ffmpeg_decode_check(source, seconds=0)
+    try:
+        good, detail = ffmpeg_decode_check(source, seconds=0)
+    except DecodeUnavailable as exc:
+        # Not judged: the machine failed, not the file (review of slice B).
+        return f"SKIP  {source.name}: could not decode, not judged -- not baked: {exc}"
     if execute:
         # Bookkeeping only, and the same three columns CorruptStage and
         # decode_audit.py write. A dry run stays read-only, as the rest of
