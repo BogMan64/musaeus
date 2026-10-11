@@ -225,7 +225,12 @@ def _search_artist(artist_name: str) -> tuple[str, str] | None:
 def _search_release(artist_mbid: str, album_name: str) -> str | None:
     """
     Search MusicBrainz for a release by artist MBID + album title.
-    Returns release MBID or None.
+    Returns release MBID or None (none found). Raises LookupUnavailable when
+    MusicBrainz could not be asked: an outage is not "no release".
+
+    Review of slice C, finding 1: the query said artist:"<MBID>", but
+    `artist` is the credited NAME; the artist id field is `arid`. No release
+    was ever found (0 of 10,713 lookups on the live vault).
     """
     if not album_name:
         return None
@@ -234,7 +239,7 @@ def _search_release(artist_mbid: str, album_name: str) -> str | None:
             "release",
             {
                 # Not quote()d, for the same reason as _search_artist above.
-                "query": f'artist:"{artist_mbid}" AND release:"{album_name}"',
+                "query": f'arid:{artist_mbid} AND release:"{album_name}"',
                 "limit": "1",
             },
         )
@@ -245,7 +250,7 @@ def _search_release(artist_mbid: str, album_name: str) -> str | None:
             album_name,
             exc,
         )
-        return None
+        raise LookupUnavailable(str(exc)) from exc
 
     releases = data.get("releases", [])
     if releases:
@@ -311,17 +316,24 @@ class MBEnrichStage(BaseStage):
         # the stage/run over it. Real per-request failures further down are
         # already caught individually (_search_artist/_search_release) and
         # skip that one artist/release without aborting the rest.
-        try:
-            req = Request(
-                "https://musicbrainz.org/",
-                headers={"User-Agent": _USER_AGENT},
-                method="HEAD",
-            )
-            urlopen(req, timeout=5)
-        except Exception as exc:
-            result.notes.append(f"MusicBrainz not reachable — skipping mb_enrich this run. ({exc})")
-            ctx.record_stage(result)
-            return result
+        # Through the gateway like every other request, and never in a dry
+        # run, which asks nothing (review of slice C, finding 4: this probe
+        # went out under LOCAL_ONLY, unseen).
+        if not dry_run:
+            try:
+                _network_check("https://musicbrainz.org/")
+                req = Request(
+                    "https://musicbrainz.org/",
+                    headers={"User-Agent": _USER_AGENT},
+                    method="HEAD",
+                )
+                urlopen(req, timeout=5)
+            except Exception as exc:
+                result.notes.append(
+                    f"MusicBrainz not reachable — skipping mb_enrich this run. ({exc})"
+                )
+                ctx.record_stage(result)
+                return result
 
         if not dry_run:
             _ensure_columns(ctx.conn)
@@ -481,13 +493,23 @@ class MBEnrichStage(BaseStage):
 
             # ── Release lookup ─────────────────────────────────────────────
             release_key = (mb_artist_id, album.lower())
+            release_asked = True
             if album and release_key not in release_cache:
                 time.sleep(_RATE_LIMIT_S)
-                mb_release_id = _search_release(mb_artist_id, album)
-                release_cache[release_key] = mb_release_id
-                if mb_release_id:
-                    logger.info("[mb_enrich] release found: %r → %s", album, mb_release_id)
-            mb_release_id = release_cache.get(release_key) if album else None
+                try:
+                    mb_release_id = _search_release(mb_artist_id, album)
+                except LookupUnavailable:
+                    # Not asked: the artist is kept but the row is left open,
+                    # so the release is asked again next run (review of slice
+                    # C, finding 1 -- it was stamped closed for good).
+                    release_asked = False
+                    mb_release_id = None
+                else:
+                    release_cache[release_key] = mb_release_id
+                    if mb_release_id:
+                        logger.info("[mb_enrich] release found: %r → %s", album, mb_release_id)
+            if release_asked:
+                mb_release_id = release_cache.get(release_key) if album else None
 
             if mb_release_id:
                 found_releases += 1
@@ -504,7 +526,13 @@ class MBEnrichStage(BaseStage):
                            mb_enriched_at=?
                      WHERE file_path=?
                     """,
-                    (mb_artist_id, mb_artist_name, mb_release_id, now, fp),
+                    (
+                        mb_artist_id,
+                        mb_artist_name,
+                        mb_release_id,
+                        now if release_asked else None,
+                        fp,
+                    ),
                 )
                 ctx.log_event(
                     "MB_ARTIST_FOUND",
