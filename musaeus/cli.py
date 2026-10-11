@@ -307,6 +307,19 @@ def _resume_would_skip_new_work(completed: list[str], inbox: Path) -> bool:
     return _inbox_audio_count(inbox, stop_at=1) > 0
 
 
+def _inbox_new_work(conn, cfg) -> int:  # type: ignore[no-untyped-def]
+    """INBOX audio with no catalogue row yet -- Ingest's own count. Files Ingest
+    already registered stay in INBOX until Finalize, so counting them refused
+    every resume of a batch stopped before Finalize (pre-merge review of
+    #166)."""
+    from .stages import IngestStage
+
+    try:
+        return int(IngestStage.plan_candidates(conn, cfg)[0])
+    except Exception:  # noqa: BLE001 -- unsure is "new work": start fresh
+        return _inbox_audio_count(cfg.inbox)
+
+
 def _inbox_audio_count(inbox: Path, stop_at: int = 0) -> int:
     """Audio files waiting in the INBOX: every extension Ingest takes, in any
     letter case. Only *.m4a was counted, so a FLAC or MP3 batch was skipped
@@ -522,8 +535,13 @@ def _run_pipeline_inner(
     # Check for resume
     vault_key = str(cfg.db_path)
     resume_from = _load_resume(stage_names, vault_key)
-    if resume_from and _resume_would_skip_new_work(resume_from, cfg.inbox):
-        n = _inbox_audio_count(cfg.inbox)
+    new_work = (
+        _inbox_new_work(conn, cfg)
+        if resume_from and _resume_would_skip_new_work(resume_from, cfg.inbox)
+        else 0
+    )
+    if resume_from and new_work:
+        n = new_work
         print(f"  ⚠  Incomplete run detected, but {n:,} file(s) are waiting in the INBOX.")
         print("     Resuming would skip IngestStage and leave them unprocessed.")
         print("     Starting a fresh run instead.")

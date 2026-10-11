@@ -87,3 +87,61 @@ def test_a_check_that_crashed_is_counted(ctx):
 
     r = _Stage(boom).execute(ctx)
     assert any("effect check failed to run" in e for e in r.errors), "read as no claim"
+
+
+# ── Pre-merge review of #166 ──────────────────────────────────────────────────
+
+
+def test_only_inbox_files_not_yet_ingested_are_new_work(tmp_path):
+    """Ingest leaves files in INBOX until Finalize: those are not new work, or
+    every resume of a batch stopped before Finalize would start fresh."""
+    from musaeus.config import MusicConfig
+    from musaeus.db import open_db, upsert_archive
+
+    cfg = MusicConfig(
+        vault_root=tmp_path,
+        inbox=tmp_path / "INBOX",
+        staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "QUARANTINE",
+        runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "Libraries" / "ALAC_Library",
+        db_path=tmp_path / "m.db",
+    )
+    cfg.inbox.mkdir()
+    done = cfg.inbox / "ingested.flac"
+    done.write_bytes(b"x")
+    conn = open_db(cfg.db_path)
+    upsert_archive(conn, {"file_path": str(done), "status": "HASHED"})
+    conn.commit()
+    assert cli._inbox_new_work(conn, cfg) == 0
+    (cfg.inbox / "new.mp3").write_bytes(b"x")
+    assert cli._inbox_new_work(conn, cfg) == 1
+
+
+def test_a_few_untagged_files_do_not_fail_scholar(tmp_path):
+    """An untagged '01.wav' is left blank for AcoustIDName by design; only a
+    reader that returned nothing for every sampled row is a failure."""
+    from musaeus.config import MusicConfig
+    from musaeus.context import RunContext
+    from musaeus.db import open_db, upsert_archive
+    from musaeus.stages.scholar import ScholarStage
+
+    cfg = MusicConfig(
+        vault_root=tmp_path,
+        inbox=tmp_path / "INBOX",
+        staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "QUARANTINE",
+        runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "Libraries" / "ALAC_Library",
+        db_path=tmp_path / "m.db",
+    )
+    ctx = RunContext.new(cfg, open_db(cfg.db_path), dry_run=False)
+    for name, artist in (("a.m4a", "ABC"), ("b.m4a", "Blondie"), ("01.wav", "")):
+        upsert_archive(ctx.conn, {"file_path": f"/i/{name}", "status": "CATALOGUED",
+                                  "artist": artist, "title": "T" if artist else ""})  # fmt: skip
+        ctx.log_event("METADATA_EXTRACTED", file_path=f"/i/{name}", stage="scholar")
+    result = ScholarStage()._make_result(dry_run=False)
+    assert ScholarStage().verify_effect(ctx, result) == []
+    assert any("AcoustIDName" in n for n in result.notes)
