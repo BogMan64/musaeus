@@ -118,7 +118,7 @@ def ctx(tmp_path) -> RunContext:
 
 
 def _track(ctx, artist, title, genre="Classical"):
-    p = ctx.config.alac_library / "2026-08-18" / artist / "Unsorted" / f"{artist} - {title}.m4a"
+    p = ctx.config.alac_archive / "Classical" / artist / "Unsorted" / f"{artist} - {title}.m4a"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(b"audio")
     upsert_archive(
@@ -254,4 +254,23 @@ class TestAFlatInboxTrackStaysInTheVault:
         row = ctx.conn.execute("SELECT artist, file_path FROM archive").fetchone()
         assert not src.exists()
         assert "Johann Sebastian Bach" in row["file_path"]
-        assert Path(row["file_path"]).resolve().is_relative_to(ctx.config.alac_library.resolve())
+        assert Path(row["file_path"]).resolve().is_relative_to(ctx.config.alac_archive.resolve())
+
+
+def test_a_shallow_master_stays_among_the_masters(ctx):
+    """Pre-merge review of #161: the destination came from src's grandparent,
+    so a master at ALAC-Archival/Classical/x.m4a was carried out of
+    ALAC-Archival and its genre folder pruned."""
+    archive = ctx.config.alac_archive
+    p = archive / "Classical" / "Academy of St Martin In the Fields - Concerto, BWV 1043.m4a"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"audio")
+    upsert_archive(ctx.conn, {"file_path": str(p), "status": "CATALOGUED", "genre": "Classical",
+                              "artist": "Academy of St Martin In the Fields",
+                              "title": "Concerto, BWV 1043"})  # fmt: skip
+    ctx.conn.commit()
+    ClassicalComposerStage().run(ctx)
+    final = Path(ctx.conn.execute("SELECT file_path FROM archive").fetchone()[0])
+    assert final.resolve().is_relative_to(archive.resolve()), final
+    assert final.exists()
+    assert (archive / "Classical").is_dir(), "the genre folder was pruned"

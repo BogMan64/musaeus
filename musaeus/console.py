@@ -815,42 +815,48 @@ class Console:
                     _info("Cancelled.")
                     return
 
-                conn.execute(
-                    f"""
-                    UPDATE archive
-                       SET status       = 'PENDING',
-                           audio_hash   = NULL,
-                           full_hash    = NULL,
-                           rg_tagged_at = NULL
-                     WHERE {where}
-                    """
-                )
-                note = (
-                    "console soft-reset (including decisions): "
-                    f"{count} files → PENDING, {kept_total} decisions discarded"
-                    if include_decisions
-                    else (
-                        f"console soft-reset: {count} files → PENDING, "
-                        f"{kept_total} decision-carrying rows preserved "
-                        f"({'/'.join(protected)})"
+                def soft_reset() -> None:
+                    conn.execute(
+                        f"""
+                        UPDATE archive
+                           SET status       = 'PENDING',
+                               audio_hash   = NULL,
+                               full_hash    = NULL,
+                               rg_tagged_at = NULL
+                         WHERE {where}
+                        """
                     )
-                )
-                conn.execute(
-                    "INSERT INTO events (run_id, event_type, note) "
-                    "VALUES ('manual', 'SOFT_RESET', ?)",
-                    (note,),
-                )
-                conn.commit()
-                _ok(f"Soft reset complete — {count:,} file(s) queued for re-processing.")
-                if not include_decisions and kept_total:
-                    _ok(f"Preserved {kept_total:,} decision-carrying row(s).")
-                _info("Run the full pipeline to re-hash and re-catalogue.")
+                    note = (
+                        "console soft-reset (including decisions): "
+                        f"{count} files → PENDING, {kept_total} decisions discarded"
+                        if include_decisions
+                        else (
+                            f"console soft-reset: {count} files → PENDING, "
+                            f"{kept_total} decision-carrying rows preserved "
+                            f"({'/'.join(protected)})"
+                        )
+                    )
+                    conn.execute(
+                        "INSERT INTO events (run_id, event_type, note) "
+                        "VALUES ('manual', 'SOFT_RESET', ?)",
+                        (note,),
+                    )
+                    conn.commit()
+                    _ok(f"Soft reset complete — {count:,} file(s) queued for re-processing.")
+                    if not include_decisions and kept_total:
+                        _ok(f"Preserved {kept_total:,} decision-carrying row(s).")
+                    _info("Run the full pipeline to re-hash and re-catalogue.")
+
+                # Under the masters lock: a run, build or carry-out meanwhile would
+                # have its rows changed under it (review of slice E, finding 8).
+                self._masters_held(False, "soft reset", soft_reset)
             finally:
                 conn.close()
 
         # ── Hard reset ────────────────────────────────────────────────────────
         elif idx == 2:
             db_path = self._config.db_path
+            history_dir = self._config.db_history_dir
             _warn(f"This will PERMANENTLY DELETE: {db_path}")
             _warn("All run history, hashes, metadata, and duplicate decisions will be lost.")
             confirm1 = _prompt("Type DELETE to confirm")
@@ -861,34 +867,44 @@ class Console:
             if confirm2 != "DELETE":
                 _info("Cancelled.")
                 return
-            try:
-                snapshot_path = snapshot_db_before_wipe(db_path, self._config.db_history_dir)
-                if snapshot_path is not None:
-                    _ok(f"Snapshotted to: {snapshot_path}")
-                # Also remove WAL/SHM sidecar files
-                for suffix in ("", "-wal", "-shm"):
-                    p = db_path.parent / (db_path.name + suffix)
-                    if p.exists():
-                        p.unlink()
-                # Clear the resume state too, exactly as `musaeus reset` does.
-                #
-                # P1-D, 2026-09-09. The CLI's reset calls _clear_resume(); this
-                # path did not. The resume file records which stages finished,
-                # keyed on stage name and nothing else -- so after a hard reset
-                # the next `musaeus run` reads a file that still says "ingest,
-                # sentinel, scholar: done" and SKIPS them against a brand-new
-                # empty database. The run reports success having processed
-                # nothing, which is the worst shape of failure this project
-                # has: a green result that measured nothing.
-                from .cli import _clear_resume
 
-                _clear_resume()
-                _ok(f"Database deleted: {db_path}")
-                _info("Restart musaeus to begin fresh — Ingest will re-register all inbox files.")
-                # Stop the console — DB is gone
-                self._running = False
-            except OSError as exc:
-                _err(f"Delete failed: {exc}")
+            def hard_reset() -> None:
+                try:
+                    snapshot_path = snapshot_db_before_wipe(db_path, history_dir)
+                    if snapshot_path is not None:
+                        _ok(f"Snapshotted to: {snapshot_path}")
+                    # Also remove WAL/SHM sidecar files
+                    for suffix in ("", "-wal", "-shm"):
+                        p = db_path.parent / (db_path.name + suffix)
+                        if p.exists():
+                            p.unlink()
+                    # Clear the resume state too, exactly as `musaeus reset` does.
+                    #
+                    # P1-D, 2026-09-09. The CLI's reset calls _clear_resume(); this
+                    # path did not. The resume file records which stages finished,
+                    # keyed on stage name and nothing else -- so after a hard reset
+                    # the next `musaeus run` reads a file that still says "ingest,
+                    # sentinel, scholar: done" and SKIPS them against a brand-new
+                    # empty database. The run reports success having processed
+                    # nothing, which is the worst shape of failure this project
+                    # has: a green result that measured nothing.
+                    from .cli import _clear_resume
+
+                    _clear_resume()
+                    _ok(f"Database deleted: {db_path}")
+                    _info(
+                        "Restart musaeus to begin fresh — Ingest will re-register all inbox files."
+                    )
+                    # Stop the console — DB is gone
+                    self._running = False
+                except OSError as exc:
+                    _err(f"Delete failed: {exc}")
+
+            # Under the masters lock: a run, build or carry-out holding the
+            # database open would go on writing into the deleted file, and
+            # everything after the snapshot would be lost (review of slice E,
+            # finding 8).
+            self._masters_held(False, "hard reset", hard_reset)
 
     # ── Dedupe review ─────────────────────────────────────────────────────────
 
