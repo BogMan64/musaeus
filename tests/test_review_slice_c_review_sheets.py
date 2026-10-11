@@ -76,3 +76,52 @@ def test_a_row_that_matches_nothing_is_not_counted(conn, tmp_path):
     report = apply_approved_fixes(conn, sheet, "run1")
     assert report.applied == 0
     assert report.errors and "nothing matched" in report.errors[0]
+
+
+# ── Pre-merge review of #173 ──────────────────────────────────────────────────
+
+
+def test_a_note_grey_typed_keeps_the_mark(tmp_path):
+    sheet = tmp_path / "artist_review.tsv"
+    write_review_tsv(sheet, [_entry()])
+    edited = read_review_tsv(sheet)
+    edited[0].approve, edited[0].notes = "yes", "checked with the album sleeve"
+    write_review_tsv(sheet, edited)
+    write_review_tsv(sheet, [_entry()])  # generate again
+    got = read_review_tsv(sheet)[0]
+    assert (got.approve, got.notes) == ("yes", "checked with the album sleeve")
+
+
+def test_an_artist_correction_leaves_ghosts_alone(conn, tmp_path):
+    upsert_archive(conn, {"file_path": "/x/gone.m4a", "status": "GHOST", "artist": "Beetles"})
+    conn.commit()
+    sheet = tmp_path / "artist_review.tsv"
+    write_review_tsv(sheet, [_entry(approve="yes")])
+    apply_approved_fixes(conn, sheet, "run1")
+    ghost = conn.execute("SELECT artist FROM archive WHERE status='GHOST'").fetchone()[0]
+    assert ghost == "Beetles"
+
+
+def test_the_apply_command_shows_what_it_did_not_apply(tmp_path, monkeypatch, capsys):
+    from musaeus import approval
+    from musaeus.config import MusicConfig
+
+    cfg = MusicConfig(
+        vault_root=tmp_path,
+        inbox=tmp_path / "INBOX",
+        staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "QUARANTINE",
+        runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData",
+        alac_library=tmp_path / "Libraries" / "ALAC_Library",
+        db_path=tmp_path / "musaeus.db",
+    )
+    cfg.ensure_dirs()
+    write_review_tsv(
+        cfg.meta_dir / "review" / "artist_review.tsv",
+        [_entry(current_value="Nobody", approve="yes")],
+    )
+    monkeypatch.setattr("musaeus.config.get_config", lambda: cfg)
+    code = approval.cmd_review_apply()
+    assert code == 1
+    assert "nothing matched" in capsys.readouterr().err

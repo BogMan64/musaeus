@@ -75,9 +75,14 @@ _PER_FILE_FIELDS = frozenset({"year", "genre"})
 
 
 def _sheet_key(e: ReviewEntry) -> tuple[str, ...]:
+    # Never the notes: Grey may type one, and a typed note lost the mark on the
+    # next regenerate (pre-merge review of #173). An album variant is per
+    # artist, so its sample file (picked in a fixed order) stands for it.
     if e.field_name in _PER_FILE_FIELDS:
         return (e.field_name, e.file_path)
-    return (e.field_name, e.current_value, e.suggested_value, e.notes)
+    if e.field_name == "album":
+        return (e.field_name, e.file_path, e.current_value, e.suggested_value)
+    return (e.field_name, e.current_value, e.suggested_value)
 
 
 def _keep_marks(path: Path, entries: list[ReviewEntry]) -> None:
@@ -97,8 +102,8 @@ def _keep_marks(path: Path, entries: list[ReviewEntry]) -> None:
             e.approve = was.approve
         if e.field_name in _PER_FILE_FIELDS and was.suggested_value and not e.suggested_value:
             e.suggested_value = was.suggested_value  # typed by hand
-        if was.notes and not e.notes:
-            e.notes = was.notes
+        if was.notes and was.notes != e.notes:
+            e.notes = was.notes  # a note Grey typed is kept
 
 
 def write_review_tsv(path: Path, entries: list[ReviewEntry]) -> int:
@@ -290,7 +295,8 @@ def generate_album_review(
                     if v != canonical:
                         # Find a file with this album
                         sample = conn.execute(
-                            "SELECT file_path FROM archive WHERE artist=? AND album=? LIMIT 1",
+                            "SELECT file_path FROM archive WHERE artist=? AND album=? "
+                            "ORDER BY file_path LIMIT 1",
                             (artist, v),
                         ).fetchone()
                         if sample:
@@ -384,7 +390,8 @@ def apply_approved_fixes(
                         ).rowcount
                 else:
                     changed = conn.execute(
-                        f"UPDATE archive SET {col} = ? WHERE {col} = ?",
+                        f"UPDATE archive SET {col} = ? WHERE {col} = ? "
+                        "AND status NOT IN ('GHOST', 'DELETED')",
                         (entry.suggested_value, entry.current_value),
                     ).rowcount
                 if not changed:
@@ -495,6 +502,8 @@ def cmd_review_apply(dry_run: bool = False) -> int:
         print(f"  Source: {review_dir}")
         print()
 
+        total_errors = 0
+
         total_applied = 0
         total_approved = 0
         total_rejected = 0
@@ -513,6 +522,11 @@ def cmd_review_apply(dry_run: bool = False) -> int:
             print(f"    Pending  : {report.pending}")
             if not dry_run:
                 print(f"    Applied  : {report.applied}")
+            # Shown, or "nothing matched" and "not a column" were invisible and
+            # the command said "Applied 0" with exit 0 (pre-merge review of #173).
+            for err in report.errors:
+                print(f"    NOT APPLIED: {err}", file=sys.stderr)
+            total_errors += len(report.errors)
 
             total_applied += report.applied
             total_approved += report.approved
@@ -529,9 +543,11 @@ def cmd_review_apply(dry_run: bool = False) -> int:
             if total_pending > 0:
                 print(f"    {total_pending} entries still pending review.")
 
+        if total_errors:
+            print(f"  {total_errors} approved row(s) were NOT applied (listed above).")
         ctx.finish()
         print()
-        return 0
+        return 1 if total_errors else 0
     finally:
         conn.close()
 
