@@ -17,6 +17,7 @@ import os
 import shutil
 from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 
 def change_beside(
@@ -54,3 +55,60 @@ def change_beside(
         os.fsync(dir_fd)
     finally:
         os.close(dir_fd)
+
+
+T = TypeVar("T")
+
+
+class _WriterRefused(Exception):
+    pass
+
+
+def write_beside(
+    path: Path,
+    write: Callable[[Path], T],
+    *,
+    failed: T,
+    ok: Callable[[T], bool] = bool,
+    suffix: str = ".tagging",
+) -> T:
+    """Run a tag writer on a copy beside *path* instead of on *path* itself.
+
+    *write* gets the copy's path and returns its usual result. The copy takes
+    the place of *path* only if ok(result) and the copy still reads, with the
+    same length; then the writer's result is returned. Otherwise *path* is as
+    it was, and the writer's result (or *failed*, when something else went
+    wrong) is returned. For the stage writers that saved masters in place --
+    Forge, Tagger, BPM, IdentityTag (review of slice A, findings 4-6): a kill,
+    power cut or full disk mid-save left a damaged master under its name.
+    """
+    import mutagen
+
+    result: list[T] = []
+    raised: list[Exception] = []
+
+    def change(tmp: Path) -> None:
+        try:
+            result.append(write(tmp))
+        except Exception as exc:
+            raised.append(exc)
+            raise
+        if not ok(result[-1]):
+            raise _WriterRefused
+
+    def same_length(tmp: Path) -> None:
+        before, after = mutagen.File(path), mutagen.File(tmp)
+        if after is None or (
+            before is not None and abs(after.info.length - before.info.length) > 0.01
+        ):
+            raise ValueError(f"the tagged copy of {path.name} does not read as the same audio")
+
+    try:
+        change_beside(path, change, suffix=suffix, check=same_length)
+    except _WriterRefused:
+        return result[-1]
+    except Exception:
+        if raised:
+            raise  # the writer's own error, as callers already handle it
+        return failed  # the copy or its check failed; the file is as it was
+    return result[-1]

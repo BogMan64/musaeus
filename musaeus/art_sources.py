@@ -250,12 +250,19 @@ def fetch_album_art(
     attempts = 0
     unavailable = 0
     best: tuple[bytes, str] | None = None  # largest sub-threshold fallback
-    for name, fn in (
-        ("itunes", lambda: fetch_itunes(artist, album)),
-        ("deezer", lambda: fetch_deezer(artist, album)),
-        ("coverartarchive", lambda: fetch_coverartarchive(artist, album)),
-        ("lastfm", lambda: fetch_lastfm(artist, album, lastfm_key)),
-    ):
+    # Only a source that can be asked counts: with no Last.fm key, or no album
+    # for the Cover Art Archive, nothing was asked, and counting those as
+    # answers turned "every source refused" into "no art exists" (review of
+    # slice A, finding 12).
+    for name, can_ask, fn in (
+        ("itunes", bool(artist), lambda: fetch_itunes(artist, album)),
+        ("deezer", bool(artist), lambda: fetch_deezer(artist, album)),
+        ("coverartarchive", bool(artist and album), lambda: fetch_coverartarchive(artist, album)),
+        ("lastfm", bool(lastfm_key and artist and album),
+         lambda: fetch_lastfm(artist, album, lastfm_key)),
+    ):  # fmt: skip
+        if not can_ask:
+            continue
         attempts += 1
         try:
             blob = fn()
@@ -294,7 +301,7 @@ def fetch_album_art(
             best[1],
         )
         return best
-    if unavailable == attempts:
+    if attempts and unavailable == attempts:
         raise ArtUnavailable("no art source answered")
     return None
 
