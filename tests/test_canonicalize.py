@@ -109,6 +109,10 @@ def _register_catalogued(ctx: RunContext, path: Path, codec: str, ext: str) -> N
             "sample_rate": 44100,
             "channels": 1,
             "duration": 2.0,
+            # Sentinel hashes every row before Canonicalize runs; the stage's
+            # effect check confirms the hash survives conversion, and a
+            # failed check now fails the stage (review of slice D, finding 3).
+            "audio_hash": "a" * 64,
         },
     )
     ctx.conn.commit()
