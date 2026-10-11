@@ -560,9 +560,12 @@ class BPMStage(BaseStage):
                 logger.warning("[bpm] %s: %s", path, exc)
                 return "error"
 
+        # Written before the row is stamped: stamped first, a failed write was
+        # reported "ok", and a stamped row is never selected again, so the
+        # master never got its tempo (review of slice A, finding 9).
+        if not from_tags and not write_bpm_tags(path, features):
+            return "error"
         _save_features(ctx, file_path, features)
-        if not from_tags:
-            write_bpm_tags(path, features)
         return "tag_shortcut" if from_tags else "ok"
 
     def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
