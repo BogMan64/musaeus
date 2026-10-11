@@ -830,12 +830,12 @@ def _cmd_rebuild_from_disk(args) -> int:
         finally:
             conn.close()
 
-    if not promoting:
-        return rebuild()  # writes only its own table
+    # Shared without --promote: it only reads the masters, but it rebuilds the
+    # one archive_rebuilt table, so it must not run under a promote's scan
+    # (pre-merge review of #160).
+    what = "musaeus rebuild-from-disk" + (" --promote" if promoting else "")
     try:
-        with masters_lock(
-            cfg.runs_root, exclusive=True, what="musaeus rebuild-from-disk --promote"
-        ):
+        with masters_lock(cfg.runs_root, exclusive=promoting, what=what):
             return rebuild()
     except MastersBusy as exc:
         print(f"  NOT RUN: {exc}", file=sys.stderr)

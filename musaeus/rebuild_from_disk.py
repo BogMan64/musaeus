@@ -403,6 +403,14 @@ REBUILT_STATUSES = ("CATALOGUED", "DUPE_REVIEW", "TRIBUTE_REVIEW")
 _REBUILT_SQL = "('" + "','".join(REBUILT_STATUSES) + "')"
 
 
+#: Decisions recorded only on the catalogue row -- nothing on disk holds them
+#: -- carried onto the same files by promote: a person's keep in `musaeus
+#: dedupe`, and a genre ruling (GenreValidate reports, never overwrites, a
+#: ruled genre; without the mark MasterLaw would overwrite it; pre-merge
+#: review of #160).
+_DECISIONS = ("kept_by_person_at", "genre_ruled_at")
+
+
 class PromoteRefused(RuntimeError):
     """The rebuild would drop rows from the live catalogue."""
 
@@ -455,35 +463,38 @@ def promote(
       - It refuses (PromoteRefused) when live rows would be dropped because
         the rebuild lacks their file, unless *accept_missing*.
       - The rows the scan cannot see (any status outside REBUILT_STATUSES)
-        come across as they were, and so do the person's keeps
-        (`kept_by_person_at`), which nothing on disk records: without them
-        the next Act 2 would move copies Grey chose to keep.
+        come across as they were, and so do the decisions only the row
+        records (_DECISIONS: the person's keeps, genre rulings): without the
+        keeps the next Act 2 would move copies Grey chose to keep.
       - It is one transaction, holding the write lock from the start: a stop
         part way leaves `archive` as it was. Each step used to commit on its
         own, so a stop between the two renames left no `archive` table, and
         the next open made an empty one.
     """
-    missing = missing_from_rebuild(conn, table)
-    if missing and not accept_missing:
-        raise PromoteRefused(missing)
-    backup = _backup_name(conn)
-
     if conn.in_transaction:
         conn.commit()
     conn.execute("BEGIN IMMEDIATE")
     try:
+        # Inside the transaction: a writer that does not take the masters lock
+        # cannot add a catalogued row between the check and the swap (pre-merge
+        # review of #160).
+        missing = missing_from_rebuild(conn, table)
+        if missing and not accept_missing:
+            raise PromoteRefused(missing)
+        backup = _backup_name(conn)
         old_cols = [r[1] for r in conn.execute("PRAGMA table_info(archive)")]
         new_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
-        if "kept_by_person_at" in new_cols and "kept_by_person_at" in old_cols:
-            conn.execute(
-                f"""
-                UPDATE {table}
-                   SET kept_by_person_at = (
-                       SELECT a.kept_by_person_at FROM archive a
-                        WHERE a.file_path = {table}.file_path)
-                 WHERE kept_by_person_at IS NULL
-                """
-            )
+        for col in _DECISIONS:
+            if col in new_cols and col in old_cols:
+                conn.execute(
+                    f"""
+                    UPDATE {table}
+                       SET {col} = (
+                           SELECT a.{col} FROM archive a
+                            WHERE a.file_path = {table}.file_path)
+                     WHERE {col} IS NULL
+                    """
+                )
         shared = ", ".join(c for c in old_cols if c in new_cols and c != "id")
         carried = conn.execute(
             f"""

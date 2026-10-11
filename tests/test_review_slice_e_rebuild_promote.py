@@ -207,3 +207,24 @@ def test_a_whole_rebuild_is_promoted(vault, monkeypatch):
         assert len(_paths(c)) == 2 and len(_backups(c)) == 1
     finally:
         c.close()
+
+
+# ── Pre-merge review of #160 ──────────────────────────────────────────────────
+
+
+def test_a_genre_ruling_survives_a_promote(conn):
+    from musaeus.db import ensure_columns
+
+    ensure_columns(conn, (("genre_ruled_at", "TEXT"),))
+    conn.execute("UPDATE archive SET genre_ruled_at='2026-09-14' WHERE file_path='/m/a.m4a'")
+    conn.commit()
+    _rebuilt(conn, "/m/a.m4a", "/m/b.m4a")
+    promote(conn)
+    ruled = dict(conn.execute("SELECT file_path, genre_ruled_at FROM archive").fetchall())
+    assert ruled == {"/m/a.m4a": "2026-09-14", "/m/b.m4a": None}
+
+
+def test_a_plain_rebuild_waits_for_a_promote(vault, monkeypatch):
+    with masters_lock(vault.runs_root, exclusive=True, what="musaeus rebuild-from-disk --promote"):
+        code = _musaeus(monkeypatch, "rebuild-from-disk", "--no-hashes")
+    assert code == EXIT_BUSY
