@@ -74,6 +74,8 @@ from urllib.request import Request, urlopen
 
 from ..context import RunContext, StageResult
 from ..filing import load as filing_load
+from ..network_policy import NetworkDenied
+from ..network_policy import check as _network_check
 from .base import BaseStage
 from .normalize import stored_artist, stored_title
 from .organize import _is_collision_name_for, library_relpath, unique_path
@@ -178,6 +180,78 @@ def strip_leading_credit(title: str, real_artist: str) -> str:
     return t
 
 
+#: Words that describe a recording, not who made it. A bracket made only of
+#: these (and numbers), or starting with one of _NOT_AN_ARTIST_FIRST, is the
+#: title's annotation: "[Live]", "[Remastered 2009]", "[Explicit]",
+#: "[2019 Mix]" were each taken as the artist and the master moved under it
+#: (review of slice A, finding 3).
+_RECORDING_WORDS = frozenset(
+    [
+        "live",
+        "remaster",
+        "remastered",
+        "remasters",
+        "digital",
+        "digitally",
+        "explicit",
+        "clean",
+        "mono",
+        "stereo",
+        "mix",
+        "remix",
+        "remixed",
+        "mixed",
+        "edit",
+        "edited",
+        "version",
+        "versions",
+        "bonus",
+        "track",
+        "tracks",
+        "demo",
+        "acoustic",
+        "instrumental",
+        "deluxe",
+        "edition",
+        "expanded",
+        "single",
+        "album",
+        "radio",
+        "extended",
+        "original",
+        "reissue",
+        "anniversary",
+        "karaoke",
+        "unplugged",
+        "session",
+        "sessions",
+        "take",
+        "alternate",
+        "alt",
+        "outtake",
+        "rehearsal",
+        "cover",
+        "b-side",
+        "lp",
+        "ep",
+        "vinyl",
+        "hd",
+        "hq",
+    ]
+)
+_NOT_AN_ARTIST_FIRST = frozenset({"live", "remaster", "remastered", "bonus", "from"})
+_WORD_RE = re.compile(r"[\w'-]+", re.UNICODE)
+
+
+def _describes_the_recording(content: str) -> bool:
+    words = [w.lower() for w in _WORD_RE.findall(content)]
+    if not words:
+        return True
+    if words[0] in _NOT_AN_ARTIST_FIRST:
+        return True
+    return all(w in _RECORDING_WORDS or w.rstrip("s").isdigit() or w[:-2].isdigit() for w in words)
+
+
 def extract_from_brackets(filename: str) -> str:
     """Extract artist from a "[Artist]" or "[Artist-Label]" bracket in the
     filename. "The Ronettes-Phil Spector" -> "The Ronettes" (heuristic:
@@ -188,6 +262,8 @@ def extract_from_brackets(filename: str) -> str:
     if not m:
         return ""
     content = m.group(1)
+    if _describes_the_recording(content):
+        return ""
     if "-" in content:
         parts = [p.strip() for p in content.split("-")]
         if len(parts[0]) > 3:
@@ -217,9 +293,19 @@ def _lookup_musicbrainz(title: str, album: str = "") -> str:
             query += f' AND release:"{album}"'
         url = f"{_MB_BASE}/recording?" + urlencode({"query": query, "fmt": "json", "limit": "1"})
         req = Request(url, headers={"User-Agent": _USER_AGENT})
+        # Every lookup asks the gateway first (CLAUDE.md: "may I reach the
+        # network -> musaeus.network_policy"); this one called urlopen
+        # directly (review of slice A).
+        _network_check(_MB_BASE)
         with urlopen(req, timeout=_MB_TIMEOUT_S) as resp:  # nosec B310
             data = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+    except (
+        NetworkDenied,
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        OSError,
+    ) as exc:
         logger.debug("[various-artists-fix] MB lookup failed for %r: %s", title, exc)
         return ""
 
@@ -260,13 +346,16 @@ def find_real_artist(
     """Returns (real_artist, strategy). real_artist is "" if unresolved."""
     filename = source.name
 
-    artist = extract_from_brackets(filename)
-    if artist and not is_placeholder_credit(artist):
-        return artist, "bracket"
-
+    # "Various Artists - Al Green - Let's Stay Together [Live]" names its
+    # artist outright, so it is read before any bracket (review of slice A,
+    # finding 3: the bracket ran first and answered "Live").
     artist = extract_from_filename_segments(filename)
     if artist and not is_placeholder_credit(artist):
         return artist, "filename_segment"
+
+    artist = extract_from_brackets(filename)
+    if artist and not is_placeholder_credit(artist):
+        return artist, "bracket"
 
     if use_mb and title:
         time.sleep(_MB_RATE_LIMIT_S)
