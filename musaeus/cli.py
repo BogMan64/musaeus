@@ -712,13 +712,13 @@ def _run_pipeline_inner(
 # ── Reset command ─────────────────────────────────────────────────────────────
 
 
-def _cmd_reset() -> None:
+def _cmd_reset() -> int:
     """Wipe the MUSAEUS database for a completely fresh start."""
     try:
         cfg = get_config()
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
-        return
+        return 1
 
     db = cfg.db_path
     print("\n  MUSAEUS — Database Reset")
@@ -734,34 +734,45 @@ def _cmd_reset() -> None:
         # is to refuse, not to auto-confirm.
         print("  ⚠  No TTY detected — refusing to reset non-interactively.")
         print("  Run this command from an interactive shell to confirm.")
-        return
+        return 1
 
     try:
         confirm = input("  Type RESET to confirm: ").strip()
     except (EOFError, KeyboardInterrupt):
         print("\n  Cancelled.")
-        return
+        return 0
 
     if confirm != "RESET":
         print("  Cancelled.")
-        return
+        return 0
 
-    snapshot_path = snapshot_db_before_wipe(db, cfg.db_history_dir)
-    if snapshot_path is not None:
-        print(f"  ✓ Snapshotted to: {snapshot_path}")
+    # Under the masters lock: a run, build or carry-out holding the database
+    # open would go on writing into the deleted file, and everything after the
+    # snapshot would be lost (review of slice E, finding 8).
+    from .masters_lock import EXIT_BUSY, MastersBusy, masters_lock
 
-    for suffix in ("", "-wal", "-shm"):
-        p = Path(str(db) + suffix)
-        if p.exists():
-            p.unlink()
-            print(f"  ✓ Deleted: {p.name}")
+    try:
+        with masters_lock(cfg.runs_root, exclusive=True, what="musaeus reset"):
+            snapshot_path = snapshot_db_before_wipe(db, cfg.db_history_dir)
+            if snapshot_path is not None:
+                print(f"  ✓ Snapshotted to: {snapshot_path}")
 
-    # Also clear resume state
-    _clear_resume()
+            for suffix in ("", "-wal", "-shm"):
+                p = Path(str(db) + suffix)
+                if p.exists():
+                    p.unlink()
+                    print(f"  ✓ Deleted: {p.name}")
+
+            # Also clear resume state
+            _clear_resume()
+    except MastersBusy as exc:
+        print(f"  NOT RESET: {exc}", file=sys.stderr)
+        return EXIT_BUSY
 
     print("\n  ✓ Database reset complete.")
     print("  Run 'musaeus run' to re-ingest your library from the inbox.")
     print()
+    return 0
 
 
 # ── Status command ────────────────────────────────────────────────────────────
@@ -2232,8 +2243,7 @@ def main() -> None:
         return
 
     if command == "reset":
-        _cmd_reset()
-        return
+        sys.exit(_cmd_reset())
 
     if needs_setup() and command not in ("setup", "reset", "status", "runs"):
         print("\n  Welcome to MUSAEUS! No configuration found.")
