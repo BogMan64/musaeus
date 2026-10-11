@@ -200,22 +200,36 @@ def _pick_matching_recording(
     if not wt:
         return None  # nothing to check against; refusing beats guessing
 
-    best: str | None = None
+    # Review of slice C, findings 5 and 6. The artist was a substring match
+    # either way ("Dion" took Celine Dion's recording), and the first title
+    # containing the file's won although cluster order means nothing -- "Born
+    # to Run (live at Hammersmith Odeon)" listed first became the studio
+    # master's recording, and TitleComplete then retitled the master.
+    from .mb_enrich import _same_artist
+
+    agreeing: list[tuple[str, str, bool]] = []  # (id, title, artist checked)
     for rec in recordings:
         rid = rec.get("id")
         if not rid:
             continue
-        rid = str(rid)
         rt = _norm_for_match(rec.get("title", ""))
         if not rt or (rt not in wt and wt not in rt):
             continue
-        artists = [_norm_for_match(a.get("name", "")) for a in rec.get("artists", [])]
-        if wa and artists and not any(a and (a in wa or wa in a) for a in artists):
-            continue  # title agrees, artist does not -- a cover
-        if wa and artists:
-            return rid  # both agree: done
-        best = best or rid  # title agrees, no artist to check
-    return best
+        names = [str(x.get("name", "")) for x in rec.get("artists", []) if x.get("name")]
+        if wa and names:
+            credit = " & ".join(names)
+            if not any(_same_artist(want_artist, n) for n in [*names, credit]):
+                continue  # title agrees, artist does not -- a cover
+        agreeing.append((str(rid), rt, bool(wa and names)))
+    if not agreeing:
+        return None
+    # The file's own title exactly, when a recording has it; otherwise the
+    # longer titles must all be one title, or it is a guess between versions.
+    pool = [x for x in agreeing if x[1] == wt] or agreeing
+    if len({x[1] for x in pool}) > 1:
+        return None
+    checked = [x for x in pool if x[2]]
+    return (checked or pool)[0][0]
 
 
 def _acousticid_query(fingerprint: str, duration: float, api_key: str) -> list[dict]:
