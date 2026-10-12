@@ -76,115 +76,155 @@ class GenreValidateStage(BaseStage):
     #: Class-level default so verify_effect never raises on a path that never
     #: reached _check (_consolidate, or an early return when MasterLaw is absent).
     _conflict_artists: frozenset[str] = frozenset()
+    #: The genre values _check wrote this run.
+    _written_genres: frozenset[str] = frozenset()
+    #: Set by _consolidate to the artists it left alone on a tie; None when
+    #: the run was the ordinary check, so verify_effect knows which job ran.
+    _tie_artists: frozenset[str] | None = None
+
+    #: The outcomes of _decide that write a row.
+    _WRITES = frozenset({"fill", "fill_lead", "illegal_fixed", "law_wins"})
 
     def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
-        """Assert the two rules this stage exists to enforce still hold.
+        """Confirm the run did what it set out to do -- and only judge that.
+
+        The check before 2026-10-11 judged the whole library against
+        MasterLaw's genre set: any genre no MasterLaw line uses failed it,
+        even one this stage deliberately keeps (a Genre_Allowed genre for an
+        act the law does not know, or a stamped ruling). Since #166 a failed
+        check fails the run, so 'Classic Rock' on twenty John Lennon masters
+        stopped Act 1 on a run that had written every row correctly
+        (Grey's code review, 2026-10-11, finding 1).
+
+        Two things are now failures, both about this run's own writes:
+
+          * a row the stage's own rules still want to change. The rules are
+            run again over the library (_decide, the same function _check
+            used), so a partial write -- 900 rows consolidated and 3 missed
+            -- or a write that never landed is found, while a genre the rules
+            leave alone on purpose never is;
+          * a genre written this run that Genre_Allowed.txt does not list.
+
+        What the library holds beyond that -- two genres under one artist
+        for a recorded reason, genres outside the vocabulary that the stage
+        could not resolve, case variants -- is reported in the notes.
+        """
+        if self._tie_artists is not None:
+            return self._verify_consolidate(ctx, result)
+
+        problems: list[str] = []
+        allowed = self._allowed_vocabulary(ctx)
+        if allowed:
+            off = sorted(self._written_genres - allowed, key=str.lower)
+            if off:
+                problems.append(
+                    f"{len(off)} genre(s) written this run are absent from "
+                    "Genre_Allowed.txt: " + ", ".join(repr(g) for g in off[:5])
+                )
+
+        law = self._law(ctx)
+        canon = self._canon(ctx)
+        left = []
+        for row in self._rows(ctx.conn, order="rowid"):
+            kind, new, _via = self._decide(row, law, allowed, canon)
+            if kind in self._WRITES:
+                left.append((row["artist"], row["genre"], new))
+        if left:
+            # Items are repr'd, not joined raw: a genre VALUE can itself
+            # contain ", " -- the live library held one called 'Pop, Rock'
+            # across 72 tracks -- so a bare join renders one item as two.
+            names = ", ".join(f"{a} ({g!r} -> {n!r})" for a, g, n in left[:3])
+            problems.append(
+                f"{len(left)} row(s) still need the change genre-validate made "
+                f"{result.files_changed} change(s) to bring about: {names}"
+            )
+
+        self._library_notes(ctx, result, law, allowed)
+        return problems
+
+    def _verify_consolidate(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """--consolidate's rule: one genre per artist, ties aside.
 
         One genre per artist (never per song) is Grey's standing rule, and
-        it is the one a partial write breaks most quietly: consolidating
-        900 rows and missing 3 leaves an artist straddling two genres, which
-        no count in the result would reveal. Checked with a GROUP BY rather
-        than by re-reading what we just wrote, so a no-op cannot pass.
+        it is the one a partial write breaks most quietly: consolidating 900
+        rows and missing 3 leaves an artist straddling two genres, which no
+        count in the result would reveal. Checked with a GROUP BY rather than
+        by re-reading what was written, so a no-op cannot pass. A tie is left
+        alone on purpose, so it is not a failure.
         """
-        problems: list[str] = []
-        multi = ctx.conn.execute(
-            "SELECT artist, COUNT(DISTINCT genre) AS n FROM archive "
-            "WHERE status='CATALOGUED' AND genre IS NOT NULL AND trim(genre)!='' "
-            "GROUP BY artist HAVING n > 1 ORDER BY n DESC"
-        ).fetchall()
+        ties = self._tie_artists or frozenset()
+        multi = [r for r in self._multi_genre_artists(ctx.conn) if r["artist"] not in ties]
+        if not multi:
+            return []
+        names = ", ".join(f"{r['artist']} ({r['n']})" for r in multi[:3])
+        return [
+            f"{len(multi)} artist(s) still carry more than one genre after "
+            f"genre-validate --consolidate claimed {result.files_changed} "
+            f"change(s): {names}"
+        ]
 
-        # An artist can straddle two genres for two unlike reasons:
-        #
-        #   a partial write   -- consolidating 900 rows and missing 3. The
-        #                        defect this check exists for, invisible in
-        #                        any count the result carries.
-        #   a ruled conflict  -- the owner's genre disagrees with the law on
-        #                        some files, genre_ruled_at is set, and _check
-        #                        correctly left it alone awaiting no further
-        #                        action (the ruling IS the decision).
-        #
-        # Reporting the second as a failure made the stage unable to pass its
-        # own verification while any ruled conflict existed. Both are still
-        # surfaced, but only the first fails the seal.
+    @staticmethod
+    def _multi_genre_artists(conn) -> list:
+        return list(
+            conn.execute(
+                "SELECT artist, COUNT(DISTINCT genre) AS n FROM archive "
+                "WHERE status='CATALOGUED' AND genre IS NOT NULL AND trim(genre)!='' "
+                "GROUP BY artist HAVING n > 1 ORDER BY n DESC"
+            ).fetchall()
+        )
+
+    def _library_notes(self, ctx: RunContext, result: StageResult, law, allowed) -> None:
+        """What the library holds that this run did not cause. Notes only."""
+        multi = self._multi_genre_artists(ctx.conn)
+        # An artist can straddle two genres for two unlike reasons: a ruled
+        # conflict (the owner's genre disagrees with the law on some files and
+        # genre_ruled_at is set -- the ruling IS the decision), or a state
+        # the law has no say over (an act MasterLaw does not know). Neither is
+        # this run's doing; a partial write is caught by verify_effect above.
         pending = [r for r in multi if r["artist"] in self._conflict_artists]
-        unexpected = [r for r in multi if r["artist"] not in self._conflict_artists]
-
-        if unexpected:
-            names = ", ".join(f"{r['artist']} ({r['n']})" for r in unexpected[:3])
-            problems.append(
-                f"{len(unexpected)} artist(s) carry more than one genre for no "
-                f"recorded reason after genre-validate claimed "
-                f"{result.files_changed} change(s): {names}"
-            )
+        other = [r for r in multi if r["artist"] not in self._conflict_artists]
         if pending:
             names = ", ".join(f"{r['artist']} ({r['n']})" for r in pending[:3])
             result.notes.append(
                 f"  {len(pending)} artist(s) straddle two genres because a "
-                f"library-vs-law conflict is awaiting a ruling -- not a stage "
-                f"failure: {names}"
+                f"library-vs-law conflict has a ruling -- not a stage failure: {names}"
+            )
+        if other:
+            names = ", ".join(f"{r['artist']} ({r['n']})" for r in other[:3])
+            result.notes.append(
+                f"  {len(other)} artist(s) carry more than one genre that the law "
+                f"has no say over -- not a stage failure: {names}"
             )
 
-        # Items are repr'd, not joined raw: a genre VALUE can itself contain
-        # ", " -- the live library holds one called 'Pop, Rock' across 72
-        # tracks -- so a bare join renders two findings as three and sends
-        # the reader looking for a genre that was never missing. Line 137
-        # already had this right; these two did not.
-        # A genre outside the closed vocabulary means the law was not applied,
-        # or something wrote around it.
-        law = self._law(ctx)
-        if len(law):
-            stray = ctx.conn.execute(
+        in_use = [
+            r["genre"]
+            for r in ctx.conn.execute(
                 "SELECT DISTINCT genre FROM archive WHERE status='CATALOGUED' "
                 "AND genre IS NOT NULL AND trim(genre)!=''"
-            ).fetchall()
-            # permits() folds "/" against "-", so "R&B/Funk/Soul" is not
-            # reported as stray merely because the law spells it with a dash.
-            off = [r["genre"] for r in stray if not law.permits(r["genre"])]
-            if off:
-                problems.append(
-                    f"{len(off)} genre(s) outside the closed vocabulary: "
-                    + ", ".join(repr(g) for g in off[:5])
+            )
+        ]
+        # Genre_Allowed.txt, not MasterLaw's own values: GenreLaw.genres is
+        # derived from MasterLaw, so any value that reaches the law becomes
+        # vocabulary and permits() blesses it for ever. Measured 2026-08-24:
+        # "Electronic/Dance" (64 tracks) and "Classic Rock" (11) sat in the
+        # library under that blessing. The hand-written file can disagree.
+        if allowed:
+            unlisted = sorted(set(in_use) - allowed, key=str.lower)
+            if unlisted:
+                result.notes.append(
+                    f"  {len(unlisted)} genre(s) in use but absent from "
+                    "Genre_Allowed.txt: " + ", ".join(repr(g) for g in unlisted[:5])
                 )
-
-            # ...and permits() cannot catch a value the law itself contains.
-            # Measured 2026-08-24: "Electronic/Dance" (64 tracks) and
-            # "Classic Rock" (11) sat in the library, absent from
-            # Genre_Allowed.txt, while Genre_Canonical_Map.txt already held
-            # rules mapping both to canonical values. ScholarStage writes the
-            # embedded genre tag verbatim and never consults GenreCanon;
-            # EnrichStage only fills EMPTY genres, so nothing revisited them;
-            # and once the value reached MasterLaw, permits() blessed it.
-            # Checking against the hand-written vocabulary is the only link
-            # in that chain that can actually fail.
-            allowed = self._allowed_vocabulary(ctx)
-            if allowed:
-                unlisted = sorted(
-                    {r["genre"] for r in stray} - allowed,
-                    key=str.lower,
-                )
-                if unlisted:
-                    problems.append(
-                        f"{len(unlisted)} genre(s) in use but absent from "
-                        "Genre_Allowed.txt: " + ", ".join(repr(g) for g in unlisted[:5])
-                    )
-
-            # permits() is deliberately forgiving, which leaves a gap: a stored
-            # "pop" satisfies it because the law spells the same genre "Pop".
-            # The value is then legal but not canonical, and it hides from
-            # every check above -- found 2026-08-23 on a single track
-            # (Gwen Stefani, "Hollaback Girl") that had sat there through
-            # multiple clean audits. Compare exact spelling separately so a
-            # case or punctuation variant is reported rather than absorbed.
-            canon = {g: g for g in law.genres}
-            variants = [
-                r["genre"] for r in stray if r["genre"] not in canon and law.permits(r["genre"])
-            ]
+        # permits() is forgiving, so a stored "pop" passes where the law
+        # spells "Pop" -- found 2026-08-23 on one track (Gwen Stefani,
+        # "Hollaback Girl") that sat through several clean audits.
+        if len(law):
+            variants = [g for g in in_use if g not in law.genres and law.permits(g)]
             if variants:
-                problems.append(
-                    f"{len(variants)} genre(s) legal but not spelled canonically: "
-                    + ", ".join(f"{v!r}" for v in variants[:5])
+                result.notes.append(
+                    f"  {len(variants)} genre(s) legal but not spelled canonically: "
+                    + ", ".join(repr(v) for v in variants[:5])
                 )
-        return problems
 
     def _law(self, ctx: RunContext) -> GenreLaw:
         return GenreLaw(ctx.config.meta_dir / "MasterLaw.csv")
@@ -229,6 +269,144 @@ class GenreValidateStage(BaseStage):
         law = self._law(ctx)
         logger.info("[genre-validate] MasterLaw knows %d artist(s)", len(law))
 
+    @staticmethod
+    def _rows(conn, order: str = "artist, album, track"):
+        """The catalogued rows _decide reads, in *order*."""
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
+        # genre_ruled_at is added by this stage's first real run, and
+        # mb_artist_name by enrichment, so either can be absent. folder_artist
+        # uses mb_artist_name to keep a credit that MusicBrainz knows as ONE
+        # artist whole.
+        ruled_col = "genre_ruled_at" if "genre_ruled_at" in cols else "NULL AS genre_ruled_at"
+        mb_col = "mb_artist_name" if "mb_artist_name" in cols else "NULL AS mb_artist_name"
+        return conn.execute(
+            f"SELECT rowid AS rid, file_path, artist, genre, {ruled_col}, {mb_col} FROM archive "
+            f"WHERE status='CATALOGUED' ORDER BY {order}"
+        )
+
+    @staticmethod
+    def _decide(row, law: GenreLaw, allowed: set[str], canon) -> tuple[str, str | None, str | None]:
+        """What this stage does with one row: (outcome, genre, lead artist).
+
+        The outcomes that write are in _WRITES; the genre is the value
+        written (or, for "conflict" and "law_outside", the law's). The lead
+        artist is set when the law's genre came through it. One function for
+        _check and verify_effect, so the check judges by the stage's rules.
+        """
+        artist = (row["artist"] or "").strip()
+        genre = (row["genre"] or "").strip()
+        law_genre = law.genre_for(artist)
+
+        # An ABSENT genre is settled here, BEFORE the vocabulary test.
+        #
+        # '' is not in the vocabulary either, so the test below cannot
+        # tell "no genre" from "a genre we retired". Until 2026-09-07 it
+        # did not try: every blank fell into the outside-the-vocabulary
+        # branch, was filled from the law there, and was counted as
+        # `illegal_fixed`. That made the `if not genre:` block below
+        # unreachable in any vault that has a Genre_Allowed.txt, which is
+        # all of them.
+        #
+        # The stage then reported "filled empty genre: 0" in the same
+        # breath as filling 13, set files_changed = 0 while changing 13
+        # rows, and logged GENRE_OUTSIDE_VOCABULARY with old_value='' and
+        # the note "'' is not in Genre_Allowed.txt". So the count was
+        # wrong, the change count was wrong, and the audit trail said the
+        # wrong thing had happened -- a reader grepping GENRE_FILLED
+        # would have found nothing at all.
+        #
+        # A missing genre is missing. It is not an illegal value.
+        if not genre:
+            # A credit with no ruling of its own -- "Phil Collins, Marilyn
+            # Martin", "Gorillaz feat. Bobby Womack" -- takes its lead
+            # artist's (Grey, 2026-09-25). The lead is the artist the track
+            # FILES under, so the genre and the folder agree about whose
+            # track it is; and folder_artist is what keeps a band like
+            # Earth, Wind & Fire whole rather than reading it as Earth.
+            # Only an EMPTY genre is filled this way, and only when the
+            # full credit has no ruling: the exact credit always wins.
+            via = None
+            if law_genre is None:
+                lead = folder_artist(artist, row["mb_artist_name"])
+                if lead and lead != artist:
+                    law_genre = law.genre_for(lead)
+                    via = lead if law_genre else None
+            if law_genre is None:
+                # No genre AND no law entry. This needs a ruling from the
+                # owner and is not the same finding as a retired genre
+                # walking back in, so it is counted separately.
+                return "blank_unknown", None, None
+            if allowed and law_genre not in allowed:
+                # The law itself holds a genre the vocabulary does not list.
+                # Writing it would put an unlisted genre into the library
+                # (and the next run would then "correct" its own fill), so
+                # MasterLaw is reported for fixing instead.
+                return "law_outside", law_genre, via
+            return ("fill_lead" if via else "fill"), law_genre, via
+
+        # A genre outside the closed vocabulary is not a disagreement --
+        # it is not a genre. Library-vs-law conflicts stay report-only
+        # because the library holds the owner's decision (section 4.19),
+        # but there is no decision to protect in a value the vocabulary
+        # does not contain, and leaving it means a retired genre walks
+        # back in on the next ingest.
+        #
+        # Measured 2026-08-25 on a five-file test batch: "Pop, Rock" --
+        # drained to zero and retired the day before -- returned on the
+        # very first new file, because ScholarStage writes the file's own
+        # genre tag verbatim and never consults GenreCanon. This stage
+        # ran and left it, because it only ever filled EMPTY genres.
+        if allowed and genre not in allowed:
+            replacement = law_genre if law_genre in allowed else None
+            if replacement is None:
+                resolved = canon.resolve(genre) if canon else None
+                replacement = resolved if resolved in allowed else None
+            if replacement:
+                return "illegal_fixed", replacement, None
+            return "illegal_stuck", None, None
+
+        # A credit with no ruling of its own takes its lead artist's even
+        # when it arrived WITH a genre (Grey, 2026-10-06: "one genre per
+        # artist"). Only empty genres were filled from the lead, so
+        # "Stevie Ray Vaughan & Double Trouble" kept its source tag
+        # "Southern Rock" for ever while Stevie Ray Vaughan is Blues --
+        # 23 songs under a second genre, and 10 artists split in all.
+        via_lead = None
+        if law_genre is None:
+            lead = folder_artist(artist, row["mb_artist_name"])
+            if lead and lead != artist:
+                law_genre = law.genre_for(lead)
+                via_lead = lead if law_genre else None
+        if law_genre is None:
+            return "unknown", None, None
+
+        if law.agrees(via_lead or artist, genre):
+            return "agreed", None, via_lead
+        if not (row["genre_ruled_at"] or "").strip() and allowed and law_genre in allowed:
+            # NO RULING RECORDED -- there is no owner decision to protect.
+            #
+            # Report-only exists because "the library holds the owner's
+            # decision" (section 4.19). That is true of a file the owner
+            # has reviewed. It is NOT true of a file ingested ten minutes
+            # ago: ScholarStage writes the embedded genre tag verbatim and
+            # never consults MasterLaw, so a fresh row's genre is whatever
+            # the source said -- an opinion, not a ruling.
+            #
+            # Treating that as a decision made every new arrival a
+            # permanent conflict resolvable by nobody.
+            #
+            # Gated on the law's target being IN the vocabulary, and on a
+            # vocabulary existing. Always validate a mapped result against
+            # the current Genre_Allowed.txt, never against the map alone,
+            # because a map target can itself be stale. With no vocabulary
+            # file this falls back to report-only rather than writing a
+            # value nothing can check.
+            return "law_wins", law_genre, via_lead
+        # A RULING EXISTS (genre_ruled_at is set), or no vocabulary is
+        # loaded to validate the law's target against. Report only --
+        # the owner has seen this conflict and chosen a side.
+        return "conflict", law_genre, via_lead
+
     def _check(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
         law = self._law(ctx)
@@ -247,28 +425,15 @@ class GenreValidateStage(BaseStage):
         if not dry_run:
             ensure_columns(ctx.conn, (("genre_ruled_at", "TEXT"),))
 
-        has_ruled_at = any(
-            r[1] == "genre_ruled_at" for r in ctx.conn.execute("PRAGMA table_info(archive)")
-        )
-        ruled_col = "genre_ruled_at" if has_ruled_at else "NULL AS genre_ruled_at"
-        # mb_artist_name is added by enrichment, so a vault that never ran it
-        # has no such column. folder_artist uses it to keep a credit that
-        # MusicBrainz knows as ONE artist whole.
-        has_mb = any(
-            r[1] == "mb_artist_name" for r in ctx.conn.execute("PRAGMA table_info(archive)")
-        )
-        mb_col = "mb_artist_name" if has_mb else "NULL AS mb_artist_name"
-
-        rows = ctx.conn.execute(
-            f"SELECT rowid AS rid, file_path, artist, genre, {ruled_col}, {mb_col} FROM archive "
-            "WHERE status='CATALOGUED' ORDER BY artist, album, track"
-        ).fetchall()
+        rows = self._rows(ctx.conn).fetchall()
         result.files_processed = len(rows)
 
         filled = conflicts = unknown = agreed = illegal_fixed = law_wins = 0
         filled_lead = 0
         blank_unknown = 0
         illegal_stuck: dict[str, int] = {}
+        law_outside: dict[str, int] = {}
+        written: set[str] = set()
         allowed = self._allowed_vocabulary(ctx)
         canon = self._canon(ctx)
         # Keyed by (artist, library genre, law genre), not per file. A
@@ -282,176 +447,78 @@ class GenreValidateStage(BaseStage):
         for i, row in enumerate(rows, 1):
             artist = (row["artist"] or "").strip()
             genre = (row["genre"] or "").strip()
-            law_genre = law.genre_for(artist)
+            kind, new, via = self._decide(row, law, allowed, canon)
 
-            # An ABSENT genre is settled here, BEFORE the vocabulary test.
-            #
-            # '' is not in the vocabulary either, so the test below cannot
-            # tell "no genre" from "a genre we retired". Until 2026-09-07 it
-            # did not try: every blank fell into the outside-the-vocabulary
-            # branch, was filled from the law there, and was counted as
-            # `illegal_fixed`. That made the `if not genre:` block below
-            # unreachable in any vault that has a Genre_Allowed.txt, which is
-            # all of them.
-            #
-            # The stage then reported "filled empty genre: 0" in the same
-            # breath as filling 13, set files_changed = 0 while changing 13
-            # rows, and logged GENRE_OUTSIDE_VOCABULARY with old_value='' and
-            # the note "'' is not in Genre_Allowed.txt". So the count was
-            # wrong, the change count was wrong, and the audit trail said the
-            # wrong thing had happened -- a reader grepping GENRE_FILLED
-            # would have found nothing at all.
-            #
-            # A missing genre is missing. It is not an illegal value.
-            if not genre:
-                # A credit with no ruling of its own -- "Phil Collins, Marilyn
-                # Martin", "Gorillaz feat. Bobby Womack" -- takes its lead
-                # artist's (Grey, 2026-09-25). The lead is the artist the track
-                # FILES under, so the genre and the folder agree about whose
-                # track it is; and folder_artist is what keeps a band like
-                # Earth, Wind & Fire whole rather than reading it as Earth.
-                # Only an EMPTY genre is filled this way, and only when the
-                # full credit has no ruling: the exact credit always wins.
-                via = None
-                if law_genre is None:
-                    lead = folder_artist(artist, row["mb_artist_name"])
-                    if lead and lead != artist:
-                        law_genre = law.genre_for(lead)
-                        via = lead if law_genre else None
-                if law_genre is None:
-                    # No genre AND no law entry. This needs a ruling from the
-                    # owner and is not the same finding as a retired genre
-                    # walking back in, so it is counted separately.
-                    blank_unknown += 1
-                    continue
+            if kind == "blank_unknown":
+                blank_unknown += 1
+            elif kind == "law_outside":
+                assert new is not None
+                law_outside[new] = law_outside.get(new, 0) + 1
+            elif kind == "illegal_stuck":
+                illegal_stuck[genre] = illegal_stuck.get(genre, 0) + 1
+            elif kind == "unknown":
+                unknown += 1
+            elif kind == "agreed":
+                agreed += 1
+            elif kind == "conflict":
+                conflicts += 1
+                assert new is not None
+                key = (artist, genre, new)
+                conflict_groups[key] = conflict_groups.get(key, 0) + 1
+            elif kind in ("fill", "fill_lead"):
                 if via:
                     filled_lead += 1
                 else:
                     filled += 1
-                if not dry_run:
-                    # A genre the law fills is not a ruling, so it is not
-                    # marked as one: a later MasterLaw change must reach it
-                    # (Grey, 2026-10-11; review of slice B, finding 4).
-                    ctx.conn.execute(
-                        "UPDATE archive SET genre = ? WHERE rowid = ?",
-                        (law_genre, row["rid"]),
-                    )
+            elif kind == "illegal_fixed":
+                illegal_fixed += 1
+            elif kind == "law_wins":
+                law_wins += 1
+
+            if kind in self._WRITES and not dry_run:
+                assert new is not None
+                # None of these writes is a ruling, so none is marked as one:
+                # a genre the law set follows the law, and a later MasterLaw
+                # change must reach it (Grey, 2026-10-11; review of slice B,
+                # finding 4).
+                ctx.conn.execute("UPDATE archive SET genre = ? WHERE rowid = ?", (new, row["rid"]))
+                written.add(new)
+                if kind in ("fill", "fill_lead"):
                     ctx.log_event(
                         "GENRE_FILLED",
                         file_path=row["file_path"],
                         stage=self.NAME,
-                        new_value=law_genre,
+                        new_value=new,
                         note=(
                             f"empty genre filled from MasterLaw via the lead artist ({via} of {artist})"
                             if via
                             else f"empty genre filled from MasterLaw ({artist})"
                         ),
                     )
-                continue
-
-            # A genre outside the closed vocabulary is not a disagreement --
-            # it is not a genre. Library-vs-law conflicts stay report-only
-            # because the library holds the owner's decision (section 4.19),
-            # but there is no decision to protect in a value the vocabulary
-            # does not contain, and leaving it means a retired genre walks
-            # back in on the next ingest.
-            #
-            # Measured 2026-08-25 on a five-file test batch: "Pop, Rock" --
-            # drained to zero and retired the day before -- returned on the
-            # very first new file, because ScholarStage writes the file's own
-            # genre tag verbatim and never consults GenreCanon. This stage
-            # ran and left it, because it only ever filled EMPTY genres.
-            if allowed and genre not in allowed:
-                replacement = law_genre if law_genre in allowed else None
-                if replacement is None:
-                    resolved = canon.resolve(genre) if canon else None
-                    replacement = resolved if resolved in allowed else None
-                if replacement:
-                    illegal_fixed += 1
-                    if not dry_run:
-                        ctx.conn.execute(
-                            "UPDATE archive SET genre = ? WHERE rowid = ?",
-                            (replacement, row["rid"]),
-                        )
-                        ctx.log_event(
-                            "GENRE_OUTSIDE_VOCABULARY",
-                            file_path=row["file_path"],
-                            old_value=genre,
-                            new_value=replacement,
-                            stage=self.NAME,
-                            note=f"{genre!r} is not in Genre_Allowed.txt ({artist})",
-                        )
-                    continue
-                illegal_stuck.setdefault(genre, 0)
-                illegal_stuck[genre] += 1
-                continue
-
-            # A credit with no ruling of its own takes its lead artist's even
-            # when it arrived WITH a genre (Grey, 2026-10-06: "one genre per
-            # artist"). Only empty genres were filled from the lead, so
-            # "Stevie Ray Vaughan & Double Trouble" kept its source tag
-            # "Southern Rock" for ever while Stevie Ray Vaughan is Blues --
-            # 23 songs under a second genre, and 10 artists split in all.
-            via_lead = None
-            if law_genre is None:
-                lead = folder_artist(artist, row["mb_artist_name"])
-                if lead and lead != artist:
-                    law_genre = law.genre_for(lead)
-                    via_lead = lead if law_genre else None
-            if law_genre is None:
-                unknown += 1
-                continue
-
-            if law.agrees(via_lead or artist, genre):
-                agreed += 1
-            elif not (row["genre_ruled_at"] or "").strip() and allowed and law_genre in allowed:
-                # NO RULING RECORDED -- there is no owner decision to protect.
-                #
-                # Report-only exists because "the library holds the owner's
-                # decision" (section 4.19). That is true of a file the owner
-                # has reviewed. It is NOT true of a file ingested ten minutes
-                # ago: ScholarStage writes the embedded genre tag verbatim and
-                # never consults MasterLaw, so a fresh row's genre is whatever
-                # the source said -- an opinion, not a ruling.
-                #
-                # Treating that as a decision made every new arrival a
-                # permanent conflict resolvable by nobody.
-                #
-                # Gated on the law's target being IN the vocabulary, and on a
-                # vocabulary existing. Always validate a mapped result against
-                # the current Genre_Allowed.txt, never against the map alone,
-                # because a map target can itself be stale. With no vocabulary
-                # file this falls back to report-only rather than writing a
-                # value nothing can check.
-                law_wins += 1
-                if not dry_run:
-                    # Not a ruling either (see the fill above): the law's
-                    # correction follows the law when it changes.
-                    ctx.conn.execute(
-                        "UPDATE archive SET genre = ? WHERE rowid = ?",
-                        (law_genre, row["rid"]),
+                elif kind == "illegal_fixed":
+                    ctx.log_event(
+                        "GENRE_OUTSIDE_VOCABULARY",
+                        file_path=row["file_path"],
+                        old_value=genre,
+                        new_value=new,
+                        stage=self.NAME,
+                        note=f"{genre!r} is not in Genre_Allowed.txt ({artist})",
                     )
+                else:
                     ctx.log_event(
                         "GENRE_CORRECTED_FROM_LAW",
                         file_path=row["file_path"],
                         old_value=genre,
-                        new_value=law_genre,
+                        new_value=new,
                         stage=self.NAME,
                         note=(
                             f"no ruling recorded for {artist!r}; source tag "
-                            f"{genre!r} corrected to MasterLaw {law_genre!r}"
-                            f"{f' via the lead artist {via_lead!r}' if via_lead else ''}. "
+                            f"{genre!r} corrected to MasterLaw {new!r}"
+                            f"{f' via the lead artist {via!r}' if via else ''}. "
                             "TaggerStage must write the tag before Scholar "
                             "reads this file again, or the upsert restores it."
                         ),
                     )
-            else:
-                # A RULING EXISTS (genre_ruled_at is set), or no vocabulary is
-                # loaded to validate the law's target against. Report only --
-                # the owner has seen this conflict and chosen a side.
-                conflicts += 1
-                key = (artist, genre, law_genre)
-                conflict_groups[key] = conflict_groups.get(key, 0) + 1
 
             if not dry_run and i % _COMMIT_EVERY == 0:
                 ctx.conn.commit()
@@ -463,6 +530,8 @@ class GenreValidateStage(BaseStage):
         # alone on purpose (owner ruling exists) from one left alone by a
         # partial write (which is the actual defect verify_effect exists to catch).
         self._conflict_artists = frozenset(artist for (artist, _h, _l) in conflict_groups)
+        self._written_genres = frozenset(written)
+        self._tie_artists = None
 
         # All three write branches count toward files_changed so verify_effect
         # quotes back a number that reflects what actually happened on disk.
@@ -491,6 +560,13 @@ class GenreValidateStage(BaseStage):
         if illegal_stuck:
             result.notes.append("  OUTSIDE THE VOCABULARY and unresolvable -- these need a ruling:")
             for g, n in sorted(illegal_stuck.items(), key=lambda kv: -kv[1]):
+                result.notes.append(f"    {g!r}  ({n} file{'s' if n != 1 else ''})")
+        if law_outside:
+            result.notes.append(
+                "  MasterLaw's genre is not in Genre_Allowed.txt, so these blanks "
+                "were left empty -- fix MasterLaw or the vocabulary:"
+            )
+            for g, n in sorted(law_outside.items(), key=lambda kv: -kv[1]):
                 result.notes.append(f"    {g!r}  ({n} file{'s' if n != 1 else ''})")
         result.notes.append(
             f"  CONFLICTS (report only, ruling exists): {conflicts} file(s) "
@@ -540,6 +616,7 @@ class GenreValidateStage(BaseStage):
             counts.setdefault(row["artist"], {})[row["genre"]] = row["n"]
 
         by_law = by_majority = ties = changed = 0
+        tie_artists: set[str] = set()
         for artist, genres in counts.items():
             if len(genres) < 2:
                 continue
@@ -551,6 +628,7 @@ class GenreValidateStage(BaseStage):
                 ranked = sorted(genres.items(), key=lambda kv: -kv[1])
                 if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
                     ties += 1
+                    tie_artists.add(artist)
                     result.notes.append(
                         f"  TIE, left alone: {artist} " + ", ".join(f"{g}:{n}" for g, n in ranked)
                     )
@@ -605,6 +683,8 @@ class GenreValidateStage(BaseStage):
                 )
 
         ctx.conn.commit()
+        # verify_effect checks --consolidate by its own rule, ties aside.
+        self._tie_artists = frozenset(tie_artists)
         result.files_changed = changed
         result.notes.insert(0, f"artists given a genre from MasterLaw: {by_law_blank}")
         result.notes.insert(1, f"artists consolidated by MasterLaw:  {by_law}")
