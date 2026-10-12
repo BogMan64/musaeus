@@ -40,6 +40,7 @@ Pipeline commands:
     bitrot           Verify ALAC_Archive against a baseline (silent corruption)
     enrich           Last.fm genre enrichment for tracks with missing genre
     mb-enrich        MusicBrainz artist + release MBID enrichment
+    possible-dupes   List songs that may be one recording, for you to decide (Desktop sheet)
     genre-suggest    Suggest genres from MusicBrainz + Wikipedia (sheet on the Desktop);
                      `genre-suggest apply SHEET` loads the rows you approved into MasterLaw
     original-year    recover each recording's first release year from MusicBrainz
@@ -2295,6 +2296,13 @@ def _build_parser() -> argparse.ArgumentParser:
     gs_apply.add_argument("sheet", help="The review sheet you marked")
     gs_apply.add_argument("--dry-run", action="store_true", help="Show what would change")
 
+    # possible-dupes (Grey, 2026-10-11)
+    pd_p = sub.add_parser(
+        "possible-dupes", help="List songs that may be one recording, for you to decide"
+    )
+    pd_p.add_argument("--dry-run", action="store_true", help="Count and show a few; no sheet")
+    pd_p.add_argument("--out", default=None, help="Sheet path (default: on the Desktop)")
+
     # dedupe
     dedupe_p = sub.add_parser("dedupe", help="Interactive duplicate review console")
     dedupe_p.add_argument(
@@ -2694,6 +2702,11 @@ def main() -> None:
             else:
                 print("Usage: musaeus genre-suggest {generate|apply SHEET}")
                 sys.exit(1)
+
+        elif command == "possible-dupes":
+            from .possible_dupes import cmd_possible_dupes
+
+            sys.exit(cmd_possible_dupes(out=getattr(args, "out", None), dry_run=dry_run))
 
         elif command == "review":
             from .approval import cmd_review_apply, cmd_review_generate, cmd_review_status
