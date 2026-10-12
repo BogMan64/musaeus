@@ -55,8 +55,9 @@ _WIKIDATA = "https://www.wikidata.org/wiki/Special:EntityData"
 _USER_AGENT = "Musaeus/1.0 (personal music library; genre suggestions)"
 _TIMEOUT_S = 15
 _MB_PAUSE_S = 1.1  # MusicBrainz: at most one request a second
-_WIKI_PAUSE_S = 0.2
-_BUSY_WAIT_S = 5
+_WIKI_PAUSE_S = 1.0
+_BUSY_WAIT_S = 30
+_BUSY_TRIES = 3
 #: No answers this many acts in a row: the network or a service is down, and
 #: going on would spend an hour learning nothing (pre-merge review of #188).
 _GIVE_UP_AFTER = 5
@@ -88,6 +89,8 @@ _FINER_THAN = {"Pop": frozenset({"classic pop", "modern pop", "french pop"})}
 #: A name search that found nothing. Not cached: it is as often the name
 #: check as a real absence ("Hall & Oates"), so the next run asks again.
 NOT_FOUND = "MusicBrainz has no act by this name"
+#: MusicBrainz answered and Wikipedia did not: shown, not cached.
+WIKI_UNAVAILABLE = "Wikipedia did not answer -- asked again next time"
 
 
 class LookupUnavailable(Exception):
@@ -210,7 +213,7 @@ def _within_the_field(value: str) -> str:
 
 def _get_json(url: str, gate: str) -> dict:
     req = Request(url, headers={"User-Agent": _USER_AGENT})
-    for attempt in range(2):
+    for attempt in range(_BUSY_TRIES):
         try:
             # Inside the try: a gateway refusal is "no answer" like a timeout --
             # the act is asked again next time, never recorded as looked up.
@@ -221,8 +224,17 @@ def _get_json(url: str, gate: str) -> dict:
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return {}
-            if exc.code in (429, 503) and attempt == 0:
-                time.sleep(_BUSY_WAIT_S)  # the service asked us to slow down
+            if exc.code in (429, 503) and attempt < _BUSY_TRIES - 1:
+                # The service asked us to slow down. 185 of the first full run's
+                # 187 no-answers were Wikipedia's 429 at a 0.2 s pace and one
+                # 5 s retry (2026-10-12): now 1 s between pages, and 30 s,
+                # twice, or what Retry-After asks.
+                after = exc.headers.get("Retry-After") if exc.headers is not None else None
+                try:
+                    wait = max(int(str(after).strip()), 0) if after else _BUSY_WAIT_S
+                except ValueError:  # an HTTP date, or anything odd
+                    wait = _BUSY_WAIT_S
+                time.sleep(min(wait, 120))
                 continue
             raise LookupUnavailable(f"{gate}: HTTP {exc.code}") from exc
         except Exception as exc:  # timeout, DNS, a gateway refusal
@@ -267,25 +279,38 @@ def look_up(artist: str, mbid: str | None) -> Found:
         ((g["name"], int(g.get("count") or 0)) for g in data.get("genres", []) if g.get("name")),
         key=lambda gc: -gc[1],
     )
-    title = _wikipedia_title(data.get("relations", []))
+    try:
+        # Wikidata (for the title) is Wikimedia too, and refuses the same way:
+        # a refusal there keeps MusicBrainz's answer as well (pre-merge review
+        # of #193).
+        title = _wikipedia_title(data.get("relations", []))
+    except LookupUnavailable:
+        found.note = WIKI_UNAVAILABLE
+        return found
     if title:
         time.sleep(_WIKI_PAUSE_S)
-        page = _get_json(
-            _WIKI_API
-            + "?"
-            + urlencode(
-                {
-                    "action": "parse",
-                    "page": title,
-                    "prop": "wikitext",
-                    "section": "0",
-                    "format": "json",
-                    "formatversion": "2",
-                    "redirects": "1",
-                }  # fmt: skip
-            ),
-            _WIKI_API,
-        )
+        try:
+            page = _get_json(
+                _WIKI_API
+                + "?"
+                + urlencode(
+                    {
+                        "action": "parse",
+                        "page": title,
+                        "prop": "wikitext",
+                        "section": "0",
+                        "format": "json",
+                        "formatversion": "2",
+                        "redirects": "1",
+                    }  # fmt: skip
+                ),
+                _WIKI_API,
+            )
+        except LookupUnavailable:
+            # MusicBrainz answered; Wikipedia did not. The act keeps what
+            # MusicBrainz said, is not cached, and Wikipedia is asked next time.
+            found.note = WIKI_UNAVAILABLE
+            return found
         found.wikipedia = infobox_genres((page.get("parse") or {}).get("wikitext", ""))
     else:
         found.note = "no Wikipedia article linked from MusicBrainz"
@@ -440,6 +465,7 @@ class Report:
     no_suggestion: int = 0
     rows: int = 0
     gave_up: bool = False
+    wiki_unavailable: int = 0
     finer_kept: int = 0
     unmapped: dict[str, int] = field(default_factory=dict)
 
@@ -455,6 +481,7 @@ def generate(
     refresh: bool = False,
     lookup: Callable[[str, str | None], Found] = look_up,
     progress: Callable[[str], None] = lambda s: None,
+    new_only: bool = False,
 ) -> Report:
     """Look each act up and write the review sheet. Reads the catalogue only."""
     if out_path.exists():
@@ -469,7 +496,7 @@ def generate(
     rep.acts = len(acts)
     rows: list[dict] = []
     try:
-        _collect(acts, cache, cache_path, law, vocab, rows, rep, limit, lookup, progress)
+        _collect(acts, cache, cache_path, law, vocab, rows, rep, limit, lookup, progress, new_only)
     finally:
         # Kept even when the run is stopped: what was fetched is not fetched again.
         _save_cache(cache_path, cache)
@@ -486,14 +513,21 @@ def generate(
     return rep
 
 
-def _collect(acts, cache, cache_path, law, vocab, rows, rep, limit, lookup, progress) -> None:
+def _collect(
+    acts, cache, cache_path, law, vocab, rows, rep, limit, lookup, progress, new_only=False
+) -> None:
     failed_in_a_row = 0
+    wiki_refused_in_a_row = 0
     for i, (artist, mbid, songs) in enumerate(acts, 1):
         hit = cache.get(artist)
         if hit is not None:
             found = Found(hit.get("mbid"), [tuple(x) for x in hit.get("musicbrainz", [])],
                           list(hit.get("wikipedia", [])), hit.get("note", ""))  # fmt: skip
             rep.from_cache += 1
+            if new_only:
+                # A second pass: the sheet holds only the acts asked this run,
+                # so it does not repeat a sheet Grey is already marking.
+                continue
         else:
             # Tries count toward --limit, answered or not.
             if limit is not None and rep.asked + rep.unavailable >= limit:
@@ -514,7 +548,21 @@ def _collect(acts, cache, cache_path, law, vocab, rows, rep, limit, lookup, prog
                 continue
             failed_in_a_row = 0
             rep.asked += 1
-            if found.note != NOT_FOUND:
+            if found.note == WIKI_UNAVAILABLE:
+                # Each refusal costs a minute of waiting: after a few in a row
+                # Wikipedia is down for us, and the run stops rather than
+                # sitting silent for hours (pre-merge review of #193).
+                rep.wiki_unavailable += 1
+                wiki_refused_in_a_row += 1
+                progress(f"  ~ {artist}: Wikipedia did not answer (MusicBrainz did)")
+                if wiki_refused_in_a_row >= _GIVE_UP_AFTER:
+                    failed_in_a_row = _GIVE_UP_AFTER
+                    progress(
+                        f"  Wikipedia refused {_GIVE_UP_AFTER} acts in a row: not asking more this run"
+                    )
+            else:
+                wiki_refused_in_a_row = 0
+            if found.note not in (NOT_FOUND, WIKI_UNAVAILABLE):
                 cache[artist] = {
                     "mbid": found.mbid,
                     "musicbrainz": found.musicbrainz,
@@ -660,7 +708,9 @@ def default_sheet() -> Path:
     return Path.home() / "Desktop" / f"MUSAEUS_genre_suggestions_{datetime.date.today()}.csv"
 
 
-def cmd_generate(*, dry_run: bool, limit: int | None, refresh: bool, out: str | None) -> int:
+def cmd_generate(
+    *, dry_run: bool, limit: int | None, refresh: bool, out: str | None, new_only: bool = False
+) -> int:
     from .canon.genre_law import GenreLaw
     from .config import get_config
     from .network_policy import NetworkPolicy, policy
@@ -681,7 +731,7 @@ def cmd_generate(*, dry_run: bool, limit: int | None, refresh: bool, out: str | 
             print(f"\nMusaeus genre-suggest generate [DRY RUN]\n  acts: {len(acts):,}")
             print(f"  already looked up: {len(acts) - len(to_ask):,}")
             n = len(to_ask) if limit is None else min(limit, len(to_ask))
-            print(f"  would look up: {n:,} (about {n * 2.5 / 60:.0f} min; nothing asked now)")
+            print(f"  would look up: {n:,} (about {n * 10 / 60:.0f} min; nothing asked now)")
             return 0
         sheet = Path(out).expanduser() if out else default_sheet()
         if sheet.exists():
@@ -694,10 +744,16 @@ def cmd_generate(*, dry_run: bool, limit: int | None, refresh: bool, out: str | 
         # The network for this explicit command only, and only while it asks.
         with policy(NetworkPolicy.ALLOWED):
             rep = generate(conn, law, vocab, cache_path, sheet, limit=limit, refresh=refresh,
-                           progress=print)  # fmt: skip
+                           progress=print, new_only=new_only)  # fmt: skip
     finally:
         conn.close()
-    print(f"\n  looked up now: {rep.asked:,}   from earlier: {rep.from_cache:,}")
+    earlier = " (not on this sheet)" if new_only else ""
+    print(f"\n  looked up now: {rep.asked:,}   from earlier: {rep.from_cache:,}{earlier}")
+    if rep.wiki_unavailable:
+        print(
+            f"  Wikipedia did not answer (MusicBrainz's answer shown, asked again next time): "
+            f"{rep.wiki_unavailable:,}"
+        )
     if rep.unavailable:
         print(f"  no answer (asked again next time): {rep.unavailable:,}")
     if rep.gave_up:

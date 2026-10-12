@@ -10,8 +10,8 @@ one standard, applied in Act 1, to artist names and song titles:
       after an apostrophe      "Don't", never "Don'T"
       feat. and vs.            left exactly as written
 
-Album names are not part of this: they already have their own rule
-(title_case.album_title_case, Grey 2026-09-16).
+Album names take it too since 2026-10-11 (Grey), without the ALL-CAPS
+repair: RAM, OU812 and BEYONCÉ are written so on purpose.
 
 The rule has to be the LAST word on a name, or two steps rewrite each other
 on every run. Normalize applies it to every catalogued row, and every other
@@ -115,10 +115,16 @@ def test_after_an_apostrophe_the_letter_stays_small(tmp_path):
     assert _normalized(tmp_path, "Dion", "don't stop")[1] == "Don't Stop"
 
 
-def test_album_names_keep_their_own_rule(tmp_path):
+def test_album_names_take_every_word_capitalised_too(tmp_path):
+    """Grey, 2026-10-11: albums follow artists and titles, in tags and folders.
+    The 2026-09-16 small-words rule was never wired into any step."""
     assert (
-        _normalized(tmp_path, "AC/DC", "Hells Bells", album="Back in Black")[2] == "Back in Black"
+        _normalized(tmp_path, "AC/DC", "Hells Bells", album="Back in Black")[2] == "Back In Black"
     )
+    assert _normalized(tmp_path, "Elton John", "Daniel",
+                       album="Don't Shoot Me I'm only the Piano Player")[2] == (
+        "Don't Shoot Me I'm Only The Piano Player"
+    )  # fmt: skip
 
 
 def test_act_one_settles_in_one_pass_and_stays_settled(tmp_path):
@@ -196,3 +202,36 @@ def test_organize_refiles_under_the_new_capitals_and_clears_the_old_folder(tmp_p
     assert not (ctx.config.alac_archive / "Rock" / "Dead or Alive").exists(), (
         "the emptied old-capitals folder was left behind"
     )
+
+
+@pytest.mark.parametrize(
+    "album", ["RAM", "OU812", "CSN", "X&Y", "BEYONCÉ", "DAMN.", "E=MC²", "SOUR"]
+)
+def test_an_album_written_in_capitals_keeps_them(tmp_path, album):
+    """Pre-merge review of #190: the ALL-CAPS repair flattened all 23 live
+    ones ("Ram", "Ou812"), undoing Grey's 2026-10-06 fixes."""
+    assert _normalized(tmp_path, "Paul McCartney", "Too Many People", album=album)[2] == album
+
+
+def test_album_names_settle_with_sanitize_and_the_spelling_step_between():
+    """Act 1's real order: Normalize, Sanitize, then one spelling per album.
+    A second pass changes nothing (pre-merge review of #190)."""
+    from musaeus.album_spelling import plan_album_spelling
+    from musaeus.stages.normalize import stored_album
+    from musaeus.stages.sanitize import sanitize_value
+
+    raw = [("Gary Moore", "Still Got The Blues & More", True), ("Gary Moore", "still got the blues and more", False),
+           ("Lynyrd Skynyrd", "Pronounced ’Lĕh-’nérd ’Skin-’nérd", True),
+           ("Lynyrd Skynyrd", "Pronounced 'Lĕh-'nérd 'Skin-'nérd", False)]  # fmt: skip
+
+    def one_pass(rows):
+        rows = [(a, sanitize_value(stored_album(al)) or stored_album(al), f) for a, al, f in rows]
+        recs = [{"file_path": f"{a}/{i}", "artist": a, "album": al, "finalized_at": "x" if f else None,
+                 "mb_artist_name": None} for i, (a, al, f) in enumerate(rows)]  # fmt: skip
+        best = {r["file_path"]: b for r, b in plan_album_spelling(recs)}
+        return [(a, best.get(f"{a}/{i}", al), f) for i, (a, al, f) in enumerate(rows)]
+
+    once = one_pass(raw)
+    assert len({al for a, al, _ in once if a == "Gary Moore"}) == 1
+    assert len({al for a, al, _ in once if a == "Lynyrd Skynyrd"}) == 1
+    assert one_pass(once) == once

@@ -188,7 +188,22 @@ def _strip_title_qualifiers(s: str) -> str:
     return s
 
 
-def _normalise(s: str, strip_qualifiers: bool = False) -> str:
+_AMPERSAND = re.compile(r"\s*&\s*")
+
+#: A bracket that only names who played with whom: "(feat. Rob Thomas)",
+#: "(With Paul McCartney)". The same recording is filed with and without it.
+_CREDIT_BRACKET = re.compile(
+    rf"[{OPEN}]\s*(?:with|feat\.?|featuring|ft\.?)\s[^{CLOSE}]*[{CLOSE}]", re.I
+)
+
+
+def _credit(title: str) -> str:
+    """The guest a title's credit bracket names, folded; "" if none."""
+    m = _CREDIT_BRACKET.search(title or "")
+    return re.sub(r"\W+", " ", m.group(0).lower()).strip() if m else ""
+
+
+def _normalise(s: str, strip_qualifiers: bool = False, fold_and: bool = True) -> str:
     """
     Lowercase, NFD-normalise, strip punctuation, collapse whitespace.
 
@@ -197,6 +212,11 @@ def _normalise(s: str, strip_qualifiers: bool = False) -> str:
     """
     if strip_qualifiers:
         s = _strip_title_qualifiers(s)
+    # "&" and "and" are one word (Grey, 2026-10-12): "Jack & Diane" and "Jack
+    # And Diane", "Shout (Part 1 & 2)" and "(Part 1 And 2)" are one song, and
+    # stripping "&" as punctuation scored them under the threshold.
+    if fold_and:
+        s = _AMPERSAND.sub(" and ", s)
     s = unicodedata.normalize("NFD", s.lower())
     s = re.sub(r"[^\w\s]", " ", s)  # punctuation → space
     s = re.sub(r"\s+", " ", s).strip()  # collapse whitespace
@@ -419,6 +439,39 @@ class NearDupeStage(BaseStage):
                 fuzz.ratio(bare_a, bare_b),
             )
             if score < TITLE_THRESHOLD:
+                # The same song with and without its guest named: "Smooth (feat.
+                # Rob Thomas)" and "Smooth" (Grey, 2026-10-12: the same song).
+                # Only at one length -- "Stay With Me (With The Royal
+                # Philharmonic Orchestra)" is another recording -- and never
+                # when both name a guest and the guests differ.
+                ca, cb = _credit(a["title"]), _credit(b["title"])
+                if not (ca or cb) or (ca and cb and ca != cb):
+                    continue
+                # One take's length: the Complete Decca "Blues Are Brewin'"
+                # holds alternate takes 2.5 s apart (pre-merge review of #191).
+                if abs((a["duration"] or 0) - (b["duration"] or 0)) > _SAME_TAKE_SECONDS:
+                    continue
+                bare = fuzz.ratio(
+                    _normalise(_CREDIT_BRACKET.sub(" ", a["title"]), strip_qualifiers=True),
+                    _normalise(_CREDIT_BRACKET.sub(" ", b["title"]), strip_qualifiers=True),
+                )
+                if bare < TITLE_THRESHOLD:
+                    continue
+                score = bare
+            elif _is_live(dict(a)) != _is_live(dict(b)) and (
+                abs((a["duration"] or 0) - (b["duration"] or 0)) > _SAME_TAKE_SECONDS
+                and fuzz.ratio(
+                    _normalise(a["title"], strip_qualifiers=True, fold_and=False),
+                    _normalise(b["title"], strip_qualifiers=True, fold_and=False),
+                )
+                < TITLE_THRESHOLD
+            ):
+                # Matched only because "&" is "and" now, one side live, at
+                # another length: a live take and a studio one (Stray Cats
+                # "Rev It Up & Go (Live)", 83 s longer). Without the fold this
+                # pair was never staged, so it is not staged now (pre-merge
+                # review of #191). Studio-vs-live pairs that matched before
+                # are left exactly as they were.
                 continue
 
             # Near duplicate found

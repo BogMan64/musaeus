@@ -572,10 +572,7 @@ def _normalise_artist(artist: str) -> str | None:
 
 
 def _normalise_title(value: str) -> str | None:
-    """A song title: the ALL-CAPS repair, then every word capitalised.
-
-    Albums keep _normalise_text_field -- their own rule, 2026-09-16.
-    """
+    """A song title: the ALL-CAPS repair, then every word capitalised."""
     fixed = _smart_title_case(value) if _is_all_caps(value) else value
     fixed = every_word_capitalised(fixed)
     return fixed if fixed != value else None
@@ -599,15 +596,28 @@ def stored_title(title: str) -> str:
     return (_normalise_title(title) or title) if title else title
 
 
-def _normalise_text_field(value: str) -> str | None:
+def _normalise_album(value: str) -> str | None:
+    """An album: every word capitalised -- and nothing lowered.
+
+    Albums had their own rule from 2026-09-16 (small words lower case, "Back
+    in Black"), which was never wired into any step, so an album kept its
+    source's spelling. Grey, 2026-10-11: albums take every word capitalised
+    too, in tags and folders ("Back In Black"). MusicBrainz searches ignore
+    case and MUSAEUS keeps its release ID, not its spelling.
+
+    Not the ALL-CAPS repair titles get: an album written in capitals is
+    nearly always written so on purpose -- RAM, OU812, CSN, X&Y, BEYONCÉ,
+    SOUR, DAMN. -- and the repair turned all 23 live ones into "Ram",
+    "Ou812", "Csn", undoing Grey's 2026-10-06 fixes (pre-merge review of
+    #190). every_word_capitalised only ever raises a first letter.
     """
-    Normalise a title or album field.
-    Only fixes ALL-CAPS strings; does not apply article logic.
-    Returns None if no change needed.
-    """
-    if _is_all_caps(value):
-        return _smart_title_case(value)
-    return None
+    fixed = every_word_capitalised(value)
+    return fixed if fixed != value else None
+
+
+def stored_album(album: str) -> str:
+    """An album exactly as Normalize stores it. See stored_artist."""
+    return (_normalise_album(album) or album) if album else album
 
 
 # ── Stage ─────────────────────────────────────────────────────────────────────
@@ -670,6 +680,20 @@ class NormalizeStage(BaseStage):
             problems.append(
                 f"{len(loose)} stored title(s) would still change if normalized again: {shown}"
             )
+        # And albums, since 2026-10-11.
+        albums = ctx.conn.execute(
+            "SELECT DISTINCT album FROM archive "
+            "WHERE status='CATALOGUED' AND album IS NOT NULL AND trim(album)!=''"
+        ).fetchall()
+        loose_albums = [
+            (r["album"], a) for r in albums if (a := _normalise_album(r["album"])) is not None
+        ]
+        if loose_albums:
+            shown = ", ".join(f"{a!r}→{b!r}" for a, b in loose_albums[:3])
+            problems.append(
+                f"{len(loose_albums)} stored album(s) would still change if normalized again: "
+                f"{shown}"
+            )
         return problems
 
     # ── Validate ──────────────────────────────────────────────────────────────
@@ -710,7 +734,7 @@ class NormalizeStage(BaseStage):
 
             new_artist = _normalise_artist(artist) if artist else None
             new_title = _normalise_title(title) if title else None
-            new_album = _normalise_text_field(album) if album else None
+            new_album = _normalise_album(album) if album else None
 
             if new_artist:
                 logger.info("[normalize] artist  %r → %r  (%s)", artist, new_artist, fp)

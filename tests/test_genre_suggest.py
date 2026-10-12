@@ -392,3 +392,97 @@ def test_a_finer_pop_genre_grey_chose_stays_off_the_sheet(tmp_path, vocab):
     rows = {r["artist"] for r in _read(sheet)}
     assert "Carole King" not in rows and rep.finer_kept == 1
     assert "Judy Collins" in rows, "a different genre (Folk) is still shown"
+
+
+# ── After the first full run (2026-10-12): 185 Wikipedia 429s ───────────────
+
+
+def test_a_wikipedia_refusal_keeps_the_musicbrainz_answer(monkeypatch):
+    import io
+    import json
+    import urllib.error
+
+    mb = {"genres": [{"name": "folk", "count": 3}],
+          "relations": [{"type": "wikipedia", "url": {"resource": "https://en.wikipedia.org/wiki/Judy_Collins"}}]}  # fmt: skip
+
+    def fake(req, timeout):
+        if "wikipedia" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {}, None)
+        return io.BytesIO(json.dumps(mb).encode())
+
+    monkeypatch.setattr(gs, "urlopen", fake)
+    for pause in ("_MB_PAUSE_S", "_WIKI_PAUSE_S", "_BUSY_WAIT_S"):
+        monkeypatch.setattr(gs, pause, 0)
+    with network_policy.policy(NetworkPolicy.ALLOWED):
+        found = gs.look_up("Judy Collins", "mbid-jc")
+    assert found.musicbrainz == [("folk", 3)] and found.note == gs.WIKI_UNAVAILABLE
+
+
+def test_an_act_wikipedia_refused_is_shown_but_asked_again(tmp_path, vocab):
+    conn = _db(tmp_path)
+    law = GenreLaw(_law(tmp_path, "artist,genre\r\n"))
+    half = gs.Found("mbid-jc", [("folk", 7)], [], gs.WIKI_UNAVAILABLE)
+    gs.generate(conn, law, vocab, tmp_path / "c.json", tmp_path / "s.csv",
+                lookup=lambda a, m: half if a == "Judy Collins" else ANSWERS[a])  # fmt: skip
+    assert "Judy Collins" in {r["artist"] for r in _read(tmp_path / "s.csv")}
+    assert "Judy Collins" not in gs._load_cache(tmp_path / "c.json")
+
+
+def test_new_only_lists_just_this_runs_acts(tmp_path, vocab):
+    conn = _db(tmp_path)
+    law = GenreLaw(_law(tmp_path, "artist,genre\r\n"))
+    cache = tmp_path / "c.json"
+    gs.generate(conn, law, vocab, cache, tmp_path / "first.csv",
+                lookup=lambda a, m: (_ for _ in ()).throw(gs.LookupUnavailable("x")) if a == "Judy Collins"
+                else ANSWERS[a])  # fmt: skip
+    rep = gs.generate(conn, law, vocab, cache, tmp_path / "second.csv", new_only=True,
+                      lookup=lambda a, m: ANSWERS[a])  # fmt: skip
+    assert [r["artist"] for r in _read(tmp_path / "second.csv")] == ["Judy Collins"]
+    assert rep.asked == 1
+
+
+def test_wikipedia_refusing_again_and_again_stops_the_run(tmp_path, vocab):
+    """Pre-merge review of #193: each refusal waits a minute, and a refusal
+    still counted as an answer, so the run never gave up."""
+    conn = _db(tmp_path)
+    for n in range(12):
+        upsert_archive(conn, {"file_path": f"/x/{n}.m4a", "status": "CATALOGUED",
+                              "artist": f"Act {n:02d}", "title": "t"})  # fmt: skip
+    conn.commit()
+    law = GenreLaw(_law(tmp_path, "artist,genre\r\n"))
+    calls: list[str] = []
+
+    def refused(artist, mbid):
+        calls.append(artist)
+        return gs.Found("mbid", [("folk", 1)], [], gs.WIKI_UNAVAILABLE)
+
+    rep = gs.generate(conn, law, vocab, tmp_path / "c.json", tmp_path / "s.csv", lookup=refused)
+    assert (
+        len(calls) == gs._GIVE_UP_AFTER
+        and rep.gave_up
+        and rep.wiki_unavailable == gs._GIVE_UP_AFTER
+    )
+
+
+@pytest.mark.parametrize("after", ["²", "Wed, 21 Oct 2026 07:28:00 GMT", " 7 ", "-3"])
+def test_an_odd_retry_after_never_stops_the_run(monkeypatch, after):
+    import io
+    import urllib.error
+    from email.message import Message
+
+    hdrs = Message()
+    hdrs["Retry-After"] = after
+    answers: list = [urllib.error.HTTPError("u", 429, "slow down", hdrs, None), b'{"ok": 1}']
+
+    def fake(req, timeout):
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return io.BytesIO(a)
+
+    monkeypatch.setattr(gs, "urlopen", fake)
+    monkeypatch.setattr(gs.time, "sleep", lambda s: None)
+    with network_policy.policy(NetworkPolicy.ALLOWED):
+        assert gs._get_json(
+            "https://en.wikipedia.org/w/api.php", "https://en.wikipedia.org/w/api.php"
+        ) == {"ok": 1}
