@@ -2292,6 +2292,9 @@ def _build_parser() -> argparse.ArgumentParser:
     gs_gen.add_argument("--limit", type=int, default=None, help="Look up at most N new acts")
     gs_gen.add_argument("--refresh", action="store_true", help="Ask again for every act")
     gs_gen.add_argument("--out", default=None, help="Sheet path (default: on the Desktop)")
+    gs_gen.add_argument(
+        "--new-only", action="store_true", help="List only acts looked up in this run"
+    )
     gs_apply = gs_sub.add_parser("apply", help="Load the approved rows into MasterLaw.csv")
     gs_apply.add_argument("sheet", help="The review sheet you marked")
     gs_apply.add_argument("--dry-run", action="store_true", help="Show what would change")
@@ -2695,6 +2698,7 @@ def main() -> None:
                         limit=getattr(args, "limit", None),
                         refresh=getattr(args, "refresh", False),
                         out=getattr(args, "out", None),
+                        new_only=getattr(args, "new_only", False),
                     )
                 )
             elif gs_cmd == "apply":

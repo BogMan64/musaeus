@@ -13,9 +13,10 @@ filesystem would have merged them by accident long ago.
 
 THE RULINGS THIS APPLIES, both Grey's, 2026-09-16
 
-  which spelling wins    musaeus.title_case.album_title_case -- "at", not
-                         "At". One ruling, one place, so the next caller does
-                         not invent a third spelling.
+  which spelling wins    Normalize's album form (stored_album): every word
+                         capitalised since 2026-10-11 ("At", not "at"). One
+                         ruling, one place, so the next caller does not invent
+                         a third spelling or fight Normalize.
 
   which FILE wins        when both folders hold a track of the same name:
                          best quality first, then length, longer wins.
@@ -35,6 +36,7 @@ earlier today had to repair two of.
     python3 scripts/merge_case_duplicate_albums.py              # dry run
     python3 scripts/merge_case_duplicate_albums.py --execute
 """
+
 from __future__ import annotations
 
 import argparse
@@ -49,7 +51,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from musaeus.config import MusicConfig  # noqa: E402
-from musaeus.title_case import album_title_case  # noqa: E402
+from musaeus.stages.normalize import stored_album  # noqa: E402
 
 TIERS = ("ALAC-Archival", "ALAC_Library", "CAR_Library")
 
@@ -59,9 +61,11 @@ def probe(p: Path) -> tuple[int, float]:
     file must never beat a readable one."""
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json",
-             "-show_format", str(p)],
-            capture_output=True, text=True, timeout=20)
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(p)],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
         fmt = json.loads(r.stdout).get("format", {})
         return int(fmt.get("bit_rate") or 0), float(fmt.get("duration") or 0.0)
     except Exception:
@@ -76,7 +80,7 @@ def better(a: Path, b: Path) -> Path:
         return a if abr > bbr else b
     if abs(adur - bdur) > 1.0:
         return a if adur > bdur else b
-    return a          # a is the incumbent; ties keep it, so re-runs are stable
+    return a  # a is the incumbent; ties keep it, so re-runs are stable
 
 
 def groups_for(root: Path) -> dict[tuple[str, str], list[Path]]:
@@ -96,14 +100,15 @@ def main() -> int:
         file=sys.stderr,
     )
     return 2
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--execute", action="store_true")
     args = ap.parse_args()
 
     cfg = MusicConfig.from_env()
     libs = Path(cfg.vault_root) / "Libraries"
-    renames: list[tuple[Path, Path]] = []      # (old file, new file) for the DB
+    renames: list[tuple[Path, Path]] = []  # (old file, new file) for the DB
     n_groups = n_moved = n_lost = 0
     losers: list[tuple[Path, Path, str]] = []
 
@@ -117,7 +122,7 @@ def main() -> int:
         print(f"\n=== {tier}: {len(dupes)} case-duplicate album(s) ===")
         for (artist, _), paths in sorted(dupes.items()):
             n_groups += 1
-            # Which variant to case-correct matters, because album_title_case
+            # Which variant to case-correct matters, because stored_album
             # PRESERVES an interior capital it cannot second-guess -- so
             # "Outlandos D'Amour" and "Outlandos d'Amour" each survive their
             # own spelling and the answer depends entirely on which one is
@@ -126,7 +131,7 @@ def main() -> int:
             # spelling and is a reason rather than an accident.
             counts = {p: len(list(p.rglob("*.m4a"))) for p in paths}
             established = max(paths, key=lambda p: (counts[p], p.name))
-            want = album_title_case(established.name)
+            want = stored_album(established.name)
             keep = next((p for p in paths if p.name == want), established)
             print(f"  {artist[:24]:<26}{' | '.join(repr(p.name) for p in paths)}")
             print(f"      -> {want!r}")
@@ -148,7 +153,7 @@ def main() -> int:
                         losers.append((dst, f, "replaced by better"))
                         n_lost += 1
                         if args.execute:
-                            renames.append((dst, dst))   # path unchanged, bytes swapped
+                            renames.append((dst, dst))  # path unchanged, bytes swapped
                             dst.unlink()
                             f.rename(dst)
                         n_moved += 1
@@ -166,8 +171,9 @@ def main() -> int:
             elif keep.name != want and args.execute:
                 pass
             if keep.name != want:
-                for f in sorted(x for x in (target if args.execute else keep).rglob("*")
-                                if x.is_file()):
+                for f in sorted(
+                    x for x in (target if args.execute else keep).rglob("*") if x.is_file()
+                ):
                     old = keep / f.relative_to(target if args.execute else keep)
                     renames.append((old, f))
 
@@ -182,15 +188,16 @@ def main() -> int:
                 "UPDATE archive SET file_path=? WHERE file_path=?", (str(new), str(old))
             ).rowcount
             n_rows += conn.execute(
-                "UPDATE archive SET car_export_path=? WHERE car_export_path=?",
-                (str(new), str(old))
+                "UPDATE archive SET car_export_path=? WHERE car_export_path=?", (str(new), str(old))
             ).rowcount
         conn.commit()
         conn.close()
 
-    print(f"\n{'DONE' if args.execute else 'DRY RUN'}: {n_groups} group(s), "
-          f"{n_moved} file(s) moved, {n_lost} duplicate file(s) resolved, "
-          f"{n_rows} database path(s) updated")
+    print(
+        f"\n{'DONE' if args.execute else 'DRY RUN'}: {n_groups} group(s), "
+        f"{n_moved} file(s) moved, {n_lost} duplicate file(s) resolved, "
+        f"{n_rows} database path(s) updated"
+    )
     if losers:
         print(f"\n{len(losers)} same-name collision(s) decided by quality then length:")
         for a, b, why in losers[:12]:

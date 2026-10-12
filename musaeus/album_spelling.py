@@ -7,10 +7,16 @@ libraries (no genre level) joined songs from two genres into one clash. Grey ask
 that MUSAEUS keep one spelling by itself.
 
 The spelling already filed for that artist wins; a new song takes it. When none is
-filed yet, or more than one is, the official style wins (small words lower case,
-numerals and initials upper case), then the spelling most songs carry. Only a
-difference of capital letters is changed: apostrophe style and a final full stop
-make no folder of their own, so each song keeps its own.
+filed yet, or more than one is, the official style wins (numerals and initials upper
+case), then the spelling most songs carry.
+
+Since 2026-10-11 (Grey) two kinds of apostrophe, "&" against "And", and a final full
+stop are one album too, in the tag and the folder -- Lynyrd Skynyrd's first album was
+filed twice that way. In Act 1 Normalize (every word capitalised) and Sanitize (which
+turns a curly apostrophe straight) run first, so most such pairs already agree by the
+time this runs; on the live library it is left with "&"/"And" and final-stop pairs
+("Gary Moore & ..." / "... And ...", "3 A.M" / "3 A.M."). Every candidate is already in
+Normalize's form, so the spelling chosen is one Normalize keeps.
 """
 
 from __future__ import annotations
@@ -48,15 +54,17 @@ _ROMAN = re.compile(r"^(?=[MDCLXVI])M*(C[MD]|D?C{0,3})(X[CL]|L?X{0,3})(I[XV]|V?I
 _INITIALS = re.compile(r"(?:[A-Z]\.)+[A-Z]?\.?")
 
 
-def _shape(album: str) -> str:
-    """The album as its folder spells it: apostrophe style and a final full stop
-    make no folder of their own, so they are left as each source has them."""
-    return album.replace("’", "'").rstrip(". ").strip()
+_APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "`": "'", "´": "'", "ʼ": "'"})
+_AND = re.compile(r"\s*&\s*|\s+and\s+", re.I)
+_SPACES = re.compile(r"\s+")
 
 
 def album_key(album: str) -> str:
-    """Two spellings of one album share this key."""
-    return _shape(album).casefold()
+    """Two spellings of one album share this key: letter case, the kind of
+    apostrophe, "&" against "and", spacing and a final full stop aside."""
+    k = album.translate(_APOSTROPHES).strip().rstrip(". ").strip()
+    k = _AND.sub(" and ", k)
+    return _SPACES.sub(" ", k).casefold()
 
 
 def style_score(album: str) -> int:
@@ -94,8 +102,7 @@ def plan_album_spelling(rows: list[Any]) -> list[tuple[Any, str]]:
             continue
         filed = {r["album"].strip() for r in members if r["finalized_at"]}
         best = max(spellings, key=lambda s: (s in filed, style_score(s), spellings[s], s))
-        # Only capital letters split a folder; anything else is left alone.
-        changes += [(r, best) for r in members if _shape(r["album"]) != _shape(best)]
+        changes += [(r, best) for r in members if r["album"].strip() != best]
     return changes
 
 
@@ -121,7 +128,8 @@ def unify_album_spelling(
                 old_value=r["album"],
                 new_value=best,
                 stage=stage,
-                note="one spelling per album per artist: the one already filed, else the official style",
+                note="one spelling per album per artist (case, apostrophes, &/and): "
+                "the one already filed, else the official style",
             )
     if done and not dry_run:
         conn.commit()
