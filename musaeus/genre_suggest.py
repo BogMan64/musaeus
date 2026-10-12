@@ -230,7 +230,10 @@ def _get_json(url: str, gate: str) -> dict:
                 # 5 s retry (2026-10-12): now 1 s between pages, and 30 s,
                 # twice, or what Retry-After asks.
                 after = exc.headers.get("Retry-After") if exc.headers is not None else None
-                wait = int(after) if after and str(after).isdigit() else _BUSY_WAIT_S
+                try:
+                    wait = max(int(str(after).strip()), 0) if after else _BUSY_WAIT_S
+                except ValueError:  # an HTTP date, or anything odd
+                    wait = _BUSY_WAIT_S
                 time.sleep(min(wait, 120))
                 continue
             raise LookupUnavailable(f"{gate}: HTTP {exc.code}") from exc
@@ -276,7 +279,14 @@ def look_up(artist: str, mbid: str | None) -> Found:
         ((g["name"], int(g.get("count") or 0)) for g in data.get("genres", []) if g.get("name")),
         key=lambda gc: -gc[1],
     )
-    title = _wikipedia_title(data.get("relations", []))
+    try:
+        # Wikidata (for the title) is Wikimedia too, and refuses the same way:
+        # a refusal there keeps MusicBrainz's answer as well (pre-merge review
+        # of #193).
+        title = _wikipedia_title(data.get("relations", []))
+    except LookupUnavailable:
+        found.note = WIKI_UNAVAILABLE
+        return found
     if title:
         time.sleep(_WIKI_PAUSE_S)
         try:
@@ -455,6 +465,7 @@ class Report:
     no_suggestion: int = 0
     rows: int = 0
     gave_up: bool = False
+    wiki_unavailable: int = 0
     finer_kept: int = 0
     unmapped: dict[str, int] = field(default_factory=dict)
 
@@ -506,6 +517,7 @@ def _collect(
     acts, cache, cache_path, law, vocab, rows, rep, limit, lookup, progress, new_only=False
 ) -> None:
     failed_in_a_row = 0
+    wiki_refused_in_a_row = 0
     for i, (artist, mbid, songs) in enumerate(acts, 1):
         hit = cache.get(artist)
         if hit is not None:
@@ -536,6 +548,20 @@ def _collect(
                 continue
             failed_in_a_row = 0
             rep.asked += 1
+            if found.note == WIKI_UNAVAILABLE:
+                # Each refusal costs a minute of waiting: after a few in a row
+                # Wikipedia is down for us, and the run stops rather than
+                # sitting silent for hours (pre-merge review of #193).
+                rep.wiki_unavailable += 1
+                wiki_refused_in_a_row += 1
+                progress(f"  ~ {artist}: Wikipedia did not answer (MusicBrainz did)")
+                if wiki_refused_in_a_row >= _GIVE_UP_AFTER:
+                    failed_in_a_row = _GIVE_UP_AFTER
+                    progress(
+                        f"  Wikipedia refused {_GIVE_UP_AFTER} acts in a row: not asking more this run"
+                    )
+            else:
+                wiki_refused_in_a_row = 0
             if found.note not in (NOT_FOUND, WIKI_UNAVAILABLE):
                 cache[artist] = {
                     "mbid": found.mbid,
@@ -705,7 +731,7 @@ def cmd_generate(
             print(f"\nMusaeus genre-suggest generate [DRY RUN]\n  acts: {len(acts):,}")
             print(f"  already looked up: {len(acts) - len(to_ask):,}")
             n = len(to_ask) if limit is None else min(limit, len(to_ask))
-            print(f"  would look up: {n:,} (about {n * 2.5 / 60:.0f} min; nothing asked now)")
+            print(f"  would look up: {n:,} (about {n * 10 / 60:.0f} min; nothing asked now)")
             return 0
         sheet = Path(out).expanduser() if out else default_sheet()
         if sheet.exists():
@@ -721,7 +747,13 @@ def cmd_generate(
                            progress=print, new_only=new_only)  # fmt: skip
     finally:
         conn.close()
-    print(f"\n  looked up now: {rep.asked:,}   from earlier: {rep.from_cache:,}")
+    earlier = " (not on this sheet)" if new_only else ""
+    print(f"\n  looked up now: {rep.asked:,}   from earlier: {rep.from_cache:,}{earlier}")
+    if rep.wiki_unavailable:
+        print(
+            f"  Wikipedia did not answer (MusicBrainz's answer shown, asked again next time): "
+            f"{rep.wiki_unavailable:,}"
+        )
     if rep.unavailable:
         print(f"  no answer (asked again next time): {rep.unavailable:,}")
     if rep.gave_up:

@@ -439,3 +439,50 @@ def test_new_only_lists_just_this_runs_acts(tmp_path, vocab):
                       lookup=lambda a, m: ANSWERS[a])  # fmt: skip
     assert [r["artist"] for r in _read(tmp_path / "second.csv")] == ["Judy Collins"]
     assert rep.asked == 1
+
+
+def test_wikipedia_refusing_again_and_again_stops_the_run(tmp_path, vocab):
+    """Pre-merge review of #193: each refusal waits a minute, and a refusal
+    still counted as an answer, so the run never gave up."""
+    conn = _db(tmp_path)
+    for n in range(12):
+        upsert_archive(conn, {"file_path": f"/x/{n}.m4a", "status": "CATALOGUED",
+                              "artist": f"Act {n:02d}", "title": "t"})  # fmt: skip
+    conn.commit()
+    law = GenreLaw(_law(tmp_path, "artist,genre\r\n"))
+    calls: list[str] = []
+
+    def refused(artist, mbid):
+        calls.append(artist)
+        return gs.Found("mbid", [("folk", 1)], [], gs.WIKI_UNAVAILABLE)
+
+    rep = gs.generate(conn, law, vocab, tmp_path / "c.json", tmp_path / "s.csv", lookup=refused)
+    assert (
+        len(calls) == gs._GIVE_UP_AFTER
+        and rep.gave_up
+        and rep.wiki_unavailable == gs._GIVE_UP_AFTER
+    )
+
+
+@pytest.mark.parametrize("after", ["²", "Wed, 21 Oct 2026 07:28:00 GMT", " 7 ", "-3"])
+def test_an_odd_retry_after_never_stops_the_run(monkeypatch, after):
+    import io
+    import urllib.error
+    from email.message import Message
+
+    hdrs = Message()
+    hdrs["Retry-After"] = after
+    answers: list = [urllib.error.HTTPError("u", 429, "slow down", hdrs, None), b'{"ok": 1}']
+
+    def fake(req, timeout):
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return io.BytesIO(a)
+
+    monkeypatch.setattr(gs, "urlopen", fake)
+    monkeypatch.setattr(gs.time, "sleep", lambda s: None)
+    with network_policy.policy(NetworkPolicy.ALLOWED):
+        assert gs._get_json(
+            "https://en.wikipedia.org/w/api.php", "https://en.wikipedia.org/w/api.php"
+        ) == {"ok": 1}
