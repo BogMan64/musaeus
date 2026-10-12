@@ -165,6 +165,22 @@ def comparison_key(name: str) -> str:
     return n.lower()
 
 
+def act_key(name: str) -> str:
+    """One act's key across the ways a name gets written: no case, accents,
+    punctuation or leading/trailing "The", and "&"/"+" read as "and".
+
+    "Beyonce" == "Beyoncé", "Beatles" == "Beatles, The" == "The Beatles",
+    "Hall & Oates" == "Hall and Oates". Built on comparison_key, so the
+    article rule is the one this module owns. Doctor's "one act, two
+    spellings" and AcoustID's artist check each grew this as a private copy
+    (Grey's code review, 2026-10-11, finding 12); they share it now.
+    """
+    n = comparison_key(name or "")
+    n = unicodedata.normalize("NFKD", n).encode("ascii", "ignore").decode()
+    n = re.sub(r"\s*[&+]\s*", " and ", n)
+    return re.sub(r"[^0-9a-z]", "", n)
+
+
 def tag_values(stored_artist: str) -> dict[str, str]:
     """What the artist and sort-artist tags should hold for a stored name.
 

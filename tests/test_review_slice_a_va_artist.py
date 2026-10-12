@@ -33,6 +33,28 @@ def _artist(name: str) -> tuple[str, str]:
         "Various Artists - Song [Bonus Track].m4a",
         "Various Artists - Song [Live at Wembley].m4a",
         "Various Artists - Song [50th Anniversary Edition].m4a",
+        # Grey's code review, 2026-10-11, finding 7.
+        "Various Artists - Song [Official Video].m4a",
+        "Various Artists - Song [Official Music Video].m4a",
+        "Various Artists - Song [feat. Drake].m4a",
+        "Various Artists - Song [ft. Rihanna].m4a",
+        "Various Artists - Song [Club Mix].m4a",
+        "Various Artists - Song [Tiesto Remix].m4a",
+        "Various Artists - Song [Long Version].m4a",
+        "Various Artists - Song [Kygo Rework].m4a",
+        "Various Artists - Song [Prod. by Metro Boomin].m4a",
+        "Various Artists - Song [featuring Drake].m4a",
+        # Pre-merge review of #185.
+        "Various Artists - Song [With The Royal Philharmonic Orchestra].m4a",
+        "Various Artists - Song [w/ Drake].m4a",
+        "Various Artists - Song [Sped Up].m4a",
+        "Various Artists - Song [Official 4K Video].m4a",
+        "Various Artists - Song [12'' Mix].m4a",
+        "Various Artists - Song [VIP Mix].m4a",
+        "Various Artists - Song [Re-Edit].m4a",
+        "Various Artists - Song [MTV Unplugged].m4a",
+        "Various Artists - Song [Soundtrack].m4a",
+        "Various Artists - Song [Lyric Video].m4a",
     ],
 )
 def test_a_description_of_the_recording_is_not_an_artist(name):
@@ -49,6 +71,9 @@ def test_the_filename_rule_is_read_before_a_bracket():
     [
         ("Various Artists - Be My Baby [The Ronettes-Phil Spector].m4a", "The Ronettes"),
         ("Various Artists - Wings [Little Mix].m4a", "Little Mix"),
+        ("Various Artists - Song [Club Nouveau].m4a", "Club Nouveau"),
+        ("Various Artists - Song [Audio Adrenaline].m4a", "Audio Adrenaline"),
+        ("Various Artists - Song [The Music].m4a", "The Music"),
         ("Various Artists - Song [Live Wire Band].m4a", ""),  # refused, not guessed
     ],
 )
