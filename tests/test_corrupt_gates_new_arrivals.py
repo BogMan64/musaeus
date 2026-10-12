@@ -262,3 +262,15 @@ def test_quarantine_follows_the_configured_folder(tmp_path) -> None:
     assert (cfg.quarantine / "corrupted" / "broken.m4a").exists()
     assert not (cfg.vault_root / "QUARANTINE").exists()
     assert stage.verify_effect(ctx, result) == []
+
+
+def test_a_library_file_is_never_taken_as_an_arrival(ctx, cfg) -> None:
+    """Pre-merge review of #179: an unfinalized row on an ALAC_Library file
+    would have been decoded and, if bad, quarantined out of the library."""
+    f = _truncate(_tone(cfg.alac_library / "Rock" / "edition.m4a"))
+    _catalogued_arrival(ctx, f)
+
+    stage = CorruptStage()
+    stage._gate_new_arrivals(ctx, stage._make_result(), dry_run=False)
+
+    assert f.exists() and _status(ctx, "edition") == "CATALOGUED"

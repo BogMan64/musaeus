@@ -474,19 +474,14 @@ class CorruptStage(BaseStage):
         """Scan for corrupt files, optionally quarantine them."""
         result = self._make_result(dry_run=dry_run)
         conn = ctx.conn
-        # The decode columns are owned by deep_scan and added lazily, so on
-        # a database where deep_scan has never run they do not exist yet.
-        # Reusing its helper rather than adding a sixth _ensure_columns.
+        # The decode columns are part of the schema (open_db adds them) since
+        # Finalize reads them; this stays for a connection opened some other
+        # way. A dry run never adds a column (a preview must not alter
+        # schema), so the columns are selected only if they are there; NULL
+        # stands in otherwise, which is exactly what "never checked" means.
         if not dry_run:
             deep_scan_ensure_columns(conn)
 
-        # decode_ok/decode_checked_at exist once deep_scan_ensure_columns
-        # has run at least once with dry_run=False. A dry run never calls
-        # it (a preview must not alter schema), so on a database that has
-        # never done a real run, selecting those columns would raise
-        # "no such column". Select them only if they are actually there;
-        # NULL stands in otherwise, which is exactly what "never checked"
-        # means anyway.
         _has_decode_cols = {"decode_ok", "decode_checked_at"} <= {
             r[1] for r in conn.execute("PRAGMA table_info(archive)").fetchall()
         }
@@ -543,7 +538,10 @@ class CorruptStage(BaseStage):
         # budget exists so Act 1 never tries to do deep_scan's job
         # synchronously. 200 files at the ~1.46s/file measured 2026-09-02
         # is ~5 minutes added to a run with many new arrivals; a genuinely
-        # large backlog is left for deep_scan rather than blocking here.
+        # large backlog of MASTERS is left for deep_scan rather than blocking
+        # here. New arrivals are not budgeted: _gate_new_arrivals decodes
+        # every one (~1.5 s/file), since Finalize files none that has not
+        # decoded clean.
         new_arrival_decodes = 0
         # The configured quarantine (MUSAEUS_QUARANTINE), which verify_effect
         # checks against -- not vault_root/QUARANTINE, which it only is by
@@ -869,9 +867,15 @@ class CorruptStage(BaseStage):
         # default (Grey's code review, 2026-10-11, finding 9).
         quarantine_dir = ctx.quarantine / "corrupted"
         gated = 0
+        lib = ctx.alac_library
         for row in rows:
             file_path = Path(row["file_path"])
             if not file_path.is_file():
+                continue
+            # Never a file in ALAC_Library: it is an edition, not an arrival,
+            # and quarantining it would take it straight out of the library
+            # (Finalize skips them the same way; pre-merge review of #179).
+            if lib is not None and file_path.is_relative_to(lib):
                 continue
             try:
                 decoded_ok, decode_err = ffmpeg_decode_check(file_path, seconds=0)

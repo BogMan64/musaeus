@@ -304,10 +304,23 @@ class FinalizeStage(BaseStage):
              WHERE status='CATALOGUED' AND canonicalized_at IS NOT NULL
             """
         ).fetchone()
+        # Not counted as awaiting: an arrival that has not decoded clean is
+        # held, not finalized (pre-merge review of #179).
+        cols = {r[1] for r in ctx.conn.execute("PRAGMA table_info(archive)")}
+        held = 0
+        if "decode_ok" in cols:
+            held = ctx.conn.execute(
+                "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' "
+                "AND canonicalized_at IS NOT NULL "
+                "AND (finalized_at IS NULL OR finalized_at = '') "
+                "AND (decode_ok IS NULL OR decode_ok != 1)"
+            ).fetchone()[0]
         logger.info(
-            "[finalize] %d file(s) awaiting finalize (%d already finalized, skipped)",
-            pending,
+            "[finalize] %d file(s) awaiting finalize (%d already finalized, skipped; "
+            "%d held back, not decoded clean)",
+            pending - held,
             canonicalized - pending,
+            held,
         )
 
     def _get_pending(self, ctx: RunContext, force: bool) -> list[dict]:
@@ -317,8 +330,8 @@ class FinalizeStage(BaseStage):
         # Same guard OrganizeStage uses; NULL is exactly "not enriched".
         cols = {r[1] for r in ctx.conn.execute("PRAGMA table_info(archive)").fetchall()}
         mb = "mb_artist_name" if "mb_artist_name" in cols else "NULL AS mb_artist_name"
-        # decode_ok is added by Corrupt (deep_scan's columns); absent means no
-        # file here was ever decoded.
+        # decode_ok is written by Corrupt's decode; the column is part of the
+        # schema, and absent (an old database) means nothing was decoded.
         dec = "decode_ok" if "decode_ok" in cols else "NULL AS decode_ok"
         if force:
             rows = ctx.conn.execute(
@@ -376,6 +389,14 @@ class FinalizeStage(BaseStage):
             f"{verb} back {len(held)} arrival(s) not decoded clean -- Corrupt must "
             "decode them first; the next run tries again:"
         )
+        if not dry_run:
+            # A problem the run's report counts, not only a note: run on its
+            # own (`--act 3`), Finalize held files and the Act still said "no
+            # problems" while they sat in STAGING (pre-merge review of #179).
+            result.errors.append(
+                f"{len(held)} arrival(s) held back: not decoded clean "
+                "(Act 1's Corrupt decodes them; then Act 3 files them)"
+            )
         for r in held[:10]:
             state = "never decoded" if r["decode_ok"] is None else "failed its decode"
             result.notes.append(f"  {Path(r['file_path']).name} ({state})")

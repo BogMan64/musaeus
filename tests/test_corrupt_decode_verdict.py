@@ -105,7 +105,7 @@ def test_a_file_the_ratio_accuses_but_the_decode_acquits_is_left_alone(ctx, cfg)
     result = CorruptStage()._scan(ctx, dry_run=False)
 
     assert f.exists(), "an intact file must never be quarantined on a size ratio"
-    assert not (cfg.vault_root / "QUARANTINE" / "corrupted" / f.name).exists()
+    assert not (cfg.quarantine / "corrupted" / f.name).exists()
     assert any("decoded cleanly" in n for n in result.notes), result.notes
 
 
@@ -126,7 +126,7 @@ def test_a_truncated_file_is_still_caught(ctx, cfg) -> None:
     CorruptStage()._scan(ctx, dry_run=False)
 
     assert not f.exists(), "a file that fails to decode must be quarantined"
-    assert (cfg.vault_root / "QUARANTINE" / "corrupted" / "broken.m4a").exists()
+    assert (cfg.quarantine / "corrupted" / "broken.m4a").exists()
 
 
 def test_the_decode_result_is_recorded_so_deep_scan_need_not_repeat_it(ctx, cfg) -> None:
@@ -226,7 +226,7 @@ def test_a_right_sized_damaged_file_is_caught_and_quarantined(ctx, cfg) -> None:
     result = CorruptStage()._scan(ctx, dry_run=False)
 
     assert not f.exists(), "the decode must catch it and quarantine it"
-    assert (cfg.vault_root / "QUARANTINE" / "corrupted" / "broken.m4a").exists()
+    assert (cfg.quarantine / "corrupted" / "broken.m4a").exists()
     assert result.files_changed == 1
 
 

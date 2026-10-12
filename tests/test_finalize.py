@@ -806,3 +806,15 @@ class TestFinalizeHoldsUndecodedArrivals:
         assert [r["title"] for r in pending] == ["old"]
         assert stage._held_undecoded == []
         assert not path.exists()
+
+
+def test_a_held_arrival_is_a_problem_the_report_counts(ctx):
+    """Pre-merge review of #179: run alone (`--act 3`), Finalize held a file
+    and the Act still read "no problems"."""
+    held = _make_canonicalized_track(ctx, "a/held.m4a", "Artist", "Album", "held")
+    ctx.conn.execute("UPDATE archive SET decode_ok = NULL WHERE file_path = ?", (str(held),))
+    ctx.conn.commit()
+
+    result = FinalizeStage().run(ctx)
+
+    assert any("1 arrival(s) held back" in e for e in result.errors)
