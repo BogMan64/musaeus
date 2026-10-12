@@ -152,16 +152,29 @@ class GenreValidateStage(BaseStage):
         by re-reading what was written, so a no-op cannot pass. A tie is left
         alone on purpose, so it is not a failure.
         """
+        problems: list[str] = []
         ties = self._tie_artists or frozenset()
         multi = [r for r in self._multi_genre_artists(ctx.conn) if r["artist"] not in ties]
-        if not multi:
-            return []
-        names = ", ".join(f"{r['artist']} ({r['n']})" for r in multi[:3])
-        return [
-            f"{len(multi)} artist(s) still carry more than one genre after "
-            f"genre-validate --consolidate claimed {result.files_changed} "
-            f"change(s): {names}"
-        ]
+        if multi:
+            names = ", ".join(f"{r['artist']} ({r['n']})" for r in multi[:3])
+            problems.append(
+                f"{len(multi)} artist(s) still carry more than one genre after "
+                f"genre-validate --consolidate claimed {result.files_changed} "
+                f"change(s): {names}"
+            )
+        # A majority winner is whatever the library mostly said, which can be
+        # a genre the vocabulary does not list ('Pop, Rock'): this run's own
+        # write, so a failure, as in the ordinary check.
+        allowed = self._allowed_vocabulary(ctx)
+        if allowed:
+            off = sorted(self._written_genres - allowed, key=str.lower)
+            if off:
+                problems.append(
+                    f"{len(off)} genre(s) written this run are absent from "
+                    "Genre_Allowed.txt: " + ", ".join(repr(g) for g in off[:5])
+                )
+        self._library_notes(ctx, result, self._law(ctx), allowed)
+        return problems
 
     @staticmethod
     def _multi_genre_artists(conn) -> list:
@@ -357,6 +370,16 @@ class GenreValidateStage(BaseStage):
         # genre tag verbatim and never consults GenreCanon. This stage
         # ran and left it, because it only ever filled EMPTY genres.
         if allowed and genre not in allowed:
+            # A credit with no ruling of its own takes its lead artist's here
+            # too (Grey, 2026-10-06, below). Asking only the full credit sent
+            # "Some Lead, Friend" tagged 'pop' to the map ('Pop') on one run
+            # and to the lead's 'Rock' on the next -- two writes for one
+            # decision, and the self-check, which runs these rules again,
+            # failed the first run (pre-merge review of #178).
+            if law_genre is None:
+                lead = folder_artist(artist, row["mb_artist_name"])
+                if lead and lead != artist:
+                    law_genre = law.genre_for(lead)
             replacement = law_genre if law_genre in allowed else None
             if replacement is None:
                 resolved = canon.resolve(genre) if canon else None
@@ -617,6 +640,7 @@ class GenreValidateStage(BaseStage):
 
         by_law = by_majority = ties = changed = 0
         tie_artists: set[str] = set()
+        written: set[str] = set()
         for artist, genres in counts.items():
             if len(genres) < 2:
                 continue
@@ -642,6 +666,8 @@ class GenreValidateStage(BaseStage):
                 (winner, artist, winner),
             )
             changed += cur.rowcount
+            if cur.rowcount:
+                written.add(winner)
 
         # A blank genre is not a disagreement, so the loop above never sees
         # it: `counts` is built only from rows that already HAVE a genre, and
@@ -672,6 +698,7 @@ class GenreValidateStage(BaseStage):
                 (verdict, artist),
             )
             if cur.rowcount:
+                written.add(verdict)
                 by_law_blank += 1
                 changed += cur.rowcount
                 ctx.log_event(
@@ -685,6 +712,7 @@ class GenreValidateStage(BaseStage):
         ctx.conn.commit()
         # verify_effect checks --consolidate by its own rule, ties aside.
         self._tie_artists = frozenset(tie_artists)
+        self._written_genres = frozenset(written)
         result.files_changed = changed
         result.notes.insert(0, f"artists given a genre from MasterLaw: {by_law_blank}")
         result.notes.insert(1, f"artists consolidated by MasterLaw:  {by_law}")

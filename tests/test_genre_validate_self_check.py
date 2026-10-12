@@ -106,7 +106,7 @@ class TestWhatTheStageKeepsOnPurposeIsNotAFailure:
 
 
 class TestTheCheckStillCatchesAWriteThatDidNotLand:
-    def test_a_partial_write(self, ctx, monkeypatch):
+    def test_a_partial_write(self, ctx):
         # 900 rows consolidated and 3 missed: the defect the check exists for.
         for i in range(5):
             _track(ctx, f"t{i}", "The Beatles", "Pop")
@@ -185,3 +185,39 @@ class TestConsolidateIsCheckedByItsOwnRule:
         assert _genre(ctx, "e") == "Rock"
         assert result.success, result.errors
         assert result.verified is True, result.verify_notes
+
+
+class TestOneRunIsEnough:
+    """The self-check runs the stage's rules again, so the rules must settle
+    every row in one run: a second run that still writes means the first
+    failed its own check (pre-merge review of #178)."""
+
+    @pytest.mark.parametrize("credit", ["Carole King, Friend", "Carole King feat. Friend"])
+    def test_a_credit_with_an_unlisted_genre_takes_its_leads_genre_at_once(self, ctx, credit):
+        (ctx.config.meta_dir / "Genre_Canonical_Map.txt").write_text(
+            "pop, rock => Rock\n", encoding="utf-8"
+        )
+        _track(ctx, "a", credit, "pop")  # a case variant: resolves to 'Pop'
+        _track(ctx, "b", credit, "Pop, Rock")  # a mapped value: resolves to 'Rock'
+
+        first = GenreValidateStage().execute(ctx)
+        second = GenreValidateStage().execute(ctx)
+
+        assert first.success and first.verified is True, first.verify_notes
+        assert (_genre(ctx, "a"), _genre(ctx, "b")) == ("Pop", "Pop")  # Carole King: Pop
+        assert second.files_changed == 0
+
+
+class TestConsolidateKeepsItsFindings:
+    def test_an_unlisted_majority_winner_fails_and_the_notes_are_kept(self, ctx):
+        _track(ctx, "a", "Unknown Act", "Pop, Rock")
+        _track(ctx, "b", "Unknown Act", "Pop, Rock")
+        _track(ctx, "c", "Unknown Act", "Rock")
+        ctx.set("genre_consolidate", True)
+
+        result = GenreValidateStage().execute(ctx)
+
+        assert _genre(ctx, "c") == "Pop, Rock"
+        assert result.verified is False
+        assert any("'Pop, Rock'" in v and "Genre_Allowed" in v for v in result.verify_notes)
+        assert any("absent from Genre_Allowed.txt" in n for n in result.notes)
