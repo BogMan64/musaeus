@@ -10,11 +10,13 @@ The spelling already filed for that artist wins; a new song takes it. When none 
 filed yet, or more than one is, the official style wins (numerals and initials upper
 case), then the spelling most songs carry.
 
-Since 2026-10-11 (Grey) two kinds of apostrophe ("Pronounced 'Lĕh-'nérd" with ’ and
-with '), "&" against "And", and a final full stop are one album too, in the tag and
-the folder -- Lynyrd Skynyrd's first album was filed twice that way. Every candidate
-is already in Normalize's form (every word capitalised, which runs first in Act 1),
-so the spelling chosen is one Normalize keeps.
+Since 2026-10-11 (Grey) two kinds of apostrophe, "&" against "And", and a final full
+stop are one album too, in the tag and the folder -- Lynyrd Skynyrd's first album was
+filed twice that way. In Act 1 Normalize (every word capitalised) and Sanitize (which
+turns a curly apostrophe straight) run first, so most such pairs already agree by the
+time this runs; on the live library it is left with "&"/"And" and final-stop pairs
+("Gary Moore & ..." / "... And ...", "3 A.M" / "3 A.M."). Every candidate is already in
+Normalize's form, so the spelling chosen is one Normalize keeps.
 """
 
 from __future__ import annotations

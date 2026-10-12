@@ -142,9 +142,10 @@ def album_title_case(text: str) -> str:
 #
 # Grey, 2026-09-25, after finding "Dead Or Alive" and "Dead or Alive" as two
 # folders: "the simpler solution ... every word with a few exceptions
-# capitalised" -- for artist names and song titles. He was told that album
-# names follow album_title_case above ("i like at", 2026-09-16) and chose this
-# for artists and titles anyway, so albums are deliberately not covered here.
+# capitalised" -- for artist names and song titles. Albums followed
+# album_title_case above ("i like at", 2026-09-16) until 2026-10-11, when Grey
+# chose every word capitalised for albums too (normalize._normalise_album). So
+# album_title_case is no longer applied to the library.
 #
 # It only ever RAISES a first letter. Nothing is lowercased, so every spelling
 # someone chose on purpose survives: ABBA, AC/DC, McCartney, eBay (_is_fixed).
