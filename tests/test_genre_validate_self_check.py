@@ -221,3 +221,17 @@ class TestConsolidateKeepsItsFindings:
         assert result.verified is False
         assert any("'Pop, Rock'" in v and "Genre_Allowed" in v for v in result.verify_notes)
         assert any("absent from Genre_Allowed.txt" in n for n in result.notes)
+
+
+class TestAStampOnANonGenreDoesNotFreezeTheLaw:
+    """Pre-merge review of #180: a ruling stamp on a blank or unlisted genre
+    stayed after the law's genre was written, and froze it."""
+
+    @pytest.mark.parametrize("genre", ["", "Rokc"])
+    def test_the_stamp_goes_when_the_law_writes(self, ctx, genre):
+        _track(ctx, "a", "Carole King", genre, ruled="2026-10-11 20:00:00")
+
+        GenreValidateStage().execute(ctx)
+
+        row = ctx.conn.execute("SELECT genre, genre_ruled_at FROM archive").fetchone()
+        assert tuple(row) == ("Pop", None)

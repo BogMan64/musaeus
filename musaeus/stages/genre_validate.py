@@ -504,7 +504,15 @@ class GenreValidateStage(BaseStage):
                 # a genre the law set follows the law, and a later MasterLaw
                 # change must reach it (Grey, 2026-10-11; review of slice B,
                 # finding 4).
-                ctx.conn.execute("UPDATE archive SET genre = ? WHERE rowid = ?", (new, row["rid"]))
+                if kind == "law_wins":
+                    sql = "UPDATE archive SET genre = ? WHERE rowid = ?"
+                else:
+                    # A blank or an unlisted genre is not a ruling to keep, so
+                    # a stamp on it goes: left, it froze the law's genre written
+                    # here against every later MasterLaw change (pre-merge
+                    # review of #180).
+                    sql = "UPDATE archive SET genre = ?, genre_ruled_at = NULL WHERE rowid = ?"
+                ctx.conn.execute(sql, (new, row["rid"]))
                 written.add(new)
                 if kind in ("fill", "fill_lead"):
                     ctx.log_event(
