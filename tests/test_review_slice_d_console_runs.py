@@ -79,3 +79,32 @@ def test_an_interrupted_console_run_keeps_its_records(con, monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         con._run_pipeline(dry_run=False, stage_classes=[Stop], label="Stop")
     assert called, "the interrupted run wrote no records"
+
+
+@pytest.mark.parametrize(("current", "order"), [(False, ["drift"]), (True, ["drift", "lock"])])
+def test_the_source_check_runs_before_the_masters_lock(con, monkeypatch, current, order):
+    """Grey's code review, 2026-10-11, finding 10: the check ran under the
+    lock, waited at its prompt holding it, and its restart left the lock's
+    holder record naming a live pid that held nothing."""
+    import contextlib
+
+    from musaeus import masters_lock
+
+    seen: list[str] = []
+
+    @contextlib.contextmanager
+    def lock(*a, **k):
+        seen.append("lock")
+        yield
+
+    def drift():
+        seen.append("drift")
+        return current
+
+    monkeypatch.setattr(masters_lock, "masters_lock", lock)
+    monkeypatch.setattr(con, "_check_source_drift", drift)
+    monkeypatch.setattr(con, "_run_pipeline_inner", lambda *a, **k: None)
+
+    con._run_pipeline(dry_run=False)
+
+    assert seen == order
