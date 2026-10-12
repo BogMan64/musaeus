@@ -55,6 +55,9 @@ def test_a_collaboration_files_under_the_primary_artist(credit, mb, expected):
         ("Ike & Tina Turner", "Ike & Tina Turner"),
         ("Hall & Oates", None),
         ("The Beatles", None),
+        # Grey, 2026-10-11: filed under "C". A single initial is no artist.
+        ("C & C Music Factory", None),
+        ("C. & C. Music Factory", None),
     ],
 )
 def test_a_band_is_never_taken_apart(band, mb):
@@ -126,3 +129,9 @@ def test_bands_protected_by_the_ampersand_rules_are_still_protected():
         "Simon & Garfunkel",
     ):
         assert folder_artist(band) == band
+
+
+def test_a_full_name_before_the_ampersand_still_splits():
+    """The initial rule must not protect real duets."""
+    assert folder_artist("Johnny Mathis & Deniece Williams") == "Johnny Mathis"
+    assert folder_artist("Cher & Gregg Allman") == "Cher"
