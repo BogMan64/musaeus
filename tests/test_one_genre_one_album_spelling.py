@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from musaeus.album_spelling import plan_album_spelling, style_score
+from musaeus.album_spelling import album_key, plan_album_spelling, style_score
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
 from musaeus.db import open_db, upsert_archive
@@ -108,10 +108,30 @@ def test_a_credit_shares_its_lead_artists_album_spelling():
     assert [b for _r, b in plan_album_spelling(rows)] == ["The Sky Is Crying"]
 
 
-def test_apostrophes_and_a_final_full_stop_are_left_alone():
+def test_apostrophes_and_a_final_full_stop_are_one_album():
+    """Grey, 2026-10-11: two kinds of apostrophe (Lynyrd Skynyrd's first
+    album was filed twice) and a final full stop no longer make two albums;
+    the spelling already filed wins, in the tag and the folder."""
     rows = [_row("Marvin Gaye", "What’s Going On", True), _row("Marvin Gaye", "What's Going On"),
             _row("Marvin Gaye", "M.P.G.", True), _row("Marvin Gaye", "M.P.G")]  # fmt: skip
-    assert plan_album_spelling(rows) == []
+    assert sorted((r["album"], b) for r, b in plan_album_spelling(rows)) == [
+        ("M.P.G", "M.P.G."),
+        ("What's Going On", "What’s Going On"),
+    ]
+
+
+def test_ampersand_and_and_are_one_album():
+    rows = [_row("Simon & Garfunkel", "Bridge Over Troubled Water", True),
+            _row("Chuck Berry", "Rock & Roll Music", True), _row("Chuck Berry", "Rock And Roll Music")]  # fmt: skip
+    assert [(r["album"], b) for r, b in plan_album_spelling(rows)] == [
+        ("Rock And Roll Music", "Rock & Roll Music")
+    ]
+
+
+def test_a_word_containing_and_is_not_split():
+    # "Band" and "Sandman" hold "and" but are not the word.
+    assert album_key("Band On The Run") != album_key("B & On The Run")
+    assert album_key("Mr. Sandman") == "mr. sandman"
 
 
 def test_the_same_album_name_by_two_artists_is_two_albums():
