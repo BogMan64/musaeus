@@ -372,7 +372,7 @@ class Console:
         try:
             # Nothing of this run has been opened yet, but the console may
             # hold a connection from an earlier menu action; exec drops the
-            # fds either way, so flush first.
+            # fds either way (restart() flushes the output first).
             self._source.restart()  # does not return
         except OSError as exc:
             _err(f"Could not restart automatically ({exc}). Quit and relaunch before running live.")
@@ -484,6 +484,14 @@ class Console:
         stage_classes: list[type[BaseStage]] | None = None,
         label: str = "Pipeline",
     ) -> None:
+        # Checked here rather than at the menu: this is the moment stale
+        # code costs a batch, and it keeps ordinary browsing quiet. A dry
+        # run mutates nothing, so it is not worth interrupting. BEFORE the
+        # masters lock: the check's restart replaces the process, and under
+        # the lock it left the lock's holder record naming a live pid that
+        # held nothing (Grey's code review, 2026-10-11, finding 10).
+        if not dry_run and not self._check_source_drift():
+            return
         self._masters_held(
             dry_run, label, lambda: self._run_pipeline_inner(dry_run, stage_classes, label)
         )
@@ -507,12 +515,7 @@ class Console:
         mode = "DRY RUN" if dry_run else "LIVE RUN"
         _section(f"{label}  [{mode}]  —  {len(selected)} stage(s)")
 
-        # Checked here rather than at the menu: this is the moment stale
-        # code costs a batch, and it keeps ordinary browsing quiet. A dry
-        # run mutates nothing, so it is not worth interrupting.
-        if not dry_run and not self._check_source_drift():
-            return
-
+        # The source-drift check runs in _run_pipeline, before the lock.
         assert self._config is not None
         conn = self._open_db()
         if conn is None:
@@ -612,6 +615,8 @@ class Console:
     # ── Run single stage ──────────────────────────────────────────────────────
 
     def _run_stage(self, stage_cls: type[BaseStage], dry_run: bool) -> None:
+        if not dry_run and not self._check_source_drift():
+            return
         self._masters_held(
             dry_run, stage_cls.__name__, lambda: self._run_stage_inner(stage_cls, dry_run)
         )
@@ -960,21 +965,26 @@ class Console:
 
     def _run_dedupe(self) -> None:
         _section("Dedupe Review")
+        opts = [
+            "Interactive review  (manual keep/archive per group)",
+            "Auto                (leave every group to the keep rule)",
+            "Report only         (show summary, no changes)",
+            "Back",
+        ]
+        choice = _choose("Dedupe mode", opts)
+        try:
+            idx = int(choice)
+        except ValueError:
+            return
+        # Interactive review carries a choice out at once -- it moves files --
+        # so it must not run stale code either (pre-merge review of #186).
+        # Asked before the database is opened, so a restart leaves nothing open.
+        if idx == 0 and not self._check_source_drift():
+            return
         conn = self._open_db()
         if conn is None:
             return
         try:
-            opts = [
-                "Interactive review  (manual keep/archive per group)",
-                "Auto                (leave every group to the keep rule)",
-                "Report only         (show summary, no changes)",
-                "Back",
-            ]
-            choice = _choose("Dedupe mode", opts)
-            try:
-                idx = int(choice)
-            except ValueError:
-                return
             from .dedupe import carry_out_with, print_dedupe_report, run_dedupe_console
 
             if idx == 0:
@@ -991,6 +1001,11 @@ class Console:
     def _run_stage_with_stash(
         self, stage_cls: type, dry_run: bool, stash: dict | None = None
     ) -> None:
+        # One live stage on stale code is the same failure as a whole run on
+        # it (Finalize, Forge --force, Curator move files); it was checked
+        # only for the pipeline (pre-merge review of #186).
+        if not dry_run and not self._check_source_drift():
+            return
         self._masters_held(
             dry_run,
             stage_cls.__name__,
