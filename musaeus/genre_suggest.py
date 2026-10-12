@@ -78,6 +78,12 @@ SHEET_FIELDS = [
 
 _APPROVED = {"yes", "y", "x"}
 
+#: Grey's finer choices inside a broad genre the sources use. MusicBrainz and
+#: Wikipedia say "pop", never "classic pop", so an act Grey ruled Classic Pop
+#: would always come back as plain Pop. Grey, 2026-10-11: the finer genre
+#: stands, and such acts are left off the sheet.
+_FINER_THAN = {"Pop": frozenset({"classic pop", "modern pop", "french pop"})}
+
 
 #: A name search that found nothing. Not cached: it is as often the name
 #: check as a real absence ("Hall & Oates"), so the next run asks again.
@@ -434,6 +440,7 @@ class Report:
     no_suggestion: int = 0
     rows: int = 0
     gave_up: bool = False
+    finer_kept: int = 0
     unmapped: dict[str, int] = field(default_factory=dict)
 
 
@@ -527,6 +534,9 @@ def _collect(acts, cache, cache_path, law, vocab, rows, rep, limit, lookup, prog
             continue
         if current and law.agrees(artist, s.genre):
             rep.agree_with_law += 1
+            continue
+        if current.lower() in _FINER_THAN.get(s.genre, frozenset()):
+            rep.finer_kept += 1
             continue
         rows.append(
             {
@@ -695,6 +705,8 @@ def cmd_generate(*, dry_run: bool, limit: int | None, refresh: bool, out: str | 
             f"  stopped asking after {_GIVE_UP_AFTER} acts in a row got no answer -- run it again later"
         )
     print(f"  already agree with MasterLaw: {rep.agree_with_law:,}")
+    if rep.finer_kept:
+        print(f"  your finer pop genre kept (sources say just Pop): {rep.finer_kept:,}")
     print(f"  nothing in the vocabulary: {rep.no_suggestion:,}")
     print(f"  rows for you to decide: {rep.rows:,}")
     print(f"\n  Sheet: {sheet}")

@@ -378,3 +378,17 @@ class TestReviewOf188:
             assert gs._get_json(
                 "https://musicbrainz.org/ws/2/x", "https://musicbrainz.org/ws/2"
             ) == {"ok": 1}
+
+
+def test_a_finer_pop_genre_grey_chose_stays_off_the_sheet(tmp_path, vocab):
+    """Grey, 2026-10-11: the sources say "pop", never "classic pop"; Grey's
+    finer genre stands and the act is not put on the sheet."""
+    conn = _db(tmp_path)
+    law = GenreLaw(
+        _law(tmp_path, "artist,genre\r\nCarole King,Classic Pop\r\nJudy Collins,Classic Pop\r\n")
+    )
+    sheet = tmp_path / "s.csv"
+    rep = gs.generate(conn, law, vocab, tmp_path / "c.json", sheet, lookup=lambda a, m: ANSWERS[a])
+    rows = {r["artist"] for r in _read(sheet)}
+    assert "Carole King" not in rows and rep.finer_kept == 1
+    assert "Judy Collins" in rows, "a different genre (Folk) is still shown"
