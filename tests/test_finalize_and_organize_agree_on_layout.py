@@ -177,3 +177,25 @@ def test_finalize_files_under_the_genre_and_honours_the_filing_rulings(tmp_path)
     assert rel["Nobody Ruled Yet"].startswith("Unsorted/"), (
         "no genre is still Unsorted, never 'None'"
     )
+
+
+@pytest.mark.parametrize(
+    ("name", "folder"),
+    [
+        ("Peter, Paul and Mary", "Peter, Paul & Mary"),
+        ("Rock And Roll Music", "Rock & Roll Music"),
+        ("Simon & Garfunkel", "Simon & Garfunkel"),
+        ("Band Of Gypsys", "Band Of Gypsys"),  # "and" inside a word
+        ("Mr. Sandman", "Mr. Sandman"),
+        ("And Justice For All", "And Justice For All"),  # not between two words
+    ],
+)
+def test_folders_spell_the_word_and_as_ampersand(name, folder):
+    """Grey, 2026-10-12: "&" across the board in folders; tags and file
+    names keep their spelling."""
+    from musaeus.stages.organize import folder_spelling, library_relpath
+
+    assert folder_spelling(name) == folder
+    rel = library_relpath(name, name, "Rock", f"{name} Album", "Song", ".m4a")
+    assert rel.parts[1] == folder and rel.parts[2] == f"{folder} Album"
+    assert rel.parts[3].startswith(f"{name} - "), "the file name keeps the tag's spelling"

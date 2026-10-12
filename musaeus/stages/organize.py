@@ -455,10 +455,26 @@ def library_relpath(
     # rule rather than two that happen to agree.
     return (
         Path(genre_folder(genre))
-        / sanitize_path_component(path_artist)
-        / sanitize_path_component(album or "Unsorted")
+        / sanitize_path_component(folder_spelling(path_artist))
+        / sanitize_path_component(folder_spelling(album or "Unsorted"))
         / build_track_filename(path_artist, title or "Unknown Title", ext)
     )
+
+
+_AND_WORD = re.compile(r"\s+and\s+", re.I)
+
+
+def folder_spelling(name: str) -> str:
+    """A name as an artist or album FOLDER spells it: the word "and" is "&".
+
+    Grey, 2026-10-12: "&" across the board in folders ("Peter, Paul & Mary",
+    "Rock & Roll Music"); tags keep the spelling MusicBrainz writes, and song
+    titles stay as released. Outside services read tags, never folder names,
+    so nothing they match on changes. Only "and" standing as a word between
+    two others: "Band", "Sandman" and a name that starts "And ..." are left.
+    The file name keeps the tag's spelling.
+    """
+    return _AND_WORD.sub(" & ", name)
 
 
 def destination_root(current_path: Path, roots: Iterable[Path]) -> Path | None:

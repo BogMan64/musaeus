@@ -1542,9 +1542,14 @@ def _one_act_two_spellings(cfg: MusicConfig, rep: Report) -> None:
         conn.close()
     filing = filing_load(cfg.meta_dir) if getattr(cfg, "meta_dir", None) else {}
 
+    from .stages.organize import folder_spelling
+
+    # As the folder is actually spelled: "Jan And Dean" and "Jan & Dean" are
+    # one folder since 2026-10-12, so not "two spellings" (pre-merge review
+    # of #192).
     folders: dict[str, int] = defaultdict(int)
     for artist, mb_name, n in rows:
-        folders[library_artist(artist, mb_name, filing)] += int(n)
+        folders[folder_spelling(library_artist(artist, mb_name, filing))] += int(n)
     groups: dict[str, list[tuple[str, int]]] = defaultdict(list)
     for folder, n in folders.items():
         key = _spelling_key(folder)

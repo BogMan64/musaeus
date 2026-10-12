@@ -36,10 +36,12 @@ def _finding(cfg, artists):
     return f
 
 
-def test_and_versus_ampersand_is_one_act(tmp_path):
+def test_and_versus_ampersand_is_one_folder_now(tmp_path):
+    """Folders spell "and" as "&" since 2026-10-12 (Grey), so "Jan And Dean"
+    and "Jan & Dean" file in one folder: not two spellings (pre-merge review
+    of #192). Their tags are artist_canon.tsv's to settle."""
     f = _finding(_cfg(tmp_path), ["Jan & Dean", "Jan And Dean", "Blondie"])
-    assert f.level == "warn" and f.count == 1
-    assert "Jan & Dean" in f.detail and "Jan And Dean" in f.detail
+    assert f.level == "ok"
 
 
 def test_punctuation_accents_and_the(tmp_path):
