@@ -137,6 +137,13 @@ def _connected_groups(conn, group_ids: list[str]) -> list[list[str]]:
 
     EXACT clusters keyed by audio_hash cannot overlap -- a file has exactly
     one hash -- so this only concerns the duplicates-table path.
+
+    Joined through a shared file's rows of ANY status, not only pending ones:
+    a file marked keep in one group and pending in another joined nothing, so
+    the two groups were resolved apart -- two copies of one song left, or the
+    file kept in the first and moved as the second's loser. `musaeus dedupe`
+    already joined them, so the console showed one set and Act 2 did another
+    (Grey's code review, 2026-10-11, finding 4). One function now serves both.
     """
     if not group_ids:
         return []
@@ -157,19 +164,25 @@ def _connected_groups(conn, group_ids: list[str]) -> list[list[str]]:
     placeholders = ",".join("?" for _ in group_ids)
     rows = conn.execute(
         f"""
-        SELECT file_path, group_id FROM duplicates
-         WHERE group_id IN ({placeholders}) AND status = 'pending'
+        SELECT file_path, group_id, audio_hash FROM duplicates
+         WHERE group_id IN ({placeholders})
         """,
         group_ids,
     ).fetchall()
 
-    by_path: dict[str, list[str]] = {}
+    # A shared PATH is not enough: paths are reused, and two groups that
+    # recorded different songs at one path (318 such paths live) are not one
+    # set -- joined, a song was moved as another song's loser (pre-merge
+    # review of #184). Joined when the recordings agree, or one side never
+    # stored one.
+    by_path: dict[str, list[tuple[str, str | None]]] = {}
     for r in rows:
-        by_path.setdefault(r["file_path"], []).append(r["group_id"])
+        by_path.setdefault(r["file_path"], []).append((r["group_id"], r["audio_hash"] or None))
     for shared in by_path.values():
-        for g in shared[1:]:
-            if g in parent and shared[0] in parent:
-                union(shared[0], g)
+        for i, (ga, ha) in enumerate(shared):
+            for gb, hb in shared[i + 1 :]:
+                if ga in parent and gb in parent and (ha is None or hb is None or ha == hb):
+                    union(ga, gb)
 
     components: dict[str, list[str]] = {}
     for g in group_ids:

@@ -36,6 +36,35 @@ def test_a_forced_preview_is_refused(env, monkeypatch, capsys):
     assert "--force" in out.err
 
 
+@pytest.mark.parametrize(
+    ("argv", "flag"),
+    [
+        (("bitrot", "--rebaseline"), "--rebaseline"),
+        (("bitrot", "--backfill-pcm"), "--backfill-pcm"),
+        (("genre-validate", "--consolidate"), "--consolidate"),
+    ],
+)
+def test_a_preview_of_a_different_job_is_refused(env, monkeypatch, capsys, argv, flag):
+    """Grey's code review, 2026-10-11, finding 6: each of these previewed the
+    plain check, while the real run rewrites the baseline, records new
+    fingerprints, or re-genres whole artists."""
+    code, out = _main(monkeypatch, capsys, *argv, "--dry-run")
+    assert code == 2, out.out
+    assert flag in out.err
+
+
+def test_a_reset_preview_keeps_the_resume_marker(env, monkeypatch, capsys, tmp_path):
+    """Pre-merge review of #183: `run --reset --dry-run` deleted the resume
+    marker in a run that said nothing was changed."""
+    marker = tmp_path / "resume_state.json"
+    marker.write_text('{"completed": ["preflight"]}', encoding="utf-8")
+    monkeypatch.setattr(cli, "_RESUME_FILE", marker)
+
+    _main(monkeypatch, capsys, "run", "--reset", "--dry-run")
+
+    assert marker.exists(), "a preview deleted the resume marker"
+
+
 def test_a_home_relative_vault_is_expanded(env, monkeypatch, tmp_path):
     """8: "~/vault" from settings.env became a folder named "~"."""
     monkeypatch.setenv("MUSAEUS_VAULT_ROOT", "~/vault")

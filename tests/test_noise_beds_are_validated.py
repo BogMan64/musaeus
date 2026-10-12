@@ -50,7 +50,10 @@ def complete_bed(tmp_path_factory) -> Path:
             "-f",
             "lavfi",
             "-i",
-            "anoisesrc=d=5:c=pink:r=44100",
+            # Seeded: unseeded noise is new every run, and about 1 cut in 40
+            # still decoded clean, so the truncation tests failed now and then
+            # (CI on #178, 2026-10-11; 1 of 40 reproduced locally).
+            "anoisesrc=d=5:c=pink:r=44100:seed=1",
             "-c:a",
             "aac",
             "-b:a",
