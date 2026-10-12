@@ -181,8 +181,8 @@ def strip_leading_credit(title: str, real_artist: str) -> str:
 
 
 #: Words that describe a recording, not who made it. A bracket made only of
-#: these (and numbers), or starting with one of _NOT_AN_ARTIST_FIRST, is the
-#: title's annotation: "[Live]", "[Remastered 2009]", "[Explicit]",
+#: these (and numbers), starting with one of _NOT_AN_ARTIST_FIRST, or ending
+#: with one of _DESCRIBES_A_VERSION_LAST, is the title's annotation: "[Live]", "[Remastered 2009]", "[Explicit]",
 #: "[2019 Mix]" were each taken as the artist and the master moved under it
 #: (review of slice A, finding 3).
 _RECORDING_WORDS = frozenset(
@@ -237,20 +237,68 @@ _RECORDING_WORDS = frozenset(
         "vinyl",
         "hd",
         "hq",
+        # Grey's code review, 2026-10-11, finding 7: "[Official Video]" and
+        # "[Club Mix]" were read as artists.
+        "official",
+        "video",
+        "audio",
+        "lyric",
+        "lyrics",
+        "visualizer",
+        "visualiser",
+        "music",
+        "club",
+        "dub",
+        "promo",
+        "clip",
+        # Pre-merge review of #185.
+        "vip",
+        "only",
+        "mtv",
+        "performance",
+        "soundtrack",
+        "ost",
+        "megamix",
+        "medley",
     ]
 )
-_NOT_AN_ARTIST_FIRST = frozenset({"live", "remaster", "remastered", "bonus", "from"})
+#: A first word that says the bracket is not the act: a description, or a
+#: guest -- "[feat. Drake]" names who joined, not whose recording it is.
+_NOT_AN_ARTIST_FIRST = frozenset(
+    {
+        "live",
+        "remaster",
+        "remastered",
+        "bonus",
+        "from",
+        "feat",
+        "ft",
+        "featuring",
+        "prod",
+        # "[With The Royal Philharmonic Orchestra]", "[w/ Drake]" (in the
+        # live catalogue's own brackets) and "[Sped Up]"/"[Slowed]": a guest
+        # or an edit, not the act (pre-merge review of #185). A band named
+        # "With ..." falls through to the lookups, never to a wrong artist.
+        "with",
+        "w",
+        "sped",
+        "slowed",
+    }
+)
+#: A last word that makes the bracket a note about one version: "[Tiesto
+#: Remix]", "[Single Edit]". Not "mix": "[Little Mix]" is a band.
+_DESCRIBES_A_VERSION_LAST = frozenset({"remix", "edit", "re-edit", "version", "rework", "bootleg"})
 _WORD_RE = re.compile(r"[\w'-]+", re.UNICODE)
 #: A year, a number, a decade ("60s", "60's") or an ordinal ("50th") -- not
 #: a band whose name starts with digits ("10cc"; review of #161).
-_NUMBER_WORD = re.compile(r"\d+|\d+'?s|\d+(?:st|nd|rd|th)")
+_NUMBER_WORD = re.compile(r"\d+|\d+'?s|\d+(?:st|nd|rd|th)|\d+'{1,2}|\d+k")
 
 
 def _describes_the_recording(content: str) -> bool:
     words = [w.lower() for w in _WORD_RE.findall(content)]
     if not words:
         return True
-    if words[0] in _NOT_AN_ARTIST_FIRST:
+    if words[0] in _NOT_AN_ARTIST_FIRST or words[-1] in _DESCRIBES_A_VERSION_LAST:
         return True
     return all(w in _RECORDING_WORDS or _NUMBER_WORD.fullmatch(w) for w in words)
 
