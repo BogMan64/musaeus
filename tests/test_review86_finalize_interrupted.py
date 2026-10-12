@@ -39,7 +39,7 @@ def _staged(ctx, data: bytes) -> Path:
     path.write_bytes(data)
     upsert_archive(ctx.conn, {"file_path": str(path), "status": "CATALOGUED", "artist": "Bob Seger",
                               "album": "Night Moves", "title": "Night Moves", "audio_hash": "cafe"})  # fmt: skip
-    ctx.conn.execute("UPDATE archive SET canonicalized_at = datetime('now'), "
+    ctx.conn.execute("UPDATE archive SET decode_ok = 1, canonicalized_at = datetime('now'), "
                      "canon_action = 'CONVERTED' WHERE file_path = ?", (str(path),))  # fmt: skip
     ctx.conn.commit()
     return path

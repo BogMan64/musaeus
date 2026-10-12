@@ -51,7 +51,7 @@ def _arrive(ctx, name, artist, title, genre, data):
         },
     )
     ctx.conn.execute(
-        "UPDATE archive SET canonicalized_at = datetime('now'), canon_action = 'PASSTHROUGH' WHERE file_path = ?",
+        "UPDATE archive SET decode_ok = 1, canonicalized_at = datetime('now'), canon_action = 'PASSTHROUGH' WHERE file_path = ?",
         (str(p),),
     )
     ctx.conn.commit()
