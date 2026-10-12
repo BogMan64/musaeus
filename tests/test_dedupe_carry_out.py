@@ -269,6 +269,27 @@ def test_a_file_kept_in_a_closed_row_joins_the_sets_it_is_in(ctx):
     assert dedupe._get_sets(ctx.conn) == [["dup_p", "near_b"]]
 
 
+def test_act_2_joins_the_same_sets_the_console_shows(ctx):
+    """Grey's code review, 2026-10-11, finding 4: the resolver joined groups
+    only through pending rows, so the set above was two sets in Act 2 -- in
+    some orders two copies of one song were left, in one the kept copy was
+    moved as the other group's loser."""
+    p = _copy(ctx, "p.m4a", ["dup_p", "near_b"])
+    n = _copy(ctx, "n.m4a", "dup_p")
+    r = _copy(ctx, "r.m4a", "near_b")
+    ctx.conn.execute("UPDATE duplicates SET status = 'keep' WHERE group_id = 'dup_p' AND file_path = ?",
+                     (str(p),))  # fmt: skip
+    ctx.conn.commit()
+    from musaeus.stages.dupe_resolver import _connected_groups
+
+    assert _connected_groups(ctx.conn, ["dup_p", "near_b"]) == [["dup_p", "near_b"]]
+
+    DupeResolverStage().execute(ctx)
+
+    left = sorted(x.name for x in (p, n, r) if x.exists())
+    assert len(left) == 1, f"one song, {left} left in the library"
+
+
 def test_two_carry_outs_keep_two_restore_scripts_and_finish_their_runs(ctx, monkeypatch):
     """Findings 6 and 9: one-second names overwrote a restore script; a carry-out
     left a run with no RUN_END."""
