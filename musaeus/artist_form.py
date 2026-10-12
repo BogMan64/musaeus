@@ -213,6 +213,9 @@ _JOINED = re.compile(r"&|\band\b", re.I)
 _BAND_TAIL = re.compile(r"^(the|his|her|their|los|las)\b", re.I)
 
 
+#: One letter, with or without its full stop.
+_INITIAL = re.compile(r"[^\W\d_]\.?")
+
 _ARTICLE_TAIL = re.compile(r"^(the|a|an)$", re.I)
 _NAME_SUFFIX = re.compile(r"^(jr|sr|jnr|snr|ii|iii|iv)\.?$", re.I)
 
@@ -262,6 +265,10 @@ def _performing_head(name: str, mb_artist_name: str | None = None) -> str:
     if _BAND_TAIL.match(right):
         return name
     if len(right.split()) < 2:
+        return name
+    # A single initial is not an artist: "C & C Music Factory" filed under
+    # "C" (Grey, 2026-10-11). The name is the band's own.
+    if _INITIAL.fullmatch(left):
         return name
     return left
 
