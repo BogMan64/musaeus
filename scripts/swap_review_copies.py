@@ -14,9 +14,11 @@ A SWAP IS THREE STEPS, BECAUSE A MASTER MUST NEVER BE MISSING
                 artist, so it files exactly where L is. Its canonicalize and
                 finalize marks are cleared, which is precisely what Act 3
                 selects.
-    musaeus run --act 3
-                canonicalize and finalize take R like any arrival: decode
-                gate, journal, hash index. Finalize files it beside L as
+    musaeus run
+                R goes through like any arrival: Act 1's Corrupt decodes it
+                (Finalize holds back an arrival that has not decoded clean, so
+                `--act 3` alone files it only if it already has), then
+                canonicalize and finalize: journal, hash index. Finalize files it beside L as
                 " (2)", because L still holds the name.
     --retire    for every promoted pair whose R is now finalized in the
                 masters, L goes through scripts/delete_reviewed_tracks.py --
@@ -36,7 +38,7 @@ out of the library in September by trusting a stored path (bug 1).
     python3 scripts/swap_review_copies.py --promote            # dry run
     python3 scripts/swap_review_copies.py --promote --execute --limit 1   # trial
     python3 scripts/swap_review_copies.py --promote --execute
-    musaeus run --act 3
+    musaeus run
     python3 scripts/swap_review_copies.py --retire             # dry run
     python3 scripts/swap_review_copies.py --retire --execute
 """
@@ -114,14 +116,17 @@ def library_copy(conn: sqlite3.Connection, review: sqlite3.Row) -> sqlite3.Row |
         ).fetchone()
         if row is not None:
             return row
-    found = conn.execute(
-        "SELECT audio_hash FROM duplicates WHERE file_path=? AND audio_hash IS NOT NULL LIMIT 1",
-        (kept,),
-    ).fetchone() or conn.execute(
-        "SELECT audio_hash FROM duplicates WHERE group_id=? AND status IN ('keep', 'keep_user') "
-        "AND audio_hash IS NOT NULL LIMIT 1",
-        (group,),
-    ).fetchone()
+    found = (
+        conn.execute(
+            "SELECT audio_hash FROM duplicates WHERE file_path=? AND audio_hash IS NOT NULL LIMIT 1",
+            (kept,),
+        ).fetchone()
+        or conn.execute(
+            "SELECT audio_hash FROM duplicates WHERE group_id=? AND status IN ('keep', 'keep_user') "
+            "AND audio_hash IS NOT NULL LIMIT 1",
+            (group,),
+        ).fetchone()
+    )
     if found is None:
         return None
     return conn.execute(
@@ -158,7 +163,9 @@ def review_wins(
         return -1 if winner == "review" else 1 if winner == "library" else 0
 
     for library, reviews in by_song.values():
-        ranked = sorted(reviews, key=functools.cmp_to_key(better_first))  # stable: ties keep id order
+        ranked = sorted(
+            reviews, key=functools.cmp_to_key(better_first)
+        )  # stable: ties keep id order
         best, rest = ranked[0], ranked[1:]
         winner, step = decide(dict(best), dict(library))
         tally[f"{winner} ({step})" if step else winner] += 1
@@ -267,10 +274,16 @@ def retire(cfg, ids: list[int], execute: bool) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     step = ap.add_mutually_exclusive_group(required=True)
-    step.add_argument("--promote", action="store_true", help="return winning review copies to Act 3")
-    step.add_argument("--retire", action="store_true", help="delete masters a promoted copy has replaced")
+    step.add_argument(
+        "--promote", action="store_true", help="return winning review copies to Act 3"
+    )
+    step.add_argument(
+        "--retire", action="store_true", help="delete masters a promoted copy has replaced"
+    )
     step.add_argument(
         "--write-losers",
         metavar="FILE",
@@ -311,7 +324,7 @@ def main() -> int:
         verb = "PROMOTED" if args.execute else "DRY RUN: would promote"
         print(f"\n{verb} {out['promoted']:,}; refused {out['refused']:,}")
         if args.execute and out["promoted"]:
-            print("Next: musaeus run --act 3, then --retire")
+            print("Next: musaeus run (Act 1 decodes, Act 3 files), then --retire")
         return 0
     return retire(cfg, to_retire(conn, Path(cfg.alac_archive)), args.execute)
 

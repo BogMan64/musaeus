@@ -18,7 +18,7 @@ import pytest
 
 from musaeus import doctor
 from musaeus.config import MusicConfig
-from musaeus.db import open_db, upsert_archive
+from musaeus.db import ensure_columns, open_db, upsert_archive
 from musaeus.hasher import audio_hash_safe
 
 pytestmark = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="requires ffmpeg")
@@ -164,4 +164,75 @@ def test_a_bitrot_repair_is_musaeus_own(cfg):
     _catalogue(cfg, f, written_days_ago=3)
     os.utime(f, None)
     _event(cfg, "BITROT_REPAIRED", f, 0)
+    assert _finding(cfg).level == "ok"
+
+
+# Grey's code review, 2026-10-11, finding 5.
+
+
+@pytest.mark.parametrize("etype", ["ACOUSTIC_DUPE_FOUND", "DUPLICATE_FOUND"])
+def test_a_duplicate_finding_does_not_hand_over_history(cfg, etype):
+    """x and y are both still there: x's recent write says nothing of y."""
+    y = _master(cfg, "y.m4a", 440)
+    _catalogue(cfg, y, written_days_ago=3)
+    os.utime(y, None)  # y edited outside, today
+    x = y.with_name("x.m4a")
+    _event(cfg, "TAGGER_WRITE", x, 0)
+    _event(cfg, etype, x, 0, new_value=str(y))
+    assert _finding(cfg).level == "warn"
+
+
+def test_a_duplicate_found_in_its_live_shape_hands_over_nothing(cfg):
+    """DUPLICATE_FOUND as it is logged: the library master in old_value, the
+    arrival in file_path. Both files remain."""
+    y = _master(cfg, "y.m4a", 440)
+    _catalogue(cfg, y, written_days_ago=3)
+    os.utime(y, None)  # y edited outside, today
+    x = y.with_name("x.m4a")
+    _event(cfg, "TAGGER_WRITE", x, 0)
+    conn = open_db(cfg.db_path)
+    conn.execute(
+        "INSERT INTO events (run_id, event_type, file_path, old_value) "
+        "VALUES ('r', 'DUPLICATE_FOUND', ?, ?)",
+        (str(y), str(x)),
+    )
+    conn.commit()
+    conn.close()
+    assert _finding(cfg).level == "warn"
+
+
+def test_a_look_is_not_a_write(cfg):
+    """art_checked_at says MUSAEUS looked at the file, not that it wrote it."""
+    f = _master(cfg, "a.m4a", 440)
+    _catalogue(cfg, f, written_days_ago=3)
+    os.utime(f, None)
+    conn = open_db(cfg.db_path)
+    ensure_columns(conn, (("art_checked_at", "TEXT"), ("title_checked_at", "TEXT")))
+    conn.execute(
+        "UPDATE archive SET art_checked_at = datetime('now'), title_checked_at = datetime('now')"
+    )
+    conn.commit()
+    conn.close()
+    assert _finding(cfg).level == "warn"
+
+
+def test_a_master_filed_under_its_composer_is_followed(cfg):
+    """ClassicalComposer moves masters within ALAC-Archival; its artist event
+    carries names, so the move needs its own path-to-path event."""
+    from musaeus.context import RunContext
+    from musaeus.stages.classical_composer import ClassicalComposerStage
+
+    f = _master(cfg, "Air.m4a", 440)
+    _catalogue(cfg, f, written_days_ago=3)
+    _event(cfg, "TAGGER_WRITE", f, 0)  # MUSAEUS wrote it today, then refiled it
+    conn = open_db(cfg.db_path)
+    conn.execute("UPDATE archive SET artist = 'Some Orchestra', title = 'Air, BWV 1068', "
+                 "album = 'B', genre = 'Classical'")  # fmt: skip
+    conn.commit()
+    ctx = RunContext.new(cfg, conn, dry_run=False)
+    ClassicalComposerStage().execute(ctx)
+    (new,) = conn.execute("SELECT file_path FROM archive").fetchone()
+    conn.close()
+    assert new != str(f) and Path(new).exists(), "the stage did not refile the master"
+    os.utime(new, None)
     assert _finding(cfg).level == "ok"

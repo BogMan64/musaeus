@@ -269,6 +269,25 @@ def test_a_file_kept_in_a_closed_row_joins_the_sets_it_is_in(ctx):
     assert dedupe._get_sets(ctx.conn) == [["dup_p", "near_b"]]
 
 
+def test_act_2_joins_the_same_sets_the_console_shows(ctx):
+    """Grey's code review, 2026-10-11, finding 4: the resolver joined groups
+    only through pending rows, so the set above was two sets in Act 2 -- in
+    some orders two copies of one song were left, in one the kept copy was
+    moved as the other group's loser."""
+    p = _copy(ctx, "p.m4a", ["dup_p", "near_b"])
+    # The filed copy outranks p in dup_p; apart, near_b still keeps p.
+    n = _copy(ctx, "n.m4a", "dup_p", finalized="2026-01-01")
+    r = _copy(ctx, "r.m4a", "near_b")
+    ctx.conn.execute("UPDATE duplicates SET status = 'keep' WHERE group_id = 'dup_p' AND file_path = ?",
+                     (str(p),))  # fmt: skip
+    ctx.conn.commit()
+
+    DupeResolverStage().execute(ctx)
+
+    left = sorted(x.name for x in (p, n, r) if x.exists())
+    assert len(left) == 1, f"one song, {left} left in the library"
+
+
 def test_two_carry_outs_keep_two_restore_scripts_and_finish_their_runs(ctx, monkeypatch):
     """Findings 6 and 9: one-second names overwrote a restore script; a carry-out
     left a run with no RUN_END."""
@@ -381,3 +400,24 @@ def test_no_keep_is_recorded_when_nothing_could_be_moved(ctx, monkeypatch):
     _console(ctx, monkeypatch, "2k\n1a\ny\ns\n")
     assert studio.exists() and not _kept_mark(ctx, live)
     assert set(_statuses(ctx).values()) == {"pending"}
+
+
+def test_a_reused_path_holding_another_song_joins_nothing(ctx):
+    """Pre-merge review of #184: two groups recorded different songs at one
+    path, now gone from the catalogue; joined by path alone, one song was
+    moved as the other's loser."""
+    from musaeus.stages.dupe_resolver import _connected_groups
+
+    _copy(ctx, "p.m4a", "near_a", pcm="pcm:song-1")
+    _copy(ctx, "q.m4a", "near_b", pcm="pcm:song-2")
+    gone = str(ctx.alac_library / "A" / "reused.m4a")
+    for gid, pcm, status in (
+        ("near_a", "pcm:song-1", "archive"),
+        ("near_b", "pcm:song-2", "pending"),
+    ):
+        ctx.conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, "
+            "audio_hash, status) VALUES (?, ?, 'NEAR', 0.9, 'r', ?, ?)", (gid, gone, pcm, status))  # fmt: skip
+    ctx.conn.commit()
+
+    assert _connected_groups(ctx.conn, ["near_a", "near_b"]) == [["near_a"], ["near_b"]]

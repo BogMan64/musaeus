@@ -79,10 +79,13 @@ class TestVocabularyCheckCatchesWhatPermitsCannot:
         _vocab(ctx, ["Disco/Electronic", "Rock"])
         _track(ctx, "Some Band", "Electronic/Dance")
 
-        problems = GenreValidateStage().verify_effect(ctx, GenreValidateStage()._make_result())
+        result = GenreValidateStage()._make_result()
+        problems = GenreValidateStage().verify_effect(ctx, result)
 
-        assert any("Genre_Allowed.txt" in p for p in problems)
-        assert any("Electronic/Dance" in p for p in problems)
+        # Reported, but in the notes: this run did not write it, so it is
+        # not this run's failure (Grey's code review, 2026-10-11, finding 1).
+        assert problems == []
+        assert any("Genre_Allowed.txt" in n and "Electronic/Dance" in n for n in result.notes)
 
     def test_permits_alone_would_have_passed_it(self, ctx):
         # Proves the gap is real rather than hypothetical.
