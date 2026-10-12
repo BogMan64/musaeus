@@ -139,3 +139,32 @@ class TestAWriteCutShortKeepsTheMarks:
             write_review_tsv(sheet, [_entry(), _entry(file_path="/x/2.m4a")])
 
         assert sheet.read_bytes() == before
+
+
+class TestAnApprovedGenreMustBeAGenre:
+    """Pre-merge review of #180: a genre row approved blank or misspelled was
+    stamped, and GenreValidate then wrote the law's genre under the stamp."""
+
+    @pytest.mark.parametrize(
+        ("typed", "why"), [("", "none typed"), ("Rokc", "not in Genre_Allowed")]
+    )
+    def test_refused_and_said_why(self, ctx, tmp_path, typed, why):
+        _row(ctx, "/x/1.m4a", "John Lennon", "")
+        sheet = tmp_path / "album_review.tsv"
+        write_review_tsv(sheet, [_entry(current_value="", suggested_value=typed)])
+
+        report = apply_approved_fixes(ctx.conn, sheet, "run1", allowed_genres={"Rock", "Pop"})
+
+        assert report.applied == 0 and any(why in e for e in report.errors)
+        row = ctx.conn.execute("SELECT genre, genre_ruled_at FROM archive").fetchone()
+        assert tuple(row) == ("", None)
+
+    def test_a_case_slip_is_written_as_listed(self, ctx, tmp_path):
+        _row(ctx, "/x/1.m4a", "John Lennon", "Rock")
+        sheet = tmp_path / "album_review.tsv"
+        write_review_tsv(sheet, [_entry(suggested_value="pop")])
+
+        report = apply_approved_fixes(ctx.conn, sheet, "run1", allowed_genres={"Rock", "Pop"})
+
+        assert report.applied == 1
+        assert ctx.conn.execute("SELECT genre FROM archive").fetchone()[0] == "Pop"

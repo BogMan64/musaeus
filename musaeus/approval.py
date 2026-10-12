@@ -357,10 +357,14 @@ def apply_approved_fixes(
     run_id: str,
     *,
     dry_run: bool = False,
+    allowed_genres: set[str] | None = None,
 ) -> ReviewReport:
     """
     Read a review TSV, apply all rows marked approve=yes to the archive DB.
     Returns a summary report.
+
+    *allowed_genres* is Genre_Allowed.txt: an approved genre must be one of
+    them (any letter case; the listed spelling is written).
     """
     from .db import ensure_columns, log_event
 
@@ -410,6 +414,26 @@ def apply_approved_fixes(
                 # have retitled every song called "Yesterday".
                 col = entry.field_name
                 if col == "genre":
+                    # A ruling freezes the genre against MasterLaw, so it must
+                    # be a genre. A row approved with nothing typed, or with a
+                    # misspelling, was stamped; GenreValidate then wrote the
+                    # law's genre into it and the stamp froze THAT (pre-merge
+                    # review of #180). Refused, and said why.
+                    typed = entry.suggested_value.strip()
+                    listed = {g.lower(): g for g in allowed_genres or ()}
+                    if not typed:
+                        report.errors.append(
+                            f"{entry.file_path}: genre approved but none typed -- "
+                            "type the genre in suggested_value, or mark it no"
+                        )
+                        continue
+                    if listed and typed.lower() not in listed:
+                        report.errors.append(
+                            f"{entry.file_path}: genre {typed!r} is not in "
+                            "Genre_Allowed.txt -- check the spelling"
+                        )
+                        continue
+                    entry.suggested_value = listed.get(typed.lower(), typed)
                     # Grey chose it, so it is a ruling: GenreValidate leaves a
                     # ruled genre alone. Without the stamp the next Act 1
                     # "corrected" Grey's choice back to MasterLaw's as a source
@@ -550,6 +574,9 @@ def cmd_review_apply(dry_run: bool = False) -> int:
         print()
 
         total_errors = 0
+        from .stages.genre_validate import GenreValidateStage
+
+        vocabulary = GenreValidateStage._allowed_vocabulary(ctx)
 
         total_applied = 0
         total_approved = 0
@@ -562,7 +589,9 @@ def cmd_review_apply(dry_run: bool = False) -> int:
                 print(f"  {tsv_name}: not found (skipped)")
                 continue
 
-            report = apply_approved_fixes(conn, tsv_path, ctx.run_id, dry_run=dry_run)
+            report = apply_approved_fixes(
+                conn, tsv_path, ctx.run_id, dry_run=dry_run, allowed_genres=vocabulary
+            )
             print(f"  {tsv_name}:")
             print(f"    Approved : {report.approved}")
             print(f"    Rejected : {report.rejected}")
