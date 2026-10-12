@@ -287,7 +287,7 @@ def test_finalize_moves_and_rolls_back_a_real_tagged_alac(tmp_path):
         },
     )
     ctx.conn.execute(
-        "UPDATE archive SET canonicalized_at = datetime('now'), "
+        "UPDATE archive SET decode_ok = 1, canonicalized_at = datetime('now'), "
         "canon_action = 'CONVERTED' WHERE file_path = ?",
         (str(staged),),
     )

@@ -396,7 +396,7 @@ class TestStagingFlow:
             },
         )
         ctx.conn.execute(
-            "UPDATE archive SET canonicalized_at = datetime('now') WHERE file_path = ?",
+            "UPDATE archive SET decode_ok = 1, canonicalized_at = datetime('now') WHERE file_path = ?",
             (str(colliding_staging_path),),
         )
         ctx.conn.commit()
@@ -463,6 +463,15 @@ class TestStagingFlow:
         ctx.inbox.mkdir(parents=True, exist_ok=True)
         _gen_audio(path, "flac")
         _register_catalogued(ctx, path, "flac", ".flac")
+
+        # Act 1's decode gate, as the pipeline runs it: Finalize files only
+        # an arrival that decoded clean (Grey's code review, 2026-10-11).
+        from musaeus.stages.corrupt import CorruptStage
+
+        gate = CorruptStage()
+        gated = gate._make_result()
+        gate._gate_new_arrivals(ctx, gated, dry_run=False)
+        assert gated.success and not gated.errors
 
         canon_result = CanonicalizeStage().execute(ctx)
         assert canon_result.success is True

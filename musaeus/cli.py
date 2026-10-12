@@ -2401,13 +2401,21 @@ def main() -> None:
     # A preview counts the normal run; with --force, --retag or --embed-from-db
     # the real run does more -- `forge --force --dry-run` said 0 while the run
     # rewrites every master (review of slice D, finding 5). Refused, as
-    # `musaeus plan` refuses its persistence flags.
-    widening = [f for f in ("force", "retag", "embed_from_db") if getattr(args, f, False)]
+    # `musaeus plan` refuses its persistence flags. The same for a flag that
+    # changes the job itself: `bitrot --rebaseline` rewrites the baseline,
+    # `--backfill-pcm` records new fingerprints and `genre-validate
+    # --consolidate` re-genres whole artists, while each preview showed the
+    # plain check (Grey's code review, 2026-10-11, finding 6).
+    widening = [
+        f
+        for f in ("force", "retag", "embed_from_db", "rebaseline", "backfill_pcm", "consolidate")
+        if getattr(args, f, False)
+    ]
     if dry_run and widening and command != "plan":
         flags = ", ".join("--" + f.replace("_", "-") for f in widening)
         print(
             f"ERROR: --dry-run cannot preview {flags}: the preview would count the normal "
-            "run, not the forced one. Drop --dry-run to run it, or drop the flag to preview.",
+            "run, not the run with that flag. Drop --dry-run to run it, or drop the flag to preview.",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -2440,8 +2448,14 @@ def main() -> None:
 
         if command == "run":
             if getattr(args, "reset", False):
-                _clear_resume()
-                print("  ✓ Resume state cleared.")
+                # Not in a preview: `run --reset --dry-run` deleted the resume
+                # marker inside a run that said nothing was changed (pre-merge
+                # review of #183).
+                if dry_run:
+                    print("  Resume state would be cleared (not in a preview).")
+                else:
+                    _clear_resume()
+                    print("  ✓ Resume state cleared.")
             pipeline, run_stash = _pipeline_for_run(args)
             sys.exit(_run_pipeline(pipeline, dry_run=dry_run, stash=run_stash))
 
