@@ -165,3 +165,56 @@ def test_a_bitrot_repair_is_musaeus_own(cfg):
     os.utime(f, None)
     _event(cfg, "BITROT_REPAIRED", f, 0)
     assert _finding(cfg).level == "ok"
+
+
+# Grey's code review, 2026-10-11, finding 5.
+
+
+@pytest.mark.parametrize("etype", ["ACOUSTIC_DUPE_FOUND", "DUPLICATE_FOUND"])
+def test_a_duplicate_finding_does_not_hand_over_history(cfg, etype):
+    """x and y are both still there: x's recent write says nothing of y."""
+    y = _master(cfg, "y.m4a", 440)
+    _catalogue(cfg, y, written_days_ago=3)
+    os.utime(y, None)  # y edited outside, today
+    x = y.with_name("x.m4a")
+    _event(cfg, "TAGGER_WRITE", x, 0)
+    _event(cfg, etype, x, 0, new_value=str(y))
+    assert _finding(cfg).level == "warn"
+
+
+def test_a_look_is_not_a_write(cfg):
+    """art_checked_at says MUSAEUS looked at the file, not that it wrote it."""
+    f = _master(cfg, "a.m4a", 440)
+    _catalogue(cfg, f, written_days_ago=3)
+    os.utime(f, None)
+    conn = open_db(cfg.db_path)
+    for col in ("art_checked_at", "title_checked_at"):
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
+        if col not in cols:
+            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} TEXT")
+        conn.execute(f"UPDATE archive SET {col} = datetime('now')")
+    conn.commit()
+    conn.close()
+    assert _finding(cfg).level == "warn"
+
+
+def test_a_master_filed_under_its_composer_is_followed(cfg):
+    """ClassicalComposer moves masters within ALAC-Archival; its artist event
+    carries names, so the move needs its own path-to-path event."""
+    from musaeus.context import RunContext
+    from musaeus.stages.classical_composer import ClassicalComposerStage
+
+    f = _master(cfg, "Air.m4a", 440)
+    _catalogue(cfg, f, written_days_ago=3)
+    _event(cfg, "TAGGER_WRITE", f, 0)  # MUSAEUS wrote it today, then refiled it
+    conn = open_db(cfg.db_path)
+    conn.execute("UPDATE archive SET artist = 'Some Orchestra', title = 'Air, BWV 1068', "
+                 "album = 'B', genre = 'Classical'")  # fmt: skip
+    conn.commit()
+    ctx = RunContext.new(cfg, conn, dry_run=False)
+    ClassicalComposerStage().execute(ctx)
+    (new,) = conn.execute("SELECT file_path FROM archive").fetchone()
+    conn.close()
+    assert new != str(f) and Path(new).exists(), "the stage did not refile the master"
+    os.utime(new, None)
+    assert _finding(cfg).level == "ok"
