@@ -112,3 +112,55 @@ def test_it_opens_the_catalogue_read_only(tmp_path, monkeypatch, conn):
     with pytest.raises(sqlite3.OperationalError):
         ro.execute("UPDATE archive SET title = 'x'")
     ro.close()
+
+
+# ── Pre-merge review of #191 ─────────────────────────────────────────────────
+
+
+def _group(conn, gid, paths, status="keep", kind="NEAR", hashes=None):
+    for i, p in enumerate(paths):
+        h = (hashes or [None] * len(paths))[i]
+        conn.execute("INSERT INTO duplicates (group_id, file_path, duplicate_type, status, audio_hash) "
+                     "VALUES (?, ?, ?, ?, ?)", (gid, p, kind, status, h))  # fmt: skip
+
+
+def test_a_pair_kept_both_stays_decided_when_a_fingerprint_changed(conn):
+    _song(conn, "/m/1.m4a", "Simon & Garfunkel", "Overs", 130.0, audio="pcm:new")
+    _song(conn, "/m/2.m4a", "Simon & Garfunkel", "Overs", 131.0)
+    _group(conn, "near_x", ["/m/1.m4a", "/m/2.m4a"], hashes=["pcm:old", "pcm:/m/2.m4a"])
+    conn.commit()
+    assert pd.find(conn) == []
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "lengths"),
+    [
+        ("Overs", "Overs (Live)", (130.0, 133.9)),  # studio against a live take
+        ("The Future's So Bright", "The Future's So Bright (Re-Recorded)", (180.0, 182.0)),
+        ("Loca (feat. Dizzee Rascal)", "Loca (feat. El Cata)", (190.0, 196.0)),  # two guests
+    ],
+)
+def test_not_one_recording(conn, first, second, lengths):
+    _song(conn, "/m/1.m4a", "Some Act", first, lengths[0])
+    _song(conn, "/m/2.m4a", "Some Act", second, lengths[1])
+    conn.commit()
+    assert pd.find(conn) == []
+
+
+@pytest.mark.parametrize(
+    "edit", ["(Single)", "(Album Edit)", "(Video)", "(Original Mix)", "(Bonus Track)"]
+)
+def test_an_edit_bracket_hides_nothing(conn, edit):
+    _song(conn, "/m/1.m4a", "War", "Slippin' Into Darkness", 420.0)
+    _song(conn, "/m/2.m4a", "War", f"Slippin' Into Darkness {edit}", 420.0)
+    conn.commit()
+    assert len(pd.find(conn)) == 1
+
+
+def test_an_acoustid_pair_waiting_for_grey_says_so(conn):
+    _song(conn, "/m/1.m4a", "John Mellencamp", "Jack & Diane", 254.0)
+    _song(conn, "/m/2.m4a", "John Mellencamp", "Jack And Diane", 255.0)
+    _group(conn, "acoustic_1", ["/m/1.m4a", "/m/2.m4a"], status="review", kind="ACOUSTIC")
+    conn.commit()
+    (pair,) = pd.find(conn)
+    assert pair.why.startswith("AcoustID: same recording, waiting for you")

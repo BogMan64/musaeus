@@ -18,7 +18,7 @@ the same audio, pairs Grey kept both of, different classical movements,
 and two live recordings of different nights.
 
 Read-only: it opens the catalogue read-only and writes only the sheet. Nothing
-is moved or deleted. A pair is settled in `musaeus dedupe` or by hand.
+is moved or deleted. A pair is settled by hand: removing the copy not wanted.
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ SHEET_FIELDS = [
     "pair",
     "why",
     "artist",
+    "artist_b",
     "title_a",
     "album_a",
     "length_a",
@@ -67,11 +68,29 @@ _CREDIT_BRACKET = re.compile(
 )
 
 
+#: A bracket that only names an edit of one recording: "(Single)", "(Album
+#: Edit)", "(Video)", "(Original Mix)", "(Bonus Track)" -- 15 live pairs hid
+#: behind them (pre-merge review of #191). NearDupe's own words come on top.
+_EDIT_BRACKET = re.compile(
+    rf"[{OPEN}]\s*(?:(?:19|20)\d{{2}}\s+)?(?:single|album|original|radio|extended|video|"
+    rf"official|bonus|edit|mix|track|version|\s)+[{CLOSE}]",
+    re.I,
+)
+_REDONE = re.compile(r"\bre-?recorded\b|\bre-?recording\b", re.I)
+
+
 def _title_key(title: str) -> str:
     from .stages.neardupe import _normalise
 
     t = _CREDIT_BRACKET.sub(" ", title or "")
+    t = _EDIT_BRACKET.sub(" ", t)
     return _normalise(_AND.sub(" and ", t), strip_qualifiers=True)
+
+
+def _credit(title: str) -> str:
+    """The guest named in a "(feat. ...)"/"(With ...)" bracket, folded."""
+    m = _CREDIT_BRACKET.search(title or "")
+    return re.sub(r"\W+", " ", m.group(0).lower()).strip() if m else ""
 
 
 def _quality(r: sqlite3.Row) -> str:
@@ -101,7 +120,7 @@ def find(conn: sqlite3.Connection) -> list[Pair]:
 
     from .artist_form import act_key, folder_artist
     from .stages.dupe_resolver import _is_live
-    from .stages.neardupe import _is_different_piece, _same_take
+    from .stages.neardupe import _SAME_TAKE_SECONDS, _is_different_piece, _same_take
 
     conn.row_factory = sqlite3.Row
     cols = {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
@@ -112,15 +131,32 @@ def find(conn: sqlite3.Connection) -> list[Pair]:
         "AND title IS NOT NULL AND trim(title) != '' AND artist IS NOT NULL"
     ).fetchall()
 
-    # Pairs a person kept both of: decided, never offered again.
-    kept: dict[str, list] = defaultdict(list)
-    for g in conn.execute("SELECT group_id, status, audio_hash FROM duplicates"):
-        kept[g["group_id"]].append(g)
-    keep_both = {
-        frozenset(r["audio_hash"] for r in rs)
-        for rs in kept.values()
-        if len(rs) > 1 and all(r["status"] == "keep" and r["audio_hash"] for r in rs)
-    }
+    # Pairs a person kept both of: decided, never offered again. By path OR by
+    # recording: a fingerprint can change after the decision (2 of 55 live
+    # keep-both groups), and a group can hold more than two (pre-merge review
+    # of #191). And AcoustID's pairs already waiting for Grey are said so.
+    kept_paths: dict[str, set[str]] = defaultdict(set)
+    kept_hashes: dict[str, set[str]] = defaultdict(set)
+    waiting: dict[str, set[str]] = defaultdict(set)
+    for g in conn.execute(
+        "SELECT group_id, file_path, status, audio_hash, duplicate_type FROM duplicates"
+    ):
+        if g["status"] == "keep":
+            kept_paths[g["group_id"]].add(g["file_path"])
+            if g["audio_hash"]:
+                kept_hashes[g["group_id"]].add(g["audio_hash"])
+        elif g["status"] == "review" and g["duplicate_type"] == "ACOUSTIC":
+            waiting[g["group_id"]].add(g["file_path"])
+
+    def kept_both(a: sqlite3.Row, b: sqlite3.Row) -> bool:
+        ab = {a["file_path"], b["file_path"]}
+        if any(ab <= paths for paths in kept_paths.values()):
+            return True
+        hashes = {a["audio_hash"], b["audio_hash"]}
+        return None not in hashes and any(hashes <= hs for hs in kept_hashes.values())
+
+    def acoustid_waiting(a: sqlite3.Row, b: sqlite3.Row) -> bool:
+        return any({a["file_path"], b["file_path"]} <= paths for paths in waiting.values())
 
     acts: dict[str, list[sqlite3.Row]] = defaultdict(list)
     for r in rows:
@@ -133,7 +169,7 @@ def find(conn: sqlite3.Connection) -> list[Pair]:
             for b, kb in keyed[i + 1 :]:
                 if a["audio_hash"] and a["audio_hash"] == b["audio_hash"]:
                     continue  # the same audio: CrossDupe's
-                if frozenset((a["audio_hash"], b["audio_hash"])) in keep_both:
+                if kept_both(a, b):
                     continue
                 da, db = a["duration"], b["duration"]
                 if not da or not db or not ka or not kb:
@@ -152,8 +188,21 @@ def find(conn: sqlite3.Connection) -> list[Pair]:
                     why = f"titles {score:.0f}% alike"
                 if _is_different_piece(a["title"], b["title"]):
                     continue
-                if _is_live(dict(a)) and _is_live(dict(b)) and not _same_take(dict(a), dict(b)):
+                live_a, live_b = _is_live(dict(a)), _is_live(dict(b))
+                if live_a and live_b and not _same_take(dict(a), dict(b)):
                     continue
+                # A live take against a studio one, a re-recording, two
+                # versions with different guests: not one recording (pre-merge
+                # review of #191).
+                if live_a != live_b and gap > _SAME_TAKE_SECONDS:
+                    continue
+                if bool(_REDONE.search(a["title"])) != bool(_REDONE.search(b["title"])):
+                    continue
+                ca, cb = _credit(a["title"]), _credit(b["title"])
+                if ca and cb and ca != cb:
+                    continue
+                if acoustid_waiting(a, b):
+                    why = f"AcoustID: same recording, waiting for you; {why}"
                 pairs.append(Pair(f"{why}, {gap:.1f} s apart", a, b))
     pairs.sort(key=lambda p: ((p.a["artist"] or "").lower(), (p.a["title"] or "").lower()))
     return pairs
@@ -171,7 +220,13 @@ def write_sheet(pairs: list[Pair], out: Path, roots: list[Path]) -> None:
     """Write the sheet beside *out*, then rename it into place."""
     rows = []
     for n, p in enumerate(pairs, 1):
-        row: dict[str, object] = {"pair": n, "why": p.why, "artist": p.a["artist"], "decide": ""}
+        row: dict[str, object] = {
+            "pair": n,
+            "why": p.why,
+            "artist": p.a["artist"],
+            "artist_b": p.b["artist"] if p.b["artist"] != p.a["artist"] else "",
+            "decide": "",
+        }
         for side, r in (("a", p.a), ("b", p.b)):
             row[f"title_{side}"] = r["title"]
             row[f"album_{side}"] = r["album"] or ""
@@ -203,6 +258,9 @@ def cmd_possible_dupes(*, out: str | None, dry_run: bool) -> int:
 
     cfg = get_config()
     sheet = Path(out).expanduser() if out else default_sheet()
+    if sheet.is_dir():
+        print(f"ERROR: {sheet} is a folder -- give a file name for the sheet.")
+        return 1
     if sheet.exists() and not dry_run:
         print(f"ERROR: {sheet} already exists -- it may hold your notes.")
         print("  Move it, or pass --out for a new sheet.")
@@ -221,5 +279,7 @@ def cmd_possible_dupes(*, out: str | None, dry_run: bool) -> int:
     sheet.parent.mkdir(parents=True, exist_ok=True)
     write_sheet(pairs, sheet, [cfg.alac_archive, cfg.alac_library, cfg.vault_root])
     print(f"  Sheet: {sheet}")
-    print("  Nothing was moved or deleted. Settle a pair in `musaeus dedupe` or by hand.")
+    print("  Nothing was moved or deleted. These pairs are not waiting in `musaeus dedupe`:")
+    print("  settle one by removing the copy you do not want. The `decide` column is for")
+    print("  your notes; MUSAEUS does not read it, so a pair kept as two stays on the list.")
     return 0
