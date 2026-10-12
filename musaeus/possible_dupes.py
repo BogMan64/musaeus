@@ -60,14 +60,6 @@ SAME_LENGTH_S = 3.0
 #: The same title after folding may be a longer edit of one recording.
 SAME_TITLE_LENGTH_S = 10.0
 
-_AND = re.compile(r"\s*&\s*")
-#: A bracket that only names who played with whom: "(With Teddy Wilson And His
-#: Orchestra)", "(feat. Cher)". Two songs sharing one scored as one song.
-_CREDIT_BRACKET = re.compile(
-    rf"[{OPEN}]\s*(?:with|feat\.?|featuring|ft\.?)\s[^{CLOSE}]*[{CLOSE}]", re.I
-)
-
-
 #: A bracket that only names an edit of one recording: "(Single)", "(Album
 #: Edit)", "(Video)", "(Original Mix)", "(Bonus Track)" -- 15 live pairs hid
 #: behind them (pre-merge review of #191). NearDupe's own words come on top.
@@ -80,17 +72,12 @@ _REDONE = re.compile(r"\bre-?recorded\b|\bre-?recording\b", re.I)
 
 
 def _title_key(title: str) -> str:
-    from .stages.neardupe import _normalise
+    """NearDupe's own title key ("&" is "and"), with credit and edit brackets out."""
+    from .stages.neardupe import _CREDIT_BRACKET, _normalise
 
     t = _CREDIT_BRACKET.sub(" ", title or "")
     t = _EDIT_BRACKET.sub(" ", t)
-    return _normalise(_AND.sub(" and ", t), strip_qualifiers=True)
-
-
-def _credit(title: str) -> str:
-    """The guest named in a "(feat. ...)"/"(With ...)" bracket, folded."""
-    m = _CREDIT_BRACKET.search(title or "")
-    return re.sub(r"\W+", " ", m.group(0).lower()).strip() if m else ""
+    return _normalise(t, strip_qualifiers=True)
 
 
 def _quality(r: sqlite3.Row) -> str:
@@ -120,7 +107,7 @@ def find(conn: sqlite3.Connection) -> list[Pair]:
 
     from .artist_form import act_key, folder_artist
     from .stages.dupe_resolver import _is_live
-    from .stages.neardupe import _SAME_TAKE_SECONDS, _is_different_piece, _same_take
+    from .stages.neardupe import _SAME_TAKE_SECONDS, _credit, _is_different_piece, _same_take
 
     conn.row_factory = sqlite3.Row
     cols = {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
