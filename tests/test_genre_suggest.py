@@ -392,3 +392,50 @@ def test_a_finer_pop_genre_grey_chose_stays_off_the_sheet(tmp_path, vocab):
     rows = {r["artist"] for r in _read(sheet)}
     assert "Carole King" not in rows and rep.finer_kept == 1
     assert "Judy Collins" in rows, "a different genre (Folk) is still shown"
+
+
+# ── After the first full run (2026-10-12): 185 Wikipedia 429s ───────────────
+
+
+def test_a_wikipedia_refusal_keeps_the_musicbrainz_answer(monkeypatch):
+    import io
+    import json
+    import urllib.error
+
+    mb = {"genres": [{"name": "folk", "count": 3}],
+          "relations": [{"type": "wikipedia", "url": {"resource": "https://en.wikipedia.org/wiki/Judy_Collins"}}]}  # fmt: skip
+
+    def fake(req, timeout):
+        if "wikipedia" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {}, None)
+        return io.BytesIO(json.dumps(mb).encode())
+
+    monkeypatch.setattr(gs, "urlopen", fake)
+    for pause in ("_MB_PAUSE_S", "_WIKI_PAUSE_S", "_BUSY_WAIT_S"):
+        monkeypatch.setattr(gs, pause, 0)
+    with network_policy.policy(NetworkPolicy.ALLOWED):
+        found = gs.look_up("Judy Collins", "mbid-jc")
+    assert found.musicbrainz == [("folk", 3)] and found.note == gs.WIKI_UNAVAILABLE
+
+
+def test_an_act_wikipedia_refused_is_shown_but_asked_again(tmp_path, vocab):
+    conn = _db(tmp_path)
+    law = GenreLaw(_law(tmp_path, "artist,genre\r\n"))
+    half = gs.Found("mbid-jc", [("folk", 7)], [], gs.WIKI_UNAVAILABLE)
+    gs.generate(conn, law, vocab, tmp_path / "c.json", tmp_path / "s.csv",
+                lookup=lambda a, m: half if a == "Judy Collins" else ANSWERS[a])  # fmt: skip
+    assert "Judy Collins" in {r["artist"] for r in _read(tmp_path / "s.csv")}
+    assert "Judy Collins" not in gs._load_cache(tmp_path / "c.json")
+
+
+def test_new_only_lists_just_this_runs_acts(tmp_path, vocab):
+    conn = _db(tmp_path)
+    law = GenreLaw(_law(tmp_path, "artist,genre\r\n"))
+    cache = tmp_path / "c.json"
+    gs.generate(conn, law, vocab, cache, tmp_path / "first.csv",
+                lookup=lambda a, m: (_ for _ in ()).throw(gs.LookupUnavailable("x")) if a == "Judy Collins"
+                else ANSWERS[a])  # fmt: skip
+    rep = gs.generate(conn, law, vocab, cache, tmp_path / "second.csv", new_only=True,
+                      lookup=lambda a, m: ANSWERS[a])  # fmt: skip
+    assert [r["artist"] for r in _read(tmp_path / "second.csv")] == ["Judy Collins"]
+    assert rep.asked == 1
