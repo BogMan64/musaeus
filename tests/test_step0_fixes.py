@@ -235,7 +235,7 @@ def test_adopt_a_file_an_interrupted_finalize_already_moved(tmp_path):
         },
     )
     ctx.conn.execute(
-        "UPDATE archive SET canonicalized_at = datetime('now'), canon_action = 'PASSTHROUGH'"
+        "UPDATE archive SET decode_ok = 1, canonicalized_at = datetime('now'), canon_action = 'PASSTHROUGH'"
     )
     ctx.conn.commit()
     journal = ctx.config.runs_root / "recovery" / "finalize_run_OLD" / "journal.jsonl"
@@ -279,7 +279,7 @@ def test_adopt_never_takes_a_different_recording_at_that_path(tmp_path):
         },
     )
     ctx.conn.execute(
-        "UPDATE archive SET canonicalized_at = datetime('now'), canon_action = 'PASSTHROUGH'"
+        "UPDATE archive SET decode_ok = 1, canonicalized_at = datetime('now'), canon_action = 'PASSTHROUGH'"
     )
     ctx.conn.commit()
     journal = ctx.config.runs_root / "recovery" / "finalize_run_OLD" / "journal.jsonl"

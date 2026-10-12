@@ -304,10 +304,23 @@ class FinalizeStage(BaseStage):
              WHERE status='CATALOGUED' AND canonicalized_at IS NOT NULL
             """
         ).fetchone()
+        # Not counted as awaiting: an arrival that has not decoded clean is
+        # held, not finalized (pre-merge review of #179).
+        cols = {r[1] for r in ctx.conn.execute("PRAGMA table_info(archive)")}
+        held = 0
+        if "decode_ok" in cols:
+            held = ctx.conn.execute(
+                "SELECT COUNT(*) FROM archive WHERE status='CATALOGUED' "
+                "AND canonicalized_at IS NOT NULL "
+                "AND (finalized_at IS NULL OR finalized_at = '') "
+                "AND (decode_ok IS NULL OR decode_ok != 1)"
+            ).fetchone()[0]
         logger.info(
-            "[finalize] %d file(s) awaiting finalize (%d already finalized, skipped)",
-            pending,
+            "[finalize] %d file(s) awaiting finalize (%d already finalized, skipped; "
+            "%d held back, not decoded clean)",
+            pending - held,
             canonicalized - pending,
+            held,
         )
 
     def _get_pending(self, ctx: RunContext, force: bool) -> list[dict]:
@@ -315,14 +328,16 @@ class FinalizeStage(BaseStage):
         # never been enriched (every fresh vault before its first enrichment)
         # has no such column, and selecting it would take the stage down.
         # Same guard OrganizeStage uses; NULL is exactly "not enriched".
-        has_mb = "mb_artist_name" in {
-            r[1] for r in ctx.conn.execute("PRAGMA table_info(archive)").fetchall()
-        }
-        mb = "mb_artist_name" if has_mb else "NULL AS mb_artist_name"
+        cols = {r[1] for r in ctx.conn.execute("PRAGMA table_info(archive)").fetchall()}
+        mb = "mb_artist_name" if "mb_artist_name" in cols else "NULL AS mb_artist_name"
+        # decode_ok is written by Corrupt's decode; the column is part of the
+        # schema, and absent (an old database) means nothing was decoded.
+        dec = "decode_ok" if "decode_ok" in cols else "NULL AS decode_ok"
         if force:
             rows = ctx.conn.execute(
                 f"""
-                SELECT id, file_path, artist, album, title, audio_hash, genre, {mb}
+                SELECT id, file_path, artist, album, title, audio_hash, genre, {mb},
+                       {dec}, finalized_at
                   FROM archive
                  WHERE status='CATALOGUED' AND canonicalized_at IS NOT NULL
                  ORDER BY file_path
@@ -331,7 +346,8 @@ class FinalizeStage(BaseStage):
         else:
             rows = ctx.conn.execute(
                 f"""
-                SELECT id, file_path, artist, album, title, audio_hash, genre, {mb}
+                SELECT id, file_path, artist, album, title, audio_hash, genre, {mb},
+                       {dec}, finalized_at
                   FROM archive
                  WHERE status='CATALOGUED'
                    AND canonicalized_at IS NOT NULL
@@ -347,7 +363,45 @@ class FinalizeStage(BaseStage):
         # library file (the 389 of 2026-09-24) are moved into the new layout
         # deliberately, by a migration, never by a re-finalize.
         lib = ctx.alac_library
-        return [dict(r) for r in rows if not Path(r["file_path"]).is_relative_to(lib)]
+        rows = [dict(r) for r in rows if not Path(r["file_path"]).is_relative_to(lib)]
+        # Never an arrival that has not decoded clean. Corrupt decodes every
+        # arrival before this stage, but when it cannot (a timeout on a slow
+        # drive, ffmpeg killed) it leaves the row unchecked, and nothing here
+        # looked: the arrival was filed as a master undecoded (Grey's code
+        # review, 2026-10-11, finding 2). It stays where it is until a later
+        # run's Corrupt decodes it. A row already filed (a forced re-finalize)
+        # is a master, not an arrival, and is not held.
+        self._held_undecoded = [
+            r for r in rows if not (r["finalized_at"] or "").strip() and r["decode_ok"] != 1
+        ]
+        held = {r["id"] for r in self._held_undecoded}
+        return [r for r in rows if r["id"] not in held]
+
+    #: Arrivals _get_pending held back because they have not decoded clean.
+    _held_undecoded: list[dict] = []
+
+    def _note_held(self, result: StageResult, dry_run: bool) -> None:
+        held = self._held_undecoded
+        if not held:
+            return
+        verb = "would hold" if dry_run else "held"
+        result.notes.append(
+            f"{verb} back {len(held)} arrival(s) not decoded clean -- Corrupt must "
+            "decode them first; the next run tries again:"
+        )
+        if not dry_run:
+            # A problem the run's report counts, not only a note: run on its
+            # own (`--act 3`), Finalize held files and the Act still said "no
+            # problems" while they sat in STAGING (pre-merge review of #179).
+            result.errors.append(
+                f"{len(held)} arrival(s) held back: not decoded clean "
+                "(Act 1's Corrupt decodes them; then Act 3 files them)"
+            )
+        for r in held[:10]:
+            state = "never decoded" if r["decode_ok"] is None else "failed its decode"
+            result.notes.append(f"  {Path(r['file_path']).name} ({state})")
+        if len(held) > 10:
+            result.notes.append(f"  {elision(len(held) - 10)}")
 
     def _batch_date(self, ctx: RunContext) -> str:
         """
@@ -631,6 +685,7 @@ class FinalizeStage(BaseStage):
 
         total = len(pending)
         result.notes.append(f"files to finalize: {total}")
+        self._note_held(result, dry_run=False)
         if not total:
             result.notes.append("nothing to do — no canonicalized files pending finalize")
             ctx.record_stage(result)
@@ -850,6 +905,7 @@ class FinalizeStage(BaseStage):
         result.files_processed = total
         result.files_changed = total
         result.notes.append(f"[DRY RUN] would finalize {total} file(s)")
+        self._note_held(result, dry_run=True)
 
         shown = 0
         for row in pending:

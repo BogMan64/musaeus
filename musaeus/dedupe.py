@@ -78,32 +78,12 @@ def _get_sets(conn) -> list[list[str]]:
     """The pending groups, joined where they share a file -- through rows of
     any status: a file kept in one group and still pending in another was
     shown in two sets, kept in the first and archived in the second (reviews
-    of #135-#139, finding 1, and #140-#142, finding 3)."""
-    from .stages.dupe_resolver import _get_pending_groups
+    of #135-#139, finding 1, and #140-#142, finding 3). The resolver's own
+    join, so the console and Act 2 see the same sets (Grey's code review,
+    2026-10-11, finding 4)."""
+    from .stages.dupe_resolver import _connected_groups, _get_pending_groups
 
-    groups = _get_pending_groups(conn)
-    parent = {g: g for g in groups}
-
-    def find(g: str) -> str:
-        while parent[g] != g:
-            parent[g] = parent[parent[g]]
-            g = parent[g]
-        return g
-
-    if groups:
-        qs = ",".join("?" * len(groups))
-        first: dict[str, str] = {}
-        for gid, path in conn.execute(
-            f"SELECT group_id, file_path FROM duplicates WHERE group_id IN ({qs})", groups
-        ):
-            if path in first:
-                parent[find(gid)] = find(first[path])
-            else:
-                first[path] = gid
-    sets: dict[str, list[str]] = {}
-    for g in groups:
-        sets.setdefault(find(g), []).append(g)
-    return [sorted(v) for v in sets.values()]
+    return _connected_groups(conn, _get_pending_groups(conn))
 
 
 def _set_members(conn, groups: Sequence[str]) -> list[dict]:

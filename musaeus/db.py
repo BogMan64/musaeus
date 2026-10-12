@@ -196,6 +196,13 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     #                  also logged to TuneMyMusic.csv
     ("archive", "canon_action", "TEXT"),
     ("archive", "finalized_at", "TEXT"),
+    # Corrupt's decode (deep_scan owns the writes). Part of the schema since
+    # Finalize refuses an arrival that has not decoded clean (Grey's code
+    # review, 2026-10-11, finding 2): a column added only when Corrupt first
+    # ran was absent wherever it never had.
+    ("archive", "decode_checked_at", "TEXT"),
+    ("archive", "decode_ok", "INTEGER"),
+    ("archive", "decode_errors", "INTEGER"),
     # Phase 2A — ALAC-Library LUFS bake (scripts/alac_library/build_alac_library.py,
     # standalone, not a pipeline stage). Same nullable-timestamp resumability
     # pattern as canonicalized_at/finalized_at. lufs_baked_target records what

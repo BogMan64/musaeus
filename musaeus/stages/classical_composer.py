@@ -274,6 +274,18 @@ class ClassicalComposerStage(BaseStage):
                 stage=self.NAME,
                 note=f"resolved by {how}",
             )
+            if dst != src:
+                # The move itself, path to path: the event above carries the
+                # artist names, so doctor could not follow the file and read
+                # a master MUSAEUS had tagged as changed outside (Grey's code
+                # review, 2026-10-11, finding 5).
+                ctx.log_event(
+                    "COMPOSER_REFILED",
+                    file_path=str(dst),
+                    old_value=str(src),
+                    stage=self.NAME,
+                    note=f"filed under the composer {composer}",
+                )
             ctx.conn.commit()
             result.files_changed += 1
             # Guarded because artist_dir used to resolve to the vault

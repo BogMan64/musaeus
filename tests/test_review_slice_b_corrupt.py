@@ -157,7 +157,7 @@ def _damaged(path: Path) -> Path:
 
 def test_a_quarantine_name_held_by_an_old_row_is_not_reused(ctx):
     deep_scan.ensure_columns(ctx.conn)  # as CorruptStage.run does first
-    taken = ctx.vault_root / "QUARANTINE" / "corrupted" / "Bad.m4a"  # no file there
+    taken = ctx.quarantine / "corrupted" / "Bad.m4a"  # no file there
     upsert_archive(ctx.conn, {"file_path": str(taken), "status": "DELETED", "title": "old"})
     arrival = _damaged(ctx.config.inbox / "Bad.m4a")
     upsert_archive(ctx.conn, {"file_path": str(arrival), "status": "HASHED", "title": "new"})
