@@ -106,10 +106,17 @@ def _dest_path(
     export_root: Path, row: dict, noise_subdir: bool = False, filing: dict[str, str] | None = None
 ) -> Path:
     """Compute the destination file path for one archive row."""
+    from .organize import folder_spelling
+
+    # Folders spell the word "and" as "&", as the masters' do (Grey, 2026-10-12).
     artist = _sanitise(
-        _primary_artist(row.get("artist") or "Unknown Artist", row.get("mb_artist_name"), filing)
+        folder_spelling(
+            _primary_artist(
+                row.get("artist") or "Unknown Artist", row.get("mb_artist_name"), filing
+            )
+        )
     )
-    album = _sanitise(row.get("album") or "Unknown Album")
+    album = _sanitise(folder_spelling(row.get("album") or "Unknown Album"))
     ext = (row.get("ext") or ".m4a").lower()
     if not ext.startswith("."):
         ext = "." + ext
