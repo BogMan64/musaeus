@@ -72,3 +72,14 @@ def test_the_export_folder_is_the_masters_folder():
         row = {"artist": credit, "mb_artist_name": mb, "title": "Song", "file_path": "/m/a.m4a"}
         exported = _dest_path(Path("/export"), row).relative_to("/export").parts[0]
         assert exported == filed, credit
+
+
+def test_the_export_folder_spells_and_as_the_masters_do():
+    """Grey, 2026-10-12: folders spell "and" as "&"; the export matches."""
+    from musaeus.stages.organize import library_relpath
+
+    row = {"artist": "Huey Lewis And The News", "mb_artist_name": None, "title": "Do You Believe In Love",
+           "album": "Picture This And More", "file_path": "/m/a.m4a"}  # fmt: skip
+    filed = library_relpath(row["artist"], None, "Rock", row["album"], row["title"], ".m4a").parts
+    exported = _dest_path(Path("/export"), row).relative_to("/export").parts
+    assert exported[:2] == filed[1:3] == ("Huey Lewis & The News", "Picture This & More")

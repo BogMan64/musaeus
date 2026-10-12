@@ -33,6 +33,7 @@ the split this is meant to end.
     python3 scripts/car_library/refile_car_by_catalogue.py            # dry run
     python3 scripts/car_library/refile_car_by_catalogue.py --execute
 """
+
 from __future__ import annotations
 
 import argparse
@@ -51,7 +52,7 @@ if str(_REPO_ROOT) not in sys.path:
 from musaeus import filing  # noqa: E402
 from musaeus.artist_form import sort_form  # noqa: E402
 from musaeus.config import MusicConfig  # noqa: E402
-from musaeus.stages.organize import sanitize_path_component  # noqa: E402
+from musaeus.stages.organize import folder_spelling, sanitize_path_component  # noqa: E402
 
 
 def plan(cfg: MusicConfig) -> tuple[list[tuple[Path, Path, str]], list[str]]:
@@ -88,12 +89,15 @@ def plan(cfg: MusicConfig) -> tuple[list[tuple[Path, Path, str]], list[str]]:
         # "Morse/portnoy/george". The ALAC tiers file them as "M-a-r-r-s" and
         # "Morse-portnoy-george"; an unsanitised name instead builds a nested
         # directory and the track lands in a folder called "r".
-        want_folder = sanitize_path_component(sort_form(filing.folder_for(row["artist"], rules)))
+        want_artist = sanitize_path_component(sort_form(filing.folder_for(row["artist"], rules)))
+        # The folder spells "and" as "&" (Grey, 2026-10-12), as library_relpath
+        # does; the file name keeps the tag's spelling.
+        want_folder = sanitize_path_component(
+            folder_spelling(sort_form(filing.folder_for(row["artist"], rules)))
+        )
         album = src.parent.name
         stem = src.name
-        renamed = (
-            f"{want_folder} - {stem.split(' - ', 1)[1]}" if " - " in stem else stem
-        )
+        renamed = f"{want_artist} - {stem.split(' - ', 1)[1]}" if " - " in stem else stem
         dst = car_root / want_folder / album / renamed
         if dst == src:
             continue
@@ -109,8 +113,9 @@ def plan(cfg: MusicConfig) -> tuple[list[tuple[Path, Path, str]], list[str]]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--execute", action="store_true", help="actually move (default: dry run)")
     args = ap.parse_args()
 
@@ -140,7 +145,7 @@ def main() -> int:
     skipped = 0
     for src, dst, artist in moves:
         if not src.is_file():
-            skipped += 1   # a partial earlier run already moved it
+            skipped += 1  # a partial earlier run already moved it
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), str(dst))
@@ -151,8 +156,9 @@ def main() -> int:
         # wrong means the next build undoes this.
         tags.tags["aART"] = [artist]
         tags.save()
-        conn.execute("UPDATE archive SET car_export_path = ? WHERE car_export_path = ?",
-                     (str(dst), str(src)))
+        conn.execute(
+            "UPDATE archive SET car_export_path = ? WHERE car_export_path = ?", (str(dst), str(src))
+        )
         # Commit per move, not at the end. The first run of this script raised
         # on move 419 of 1,171; the loop's UPDATEs were still uncommitted, so
         # 412 files had moved on disk while every row still pointed at the old
@@ -164,9 +170,11 @@ def main() -> int:
     for d in sorted(car_root.rglob("*"), key=lambda p: -len(p.parts)):
         if d.is_dir() and not any(d.iterdir()):
             d.rmdir()
-    print(f"\n  MOVED {done} file(s)"
-          + (f"; {skipped} source(s) already gone (earlier partial run)" if skipped else "")
-          + "; empty folders pruned.")
+    print(
+        f"\n  MOVED {done} file(s)"
+        + (f"; {skipped} source(s) already gone (earlier partial run)" if skipped else "")
+        + "; empty folders pruned."
+    )
     return 0
 
 
