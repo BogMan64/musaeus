@@ -70,3 +70,15 @@ def test_two_different_guests_are_two_versions(ctx):
         _pair(ctx, "Shakira", "Loca (feat. Dizzee Rascal)", "Loca (feat. El Cata)", 190.0, 191.0)
         == 0
     )
+
+
+def test_a_live_take_matched_only_by_the_fold_is_not_staged(ctx):
+    """Pre-merge review of #191: Stray Cats "Rev It Up & Go (Live)" against
+    the studio "Rev It Up And Go", 83 s apart."""
+    assert _pair(ctx, "Stray Cats", "Rev It Up & Go (Live)", "Rev It Up And Go", 231.2, 148.3) == 0
+
+
+def test_a_guest_bracket_within_one_take_only(ctx):
+    """Pre-merge review of #191: 2.5 s apart can be an alternate take."""
+    assert _pair(ctx, "Billie Holiday", "The Blues Are Brewin' (feat. John Simmons)",
+                 "The Blues Are Brewin'", 182.2, 184.7) == 0  # fmt: skip
