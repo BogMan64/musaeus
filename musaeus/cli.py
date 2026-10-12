@@ -2415,7 +2415,7 @@ def main() -> None:
         flags = ", ".join("--" + f.replace("_", "-") for f in widening)
         print(
             f"ERROR: --dry-run cannot preview {flags}: the preview would count the normal "
-            "run, not the forced one. Drop --dry-run to run it, or drop the flag to preview.",
+            "run, not the run with that flag. Drop --dry-run to run it, or drop the flag to preview.",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -2448,8 +2448,14 @@ def main() -> None:
 
         if command == "run":
             if getattr(args, "reset", False):
-                _clear_resume()
-                print("  ✓ Resume state cleared.")
+                # Not in a preview: `run --reset --dry-run` deleted the resume
+                # marker inside a run that said nothing was changed (pre-merge
+                # review of #183).
+                if dry_run:
+                    print("  Resume state would be cleared (not in a preview).")
+                else:
+                    _clear_resume()
+                    print("  ✓ Resume state cleared.")
             pipeline, run_stash = _pipeline_for_run(args)
             sys.exit(_run_pipeline(pipeline, dry_run=dry_run, stash=run_stash))
 
