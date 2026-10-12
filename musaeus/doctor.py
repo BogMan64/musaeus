@@ -1328,8 +1328,6 @@ _MOVE_EVENTS = frozenset(
         "ORGANIZE_MOVE",
         "ORGANIZE_RENAME",
         "DUPE_MOVED_FOR_REVIEW",
-        "DUPES_MOVED",
-        "DUPES_MOVED_FOR_REVIEW",
         "TRIBUTE_QUARANTINED",
         "TRIBUTE_MOVED_FOR_REVIEW",
         "QUARANTINE",
@@ -1339,6 +1337,9 @@ _MOVE_EVENTS = frozenset(
         "CANONICALIZE",
         "COMPOSER_REFILED",
         "MANUAL_REPAIR",
+        # Scripts that move masters (pre-merge review of #182).
+        "RELINK_RECOVERED",
+        "MIGRATE_TO_ARCHIVE",
     }
 )
 #: Events that write a master's contents. A database-only event is not a

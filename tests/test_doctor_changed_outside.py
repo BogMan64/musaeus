@@ -182,6 +182,25 @@ def test_a_duplicate_finding_does_not_hand_over_history(cfg, etype):
     assert _finding(cfg).level == "warn"
 
 
+def test_a_duplicate_found_in_its_live_shape_hands_over_nothing(cfg):
+    """DUPLICATE_FOUND as it is logged: the library master in old_value, the
+    arrival in file_path. Both files remain."""
+    y = _master(cfg, "y.m4a", 440)
+    _catalogue(cfg, y, written_days_ago=3)
+    os.utime(y, None)  # y edited outside, today
+    x = y.with_name("x.m4a")
+    _event(cfg, "TAGGER_WRITE", x, 0)
+    conn = open_db(cfg.db_path)
+    conn.execute(
+        "INSERT INTO events (run_id, event_type, file_path, old_value) "
+        "VALUES ('r', 'DUPLICATE_FOUND', ?, ?)",
+        (str(y), str(x)),
+    )
+    conn.commit()
+    conn.close()
+    assert _finding(cfg).level == "warn"
+
+
 def test_a_look_is_not_a_write(cfg):
     """art_checked_at says MUSAEUS looked at the file, not that it wrote it."""
     f = _master(cfg, "a.m4a", 440)
