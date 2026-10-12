@@ -40,6 +40,8 @@ Pipeline commands:
     bitrot           Verify ALAC_Archive against a baseline (silent corruption)
     enrich           Last.fm genre enrichment for tracks with missing genre
     mb-enrich        MusicBrainz artist + release MBID enrichment
+    genre-suggest    Suggest genres from MusicBrainz + Wikipedia (sheet on the Desktop);
+                     `genre-suggest apply SHEET` loads the rows you approved into MasterLaw
     original-year    recover each recording's first release year from MusicBrainz
     neardupe         Metadata-based near-duplicate detection
     acousticid       Acoustic fingerprint dedup via fpcalc + AcousticID API
@@ -2278,6 +2280,21 @@ def _build_parser() -> argparse.ArgumentParser:
     review_apply.add_argument("--dry-run", action="store_true", help="Preview only")
     review_sub.add_parser("status", help="Show pending review sheet status")
 
+    # genre-suggest (Grey, 2026-10-11)
+    gs_p = sub.add_parser(
+        "genre-suggest",
+        help="Suggest genres from MusicBrainz and Wikipedia; load the ones you approve",
+    )
+    gs_sub = gs_p.add_subparsers(dest="genre_suggest_command", metavar="action")
+    gs_gen = gs_sub.add_parser("generate", help="Look the acts up and write a review sheet")
+    gs_gen.add_argument("--dry-run", action="store_true", help="Count only; nothing is asked")
+    gs_gen.add_argument("--limit", type=int, default=None, help="Look up at most N new acts")
+    gs_gen.add_argument("--refresh", action="store_true", help="Ask again for every act")
+    gs_gen.add_argument("--out", default=None, help="Sheet path (default: on the Desktop)")
+    gs_apply = gs_sub.add_parser("apply", help="Load the approved rows into MasterLaw.csv")
+    gs_apply.add_argument("sheet", help="The review sheet you marked")
+    gs_apply.add_argument("--dry-run", action="store_true", help="Show what would change")
+
     # dedupe
     dedupe_p = sub.add_parser("dedupe", help="Interactive duplicate review console")
     dedupe_p.add_argument(
@@ -2658,6 +2675,25 @@ def main() -> None:
             from .rebuild import cmd_rebuild_db
 
             sys.exit(cmd_rebuild_db(dry_run=dry_run))
+
+        elif command == "genre-suggest":
+            from .genre_suggest import cmd_apply, cmd_generate
+
+            gs_cmd = getattr(args, "genre_suggest_command", None)
+            if gs_cmd == "generate":
+                sys.exit(
+                    cmd_generate(
+                        dry_run=dry_run,
+                        limit=getattr(args, "limit", None),
+                        refresh=getattr(args, "refresh", False),
+                        out=getattr(args, "out", None),
+                    )
+                )
+            elif gs_cmd == "apply":
+                sys.exit(cmd_apply(args.sheet, dry_run=dry_run))
+            else:
+                print("Usage: musaeus genre-suggest {generate|apply SHEET}")
+                sys.exit(1)
 
         elif command == "review":
             from .approval import cmd_review_apply, cmd_review_generate, cmd_review_status
