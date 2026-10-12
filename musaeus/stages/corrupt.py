@@ -7,7 +7,7 @@ Detects truncated or corrupt audio files via ffprobe analysis.
 What it does:
   1. Checks filesize vs duration ratio (codec-appropriate thresholds)
   2. Flags suspiciously short tracks (<45s) unless they match keywords
-  3. Quarantines corrupt files to VAULT/QUARANTINE/corrupted/ on a real
+  3. Quarantines corrupt files to QUARANTINE/corrupted/ on a real
      run. There is no --apply flag and there never was; a dry run is
      what reports without moving. (P0-G, 2026-09-09.)
   4. Reports findings to validation_issues table
@@ -545,7 +545,10 @@ class CorruptStage(BaseStage):
         # is ~5 minutes added to a run with many new arrivals; a genuinely
         # large backlog is left for deep_scan rather than blocking here.
         new_arrival_decodes = 0
-        quarantine_dir = ctx.vault_root / "QUARANTINE" / "corrupted"
+        # The configured quarantine (MUSAEUS_QUARANTINE), which verify_effect
+        # checks against -- not vault_root/QUARANTINE, which it only is by
+        # default (Grey's code review, 2026-10-11, finding 9).
+        quarantine_dir = ctx.quarantine / "corrupted"
 
         for row in rows:
             result.files_processed += 1
@@ -803,9 +806,9 @@ class CorruptStage(BaseStage):
                 problems.append(f"{p.name}: marked QUARANTINED but still outside {qroot}")
         return problems
 
-    #: Statuses a row holds after Ingest but before Finalize. These are THIS
-    #: run's arrivals -- the only files that have never had a chance to be
-    #: decode-checked, because _scan() only ever looks at CATALOGUED rows.
+    #: Statuses a row holds after Ingest but before Scholar catalogues it.
+    #: An arrival Scholar HAS catalogued but Finalize has not yet filed is an
+    #: arrival too; _gate_new_arrivals asks finalized_at for those.
     ARRIVAL_STATUSES = ("PENDING", "HASHED")
 
     def _gate_new_arrivals(self, ctx: RunContext, result: StageResult, dry_run: bool) -> None:
@@ -814,12 +817,10 @@ class CorruptStage(BaseStage):
         Why this exists
         ---------------
         `ffmpeg_decode_check` was called from exactly one place: the
-        `_scan()` sweep, whose query is `WHERE status = 'CATALOGUED'`. A new
-        arrival is PENDING/HASHED until FinalizeStage promotes it, and
-        CorruptStage runs BEFORE Finalize -- so on the run that ingests a
-        file, nothing ever decoded it. It became eligible only on the NEXT
-        run, and then only if the size-ratio heuristic flagged it or it won
-        one of NEW_ARRIVAL_DECODE_BUDGET slots.
+        `_scan()` sweep, which decodes only a budget of never-checked rows a
+        run. CorruptStage runs BEFORE Finalize -- so on the run that ingests
+        a file, nothing was sure to decode it: only the size-ratio heuristic
+        or one of NEW_ARRIVAL_DECODE_BUDGET slots would.
 
         That is how five truncated files reached the library as masters on
         2026-09-21 (Billy Joel, Billy Ocean, Chic, The Who, Tower of Power).
@@ -837,16 +838,36 @@ class CorruptStage(BaseStage):
         """
         conn = ctx.conn
         placeholders = ",".join("?" for _ in self.ARRIVAL_STATUSES)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(archive)").fetchall()}
+        # Scholar runs BEFORE this stage and catalogues every arrival it
+        # reads, so by now an arrival is normally CATALOGUED, not HASHED. The
+        # gate asked for PENDING/HASHED only and so saw almost nothing: on
+        # 2026-10-11 8,118 of the 8,819 masters had never been decoded, and
+        # the run that filed them had decoded only _scan's budget of 200
+        # (found tracing Grey's code review, 2026-10-11, finding 2). Not yet
+        # filed by Finalize is what makes a row an arrival.
+        not_filed = (
+            " OR (status = 'CATALOGUED' AND (finalized_at IS NULL OR finalized_at = ''))"
+            if "finalized_at" in cols
+            else ""
+        )
+        # One already decoded clean -- by _scan's budget above, or a run cut
+        # short -- is not decoded twice.
+        unchecked = " AND (decode_ok IS NULL OR decode_ok != 1)" if "decode_ok" in cols else ""
         rows = conn.execute(
             f"SELECT file_path, artist, title FROM archive "
-            f"WHERE status IN ({placeholders}) AND file_path IS NOT NULL",
+            f"WHERE (status IN ({placeholders}){not_filed}) AND file_path IS NOT NULL"
+            f"{unchecked}",
             self.ARRIVAL_STATUSES,
         ).fetchall()
         if not rows:
             return
         logger.info("[%s] decode-gating %d new arrival(s)", self.NAME, len(rows))
 
-        quarantine_dir = ctx.vault_root / "QUARANTINE" / "corrupted"
+        # The configured quarantine (MUSAEUS_QUARANTINE), which verify_effect
+        # checks against -- not vault_root/QUARANTINE, which it only is by
+        # default (Grey's code review, 2026-10-11, finding 9).
+        quarantine_dir = ctx.quarantine / "corrupted"
         gated = 0
         for row in rows:
             file_path = Path(row["file_path"])
@@ -856,9 +877,13 @@ class CorruptStage(BaseStage):
                 decoded_ok, decode_err = ffmpeg_decode_check(file_path, seconds=0)
             except DecodeUnavailable as exc:
                 # Not checked (review of slice B, finding 1): nothing recorded
-                # or moved, and the run is not reported clean.
+                # or moved. The stage did not do its job for this arrival, so
+                # it fails rather than reporting success with an error line
+                # (Grey's code review, 2026-10-11, finding 2). Finalize holds
+                # the arrival back until a later run decodes it.
                 result.files_errored += 1
                 result.errors.append(f"{file_path.name}: arrival not decoded: {exc}")
+                result.success = False
                 continue
             if not dry_run:
                 conn.execute(
