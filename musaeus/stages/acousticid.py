@@ -187,16 +187,12 @@ def _norm_for_match(value: str) -> str:
 
 
 def _artist_key(name: str) -> str:
-    """An artist name with what does not tell two acts apart taken out:
-    accents, case, punctuation, a leading or trailing "The", and "&"/"+" read
-    as "and" ("Beyonce" == "Beyoncé", "Beatles" == "Beatles, The" ==
-    "The Beatles", "Hall & Oates" == "Hall and Oates")."""
-    from ..artist_form import comparison_key  # the article rule lives there
+    """An artist name with what does not tell two acts apart taken out
+    (artist_form.act_key): "Beyonce" == "Beyoncé", "The Beatles" ==
+    "Beatles, The", "Hall & Oates" == "Hall and Oates"."""
+    from ..artist_form import act_key
 
-    n = comparison_key(name or "")
-    n = unicodedata.normalize("NFKD", n).encode("ascii", "ignore").decode()
-    n = re.sub(r"\s*[&+]\s*", " and ", n)
-    return re.sub(r"[^0-9a-z]", "", n)
+    return act_key(name)
 
 
 def _artist_agrees(want: str, names: list[str]) -> bool:

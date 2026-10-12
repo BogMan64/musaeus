@@ -1311,8 +1311,36 @@ _WRITE_STAMPS = (
     "rg_tagged_at",
     "bpm_analyzed_at",
     "identity_tagged_at",
-    "art_checked_at",
-    "title_checked_at",
+)
+# Not art_checked_at or title_checked_at: they say MUSAEUS LOOKED at a file,
+# and a look after an outside tag edit hid the edit (Grey's code review,
+# 2026-10-11, finding 5). An embed logs ART_EMBEDDED; a title is written by
+# Tagger, which logs TAGGER_WRITE.
+#: Events that MOVE a file: its history goes from the old path to the new.
+#: Named, not inferred from "two paths in the event": DUPLICATE_FOUND and
+#: ACOUSTIC_DUPE_FOUND name two files that are both still there, and carrying
+#: one's history to the other hid an outside edit to the second (Grey's code
+#: review, 2026-10-11, finding 5; 2,685 and 1,097 such events live).
+_MOVE_EVENTS = frozenset(
+    {
+        "FINALIZE_MOVE",
+        "FINALIZE_ADOPTED",
+        "ORGANIZE_MOVE",
+        "ORGANIZE_RENAME",
+        "DUPE_MOVED_FOR_REVIEW",
+        "TRIBUTE_QUARANTINED",
+        "TRIBUTE_MOVED_FOR_REVIEW",
+        "QUARANTINE",
+        "DENIED_REINGEST",
+        "VARIOUS_ARTISTS_FIXED",
+        "ARTIST_CONSOLIDATED",
+        "CANONICALIZE",
+        "COMPOSER_REFILED",
+        "MANUAL_REPAIR",
+        # Scripts that move masters (pre-merge review of #182).
+        "RELINK_RECOVERED",
+        "MIGRATE_TO_ARCHIVE",
+    }
 )
 #: Events that write a master's contents. A database-only event is not a
 #: write; a move keeps the file's date (its history is carried, see below).
@@ -1404,6 +1432,8 @@ def _changed_outside_musaeus(cfg: MusicConfig, rep: Report) -> None:
         # A move logged as (old -> new) under the old path (Organize), or under
         # the new path with the old one in old_value (VA fix, dupe moves,
         # consolidate): either way the old path's history goes to the new one.
+        if etype not in _MOVE_EVENTS:
+            continue
         for src, dst in ((fp, new_value), (old_value, fp)):
             if (
                 src
@@ -1477,17 +1507,10 @@ def _changed_outside_musaeus(cfg: MusicConfig, rep: Report) -> None:
 
 
 def _spelling_key(name: str) -> str:
-    """What two spellings of one act share: no case, accents, punctuation or
-    leading/trailing "The", and "&"/"+" read as "and"."""
-    import re
-    import unicodedata
+    """What two spellings of one act share (artist_form.act_key)."""
+    from .artist_form import act_key
 
-    from .artist_form import comparison_key  # the article rule lives there
-
-    n = comparison_key(name or "")
-    n = unicodedata.normalize("NFKD", n).encode("ascii", "ignore").decode()
-    n = re.sub(r"\s*[&+]\s*", " and ", n)
-    return re.sub(r"[^0-9a-z]", "", n)
+    return act_key(name)
 
 
 def _one_act_two_spellings(cfg: MusicConfig, rep: Report) -> None:
