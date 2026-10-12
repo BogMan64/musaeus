@@ -19,8 +19,10 @@ TSV sheets live in: <vault>/MetaData/review/
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import logging
+import os
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -108,9 +110,34 @@ def _keep_marks(path: Path, entries: list[ReviewEntry]) -> None:
 
 def write_review_tsv(path: Path, entries: list[ReviewEntry]) -> int:
     """Write review entries to a TSV file, keeping the marks of the sheet
-    already there. Returns count written."""
+    already there. Returns count written.
+
+    Written beside the sheet, read back, then renamed over it: the marks are
+    read from the old sheet first, so a crash or full disk mid-write used to
+    lose the very marks _keep_marks keeps (Grey's code review, 2026-10-11,
+    finding 11; CLAUDE.md: write aside, verify, then rename).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     _keep_marks(path, entries)
+    part = path.with_name(path.name + ".part")
+    try:
+        _write_rows(part, entries)
+        if len(read_review_tsv(part)) != len(entries):
+            raise OSError(f"{part.name} did not read back whole; {path.name} left as it was")
+        os.replace(part, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(part)
+        raise
+    dir_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+    return len(entries)
+
+
+def _write_rows(path: Path, entries: list[ReviewEntry]) -> None:
     with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=_FIELDS, delimiter="\t")
         writer.writeheader()
@@ -127,7 +154,8 @@ def write_review_tsv(path: Path, entries: list[ReviewEntry]) -> int:
                     "notes": e.notes,
                 }
             )
-    return len(entries)
+        fh.flush()
+        os.fsync(fh.fileno())
 
 
 def read_review_tsv(path: Path) -> list[ReviewEntry]:
@@ -334,10 +362,13 @@ def apply_approved_fixes(
     Read a review TSV, apply all rows marked approve=yes to the archive DB.
     Returns a summary report.
     """
-    from .db import log_event
+    from .db import ensure_columns, log_event
 
     report = ReviewReport()
     entries = read_review_tsv(review_path)
+    if not dry_run and any(e.approve == "yes" and e.field_name == "genre" for e in entries):
+        # Where an approved genre is marked as Grey's (see below).
+        ensure_columns(conn, (("genre_ruled_at", "TEXT"),))
 
     # A column name cannot be a bound parameter, so it is interpolated -- and
     # it arrives from a TSV a human edits by hand. Interpolating it unchecked
@@ -369,10 +400,26 @@ def apply_approved_fixes(
                 # applied whether or not any row changed, and never checked
                 # current_value. An artist correction now reaches every row
                 # with that artist; an album variant, that artist's rows with
-                # that album; a year or genre fill, its one file -- each only
-                # while the value is still the one the sheet saw.
+                # that album; anything else -- a year or genre fill, or a row
+                # added by hand -- its one file. Each only while the value is
+                # still the one the sheet saw.
+                #
+                # Library-wide is for artist rows ONLY (Grey's code review,
+                # 2026-10-11, finding 8): it was every field but year, genre
+                # and album, so a hand-added title fix for "Yesterday" would
+                # have retitled every song called "Yesterday".
                 col = entry.field_name
-                if col in _PER_FILE_FIELDS:
+                if col == "genre":
+                    # Grey chose it, so it is a ruling: GenreValidate leaves a
+                    # ruled genre alone. Without the stamp the next Act 1
+                    # "corrected" Grey's choice back to MasterLaw's as a source
+                    # tag (Grey's code review, 2026-10-11, finding 3).
+                    changed = conn.execute(
+                        "UPDATE archive SET genre = ?, genre_ruled_at = datetime('now') "
+                        "WHERE file_path = ? AND COALESCE(genre, '') = ?",
+                        (entry.suggested_value, entry.file_path, entry.current_value),
+                    ).rowcount
+                elif col not in ("artist", "album"):
                     changed = conn.execute(
                         f"UPDATE archive SET {col} = ? WHERE file_path = ? "
                         f"AND COALESCE({col}, '') = ?",
