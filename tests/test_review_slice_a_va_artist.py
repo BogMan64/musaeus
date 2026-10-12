@@ -33,6 +33,15 @@ def _artist(name: str) -> tuple[str, str]:
         "Various Artists - Song [Bonus Track].m4a",
         "Various Artists - Song [Live at Wembley].m4a",
         "Various Artists - Song [50th Anniversary Edition].m4a",
+        # Grey's code review, 2026-10-11, finding 7.
+        "Various Artists - Song [Official Video].m4a",
+        "Various Artists - Song [Official Music Video].m4a",
+        "Various Artists - Song [feat. Drake].m4a",
+        "Various Artists - Song [ft. Rihanna].m4a",
+        "Various Artists - Song [Club Mix].m4a",
+        "Various Artists - Song [Tiesto Remix].m4a",
+        "Various Artists - Song [Single Edit].m4a",
+        "Various Artists - Song [Lyric Video].m4a",
     ],
 )
 def test_a_description_of_the_recording_is_not_an_artist(name):

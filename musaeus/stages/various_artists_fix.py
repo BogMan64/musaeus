@@ -237,9 +237,30 @@ _RECORDING_WORDS = frozenset(
         "vinyl",
         "hd",
         "hq",
+        # Grey's code review, 2026-10-11, finding 7: "[Official Video]" and
+        # "[Club Mix]" were read as artists.
+        "official",
+        "video",
+        "audio",
+        "lyric",
+        "lyrics",
+        "visualizer",
+        "visualiser",
+        "music",
+        "club",
+        "dub",
+        "promo",
+        "clip",
     ]
 )
-_NOT_AN_ARTIST_FIRST = frozenset({"live", "remaster", "remastered", "bonus", "from"})
+#: A first word that says the bracket is not the act: a description, or a
+#: guest -- "[feat. Drake]" names who joined, not whose recording it is.
+_NOT_AN_ARTIST_FIRST = frozenset(
+    {"live", "remaster", "remastered", "bonus", "from", "feat", "ft", "featuring", "prod"}
+)
+#: A last word that makes the bracket a note about one version: "[Tiesto
+#: Remix]", "[Single Edit]". Not "mix": "[Little Mix]" is a band.
+_DESCRIBES_A_VERSION_LAST = frozenset({"remix", "edit", "version", "rework", "bootleg"})
 _WORD_RE = re.compile(r"[\w'-]+", re.UNICODE)
 #: A year, a number, a decade ("60s", "60's") or an ordinal ("50th") -- not
 #: a band whose name starts with digits ("10cc"; review of #161).
@@ -250,7 +271,7 @@ def _describes_the_recording(content: str) -> bool:
     words = [w.lower() for w in _WORD_RE.findall(content)]
     if not words:
         return True
-    if words[0] in _NOT_AN_ARTIST_FIRST:
+    if words[0] in _NOT_AN_ARTIST_FIRST or words[-1] in _DESCRIBES_A_VERSION_LAST:
         return True
     return all(w in _RECORDING_WORDS or _NUMBER_WORD.fullmatch(w) for w in words)
 
