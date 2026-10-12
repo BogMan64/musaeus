@@ -40,6 +40,8 @@ Pipeline commands:
     bitrot           Verify ALAC_Archive against a baseline (silent corruption)
     enrich           Last.fm genre enrichment for tracks with missing genre
     mb-enrich        MusicBrainz artist + release MBID enrichment
+    genre-suggest    Suggest genres from MusicBrainz + Wikipedia (sheet on the Desktop);
+                     `genre-suggest apply SHEET` loads the rows you approved into MasterLaw
     original-year    recover each recording's first release year from MusicBrainz
     neardupe         Metadata-based near-duplicate detection
     acousticid       Acoustic fingerprint dedup via fpcalc + AcousticID API

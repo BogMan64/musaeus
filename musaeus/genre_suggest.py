@@ -56,6 +56,10 @@ _USER_AGENT = "Musaeus/1.0 (personal music library; genre suggestions)"
 _TIMEOUT_S = 15
 _MB_PAUSE_S = 1.1  # MusicBrainz: at most one request a second
 _WIKI_PAUSE_S = 0.2
+_BUSY_WAIT_S = 5
+#: No answers this many acts in a row: the network or a service is down, and
+#: going on would spend an hour learning nothing (pre-merge review of #188).
+_GIVE_UP_AFTER = 5
 
 #: The sheet's columns, in order. Grey marks `approve` (yes) and may type a
 #: different genre over `suggested_genre`; nothing else is read back.
@@ -73,6 +77,11 @@ SHEET_FIELDS = [
 ]
 
 _APPROVED = {"yes", "y", "x"}
+
+
+#: A name search that found nothing. Not cached: it is as often the name
+#: check as a real absence ("Hall & Oates"), so the next run asks again.
+NOT_FOUND = "MusicBrainz has no act by this name"
 
 
 class LookupUnavailable(Exception):
@@ -104,12 +113,18 @@ class Vocabulary:
         r = (raw or "").strip().lower()
         if not r:
             return None
-        for cand in (r, r.removesuffix(" music"), r.replace("-", " "), r.replace(" ", "-")):
+        forms = (r, r.removesuffix(" music"), r.replace("-", " "), r.replace(" ", "-"))
+        # Every exact form before any map rule: "doo-wop" is Doo Wop (allowed
+        # since 2026-09-05), not the older map rule's Rock N'Roll. And a map
+        # target outside Genre_Allowed.txt is no suggestion -- apply would
+        # refuse it (pre-merge review of #188).
+        for cand in forms:
             if cand in self._lower:
                 return self._lower[cand]
+        for cand in forms:
             mapped = self._map.get(cand)
-            if mapped:
-                return self._lower.get(mapped.lower(), mapped)
+            if mapped and mapped.lower() in self._lower:
+                return self._lower[mapped.lower()]
         return None
 
     def canonical(self, typed: str) -> str | None:
@@ -122,8 +137,11 @@ class Vocabulary:
 _REF = re.compile(r"<ref[^>]*/>|<ref[^>]*>.*?</ref>", re.S | re.I)
 _COMMENT = re.compile(r"<!--.*?-->", re.S)
 _LINK = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
-_GENRE_FIELD = re.compile(r"^\s*\|\s*genres?\s*=(.*?)(?=^\s*\||^\s*\}\})", re.S | re.M | re.I)
+_GENRE_FIELD = re.compile(r"^\s*\|\s*genres?\s*=(.*?)(?=^\s*\|\s*[\w ]+=|\Z)", re.S | re.M | re.I)
+_INNERMOST = re.compile(r"\{\{([^{}]*)\}\}")
 _TEMPLATE_NAMES = {"hlist", "flatlist", "plainlist", "ubl", "unbulleted list", "flat list"}
+#: Templates that only format what they hold: their content is kept.
+_WRAPPERS = {"nowrap", "nobr", "small", "nobold", "noitalic"}
 
 
 def infobox_genres(wikitext: str) -> list[str]:
@@ -136,8 +154,20 @@ def infobox_genres(wikitext: str) -> list[str]:
     if not m:
         return []
     value = _COMMENT.sub("", _REF.sub("", m.group(1)))
+    value = _within_the_field(value)
     value = _LINK.sub(lambda x: x.group(2) or x.group(1), value)
-    value = value.replace("{{", "|").replace("}}", "|")
+    # Templates from the inside out: a list template gives its items and a
+    # wrapper ({{nowrap|..}}) its content; any other ({{citation needed}},
+    # {{sfn|..}}, {{efn|a note}}) is dropped,
+    # or its name and arguments read as genres (pre-merge review of #188).
+    while True:
+        inner = _INNERMOST.search(value)
+        if not inner:
+            break
+        name, _, args = inner.group(1).partition("|")
+        kind = name.strip().lower()
+        keep = "|" + args + "|" if kind in _TEMPLATE_NAMES or kind in _WRAPPERS else "|"
+        value = value[: inner.start()] + keep + value[inner.end() :]
     out: list[str] = []
     for part in re.split(r"[|\n*,•·]|<br\s*/?>", value):
         g = re.sub(r"\s+", " ", part).strip(" '\"")
@@ -148,24 +178,50 @@ def infobox_genres(wikitext: str) -> list[str]:
     return out
 
 
+def _within_the_field(value: str) -> str:
+    """Cut where the field's own braces end: the genre field written last
+    runs into the "}}" that closes the infobox."""
+    depth = 0
+    i = 0
+    while i < len(value) - 1:
+        pair = value[i : i + 2]
+        if pair == "{{":
+            depth += 1
+            i += 2
+            continue
+        if pair == "}}":
+            if depth == 0:
+                return value[:i]
+            depth -= 1
+            i += 2
+            continue
+        i += 1
+    return value
+
+
 # ── The lookups (each one through the gateway) ───────────────────────────────
 
 
 def _get_json(url: str, gate: str) -> dict:
     req = Request(url, headers={"User-Agent": _USER_AGENT})
-    try:
-        # Inside the try: a gateway refusal is "no answer" like a timeout --
-        # the act is asked again next time, never recorded as looked up.
-        _network_check(gate)
-        with urlopen(req, timeout=_TIMEOUT_S) as resp:
-            data: dict = json.loads(resp.read().decode("utf-8"))
-            return data
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return {}
-        raise LookupUnavailable(f"{gate}: HTTP {exc.code}") from exc
-    except Exception as exc:  # timeout, DNS, a gateway refusal
-        raise LookupUnavailable(f"{gate}: {exc}") from exc
+    for attempt in range(2):
+        try:
+            # Inside the try: a gateway refusal is "no answer" like a timeout --
+            # the act is asked again next time, never recorded as looked up.
+            _network_check(gate)
+            with urlopen(req, timeout=_TIMEOUT_S) as resp:
+                data: dict = json.loads(resp.read().decode("utf-8"))
+                return data
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return {}
+            if exc.code in (429, 503) and attempt == 0:
+                time.sleep(_BUSY_WAIT_S)  # the service asked us to slow down
+                continue
+            raise LookupUnavailable(f"{gate}: HTTP {exc.code}") from exc
+        except Exception as exc:  # timeout, DNS, a gateway refusal
+            raise LookupUnavailable(f"{gate}: {exc}") from exc
+    raise LookupUnavailable(f"{gate}: still busy")
 
 
 @dataclass
@@ -190,7 +246,7 @@ def look_up(artist: str, mbid: str | None) -> Found:
         except mb_enrich.LookupUnavailable as exc:
             raise LookupUnavailable(str(exc)) from exc
         if hit is None:
-            found.note = "MusicBrainz has no act by this name"
+            found.note = NOT_FOUND
             return found
         found.mbid = hit[0]
     time.sleep(_MB_PAUSE_S)
@@ -199,6 +255,8 @@ def look_up(artist: str, mbid: str | None) -> Found:
         + urlencode({"inc": "genres+url-rels", "fmt": "json"}),
         mb_enrich._MB_BASE,
     )
+    if not data:
+        found.note = "MusicBrainz returned nothing for this act's MBID"
     found.musicbrainz = sorted(
         ((g["name"], int(g.get("count") or 0)) for g in data.get("genres", []) if g.get("name")),
         key=lambda gc: -gc[1],
@@ -311,17 +369,27 @@ def catalogue_acts(conn: sqlite3.Connection) -> list[tuple[str, str | None, int]
     mbid = "mb_artist_id" if "mb_artist_id" in cols else "NULL"
     mbname = "mb_artist_name" if "mb_artist_name" in cols else "NULL"
     acts: dict[str, list] = {}
+    leads: dict[str, int] = {}
     for artist, mb_id, mb_name, n in conn.execute(
         f"SELECT artist, {mbid}, {mbname}, COUNT(*) FROM archive "
         "WHERE status = 'CATALOGUED' AND artist IS NOT NULL AND trim(artist) != '' "
         f"GROUP BY artist, {mbid}, {mbname}"
     ):
-        if folder_artist(artist, mb_name) != artist:
+        lead = folder_artist(artist, mb_name)
+        if lead != artist:
+            if lead:
+                leads[lead] = leads.get(lead, 0) + n
             continue
         a = acts.setdefault(artist, [None, 0, 0])
         if mb_id and n > a[2]:
             a[0], a[2] = mb_id, n
         a[1] += n
+    # A lead with no songs under its own name ("Tony Orlando" of "Tony
+    # Orlando, Dawn") is still the act the credits follow, so it is asked
+    # about too (pre-merge review of #188).
+    for lead, n in leads.items():
+        if lead not in acts:
+            acts[lead] = [None, n, 0]
     return sorted(((k, v[0], v[1]) for k, v in acts.items()), key=lambda t: t[0].lower())
 
 
@@ -365,6 +433,7 @@ class Report:
     agree_with_law: int = 0
     no_suggestion: int = 0
     rows: int = 0
+    gave_up: bool = False
     unmapped: dict[str, int] = field(default_factory=dict)
 
 
@@ -381,11 +450,37 @@ def generate(
     progress: Callable[[str], None] = lambda s: None,
 ) -> Report:
     """Look each act up and write the review sheet. Reads the catalogue only."""
+    if out_path.exists():
+        # It may hold Grey's marks: a second run the same day wiped them
+        # (pre-merge review of #188).
+        raise FileExistsError(
+            f"{out_path} already exists -- apply it, or move it, or pass --out for a new sheet"
+        )
     rep = Report()
     cache = {} if refresh else _load_cache(cache_path)
     acts = catalogue_acts(conn)
     rep.acts = len(acts)
     rows: list[dict] = []
+    try:
+        _collect(acts, cache, cache_path, law, vocab, rows, rep, limit, lookup, progress)
+    finally:
+        # Kept even when the run is stopped: what was fetched is not fetched again.
+        _save_cache(cache_path, cache)
+
+    def write(p: Path) -> None:
+        with open(p, "w", encoding="utf-8-sig", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=SHEET_FIELDS)
+            w.writeheader()
+            w.writerows(rows)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_aside(out_path, write)
+    rep.rows = len(rows)
+    return rep
+
+
+def _collect(acts, cache, cache_path, law, vocab, rows, rep, limit, lookup, progress) -> None:
+    failed_in_a_row = 0
     for i, (artist, mbid, songs) in enumerate(acts, 1):
         hit = cache.get(artist)
         if hit is not None:
@@ -393,22 +488,33 @@ def generate(
                           list(hit.get("wikipedia", [])), hit.get("note", ""))  # fmt: skip
             rep.from_cache += 1
         else:
-            if limit is not None and rep.asked >= limit:
+            # Tries count toward --limit, answered or not.
+            if limit is not None and rep.asked + rep.unavailable >= limit:
+                continue
+            if failed_in_a_row >= _GIVE_UP_AFTER:
+                rep.gave_up = True
                 continue
             try:
                 found = lookup(artist, mbid)
             except LookupUnavailable as exc:
                 rep.unavailable += 1
+                failed_in_a_row += 1
                 progress(f"  ? {artist}: no answer ({exc})")
+                if failed_in_a_row == _GIVE_UP_AFTER:
+                    progress(
+                        f"  {_GIVE_UP_AFTER} acts in a row got no answer: not asking more this run"
+                    )
                 continue
+            failed_in_a_row = 0
             rep.asked += 1
-            cache[artist] = {
-                "mbid": found.mbid,
-                "musicbrainz": found.musicbrainz,
-                "wikipedia": found.wikipedia,
-                "note": found.note,
-                "asked": datetime.date.today().isoformat(),
-            }
+            if found.note != NOT_FOUND:
+                cache[artist] = {
+                    "mbid": found.mbid,
+                    "musicbrainz": found.musicbrainz,
+                    "wikipedia": found.wikipedia,
+                    "note": found.note,
+                    "asked": datetime.date.today().isoformat(),
+                }
             if rep.asked % 25 == 0:
                 _save_cache(cache_path, cache)
                 progress(f"  {i:,} of {len(acts):,} acts")
@@ -436,18 +542,6 @@ def generate(
                 "notes": found.note,
             }
         )
-    _save_cache(cache_path, cache)
-
-    def write(p: Path) -> None:
-        with open(p, "w", encoding="utf-8-sig", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=SHEET_FIELDS)
-            w.writeheader()
-            w.writerows(rows)
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_aside(out_path, write)
-    rep.rows = len(rows)
-    return rep
 
 
 # ── apply ────────────────────────────────────────────────────────────────────
@@ -494,6 +588,10 @@ def apply(sheet: Path, law_path: Path, vocab: Vocabulary, *, dry_run: bool = Fal
         wanted[GenreLaw._key(artist)] = (artist, genre)
 
     raw = law_path.read_bytes().decode("utf-8")
+    if "\n" in raw.replace("\r\n", ""):
+        # MasterLaw is CRLF; a line split any other way would be appended
+        # as a duplicate and leave mixed endings (pre-merge review of #188).
+        raise ValueError(f"{law_path.name} has lines not ending in CRLF -- not changed")
     lines = raw.split("\r\n")
     header, body = lines[0], lines[1:]
     seen: set[str] = set()
@@ -555,7 +653,7 @@ def default_sheet() -> Path:
 def cmd_generate(*, dry_run: bool, limit: int | None, refresh: bool, out: str | None) -> int:
     from .canon.genre_law import GenreLaw
     from .config import get_config
-    from .network_policy import NetworkPolicy, set_policy
+    from .network_policy import NetworkPolicy, policy
 
     cfg = get_config()
     vocab = Vocabulary(cfg.meta_dir / "Genre_Allowed.txt", cfg.meta_dir / "Genre_Canonical_Map.txt")
@@ -576,17 +674,26 @@ def cmd_generate(*, dry_run: bool, limit: int | None, refresh: bool, out: str | 
             print(f"  would look up: {n:,} (about {n * 2.5 / 60:.0f} min; nothing asked now)")
             return 0
         sheet = Path(out).expanduser() if out else default_sheet()
+        if sheet.exists():
+            print(f"ERROR: {sheet} already exists -- it may hold your marks.")
+            print("  Apply it first, move it, or pass --out for a new sheet.")
+            return 1
         print(
             f"\nMusaeus genre-suggest generate\n  acts: {len(acts):,}, to look up: {len(to_ask):,}"
         )
-        set_policy(NetworkPolicy.ALLOWED)
-        rep = generate(conn, law, vocab, cache_path, sheet, limit=limit, refresh=refresh,
-                       progress=print)  # fmt: skip
+        # The network for this explicit command only, and only while it asks.
+        with policy(NetworkPolicy.ALLOWED):
+            rep = generate(conn, law, vocab, cache_path, sheet, limit=limit, refresh=refresh,
+                           progress=print)  # fmt: skip
     finally:
         conn.close()
     print(f"\n  looked up now: {rep.asked:,}   from earlier: {rep.from_cache:,}")
     if rep.unavailable:
         print(f"  no answer (asked again next time): {rep.unavailable:,}")
+    if rep.gave_up:
+        print(
+            f"  stopped asking after {_GIVE_UP_AFTER} acts in a row got no answer -- run it again later"
+        )
     print(f"  already agree with MasterLaw: {rep.agree_with_law:,}")
     print(f"  nothing in the vocabulary: {rep.no_suggestion:,}")
     print(f"  rows for you to decide: {rep.rows:,}")
@@ -612,17 +719,20 @@ def cmd_apply(sheet: str, *, dry_run: bool) -> int:
         return 1
     vocab = Vocabulary(cfg.meta_dir / "Genre_Allowed.txt", cfg.meta_dir / "Genre_Canonical_Map.txt")
     law_path = cfg.meta_dir / "MasterLaw.csv"
-    if dry_run:
-        res = apply(path, law_path, vocab, dry_run=True)
-    else:
-        # MasterLaw is read by GenreValidate at the start of Act 1: not
-        # rewritten while a run or another writer holds the masters.
-        try:
+    try:
+        if dry_run:
+            res = apply(path, law_path, vocab, dry_run=True)
+        else:
+            # MasterLaw is read by GenreValidate at the start of Act 1: not
+            # rewritten while a run or another writer holds the masters.
             with masters_lock(cfg.runs_root, exclusive=True, what="genre-suggest apply"):
                 res = apply(path, law_path, vocab)
-        except MastersBusy as exc:
-            print(f"Not applied: {exc}")
-            return EXIT_BUSY
+    except MastersBusy as exc:
+        print(f"Not applied: {exc}")
+        return EXIT_BUSY
+    except ValueError as exc:
+        print(f"Not applied: {exc}")
+        return 1
     verb = "would change" if dry_run else "changed"
     print(f"\nMusaeus genre-suggest apply{' [DRY RUN]' if dry_run else ''}")
     for artist, was, now in res.changed:

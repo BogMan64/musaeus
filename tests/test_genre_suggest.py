@@ -267,3 +267,114 @@ class TestApply:
         assert res.changed == [("Fleetwood Mac", "Rock", "Pop")]
         assert law.read_bytes() == LAW.encode()
         assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+
+# ── Pre-merge review of #188 ─────────────────────────────────────────────────
+
+
+class TestReviewOf188:
+    def test_a_marked_sheet_is_never_written_over(self, tmp_path, vocab):
+        conn = _db(tmp_path)
+        law = GenreLaw(_law(tmp_path, "artist,genre\r\n"))
+        sheet = tmp_path / "sheet.csv"
+        sheet.write_bytes(b"approve,artist\r\nyes,Judy Collins\r\n")
+        with pytest.raises(FileExistsError):
+            gs.generate(
+                conn, law, vocab, tmp_path / "c.json", sheet, lookup=lambda a, m: ANSWERS[a]
+            )
+        assert sheet.read_bytes() == b"approve,artist\r\nyes,Judy Collins\r\n"
+
+    def test_it_stops_asking_when_nothing_answers(self, tmp_path, vocab, monkeypatch):
+        conn = _db(tmp_path)
+        for n in range(20):
+            upsert_archive(conn, {"file_path": f"/x/{n}.m4a", "status": "CATALOGUED",
+                                  "artist": f"Act {n:02d}", "title": "t"})  # fmt: skip
+        conn.commit()
+        law = GenreLaw(_law(tmp_path, "artist,genre\r\n"))
+        calls: list[str] = []
+
+        def down(artist, mbid):
+            calls.append(artist)
+            raise gs.LookupUnavailable("no route to host")
+
+        rep = gs.generate(conn, law, vocab, tmp_path / "c.json", tmp_path / "s.csv", lookup=down)
+        assert len(calls) == gs._GIVE_UP_AFTER and rep.gave_up
+
+    def test_a_failed_try_counts_toward_the_limit(self, tmp_path, vocab):
+        conn = _db(tmp_path)
+        law = GenreLaw(_law(tmp_path, "artist,genre\r\n"))
+        calls: list[str] = []
+
+        def down(artist, mbid):
+            calls.append(artist)
+            raise gs.LookupUnavailable("timeout")
+
+        gs.generate(conn, law, vocab, tmp_path / "c.json", tmp_path / "s.csv", limit=2, lookup=down)
+        assert len(calls) == 2
+
+    def test_a_lead_known_only_from_credits_is_asked_about(self, tmp_path):
+        conn = open_db(tmp_path / "m.db")
+        upsert_archive(conn, {"file_path": "/m/1.m4a", "status": "CATALOGUED",
+                              "artist": "Tony Orlando, Dawn", "title": "Knock Three Times"})  # fmt: skip
+        conn.commit()
+        assert gs.catalogue_acts(conn) == [("Tony Orlando", None, 1)]
+
+    def test_a_name_search_miss_is_not_remembered(self, tmp_path, vocab):
+        conn = _db(tmp_path)
+        law = GenreLaw(_law(tmp_path, "artist,genre\r\n"))
+        miss = gs.Found(note=gs.NOT_FOUND)
+        gs.generate(
+            conn, law, vocab, tmp_path / "c.json", tmp_path / "s.csv", lookup=lambda a, m: miss
+        )
+        assert gs._load_cache(tmp_path / "c.json") == {}
+
+    def test_an_exact_genre_beats_an_old_map_rule(self, tmp_path):
+        allowed = tmp_path / "a.txt"
+        allowed.write_text("Doo Wop\nRock N'Roll\n", encoding="utf-8")
+        mapping = tmp_path / "m.txt"
+        mapping.write_text("doo-wop => Rock N'Roll\nkaraoke => Karaoke\n", encoding="utf-8")
+        v = gs.Vocabulary(allowed, mapping)
+        assert v.resolve("doo-wop") == "Doo Wop"
+        assert v.resolve("karaoke") is None, "a map target outside the vocabulary is no suggestion"
+
+    @pytest.mark.parametrize(
+        ("wikitext", "want"),
+        [
+            ("{{Infobox musical artist\n| genre = {{hlist\n | [[Rock music|Rock]]\n | [[pop music|pop]]\n}}\n"
+             "| label = X\n}}", ["Rock", "pop"]),
+            ("{{Infobox musical artist\n| name = X\n| genre = [[Folk music|Folk]], [[country music|country]]}}",
+             ["Folk", "country"]),
+            ("{{Infobox musical artist\n| genre = {{nowrap|[[Soul music|Soul]]}}{{citation needed|date=May 2020}}, "
+             "[[funk]]{{sfn|Smith|2001}}{{efn|Called rock by some}}\n| label = X\n}}", ["Soul", "funk"]),
+        ],
+    )  # fmt: skip
+    def test_infobox_layouts(self, wikitext, want):
+        assert gs.infobox_genres(wikitext) == want
+
+    def test_a_masterlaw_not_in_crlf_is_refused(self, tmp_path, vocab):
+        law = _law(tmp_path, "artist,genre\nFleetwood Mac,Rock\n")
+        sheet = _sheet(
+            tmp_path, [{"approve": "yes", "artist": "Fleetwood Mac", "suggested_genre": "Pop"}]
+        )
+        with pytest.raises(ValueError, match="CRLF"):
+            gs.apply(sheet, law, vocab)
+        assert law.read_bytes() == b"artist,genre\nFleetwood Mac,Rock\n"
+
+    def test_a_busy_service_is_asked_once_more(self, monkeypatch):
+        import io
+        import urllib.error
+
+        answers: list = [urllib.error.HTTPError("u", 503, "busy", {}, None), b'{"ok": 1}']
+
+        def fake(req, timeout):
+            a = answers.pop(0)
+            if isinstance(a, Exception):
+                raise a
+            return io.BytesIO(a)
+
+        monkeypatch.setattr(gs, "urlopen", fake)
+        monkeypatch.setattr(gs, "_BUSY_WAIT_S", 0)
+        with network_policy.policy(NetworkPolicy.ALLOWED):
+            assert gs._get_json(
+                "https://musicbrainz.org/ws/2/x", "https://musicbrainz.org/ws/2"
+            ) == {"ok": 1}
