@@ -13,10 +13,12 @@ Run it only with MasterLaw's credit lines following their lead artist (done
 lead's genre on 2026-10-06 back to the old credit lines (SRV & Double Trouble
 to Southern Rock).
 
-Every stamp on record was written by GenreValidate -- nothing else in MUSAEUS
-has ever written genre_ruled_at (checked through the whole git history) -- so
-every one is the law's, and this clears them all. The next GenreValidate run
-then brings those rows to the current MasterLaw.
+Until 2026-10-11 only GenreValidate wrote genre_ruled_at, so those stamps
+are the law's and this clears them. Since then `musaeus review apply` stamps a
+genre Grey approves in a review sheet -- a real ruling. Those rows (a
+REVIEW_APPLIED genre event names them) are left alone (pre-merge review of
+#180). The next GenreValidate run brings the cleared rows to the current
+MasterLaw.
 
 Dry run unless --execute. --execute holds the masters lock, writes one
 GENRE_RULING_CLEARED event per row (old_value = the stamp), and commits once.
@@ -57,10 +59,19 @@ def main() -> int:
         return 0
     rows = db.execute(
         "SELECT file_path, artist, genre, genre_ruled_at FROM archive "
-        "WHERE genre_ruled_at IS NOT NULL AND TRIM(genre_ruled_at) <> ''"
+        "WHERE genre_ruled_at IS NOT NULL AND TRIM(genre_ruled_at) <> '' "
+        "AND file_path NOT IN (SELECT file_path FROM events WHERE "
+        "event_type = 'REVIEW_APPLIED' AND note LIKE 'genre (%' AND file_path IS NOT NULL)"
     ).fetchall()
+    kept = db.execute(
+        "SELECT COUNT(*) FROM archive WHERE genre_ruled_at IS NOT NULL "
+        "AND TRIM(genre_ruled_at) <> '' AND file_path IN (SELECT file_path FROM events "
+        "WHERE event_type = 'REVIEW_APPLIED' AND note LIKE 'genre (%')"
+    ).fetchone()[0]
     artists = {(r["artist"] or "").strip() for r in rows}
     print(f"{len(rows):,} stamped row(s), {len(artists):,} artist(s)")
+    if kept:
+        print(f"{kept:,} genre(s) Grey approved in a review sheet: kept")
     if not args.execute:
         print("DRY RUN: nothing changed. --execute clears them; the next GenreValidate")
         print("run then brings those rows to the current MasterLaw.")
@@ -73,7 +84,10 @@ def main() -> int:
             (run_id, r["file_path"], r["genre_ruled_at"],
              f"law-set genre {r['genre']!r} no longer frozen (Grey, 2026-10-11)"),
         )  # fmt: skip
-    db.execute("UPDATE archive SET genre_ruled_at = NULL WHERE genre_ruled_at IS NOT NULL")
+    db.executemany(
+        "UPDATE archive SET genre_ruled_at = NULL WHERE file_path = ?",
+        [(r["file_path"],) for r in rows],
+    )
     db.commit()
     print(f"cleared {len(rows):,}; run GenreValidate (Act 1) to apply the current MasterLaw")
     return 0

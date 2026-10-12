@@ -31,6 +31,11 @@ class _EmptyLaw:
     def permits(self, g):
         return True
 
+    genres: set[str] = set()
+
+    def genre_for(self, artist):
+        return None
+
 
 def _res(n):
     r = StageResult(stage_name="x", success=True)
@@ -53,24 +58,39 @@ def test_sanitize_passes_when_clean():
     assert SanitizeStage().verify_effect(_ctx(c), _res(1)) == []
 
 
-def test_genre_validate_flags_split_artist():
+def test_genre_validate_consolidate_flags_split_artist():
     c = _db()
     c.execute("INSERT INTO archive VALUES ('/a.m4a','Queen','A','T','Rock','CATALOGUED')")
     c.execute("INSERT INTO archive VALUES ('/b.m4a','Queen','B','U','Pop','CATALOGUED')")
     st = GenreValidateStage()
     st._law = lambda ctx: _EmptyLaw()
+    st._tie_artists = frozenset()  # a --consolidate run, no ties
     problems = st.verify_effect(_ctx(c), _res(2))
     assert problems and "more than one genre" in problems[0]
     assert "Queen" in problems[0]
 
 
-def test_genre_validate_passes_one_genre_per_artist():
+def test_genre_validate_consolidate_passes_one_genre_per_artist():
     c = _db()
     c.execute("INSERT INTO archive VALUES ('/a.m4a','Queen','A','T','Rock','CATALOGUED')")
     c.execute("INSERT INTO archive VALUES ('/b.m4a','Queen','B','U','Rock','CATALOGUED')")
     st = GenreValidateStage()
     st._law = lambda ctx: _EmptyLaw()
+    st._tie_artists = frozenset()
     assert st.verify_effect(_ctx(c), _res(2)) == []
+
+
+def test_genre_validate_check_notes_a_split_the_law_has_no_say_over():
+    """An act MasterLaw does not know is left as it is, so its two genres
+    are a note, not this run's failure (Grey's code review, 2026-10-11)."""
+    c = _db()
+    c.execute("INSERT INTO archive VALUES ('/a.m4a','Queen','A','T','Rock','CATALOGUED')")
+    c.execute("INSERT INTO archive VALUES ('/b.m4a','Queen','B','U','Pop','CATALOGUED')")
+    st = GenreValidateStage()
+    st._law = lambda ctx: _EmptyLaw()
+    res = _res(2)
+    assert st.verify_effect(_ctx(c), res) == []
+    assert any("Queen" in n and "more than one genre" in n for n in res.notes)
 
 
 def test_normalize_flags_unstable_name():
@@ -132,6 +152,9 @@ class _RealLaw:
 
         return n(g) in {n(x) for x in self._g}
 
+    def genre_for(self, artist):
+        return None
+
 
 def test_genre_validate_flags_non_canonical_spelling():
     """'pop' is legal under permits() but is not how the law spells it."""
@@ -141,9 +164,12 @@ def test_genre_validate_flags_non_canonical_spelling():
     )
     st = GenreValidateStage()
     st._law = lambda ctx: _RealLaw({"Pop", "Rock"})
-    problems = st.verify_effect(_ctx(c), _res(1))
-    assert problems, "a case variant must not be absorbed silently"
-    assert "not spelled canonically" in problems[0] and "'pop'" in problems[0]
+    res = _res(1)
+    # Not this run's write, so a note rather than a failure -- but still said.
+    assert st.verify_effect(_ctx(c), res) == []
+    assert any("not spelled canonically" in n and "'pop'" in n for n in res.notes), (
+        "a case variant must not be absorbed silently"
+    )
 
 
 def test_genre_validate_accepts_slash_variant():
@@ -154,4 +180,6 @@ def test_genre_validate_accepts_slash_variant():
     )
     st = GenreValidateStage()
     st._law = lambda ctx: _RealLaw({"R&B/Funk/Soul"})
-    assert st.verify_effect(_ctx(c), _res(1)) == []
+    res = _res(1)
+    assert st.verify_effect(_ctx(c), res) == []
+    assert not any("canonically" in n for n in res.notes)

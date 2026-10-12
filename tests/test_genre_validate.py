@@ -16,7 +16,6 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -236,10 +235,15 @@ class TestAGenreContainingACommaIsNotAmbiguous:
 
     def test_a_comma_bearing_genre_is_reported_as_one_item(self, vault_with_genres):
         ctx = vault_with_genres("Pop, Rock", "Doo Wop")
-        out = GenreValidateStage().verify_effect(ctx, MagicMock(files_changed=1))
+        stage = GenreValidateStage()
+        result = stage._make_result()
+        result.files_changed = 1
+        # Genres this run did not write are reported in the notes, not as a
+        # failure (Grey's code review, 2026-10-11, finding 1).
+        assert stage.verify_effect(ctx, result) == []
         vocab = [
             line
-            for line in out
+            for line in result.notes
             if "outside the closed vocabulary" in line or "absent from Genre_Allowed" in line
         ]
         assert vocab, "expected the vocabulary findings"
