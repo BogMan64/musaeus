@@ -137,7 +137,7 @@ def _stage_awkward_rows(ctx):
             },
         )
     ctx.conn.execute(
-        "UPDATE archive SET canonicalized_at = datetime('now'), canon_action = 'PASSTHROUGH'"
+        "UPDATE archive SET decode_ok = 1, canonicalized_at = datetime('now'), canon_action = 'PASSTHROUGH'"
     )
     ctx.conn.commit()
 

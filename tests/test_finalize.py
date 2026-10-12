@@ -84,7 +84,7 @@ def _make_canonicalized_track(
         },
     )
     ctx.conn.execute(
-        "UPDATE archive SET canonicalized_at = datetime('now'), canon_action = 'PASSTHROUGH' "
+        "UPDATE archive SET decode_ok = 1, canonicalized_at = datetime('now'), canon_action = 'PASSTHROUGH' "
         "WHERE file_path = ?",
         (str(path),),
     )
@@ -119,7 +119,7 @@ def _make_staged_track(
         },
     )
     ctx.conn.execute(
-        "UPDATE archive SET canonicalized_at = datetime('now'), canon_action = 'CONVERTED' "
+        "UPDATE archive SET decode_ok = 1, canonicalized_at = datetime('now'), canon_action = 'CONVERTED' "
         "WHERE file_path = ?",
         (str(path),),
     )
@@ -372,7 +372,7 @@ class TestFinalizeRunLive:
             },
         )
         ctx.conn.execute(
-            "UPDATE archive SET canonicalized_at = datetime('now') WHERE file_path = ?",
+            "UPDATE archive SET decode_ok = 1, canonicalized_at = datetime('now') WHERE file_path = ?",
             (str(missing),),
         )
         ctx.conn.commit()
@@ -719,7 +719,7 @@ class TestFinalizeRecoveryBoundary:
             },
         )
         ctx.conn.execute(
-            "UPDATE archive SET canonicalized_at = datetime('now'), "
+            "UPDATE archive SET decode_ok = 1, canonicalized_at = datetime('now'), "
             "canon_action = 'CONVERTED' WHERE file_path = ?",
             (str(stray),),
         )
@@ -745,3 +745,76 @@ class TestFinalizeRecoveryBoundary:
             "SELECT finalized_at FROM archive WHERE file_path = ?", (str(stray),)
         ).fetchone()
         assert row["finalized_at"] is None
+
+
+# ── Only an arrival that decoded clean becomes a master ──────────────────────
+
+
+class TestFinalizeHoldsUndecodedArrivals:
+    """Grey's code review, 2026-10-11, finding 2: when Corrupt could not
+    decode an arrival (a timeout on a slow drive, ffmpeg killed) it left the
+    row unchecked, and Finalize filed it as a master anyway."""
+
+    def _decode(self, ctx: RunContext, path: Path, verdict: int | None) -> None:
+        ctx.conn.execute(
+            "UPDATE archive SET decode_ok = ? WHERE file_path = ?", (verdict, str(path))
+        )
+        ctx.conn.commit()
+
+    def _row(self, ctx: RunContext, title: str):
+        return ctx.conn.execute(
+            "SELECT file_path, finalized_at FROM archive WHERE title = ?", (title,)
+        ).fetchone()
+
+    @pytest.mark.parametrize(
+        ("verdict", "state"), [(None, "never decoded"), (0, "failed its decode")]
+    )
+    def test_an_arrival_not_decoded_clean_stays_where_it_is(self, ctx, verdict, state):
+        held = _make_canonicalized_track(ctx, "a/held.m4a", "Artist", "Album", "held", "h1")
+        good = _make_canonicalized_track(ctx, "a/good.m4a", "Artist", "Album", "good", "h2")
+        self._decode(ctx, held, verdict)
+
+        result = FinalizeStage().run(ctx)
+
+        assert held.exists() and self._row(ctx, "held")["file_path"] == str(held)
+        assert self._row(ctx, "held")["finalized_at"] is None
+        assert self._row(ctx, "good")["finalized_at"] is not None
+        assert not good.exists()
+        assert any("held back 1 arrival(s)" in n for n in result.notes)
+        assert any(f"held.m4a ({state})" in n for n in result.notes)
+
+    def test_the_preview_says_what_it_would_hold(self, ctx_dry):
+        held = _make_canonicalized_track(ctx_dry, "a/held.m4a", "Artist", "Album", "held")
+        self._decode(ctx_dry, held, None)
+
+        result = FinalizeStage().dry_run(ctx_dry)
+
+        assert result.files_changed == 0
+        assert any("would hold back 1 arrival(s)" in n for n in result.notes)
+
+    def test_a_forced_refinalize_does_not_hold_a_filed_master(self, ctx):
+        # A master filed before decoding was a rule is a master, not an
+        # arrival; --force re-files it and must not strand it.
+        path = _make_canonicalized_track(ctx, "a/old.m4a", "Artist", "Album", "old")
+        FinalizeStage().run(ctx)
+        self._decode(ctx, Path(self._row(ctx, "old")["file_path"]), None)
+        ctx.set("finalize_force", True)
+
+        stage = FinalizeStage()
+        pending = stage._get_pending(ctx, force=True)
+
+        assert [r["title"] for r in pending] == ["old"]
+        assert stage._held_undecoded == []
+        assert not path.exists()
+
+
+def test_a_held_arrival_is_a_problem_the_report_counts(ctx):
+    """Pre-merge review of #179: run alone (`--act 3`), Finalize held a file
+    and the Act still read "no problems"."""
+    held = _make_canonicalized_track(ctx, "a/held.m4a", "Artist", "Album", "held")
+    ctx.conn.execute("UPDATE archive SET decode_ok = NULL WHERE file_path = ?", (str(held),))
+    ctx.conn.commit()
+
+    result = FinalizeStage().run(ctx)
+
+    assert any("1 arrival(s) held back" in e for e in result.errors)
