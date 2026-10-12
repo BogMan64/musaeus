@@ -115,10 +115,16 @@ def test_after_an_apostrophe_the_letter_stays_small(tmp_path):
     assert _normalized(tmp_path, "Dion", "don't stop")[1] == "Don't Stop"
 
 
-def test_album_names_keep_their_own_rule(tmp_path):
+def test_album_names_take_every_word_capitalised_too(tmp_path):
+    """Grey, 2026-10-11: albums follow artists and titles, in tags and folders.
+    The 2026-09-16 small-words rule was never wired into any step."""
     assert (
-        _normalized(tmp_path, "AC/DC", "Hells Bells", album="Back in Black")[2] == "Back in Black"
+        _normalized(tmp_path, "AC/DC", "Hells Bells", album="Back in Black")[2] == "Back In Black"
     )
+    assert _normalized(tmp_path, "Elton John", "Daniel",
+                       album="Don't Shoot Me I'm only the Piano Player")[2] == (
+        "Don't Shoot Me I'm Only The Piano Player"
+    )  # fmt: skip
 
 
 def test_act_one_settles_in_one_pass_and_stays_settled(tmp_path):

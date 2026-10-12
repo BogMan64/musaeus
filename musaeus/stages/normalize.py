@@ -572,9 +572,15 @@ def _normalise_artist(artist: str) -> str | None:
 
 
 def _normalise_title(value: str) -> str | None:
-    """A song title: the ALL-CAPS repair, then every word capitalised.
+    """A song title or an album: the ALL-CAPS repair, then every word
+    capitalised.
 
-    Albums keep _normalise_text_field -- their own rule, 2026-09-16.
+    Albums had their own rule from 2026-09-16 (small words lower case, "Back
+    in Black"), which was never wired into any step, so an album kept its
+    source's spelling. Grey, 2026-10-11: albums take every word capitalised
+    too, in tags and folders ("Back In Black"), with the same exceptions as
+    artists and titles. MusicBrainz searches ignore case and MUSAEUS keeps
+    its release ID, not its spelling, so nothing there changes.
     """
     fixed = _smart_title_case(value) if _is_all_caps(value) else value
     fixed = every_word_capitalised(fixed)
@@ -599,15 +605,9 @@ def stored_title(title: str) -> str:
     return (_normalise_title(title) or title) if title else title
 
 
-def _normalise_text_field(value: str) -> str | None:
-    """
-    Normalise a title or album field.
-    Only fixes ALL-CAPS strings; does not apply article logic.
-    Returns None if no change needed.
-    """
-    if _is_all_caps(value):
-        return _smart_title_case(value)
-    return None
+def stored_album(album: str) -> str:
+    """An album exactly as Normalize stores it. See stored_artist."""
+    return (_normalise_title(album) or album) if album else album
 
 
 # ── Stage ─────────────────────────────────────────────────────────────────────
@@ -710,7 +710,7 @@ class NormalizeStage(BaseStage):
 
             new_artist = _normalise_artist(artist) if artist else None
             new_title = _normalise_title(title) if title else None
-            new_album = _normalise_text_field(album) if album else None
+            new_album = _normalise_title(album) if album else None
 
             if new_artist:
                 logger.info("[normalize] artist  %r → %r  (%s)", artist, new_artist, fp)
