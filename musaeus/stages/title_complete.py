@@ -48,9 +48,23 @@ def _norm(s: str) -> str:
 
 
 def completed_title(title: str, mb_title: str) -> str | None:
-    """MusicBrainz's title when *title* is a cut-off start of it, else None."""
+    """MusicBrainz's title when *title* is a cut-off start of it, else None.
+
+    Cut off means the title stops where nobody would end one: inside a word
+    ("Under the Brid") or inside a bracket it never closed ("Ain't No Fun
+    (Waiting 'round To Be A"). A title that ends cleanly is already whole, and
+    whatever MusicBrainz adds after it names ITS recording -- "(The Neptunes
+    remix)", "(5.1 mix)", "(live)", ", BWV 565", "/Skokiaan" -- not this one.
+    The full run of 2026-10-12 wrote 91 such notes over Grey's titles
+    (reverted); starting the MusicBrainz title was the whole rule then.
+    """
     cur, full = _norm(title), _norm(mb_title)
     if len(cur) < _MIN_TITLE_CHARS or not full.startswith(cur) or len(full) - len(cur) < 2:
+        return None
+    mid_word = cur[-1:].isalnum() and full[len(cur) : len(cur) + 1].isalnum()
+    raw = title.strip()
+    unclosed = raw.count("(") > raw.count(")") or raw.count("[") > raw.count("]")
+    if not (mid_word or unclosed):
         return None
     return mb_title.replace("’", "'").strip()
 
