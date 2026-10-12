@@ -30,7 +30,24 @@ from musaeus.stages.album_fill import Unavailable
         ("Solsbury Hill (Remastered)", "Solsbury Hill", None),  # differs, not cut
         ("Under the Bridge", "Under the Bridge", None),  # the same: nothing to finish
         ("Lola", "Lola Versus Powerman", None),  # too short to say it was cut
-        ("Hot Stuff", "Hot Stuff (12\" version)", "Hot Stuff (12\" version)"),
+        # The whole name already: MusicBrainz's note names ITS recording, not
+        # this one (the full run of 2026-10-12 wrote 91 of these; reverted).
+        ("Hot Stuff", "Hot Stuff (12\" version)", None),
+        ("Sympathy For The Devil", "Sympathy for the Devil (The Neptunes remix)", None),
+        ("Ventura Highway", "Ventura Highway (5.1 mix)", None),
+        ("All Day And All Of The Night", "All Day and All of the Night (BBC live)", None),
+        ("Jamaica Shout", "Jamaica Shout (alt tk -1)", None),
+        ("Something / Blue Jay Way", "Something / Blue Jay Way (transition)", None),
+        ("Love In An Elevator", "Love in an Elevator - single version", None),
+        ("Drops Of Jupiter (Tell Me)", "Drops Of Jupiter (Tell Me) (Rock Mix)", None),
+        ("Toccata And Fugue In D Minor", "Toccata and Fugue in D minor, BWV 565", None),
+        ("No No Song", "No No Song/Skokiaan", None),
+        ("Are You Gonna Go My Wa", "Are You Gonna Go My Way", "Are You Gonna Go My Way"),
+        ("Who'll Stop The Rai", "Who'll Stop the Rain", "Who'll Stop the Rain"),
+        ("Sweet Dream Baby", "Sweet Dream Babys", None),  # a plural s, not a cut
+        ("Symphony No. 4", "Symphony No. 40 in G minor, K. 550", None),
+        ("Hot Stuff (Single", "Hot Stuff (single version) [live]", "Hot Stuff (single version)"),
+        ("Ombra Mai Fu", "Ombra mai fu from Serse", None),
     ],
 )  # fmt: skip
 def test_only_a_cut_off_start_is_finished(title, mb, want):
