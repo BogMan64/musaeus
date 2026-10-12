@@ -18,7 +18,7 @@ import pytest
 
 from musaeus import doctor
 from musaeus.config import MusicConfig
-from musaeus.db import open_db, upsert_archive
+from musaeus.db import ensure_columns, open_db, upsert_archive
 from musaeus.hasher import audio_hash_safe
 
 pytestmark = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="requires ffmpeg")
@@ -188,11 +188,10 @@ def test_a_look_is_not_a_write(cfg):
     _catalogue(cfg, f, written_days_ago=3)
     os.utime(f, None)
     conn = open_db(cfg.db_path)
-    for col in ("art_checked_at", "title_checked_at"):
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
-        if col not in cols:
-            conn.execute(f"ALTER TABLE archive ADD COLUMN {col} TEXT")
-        conn.execute(f"UPDATE archive SET {col} = datetime('now')")
+    ensure_columns(conn, (("art_checked_at", "TEXT"), ("title_checked_at", "TEXT")))
+    conn.execute(
+        "UPDATE archive SET art_checked_at = datetime('now'), title_checked_at = datetime('now')"
+    )
     conn.commit()
     conn.close()
     assert _finding(cfg).level == "warn"
