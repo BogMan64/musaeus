@@ -1507,17 +1507,10 @@ def _changed_outside_musaeus(cfg: MusicConfig, rep: Report) -> None:
 
 
 def _spelling_key(name: str) -> str:
-    """What two spellings of one act share: no case, accents, punctuation or
-    leading/trailing "The", and "&"/"+" read as "and"."""
-    import re
-    import unicodedata
+    """What two spellings of one act share (artist_form.act_key)."""
+    from .artist_form import act_key
 
-    from .artist_form import comparison_key  # the article rule lives there
-
-    n = comparison_key(name or "")
-    n = unicodedata.normalize("NFKD", n).encode("ascii", "ignore").decode()
-    n = re.sub(r"\s*[&+]\s*", " and ", n)
-    return re.sub(r"[^0-9a-z]", "", n)
+    return act_key(name)
 
 
 def _one_act_two_spellings(cfg: MusicConfig, rep: Report) -> None:
