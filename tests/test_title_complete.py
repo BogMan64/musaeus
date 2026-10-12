@@ -42,6 +42,11 @@ from musaeus.stages.album_fill import Unavailable
         ("Drops Of Jupiter (Tell Me)", "Drops Of Jupiter (Tell Me) (Rock Mix)", None),
         ("Toccata And Fugue In D Minor", "Toccata and Fugue in D minor, BWV 565", None),
         ("No No Song", "No No Song/Skokiaan", None),
+        ("Are You Gonna Go My Wa", "Are You Gonna Go My Way", "Are You Gonna Go My Way"),
+        ("Who'll Stop The Rai", "Who'll Stop the Rain", "Who'll Stop the Rain"),
+        ("Sweet Dream Baby", "Sweet Dream Babys", None),  # a plural s, not a cut
+        ("Symphony No. 4", "Symphony No. 40 in G minor, K. 550", None),
+        ("Hot Stuff (Single", "Hot Stuff (single version) [live]", "Hot Stuff (single version)"),
         ("Ombra Mai Fu", "Ombra mai fu from Serse", None),
     ],
 )  # fmt: skip

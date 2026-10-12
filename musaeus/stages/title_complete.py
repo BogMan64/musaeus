@@ -6,11 +6,11 @@ Under the Brid", "Lenny Kravitz Are You Gonna Go My Wa"), and the library kept
 the cut titles: 15 were found and completed by hand on 2026-10-06, and Grey asked
 that MUSAEUS catch them as songs come in.
 
-The rule is the one that held every time that day: a title that is the START of
-the song's MusicBrainz recording title (the recording AcoustID matched), and at
-least two characters shorter, was cut -- it takes the recording's title. A title
-that merely differs from MusicBrainz (a version word, a different spelling) is
-left alone: only an unfinished title is finished.
+A title was cut when it is the START of the song's MusicBrainz recording title
+(the recording AcoustID matched) AND stops where nobody ends a title: inside a word
+or inside a bracket it never closed. A title that ends cleanly is whole, and is
+left alone -- what MusicBrainz adds after it names its own recording ("(5.1 mix)",
+"(live)"); the full run of 2026-10-12 wrote 91 such notes before this rule.
 
 Each song is asked about once (title_checked_at), at MusicBrainz's 1 request per
 second. A song with no recording, or a lookup that could not be made, is not
@@ -59,14 +59,34 @@ def completed_title(title: str, mb_title: str) -> str | None:
     (reverted); starting the MusicBrainz title was the whole rule then.
     """
     cur, full = _norm(title), _norm(mb_title)
-    if len(cur) < _MIN_TITLE_CHARS or not full.startswith(cur) or len(full) - len(cur) < 2:
+    if len(cur) < _MIN_TITLE_CHARS or not full.startswith(cur) or len(full) == len(cur):
         return None
-    mid_word = cur[-1:].isalnum() and full[len(cur) : len(cur) + 1].isalnum()
+    last, nxt = cur[-1:], full[len(cur) : len(cur) + 1]
+    # Inside a word -- but a number is not cut by the next digit ("Symphony No.
+    # 4" is not the start of "No. 40") (pre-merge review of #194).
+    mid_word = last.isalnum() and nxt.isalnum() and not (last.isdigit() and nxt.isdigit())
     raw = title.strip()
     unclosed = raw.count("(") > raw.count(")") or raw.count("[") > raw.count("]")
     if not (mid_word or unclosed):
         return None
-    return mb_title.replace("’", "'").strip()
+    # One letter short is a cut too ("My Wa" -> "My Way"), but not a plural s.
+    if len(full) - len(cur) < 2 and (not mid_word or nxt == "s"):
+        return None
+    done = mb_title.replace("’", "'").strip()
+    if unclosed and not mid_word:
+        # Finish the open bracket and stop: what MusicBrainz adds after it is
+        # another note ("Hot Stuff (Single" -> "(single version)", not "... [live]").
+        opener = "(" if raw.count("(") > raw.count(")") else "["
+        closer = ")" if opener == "(" else "]"
+        depth, start = 0, len(raw.rstrip())
+        for i, ch in enumerate(done):
+            if ch == opener:
+                depth += 1
+            elif ch == closer:
+                depth -= 1
+                if i >= start - 1 and depth < raw.count(opener) - raw.count(closer):
+                    return done[: i + 1]
+    return done
 
 
 def recording_title(mbid: str) -> str | None:
