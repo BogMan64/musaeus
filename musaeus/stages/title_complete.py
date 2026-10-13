@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 _MB_RECORDING = "https://musicbrainz.org/ws/2/recording/{}?fmt=json"
 _MB_RATE_S = 1.05
 #: Shorter than this, "starts with" says nothing ("Lola" is the start of many titles).
-_MIN_TITLE_CHARS = 8
+_MIN_TITLE_CHARS = 12
 _COMMIT_EVERY = 50
 
 
@@ -69,8 +69,10 @@ def completed_title(title: str, mb_title: str) -> str | None:
     unclosed = raw.count("(") > raw.count(")") or raw.count("[") > raw.count("]")
     if not (mid_word or unclosed):
         return None
-    # One letter short is a cut too ("My Wa" -> "My Way"), but not a plural s.
-    if len(full) - len(cur) < 2 and (not mid_word or nxt == "s"):
+    # One letter short is a spelling, not a cut: the 2026-10-12 run turned
+    # "Spoonful" into "Spoonfull", "Gangster Trippin" into "Tripping" and
+    # "Good Mornin'" into "Good Morning" (reverted). "My Wa" stays as it is.
+    if len(full) - len(cur) < 2:
         return None
     done = mb_title.replace("’", "'").strip()
     if unclosed and not mid_word:

@@ -42,9 +42,12 @@ from musaeus.stages.album_fill import Unavailable
         ("Drops Of Jupiter (Tell Me)", "Drops Of Jupiter (Tell Me) (Rock Mix)", None),
         ("Toccata And Fugue In D Minor", "Toccata and Fugue in D minor, BWV 565", None),
         ("No No Song", "No No Song/Skokiaan", None),
-        ("Are You Gonna Go My Wa", "Are You Gonna Go My Way", "Are You Gonna Go My Way"),
-        ("Who'll Stop The Rai", "Who'll Stop the Rain", "Who'll Stop the Rain"),
-        ("Sweet Dream Baby", "Sweet Dream Babys", None),  # a plural s, not a cut
+        # One letter short is a spelling, not a cut (the 2026-10-12 run).
+        ("Spoonful Of Blues", "Spoonfull Of Blues", None),
+        ("Gangster Trippin", "Gangster Tripping", None),
+        ("Kiss An Angel Good Mornin'", "Kiss an Angel Good Morning", None),
+        ("Bonnie B", "Bonnie Bee", None),  # too short to say it was cut
+        ("Are You Gonna Go My Wa", "Are You Gonna Go My Way", None),  # the price: kept as it is
         ("Symphony No. 4", "Symphony No. 40 in G minor, K. 550", None),
         ("Hot Stuff (Single", "Hot Stuff (single version) [live]", "Hot Stuff (single version)"),
         ("Ombra Mai Fu", "Ombra mai fu from Serse", None),
