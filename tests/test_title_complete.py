@@ -47,6 +47,7 @@ from musaeus.stages.album_fill import Unavailable
         ("Gangster Trippin", "Gangster Tripping", None),
         ("Kiss An Angel Good Mornin'", "Kiss an Angel Good Morning", None),
         ("Bonnie B", "Bonnie Bee", None),  # too short to say it was cut
+        ("Are You Gonna Go My Wa", "Are You Gonna Go My Way", None),  # the price: kept as it is
         ("Symphony No. 4", "Symphony No. 40 in G minor, K. 550", None),
         ("Hot Stuff (Single", "Hot Stuff (single version) [live]", "Hot Stuff (single version)"),
         ("Ombra Mai Fu", "Ombra mai fu from Serse", None),
