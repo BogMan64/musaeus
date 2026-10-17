@@ -177,7 +177,9 @@ def main() -> int:
         "--force-id", type=int, action="append", default=[], metavar="ID",
         help="delete this id's master even though it cannot be confirmed as this track "
              "(damaged, unreadable, re-encoded by a newer ffmpeg). Read its REFUSED line "
-             "first: it says what is at the path. Repeatable.",
+             "first: it says what is at the path. Only files outside the edition folders "
+             "are forced; a copy inside one is still left unless its marker is this "
+             "track's. Repeatable.",
     )  # fmt: skip
     args = ap.parse_args()
     if args.execute:  # the masters lock (review of #87, findings 9 and 10)
@@ -266,6 +268,8 @@ def main() -> int:
     edition_roots = {name: kind.root(cfg) for name, kind in KINDS.items()}
     emptied: set[Path] = set()
     forced = set(args.force_id)
+    for i in sorted(forced - set(ids)):
+        print(f"WARNING: --force-id {i} is not in {args.ids}; it does nothing")
 
     # PASS 1, before anything goes: what is at each path must be THIS track
     # (Codex audit 2026-10-16, F2 and F8). A path is only where the row last
@@ -289,11 +293,12 @@ def main() -> int:
     confirmed: dict[int, list[Path]] = {}
     refused: dict[int, str] = {}
     said: dict[int, list[str]] = {}
+    left: dict[int, set[str]] = {}  # paths pass 1 already reported LEFT
     for i in ids:
         row = conn.execute("SELECT * FROM archive WHERE id=?", (i,)).fetchone()
         if row is None:
             continue
-        rows[i], said[i] = row, []
+        rows[i], said[i], left[i] = row, [], set()
         h0 = row["audio_hash"] if "audio_hash" in set(row.keys()) else None
         checked: list[Path] = []
         for p in copies(row, libs):
@@ -304,6 +309,7 @@ def main() -> int:
             if kind is not None:
                 if not h0 or read_marker(p) != marker_for(h0, KINDS[kind]):
                     said[i].append(f"     LEFT (the file there is not this track's copy): {p}")
+                    left[i].add(str(p))
                     continue
                 checked.append(p)
                 continue
@@ -361,14 +367,16 @@ def main() -> int:
         for name, ec in ecs:
             if h0 in keep_hashes:
                 # A copy is keyed by audio: another row with this audio is
-                # still in the library, so this copy is its copy too.
-                print(f"     KEPT (a surviving row has the same audio): {ec}")
+                # still in the library, so this copy is its copy too. (Already
+                # LEFT in pass 1: another master's copy, said once.)
+                if str(Path(ec)) not in left[i]:
+                    print(f"     KEPT (a surviving row has the same audio): {ec}")
                 held_back.add(str(Path(ec)))
             elif Path(ec).is_file() and read_marker(Path(ec)) != marker_for(h0, KINDS[name]):
                 # The build never deletes a file whose marker is not the
                 # copy's, and neither does this (second review of #49). The
                 # record is stale; it goes below with the others.
-                if not any(str(ec) in line for line in said[i]):
+                if str(Path(ec)) not in left[i]:
                     print(f"     LEFT (the file there is not this track's copy): {ec}")
                 held_back.add(str(Path(ec)))
             elif Path(ec) not in paths:
