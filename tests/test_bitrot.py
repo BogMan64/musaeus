@@ -284,3 +284,86 @@ class TestAMissingMasterIsAFailure:
         assert result.success is True
         assert any("missing from disk" in n and "1" in n for n in result.notes)
         assert not any("MASTERS MISSING" in n for n in result.notes) and sent == []
+
+    # Review of #196: the first version asked the BASELINE which recordings
+    # were gone, and the baseline goes stale.
+
+    def _refile(self, ctx, master, rel):
+        new = _archive_file(ctx, rel, master.read_bytes())
+        master.unlink()
+        ctx.conn.execute(
+            "UPDATE archive SET file_path = ? WHERE file_path = ?", (str(new), str(master))
+        )
+        ctx.conn.commit()
+        return new
+
+    def test_a_refiled_and_rebaselined_master_is_not_missing(self, ctx, monkeypatch):
+        # Finding 1: a rebaseline adds the new path and keeps the old row, which
+        # is gone from disk and still names a catalogued recording. Live, that
+        # was 5,388 false alarms on every monthly run.
+        from musaeus.stages import bitrot as bitrot_mod
+
+        sent = []
+        monkeypatch.setattr(bitrot_mod, "_notify", lambda *a, **k: sent.append(a))
+        self._refile(ctx, self._master(ctx, "A/Album/song.m4a", b"SONG"), "Rock/A/Album/song.m4a")
+        ctx.set("bitrot_rebaseline", True)
+        BitRotStage().run(ctx)
+        ctx.set("bitrot_rebaseline", False)
+
+        result = BitRotStage().run(ctx)
+
+        assert result.success is True, result.notes
+        assert not any("MASTERS MISSING" in n for n in result.notes) and sent == []
+
+    def test_a_limited_run_does_not_call_the_unread_rest_missing(self, ctx, monkeypatch):
+        # Finding 2: with --limit N only N files can claim their baseline rows.
+        from musaeus.stages import bitrot as bitrot_mod
+
+        monkeypatch.setattr(bitrot_mod, "_notify", lambda *a, **k: None)
+        self._master(ctx, "A/Album/0.m4a", b"SONG 0")
+        for i in (1, 2):
+            self._refile(
+                ctx, self._master(ctx, f"A/Album/{i}.m4a", f"SONG {i}".encode()), f"Rock/{i}.m4a"
+            )
+        ctx.set("bitrot_limit", 1)
+
+        result = BitRotStage().run(ctx)
+
+        assert result.success is True, result.notes
+        assert not any("MASTERS MISSING" in n for n in result.notes)
+
+    def test_a_lossy_master_gone_is_missing_too(self, ctx, monkeypatch):
+        # Finalize keeps a TRANSCODED master's SOURCE hash on its row; the
+        # baseline records the file's own PCM. The two never match.
+        from musaeus.stages import bitrot as bitrot_mod
+
+        monkeypatch.setattr(bitrot_mod, "_notify", lambda *a, **k: None)
+        self._master(ctx, "A/Album/keep.m4a", b"KEEP")
+        lossy = _archive_file(ctx, "A/Album/lossy.m4a", b"AAC")
+        ctx.conn.execute(
+            "INSERT INTO archive_tier_hashes (path, sha256, size_bytes, audio_hash) VALUES (?,?,?,?)",
+            (str(lossy), file_hash(lossy), lossy.stat().st_size, "pcm:the aac"),
+        )
+        upsert_archive(ctx.conn, {"file_path": str(lossy), "status": "CATALOGUED",
+                                  "audio_hash": "pcm:the mp3", "canon_action": "TRANSCODED"})  # fmt: skip
+        ctx.conn.commit()
+        lossy.unlink()
+
+        result = BitRotStage().run(ctx)
+
+        assert result.success is False
+        assert any("MASTERS MISSING: 1" in n for n in result.notes)
+
+    def test_a_master_never_baselined_is_missing_too(self, ctx, monkeypatch):
+        from musaeus.stages import bitrot as bitrot_mod
+
+        monkeypatch.setattr(bitrot_mod, "_notify", lambda *a, **k: None)
+        self._master(ctx, "A/Album/keep.m4a", b"KEEP")
+        upsert_archive(ctx.conn, {"file_path": str(ctx.config.alac_archive / "A/Album/x.m4a"),
+                                  "status": "CATALOGUED", "audio_hash": "pcm:x"})  # fmt: skip
+        ctx.conn.commit()
+
+        result = BitRotStage().run(ctx)
+
+        assert result.success is False
+        assert any("MASTERS MISSING: 1" in n for n in result.notes)

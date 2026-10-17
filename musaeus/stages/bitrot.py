@@ -91,6 +91,7 @@ Two modes:
 from __future__ import annotations
 
 import logging
+import sqlite3
 from pathlib import Path
 
 from ..config import AUDIO_EXTENSIONS
@@ -109,6 +110,31 @@ def _scan_archive_files(alac_archive: Path) -> list[Path]:
     return sorted(
         p for p in alac_archive.rglob("*") if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS
     )
+
+
+def _lost_masters(conn: sqlite3.Connection, alac_archive: Path) -> list[str]:
+    """Catalogued masters in the archive that are not on disk.
+
+    The 10-15 check reported success with every master gone from the vault:
+    a missing file was only ever a note (Codex audit 2026-10-16, F6). A
+    recording the catalogue no longer holds (archived as a duplicate,
+    deleted on purpose) is not asked about.
+
+    Asked of the catalogue, not the baseline. A baseline row goes stale when
+    a refile is rebaselined, a --limit run lets only N files claim their
+    rows, a moved master whose decode fails reads as new, and a TRANSCODED
+    master's baselined PCM is not its row's hash (Finalize keeps the
+    source's) -- each made the baseline's answer wrong (review of #196).
+    One stat per row, so --limit does not narrow it."""
+    lost = []
+    for (fp,) in conn.execute(
+        "SELECT file_path FROM archive WHERE status = 'CATALOGUED' "
+        "AND COALESCE(file_path, '') != '' ORDER BY file_path"
+    ):
+        p = Path(fp)
+        if alac_archive in p.parents and not p.exists():
+            lost.append(fp)
+    return lost
 
 
 def _notify(repaired: list, unrepaired: list, lost: list | None = None) -> None:
@@ -372,11 +398,13 @@ class BitRotStage(BaseStage):
         # The reverse index is what makes a moved file recognisable. PCM
         # identity survives a move; a path does not.
         by_audio = {r["audio_hash"]: r["path"] for r in rows if r["audio_hash"]}
+        lost = _lost_masters(ctx.conn, alac_archive)
 
         # A baselined file can be missing on disk even when the current
         # scan finds nothing at all (e.g. every baselined file was
         # removed) -- that's still worth reporting, not "nothing to do".
-        if not files and not baseline:
+        # So is a catalogued master, baselined or not.
+        if not files and not baseline and not lost:
             result.notes.append("nothing to do — ALAC_Archive is empty or missing")
             ctx.record_stage(result)
             return result
@@ -495,19 +523,6 @@ class BitRotStage(BaseStage):
         # A baselined row is only missing if nothing on disk claimed it --
         # a moved file claims its origin row, so it must not count as gone.
         missing = [p for p in baseline if p not in matched_paths and not Path(p).exists()]
-        # Missing AND still a master: the catalogue holds that recording, and no
-        # file on disk carries it. The 10-15 check reported success with every
-        # master gone from the vault, because a missing file was only ever a note
-        # (Codex audit 2026-10-16, F6). A recording the catalogue no longer holds
-        # (archived as a duplicate, deleted on purpose) stays a note.
-        catalogued = {
-            r[0]
-            for r in ctx.conn.execute(
-                "SELECT audio_hash FROM archive WHERE status = 'CATALOGUED' "
-                "AND audio_hash IS NOT NULL AND audio_hash != ''"
-            )
-        }
-        lost = [p for p in missing if baseline_audio.get(p) and baseline_audio[p] in catalogued]
 
         result.notes.append(f"ok: {ok_count}")
         result.notes.append(
@@ -527,10 +542,7 @@ class BitRotStage(BaseStage):
                 f"to stop reporting them)"
             )
         result.notes.append(f"new (no baseline yet — run --rebaseline): {new_files}")
-        result.notes.append(
-            f"missing from disk (was baselined, gone now): {len(missing)}"
-            + (f" -- {len(missing) - len(lost)} no longer in the catalogue" if lost else "")
-        )
+        result.notes.append(f"missing from disk (was baselined, gone now): {len(missing)}")
         if lost:
             result.success = False
             result.notes.append(
@@ -546,7 +558,7 @@ class BitRotStage(BaseStage):
                     ctx.log_event(
                         "BITROT_MISSING",
                         file_path=p,
-                        old_value=baseline[p],
+                        old_value=baseline.get(p),
                         stage=self.NAME,
                         note="a catalogued master is not on disk",
                     )
