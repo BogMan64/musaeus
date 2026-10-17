@@ -651,6 +651,18 @@ class TestItConfirmsWhatItDeletes:
         assert r.returncode == 0, r.stdout
         assert not master.exists() and "FORCED" in r.stdout and not _row(vault, 1)
 
+    def test_an_id_listed_twice_is_deleted_once(self, vault):
+        _add(vault, 1, "Blur", "Song 2", self.REL)
+        r = _run(vault, [1, 1])
+        assert r.returncode == 0, r.stderr
+        conn = sqlite3.connect(vault / "musaeus.db")
+        n = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type = 'DELETED_BY_REVIEW'"
+        ).fetchone()[0]
+        conn.close()
+        assert n == 2, "the master and its lossless copy, once each"
+        assert "1 row(s)" in r.stdout
+
     def test_a_refusal_is_recorded(self, vault):
         _add(vault, 1, "Blur", "Song 2", self.REL)
         _tone(vault / "Libraries" / "ALAC-Archival" / self.REL, "another song")
