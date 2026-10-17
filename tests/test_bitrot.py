@@ -23,7 +23,7 @@ import pytest
 
 from musaeus.config import MusicConfig
 from musaeus.context import RunContext
-from musaeus.db import open_db
+from musaeus.db import open_db, upsert_archive
 from musaeus.hasher import file_hash
 from musaeus.stages.bitrot import BitRotStage
 
@@ -219,3 +219,68 @@ class TestVerify:
         result = BitRotStage().run(ctx)
 
         assert result.files_processed == 0
+
+
+class TestAMissingMasterIsAFailure:
+    """Codex audit 2026-10-16, F6: on 2026-10-15 the scheduled check reported
+    success with every master gone from the vault -- a missing file was only
+    ever a note. A recording the catalogue still holds and no file carries
+    now fails the check and sends the alert."""
+
+    def _master(self, ctx, rel, content, catalogued=True):
+        path = _archive_file(ctx, rel, content)
+        ctx.conn.execute(
+            "INSERT INTO archive_tier_hashes (path, sha256, size_bytes, audio_hash) VALUES (?,?,?,?)",
+            (str(path), file_hash(path), path.stat().st_size, "pcm:" + rel),
+        )
+        if catalogued:
+            upsert_archive(ctx.conn, {"file_path": str(path), "status": "CATALOGUED",
+                                      "audio_hash": "pcm:" + rel})  # fmt: skip
+        ctx.conn.commit()
+        return path
+
+    def test_a_catalogued_master_gone_fails_and_alerts(self, ctx, monkeypatch):
+        from musaeus.stages import bitrot as bitrot_mod
+
+        sent = []
+        monkeypatch.setattr(bitrot_mod, "_notify", lambda rep, unrep, lost=None: sent.append(lost))
+        keep = self._master(ctx, "A/Album/keep.m4a", b"KEEP")
+        gone = self._master(ctx, "A/Album/gone.m4a", b"GONE")
+        gone.unlink()
+
+        result = BitRotStage().run(ctx)
+
+        assert result.success is False
+        assert any("MASTERS MISSING: 1" in n for n in result.notes)
+        assert sent == [[str(gone)]]
+        events = ctx.conn.execute(
+            "SELECT file_path FROM events WHERE event_type = 'BITROT_MISSING'"
+        ).fetchall()
+        assert [e[0] for e in events] == [str(gone)]
+        assert keep.exists()
+
+    def test_every_master_gone_is_not_a_pass(self, ctx, monkeypatch):
+        from musaeus.stages import bitrot as bitrot_mod
+
+        monkeypatch.setattr(bitrot_mod, "_notify", lambda *a, **k: None)
+        for i in range(3):
+            self._master(ctx, f"A/Album/{i}.m4a", f"SONG {i}".encode()).unlink()
+
+        result = BitRotStage().run(ctx)
+
+        assert result.success is False
+        assert any("MASTERS MISSING: 3" in n for n in result.notes)
+
+    def test_a_master_removed_on_purpose_stays_a_note(self, ctx, monkeypatch):
+        from musaeus.stages import bitrot as bitrot_mod
+
+        sent = []
+        monkeypatch.setattr(bitrot_mod, "_notify", lambda *a, **k: sent.append(a))
+        self._master(ctx, "A/Album/keep.m4a", b"KEEP")
+        self._master(ctx, "A/Album/archived.m4a", b"DUPE", catalogued=False).unlink()
+
+        result = BitRotStage().run(ctx)
+
+        assert result.success is True
+        assert any("missing from disk" in n and "1" in n for n in result.notes)
+        assert not any("MASTERS MISSING" in n for n in result.notes) and sent == []
