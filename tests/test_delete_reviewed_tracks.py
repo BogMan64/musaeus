@@ -116,10 +116,10 @@ def _tone(path: Path, label: str, seconds: float = 0.3, noise: bool = False) -> 
     return audio_hash(path, strict=True)
 
 
-def _run(vault, ids, execute=True):
+def _run(vault, ids, execute=True, extra=()):
     f = vault / "ids.txt"
     f.write_text("\n".join(str(i) for i in ids))
-    cmd = [sys.executable, str(SCRIPT), str(f), "--reason", "test"]
+    cmd = [sys.executable, str(SCRIPT), str(f), "--reason", "test", *extra]
     if execute:
         cmd.append("--execute")
     return subprocess.run(
@@ -572,6 +572,95 @@ class TestItConfirmsWhatItDeletes:
         assert "LEFT" in r.stdout
         assert car.is_file(), "another master's car copy was deleted"
         assert not (vault / "Libraries" / "ALAC-Archival" / self.REL).exists()
+
+    # Review of #197.
+
+    def test_a_refused_row_keeps_its_audio_when_a_sibling_shares_it(self, vault):
+        # Finding 1: both in one batch, same audio; the first cannot be
+        # confirmed. Deleting the second denied that audio, took the shared
+        # lossless copy and the first row's bit-rot baseline.
+        same = _add(vault, 1, "Blur", "Song 2", self.REL, h="same")
+        _add(vault, 2, "Blur", "Song 2", "Blur/Best Of/x.m4a", h="same")
+        _tone(vault / "Libraries" / "ALAC-Archival" / self.REL, "another song")
+        conn = sqlite3.connect(vault / "musaeus.db")
+        conn.execute(
+            "CREATE TABLE archive_tier_hashes (path TEXT PRIMARY KEY, sha256 TEXT, audio_hash TEXT)"
+        )
+        one = str(vault / "Libraries" / "ALAC_Library" / self.REL)
+        conn.execute("INSERT INTO archive_tier_hashes VALUES (?, 's', ?)", (one, same))
+        conn.commit()
+        conn.close()
+        r = _run(vault, [1, 2])
+        assert not _denied(vault, same), "a refused row's audio was denied by its sibling"
+        conn = sqlite3.connect(vault / "musaeus.db")
+        left = [x[0] for x in conn.execute("SELECT path FROM archive_tier_hashes")]
+        conn.close()
+        assert left == [one], "the refused row's bit-rot baseline went"
+        assert _row(vault, 1) and not _row(vault, 2)
+        assert "NOT DENIED" in r.stdout and r.returncode == 1
+
+    def test_a_copy_reported_kept_is_not_deleted_by_the_rows_own_car_path(self, vault):
+        # Finding 2: the copy is the survivor's too (same audio). Reported
+        # KEPT, then deleted because the doomed row's car_export_path named it.
+        from musaeus.edition_ledger import Copy, open_ledger, record
+
+        car = vault / "Libraries" / "CAR_Library" / self.REL
+        h = _add(vault, 1, "Blur", "Song 2", self.REL, h="same")
+        _add(vault, 2, "Blur", "Song 2", "Blur/Best Of/x.m4a", car=self.REL, h="same")
+        led = open_ledger(vault / "_db_backups" / "editions.db")
+        record(led, Copy("car", h, "m", 1, str(car), "now", -14.0, "linear"))
+        led.close()
+        r = _run(vault, [2])
+        assert car.is_file(), "a copy reported KEPT was deleted"
+        assert "KEPT" in r.stdout and r.returncode == 0
+
+    def test_a_file_a_survivor_names_is_not_checked_or_refused(self, vault):
+        # Finding 3: an old-layout row whose mirrored master is now another
+        # row's master. That file is kept whatever it holds, so it is not a
+        # reason to refuse the row.
+        libs = vault / "Libraries"
+        master = libs / "ALAC-Archival" / self.REL
+        _tone(master, "one")
+        conn = sqlite3.connect(vault / "musaeus.db")
+        conn.execute(
+            "INSERT INTO archive (id, artist, title, status, audio_hash, file_path) "
+            "VALUES (1, 'Blur', 'Song 2', 'CATALOGUED', 'h-one', ?)",
+            (str(master),),
+        )
+        h2 = _tone(vault / "elsewhere.m4a", "two")
+        copy = _marked(libs / "ALAC_Library" / self.REL, "lossless", h2)
+        conn.execute(
+            "INSERT INTO archive (id, artist, title, status, audio_hash, file_path) "
+            "VALUES (2, 'Blur', 'Song 2 (old)', 'CATALOGUED', ?, ?)",
+            (h2, str(copy)),
+        )
+        conn.commit()
+        conn.close()
+        r = _run(vault, [2])
+        assert r.returncode == 0 and "REFUSED" not in r.stdout, r.stdout
+        assert master.is_file() and not copy.exists() and not _row(vault, 2)
+
+    def test_force_id_deletes_an_unconfirmed_master_and_says_what_was_there(self, vault):
+        # Finding 4: a damaged master could otherwise never go with this tool.
+        _add(vault, 1, "Blur", "Song 2", self.REL)
+        master = vault / "Libraries" / "ALAC-Archival" / self.REL
+        master.write_bytes(b"not audio any more")
+        r = _run(vault, [1])
+        assert master.is_file() and "could not be read" in r.stdout
+        r = _run(vault, [1], extra=("--force-id", "1"))
+        assert r.returncode == 0, r.stdout
+        assert not master.exists() and "FORCED" in r.stdout and not _row(vault, 1)
+
+    def test_a_refusal_is_recorded(self, vault):
+        _add(vault, 1, "Blur", "Song 2", self.REL)
+        _tone(vault / "Libraries" / "ALAC-Archival" / self.REL, "another song")
+        _run(vault, [1])
+        conn = sqlite3.connect(vault / "musaeus.db")
+        n = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type = 'DELETE_REFUSED'"
+        ).fetchone()[0]
+        conn.close()
+        assert n == 1
 
     @pytest.mark.skipif(not shutil.which("fpcalc"), reason="needs fpcalc")
     def test_a_re_encoded_master_is_confirmed_by_its_fingerprint(self, vault):
