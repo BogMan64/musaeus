@@ -148,8 +148,16 @@ def test_itunes_prefers_an_exact_album_match(monkeypatch):
     def fake_json(url):
         return {
             "results": [
-                {"collectionName": "Wrong Album", "artworkUrl100": "http://x/wrong100x100bb.png"},
-                {"collectionName": "Right Album", "artworkUrl100": "http://x/right100x100bb.png"},
+                {
+                    "artistName": "Artist",
+                    "collectionName": "Wrong Album",
+                    "artworkUrl100": "http://x/wrong100x100bb.png",
+                },
+                {
+                    "artistName": "Artist",
+                    "collectionName": "Right Album",
+                    "artworkUrl100": "http://x/right100x100bb.png",
+                },
             ]
         }
 
@@ -162,3 +170,134 @@ def test_itunes_prefers_an_exact_album_match(monkeypatch):
     A.fetch_itunes("Artist", "Right Album")
     assert "right" in seen["url"], f"took the wrong album: {seen['url']}"
     assert "1200x1200" in seen["url"], "did not upgrade the thumbnail size"
+
+
+# ── Codex audit 2026-10-16, F12: whose album is it ────────────────────────────
+# A search ranks; it does not say whose album a result is. Asked for Right
+# Artist's "Greatest Hits", each source could answer with Wrong Artist's first,
+# and the title check alone took it. The live catalogue has "Greatest Hits" by
+# 21 different acts.
+
+
+def _sources(monkeypatch, itunes=(), deezer=(), tracks=None, groups=()):
+    """Fake answers by URL; returns the image URLs fetched."""
+    fetched = []
+    tracks = tracks or {}
+
+    def fake_json(url):
+        if "itunes.apple.com/search" in url:
+            return {"results": list(itunes)}
+        if "itunes.apple.com/lookup" in url:
+            cid = url.split("id=")[1].split("&")[0]
+            return {
+                "results": [{"wrapperType": "track", "artistName": a} for a in tracks.get(cid, [])]
+            }
+        if "api.deezer.com/search" in url:
+            return {"data": list(deezer)}
+        if "api.deezer.com/album/" in url:
+            aid = url.split("/album/")[1].split("/")[0]
+            return {"data": [{"artist": {"name": a}} for a in tracks.get(aid, [])]}
+        if "musicbrainz.org" in url:
+            return {"release-groups": list(groups)}
+        raise AssertionError(url)
+
+    def fake_get(url, accept=None):
+        fetched.append(url)
+        return _png(1200, 1200)
+
+    monkeypatch.setattr(A, "_get_json", fake_json)
+    monkeypatch.setattr(A, "_get", fake_get)
+    monkeypatch.setattr(A.time, "sleep", lambda s: None)
+    return fetched
+
+
+def _it(artist, album="Greatest Hits", cid="1"):
+    return {
+        "artistName": artist,
+        "collectionName": album,
+        "collectionId": cid,
+        "artworkUrl100": f"http://x/{artist.replace(' ', '')}100x100bb.png",
+    }
+
+
+def _dz(artist, album="Greatest Hits", aid="1"):
+    return {
+        "id": aid,
+        "title": album,
+        "artist": {"name": artist},
+        "cover_xl": f"http://dz/{artist.replace(' ', '')}.png",
+    }
+
+
+def test_itunes_skips_another_acts_album_of_the_same_title(monkeypatch):
+    got = _sources(monkeypatch, itunes=[_it("Wrong Artist"), _it("Right Artist", cid="2")])
+    assert A.fetch_itunes("Right Artist", "Greatest Hits")
+    assert got == ["http://x/RightArtist1200x1200bb.png"]
+
+
+def test_itunes_takes_nothing_when_only_another_act_has_the_title(monkeypatch):
+    got = _sources(monkeypatch, itunes=[_it("Wrong Artist")])
+    assert A.fetch_itunes("Right Artist", "Greatest Hits") is None
+    assert got == [], "another act's cover was downloaded"
+
+
+def test_deezer_skips_another_acts_album_of_the_same_title(monkeypatch):
+    got = _sources(monkeypatch, deezer=[_dz("Wrong Artist"), _dz("Right Artist", aid="2")])
+    assert A.fetch_deezer("Right Artist", "Greatest Hits")
+    assert got == ["http://dz/RightArtist.png"]
+
+
+def test_deezer_takes_nothing_when_only_another_act_has_the_title(monkeypatch):
+    got = _sources(monkeypatch, deezer=[_dz("Wrong Artist")])
+    assert A.fetch_deezer("Right Artist", "Greatest Hits") is None
+    assert got == []
+
+
+def test_the_act_is_matched_however_its_name_is_written(monkeypatch):
+    got = _sources(monkeypatch, itunes=[_it("The Beatles", "1")])
+    assert A.fetch_itunes("Beatles, The", "1")
+    got = _sources(monkeypatch, deezer=[_dz("Simon and Garfunkel", "Bookends")])
+    assert A.fetch_deezer("Simon & Garfunkel", "Bookends") and got
+
+
+def test_a_compilation_that_lists_the_act_is_its_album(monkeypatch):
+    album = "Grosse Pointe Blank - Music From The Film"
+    _sources(
+        monkeypatch,
+        itunes=[_it("Various Artists", album, cid="7")],
+        deezer=[_dz("Various Artists", album, aid="7")],
+        tracks={"7": ["The Clash", "Right Artist", "The Specials"]},
+    )
+    assert A.fetch_itunes("Right Artist", album)
+    assert A.fetch_deezer("Right Artist", album)
+
+
+def test_a_compilation_that_does_not_list_the_act_is_not(monkeypatch):
+    got = _sources(
+        monkeypatch,
+        itunes=[_it("Various Artists", "Gold", cid="7")],
+        deezer=[_dz("Various Artists", "Gold", aid="7")],
+        tracks={"7": ["ABBA", "Wrong Artist"]},
+    )
+    assert A.fetch_itunes("Right Artist", "Gold") is None
+    assert A.fetch_deezer("Right Artist", "Gold") is None
+    assert got == []
+
+
+def _rg(rgid, *credit):
+    return {"id": rgid, "artist-credit": list(credit)}
+
+
+def test_cover_art_archive_skips_another_acts_release_group(monkeypatch):
+    got = _sources(
+        monkeypatch,
+        groups=[
+            _rg("wrong", {"name": "Wrong Artist", "joinphrase": ""}),
+            _rg("right", {"name": "Paul McCartney", "joinphrase": " & "}, {"name": "Wings"}),
+        ],
+    )
+    assert A.fetch_coverartarchive("Paul McCartney & Wings", "Greatest Hits")
+    assert got == ["https://coverartarchive.org/release-group/right/front"]
+    got.clear()
+    assert A.fetch_coverartarchive("Wings", "Greatest Hits")
+    assert got == ["https://coverartarchive.org/release-group/right/front"]

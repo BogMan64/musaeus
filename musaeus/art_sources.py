@@ -38,6 +38,7 @@ import urllib.request
 from urllib.parse import quote, urlencode
 
 from .art_quality import MIN_EDGE_PX, describe, image_dimensions, is_too_small
+from .artist_form import act_key, folder_artist
 from .network_policy import check as _network_check
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,66 @@ def _looks_like_image(blob: bytes | None) -> bool:
     return blob[:3] == b"\xff\xd8\xff" or blob[:8] == b"\x89PNG\r\n\x1a\n"
 
 
+# ── whose album is it ─────────────────────────────────────────────────────────
+#
+# A search ranks; it does not say whose album a result is. Asked for one
+# act's "Greatest Hits", iTunes and Deezer can answer with another act's
+# first, and the title check alone took it (Codex audit 2026-10-16, F12).
+# The live catalogue has "Greatest Hits" by 21 different acts.
+
+
+def _same_act(theirs: str, ours: str) -> bool:
+    """One act, however written: case, accents, "The", "&"/"and" (act_key),
+    and a credit's lead act ("X feat. Y" is X's)."""
+    if not theirs or not ours:
+        return False
+    # Keys that are empty ("!!!" keys to "") say nothing about who it is.
+    for a, b in ((theirs, ours), (folder_artist(theirs), folder_artist(ours))):
+        if act_key(a) and act_key(a) == act_key(b):
+            return True
+    return False
+
+
+def _various(name: str) -> bool:
+    return act_key(name) in ("variousartists", "various")
+
+
+def _itunes_lists(collection_id: object, artist: str) -> bool:
+    """Is *artist* on this iTunes release? A compilation is credited to
+    "Various Artists", so for one the track list is the only evidence it is
+    ours -- the Grosse Pointe Blank soundtrack, not another "Gold"."""
+    if not collection_id:
+        return False
+    data = _get_json(
+        "https://itunes.apple.com/lookup?" + urlencode({"id": collection_id, "entity": "song"})
+    )
+    return any(
+        _same_act(r.get("artistName", ""), artist)
+        for r in (data or {}).get("results", [])
+        if r.get("wrapperType") == "track"
+    )
+
+
+def _deezer_lists(album_id: object, artist: str) -> bool:
+    """The Deezer twin of _itunes_lists."""
+    if not album_id:
+        return False
+    data = _get_json(f"https://api.deezer.com/album/{album_id}/tracks?limit=200")
+    return any(
+        _same_act(((t.get("artist") or {}).get("name", "")), artist)
+        for t in (data or {}).get("data", []) or []
+    )
+
+
+def _ours(results: list, artist: str, credited, lists) -> list:
+    """The results that are *artist*'s: credited to the act, then
+    compilations that list it. Anything else -- another act's album with the
+    same title -- is never fetched."""
+    own = [r for r in results if _same_act(credited(r), artist)]
+    various = [r for r in results if _various(credited(r)) and lists(r)]
+    return own + various
+
+
 # ── sources ───────────────────────────────────────────────────────────────────
 
 
@@ -128,6 +189,12 @@ def fetch_itunes(artist: str, album: str) -> bytes | None:
     ordered = [r for r in results if want and _norm(r.get("collectionName", "")) == want]
     if not ordered:
         ordered = results if not want else []
+    ordered = _ours(
+        ordered,
+        artist,
+        lambda r: r.get("artistName", ""),
+        lambda r: _itunes_lists(r.get("collectionId"), artist),
+    )
     for r in ordered:
         art = r.get("artworkUrl100")
         if not art:
@@ -161,6 +228,12 @@ def fetch_deezer(artist: str, album: str) -> bytes | None:
     ordered = [r for r in results if want and _norm(r.get("title", "")) == want]
     if not ordered:
         ordered = results if not want else []
+    ordered = _ours(
+        ordered,
+        artist,
+        lambda r: (r.get("artist") or {}).get("name", ""),
+        lambda r: _deezer_lists(r.get("id"), artist),
+    )
     for r in ordered:
         for key in ("cover_xl", "cover_big"):
             u = r.get(key)
@@ -188,6 +261,18 @@ def fetch_coverartarchive(artist: str, album: str) -> bytes | None:
     for rg in data.get("release-groups", []):
         rgid = rg.get("id")
         if not rgid:
+            continue
+        # A scored search, like the other two: the best-scoring release group
+        # can be another act's. Its credit must be this act -- whole, or any
+        # one name in it ("Paul McCartney & Wings").
+        credit = rg.get("artist-credit") or []
+        whole = "".join(
+            (c.get("name") or "") + (c.get("joinphrase") or "")
+            for c in credit
+            if isinstance(c, dict)
+        )
+        names = [c.get("name") or "" for c in credit if isinstance(c, dict)]
+        if not (_same_act(whole, artist) or any(_same_act(n, artist) for n in names)):
             continue
         blob = _get(f"https://coverartarchive.org/release-group/{rgid}/front")
         if _looks_like_image(blob):
