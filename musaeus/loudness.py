@@ -104,6 +104,35 @@ def _extract_loudnorm_json(stderr: str) -> dict | None:
     return None
 
 
+#: ffmpeg's level on each stderr line, from `-loglevel level+info`. A
+#: truncated file decodes to a clean exit 0 with "partial file" errors, and
+#: loudnorm measured the part that was there (Codex audit 2026-10-16, F10).
+#: Its own report shares stderr at level info, so the damage is told apart
+#: by level, not by guessing at text.
+_LEVEL_RE = re.compile(r"^(?P<ctx>\[[^\]]+ @ 0x[0-9a-f]+\] )?\[(?P<level>[a-z]+)\] ?")
+_ERROR_LEVELS = frozenset({"error", "fatal", "panic"})
+
+
+def _decode_damage(stderr: str, path: Path) -> str:
+    """The first line of audio damage ffmpeg reported while measuring, or "".
+
+    Error level and above -- what the bake's decode gate sees with `-v
+    error` -- judged by the same rule (edition_bake.decode_problem): an
+    error about the artwork is not damage to the music.
+    """
+    errors = []
+    for line in stderr.splitlines():
+        m = _LEVEL_RE.match(line)
+        if m and m.group("level") in _ERROR_LEVELS:
+            errors.append((m.group("ctx") or "") + line[m.end() :])
+    if not errors:
+        return ""
+    from .stages.corrupt import audio_relevant_stderr, audio_stream_index
+
+    kept = audio_relevant_stderr("\n".join(errors), audio_stream_index(path))
+    return kept.splitlines()[0] if kept else ""
+
+
 def _run_loudnorm(path: Path, linear: bool, duration: float | None) -> tuple[int, str]:
     """
     Run one ffmpeg loudnorm pass.  Returns (returncode, stderr).
@@ -121,6 +150,8 @@ def _run_loudnorm(path: Path, linear: bool, duration: float | None) -> tuple[int
         "-nostdin",
         "-hide_banner",
         "-nostats",
+        "-loglevel",
+        "level+info",  # each line says its level: _decode_damage
         "-i",
         str(path),
         "-map",
@@ -160,6 +191,9 @@ def measure_loudness(path: Path) -> tuple[float | None, float | None, str]:
       reason == "silence"      — audio present but below measurable floor
       reason == "json_fail"    — ffmpeg ran but JSON missing (corrupted output)
       reason == "ffmpeg_fail"  — subprocess / timeout error
+      reason == "damaged"      — ffmpeg exited 0 but reported damage in the
+                                 audio (a truncated file): what it measured
+                                 is not the whole track
       reason == "missing"      — file does not exist
     """
     if not path.exists():
@@ -172,13 +206,20 @@ def measure_loudness(path: Path) -> tuple[float | None, float | None, str]:
         # something other than the whole file, even if it printed its JSON;
         # the bake refuses it too (review of #88, finding 2).
         rc, stderr = _run_loudnorm(path, linear=False, duration=duration)
-        data = _extract_loudnorm_json(stderr) if rc == 0 else None
+        damage = _decode_damage(stderr, path) if rc == 0 else ""
+        data = _extract_loudnorm_json(stderr) if rc == 0 and not damage else None
 
-        # Attempt 2: linear mode (more tolerant of short/odd files)
-        if data is None:
+        # Attempt 2: linear mode (more tolerant of short/odd files). Not for
+        # damage: a second pass reads the same broken stream.
+        if data is None and not damage:
             logger.debug("loudnorm dynamic attempt failed (rc=%d), retrying linear: %s", rc, path)
             rc, stderr = _run_loudnorm(path, linear=True, duration=duration)
-            data = _extract_loudnorm_json(stderr) if rc == 0 else None
+            damage = _decode_damage(stderr, path) if rc == 0 else ""
+            data = _extract_loudnorm_json(stderr) if rc == 0 and not damage else None
+
+        if damage:
+            logger.warning("loudnorm read damaged audio, not measured: %s: %s", path, damage)
+            return None, None, "damaged"
 
         if data is None and rc != 0:
             logger.warning("loudnorm exited %d: %s", rc, path)
