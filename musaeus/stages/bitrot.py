@@ -91,6 +91,7 @@ Two modes:
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 from pathlib import Path
 
@@ -125,14 +126,18 @@ def _lost_masters(conn: sqlite3.Connection, alac_archive: Path) -> list[str]:
     rows, a moved master whose decode fails reads as new, and a TRANSCODED
     master's baselined PCM is not its row's hash (Finalize keeps the
     source's) -- each made the baseline's answer wrong (review of #196).
-    One stat per row, so --limit does not narrow it."""
+    One stat per row, so --limit does not narrow it.
+
+    Real paths on both sides: the configured archive is resolved through
+    symlinks, and a row written through a linked path would otherwise be
+    skipped -- a loss missed (re-review of #196, point 2)."""
+    root = Path(os.path.realpath(alac_archive))
     lost = []
     for (fp,) in conn.execute(
         "SELECT file_path FROM archive WHERE status = 'CATALOGUED' "
         "AND COALESCE(file_path, '') != '' ORDER BY file_path"
     ):
-        p = Path(fp)
-        if alac_archive in p.parents and not p.exists():
+        if root in Path(os.path.realpath(fp)).parents and not Path(fp).exists():
             lost.append(fp)
     return lost
 
@@ -412,6 +417,9 @@ class BitRotStage(BaseStage):
         if dry_run:
             result.files_processed = len(files)
             result.notes.append("[DRY RUN] no hashing, no DB changes")
+            # One stat per row, no hashing: worth saying even here (re-review
+            # of #196, point 3). No events, no alert.
+            self._report_lost(ctx, result, lost, baseline, dry_run=True)
             ctx.record_stage(result)
             return result
 
@@ -543,25 +551,12 @@ class BitRotStage(BaseStage):
             )
         result.notes.append(f"new (no baseline yet — run --rebaseline): {new_files}")
         result.notes.append(f"missing from disk (was baselined, gone now): {len(missing)}")
-        if lost:
-            result.success = False
-            result.notes.append(
-                f"MASTERS MISSING: {len(lost)} recording(s) the catalogue still holds "
-                "are not on disk -- moved or deleted outside MUSAEUS?"
-            )
-            for p in lost[:20]:
-                result.notes.append(f"  missing {p}")
-            if len(lost) > 20:
-                result.notes.append(f"  {elision(len(lost) - 20)}")
-            if not dry_run:
-                for p in lost:
-                    ctx.log_event(
-                        "BITROT_MISSING",
-                        file_path=p,
-                        old_value=baseline.get(p),
-                        stage=self.NAME,
-                        note="a catalogued master is not on disk",
-                    )
+        # Asked again now, and only what was missing both times counts. A
+        # script that moves masters without the lock commits its rows at the
+        # end; a check that began part-way through would call every master it
+        # had moved so far missing (re-review of #196, point 1).
+        lost = sorted(set(lost) & set(_lost_masters(ctx.conn, alac_archive)))
+        self._report_lost(ctx, result, lost, baseline, dry_run=False)
         # The number that decides whether a clean run means anything. A
         # verify whose corpus is mostly unbaselined compared almost nothing,
         # and used to say so only by printing a large "new" count next to a
@@ -612,6 +607,30 @@ class BitRotStage(BaseStage):
             _notify(repaired, unrepaired)
         ctx.record_stage(result)
         return result
+
+    def _report_lost(
+        self, ctx: RunContext, result: StageResult, lost: list, baseline: dict, *, dry_run: bool
+    ) -> None:
+        if not lost:
+            return
+        result.success = False
+        result.notes.append(
+            f"MASTERS MISSING: {len(lost)} recording(s) the catalogue still holds "
+            "are not on disk -- moved or deleted outside MUSAEUS?"
+        )
+        for p in lost[:20]:
+            result.notes.append(f"  missing {p}")
+        if len(lost) > 20:
+            result.notes.append(f"  {elision(len(lost) - 20)}")
+        if not dry_run:
+            for p in lost:
+                ctx.log_event(
+                    "BITROT_MISSING",
+                    file_path=p,
+                    old_value=baseline.get(p),
+                    stage=self.NAME,
+                    note="a catalogued master is not on disk",
+                )
 
     def _repair(
         self, ctx: RunContext, archive_root: Path, rotted: list, baselined_at: dict | None = None

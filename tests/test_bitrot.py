@@ -354,6 +354,59 @@ class TestAMissingMasterIsAFailure:
         assert result.success is False
         assert any("MASTERS MISSING: 1" in n for n in result.notes)
 
+    # Re-review of #196.
+
+    def test_a_master_back_by_the_end_of_the_run_is_not_missing(self, ctx, monkeypatch):
+        # Point 1: an unlocked script moving masters commits its rows at the
+        # end; one missing at the start and found at the end is not lost.
+        from musaeus.stages import bitrot as bitrot_mod
+
+        sent = []
+        monkeypatch.setattr(bitrot_mod, "_notify", lambda *a, **k: sent.append(a))
+        keep = self._master(ctx, "A/Album/keep.m4a", b"KEEP")
+        answers = iter([[str(keep)], []])
+        monkeypatch.setattr(bitrot_mod, "_lost_masters", lambda conn, root: next(answers))
+
+        result = BitRotStage().run(ctx)
+
+        assert result.success is True, result.notes
+        assert not any("MASTERS MISSING" in n for n in result.notes) and sent == []
+
+    def test_a_row_written_through_a_linked_path_is_still_checked(self, ctx, monkeypatch):
+        # Point 2: the archive's path and the row's must be compared as real paths.
+        from musaeus.stages import bitrot as bitrot_mod
+
+        monkeypatch.setattr(bitrot_mod, "_notify", lambda *a, **k: None)
+        self._master(ctx, "A/Album/keep.m4a", b"KEEP")
+        link = ctx.config.vault_root / "linked_archive"
+        link.symlink_to(ctx.config.alac_archive, target_is_directory=True)
+        upsert_archive(ctx.conn, {"file_path": str(link / "A/Album/gone.m4a"),
+                                  "status": "CATALOGUED", "audio_hash": "pcm:gone"})  # fmt: skip
+        ctx.conn.commit()
+
+        result = BitRotStage().run(ctx)
+
+        assert result.success is False
+        assert any("MASTERS MISSING: 1" in n for n in result.notes)
+
+    def test_a_dry_run_says_a_master_is_missing_and_records_nothing(self, ctx, monkeypatch):
+        # Point 3: one stat per row is no hashing; the dry run says so too.
+        from musaeus.stages import bitrot as bitrot_mod
+
+        sent = []
+        monkeypatch.setattr(bitrot_mod, "_notify", lambda *a, **k: sent.append(a))
+        self._master(ctx, "A/Album/keep.m4a", b"KEEP")
+        self._master(ctx, "A/Album/gone.m4a", b"GONE").unlink()
+
+        result = BitRotStage().dry_run(ctx)
+
+        assert result.success is False
+        assert any("MASTERS MISSING: 1" in n for n in result.notes)
+        events = ctx.conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type = 'BITROT_MISSING'"
+        ).fetchone()[0]
+        assert events == 0 and sent == []
+
     def test_a_master_never_baselined_is_missing_too(self, ctx, monkeypatch):
         from musaeus.stages import bitrot as bitrot_mod
 
