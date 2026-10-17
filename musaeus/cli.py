@@ -1352,6 +1352,24 @@ def _cmd_edition_build_inner(args) -> int:
     lpath = ledger_path(cfg)
     ledger = open_for_reading(lpath) if args.dry_run else open_ledger(lpath)
     try:
+        # Finished copies a killed move left stepped aside go back BEFORE the
+        # plan is made, under the build lock: planned first, each was baked
+        # again as missing and then put back too (Codex audit 2026-10-16,
+        # F11). A preview only says how many.
+        if args.dry_run:
+            aside = eb.stepped_aside(edition_root, ledger, kind)
+            if aside:
+                print(f"  {aside:,} finished copy(ies) a stopped build left aside will be put "
+                      f"back first; this preview plans them as missing.")  # fmt: skip
+        else:
+            try:
+                with eb.build_lock(cfg.runs_root / "locks", kind.name):
+                    aside = eb.recover_stepped_aside(edition_root, ledger, kind)
+            except RuntimeError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                return 1
+            if aside:
+                print(f"  Put back {aside:,} finished copy(ies) a stopped build left aside.")
         if budget is not None:
             plan, _ = eb.budgeted(
                 conn, ledger, masters_root, edition_root, kind,
