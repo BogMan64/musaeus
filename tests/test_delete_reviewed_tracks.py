@@ -20,9 +20,11 @@ the Name". Both were recoverable only because the masters survived.
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 import pytest
@@ -41,7 +43,8 @@ def vault(tmp_path, monkeypatch):
     conn = sqlite3.connect(db)
     conn.execute(
         "CREATE TABLE archive (id INTEGER PRIMARY KEY, artist TEXT, title TEXT, "
-        "status TEXT, audio_hash TEXT, file_path TEXT, car_export_path TEXT)"
+        "status TEXT, audio_hash TEXT, file_path TEXT, car_export_path TEXT, "
+        "canon_action TEXT, chromaprint TEXT)"
     )
     conn.execute(
         "CREATE TABLE events (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, ts TEXT, "
@@ -62,16 +65,17 @@ def vault(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _add(vault, rid, artist, title, rel, car=None, h=None):
+def _add(vault, rid, artist, title, rel, car=None, h=None) -> str:
+    """A track in the old layout: the row names its ALAC_Library copy. The
+    files are real -- the tool confirms what it deletes (Codex audit F2/F8) --
+    and the same *h* is the same recording. Returns its audio hash."""
     libs = vault / "Libraries"
-    for tier in ("ALAC-Archival", "ALAC_Library"):
-        p = libs / tier / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(b"\0")
+    real = _tone(libs / "ALAC-Archival" / rel, h or f"h{rid}")
+    _marked(libs / "ALAC_Library" / rel, "lossless", real)
     if car:
         c = libs / "CAR_Library" / car
-        c.parent.mkdir(parents=True, exist_ok=True)
-        c.write_bytes(b"\0")
+        if not c.exists():  # a shared car file is the first row's copy
+            _marked(c, "car", real)
     conn = sqlite3.connect(vault / "musaeus.db")
     conn.execute(
         "INSERT INTO archive (id, artist, title, status, audio_hash, file_path, car_export_path) "
@@ -80,13 +84,36 @@ def _add(vault, rid, artist, title, rel, car=None, h=None):
             rid,
             artist,
             title,
-            h or f"h{rid}",
+            real,
             str(libs / "ALAC_Library" / rel),
             str(libs / "CAR_Library" / car) if car else None,
         ),
     )
     conn.commit()
     conn.close()
+    return real
+
+
+def _tone(path: Path, label: str, seconds: float = 0.3, noise: bool = False) -> str:
+    """A real ALAC master; the same *label* is the same audio. Returns its
+    audio hash, the identity the tool checks before deleting. *noise*: seeded
+    pink noise, for a fingerprint -- a pure tone's is nearly empty, and two
+    tones can share one."""
+    from musaeus.hasher import audio_hash
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    n = zlib.crc32(label.encode())
+    src = (
+        f"anoisesrc=seed={n}:color=pink:sample_rate=44100:duration={seconds}"
+        if noise
+        else f"sine=frequency={200 + n % 1800}:sample_rate=44100:duration={seconds}"
+    )
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+         "-i", src, "-c:a", "alac", str(path)],
+        check=True, stdin=subprocess.DEVNULL,
+    )  # fmt: skip
+    return audio_hash(path, strict=True)
 
 
 def _run(vault, ids, execute=True):
@@ -110,17 +137,12 @@ class TestItDeletesEveryCopy:
             assert not (libs / tier / "Blur" / "Parklife" / "x.m4a").exists(), tier
 
     def test_the_row_goes_and_the_hash_is_denied(self, vault):
-        _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
+        h = _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
         _run(vault, [1])
         conn = sqlite3.connect(vault / "musaeus.db")
         assert conn.execute("SELECT COUNT(*) FROM archive WHERE id=1").fetchone()[0] == 0
         conn.close()
-        lc = sqlite3.connect(vault / "_db_backups" / "hash_index.db")
-        assert (
-            lc.execute("SELECT COUNT(*) FROM denied_hashes WHERE audio_hash='h1'").fetchone()[0]
-            == 1
-        )
-        lc.close()
+        assert _denied(vault, h)
 
     def test_a_dry_run_changes_nothing(self, vault):
         _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
@@ -143,6 +165,7 @@ class TestItDoesNotTakeASurvivingRowsFile:
             "With a Little Luck",
             "Paul McCartney/Wings Greatest/luck.m4a",
             car=shared,
+            h="luck",
         )
         _add(
             vault,
@@ -151,6 +174,7 @@ class TestItDoesNotTakeASurvivingRowsFile:
             "With A Little Luck",
             "Paul McCartney/My playlist W/luck.m4a",
             car=shared,
+            h="luck",
         )
         r = _run(vault, [2])  # delete only the playlist duplicate
         assert r.returncode == 0, r.stderr
@@ -210,14 +234,14 @@ class TestItDoesNotDenyASurvivingRowsAudio:
     """
 
     def test_audio_a_surviving_row_carries_is_not_denied(self, vault):
-        _add(vault, 1, "ABC", "Poison Arrow", "ABC/Lexicon/x.m4a", h="shared")
-        _add_row_only(vault, 2, "ABC", "Poison Arrow", vault / "REVIEW/gone.m4a", h="shared")
+        h = _add(vault, 1, "ABC", "Poison Arrow", "ABC/Lexicon/x.m4a", h="shared")
+        _add_row_only(vault, 2, "ABC", "Poison Arrow", vault / "REVIEW/gone.m4a", h=h)
         r = _run(vault, [2])
         assert r.returncode == 0, r.stderr
         conn = sqlite3.connect(vault / "musaeus.db")
         assert conn.execute("SELECT COUNT(*) FROM archive WHERE id=2").fetchone()[0] == 0
         conn.close()
-        assert not _denied(vault, "shared"), "the kept track's audio was denied"
+        assert not _denied(vault, h), "the kept track's audio was denied"
         assert "NOT DENIED" in r.stdout
 
     def test_audio_only_doomed_rows_carry_is_still_denied(self, vault):
@@ -290,11 +314,10 @@ class TestTheLosslessEditionCopy:
 
     REL = "Rock/Blur/Parklife/Blur - Song 2.m4a"
 
-    def _track(self, vault, rid, h):
+    def _track(self, vault, rid) -> str:
         libs = vault / "Libraries"
         master = libs / "ALAC-Archival" / self.REL
-        master.parent.mkdir(parents=True, exist_ok=True)
-        master.write_bytes(b"\0")
+        h = _tone(master, "b")
         conn = sqlite3.connect(vault / "musaeus.db")
         conn.execute(
             "INSERT INTO archive (id, artist, title, status, audio_hash, file_path) "
@@ -303,6 +326,7 @@ class TestTheLosslessEditionCopy:
         )
         conn.commit()
         conn.close()
+        return h
 
     def _copy(self, vault, h):
         from musaeus.edition_ledger import Copy, open_ledger, record
@@ -320,8 +344,8 @@ class TestTheLosslessEditionCopy:
         return n
 
     def test_the_edition_copy_goes_with_the_master(self, vault):
-        self._track(vault, 1, "hb")
-        copy = self._copy(vault, "hb")
+        h = self._track(vault, 1)
+        copy = self._copy(vault, h)
         r = _run(vault, [1])
         assert r.returncode == 0, r.stderr
         assert not (vault / "Libraries" / "ALAC-Archival" / self.REL).exists()
@@ -329,15 +353,15 @@ class TestTheLosslessEditionCopy:
         assert self._recorded(vault) == 0
 
     def test_a_dry_run_leaves_the_copy(self, vault):
-        self._track(vault, 1, "hb")
-        copy = self._copy(vault, "hb")
+        h = self._track(vault, 1)
+        copy = self._copy(vault, h)
         _run(vault, [1], execute=False)
         assert copy.exists() and self._recorded(vault) == 1
 
     def test_the_copy_stays_while_a_surviving_track_has_the_same_audio(self, vault):
-        self._track(vault, 1, "hb")
-        self._track(vault, 2, "hb")  # the same recording, kept
-        copy = self._copy(vault, "hb")
+        h = self._track(vault, 1)
+        self._track(vault, 2)  # the same recording, kept
+        copy = self._copy(vault, h)
         _run(vault, [1])
         assert copy.exists() and self._recorded(vault) == 1
 
@@ -349,21 +373,20 @@ def test_every_editions_copy_goes_with_the_master(vault):
     rel = "Rock/Blur/Parklife/Blur - Song 2.m4a"
     libs = vault / "Libraries"
     master = libs / "ALAC-Archival" / rel
-    master.parent.mkdir(parents=True, exist_ok=True)
-    master.write_bytes(b"\0")
+    hb = _tone(master, "b")
     conn = sqlite3.connect(vault / "musaeus.db")
     conn.execute(
         "INSERT INTO archive (id, artist, title, status, audio_hash, file_path) "
-        "VALUES (1, 'Blur', 'Song 2', 'CATALOGUED', 'hb', ?)",
-        (str(master),),
+        "VALUES (1, 'Blur', 'Song 2', 'CATALOGUED', ?, ?)",
+        (hb, str(master)),
     )
     conn.commit()
     conn.close()
     led = open_ledger(vault / "_db_backups" / "editions.db")
     made = []
     for edition, tier in (("car", "CAR_Library"), ("iphone", "iPHONE_Library")):
-        p = _marked(libs / tier / "Blur" / "Parklife" / "Blur - Song 2.m4a", edition, "hb")
-        record(led, Copy(edition, "hb", str(master), 1, str(p), "now", -14.0, "linear"))
+        p = _marked(libs / tier / "Blur" / "Parklife" / "Blur - Song 2.m4a", edition, hb)
+        record(led, Copy(edition, hb, str(master), 1, str(p), "now", -14.0, "linear"))
         made.append(p)
     led.close()
     r = _run(vault, [1])
@@ -403,13 +426,12 @@ def test_a_file_at_a_copys_place_that_is_not_the_copy_is_left(vault):
     rel = "Rock/Blur/Parklife/Blur - Song 2.m4a"
     libs = vault / "Libraries"
     master = libs / "ALAC-Archival" / rel
-    master.parent.mkdir(parents=True, exist_ok=True)
-    master.write_bytes(b"\0")
+    hb = _tone(master, "b")
     conn = sqlite3.connect(vault / "musaeus.db")
     conn.execute(
         "INSERT INTO archive (id, artist, title, status, audio_hash, file_path) "
-        "VALUES (1, 'Blur', 'Song 2', 'CATALOGUED', 'hb', ?)",
-        (str(master),),
+        "VALUES (1, 'Blur', 'Song 2', 'CATALOGUED', ?, ?)",
+        (hb, str(master)),
     )
     conn.commit()
     conn.close()
@@ -417,7 +439,7 @@ def test_a_file_at_a_copys_place_that_is_not_the_copy_is_left(vault):
         libs / "CAR_Library" / "Blur" / "Parklife" / "Blur - Song 2.m4a", "car", "hx"
     )
     led = open_ledger(vault / "_db_backups" / "editions.db")
-    record(led, Copy("car", "hb", str(master), 1, str(stranger), "now", -14.0, "linear"))
+    record(led, Copy("car", hb, str(master), 1, str(stranger), "now", -14.0, "linear"))
     led.close()
     r = _run(vault, [1])
     assert r.returncode == 0, r.stderr
@@ -438,21 +460,20 @@ def test_deleting_the_last_iphone_copy_keeps_the_iphone_folder(vault):
     rel = "Rock/Blur/Parklife/Blur - Song 2.m4a"
     libs = vault / "Libraries"
     master = libs / "ALAC-Archival" / rel
-    master.parent.mkdir(parents=True, exist_ok=True)
-    master.write_bytes(b"\0")
+    hb = _tone(master, "b")
     conn = sqlite3.connect(vault / "musaeus.db")
     conn.execute(
         "INSERT INTO archive (id, artist, title, status, audio_hash, file_path) "
-        "VALUES (1, 'Blur', 'Song 2', 'CATALOGUED', 'hb', ?)",
-        (str(master),),
+        "VALUES (1, 'Blur', 'Song 2', 'CATALOGUED', ?, ?)",
+        (hb, str(master)),
     )
     conn.commit()
     conn.close()
     copy = _marked(
-        libs / "iPHONE_Library" / "Blur" / "Parklife" / "Blur - Song 2.m4a", "iphone", "hb"
+        libs / "iPHONE_Library" / "Blur" / "Parklife" / "Blur - Song 2.m4a", "iphone", hb
     )
     led = open_ledger(vault / "_db_backups" / "editions.db")
-    record(led, Copy("iphone", "hb", str(master), 1, str(copy), "now", -14.0, "linear"))
+    record(led, Copy("iphone", hb, str(master), 1, str(copy), "now", -14.0, "linear"))
     led.close()
     r = _run(vault, [1])
     assert r.returncode == 0, r.stderr
@@ -478,20 +499,117 @@ class TestTheBitRotBaselineGoesWithTheMaster:
         return sorted(r[0] for r in conn.execute("SELECT path FROM archive_tier_hashes"))
 
     def test_by_path_and_by_audio_after_a_move(self, vault):
-        _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
-        _add(vault, 2, "Blur", "Tender", "Blur/13/y.m4a")
+        h1 = _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
+        h2 = _add(vault, 2, "Blur", "Tender", "Blur/13/y.m4a")
         here = str(vault / "Libraries" / "ALAC_Library" / "Blur/Parklife/x.m4a")
         self._baseline(
             vault,
-            [(here, "s1", "h1"), ("/old/place/y.m4a", "s2", "h2"), ("/keep/z.m4a", "s3", "h9")],
+            [(here, "s1", h1), ("/old/place/y.m4a", "s2", h2), ("/keep/z.m4a", "s3", "h9")],
         )
         assert _run(vault, [1, 2]).returncode == 0
         assert self._left(vault) == ["/keep/z.m4a"]
 
     def test_never_the_baseline_of_audio_a_survivor_carries(self, vault):
         _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a", h="same")
-        _add(vault, 2, "Blur", "Song 2", "Blur/Best Of/x.m4a", h="same")
+        same = _add(vault, 2, "Blur", "Song 2", "Blur/Best Of/x.m4a", h="same")
         survivor = str(vault / "Libraries" / "ALAC_Library" / "Blur/Best Of/x.m4a")
-        self._baseline(vault, [(survivor, "s2", "same")])
+        self._baseline(vault, [(survivor, "s2", same)])
         assert _run(vault, [1]).returncode == 0
         assert self._left(vault) == [survivor]
+
+
+def _row(vault, rid) -> bool:
+    conn = sqlite3.connect(vault / "musaeus.db")
+    n = conn.execute("SELECT COUNT(*) FROM archive WHERE id=?", (rid,)).fetchone()[0]
+    conn.close()
+    return n == 1
+
+
+class TestItConfirmsWhatItDeletes:
+    """Codex audit, 2026-10-16. A row's paths say only where it last saw its
+    files; another recording can be there now. The tool deleted whatever
+    was at the path (F2), and an edition copy it had just reported LEFT
+    went anyway when the row also named it (F8)."""
+
+    REL = "Blur/Parklife/x.m4a"
+
+    def test_another_recording_at_the_masters_place_refuses_the_row(self, vault):
+        h = _add(vault, 1, "Blur", "Song 2", self.REL)
+        libs = vault / "Libraries"
+        master = libs / "ALAC-Archival" / self.REL
+        _tone(master, "another song")  # a different recording now sits there
+        r = _run(vault, [1])
+        assert master.is_file(), "a different recording was deleted"
+        assert (libs / "ALAC_Library" / self.REL).is_file(), "a refused row lost a copy"
+        assert _row(vault, 1), "a refused row was removed from the catalogue"
+        assert not _denied(vault, h), "a refused row's audio was denied"
+        assert r.returncode == 1, r.stdout
+        assert "REFUSED" in r.stdout
+
+    def test_a_refused_row_does_not_stop_the_others(self, vault):
+        _add(vault, 1, "Blur", "Song 2", self.REL)
+        _tone(vault / "Libraries" / "ALAC-Archival" / self.REL, "another song")
+        _add(vault, 2, "Blur", "Tender", "Blur/13/y.m4a")
+        r = _run(vault, [1, 2])
+        assert _row(vault, 1), "the refused row was removed"
+        assert not (vault / "Libraries" / "ALAC-Archival" / "Blur/13/y.m4a").exists()
+        assert not _row(vault, 2), "a refusal stopped the other rows"
+        assert r.returncode == 1
+
+    def test_an_old_car_path_holding_another_masters_copy_is_left(self, vault):
+        # F8: the row names this file AND the edition ledger lists it. The
+        # marker check said LEFT; the row's own path list then deleted it.
+        from musaeus.edition_ledger import Copy, open_ledger, record
+
+        car = vault / "Libraries" / "CAR_Library" / self.REL
+        h = _add(vault, 1, "Blur", "Song 2", self.REL, car=self.REL)
+        _marked(car, "car", "hx")  # now another master's copy
+        led = open_ledger(vault / "_db_backups" / "editions.db")
+        record(led, Copy("car", h, "m", 1, str(car), "now", -14.0, "linear"))
+        led.close()
+        r = _run(vault, [1])
+        assert r.returncode == 0, r.stdout
+        assert "LEFT" in r.stdout
+        assert car.is_file(), "another master's car copy was deleted"
+        assert not (vault / "Libraries" / "ALAC-Archival" / self.REL).exists()
+
+    @pytest.mark.skipif(not shutil.which("fpcalc"), reason="needs fpcalc")
+    def test_a_re_encoded_master_is_confirmed_by_its_fingerprint(self, vault):
+        # A TRANSCODED master keeps its SOURCE's audio hash, so its own audio
+        # never matches the row's. Refusing it would leave every lossy
+        # master undeletable.
+        from musaeus.stages.acousticid import _fpcalc
+
+        master = vault / "Libraries" / "ALAC-Archival" / self.REL
+        _tone(master, "lossy", seconds=8, noise=True)
+        self._transcoded(vault, master, _fpcalc(str(master))[1])
+        r = _run(vault, [1])
+        assert r.returncode == 0, r.stdout
+        assert not master.exists()
+        assert _denied(vault, "the source's hash")
+
+    @pytest.mark.skipif(not shutil.which("fpcalc"), reason="needs fpcalc")
+    def test_a_re_encoded_master_of_another_recording_is_refused(self, vault):
+        from musaeus.stages.acousticid import _fpcalc
+
+        master = vault / "Libraries" / "ALAC-Archival" / self.REL
+        _tone(master, "lossy", seconds=8, noise=True)
+        stored = _fpcalc(str(master))[1]
+        _tone(master, "another song", seconds=8, noise=True)
+        assert _fpcalc(str(master))[1] != stored  # the test's own premise
+        self._transcoded(vault, master, stored)
+        r = _run(vault, [1])
+        assert master.is_file(), "a different recording was deleted"
+        assert _row(vault, 1)
+        assert r.returncode == 1 and "REFUSED" in r.stdout
+
+    def _transcoded(self, vault, master, chromaprint):
+        conn = sqlite3.connect(vault / "musaeus.db")
+        conn.execute(
+            "INSERT INTO archive (id, artist, title, status, audio_hash, file_path, "
+            "canon_action, chromaprint) VALUES (1, 'Blur', 'Song 2', 'CATALOGUED', "
+            "'the source''s hash', ?, 'TRANSCODED', ?)",
+            (str(master), chromaprint),
+        )
+        conn.commit()
+        conn.close()

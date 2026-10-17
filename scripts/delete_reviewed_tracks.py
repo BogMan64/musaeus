@@ -90,6 +90,28 @@ def copies(row: sqlite3.Row, libs: Path) -> list[Path]:
     return out
 
 
+def _is_this_recording(p: Path, row: sqlite3.Row, h0: str | None) -> bool:
+    """Is the file at *p* the recording *row* names? Anything that cannot
+    be read counts as no: a deletion that cannot confirm its target does
+    not happen."""
+    from musaeus.hasher import audio_hash
+
+    if not h0:
+        return False
+    cols = set(row.keys())
+    try:
+        if audio_hash(p, strict=True) == h0:
+            return True
+        if (row["canon_action"] if "canon_action" in cols else None) != "TRANSCODED":
+            return False
+        from musaeus.stages.acousticid import _fpcalc
+
+        stored = row["chromaprint"] if "chromaprint" in cols else None
+        return bool(stored) and _fpcalc(str(p))[1] == stored
+    except Exception:  # noqa: BLE001 - unreadable is "not confirmed"
+        return False
+
+
 def remove_emptied_folders(
     folders: set[Path], libs: Path, editions: tuple[Path, ...] = ()
 ) -> int:
@@ -198,7 +220,8 @@ def main() -> int:
         }
 
     run_id = f"delete_reviewed_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}_{uuid.uuid4().hex[:6]}"
-    n_files = n_rows = n_denied = n_absent = n_shared = n_kept_audio = 0
+    n_files = n_rows = n_denied = n_absent = n_shared = n_kept_audio = n_refused = 0
+    edition_roots = {name: kind.root(cfg) for name, kind in KINDS.items()}
     emptied: set[Path] = set()
 
     for i in ids:
@@ -223,6 +246,42 @@ def main() -> int:
                 print(f"     LEFT (the file there is not this track's copy): {ec}")
             elif Path(ec) not in paths:
                 paths.append(Path(ec))
+        # What is at each path must be THIS track, checked before anything goes
+        # (Codex audit 2026-10-16, F2 and F8). A path is only where the row
+        # last saw its file; another recording can be there now.
+        #   an edition copy -- in any edition folder, including the old car
+        #     path the row itself names -- carries a marker naming its
+        #     master's audio. Not this track's marker: left (F8: it was
+        #     reported LEFT and then deleted anyway).
+        #   anything else is the master: its audio must be this row's. Not
+        #     this row's, or not checkable: the whole row is refused --
+        #     nothing deleted, nothing denied, the row kept (F2).
+        # A re-encoded (TRANSCODED) master keeps its SOURCE's audio hash
+        # (stages/finalize.py), so its own audio never matches the row's;
+        # its stored fingerprint does, exactly -- measured on both live
+        # TRANSCODED masters, 2026-10-17.
+        checked: list[Path] = []
+        refuse = ""
+        for p in paths:
+            if not p.is_file():
+                checked.append(p)
+                continue
+            kind = next((n for n, r in edition_roots.items() if r in p.parents), None)
+            if kind is not None:
+                if not h0 or read_marker(p) != marker_for(h0, KINDS[kind]):
+                    print(f"     LEFT (the file there is not this track's copy): {p}")
+                    continue
+                checked.append(p)
+                continue
+            if not _is_this_recording(p, row, h0):
+                refuse = f"the file there is not this track's recording, or could not be read: {p}"
+                break
+            checked.append(p)
+        if refuse:
+            print(f"     REFUSED -- {refuse}; nothing of this row is deleted")
+            n_refused += 1
+            continue
+        paths = checked
         for p in paths:
             if not p.is_file():
                 continue
@@ -303,8 +362,9 @@ def main() -> int:
           + (f", {n_absent} id(s) already gone" if n_absent else "")
           + (f", {n_shared} file(s) kept because a surviving row needs them" if n_shared else "")
           + (f", {n_kept_audio} hash(es) NOT denied because a surviving row carries the same audio"
-             if n_kept_audio else ""))
-    return 0
+             if n_kept_audio else "")
+          + (f", {n_refused} row(s) REFUSED (see above)" if n_refused else ""))
+    return 1 if n_refused else 0
 
 
 if __name__ == "__main__":
