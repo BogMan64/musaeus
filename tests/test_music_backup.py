@@ -110,3 +110,77 @@ def test_copies_are_found_newest_first(tmp_path):
     assert [c.name for c in mb.dated_copies(tmp_path)] == [
         "2.-MUSAEUS_ALAC_Archive_20261006", "2.-MUSAEUS_ALAC_Archive_20260924"
     ]  # fmt: skip
+
+
+# ── Codex audit 2026-10-16, F7 ────────────────────────────────────────────────
+# A second run on the same day took the day's VERIFIED copy back under
+# .partial and copied into it without removing what had left the masters. A
+# master renamed in between left its old name behind, the counts never agreed
+# again, every retry that day failed -- and the day's good copy was no longer
+# counted as a copy at all.
+
+SONG = Path("Rock/America/Hearts/America - Sister Golden Hair.m4a")
+
+
+def _rename_a_master(vault):
+    old = vault / "Libraries" / "ALAC-Archival" / SONG
+    old.rename(old.with_name("America - Sister Golden Hair (Remastered).m4a"))
+
+
+def test_a_same_day_retry_after_a_rename_succeeds(vault, tmp_path):
+    root = tmp_path / "NUC"
+    root.mkdir()
+    mb.run(vault, root, today="20261101")
+    _rename_a_master(vault)
+
+    r = mb.run(vault, root, today="20261101")
+
+    assert r.problems == [] and r.files == 2
+    assert mb.dated_copies(root) == [root / f"{mb.PREFIX}20261101"]
+    names = sorted(p.name for p in (r.dest / "ALAC-Archival").rglob("*.m4a"))
+    assert "America - Sister Golden Hair (Remastered).m4a" in names
+    assert "America - Sister Golden Hair.m4a" not in names
+    assert [d.name for d in root.iterdir()] == [f"{mb.PREFIX}20261101"], "leftovers"
+
+
+def test_a_failed_same_day_retry_keeps_the_days_verified_copy(vault, tmp_path, monkeypatch):
+    root = tmp_path / "NUC"
+    root.mkdir()
+    first = mb.run(vault, root, today="20261101").dest
+    monkeypatch.setattr(mb, "verify_copy", lambda vault, dest: (0, ["the copy differs"]))
+
+    r = mb.run(vault, root, today="20261101")
+
+    assert r.problems
+    assert mb.dated_copies(root) == [first], "the day's verified copy stopped counting"
+    assert (first / "BACKUP_VERIFIED_AT.txt").is_file()
+    assert (first / "ALAC-Archival" / SONG).is_file()
+
+
+def test_a_retry_after_a_failed_run_does_not_inherit_its_leftovers(vault, tmp_path, monkeypatch):
+    root = tmp_path / "NUC"
+    root.mkdir()
+    real_verify = mb.verify_copy
+    monkeypatch.setattr(mb, "verify_copy", lambda vault, dest: (0, ["the copy differs"]))
+    mb.run(vault, root, today="20261101")  # leaves its .partial
+    monkeypatch.setattr(mb, "verify_copy", real_verify)
+    _rename_a_master(vault)
+
+    r = mb.run(vault, root, today="20261101")
+
+    assert r.problems == [] and r.files == 2
+
+
+def test_a_swap_cut_short_is_put_right_on_the_next_run(vault, tmp_path):
+    # Killed between taking the old copy aside and naming the new one: the
+    # verified old copy is the day's copy again, before anything else.
+    root = tmp_path / "NUC"
+    root.mkdir()
+    final = mb.run(vault, root, today="20261101").dest
+    final.rename(final.with_name(final.name + mb.SUPERSEDED))
+    assert mb.dated_copies(root) == []
+
+    r = mb.run(vault, root, today="20261101")
+
+    assert r.problems == [] and mb.dated_copies(root) == [final]
+    assert [d.name for d in root.iterdir()] == [final.name], "leftovers"

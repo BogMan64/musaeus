@@ -24,6 +24,14 @@ A copy that fails its check keeps the .partial name, so it is never counted as
 one of the KEEP and never used by the bit-rot repair. Written under the final
 name, it once would have been both: the next month's rotation deleted the last
 good copy to keep it (review of #87, finding 3).
+
+A second run on the same day builds its own .partial beside the day's verified
+copy, and the verified copy is set aside only once the new one has passed its
+check (Codex audit 2026-10-16, F7: it used to be taken back under .partial
+first, so a failed retry left the day with no counted copy at all). The
+.partial is the run's own, so rsync --delete inside it is safe -- without it, a
+master renamed since the last attempt left its old name behind, the counts never
+agreed again and every retry that day failed.
 """
 
 from __future__ import annotations
@@ -42,6 +50,9 @@ PREFIX = "2.-MUSAEUS_ALAC_Archive_"
 _NAME_RE = re.compile(r"^2\.-MUSAEUS_ALAC_Archive_(\d{8})$")
 KEEP = 2
 PARTIAL = ".partial"
+#: The day's previous verified copy, for the moment between setting it aside
+#: and naming the new one. Never counted; put back or removed by the next run.
+SUPERSEDED = ".superseded"
 
 
 @dataclass
@@ -85,21 +96,50 @@ def _rsync(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["rsync", "-a", *args], capture_output=True, text=True, check=False)
 
 
+def _recover(root: Path, today: str) -> None:
+    """Finish a swap a crash cut short (see _replace)."""
+    final = root / f"{PREFIX}{today}"
+    aside = root / f"{PREFIX}{today}{SUPERSEDED}"
+    if not aside.is_dir():
+        return
+    if final.is_dir():
+        shutil.rmtree(aside)  # the new copy was named: the old one was on its way out
+    else:
+        aside.rename(final)  # the new one never was: the verified old one is the day's copy
+
+
+def _replace(work: Path, final: Path) -> None:
+    """Name the verified *work* copy *final*, setting aside the day's earlier
+    copy only now. A directory cannot be renamed over another, so for a moment
+    the old copy is under SUPERSEDED; _recover finishes the job if a crash
+    lands there."""
+    aside = final.with_name(final.name + SUPERSEDED)
+    if final.is_dir():
+        final.rename(aside)
+    work.rename(final)
+    if aside.is_dir():
+        shutil.rmtree(aside)
+
+
 def make_copy(vault: Path, root: Path, today: str) -> tuple[Path, list[str]]:
     """Copy the masters and the vault's state into <root>/<PREFIX><today>.partial.
 
-    A second run the same day takes the day's copy back under .partial first,
-    so it is never counted while it is being changed.
+    The day's verified copy, if there is one, is left alone and linked against
+    (F7); the .partial is this run's own, so files that have left the masters
+    are deleted from it.
     """
-    final = root / f"{PREFIX}{today}"
+    _recover(root, today)
     dest = root / f"{PREFIX}{today}{PARTIAL}"
-    if final.is_dir() and not dest.exists():
-        final.rename(dest)
-    previous = next((c for c in dated_copies(root) if c != final), None)
+    previous = next(iter(dated_copies(root)), None)
     (dest / "vault_state").mkdir(parents=True, exist_ok=True)
     problems: list[str] = []
     link = [f"--link-dest={previous / 'ALAC-Archival'}"] if previous else []
-    r = _rsync(*link, f"{vault / 'Libraries' / 'ALAC-Archival'}/", f"{dest / 'ALAC-Archival'}/")
+    r = _rsync(
+        "--delete",
+        *link,
+        f"{vault / 'Libraries' / 'ALAC-Archival'}/",
+        f"{dest / 'ALAC-Archival'}/",
+    )
     if r.returncode:
         problems.append(
             f"copying the masters failed (rsync {r.returncode}): {r.stderr.strip()[:200]}"
@@ -111,7 +151,9 @@ def make_copy(vault: Path, root: Path, today: str) -> tuple[Path, list[str]]:
             s.backup(t)
             t.close()
             s.close()
-    r = _rsync(str(vault / "MetaData"), str(vault / "_db_backups"), f"{dest / 'vault_state'}/")
+    r = _rsync(
+        "--delete", str(vault / "MetaData"), str(vault / "_db_backups"), f"{dest / 'vault_state'}/"
+    )
     if r.returncode:
         problems.append(f"copying MetaData/_db_backups failed (rsync {r.returncode})")
     return dest, problems
@@ -161,7 +203,7 @@ def run(vault: Path, root: Path, keep: int = KEEP, today: str | None = None) -> 
         return report  # stays .partial: an old copy is the only good one; keep them all
     (work / "BACKUP_VERIFIED_AT.txt").write_text(f"{date.today().isoformat()}\n", encoding="utf-8")
     dest = root / f"{PREFIX}{today}"
-    work.rename(dest)
+    _replace(work, dest)
     report.dest = dest
     for old in to_remove(dated_copies(root), keep):
         if old != dest and _NAME_RE.match(old.name):
