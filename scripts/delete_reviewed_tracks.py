@@ -39,6 +39,16 @@ ORDER MATTERS. Files first, then the database, per file. A crash leaves a row
 whose files are gone -- visible and re-runnable -- rather than a catalogue
 that has forgotten tracks still on disk.
 
+CONFIRMED FIRST. Every file is checked to be this track before anything
+goes: an edition copy by its marker, the master by its audio (a re-encoded
+master by its fingerprint). A row that cannot be confirmed is REFUSED --
+nothing of it deleted or denied, and it counts as a survivor for the rest
+of the batch. --force-id ID deletes it anyway, for a master that is
+damaged or unreadable; its REFUSED line says what is at the path.
+
+EXIT 1 when any row was refused: the others WERE done (partly done).
+Rerunning is safe -- the done ids read as already gone.
+
     python3 scripts/delete_reviewed_tracks.py ids.txt --reason "..."
     python3 scripts/delete_reviewed_tracks.py ids.txt --reason "..." --execute
 """
@@ -90,6 +100,51 @@ def copies(row: sqlite3.Row, libs: Path) -> list[Path]:
     return out
 
 
+def _not_this_recording(p: Path, row: sqlite3.Row, h0: str | None) -> str:
+    """Why the file at *p* cannot be confirmed as the recording *row* names,
+    or "" when it is. Anything that cannot be read counts as not confirmed:
+    a deletion that cannot confirm its target does not happen (--force-id)."""
+    from musaeus.hasher import audio_hash
+
+    if not h0:
+        return "the row has no audio hash to confirm it by"
+    cols = set(row.keys())
+    try:
+        if audio_hash(p, strict=True) == h0:
+            return ""
+    except Exception as exc:  # noqa: BLE001 - unreadable is "not confirmed"
+        return f"its audio could not be read ({type(exc).__name__}: {exc})"
+    if (row["canon_action"] if "canon_action" in cols else None) != "TRANSCODED":
+        return "its audio is not this track's (audio hash differs)"
+    stored = row["chromaprint"] if "chromaprint" in cols else None
+    if not stored:
+        return "a re-encoded master, and no stored fingerprint to confirm it by"
+    try:
+        from musaeus.stages.acousticid import _fpcalc
+
+        if _fpcalc(str(p))[1] == stored:
+            return ""
+    except Exception as exc:  # noqa: BLE001
+        return f"a re-encoded master whose fingerprint could not be taken ({type(exc).__name__}: {exc})"
+    return "a re-encoded master whose fingerprint is not this track's"
+
+
+def _what_is_there(p: Path) -> str:
+    """What the file's own tags say it is, for a person deciding --force-id."""
+    try:
+        from mutagen import File
+
+        f = File(p, easy=True)
+        tags = f.tags if f is not None else None
+        if tags:
+            artist = (tags.get("artist") or ["?"])[0]
+            title = (tags.get("title") or ["?"])[0]
+            return f"  [its tags say: {artist} - {title}]"
+    except Exception:  # noqa: BLE001
+        pass
+    return "  [its tags could not be read]"
+
+
 def remove_emptied_folders(
     folders: set[Path], libs: Path, editions: tuple[Path, ...] = ()
 ) -> int:
@@ -118,6 +173,14 @@ def main() -> int:
     ap.add_argument("ids", type=Path, help="file of archive ids, one per line")
     ap.add_argument("--reason", required=True, help="recorded on every event and deny entry")
     ap.add_argument("--execute", action="store_true", help="actually delete (default: dry run)")
+    ap.add_argument(
+        "--force-id", type=int, action="append", default=[], metavar="ID",
+        help="delete this id's master even though it cannot be confirmed as this track "
+             "(damaged, unreadable, re-encoded by a newer ffmpeg). Read its REFUSED line "
+             "first: it says what is at the path. Only files outside the edition folders "
+             "are forced; a copy inside one is still left unless its marker is this "
+             "track's. Repeatable.",
+    )  # fmt: skip
     args = ap.parse_args()
     if args.execute:  # the masters lock (review of #87, findings 9 and 10)
         from musaeus.masters_lock import hold_for_process
@@ -125,6 +188,9 @@ def main() -> int:
         hold_for_process(exclusive=True, what="scripts/delete_reviewed_tracks.py")
 
     ids = [int(x) for x in args.ids.read_text().split() if x.strip().isdigit()]
+    # Once each: pass 2 works from the rows pass 1 read, so an id listed twice
+    # would be deleted twice.
+    ids = list(dict.fromkeys(ids))
     if not ids:
         print(f"no ids in {args.ids}")
         return 1
@@ -198,31 +264,124 @@ def main() -> int:
         }
 
     run_id = f"delete_reviewed_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}_{uuid.uuid4().hex[:6]}"
-    n_files = n_rows = n_denied = n_absent = n_shared = n_kept_audio = 0
+    n_files = n_rows = n_denied = n_absent = n_shared = n_kept_audio = n_refused = 0
+    edition_roots = {name: kind.root(cfg) for name, kind in KINDS.items()}
     emptied: set[Path] = set()
+    forced = set(args.force_id)
+    for i in sorted(forced - set(ids)):
+        print(f"WARNING: --force-id {i} is not in {args.ids}; it does nothing")
 
+    # PASS 1, before anything goes: what is at each path must be THIS track
+    # (Codex audit 2026-10-16, F2 and F8). A path is only where the row last
+    # saw its file; another recording can be there now.
+    #   an edition copy -- in any edition folder, including the old car path
+    #     the row itself names -- carries a marker naming its master's audio.
+    #     Not this track's marker: left (F8: it was reported LEFT and then
+    #     deleted anyway).
+    #   anything else is the master: its audio must be this row's. Not this
+    #     row's, or not checkable: the whole row is REFUSED -- nothing
+    #     deleted, nothing denied, the row kept (F2) -- unless the person
+    #     named it with --force-id.
+    #   a path a surviving row names is kept whatever it holds, so it is not
+    #     checked: a decode for nothing, and a refusal of a row none of whose
+    #     files would go (review of #197, finding 3).
+    # A re-encoded (TRANSCODED) master keeps its SOURCE's audio hash
+    # (stages/finalize.py), so its own audio never matches the row's; its
+    # stored fingerprint does, exactly -- measured on both live TRANSCODED
+    # masters, 2026-10-17.
+    rows: dict[int, sqlite3.Row] = {}
+    confirmed: dict[int, list[Path]] = {}
+    refused: dict[int, str] = {}
+    said: dict[int, list[str]] = {}
+    left: dict[int, set[str]] = {}  # paths pass 1 already reported LEFT
     for i in ids:
         row = conn.execute("SELECT * FROM archive WHERE id=?", (i,)).fetchone()
+        if row is None:
+            continue
+        rows[i], said[i], left[i] = row, [], set()
+        h0 = row["audio_hash"] if "audio_hash" in set(row.keys()) else None
+        checked: list[Path] = []
+        for p in copies(row, libs):
+            if not p.is_file() or str(p) in keep_paths:
+                checked.append(p)
+                continue
+            kind = next((n for n, r in edition_roots.items() if r in p.parents), None)
+            if kind is not None:
+                if not h0 or read_marker(p) != marker_for(h0, KINDS[kind]):
+                    said[i].append(f"     LEFT (the file there is not this track's copy): {p}")
+                    left[i].add(str(p))
+                    continue
+                checked.append(p)
+                continue
+            why = _not_this_recording(p, row, h0)
+            if why and i in forced:
+                said[i].append(f"     FORCED -- {why}: {p}{_what_is_there(p)}")
+            elif why:
+                refused[i] = f"{why}: {p}{_what_is_there(p)}"
+                break
+            checked.append(p)
+        if i not in refused:
+            confirmed[i] = checked
+
+    # A refused row stays in the library, so it is a survivor like any other:
+    # another row in this batch may not take its files, its audio (the deny
+    # list), its edition copies or its bit-rot baseline (review of #197,
+    # finding 1).
+    for i in refused:
+        row = rows[i]
+        cols = set(row.keys())
+        for col in ("file_path", "car_export_path"):
+            if col in cols and row[col]:
+                keep_paths.add(str(Path(row[col])))
+        if "audio_hash" in cols and row["audio_hash"]:
+            keep_hashes.add(row["audio_hash"])
+
+    # PASS 2: the deletions.
+    for i in ids:
+        row = rows.get(i)
         if row is None:
             n_absent += 1
             continue
         print(f"\n  id={i}  {row['artist']} - {row['title']}")
+        for line in said[i]:
+            print(line)
+        if i in refused:
+            print(f"     REFUSED -- {refused[i]}; nothing of this row is deleted")
+            n_refused += 1
+            if args.execute:
+                conn.execute(
+                    "INSERT INTO events (run_id, ts, event_type, file_path, old_value, "
+                    "new_value, note) VALUES (?,?,?,?,?,?,?)",
+                    (run_id, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                     "DELETE_REFUSED", row["file_path"], "", "",
+                     f"{args.reason} [refused: {refused[i]}]"))
+            continue
         files_for_row = 0
-        paths = copies(row, libs)
+        paths = confirmed[i]
         h0 = row["audio_hash"] if "audio_hash" in set(row.keys()) else None
         ecs = [(name, held[h0]) for name, held in edition_copy.items() if h0 and h0 in held]
+        # A copy reported KEPT or LEFT here stays, even when the row's own
+        # car_export_path also names it (review of #197, finding 2: F8's
+        # shape on the KEPT branch).
+        held_back: set[str] = set()
         for name, ec in ecs:
             if h0 in keep_hashes:
                 # A copy is keyed by audio: another row with this audio is
-                # still in the library, so this copy is its copy too.
-                print(f"     KEPT (a surviving row has the same audio): {ec}")
+                # still in the library, so this copy is its copy too. (Already
+                # LEFT in pass 1: another master's copy, said once.)
+                if str(Path(ec)) not in left[i]:
+                    print(f"     KEPT (a surviving row has the same audio): {ec}")
+                held_back.add(str(Path(ec)))
             elif Path(ec).is_file() and read_marker(Path(ec)) != marker_for(h0, KINDS[name]):
                 # The build never deletes a file whose marker is not the
                 # copy's, and neither does this (second review of #49). The
                 # record is stale; it goes below with the others.
-                print(f"     LEFT (the file there is not this track's copy): {ec}")
+                if str(Path(ec)) not in left[i]:
+                    print(f"     LEFT (the file there is not this track's copy): {ec}")
+                held_back.add(str(Path(ec)))
             elif Path(ec) not in paths:
                 paths.append(Path(ec))
+        paths = [p for p in paths if str(p) not in held_back]
         for p in paths:
             if not p.is_file():
                 continue
@@ -303,8 +462,9 @@ def main() -> int:
           + (f", {n_absent} id(s) already gone" if n_absent else "")
           + (f", {n_shared} file(s) kept because a surviving row needs them" if n_shared else "")
           + (f", {n_kept_audio} hash(es) NOT denied because a surviving row carries the same audio"
-             if n_kept_audio else ""))
-    return 0
+             if n_kept_audio else "")
+          + (f", {n_refused} row(s) REFUSED (see above)" if n_refused else ""))
+    return 1 if n_refused else 0
 
 
 if __name__ == "__main__":
