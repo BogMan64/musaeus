@@ -87,6 +87,9 @@ def test_a_check_that_crashed_is_counted(ctx):
 
     r = _Stage(boom).execute(ctx)
     assert any("effect check failed to run" in e for e in r.errors), "read as no claim"
+    # ...and not done: no exit 0, no resume skip (Codex audit 2026-10-16, F13).
+    assert r.success is False
+    assert any(a[0] == "STAGE_UNVERIFIED" for a, _ in ctx.events)
 
 
 # ── Pre-merge review of #166 ──────────────────────────────────────────────────
