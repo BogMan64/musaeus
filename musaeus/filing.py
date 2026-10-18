@@ -52,6 +52,10 @@ FILENAME = "artist_filing.tsv"
 #: audio_hash TAB folder TAB note. Only songs whose folder is a different act;
 #: the folder's spelling style is the rule's. Folder only: tag and title stay.
 SONGS_FILENAME = "folder_names.tsv"
+#: Grey, 2026-10-18: act TAB person [TAB genre]. A person with two or more act
+#: folders gets a person folder holding them: Genre/Person/Act/Album/song, in
+#: the library and the car. The genre is the person's (one place to look).
+PERSONS_FILENAME = "person_folders.tsv"
 
 HEADER = """\
 # MUSAEUS Artist Filing — artist_tag TAB folder_name
@@ -90,6 +94,7 @@ def load(meta_dir: Path) -> dict[str, str]:
     if not path.exists():
         empty = FilingMap({}, songs)
         empty.song_genres = song_genres
+        empty.persons = _load_persons(meta_dir)
         return empty
     out: dict[str, str] = {}
     folded: dict[str, str] = {}
@@ -135,6 +140,7 @@ def load(meta_dir: Path) -> dict[str, str]:
         out[tag] = folder
     loaded = FilingMap(out, songs)
     loaded.song_genres = song_genres
+    loaded.persons = _load_persons(meta_dir)
     return loaded
 
 
@@ -169,6 +175,8 @@ class FilingMap(dict[str, str]):
         #: audio_hash -> genre folder, where Grey's list gives one (the act's
         #: genre: one genre per act, Grey 2026-10-18).
         self.song_genres: dict[str, str] = {}
+        #: act_key(act folder) -> (person, person's genre or None).
+        self.persons: dict[str, tuple[str, str | None]] = {}
 
 
 def song_folder(filing: dict[str, str] | None, audio_hash: str | None) -> str | None:
@@ -187,6 +195,46 @@ def song_genre(filing: dict[str, str] | None, audio_hash: str | None) -> str | N
         return None
     genre = genres.get(audio_hash)
     return str(genre) if genre else None
+
+
+def person_for(
+    filing: dict[str, str] | None, act_folder: str | None
+) -> tuple[str, str | None] | None:
+    """(person, genre or None) for an act folder in Grey's person list, or None.
+    Matched by act_key, so "The X" / "X, The" and "&" / "and" agree."""
+    persons = getattr(filing, "persons", None)
+    if not persons or not act_folder:
+        return None
+    from .artist_form import act_key
+
+    found = persons.get(act_key(act_folder))
+    return (str(found[0]), found[1]) if found else None
+
+
+def _load_persons(meta_dir: Path) -> dict[str, tuple[str, str | None]]:
+    path = Path(meta_dir) / PERSONS_FILENAME
+    if not path.exists():
+        return {}
+    from .artist_form import act_key
+
+    out: dict[str, tuple[str, str | None]] = {}
+    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        parts = [p.strip() for p in raw.split("\t")]
+        if len(parts) < 2 or not parts[0] or not parts[1]:
+            raise FilingError(
+                f"{PERSONS_FILENAME} line {lineno}: expected 'act<TAB>person', got {raw!r}"
+            )
+        key = act_key(parts[0])
+        genre = parts[2] if len(parts) >= 3 and parts[2] else None
+        if key in out and out[key][0] != parts[1]:
+            raise FilingError(
+                f"{PERSONS_FILENAME} line {lineno}: {parts[0]!r} is already under "
+                f"{out[key][0]!r}; a second person makes the file ambiguous."
+            )
+        out[key] = (parts[1], genre)
+    return out
 
 
 def _load_songs(meta_dir: Path) -> tuple[dict[str, str], dict[str, str]]:

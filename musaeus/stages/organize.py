@@ -456,9 +456,14 @@ def library_relpath(
     # different folders and organize moved every such file straight back out
     # -- R2, measured 2026-09-24: all 389 files of the first fresh batch.
     path_artist = library_artist(artist, mb_artist_name, filing, audio_hash)
-    from ..filing import song_genre
+    from ..filing import person_for, song_genre
 
     genre = song_genre(filing, audio_hash) or genre
+    # Grey, 2026-10-18: a person with two or more act folders holds them in a
+    # person folder, under the person's one genre (MetaData/person_folders.tsv).
+    person = person_for(filing, path_artist)
+    if person:
+        genre = person[1] or genre
 
     # The genre level MUST match FinalizeStage. On 2026-09-18 it did
     # not: finalize was changed to file under Genre/Artist/Album and
@@ -471,8 +476,11 @@ def library_relpath(
     # as the car encoder filing by album-artist while the catalogue
     # filed by artist. Both call genre_folder() now, so there is one
     # rule rather than two that happen to agree.
+    top = Path(genre_folder(genre))
+    if person:
+        top = top / sanitize_path_component(folder_spelling(sort_form(stored_artist(person[0]))))
     return (
-        Path(genre_folder(genre))
+        top
         / sanitize_path_component(folder_spelling(path_artist))
         / sanitize_path_component(folder_spelling(album or "Unsorted"))
         / build_track_filename(path_artist, title or "Unknown Title", ext)
