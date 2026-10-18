@@ -191,6 +191,13 @@ def _norm_for_match(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.replace("&", "and"))
 
 
+def _spellings(name: str) -> set[str]:
+    """A name with "&" read as "and" and with "&" simply dropped: a tag that
+    lost its "&" ("Hall Oates") is still the act (Codex review of #209)."""
+    plain = re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", name or "").lower())
+    return {k for k in (plain, _norm_for_match(name)) if k}
+
+
 def _titles_agree(a: str, b: str) -> bool:
     """One title is the other, or part of it.
 
@@ -809,14 +816,12 @@ class AcousticIDStage(BaseStage):
                         # -- same song, same length, different act -- and a cover
                         # is a different recording.
                         other_artist = _row_get(other, "artist") if other else ""
-                        mine = _norm_for_match(_row_get(row, "artist"))
-                        theirs = _norm_for_match(other_artist)
+                        mine = _spellings(_row_get(row, "artist"))
+                        theirs = _spellings(other_artist)
                         if (
                             mine
                             and theirs
-                            and mine != theirs
-                            and mine not in theirs
-                            and theirs not in mine
+                            and not any(m in t or t in m for m in mine for t in theirs)
                         ):
                             logger.info(
                                 "[acousticid] REJECTED pair, cross-artist (%s vs %s): %s == %s",

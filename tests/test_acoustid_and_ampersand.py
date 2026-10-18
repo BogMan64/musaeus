@@ -37,3 +37,12 @@ def test_a_recording_called_and_is_not_part_of_and_spelled_out():
     # Codex review of #209: "Jack and Diane" still picked a recording "And".
     recordings = [{"id": "r9", "title": "And", "artists": [{"name": "John Mellencamp"}]}]
     assert _pick_matching_recording(recordings, "John Mellencamp", "Jack and Diane") is None
+
+
+def test_an_artist_tag_that_lost_its_ampersand_is_the_same_act():
+    # Codex review of #209: "Hall & Oates" read as "hallandoates" no longer
+    # contained "halloates", so a true duplicate was rejected as a cover.
+    from musaeus.stages.acousticid import _spellings
+
+    mine, theirs = _spellings("Hall & Oates"), _spellings("Hall Oates")
+    assert any(m in t or t in m for m in mine for t in theirs)

@@ -95,12 +95,15 @@ def song_key(artist: str | None, title: str | None) -> tuple[str, str]:
 
 
 def _and_key(text: str) -> str:
-    # "&" alone is no name: as "and" it would be the song "And" (Codex
-    # review of #209), and a quarantined sole copy would look held.
+    # "&", the word "and", and "&" lost in a tag ("Hall Oates") key alike:
+    # both are left out (Codex review of #209). A name that is nothing else
+    # keeps itself -- the song "And" -- and "&" alone is no name, or a
+    # quarantined sole copy would look held.
     text = text.lower()
-    if not _NOISE_RE.sub("", text):
+    plain = _NOISE_RE.sub("", text)
+    if not plain:
         return ""
-    return _NOISE_RE.sub("", text.replace("&", "and"))
+    return _NOISE_RE.sub("", re.sub(r"\band\b", " ", text)) or plain
 
 
 @dataclass

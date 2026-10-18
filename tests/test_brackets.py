@@ -141,3 +141,13 @@ def test_song_key_of_a_bare_ampersand_is_not_the_song_and():
     from musaeus.doctor import song_key
 
     assert song_key("Wings", "&") != song_key("Wings", "And")
+
+
+def test_song_key_matches_an_ampersand_lost_from_a_tag():
+    # Codex review of #209: "Hall & Oates" and "Hall Oates" keyed alike before
+    # "&" became "and"; a quarantined copy then looked like a sole copy.
+    from musaeus.doctor import song_key
+
+    keys = {song_key(a, "Maneater") for a in ("Hall & Oates", "Hall and Oates", "Hall Oates")}
+    assert len(keys) == 1
+    assert song_key("X", "And") != song_key("X", "")
