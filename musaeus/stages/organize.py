@@ -737,6 +737,9 @@ class OrganizeStage(BaseStage):
         False so the caller can skip this row and keep processing the rest.
         """
         current_path.rename(target_path)
+        # One savepoint: a failure part-way undoes the archive row as well as
+        # the file, so the row never names a place the file is not.
+        ctx.conn.execute("SAVEPOINT organize_move")
         try:
             ctx.conn.execute(
                 "UPDATE archive SET file_path = ? WHERE rowid = ?",
@@ -750,11 +753,29 @@ class OrganizeStage(BaseStage):
                 if ctx.conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
                 ).fetchone():
+                    # The target was a free name (unique_path), so a row that
+                    # already names it describes a file that is not there.
+                    # Left in place it would win over the moved file's own
+                    # row -- bitrot would check the master against a stale
+                    # baseline (Codex review of #208).
+                    stale = ctx.conn.execute(
+                        f"DELETE FROM {table} WHERE {col} = ?", (str(target_path),)
+                    ).rowcount
+                    if stale:
+                        logger.warning(
+                            "[organize] %s: dropped %d stale row(s) naming %s",
+                            table,
+                            stale,
+                            target_path,
+                        )
                     ctx.conn.execute(
-                        f"UPDATE OR IGNORE {table} SET {col} = ? WHERE {col} = ?",
+                        f"UPDATE {table} SET {col} = ? WHERE {col} = ?",
                         (str(target_path), str(current_path)),
                     )
+            ctx.conn.execute("RELEASE organize_move")
         except sqlite3.IntegrityError as exc:
+            ctx.conn.execute("ROLLBACK TO organize_move")
+            ctx.conn.execute("RELEASE organize_move")
             logger.error(
                 "[organize] DB collision for %s -> %s (%s); reverting move",
                 current_path,

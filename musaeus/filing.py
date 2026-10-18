@@ -228,10 +228,10 @@ def _genre_key(genre: str) -> str:
 
 
 def _load_persons(meta_dir: Path) -> dict[str, tuple[str, str | None]]:
-    """act_key(act) -> (person, the person's ONE genre or None).
+    """act_key(act) -> (person, the person's ONE genre).
 
-    Refused rather than guessed (review of #208): a person with two
-    genres, a genre outside Genre_Allowed.txt (a typo would make a new
+    Refused rather than guessed (review of #208): a person with no genre
+    or two, a genre outside Genre_Allowed.txt (a typo would make a new
     top-level folder), a person with fewer than two acts (a typo in the
     person column makes exactly that), and one person spelled two ways."""
     path = Path(meta_dir) / PERSONS_FILENAME
@@ -275,8 +275,15 @@ def _load_persons(meta_dir: Path) -> dict[str, tuple[str, str | None]]:
                 f"{PERSONS_FILENAME}: {person!r} is given {len(named)} genres "
                 f"({', '.join(sorted(named))}); a person sits under one."
             )
-        genre = next(iter(named)) if named else None
-        if genre and allowed is not None and _genre_key(genre) not in allowed:
+        if not named:
+            # Without one, each act would follow its own songs' genre and the
+            # person would get a folder in each (Codex review of #208).
+            raise FilingError(
+                f"{PERSONS_FILENAME}: {person!r} has no genre; give one on any of "
+                f"their lines so all their acts sit in one place."
+            )
+        genre = next(iter(named))
+        if allowed is not None and _genre_key(genre) not in allowed:
             raise FilingError(
                 f"{PERSONS_FILENAME}: {person!r}'s genre {genre!r} is not in "
                 f"Genre_Allowed.txt -- check the spelling"

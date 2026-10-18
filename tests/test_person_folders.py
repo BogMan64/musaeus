@@ -15,11 +15,11 @@ from musaeus.stages.organize import library_relpath
 
 LIST = (
     "# act TAB person TAB genre\n"
-    "Bob Seger\tBob Seger\n"
+    "Bob Seger\tBob Seger\tRock\n"
     "Bob Seger & The Silver Bullet Band\tBob Seger\n"
     "Jimi Hendrix\tJimi Hendrix\tBlues Rock\n"
     "The Jimi Hendrix Experience\tJimi Hendrix\tBlues Rock\n"
-    "Paul McCartney\tPaul McCartney\n"
+    "Paul McCartney\tPaul McCartney\tPop\n"
     "Wings\tPaul McCartney\n"
 )
 
@@ -119,8 +119,9 @@ def test_a_genre_on_one_line_holds_for_all_the_persons_acts(tmp_path):
     [
         "A\tX\tRock\nA & The B\tX\tPop\n",  # two genres for one person
         "A\tX\tRokc\nA & The B\tX\n",  # a genre that is not allowed (typo)
-        "A\tX\nB\tY\n",  # a person with one act (typo in the person column)
-        "A\tBob Seger\nA & The B\tBob seger\n",  # one person spelled two ways
+        "A\tX\tRock\nB\tY\tRock\n",  # a person with one act (typo in the person column)
+        "A\tBob Seger\tRock\nA & The B\tBob seger\n",  # one person spelled two ways
+        "A\tX\nA & The B\tX\n",  # no genre: each act would follow its own songs
     ],
 )
 def test_a_list_that_would_misfile_is_refused(tmp_path, text):
@@ -143,7 +144,8 @@ def test_organize_moves_the_path_named_in_the_side_tables_too(tmp_path):
     cfg.inbox.mkdir(parents=True)
     cfg.meta_dir.mkdir()
     (cfg.meta_dir / filing.PERSONS_FILENAME).write_text(
-        "Bob Seger\tBob Seger\nBob Seger & The Silver Bullet Band\tBob Seger\n", encoding="utf-8"
+        "Bob Seger\tBob Seger\tRock\nBob Seger & The Silver Bullet Band\tBob Seger\n",
+        encoding="utf-8",
     )
     ctx = RunContext.new(cfg, open_db(cfg.db_path), dry_run=False)
     old = cfg.inbox / "flat" / "nm.m4a"
@@ -155,14 +157,27 @@ def test_organize_moves_the_path_named_in_the_side_tables_too(tmp_path):
     ctx.conn.execute(
         "INSERT INTO validation_issues (file_path, issue) VALUES (?, ?)", (str(old), "x")
     )
+    ctx.conn.execute(
+        "INSERT INTO archive_tier_hashes (path, sha256) VALUES (?, 'MOVED_FILE')", (str(old),)
+    )
+    # Codex review of #208: a stale row already naming the destination made the
+    # follow-the-move UPDATE OR IGNORE change nothing, so bitrot later checked
+    # the moved master against the stale baseline.
+    dest = cfg.inbox / "Rock/Bob Seger/Bob Seger & The Silver Bullet Band/Night Moves"
+    stale = dest / "Bob Seger & The Silver Bullet Band - Night Moves.m4a"
+    ctx.conn.execute(
+        "INSERT INTO archive_tier_hashes (path, sha256) VALUES (?, 'STALE')", (str(stale),)
+    )
     ctx.conn.commit()
 
     OrganizeStage().run(ctx)
 
     new = ctx.conn.execute("SELECT file_path FROM archive").fetchone()[0]
-    assert "/Bob Seger/Bob Seger & The Silver Bullet Band/" in new
+    assert new == str(stale)
     named = [r[0] for r in ctx.conn.execute("SELECT file_path FROM validation_issues")]
     assert named == [new], "a side table still names the old place"
+    baselines = [tuple(r) for r in ctx.conn.execute("SELECT path, sha256 FROM archive_tier_hashes")]
+    assert baselines == [(new, "MOVED_FILE")], "the moved master has a stale baseline"
 
 
 def test_a_dated_batch_folder_is_not_mistaken_for_a_person(tmp_path):
