@@ -270,7 +270,10 @@ def retire(cfg, ids: list[int], execute: bool) -> int:
     if execute:
         cmd.append("--execute")
     print(f"  {len(ids)} replaced master(s) -> {DELETE_TOOL.name} ({ids_file})")
-    return subprocess.run(cmd, check=False).returncode
+    from musaeus.masters_lock import handoff
+
+    fds, env = handoff()
+    return subprocess.run(cmd, check=False, pass_fds=fds, env=env).returncode
 
 
 def main() -> int:
@@ -299,14 +302,13 @@ def main() -> int:
         help="--promote at most N (a one-song trial before the rest: --limit 1)",
     )
     args = ap.parse_args()
-    # The masters lock (review of #87, findings 9 and 10) -- for --promote,
-    # which changes masters here. Not for --retire: it only READS to choose
-    # the ids, then hands them to delete_reviewed_tracks.py --execute, which
-    # takes the exclusive lock itself for the whole deletion and confirms
-    # every file before it goes. Held here as well, the child was refused by
-    # its own parent (exit 75) and nothing was ever retired (Codex audit
-    # 2026-10-16, F9).
-    if args.execute and args.promote:
+    # The masters lock (review of #87, findings 9 and 10). For --retire it is
+    # held from choosing the ids to deleting them and handed to the delete
+    # tool (masters_lock.handoff): the child used to ask for it afresh and be
+    # refused by its own parent (exit 75), so nothing was ever retired (Codex
+    # audit 2026-10-16, F9) -- and let go in between, another job could change
+    # the choice before the deletion (review of #202).
+    if args.execute:
         from musaeus.masters_lock import hold_for_process
 
         hold_for_process(exclusive=True, what="scripts/swap_review_copies.py")

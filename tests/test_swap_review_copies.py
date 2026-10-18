@@ -31,6 +31,18 @@ def _load():
     return mod
 
 
+@pytest.fixture(autouse=True)
+def _no_leftover_holds(monkeypatch):
+    """main() --execute holds the masters lock for the rest of the process;
+    in one pytest process that leaked into the next test (review of #202)."""
+    from musaeus import config, masters_lock
+
+    monkeypatch.setattr(config, "_cached_config", None)
+    yield
+    while masters_lock._held:
+        masters_lock._held.pop().__exit__(None, None, None)
+
+
 @pytest.fixture
 def vault(tmp_path, monkeypatch):
     mod = _load()
