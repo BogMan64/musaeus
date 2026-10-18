@@ -66,3 +66,24 @@ def test_without_a_hash_nothing_changes(tmp_path):
 def test_an_unreadable_or_ambiguous_list_is_refused(tmp_path, bad):
     with pytest.raises(filing.FilingError):
         filing.load(_meta(tmp_path, songs=bad))
+
+
+def test_finalize_keeps_the_per_song_list_for_every_track_of_a_run(tmp_path):
+    # Codex review of #206: finalize's cache handed back dict(cached), which
+    # dropped FilingMap.songs -- only a run's FIRST track used Grey's list.
+    from musaeus.config import MusicConfig
+    from musaeus.context import RunContext
+    from musaeus.db import open_db
+    from musaeus.stages.finalize import FinalizeStage
+
+    meta = _meta(tmp_path, songs=f"{H}\tWings\n")
+    cfg = MusicConfig(
+        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "Q", runs_root=tmp_path / "RUNS", meta_dir=meta,
+        alac_library=tmp_path / "ALAC-Library", db_path=tmp_path / "musaeus.db",
+    )  # fmt: skip
+    ctx = RunContext.new(cfg, open_db(cfg.db_path), dry_run=False)
+    stage = FinalizeStage()
+    first, second = stage._filing(ctx), stage._filing(ctx)
+    assert filing.song_folder(first, H) == "Wings"
+    assert filing.song_folder(second, H) == "Wings", "the list was lost after the first track"

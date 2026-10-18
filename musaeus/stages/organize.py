@@ -772,7 +772,7 @@ class OrganizeStage(BaseStage):
 
         rows = ctx.conn.execute(
             f"""
-            SELECT id, file_path, artist, album, title, genre, {_mb_sql}
+            SELECT id, file_path, artist, album, title, genre, {_mb_sql}, audio_hash
             FROM archive
             WHERE status = 'CATALOGUED'
               AND artist IS NOT NULL

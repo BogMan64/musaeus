@@ -442,7 +442,8 @@ class VariousArtistsFixStage(BaseStage):
 
     def _get_candidates(self, ctx: RunContext) -> list[dict]:
         rows = ctx.conn.execute(
-            "SELECT id, file_path, artist, title, album, genre FROM archive WHERE status='CATALOGUED'"
+            "SELECT id, file_path, artist, title, album, genre, audio_hash FROM archive "
+            "WHERE status='CATALOGUED'"
         ).fetchall()
         return [dict(r) for r in rows if is_placeholder_credit(r["artist"])]
 
