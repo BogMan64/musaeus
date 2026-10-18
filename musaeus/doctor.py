@@ -87,23 +87,34 @@ def song_key(artist: str | None, title: str | None) -> tuple[str, str]:
     "Al Green - Call Me (Come Back Home)" and "Al Green - Call Me" are the
     same song; treating them as different is what produced a phantom
     "500 songs lost" report.
+
+    "&" reads as the word "and" (Grey, 2026-10-12): "Jack & Diane" and
+    "Jack And Diane" are one song, not a sole copy each.
     """
+    return song_keys(artist, title)[0]
+
+
+def song_keys(artist: str | None, title: str | None) -> list[tuple[str, str]]:
+    """song_key first, then the key with "&" simply dropped -- the rule before
+    "&" read as "and", which a tag that lost its "&" ("Hall Oates") matches.
+
+    Asking whether a copy is HELD takes either key. The word "and" itself is
+    never dropped: "And I Love Her" is not "I Love Her" (Codex review of
+    #209), and a quarantined sole copy must not look held."""
     t = _EDITION_RE.sub("", strip_bracketed(title or ""))
-    # "&" and "and" are one spelling (Grey, 2026-10-12): "Jack & Diane" and
-    # "Jack And Diane" are one song, not a sole copy each.
-    return (_and_key(artist or ""), _and_key(t))
+    a = (artist or "").lower()
+    t = t.lower()
+    folded = (_amp_as_and(a), _amp_as_and(t))
+    dropped = (_NOISE_RE.sub("", a), _NOISE_RE.sub("", t))
+    return [folded] if dropped == folded else [folded, dropped]
 
 
-def _and_key(text: str) -> str:
-    # "&", the word "and", and "&" lost in a tag ("Hall Oates") key alike:
-    # both are left out (Codex review of #209). A name that is nothing else
-    # keeps itself -- the song "And" -- and "&" alone is no name, or a
-    # quarantined sole copy would look held.
-    text = text.lower()
-    plain = _NOISE_RE.sub("", text)
-    if not plain:
+def _amp_as_and(text: str) -> str:
+    # "&" alone is no name: as "and" it would be the song "And" (Codex
+    # review of #209), and a quarantined sole copy would look held.
+    if not _NOISE_RE.sub("", text):
         return ""
-    return _NOISE_RE.sub("", re.sub(r"\band\b", " ", text)) or plain
+    return _NOISE_RE.sub("", text.replace("&", "and"))
 
 
 @dataclass
@@ -179,8 +190,10 @@ def diagnose(cfg: MusicConfig) -> Report:
     # 1. Rows whose file is gone -- split by whether the RECORDING survives.
     missing = [r for r in lib if r["file_path"] not in on_disk]
     if missing:
-        held = {song_key(r["artist"], r["title"]) for r in rows if r["file_path"] in on_disk}
-        lost = [r for r in missing if song_key(r["artist"], r["title"]) not in held]
+        held = {
+            k for r in rows if r["file_path"] in on_disk for k in song_keys(r["artist"], r["title"])
+        }
+        lost = [r for r in missing if held.isdisjoint(song_keys(r["artist"], r["title"]))]
         rep.add(
             "fail" if lost else "warn",
             "rows with a missing file",
@@ -446,7 +459,9 @@ def diagnose(cfg: MusicConfig) -> Report:
     # 5. Quarantine: is anything in there the only copy of its recording?
     quarantined = [r for r in rows if r["status"] in ("DUPE_REVIEW", "TRIBUTE_REVIEW")]
     if quarantined:
-        held = {song_key(r["artist"], r["title"]) for r in lib if r["file_path"] in on_disk}
+        held = {
+            k for r in lib if r["file_path"] in on_disk for k in song_keys(r["artist"], r["title"])
+        }
         # ...and by audio_hash, which is the stable identity for a recording
         # and survives a rename. song_key alone cannot see a copy that is
         # safely held under a different artist name, and that is now the
@@ -462,7 +477,7 @@ def diagnose(cfg: MusicConfig) -> Report:
         solo = [
             r
             for r in quarantined
-            if song_key(r["artist"], r["title"]) not in held
+            if held.isdisjoint(song_keys(r["artist"], r["title"]))
             and not (r["audio_hash"] and r["audio_hash"] in held_audio)
         ]
         rep.add(

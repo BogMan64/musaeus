@@ -46,3 +46,10 @@ def test_an_artist_tag_that_lost_its_ampersand_is_the_same_act():
 
     mine, theirs = _spellings("Hall & Oates"), _spellings("Hall Oates")
     assert any(m in t or t in m for m in mine for t in theirs)
+
+
+def test_a_song_called_and_still_matches_its_own_versions():
+    # Codex review of #209: a file titled "And" never matched "And (Live)",
+    # and the stage then stamped it checked.
+    recordings = [{"id": "r1", "title": "And (Live)", "artists": [{"name": "X"}]}]
+    assert _pick_matching_recording(recordings, "X", "And") == "r1"

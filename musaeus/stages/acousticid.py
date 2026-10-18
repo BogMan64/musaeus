@@ -217,7 +217,11 @@ def _titles_agree(a: str, b: str) -> bool:
     )
     short, long_ = sorted((ta, tb), key=len)
     if not set(short) - {"and"}:
-        return False
+        # Only the song really called "And", in a version: "And (Live)"
+        # (Codex review of #209) -- never "and" inside another title.
+        from ..brackets import strip_bracketed
+
+        return _norm_for_match(strip_bracketed(a)) == _norm_for_match(strip_bracketed(b))
     pa, pb = (
         re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", x or "").lower()) for x in (a, b)
     )

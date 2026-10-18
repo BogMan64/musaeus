@@ -143,11 +143,17 @@ def test_song_key_of_a_bare_ampersand_is_not_the_song_and():
     assert song_key("Wings", "&") != song_key("Wings", "And")
 
 
-def test_song_key_matches_an_ampersand_lost_from_a_tag():
-    # Codex review of #209: "Hall & Oates" and "Hall Oates" keyed alike before
-    # "&" became "and"; a quarantined copy then looked like a sole copy.
+def test_the_word_and_is_never_dropped_from_a_song_key():
+    # Codex review of #209: dropping the WORD "and" made "And I Love Her" look
+    # held by "I Love Her", so a quarantined sole copy passed as a duplicate.
     from musaeus.doctor import song_key
 
-    keys = {song_key(a, "Maneater") for a in ("Hall & Oates", "Hall and Oates", "Hall Oates")}
-    assert len(keys) == 1
-    assert song_key("X", "And") != song_key("X", "")
+    assert song_key("X", "And I Love Her") != song_key("X", "I Love Her")
+
+
+def test_a_tag_that_lost_its_ampersand_is_still_held():
+    # "Hall Oates" matched "Hall & Oates" while "&" was dropped; it still does.
+    from musaeus.doctor import song_keys
+
+    assert set(song_keys("Hall & Oates", "Maneater")) & set(song_keys("Hall Oates", "Maneater"))
+    assert not set(song_keys("X", "And I Love Her")) & set(song_keys("X", "I Love Her"))
