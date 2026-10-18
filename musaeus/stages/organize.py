@@ -487,6 +487,10 @@ def library_relpath(
     )
 
 
+#: Tables whose rows are keyed by the path alone: a row already naming a free
+#: destination describes a file that is not there, and would block the move.
+_PATH_KEYED = frozenset({"archive_tier_hashes", "metadata_cache"})
+
 #: Tables that name a master by path (scripts/consolidate_artist_folders.py
 #: keeps the same list).
 _PATH_COLUMNS = (
@@ -753,17 +757,29 @@ class OrganizeStage(BaseStage):
                 if ctx.conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
                 ).fetchone():
-                    # The target was a free name (unique_path), so a row that
-                    # already names it describes a file that is not there.
-                    # Left in place it would win over the moved file's own
-                    # row -- bitrot would check the master against a stale
-                    # baseline (Codex review of #208).
-                    stale = ctx.conn.execute(
-                        f"DELETE FROM {table} WHERE {col} = ?", (str(target_path),)
-                    ).rowcount
+                    # The target was a free name (unique_path), so a baseline or
+                    # cache row that already names it describes a file that is
+                    # not there. Left in place it would win over the moved
+                    # file's own row -- bitrot would check the master against a
+                    # stale baseline (Codex review of #208). Review records
+                    # (duplicates, validation_issues) are not the file's
+                    # identity and are kept; only an issue the moved file
+                    # already carries is not written twice.
+                    if table in _PATH_KEYED:
+                        stale = ctx.conn.execute(
+                            f"DELETE FROM {table} WHERE {col} = ?", (str(target_path),)
+                        ).rowcount
+                    elif table == "validation_issues":
+                        stale = ctx.conn.execute(
+                            "DELETE FROM validation_issues WHERE file_path = ? AND issue IN "
+                            "(SELECT issue FROM validation_issues WHERE file_path = ?)",
+                            (str(current_path), str(target_path)),
+                        ).rowcount
+                    else:
+                        stale = 0
                     if stale:
                         logger.warning(
-                            "[organize] %s: dropped %d stale row(s) naming %s",
+                            "[organize] %s: dropped %d row(s) at %s already covered",
                             table,
                             stale,
                             target_path,
@@ -863,12 +879,45 @@ class OrganizeStage(BaseStage):
             filing_load(cfg.meta_dir) if cfg is not None and getattr(cfg, "meta_dir", None) else {}
         )
 
+        # A listed act no song files under is most likely a typo: its songs
+        # would stay flat while the person's other acts nest. Checked before
+        # anything moves; the dry run names it and a real run refuses (Codex
+        # review of #208).
+        person_acts = getattr(filing, "person_acts", {})
+        if person_acts:
+            from ..artist_form import act_key
+
+            acts_seen: set[str] = set()
+            for row in rows:
+                rel = library_relpath(
+                    row["artist"],
+                    row["mb_artist_name"],
+                    row["genre"],
+                    row["album"],
+                    row["title"],
+                    Path(row["file_path"]).suffix,
+                    filing,
+                    row["audio_hash"],
+                )
+                if len(rel.parts) >= 3:
+                    acts_seen.add(act_key(rel.parts[-3]))  # .../Act/Album/file
+            unmatched = sorted(act for key, act in person_acts.items() if key not in acts_seen)
+            for act in unmatched:
+                note = f"person_folders.tsv: {act!r} matches no song -- check the spelling"
+                logger.warning("[organize] %s", note)
+                result.notes.append(note)
+            if unmatched and not dry_run:
+                result.success = False
+                result.errors.append(
+                    f"person_folders.tsv names {len(unmatched)} act(s) no song files under; "
+                    f"nothing was moved -- correct the list and run again"
+                )
+                ctx.record_stage(result)
+                return result
+
         renamed = 0
         moved = 0
         skipped = 0
-        from ..artist_form import act_key
-
-        acts_seen: set[str] = set()  # act_key of every act folder a song files under
 
         for row in rows:
             result.files_processed += 1
@@ -918,8 +967,6 @@ class OrganizeStage(BaseStage):
                 row["audio_hash"] if "audio_hash" in set(row.keys()) else None,
             )
             candidate_path = dest_root / rel
-            if len(rel.parts) >= 3:
-                acts_seen.add(act_key(rel.parts[-3]))  # .../Act/Album/file
             target_dir = candidate_path.parent
 
             # unique_path() checks disk existence to avoid collisions, but
@@ -993,14 +1040,6 @@ class OrganizeStage(BaseStage):
 
         prefix = "Would" if dry_run else "Done"
         result.notes.append(f"{prefix}: renamed={renamed}, moved={moved}, skipped={skipped}")
-        # A listed act no song files under is most likely a typo: its songs
-        # stay flat while the person's other acts nest (Codex review of #208).
-        # Said in the dry run, before anything moves.
-        for key, act in sorted(getattr(filing, "person_acts", {}).items()):
-            if key not in acts_seen:
-                note = f"person_folders.tsv: {act!r} matches no song -- check the spelling"
-                logger.warning("[organize] %s", note)
-                result.notes.append(note)
 
         ctx.record_stage(result)
         return result

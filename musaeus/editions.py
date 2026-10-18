@@ -339,6 +339,9 @@ def artist_album_path(master: Path, root: Path, masters_root: Path | None = None
     return root / grand / parent / (master.stem + ".m4a")
 
 
-def output_path_for(track: Track, spec: EditionSpec, root: Path) -> Path:
-    """Where *track* lands in the edition."""
-    return artist_album_path(Path(track.file_path), root)
+def output_path_for(
+    track: Track, spec: EditionSpec, root: Path, masters_root: Path | None = None
+) -> Path:
+    """Where *track* lands in the edition. *masters_root* (the tree the track
+    lives in) keeps a person level, as the car build does (Codex review of #208)."""
+    return artist_album_path(Path(track.file_path), root, masters_root)

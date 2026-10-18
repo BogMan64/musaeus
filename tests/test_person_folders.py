@@ -156,6 +156,10 @@ def test_organize_moves_the_path_named_in_the_side_tables_too(tmp_path):
     upsert_archive(ctx.conn, {"file_path": str(old), "status": "CATALOGUED", "genre": "Rock",
                               "artist": "Bob Seger & The Silver Bullet Band",
                               "album": "Night Moves", "title": "Night Moves"})  # fmt: skip
+    solo = cfg.inbox / "flat" / "ttp.m4a"  # every listed act has a song
+    solo.write_bytes(b"AUDIO2")
+    upsert_archive(ctx.conn, {"file_path": str(solo), "status": "CATALOGUED", "genre": "Rock",
+                              "artist": "Bob Seger", "album": "Live", "title": "Turn The Page"})  # fmt: skip
     ctx.conn.execute(
         "INSERT INTO validation_issues (file_path, issue) VALUES (?, ?)", (str(old), "x")
     )
@@ -170,14 +174,30 @@ def test_organize_moves_the_path_named_in_the_side_tables_too(tmp_path):
     ctx.conn.execute(
         "INSERT INTO archive_tier_hashes (path, sha256) VALUES (?, 'STALE')", (str(stale),)
     )
+    # Codex review of #208 (second round): review records already naming the
+    # free destination are kept, not wiped; an issue the moved file already
+    # carries is not written twice.
+    ctx.conn.execute("INSERT INTO duplicates (group_id, file_path) VALUES ('g1', ?)", (str(stale),))
+    ctx.conn.execute(
+        "INSERT INTO validation_issues (file_path, issue) VALUES (?, 'x')", (str(stale),)
+    )
+    ctx.conn.execute(
+        "INSERT INTO validation_issues (file_path, issue) VALUES (?, 'y')", (str(stale),)
+    )
     ctx.conn.commit()
 
     OrganizeStage().run(ctx)
 
-    new = ctx.conn.execute("SELECT file_path FROM archive").fetchone()[0]
+    new = ctx.conn.execute("SELECT file_path FROM archive WHERE title = 'Night Moves'").fetchone()[
+        0
+    ]
     assert new == str(stale)
-    named = [r[0] for r in ctx.conn.execute("SELECT file_path FROM validation_issues")]
-    assert named == [new], "a side table still names the old place"
+    issues = sorted(
+        tuple(r) for r in ctx.conn.execute("SELECT file_path, issue FROM validation_issues")
+    )
+    assert issues == [(new, "x"), (new, "y")], "an issue was lost or still names the old place"
+    groups = [tuple(r) for r in ctx.conn.execute("SELECT group_id, file_path FROM duplicates")]
+    assert groups == [("g1", new)], "a pending duplicate review was wiped"
     baselines = [tuple(r) for r in ctx.conn.execute("SELECT path, sha256 FROM archive_tier_hashes")]
     assert baselines == [(new, "MOVED_FILE")], "the moved master has a stale baseline"
 
@@ -289,3 +309,20 @@ def test_a_listed_act_that_matches_no_song_is_named_before_anything_moves(tmp_pa
     assert any("Bob Segre & The Silver Bullet Band" in n for n in result.notes)
     assert not any("'Bob Seger'" in n for n in result.notes), "a matched act was named"
     assert song.exists(), "a dry run moved a file"
+
+    # Codex review of #208 (second round): a note after the moves came too
+    # late. A real run refuses before moving anything.
+    ctx.dry_run = False
+    result = OrganizeStage().run(ctx)
+    assert not result.success
+    assert song.exists(), "a real run moved files while the list named an unknown act"
+
+
+def test_the_old_car_script_keeps_the_person_level_too(tmp_path):
+    # Codex review of #208: output_path_for dropped the person level.
+    from types import SimpleNamespace
+
+    masters, car = tmp_path / "ALAC-Archival", tmp_path / "CAR"
+    track = SimpleNamespace(file_path=str(masters / "Rock/Bob Seger/Bob Seger/Live/x.m4a"))
+    got = editions.output_path_for(track, None, car, masters)  # type: ignore[arg-type]
+    assert got == car / "Bob Seger/Bob Seger/Live/x.m4a"
