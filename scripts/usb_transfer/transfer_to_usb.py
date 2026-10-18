@@ -727,11 +727,31 @@ def _part(dst: Path) -> Path:
     return dst.with_name(dst.name + _PART_SUFFIX)
 
 
-def _copy_one(src: Path, dst: Path) -> float:
-    """Copy src -> dst's .part in chunks, to disk. Returns elapsed seconds."""
+class UnsafeDestination(Exception):
+    """A write that would land outside the approved stick."""
+
+
+def _copy_one(src: Path, dst: Path, dest_root: Path | None = None) -> float:
+    """Copy src -> dst's .part in chunks, to disk. Returns elapsed seconds.
+
+    The approved stick constrains every write, not just its root (Codex audit
+    2026-10-16, F3): a .part that was a link to a file elsewhere was opened
+    "wb" through the link and overwrote that file -- a master, in the audit's
+    test. The .part is now this run's own: any old one is unlinked (the link,
+    never its target) and a new one created with O_EXCL|O_NOFOLLOW. A folder
+    on the way that is really elsewhere (a linked folder) is refused.
+    """
     dst.parent.mkdir(parents=True, exist_ok=True)
+    if dest_root is not None:
+        root = os.path.realpath(dest_root)
+        where = os.path.realpath(dst.parent)
+        if where != root and not where.startswith(root + os.sep):
+            raise UnsafeDestination(f"{dst.parent} leads outside {dest_root} (to {where})")
+    part = _part(dst)
+    part.unlink(missing_ok=True)
     start = time.monotonic()
-    with open(src, "rb") as rf, open(_part(dst), "wb") as wf:
+    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    with open(src, "rb") as rf, os.fdopen(fd, "wb") as wf:
         while chunk := rf.read(_COPY_CHUNK_BYTES):
             wf.write(chunk)
         wf.flush()
@@ -778,7 +798,11 @@ def copy_with_verification(
         attempt = 0
         while True:
             try:
-                elapsed = _copy_one(src, dst)
+                elapsed = _copy_one(src, dst, dest_root)
+                break
+            except UnsafeDestination as exc:
+                elapsed = -1.0
+                result.failed.append((str(src), f"refused: {exc}"))
                 break
             except OSError as exc:
                 _part(dst).unlink(missing_ok=True)
@@ -788,6 +812,8 @@ def copy_with_verification(
                     return result  # abort whole run -- device may be failing
                 time.sleep(2.0)
 
+        if elapsed < 0:
+            continue  # refused: nothing was written
         size_mb = src.stat().st_size / (1024 * 1024)
         mbps = size_mb / elapsed if elapsed > 0 else float("inf")
 
