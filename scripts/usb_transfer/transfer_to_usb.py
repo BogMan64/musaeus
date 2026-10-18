@@ -727,15 +727,79 @@ def _part(dst: Path) -> Path:
     return dst.with_name(dst.name + _PART_SUFFIX)
 
 
-def _copy_one(src: Path, dst: Path) -> float:
-    """Copy src -> dst's .part in chunks, to disk. Returns elapsed seconds."""
-    dst.parent.mkdir(parents=True, exist_ok=True)
+class UnsafeDestination(Exception):
+    """A write that would land outside the approved stick."""
+
+
+def _check_inside(dest_root: Path | None, folder: Path) -> None:
+    """Refuse a folder whose real path leaves the stick. Asked of the nearest
+    folder that exists, so nothing is created through a link before it is
+    refused (review of #204, finding 2)."""
+    if dest_root is None:
+        return
+    while not folder.exists() and folder != dest_root and folder != folder.parent:
+        folder = folder.parent
+    if not folder.exists():
+        return  # the destination itself is not made yet: checked again once it is
+    root = os.path.realpath(dest_root)
+    where = os.path.realpath(folder)
+    if where != root and not where.startswith(root + os.sep):
+        raise UnsafeDestination(f"{folder} leads outside {dest_root} (to {where})")
+
+
+def _owned_folder(dest_root: Path | None, folder: Path) -> None:
+    _check_inside(dest_root, folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    _check_inside(dest_root, folder)
+
+
+def _new_file(path: Path) -> int:
+    """A file of our own at *path*: whatever was there loses its name (a link
+    never its target), then O_EXCL|O_NOFOLLOW."""
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(path)
+    return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+
+
+def _write_text_owned(dest_root: Path, path: Path, text: str) -> None:
+    """A small text file on the stick (a playlist, the sync manifest), made
+    the way songs are: our own .part, then renamed onto the name (review of
+    #204, finding 3 -- these were written with write_text, through links)."""
+    _owned_folder(dest_root, path.parent)
+    part = _part(path)
+    with os.fdopen(_new_file(part), "w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(part, path)
+
+
+def _copy_one(src: Path, dst: Path, dest_root: Path | None = None) -> float:
+    """Copy src -> dst's .part in chunks, to disk. Returns elapsed seconds.
+
+    The approved stick constrains every write, not just its root (Codex audit
+    2026-10-16, F3): a .part that was a link to a file elsewhere was opened
+    "wb" through the link and overwrote that file -- a master, in the audit's
+    test. The .part is now this run's own (_new_file), and a folder on the
+    way that is really elsewhere (a linked folder) is refused before anything
+    is created through it.
+    """
     start = time.monotonic()
-    with open(src, "rb") as rf, open(_part(dst), "wb") as wf:
-        while chunk := rf.read(_COPY_CHUNK_BYTES):
-            wf.write(chunk)
-        wf.flush()
-        os.fsync(wf.fileno())
+    # The source first: unreadable, nothing is created on the stick -- not
+    # even its folder -- and no handle is left open (review of #204).
+    with open(src, "rb") as rf:
+        _owned_folder(dest_root, dst.parent)
+        part = _part(dst)
+        if part.is_dir() and not part.is_symlink():
+            # A .part that is a folder is not ours to remove: that file is
+            # refused, the run goes on (re-review of #204, finding 1).
+            raise UnsafeDestination(f"{part} is a folder, not a partial copy")
+        wf = os.fdopen(_new_file(part), "wb")
+        with wf:
+            while chunk := rf.read(_COPY_CHUNK_BYTES):
+                wf.write(chunk)
+            wf.flush()
+            os.fsync(wf.fileno())
     return time.monotonic() - start
 
 
@@ -778,16 +842,23 @@ def copy_with_verification(
         attempt = 0
         while True:
             try:
-                elapsed = _copy_one(src, dst)
+                elapsed = _copy_one(src, dst, dest_root)
+                break
+            except UnsafeDestination as exc:
+                elapsed = -1.0
+                result.failed.append((str(src), f"refused: {exc}"))
                 break
             except OSError as exc:
-                _part(dst).unlink(missing_ok=True)
+                with contextlib.suppress(OSError):  # a .part that is a folder, say
+                    _part(dst).unlink(missing_ok=True)
                 attempt += 1
                 if attempt > _MAX_RETRIES_PER_FILE:
                     result.failed.append((str(src), f"I/O error after retry: {exc}"))
                     return result  # abort whole run -- device may be failing
                 time.sleep(2.0)
 
+        if elapsed < 0:
+            continue  # refused: nothing was written
         size_mb = src.stat().st_size / (1024 * 1024)
         mbps = size_mb / elapsed if elapsed > 0 else float("inf")
 
@@ -952,10 +1023,9 @@ def copy_playlists(vault_root: Path, source_root: Path, dest_root: Path) -> list
             rewritten = _rewrite_playlist_for_device(content, source_root, vault_root)
             if rewritten is None:
                 continue
-            dest_playlists.mkdir(parents=True, exist_ok=True)
-            (dest_playlists / m3u.name).write_text(rewritten, encoding="utf-8")
+            _write_text_owned(dest_root, dest_playlists / m3u.name, rewritten)
             written.append(m3u.name)
-        except OSError as exc:
+        except (OSError, UnsafeDestination) as exc:
             print(f"  WARNING: could not copy playlist {m3u.name}: {exc}", file=sys.stderr)
     return written
 
@@ -1027,12 +1097,11 @@ def update_sync_manifest(dest_root: Path, source_root: Path, done: list[Path]) -
         st = src.stat()
         entries[rel.casefold()] = (st.st_size, st.st_mtime_ns)
         names[rel.casefold()] = rel
-    tmp = dest_root / (_SYNC_MANIFEST + _PART_SUFFIX)
-    tmp.write_text(
+    _write_text_owned(
+        dest_root,
+        dest_root / _SYNC_MANIFEST,
         "".join(f"{names.get(k, k)}\t{size}\t{mtime}\n" for k, (size, mtime) in sorted(entries.items())),
-        encoding="utf-8",
     )
-    os.replace(tmp, dest_root / _SYNC_MANIFEST)
 
 
 def _stick_copy_is_current(src: Path, dst: Path, recorded: tuple[int, int] | None) -> bool:

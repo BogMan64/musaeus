@@ -431,7 +431,7 @@ class TestCopyWithVerification:
 
         import scripts.usb_transfer.transfer_to_usb as mod
 
-        def _always_fail(_src, _dst):
+        def _always_fail(_src, _dst, dest_root=None):
             raise OSError("simulated device I/O error")
 
         monkeypatch.setattr(mod, "_copy_one", _always_fail)
@@ -460,7 +460,7 @@ class TestCopyWithVerification:
         # below _SPEED_DROP_THRESHOLD (0.40) of the rolling average.
         elapsed_sequence = iter([0.1, 0.1, 0.1, 0.1, 0.1, 10.0])
 
-        def _fake_copy_one(src, dst):
+        def _fake_copy_one(src, dst, dest_root=None):
             dst.parent.mkdir(parents=True, exist_ok=True)
             mod._part(dst).write_bytes(src.read_bytes())  # where _copy_one writes
             return next(elapsed_sequence)
@@ -1965,3 +1965,105 @@ def test_the_stick_check_only_unmounts_checks_and_mounts_through_udisks(tmp_path
     emitted = {c[0] for c in calls if isinstance(c, list) and c}
     assert not (emitted & _DESTRUCTIVE), f"destructive command emitted: {emitted}"
     assert (stick / "track.m4a").read_bytes() == b"hello"
+
+
+# ── Codex audit 2026-10-16, F3: the approved stick constrains every write ────
+# A .part that was a link to a file elsewhere was opened "wb" through the link:
+# the audit's test replaced a unique master's bytes with a car copy's.
+
+
+def test_a_part_file_that_is_a_link_is_never_written_through(tmp_path):
+    src_root, stick, outside = tmp_path / "src", tmp_path / "stick", tmp_path / "masters"
+    for d in (src_root / "A", stick / "A", outside):
+        d.mkdir(parents=True)
+    (src_root / "A" / "song.m4a").write_bytes(b"LOSSY CAR EDITION")
+    master = outside / "master.m4a"
+    master.write_bytes(b"UNIQUE MASTER AUDIO")
+    (stick / "A" / "song.m4a.part").symlink_to(master)
+
+    r = copy_with_verification([src_root / "A" / "song.m4a"], src_root, stick)
+
+    assert master.read_bytes() == b"UNIQUE MASTER AUDIO", "a file outside the stick was overwritten"
+    done = stick / "A" / "song.m4a"
+    assert r.ok and not done.is_symlink() and done.read_bytes() == b"LOSSY CAR EDITION"
+
+
+def test_a_folder_on_the_stick_that_leads_elsewhere_is_refused(tmp_path):
+    src_root, stick, outside = tmp_path / "src", tmp_path / "stick", tmp_path / "elsewhere"
+    (src_root / "A").mkdir(parents=True)
+    stick.mkdir()
+    outside.mkdir()
+    (src_root / "A" / "song.m4a").write_bytes(b"CAR COPY")
+    (stick / "A").symlink_to(outside, target_is_directory=True)
+
+    r = copy_with_verification([src_root / "A" / "song.m4a"], src_root, stick)
+
+    assert list(outside.iterdir()) == [], "a write landed outside the stick"
+    assert not r.ok and "refused" in r.failed[0][1]
+
+
+# Review of #204.
+
+
+def test_a_refused_folder_creates_nothing_outside_and_the_next_file_still_copies(tmp_path):
+    src_root, stick, outside = tmp_path / "src", tmp_path / "stick", tmp_path / "elsewhere"
+    (src_root / "A" / "B").mkdir(parents=True)
+    (src_root / "Z").mkdir()
+    stick.mkdir()
+    outside.mkdir()
+    (src_root / "A" / "B" / "s.m4a").write_bytes(b"CAR COPY")
+    (src_root / "Z" / "t.m4a").write_bytes(b"NEXT")
+    (stick / "A").symlink_to(outside, target_is_directory=True)
+
+    r = copy_with_verification(
+        [src_root / "A" / "B" / "s.m4a", src_root / "Z" / "t.m4a"], src_root, stick
+    )
+
+    assert list(outside.iterdir()) == [], "a folder was made outside the stick"
+    assert (stick / "Z" / "t.m4a").read_bytes() == b"NEXT", "a refusal stopped the run"
+    assert len(r.failed) == 1 and len(r.ok) == 1
+
+
+def test_an_unreadable_source_leaves_no_handle_and_no_part(tmp_path):
+    import os
+
+    stick = tmp_path / "stick"
+    stick.mkdir()
+    before = len(os.listdir("/proc/self/fd"))
+    with pytest.raises(OSError):
+        usb_mod._copy_one(tmp_path / "gone.m4a", stick / "A" / "gone.m4a", stick)
+    assert len(os.listdir("/proc/self/fd")) == before, "a file handle was left open"
+    assert not (stick / "A").exists(), "a folder was made for a source that cannot be read"
+
+
+def test_a_part_that_is_a_folder_fails_that_file_not_the_run(tmp_path, monkeypatch):
+    src_root, stick = tmp_path / "src", tmp_path / "stick"
+    (src_root / "A").mkdir(parents=True)
+    (stick / "A" / "song.m4a.part").mkdir(parents=True)
+    (src_root / "A" / "song.m4a").write_bytes(b"X")
+    (src_root / "A" / "next.m4a").write_bytes(b"Y")
+    monkeypatch.setattr(usb_mod.time, "sleep", lambda s: None)  # the retry's pause
+    r = copy_with_verification(
+        [src_root / "A" / "song.m4a", src_root / "A" / "next.m4a"], src_root, stick
+    )
+    assert len(r.failed) == 1 and "folder" in r.failed[0][1]
+    assert (stick / "A" / "next.m4a").read_bytes() == b"Y", "the run stopped at the bad .part"
+
+
+def test_the_manifest_and_playlists_are_never_written_through_a_link(tmp_path):
+    vault, src_root, stick, outside = (tmp_path / n for n in ("V", "src", "stick", "out"))
+    for d in (vault / "Playlists", src_root / "A", stick / "Playlists", outside):
+        d.mkdir(parents=True)
+    song = src_root / "A" / "s.m4a"
+    song.write_bytes(b"X")
+    victim = outside / "victim.txt"
+    victim.write_text("PRIVATE")
+    (stick / (usb_mod._SYNC_MANIFEST + usb_mod._PART_SUFFIX)).symlink_to(victim)
+    usb_mod.update_sync_manifest(stick, src_root, [song])
+    assert victim.read_text() == "PRIVATE"
+    assert not (stick / usb_mod._SYNC_MANIFEST).is_symlink()
+
+    (vault / "Playlists" / "Mix.m3u8").write_text(f"#EXTM3U\n{song}\n", encoding="utf-8")
+    (stick / "Playlists" / "Mix.m3u8").symlink_to(victim)
+    usb_mod.copy_playlists(vault, src_root, stick)
+    assert victim.read_text() == "PRIVATE"
