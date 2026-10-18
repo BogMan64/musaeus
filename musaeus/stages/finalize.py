@@ -449,7 +449,9 @@ class FinalizeStage(BaseStage):
             loaded: dict[str, str] = filing_load(ctx.config.meta_dir)
             ctx.set("_artist_filing", loaded)
             return loaded
-        return dict(cached)
+        # The map itself, not dict(cached): a plain copy dropped FilingMap.songs,
+        # Grey's per-song folders, for every track after the first (Codex review of #206).
+        return cached  # type: ignore[no-any-return]
 
     def _target_path(self, ctx: RunContext, row: dict, source: Path) -> Path:
         # One rule with OrganizeStage: organize.library_relpath(), which also
@@ -470,6 +472,7 @@ class FinalizeStage(BaseStage):
             row.get("title"),
             source.suffix,
             self._filing(ctx),
+            row.get("audio_hash"),
         )
         batch = self._batch_date(ctx)
         # The MASTER, in ALAC-Archival (Grey 2026-08-18, confirmed 2026-09-25);
