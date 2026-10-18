@@ -25,3 +25,15 @@ def test_ampersand_still_agrees_with_and_as_part_of_a_longer_title():
     recordings = [{"id": "r1", "title": "Jack and Diane", "artists": [{"name": "John Mellencamp"}]}]
     want = "Jack & Diane (Remastered)"
     assert _pick_matching_recording(recordings, "John Mellencamp", want) == "r1"
+
+
+def test_one_title_in_either_spelling_agrees():
+    # Codex review of #209: "AT&T" and "ATandT" were refused.
+    recordings = [{"id": "r1", "title": "ATandT", "artists": [{"name": "X"}]}]
+    assert _pick_matching_recording(recordings, "X", "AT&T") == "r1"
+
+
+def test_a_recording_called_and_is_not_part_of_and_spelled_out():
+    # Codex review of #209: "Jack and Diane" still picked a recording "And".
+    recordings = [{"id": "r9", "title": "And", "artists": [{"name": "John Mellencamp"}]}]
+    assert _pick_matching_recording(recordings, "John Mellencamp", "Jack and Diane") is None

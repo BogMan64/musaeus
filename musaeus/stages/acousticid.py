@@ -194,16 +194,15 @@ def _norm_for_match(value: str) -> str:
 def _titles_agree(a: str, b: str) -> bool:
     """One title is the other, or part of it.
 
-    The part-of test is the old one, "&" simply dropped. "&" read as "and"
-    counts only in whole words, and only with a word besides "and": spelled
-    out, "and" sits inside "Jack and Diane", so a recording called "And"
-    would have agreed with it (Codex review of #209)."""
-    pa, pb = (
-        re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", x or "").lower()) for x in (a, b)
-    )
-    if not pa or not pb:
+    The same title in either spelling agrees ("AT&T", "ATandT"). For part of
+    a title the old test holds ("&" simply dropped), and "&" read as "and"
+    counts only in whole words. A title that is only "and" is part of too
+    much ("Jack and Diane" holds it) and agrees with nothing but itself
+    (Codex review of #209)."""
+    ka, kb = _norm_for_match(a), _norm_for_match(b)
+    if not ka or not kb:
         return False
-    if pa in pb or pb in pa:
+    if ka == kb:
         return True
     ta, tb = (
         re.findall(r"[a-z0-9]+", unicodedata.normalize("NFKD", x).lower().replace("&", " and "))
@@ -212,6 +211,11 @@ def _titles_agree(a: str, b: str) -> bool:
     short, long_ = sorted((ta, tb), key=len)
     if not set(short) - {"and"}:
         return False
+    pa, pb = (
+        re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", x or "").lower()) for x in (a, b)
+    )
+    if pa and pb and (pa in pb or pb in pa):
+        return True
     n = len(short)
     return any(long_[i : i + n] == short for i in range(len(long_) - n + 1))
 
