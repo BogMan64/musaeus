@@ -109,7 +109,10 @@ def _extract_loudnorm_json(stderr: str) -> dict | None:
 #: loudnorm measured the part that was there (Codex audit 2026-10-16, F10).
 #: Its own report shares stderr at level info, so the damage is told apart
 #: by level, not by guessing at text.
-_LEVEL_RE = re.compile(r"^(?P<ctx>\[[^\]]+ @ 0x[0-9a-f]+\] )?\[(?P<level>[a-z]+)\] ?")
+#: Any number of "[ctx @ 0x..] " prefixes: ffmpeg 7 prints two before a
+#: decoder's error ("[aist#0:0/alac @ ..] [dec:alac @ ..] [error] ..."), and
+#: with one allowed that damage read as clean (review of #198, finding 1).
+_LEVEL_RE = re.compile(r"^(?P<ctx>(?:\[[^\]]+ @ 0x[0-9a-f]+\] )*)\[(?P<level>[a-z]+)\] ?")
 _ERROR_LEVELS = frozenset({"error", "fatal", "panic"})
 
 

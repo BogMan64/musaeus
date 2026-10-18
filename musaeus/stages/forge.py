@@ -686,6 +686,10 @@ class ForgeStage(BaseStage):
                 result.files_skipped += 1
             else:
                 result.files_errored += 1
+                if status == "damaged":
+                    # Named where a person looks first, the problems sheet, not
+                    # only the run log (review of #198, finding 2).
+                    result.errors.append(f"{Path(fp).name}: damaged audio, not measured")
 
             if i % _COMMIT_EVERY == 0:
                 ctx.conn.commit()

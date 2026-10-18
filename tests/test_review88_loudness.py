@@ -131,6 +131,7 @@ def test_forge_stores_and_writes_nothing_for_a_truncated_master(tmp_path):
     assert not [k for k in tags if "R128" in k or "replaygain" in k.lower()], "gains written"
     assert result.success is False
     assert any("damaged" in n for n in result.notes)
+    assert any("cut.m4a" in e and "damaged" in e for e in result.errors), "the file is not named"
 
 
 def test_an_artwork_error_is_not_damage_to_the_music(monkeypatch, tmp_path):
@@ -148,3 +149,16 @@ def test_an_artwork_error_is_not_damage_to_the_music(monkeypatch, tmp_path):
         + "[mov,mp4,m4a,3gp,3g2,mj2 @ 0x55d0c0a1b2c0] [error] stream 0, offset 0xeaa50: partial file\n"
     )
     assert "partial file" in loudness._decode_damage(damaged, tmp_path / "a.m4a")
+
+
+def test_ffmpeg_7s_two_prefixes_before_an_error_are_read(monkeypatch, tmp_path):
+    # Review of #198, finding 1: ffmpeg 7.0 prints a decoder's error after two
+    # "[ctx @ 0x..]" prefixes; with one allowed, mid-stream damage read as clean.
+    from musaeus.stages import corrupt
+
+    monkeypatch.setattr(corrupt, "audio_stream_index", lambda p: 0)
+    line = (
+        "[aist#0:0/alac @ 0x5600a1b2c3d0] [dec:alac @ 0x5600a1b2c4e0] [error] "
+        "Error submitting packet to decoder: Invalid data found when processing input\n"
+    )
+    assert "Error submitting packet" in loudness._decode_damage(line, tmp_path / "a.m4a")
