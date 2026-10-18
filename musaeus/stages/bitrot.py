@@ -91,6 +91,8 @@ Two modes:
 from __future__ import annotations
 
 import logging
+import os
+import sqlite3
 from pathlib import Path
 
 from ..config import AUDIO_EXTENSIONS
@@ -111,7 +113,36 @@ def _scan_archive_files(alac_archive: Path) -> list[Path]:
     )
 
 
-def _notify(repaired: list, unrepaired: list) -> None:
+def _lost_masters(conn: sqlite3.Connection, alac_archive: Path) -> list[str]:
+    """Catalogued masters in the archive that are not on disk.
+
+    The 10-15 check reported success with every master gone from the vault:
+    a missing file was only ever a note (Codex audit 2026-10-16, F6). A
+    recording the catalogue no longer holds (archived as a duplicate,
+    deleted on purpose) is not asked about.
+
+    Asked of the catalogue, not the baseline. A baseline row goes stale when
+    a refile is rebaselined, a --limit run lets only N files claim their
+    rows, a moved master whose decode fails reads as new, and a TRANSCODED
+    master's baselined PCM is not its row's hash (Finalize keeps the
+    source's) -- each made the baseline's answer wrong (review of #196).
+    One stat per row, so --limit does not narrow it.
+
+    Real paths on both sides: the configured archive is resolved through
+    symlinks, and a row written through a linked path would otherwise be
+    skipped -- a loss missed (re-review of #196, point 2)."""
+    root = Path(os.path.realpath(alac_archive))
+    lost = []
+    for (fp,) in conn.execute(
+        "SELECT file_path FROM archive WHERE status = 'CATALOGUED' "
+        "AND COALESCE(file_path, '') != '' ORDER BY file_path"
+    ):
+        if root in Path(os.path.realpath(fp)).parents and not Path(fp).exists():
+            lost.append(fp)
+    return lost
+
+
+def _notify(repaired: list, unrepaired: list, lost: list | None = None) -> None:
     """One notification at the end of the run: what was repaired, and what could not be.
 
     Best effort, through scripts/musaeus_notify.py (ntfy): a failed notice never
@@ -122,6 +153,12 @@ def _notify(repaired: list, unrepaired: list) -> None:
 
     names = lambda rs: ", ".join(Path(r.path).stem for r in rs[:3]) + ("…" if len(rs) > 3 else "")  # noqa: E731
     parts = []
+    if lost:
+        parts.append(
+            f"{len(lost)} master(s) the catalogue expects are not on disk: "
+            + ", ".join(Path(p).stem for p in lost[:3])
+            + ("…" if len(lost) > 3 else "")
+        )
     if repaired:
         parts.append(f"repaired {len(repaired)} damaged song(s) from a backup: {names(repaired)}")
     if unrepaired:
@@ -366,11 +403,13 @@ class BitRotStage(BaseStage):
         # The reverse index is what makes a moved file recognisable. PCM
         # identity survives a move; a path does not.
         by_audio = {r["audio_hash"]: r["path"] for r in rows if r["audio_hash"]}
+        lost = _lost_masters(ctx.conn, alac_archive)
 
         # A baselined file can be missing on disk even when the current
         # scan finds nothing at all (e.g. every baselined file was
         # removed) -- that's still worth reporting, not "nothing to do".
-        if not files and not baseline:
+        # So is a catalogued master, baselined or not.
+        if not files and not baseline and not lost:
             result.notes.append("nothing to do — ALAC_Archive is empty or missing")
             ctx.record_stage(result)
             return result
@@ -378,6 +417,9 @@ class BitRotStage(BaseStage):
         if dry_run:
             result.files_processed = len(files)
             result.notes.append("[DRY RUN] no hashing, no DB changes")
+            # One stat per row, no hashing: worth saying even here (re-review
+            # of #196, point 3). No events, no alert.
+            self._report_lost(ctx, result, lost, baseline, dry_run=True)
             ctx.record_stage(result)
             return result
 
@@ -509,6 +551,12 @@ class BitRotStage(BaseStage):
             )
         result.notes.append(f"new (no baseline yet — run --rebaseline): {new_files}")
         result.notes.append(f"missing from disk (was baselined, gone now): {len(missing)}")
+        # Asked again now, and only what was missing both times counts. A
+        # script that moves masters without the lock commits its rows at the
+        # end; a check that began part-way through would call every master it
+        # had moved so far missing (re-review of #196, point 1).
+        lost = sorted(set(lost) & set(_lost_masters(ctx.conn, alac_archive)))
+        self._report_lost(ctx, result, lost, baseline, dry_run=False)
         # The number that decides whether a clean run means anything. A
         # verify whose corpus is mostly unbaselined compared almost nothing,
         # and used to say so only by printing a large "new" count next to a
@@ -553,10 +601,36 @@ class BitRotStage(BaseStage):
             if len(corrupt) > 20:
                 result.notes.append(f"  {elision(len(corrupt) - 20)}")
 
-        if not dry_run and (repaired or unrepaired):
+        if not dry_run and lost:
+            _notify(repaired, unrepaired, lost=lost)
+        elif not dry_run and (repaired or unrepaired):
             _notify(repaired, unrepaired)
         ctx.record_stage(result)
         return result
+
+    def _report_lost(
+        self, ctx: RunContext, result: StageResult, lost: list, baseline: dict, *, dry_run: bool
+    ) -> None:
+        if not lost:
+            return
+        result.success = False
+        result.notes.append(
+            f"MASTERS MISSING: {len(lost)} recording(s) the catalogue still holds "
+            "are not on disk -- moved or deleted outside MUSAEUS?"
+        )
+        for p in lost[:20]:
+            result.notes.append(f"  missing {p}")
+        if len(lost) > 20:
+            result.notes.append(f"  {elision(len(lost) - 20)}")
+        if not dry_run:
+            for p in lost:
+                ctx.log_event(
+                    "BITROT_MISSING",
+                    file_path=p,
+                    old_value=baseline.get(p),
+                    stage=self.NAME,
+                    note="a catalogued master is not on disk",
+                )
 
     def _repair(
         self, ctx: RunContext, archive_root: Path, rotted: list, baselined_at: dict | None = None

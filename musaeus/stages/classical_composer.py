@@ -8,6 +8,13 @@ Grey's ruling, 2026-08-24: for classical, the composer is the identity
 that matters. A Bach cantata belongs with the other Bach, not scattered
 across whichever ensemble happened to record it.
 
+Grey's ruling, 2026-10-17, extending it: "for classical albums only
+composer instead of artists". A composer-filed album is matched by its
+composer ONLY when an outside source is asked about it -- album art first
+(art_sources.Asked): a source's answer counts only if one of its credited
+names is the composer; a performer-only credit never does. Recognised the
+way this stage filed it: the row's artist is a Composer_Canon.tsv composer.
+
 Runs after GenreValidate, because "is this Classical?" has to be settled
 before this stage can ask "then who wrote it?".
 

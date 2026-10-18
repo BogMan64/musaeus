@@ -1801,6 +1801,11 @@ folded into §4 or §5 directly, not left here.
   it, filing Classical under the composer — resolved from a thematic
   catalogue number first (RV 532 is Vivaldi whoever is playing; 85 of 104
   resolved that way), then an exact match against `Composer_Canon.tsv`.
+  Grey, 2026-10-17: "for classical albums only composer instead of
+  artists" -- the composer is also the only identity an outside lookup
+  may match (album art: a performer-only credit is not the composer's
+  album), so iTunes and Deezer rarely supply classical covers and the
+  Cover Art Archive does.
 
   **Artist identity work.** 145 collaboration credits added to
   `artist_canon.tsv` and applied (149 tracks); classical refiled under
