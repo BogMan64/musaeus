@@ -15,9 +15,34 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
+
+
+def copy_to_new(src: Path | str, dst: Path | str) -> None:
+    """Copy *src* (bytes, then mode and times) to a NEW file at *dst*.
+
+    Whatever is at *dst* is not written through (Codex audit 2026-10-16, F1):
+    shutil.copy2 followed a link planted there and overwrote the file it
+    named. The name is cleared -- a link or hardlink loses its name, never its
+    target's bytes -- and the file is created here with O_EXCL|O_NOFOLLOW: if
+    anything claims the name again first, the open fails and nothing is
+    written. The source is opened first, so a source that cannot be read
+    leaves no handle and no file behind.
+    """
+    src, dst = Path(src), Path(dst)
+    with open(src, "rb") as rf:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(dst)
+        try:
+            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            raise OSError(f"{dst} was claimed by something else while it was being made") from None
+        with os.fdopen(fd, "wb") as wf:
+            shutil.copyfileobj(rf, wf)
+    shutil.copystat(src, dst)
 
 
 def change_beside(
@@ -38,8 +63,9 @@ def change_beside(
     tmp = path.with_name(path.name + suffix)
     try:
         # Inside the try: a copy cut short (disk full) is removed too
-        # (review of #135-#139, finding 6). Replaces a copy a killed run left.
-        shutil.copy2(path, tmp)
+        # (review of #135-#139, finding 6). Never written through what was at
+        # the name (copy_to_new; Codex audit 2026-10-16, F1).
+        copy_to_new(path, tmp)
         change(tmp)
         if check is not None:
             check(tmp)
@@ -55,6 +81,30 @@ def change_beside(
         os.fsync(dir_fd)
     finally:
         os.close(dir_fd)
+
+
+def write_new(path: Path, data: bytes) -> None:
+    """Write *data* as *path* without ever writing through what is there.
+
+    A cover beside a song was written with write_bytes, which follows a link:
+    a planted `<song>.musaeus_cover.jpg` or dangling `cover.jpg` link sent
+    the image into a file elsewhere (Codex audit 2026-10-16, F1). The bytes
+    go to a private, exclusively created file in the same folder, are flushed,
+    and that file is renamed onto the name -- replacing a link, not following
+    it.
+    """
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".part", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(name, 0o644)
+        os.replace(name, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(name)
+        raise
 
 
 T = TypeVar("T")

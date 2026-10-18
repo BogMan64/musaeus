@@ -50,3 +50,25 @@ def test_a_half_made_encode_is_still_cleared(tmp_path, monkeypatch):
     eb.execute(eb.Plan(kind_name="car", target_lufs=-14.0), ledger, root, kind=eb.KINDS["car"])
 
     assert not half.exists()
+
+
+def test_a_copy_put_back_after_the_plan_was_made_stops_the_build(tmp_path, monkeypatch):
+    # Review of #201: a build stopped between another build's planning and its
+    # execute leaves a copy aside that the plan counted as missing.
+    import pytest
+
+    root = tmp_path / "CAR_Library"
+    old = root / "A" / "a.m4a"
+    old.parent.mkdir(parents=True)
+    old.with_name(f"{old.name}.{H[:12]}{eb.TMP_SUFFIX}").write_bytes(b"the finished copy")
+    ledger = _ledger_with_copy(tmp_path, old)
+    kind = eb.KINDS["car"]
+    monkeypatch.setattr(eb.edition_bake, "read_marker", lambda p: eb.marker_for(H, kind))
+    plan = eb.Plan(kind_name="car", target_lufs=-14.0)
+    plan.bake.append((object(), root / "B" / "a.m4a"))
+
+    with pytest.raises(RuntimeError, match="run the build again"):
+        eb.execute(plan, ledger, root, kind=kind)
+
+    assert old.read_bytes() == b"the finished copy"
+    assert not (root / "B").exists(), "the stale plan was carried out"

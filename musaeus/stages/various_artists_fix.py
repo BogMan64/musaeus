@@ -442,7 +442,8 @@ class VariousArtistsFixStage(BaseStage):
 
     def _get_candidates(self, ctx: RunContext) -> list[dict]:
         rows = ctx.conn.execute(
-            "SELECT id, file_path, artist, title, album, genre FROM archive WHERE status='CATALOGUED'"
+            "SELECT id, file_path, artist, title, album, genre, audio_hash FROM archive "
+            "WHERE status='CATALOGUED'"
         ).fetchall()
         return [dict(r) for r in rows if is_placeholder_credit(r["artist"])]
 
@@ -500,7 +501,14 @@ class VariousArtistsFixStage(BaseStage):
             if root is None or not source.is_relative_to(root):
                 continue
             rel = library_relpath(
-                real_artist, None, genre, row.get("album"), row.get("title"), source.suffix, filing
+                real_artist,
+                None,
+                genre,
+                row.get("album"),
+                row.get("title"),
+                source.suffix,
+                filing,
+                row.get("audio_hash"),
             )
             candidate = Path(root) / rel
             if candidate == source or _is_collision_name_for(source, candidate):

@@ -64,6 +64,7 @@ from ..brackets import strip_bracketed
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
 from ..network_policy import check as _network_check
+from ..network_policy import redact
 from ..playlist_album import is_playlist_album
 from .base import BaseStage
 
@@ -129,7 +130,8 @@ def _get_json(url: str, headers: dict[str, str] | None = None) -> dict:
             data: dict = json.load(r)
             return data
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-        raise Unavailable(str(exc)) from exc
+        # A transport error's own text can carry the URL and its key (F5).
+        raise Unavailable(redact(str(exc))) from None
 
 
 # ── The network, one function per question (tests stand in for these) ──────

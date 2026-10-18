@@ -919,7 +919,39 @@ def _move_all(
         _prune_empty(old.parent, edition_root)
 
 
-def _put_back_stepped_aside(stale: Path, ledger: sqlite3.Connection, kind: Kind) -> bool:
+def recover_stepped_aside(edition_root: Path, ledger: sqlite3.Connection, kind: Kind) -> int:
+    """Put back every finished copy a killed move left stepped aside, and
+    clear the half-made encodes beside them. The number put back.
+
+    Before planning, under the build lock (Codex audit 2026-10-16, F11). Run
+    only inside execute, after the plan was made, a stepped-aside copy was
+    planned as missing and baked again -- and then put back as well: two
+    finished copies, the ledger knowing only the new one.
+    """
+    put_back = 0
+    for stale in edition_root.rglob(f"*{TMP_SUFFIX}") if edition_root.exists() else []:
+        if _put_back_stepped_aside(stale, ledger, kind):
+            put_back += 1
+        else:
+            stale.unlink(missing_ok=True)
+    return put_back
+
+
+def stepped_aside(edition_root: Path, ledger: sqlite3.Connection, kind: Kind) -> int:
+    """How many copies recover_stepped_aside would put back. Reads only: for
+    a preview, which plans them as missing."""
+    if not edition_root.exists():
+        return 0
+    return sum(
+        1
+        for stale in edition_root.rglob(f"*{TMP_SUFFIX}")
+        if _put_back_stepped_aside(stale, ledger, kind, dry_run=True)
+    )
+
+
+def _put_back_stepped_aside(
+    stale: Path, ledger: sqlite3.Connection, kind: Kind, *, dry_run: bool = False
+) -> bool:
     """Put a finished copy a killed move left stepped aside back in its place.
 
     The move phase renames each moving copy to <name>.<hash12><TMP_SUFFIX>
@@ -943,7 +975,8 @@ def _put_back_stepped_aside(stale: Path, ledger: sqlite3.Connection, kind: Kind)
             and master_hash.startswith(short)
             and edition_bake.read_marker(stale) == marker_for(master_hash, kind)
         ):
-            stale.rename(old)
+            if not dry_run:
+                stale.rename(old)
             return True
     return False
 
@@ -968,9 +1001,15 @@ def execute(
     kind = kind or LOSSLESS_KIND
     out = Outcome()
 
-    for stale in edition_root.rglob(f"*{TMP_SUFFIX}") if edition_root.exists() else []:
-        if not _put_back_stepped_aside(stale, ledger, kind):
-            stale.unlink(missing_ok=True)
+    # The command line has already done this before planning (Codex audit
+    # 2026-10-16, F11); here for any other caller. Anything put back NOW
+    # was left by a build stopped after this plan was made: the plan may bake
+    # it again as missing, so it is not carried out (review of #201).
+    if recover_stepped_aside(edition_root, ledger, kind) and (plan.bake or plan.move):
+        raise RuntimeError(
+            "copies a stopped build had left aside were put back after this plan was "
+            "made; nothing else was done -- run the build again"
+        )
 
     for c in plan.forget:
         forget(ledger, kind.name, c.master_hash)

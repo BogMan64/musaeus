@@ -44,6 +44,7 @@ ORPHEUS equivalent: SCRIPTS/build_aac_library.py
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -152,6 +153,10 @@ def _transcode_file(
     )
     rate = rate if rate in (44100, 48000) else 44100
     part = dst.with_name(dst.name + ".part")
+    # ffmpeg -y opens the name and writes through a link planted there; the
+    # name is cleared first (Codex audit 2026-10-16, F1, follow-up).
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(part)
 
     cmd = [
         ffmpeg,
