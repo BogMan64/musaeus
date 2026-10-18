@@ -487,6 +487,15 @@ def library_relpath(
     )
 
 
+#: Tables that name a master by path (scripts/consolidate_artist_folders.py
+#: keeps the same list).
+_PATH_COLUMNS = (
+    ("archive_tier_hashes", "path"),
+    ("duplicates", "file_path"),
+    ("validation_issues", "file_path"),
+    ("metadata_cache", "file_path"),
+)
+
 _AND_WORD = re.compile(r"\s+and\s+", re.I)
 
 
@@ -733,6 +742,18 @@ class OrganizeStage(BaseStage):
                 "UPDATE archive SET file_path = ? WHERE rowid = ?",
                 (str(target_path), row_id),
             )
+            # The tables that name a master by path follow it, as the
+            # consolidate script does (review of #208: a large move left them
+            # naming the old place, and a possible-duplicate pair waiting on
+            # AcoustID was offered again as new).
+            for table, col in _PATH_COLUMNS:
+                if ctx.conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                ).fetchone():
+                    ctx.conn.execute(
+                        f"UPDATE OR IGNORE {table} SET {col} = ? WHERE {col} = ?",
+                        (str(target_path), str(current_path)),
+                    )
         except sqlite3.IntegrityError as exc:
             logger.error(
                 "[organize] DB collision for %s -> %s (%s); reverting move",

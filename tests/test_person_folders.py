@@ -19,6 +19,7 @@ LIST = (
     "Bob Seger & The Silver Bullet Band\tBob Seger\n"
     "Jimi Hendrix\tJimi Hendrix\tBlues Rock\n"
     "The Jimi Hendrix Experience\tJimi Hendrix\tBlues Rock\n"
+    "Paul McCartney\tPaul McCartney\n"
     "Wings\tPaul McCartney\n"
 )
 
@@ -87,6 +88,78 @@ def test_the_car_build_and_its_preview_place_a_song_the_same_way(tmp_path):
 def test_an_ambiguous_person_list_is_refused(tmp_path):
     meta = tmp_path / "MetaData"
     meta.mkdir()
-    (meta / filing.PERSONS_FILENAME).write_text("Wings\tPaul McCartney\nWings\tDenny Laine\n")
+    (meta / filing.PERSONS_FILENAME).write_text(
+        "Paul McCartney\tPaul McCartney\nWings\tPaul McCartney\nWings\tDenny Laine\n"
+    )
     with pytest.raises(filing.FilingError):
         filing.load(meta)
+
+
+# Review of #208: one genre per person, and a list that cannot quietly go wrong.
+
+
+def _load(tmp_path, text, allowed="Rock\nPop\nBlues Rock\nR&B/Funk/Soul\n"):
+    meta = tmp_path / "MetaData"
+    meta.mkdir()
+    (meta / filing.PERSONS_FILENAME).write_text(text, encoding="utf-8")
+    (meta / "Genre_Allowed.txt").write_text(allowed, encoding="utf-8")
+    return filing.load(meta)
+
+
+def test_a_genre_on_one_line_holds_for_all_the_persons_acts(tmp_path):
+    f = _load(
+        tmp_path, "Diana Ross\tDiana Ross\tR&B/Funk/Soul\nDiana Ross & The Supremes\tDiana Ross\n"
+    )
+    rel = library_relpath("Diana Ross & The Supremes", None, "Pop", "Hits", "Baby Love", ".m4a", f)
+    assert rel.parts[:2] == ("R&B-Funk-Soul", "Diana Ross")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "A\tX\tRock\nA & The B\tX\tPop\n",  # two genres for one person
+        "A\tX\tRokc\nA & The B\tX\n",  # a genre that is not allowed (typo)
+        "A\tX\nB\tY\n",  # a person with one act (typo in the person column)
+        "A\tBob Seger\nA & The B\tBob seger\n",  # one person spelled two ways
+    ],
+)
+def test_a_list_that_would_misfile_is_refused(tmp_path, text):
+    with pytest.raises(filing.FilingError):
+        _load(tmp_path, text)
+
+
+def test_organize_moves_the_path_named_in_the_side_tables_too(tmp_path):
+    # Review of #208: only archive.file_path followed a move.
+    from musaeus.config import MusicConfig
+    from musaeus.context import RunContext
+    from musaeus.db import open_db, upsert_archive
+    from musaeus.stages.organize import OrganizeStage
+
+    cfg = MusicConfig(
+        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "Q", runs_root=tmp_path / "RUNS", meta_dir=tmp_path / "Meta",
+        alac_library=tmp_path / "ALAC-Library", db_path=tmp_path / "musaeus.db",
+    )  # fmt: skip
+    cfg.inbox.mkdir(parents=True)
+    cfg.meta_dir.mkdir()
+    (cfg.meta_dir / filing.PERSONS_FILENAME).write_text(
+        "Bob Seger\tBob Seger\nBob Seger & The Silver Bullet Band\tBob Seger\n", encoding="utf-8"
+    )
+    ctx = RunContext.new(cfg, open_db(cfg.db_path), dry_run=False)
+    old = cfg.inbox / "flat" / "nm.m4a"
+    old.parent.mkdir()
+    old.write_bytes(b"AUDIO")
+    upsert_archive(ctx.conn, {"file_path": str(old), "status": "CATALOGUED", "genre": "Rock",
+                              "artist": "Bob Seger & The Silver Bullet Band",
+                              "album": "Night Moves", "title": "Night Moves"})  # fmt: skip
+    ctx.conn.execute(
+        "INSERT INTO validation_issues (file_path, issue) VALUES (?, ?)", (str(old), "x")
+    )
+    ctx.conn.commit()
+
+    OrganizeStage().run(ctx)
+
+    new = ctx.conn.execute("SELECT file_path FROM archive").fetchone()[0]
+    assert "/Bob Seger/Bob Seger & The Silver Bullet Band/" in new
+    named = [r[0] for r in ctx.conn.execute("SELECT file_path FROM validation_issues")]
+    assert named == [new], "a side table still names the old place"

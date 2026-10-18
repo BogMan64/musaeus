@@ -211,13 +211,37 @@ def person_for(
     return (str(found[0]), found[1]) if found else None
 
 
+def _allowed_genres(meta_dir: Path) -> set[str] | None:
+    path = Path(meta_dir) / "Genre_Allowed.txt"
+    if not path.exists():
+        return None
+    return {
+        _genre_key(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+
+def _genre_key(genre: str) -> str:
+    # "R&B/Funk/Soul" and the folder spelling "R&B-Funk-Soul" are one genre.
+    return genre.strip().casefold().replace("-", "/").replace("_", " ")
+
+
 def _load_persons(meta_dir: Path) -> dict[str, tuple[str, str | None]]:
+    """act_key(act) -> (person, the person's ONE genre or None).
+
+    Refused rather than guessed (review of #208): a person with two
+    genres, a genre outside Genre_Allowed.txt (a typo would make a new
+    top-level folder), a person with fewer than two acts (a typo in the
+    person column makes exactly that), and one person spelled two ways."""
     path = Path(meta_dir) / PERSONS_FILENAME
     if not path.exists():
         return {}
     from .artist_form import act_key
 
-    out: dict[str, tuple[str, str | None]] = {}
+    acts: dict[str, tuple[str, int]] = {}  # act_key -> (person, line)
+    spelled: dict[str, str] = {}  # person casefold -> spelling
+    genres: dict[str, set[str]] = {}
     for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
@@ -226,15 +250,44 @@ def _load_persons(meta_dir: Path) -> dict[str, tuple[str, str | None]]:
             raise FilingError(
                 f"{PERSONS_FILENAME} line {lineno}: expected 'act<TAB>person', got {raw!r}"
             )
-        key = act_key(parts[0])
-        genre = parts[2] if len(parts) >= 3 and parts[2] else None
-        if key in out and out[key][0] != parts[1]:
+        act, person = parts[0], parts[1]
+        twin = spelled.setdefault(person.casefold(), person)
+        if twin != person:
             raise FilingError(
-                f"{PERSONS_FILENAME} line {lineno}: {parts[0]!r} is already under "
-                f"{out[key][0]!r}; a second person makes the file ambiguous."
+                f"{PERSONS_FILENAME} line {lineno}: {person!r} and {twin!r} are one person "
+                f"spelled two ways; use one spelling."
             )
-        out[key] = (parts[1], genre)
-    return out
+        key = act_key(act)
+        if key in acts and acts[key][0] != person:
+            raise FilingError(
+                f"{PERSONS_FILENAME} line {lineno}: {act!r} is already under "
+                f"{acts[key][0]!r}; a second person makes the file ambiguous."
+            )
+        acts[key] = (person, lineno)
+        if len(parts) >= 3 and parts[2]:
+            genres.setdefault(person, set()).add(parts[2])
+    allowed = _allowed_genres(meta_dir)
+    per_person: dict[str, str | None] = {}
+    for person in set(spelled.values()):
+        named = genres.get(person, set())
+        if len({_genre_key(g) for g in named}) > 1:
+            raise FilingError(
+                f"{PERSONS_FILENAME}: {person!r} is given {len(named)} genres "
+                f"({', '.join(sorted(named))}); a person sits under one."
+            )
+        genre = next(iter(named)) if named else None
+        if genre and allowed is not None and _genre_key(genre) not in allowed:
+            raise FilingError(
+                f"{PERSONS_FILENAME}: {person!r}'s genre {genre!r} is not in "
+                f"Genre_Allowed.txt -- check the spelling"
+            )
+        if sum(1 for p, _ in acts.values() if p == person) < 2:
+            raise FilingError(
+                f"{PERSONS_FILENAME}: {person!r} has only one act; a person folder is "
+                f"for two or more (a typo in the person column?)"
+            )
+        per_person[person] = genre
+    return {key: (person, per_person[person]) for key, (person, _) in acts.items()}
 
 
 def _load_songs(meta_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
