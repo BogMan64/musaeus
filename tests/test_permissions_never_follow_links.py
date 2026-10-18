@@ -73,3 +73,37 @@ def test_a_dry_run_does_not_list_a_links_target(ctx, tmp_path):
 
     assert result.files_processed == 0
     assert not any("credentials" in n for n in result.notes)
+
+
+def test_a_fifo_swapped_in_after_the_scan_does_not_hang_and_is_not_changed(tmp_path):
+    # Review of #203, finding 1: opening a FIFO with no writer blocks for ever.
+    import os
+
+    from musaeus.stages.permissions import _chmod_no_follow
+
+    fifo = tmp_path / "song.m4a"
+    os.mkfifo(fifo, 0o600)
+    with pytest.raises(OSError, match="no longer a file"):
+        _chmod_no_follow(fifo, 0o644, want_dir=False)
+    assert _mode(fifo) == 0o600
+
+
+def test_a_link_swapped_in_after_the_scan_is_left_alone(tmp_path):
+    from musaeus.stages.permissions import _chmod_no_follow
+
+    secret = tmp_path / "credentials.env"
+    secret.write_text("KEY=dummy")
+    secret.chmod(0o600)
+    link = tmp_path / "song.m4a"
+    link.symlink_to(secret)
+    with pytest.raises(OSError):
+        _chmod_no_follow(link, 0o644, want_dir=False)
+    assert _mode(secret) == 0o600
+
+
+def test_a_file_its_owner_cannot_read_is_still_fixed(ctx):
+    own = ctx.inbox / "song.m4a"
+    own.write_bytes(b"audio")
+    own.chmod(0o200)
+    PermissionsStage().run(ctx)
+    assert _mode(own) == 0o644

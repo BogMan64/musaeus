@@ -74,8 +74,16 @@ def _scan_permissions(root: Path) -> tuple[list[Path], list[Path]]:
     # os.walk does not follow linked folders, and lstat sees the link itself;
     # a link is neither a regular file nor a directory, so it is skipped.
     paths: list[Path] = []
+    links = 0
     for top, dirs, files in os.walk(root, followlinks=False):
-        paths.extend(Path(top) / n for n in dirs + files)
+        for n in dirs + files:
+            p = Path(top) / n
+            if p.is_symlink():
+                links += 1
+                continue
+            paths.append(p)
+    if links:
+        logger.info("[permissions] %s: %d link(s) left alone", root, links)
     for path in paths:
         if "_history" in path.parts:
             continue
@@ -96,28 +104,18 @@ def _scan_permissions(root: Path) -> tuple[list[Path], list[Path]]:
 
 
 def _chmod_no_follow(path: Path, mode: int, want_dir: bool) -> None:
-    """chmod *path* only if it is still the regular file or folder the scan
-    saw -- through a handle opened without following a link, so one swapped
-    in after the scan is never followed (Linux has no lchmod)."""
-    flags = os.O_RDONLY | os.O_NOFOLLOW | (os.O_DIRECTORY if want_dir else 0)
+    """chmod *path* only if it is still the regular file or folder the scan saw,
+    and never through a link: fchmodat with AT_SYMLINK_NOFOLLOW. Nothing is
+    opened, so a FIFO swapped in cannot hang the stage (review of #203,
+    finding 1). This covers the last part of the path only: a parent folder
+    swapped for a link mid-run is still followed (finding 3)."""
+    st = path.lstat()
+    if not (stat.S_ISDIR if want_dir else stat.S_ISREG)(st.st_mode):
+        raise OSError(f"no longer a {'folder' if want_dir else 'file'}: {path}")
     try:
-        fd = os.open(path, flags)
-    except PermissionError:
-        # Unreadable to its owner (e.g. 0200): no handle to be had. Checked
-        # again just before, which leaves only a vanishingly small window.
-        st = path.lstat()
-        if stat.S_ISDIR(st.st_mode) != want_dir or stat.S_ISLNK(st.st_mode):
-            raise
-        path.chmod(mode)
-        return
-    try:
-        st = os.fstat(fd)
-        if (stat.S_ISDIR if want_dir else stat.S_ISREG)(st.st_mode):
-            os.fchmod(fd, mode)
-        else:
-            raise OSError(f"no longer a {'folder' if want_dir else 'file'}: {path}")
-    finally:
-        os.close(fd)
+        os.chmod(path, mode, follow_symlinks=False)
+    except NotImplementedError as exc:  # a link swapped in after the lstat
+        raise OSError(f"became a link, left alone: {path}") from exc
 
 
 def _scan_all(ctx: RunContext) -> tuple[list[Path], list[Path]]:
@@ -161,7 +159,7 @@ class PermissionsStage(BaseStage):
             for p in (bad_files + bad_dirs)[:20]:
                 kind = "dir " if p in bad_dirs else "file"
                 try:
-                    mode = oct(stat.S_IMODE(p.stat().st_mode))
+                    mode = oct(stat.S_IMODE(p.lstat().st_mode))
                 except OSError:
                     mode = "?"
                 want = oct(DIR_MODE) if p in bad_dirs else oct(FILE_MODE)
