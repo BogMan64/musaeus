@@ -299,7 +299,14 @@ def main() -> int:
         help="--promote at most N (a one-song trial before the rest: --limit 1)",
     )
     args = ap.parse_args()
-    if args.execute:  # the masters lock (review of #87, findings 9 and 10)
+    # The masters lock (review of #87, findings 9 and 10) -- for --promote,
+    # which changes masters here. Not for --retire: it only READS to choose
+    # the ids, then hands them to delete_reviewed_tracks.py --execute, which
+    # takes the exclusive lock itself for the whole deletion and confirms
+    # every file before it goes. Held here as well, the child was refused by
+    # its own parent (exit 75) and nothing was ever retired (Codex audit
+    # 2026-10-16, F9).
+    if args.execute and args.promote:
         from musaeus.masters_lock import hold_for_process
 
         hold_for_process(exclusive=True, what="scripts/swap_review_copies.py")
