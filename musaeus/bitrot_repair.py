@@ -25,12 +25,12 @@ the good copy in place (review of #87, finding 7).
 from __future__ import annotations
 
 import os
-import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .hasher import audio_hash
+from .safe_save import copy_to_new
 
 #: Where the backup copies live; overridable with MUSAEUS_BACKUP_ROOTS (":"-separated).
 DEFAULT_BACKUP_ROOTS = ("/mnt/NUC8TB_BACKUP", "/media/grey/USB2")
@@ -141,13 +141,13 @@ def _keep_aside(path: Path, aside: Path) -> Path:
     """
     aside.parent.mkdir(parents=True, exist_ok=True)
     n = 1
-    while aside.exists():  # a second repair of the same song the same day
+    while os.path.lexists(aside):  # a second repair the same day (a dangling link counts)
         aside = aside.with_name(f"{aside.stem}.{n}{aside.suffix}")
         n += 1
     try:
         os.link(path, aside)
     except OSError:
-        shutil.copy2(path, aside)
+        copy_to_new(path, aside)
     return aside
 
 
@@ -166,7 +166,7 @@ def repair(path: Path, archive_root: Path, baseline_audio: str, copies: list[Pat
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     tmp = path.with_name(path.name + ".restoring")
     try:
-        shutil.copy2(source, tmp)
+        copy_to_new(source, tmp)  # never through a link at the temp name (F1)
         tags = _copy_tags(path, tmp)  # the damaged file's tags, while it is still in place
         if audio_hash(tmp, strict=True) != baseline_audio:  # never put a wrong file in place
             tmp.unlink(missing_ok=True)

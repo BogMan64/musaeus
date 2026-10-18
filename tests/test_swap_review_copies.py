@@ -31,6 +31,18 @@ def _load():
     return mod
 
 
+@pytest.fixture(autouse=True)
+def _no_leftover_holds(monkeypatch):
+    """main() --execute holds the masters lock for the rest of the process;
+    in one pytest process that leaked into the next test (review of #202)."""
+    from musaeus import config, masters_lock
+
+    monkeypatch.setattr(config, "_cached_config", None)
+    yield
+    while masters_lock._held:
+        masters_lock._held.pop().__exit__(None, None, None)
+
+
 @pytest.fixture
 def vault(tmp_path, monkeypatch):
     mod = _load()
@@ -244,3 +256,52 @@ def test_two_better_copies_of_one_song_promote_only_the_best(vault):
     assert [(p.review["id"], p.library["id"]) for p in wins] == [(best, lib)]
     assert losers == [good], "beaten by a better copy of the same song"
     assert tally["beaten by a better review copy"] == 1
+
+
+def test_retire_execute_really_runs_the_delete_tool(tmp_path, monkeypatch):
+    """Codex audit 2026-10-16, F9: --execute took the exclusive masters lock
+    before choosing a step, and --retire's child -- delete_reviewed_tracks.py
+    --execute -- asked for the same lock, was refused (exit 75, "NOT RUN: the
+    masters are in use by scripts/swap_review_copies.py") and deleted nothing.
+    The test above mocks the child and passes execute=False, so it never saw
+    this. Here the real tool runs, on a real master, in its own vault."""
+    import subprocess as sp
+
+    from musaeus.hasher import audio_hash
+
+    mod = _load()
+    master = tmp_path / "Libraries" / "ALAC-Archival" / "Rock/Toto/Toto IV/Toto - Rosanna.m4a"
+    master.parent.mkdir(parents=True)
+    sp.run(
+        ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+         "-i", "sine=frequency=440:duration=0.3", "-c:a", "alac", str(master)],
+        check=True, stdin=sp.DEVNULL,
+    )  # fmt: skip
+    conn = sqlite3.connect(tmp_path / "musaeus.db")
+    conn.execute(f"CREATE TABLE archive ({COLS})")
+    conn.execute(
+        "CREATE TABLE events (id INTEGER PRIMARY KEY, run_id TEXT, ts TEXT, event_type TEXT, "
+        "file_path TEXT, old_value TEXT, new_value TEXT, stage TEXT, note TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO archive (id, file_path, audio_hash, status, artist, title) "
+        "VALUES (1, ?, ?, 'CATALOGUED', 'Toto', 'Rosanna')",
+        (str(master), audio_hash(master, strict=True)),
+    )
+    conn.commit()
+    conn.close()
+    (tmp_path / "_db_backups").mkdir()
+    (tmp_path / "MetaData").mkdir()
+    sqlite3.connect(tmp_path / "_db_backups" / "hash_index.db").execute(
+        "CREATE TABLE denied_hashes (audio_hash TEXT PRIMARY KEY, reason TEXT, "
+        "source_path TEXT, denied_at TEXT DEFAULT CURRENT_TIMESTAMP)"
+    ).connection.commit()
+    monkeypatch.setenv("MUSAEUS_VAULT_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSAEUS_DB_PATH", str(tmp_path / "musaeus.db"))
+    monkeypatch.setattr(mod, "to_retire", lambda conn, masters: [1])
+    monkeypatch.setattr(sys, "argv", ["swap_review_copies.py", "--retire", "--execute"])
+
+    rc = mod.main()
+
+    assert not master.exists(), "the replaced master was not deleted"
+    assert rc == 0

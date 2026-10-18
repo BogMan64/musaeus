@@ -33,12 +33,17 @@ import json
 import logging
 import re
 import time
+import unicodedata
 import urllib.error
 import urllib.request
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, field
 from urllib.parse import quote, urlencode
 
 from .art_quality import MIN_EDGE_PX, describe, image_dimensions, is_too_small
+from .artist_form import act_key, folder_artist
 from .network_policy import check as _network_check
+from .network_policy import redact
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +88,10 @@ def _get(url: str, *, accept: str | None = None) -> bytes | None:
     except urllib.error.HTTPError as exc:
         if exc.code in (404, 400):
             return None  # answered: nothing there
-        raise ArtUnavailable(f"HTTP {exc.code} for {url}") from exc
+        raise ArtUnavailable(f"HTTP {exc.code} for {redact(url)}") from exc
     except Exception as exc:
-        raise ArtUnavailable(str(exc)) from exc
+        # A transport error's own text can carry the URL (Codex review of #207).
+        raise ArtUnavailable(redact(str(exc))) from None
 
 
 def _get_json(url: str) -> dict | None:
@@ -96,7 +102,7 @@ def _get_json(url: str) -> dict | None:
         parsed: dict = json.loads(raw.decode("utf-8"))
         return parsed
     except Exception as exc:
-        raise ArtUnavailable(f"unparseable JSON from {url}: {exc}") from exc
+        raise ArtUnavailable(f"unparseable JSON from {redact(url)}: {exc}") from exc
 
 
 def _looks_like_image(blob: bytes | None) -> bool:
@@ -107,11 +113,230 @@ def _looks_like_image(blob: bytes | None) -> bool:
     return blob[:3] == b"\xff\xd8\xff" or blob[:8] == b"\x89PNG\r\n\x1a\n"
 
 
+# ── whose album is it ─────────────────────────────────────────────────────────
+#
+# A search ranks; it does not say whose album a result is. Asked for one
+# act's "Greatest Hits", iTunes and Deezer can answer with another act's
+# first, and the title check alone took it (Codex audit 2026-10-16, F12).
+# The live catalogue has "Greatest Hits" by 21 different acts.
+
+
+@dataclass(frozen=True)
+class Asked:
+    """Whose album is being asked about, and how a source's credit is read.
+
+    *alias*: a source credit -> the name MUSAEUS files it under, from an
+    EXPLICIT artist_canon.tsv entry only (ArtistCanon.resolve_exact): the
+    canon is what shortened "Tom Petty And The Heartbreakers" to Tom Petty
+    and filed Wings under Paul McCartney on the way in, so it reads the
+    sources' credits the same way (review of #199, finding 1).
+
+    *composer*: set when the row is filed under a composer. Grey, 2026-10-17:
+    "for classical albums only composer instead of artists" -- a source's
+    answer is that composer's album only if one of its credited names IS the
+    composer (Composer_Canon.tsv); the performers never count.
+    """
+
+    artist: str
+    alias: Callable[[str], str | None] = field(default=lambda s: None)
+    composer: str | None = None
+    composer_canon: Mapping[str, str] = field(default_factory=dict)
+
+
+_FOLD = str.maketrans({"ø": "o", "Ø": "O", "æ": "ae", "Æ": "AE", "ß": "ss", "ł": "l",
+                       "Ł": "L", "đ": "d", "Đ": "D", "œ": "oe", "Œ": "OE"})  # fmt: skip
+#: Separators between the names in one credit. Never inside a name: a
+#: composer-named ensemble ("Franz Liszt Chamber Orchestra") stays whole.
+_SPLIT = re.compile(r"\s*(?:,|;|/|\+|&|\band\b|\bfeat\.?|\bfeaturing\b|\bwith\b)\s*", re.I)
+#: A backing band or ensemble after the lead act: "X & The Y", "X and Her
+#: Orchestra", "X, The Y", "X Quintet". Never applied to a composer.
+_BACKING = re.compile(r"(?:\s+(?:&|and|\+)\s+|,\s+)(?:the|his|her)\s+.+$", re.I)
+_ENSEMBLE = re.compile(
+    r"\s+(?:band|orchestra|trio|quartet|quintet|sextet|septet|octet|ensemble|combo)$", re.I
+)
+
+
+def _key(name: str) -> str:
+    """act_key, with the letters NFKD cannot take apart folded first, and a
+    plain case-folded name when act_key leaves nothing ("坂本龍一")."""
+    folded = (name or "").translate(_FOLD)
+    return act_key(folded) or folded.casefold().strip()
+
+
+def _lead(name: str) -> str:
+    lead = _ENSEMBLE.sub("", _BACKING.sub("", name or "").strip()).strip()
+    return lead if _key(lead) else name
+
+
+def _parts(credit: str) -> list[str]:
+    return [p for p in _SPLIT.split(credit or "") if p.strip()]
+
+
+#: A classical credit also runs "Vivaldi - I Musici" or "Handel: Arias".
+_COMPOSER_SPLIT = re.compile(r"\s+[-–]\s+|\s*:\s*")
+#: Words that make a name an ensemble, never the composer it may be named
+#: after ("Franz Liszt Chamber Orchestra", "Josef Suk Chamber Orchestra").
+_ENSEMBLE_WORDS = frozenset(
+    [
+        "orchestra",
+        "orchester",
+        "orchestre",
+        "orquesta",
+        "chamber",
+        "kammerorchester",
+        "ensemble",
+        "consort",
+        "choir",
+        "chor",
+        "chorus",
+        "players",
+        "soloists",
+        "academy",
+        "akademie",
+        "philharmonic",
+        "philharmoniker",
+        "symphony",
+        "sinfonia",
+        "sinfonietta",
+        "quartet",
+        "quintet",
+        "trio",
+        "band",
+        "musici",
+        "camerata",
+    ]
+)
+
+
+def _words(name: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", unicodedata.normalize("NFKD", (name or "").translate(_FOLD))
+                      .encode("ascii", "ignore").decode().lower())  # fmt: skip
+
+
+def _names_composer(part: str, asked: Asked) -> bool:
+    """Is this one name in a credit the composer we asked about?
+
+    Not merely "the composer canon maps it there": the canon also maps
+    performers so ClassicalComposer can file their tracks (András Schiff ->
+    Bach, the Academy of St Martin in the Fields -> Purcell), and Grey's rule
+    is that the performers never count (review of #199, second pass). So the
+    name must carry the composer's surname, be no ensemble, and be either one
+    of the composer's spellings in the canon or an initials form ("J.S. Bach",
+    "G.F. Handel") whose initials are the composer's."""
+    composer = asked.composer or ""
+    mine, theirs = _words(composer), _words(part)
+    if not mine or not theirs or mine[-1] not in theirs or _ENSEMBLE_WORDS & set(theirs):
+        return False
+    if _key(part) == _key(composer):
+        return True
+    spellings = {_key(v) for v, c in asked.composer_canon.items() if c == composer}
+    if _key(part) in spellings:
+        return True
+    given = theirs[: theirs.index(mine[-1])]
+    initials = "".join(w for w in given if len(w) <= 3)  # "j s" or "js" from "J.S."
+    return (
+        bool(given)
+        and all(len(w) <= 3 for w in given)
+        and (initials == "".join(w[0] for w in mine[:-1]))
+    )
+
+
+def _is_ours(credit: str, asked: Asked) -> bool:
+    """Is a source's *credit* the act we asked about?"""
+    if not credit or not asked.artist:
+        return False
+    if asked.composer:
+        return any(
+            _names_composer(name, asked)
+            for part in _parts(credit)
+            for name in _COMPOSER_SPLIT.split(part)
+            if name.strip()
+        )
+    ours = {_key(asked.artist), _key(folder_artist(asked.artist))}
+    # Our own name is cut to its lead only when a real name is left: "Sly &
+    # The Family Stone" is not "Sly", and "The Band" is not "The" (review of
+    # #199, second pass).
+    lead = _lead(asked.artist)
+    if len([w for w in _words(lead) if w not in ("the", "a", "an")]) >= 2:
+        ours.add(_key(lead))
+    theirs: set[str] = set()
+    # The canon alias for the whole credit only: its one-word repairs ("Paul",
+    # "Peter") must not fire inside another act's credit.
+    for whole in {credit, asked.alias(credit) or credit}:
+        theirs |= {_key(whole), _key(_lead(whole)), _key(folder_artist(whole))}
+    # Any one name in their credit that is our act: "Queen + Adam Lambert",
+    # "Johnny Mathis & Deniece Williams" asked for Deniece Williams.
+    theirs |= {_key(p) for p in _parts(credit)}
+    return bool((ours & theirs) - {""})
+
+
+def _itunes_lists(collection_id: object, asked: Asked) -> bool:
+    """Is our act on this iTunes release? For one credited to someone else --
+    "Various Artists", a soundtrack's composer -- the track list is the only
+    evidence it is ours: the Grosse Pointe Blank soundtrack, not another
+    act's "Gold"."""
+    if not collection_id:
+        return False
+    data = _get_json(
+        "https://itunes.apple.com/lookup?"
+        + urlencode({"id": collection_id, "entity": "song", "limit": 200})
+    )
+    return any(
+        _is_ours(r.get("artistName", ""), asked)
+        for r in (data or {}).get("results") or []
+        if r.get("wrapperType") == "track"
+    )
+
+
+def _deezer_lists(album_id: object, asked: Asked) -> bool:
+    """The Deezer twin of _itunes_lists."""
+    if not album_id:
+        return False
+    data = _get_json(f"https://api.deezer.com/album/{album_id}/tracks?limit=200")
+    return any(
+        _is_ours(((t.get("artist") or {}).get("name", "")), asked)
+        for t in (data or {}).get("data") or []
+    )
+
+
+def _ours(
+    results: list, asked: Asked, credited: Callable[[dict], str], lists: Callable[[dict], bool]
+) -> Iterator[dict]:
+    """The results that are our act's, best first, looked at lazily.
+
+    Credited to the act first -- their covers are tried before any track
+    list is fetched. Then any other same-title release whose track list
+    names the act. A track-list lookup that fails is passed over, not fatal:
+    a cover already found must not be lost to it, and "could not ask" is
+    raised only when nothing was found (review of #199, finding 2).
+    Composer rows take no track-list evidence: the credit must name the
+    composer.
+    """
+    own = [r for r in results if _is_ours(credited(r), asked)]
+    yield from own
+    if asked.composer:
+        return
+    failed: ArtUnavailable | None = None
+    for r in results:
+        if any(r is o for o in own):
+            continue
+        try:
+            listed = lists(r)
+        except ArtUnavailable as exc:
+            failed = exc
+            continue
+        if listed:
+            yield r
+    if failed is not None:
+        raise failed
+
+
 # ── sources ───────────────────────────────────────────────────────────────────
 
 
-def fetch_itunes(artist: str, album: str) -> bytes | None:
+def fetch_itunes(artist: str, album: str, asked: Asked | None = None) -> bytes | None:
     """iTunes Search. No key and no MBID needed, so it is tried first."""
+    asked = asked or Asked(artist)
     if not artist:
         return None
     term = f"{artist} {album}".strip()
@@ -128,7 +353,12 @@ def fetch_itunes(artist: str, album: str) -> bytes | None:
     ordered = [r for r in results if want and _norm(r.get("collectionName", "")) == want]
     if not ordered:
         ordered = results if not want else []
-    for r in ordered:
+    for r in _ours(
+        ordered,
+        asked,
+        lambda r: r.get("artistName", ""),
+        lambda r: bool(want) and _itunes_lists(r.get("collectionId"), asked),
+    ):
         art = r.get("artworkUrl100")
         if not art:
             continue
@@ -142,7 +372,7 @@ def fetch_itunes(artist: str, album: str) -> bytes | None:
     return None
 
 
-def fetch_deezer(artist: str, album: str) -> bytes | None:
+def fetch_deezer(artist: str, album: str, asked: Asked | None = None) -> bytes | None:
     """Deezer search. Keyless like iTunes, and `cover_xl` is 1000x1000.
 
     Added 2026-08-31 when Grey asked about Amazon as a source. Amazon has no
@@ -150,6 +380,7 @@ def fetch_deezer(artist: str, album: str) -> bytes | None:
     account with qualifying sales -- so this fills the same gap: a second
     keyless, high-resolution source that answers when iTunes does not.
     """
+    asked = asked or Asked(artist)
     if not artist:
         return None
     term = f"{artist} {album}".strip()
@@ -161,7 +392,12 @@ def fetch_deezer(artist: str, album: str) -> bytes | None:
     ordered = [r for r in results if want and _norm(r.get("title", "")) == want]
     if not ordered:
         ordered = results if not want else []
-    for r in ordered:
+    for r in _ours(
+        ordered,
+        asked,
+        lambda r: (r.get("artist") or {}).get("name", ""),
+        lambda r: bool(want) and _deezer_lists(r.get("id"), asked),
+    ):
         for key in ("cover_xl", "cover_big"):
             u = r.get(key)
             if not u:
@@ -172,12 +408,13 @@ def fetch_deezer(artist: str, album: str) -> bytes | None:
     return None
 
 
-def fetch_coverartarchive(artist: str, album: str) -> bytes | None:
+def fetch_coverartarchive(artist: str, album: str, asked: Asked | None = None) -> bytes | None:
     """Cover Art Archive, via the RELEASE-GROUP mbid.
 
     The release-group is found by searching MusicBrainz for artist + album,
     so this needs no pre-existing MBID in our own database.
     """
+    asked = asked or Asked(artist)
     if not artist or not album:
         return None
     q = quote(f'artist:"{artist}" AND releasegroup:"{album}"')
@@ -188,6 +425,18 @@ def fetch_coverartarchive(artist: str, album: str) -> bytes | None:
     for rg in data.get("release-groups", []):
         rgid = rg.get("id")
         if not rgid:
+            continue
+        # A scored search, like the other two: the best-scoring release group
+        # can be another act's. Its credit must be this act -- whole, or any
+        # one name in it ("Paul McCartney & Wings").
+        credit = rg.get("artist-credit") or []
+        whole = "".join(
+            (c.get("name") or "") + (c.get("joinphrase") or "")
+            for c in credit
+            if isinstance(c, dict)
+        )
+        names = [c.get("name") or "" for c in credit if isinstance(c, dict)]
+        if not (_is_ours(whole, asked) or any(_is_ours(n, asked) for n in names)):
             continue
         blob = _get(f"https://coverartarchive.org/release-group/{rgid}/front")
         if _looks_like_image(blob):
@@ -233,7 +482,11 @@ def _norm(s: str) -> str:
 
 
 def fetch_album_art(
-    artist: str, album: str, lastfm_key: str = "", min_edge: int = MIN_EDGE_PX
+    artist: str,
+    album: str,
+    lastfm_key: str = "",
+    min_edge: int = MIN_EDGE_PX,
+    asked: Asked | None = None,
 ) -> tuple[bytes, str] | None:
     """First usable image from any source, with the source that supplied it.
 
@@ -246,7 +499,15 @@ def fetch_album_art(
     Returns None when every source ANSWERED and none had art. Raises
     ArtUnavailable only when nothing answered at all, so a caller can tell
     "this album has no art" from "we could not ask".
+
+    `asked`: how a source's credit is read -- the artist canon, and the
+    composer for a classical row (see Asked). Without it, the stored artist
+    as written.
     """
+
+    def ask(fn: Callable[..., bytes | None]) -> Callable[[], bytes | None]:
+        return (lambda: fn(artist, album, asked)) if asked else (lambda: fn(artist, album))
+
     attempts = 0
     unavailable = 0
     best: tuple[bytes, str] | None = None  # largest sub-threshold fallback
@@ -255,9 +516,9 @@ def fetch_album_art(
     # answers turned "every source refused" into "no art exists" (review of
     # slice A, finding 12).
     for name, can_ask, fn in (
-        ("itunes", bool(artist), lambda: fetch_itunes(artist, album)),
-        ("deezer", bool(artist), lambda: fetch_deezer(artist, album)),
-        ("coverartarchive", bool(artist and album), lambda: fetch_coverartarchive(artist, album)),
+        ("itunes", bool(artist), ask(fetch_itunes)),
+        ("deezer", bool(artist), ask(fetch_deezer)),
+        ("coverartarchive", bool(artist and album), ask(fetch_coverartarchive)),
         ("lastfm", bool(lastfm_key and artist and album),
          lambda: fetch_lastfm(artist, album, lastfm_key)),
     ):  # fmt: skip
