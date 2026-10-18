@@ -818,3 +818,24 @@ def test_a_held_arrival_is_a_problem_the_report_counts(ctx):
     result = FinalizeStage().run(ctx)
 
     assert any("1 arrival(s) held back" in e for e in result.errors)
+
+
+def test_a_misspelled_act_in_the_person_list_stops_finalize_before_it_moves(ctx, cfg):
+    # Codex review of #208: Finalize runs before Organize and files by the
+    # person list, so only Organize refusing left solo songs nested and the
+    # misspelled band flat.
+    from musaeus import filing
+
+    cfg.meta_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.meta_dir / "Genre_Allowed.txt").write_text("Rock\n", encoding="utf-8")
+    (cfg.meta_dir / filing.PERSONS_FILENAME).write_text(
+        "Bob Seger\tBob Seger\tRock\nBob Segre & The Silver Bullet Band\tBob Seger\n",
+        encoding="utf-8",
+    )
+    song = _make_canonicalized_track(ctx, "in/ttp.m4a", "Bob Seger", "Live", "Turn The Page")
+
+    result = FinalizeStage().run(ctx)
+
+    assert not result.success
+    assert any("Bob Segre & The Silver Bullet Band" in n for n in result.notes)
+    assert song.exists(), "Finalize moved a song while the list named an unknown act"

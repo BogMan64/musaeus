@@ -104,7 +104,13 @@ from ..safety.recovery import (
     create_checkpoint,
 )
 from .base import NO_VERIFICATION, BaseStage, VerifyResult
-from .organize import _is_collision_name_for, library_relpath, sanitize_path_component, unique_path
+from .organize import (
+    _is_collision_name_for,
+    library_relpath,
+    refuse_unmatched_person_acts,
+    sanitize_path_component,
+    unique_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -689,6 +695,11 @@ class FinalizeStage(BaseStage):
         total = len(pending)
         result.notes.append(f"files to finalize: {total}")
         self._note_held(result, dry_run=False)
+        # Finalize files by the person list too, and runs before Organize: a
+        # misspelled act must stop it before anything moves (Codex review of #208).
+        if total and refuse_unmatched_person_acts(ctx.conn, self._filing(ctx), result, "finalize"):
+            ctx.record_stage(result)
+            return result
         if not total:
             result.notes.append("nothing to do — no canonicalized files pending finalize")
             ctx.record_stage(result)
@@ -909,6 +920,7 @@ class FinalizeStage(BaseStage):
         result.files_changed = total
         result.notes.append(f"[DRY RUN] would finalize {total} file(s)")
         self._note_held(result, dry_run=True)
+        refuse_unmatched_person_acts(ctx.conn, self._filing(ctx), result, "finalize")
 
         shown = 0
         for row in pending:

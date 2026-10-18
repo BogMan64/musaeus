@@ -67,7 +67,7 @@ class TestItAsksTheCatalogueWhatIsMissing:
 
             return MasterResolution(Path(fp), True)
 
-        def fake_out(t, spec, staging):
+        def fake_out(t, spec, staging, masters_root=None):
             return staging / Path(t.file_path).name
 
         import musaeus.editions as E
@@ -107,7 +107,9 @@ class TestItAsksTheCatalogueWhatIsMissing:
                 "musaeus.editions", fromlist=["MasterResolution"]
             ).MasterResolution(Path(fp), True),
         )
-        monkeypatch.setattr(E, "output_path_for", lambda t, s, st: st / Path(t.file_path).name)
+        monkeypatch.setattr(
+            E, "output_path_for", lambda t, s, st, mr=None: st / Path(t.file_path).name
+        )
         monkeypatch.setattr(
             B,
             "get_config",

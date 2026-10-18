@@ -503,6 +503,52 @@ _PATH_COLUMNS = (
 _AND_WORD = re.compile(r"\s+and\s+", re.I)
 
 
+def unmatched_person_acts(conn: sqlite3.Connection, filing: dict[str, str] | None) -> list[str]:
+    """Acts in MetaData/person_folders.tsv that no catalogued song files under.
+
+    Most likely a typo: that act's songs would stay flat while the person's
+    other acts nest. Organize and Finalize both ask before moving anything
+    (Codex review of #208): Finalize runs first and files by the same rule.
+    """
+    person_acts = getattr(filing, "person_acts", {})
+    if not person_acts:
+        return []
+    from ..artist_form import act_key
+
+    has_mb = "mb_artist_name" in {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
+    mb = "mb_artist_name" if has_mb else "NULL"
+    seen: set[str] = set()
+    for artist, mb_name, genre, album, title, path, audio_hash in conn.execute(
+        f"SELECT artist, {mb}, genre, album, title, file_path, audio_hash FROM archive "
+        "WHERE status = 'CATALOGUED' AND artist IS NOT NULL AND title IS NOT NULL"
+    ):
+        rel = library_relpath(
+            artist, mb_name, genre, album, title, Path(path).suffix, filing, audio_hash
+        )
+        if len(rel.parts) >= 3:
+            seen.add(act_key(rel.parts[-3]))  # .../Act/Album/file
+    return sorted(act for key, act in person_acts.items() if key not in seen)
+
+
+def refuse_unmatched_person_acts(
+    conn: sqlite3.Connection, filing: dict[str, str] | None, result: StageResult, stage: str
+) -> bool:
+    """Name every unmatched listed act in *result*; True when a real run must stop."""
+    unmatched = unmatched_person_acts(conn, filing)
+    for act in unmatched:
+        note = f"person_folders.tsv: {act!r} matches no song -- check the spelling"
+        logger.warning("[%s] %s", stage, note)
+        result.notes.append(note)
+    if unmatched and not result.dry_run:
+        result.success = False
+        result.errors.append(
+            f"person_folders.tsv names {len(unmatched)} act(s) no song files under; "
+            f"nothing was moved -- correct the list and run again"
+        )
+        return True
+    return False
+
+
 def folder_spelling(name: str) -> str:
     """A name as an artist or album FOLDER spells it: the word "and" is "&".
 
@@ -770,10 +816,13 @@ class OrganizeStage(BaseStage):
                             f"DELETE FROM {table} WHERE {col} = ?", (str(target_path),)
                         ).rowcount
                     elif table == "validation_issues":
+                        # The moved file's own row wins over a stale twin at the
+                        # destination: it carries the current severity and
+                        # details (Codex review of #208).
                         stale = ctx.conn.execute(
                             "DELETE FROM validation_issues WHERE file_path = ? AND issue IN "
                             "(SELECT issue FROM validation_issues WHERE file_path = ?)",
-                            (str(current_path), str(target_path)),
+                            (str(target_path), str(current_path)),
                         ).rowcount
                     else:
                         stale = 0
@@ -879,41 +928,11 @@ class OrganizeStage(BaseStage):
             filing_load(cfg.meta_dir) if cfg is not None and getattr(cfg, "meta_dir", None) else {}
         )
 
-        # A listed act no song files under is most likely a typo: its songs
-        # would stay flat while the person's other acts nest. Checked before
-        # anything moves; the dry run names it and a real run refuses (Codex
-        # review of #208).
-        person_acts = getattr(filing, "person_acts", {})
-        if person_acts:
-            from ..artist_form import act_key
-
-            acts_seen: set[str] = set()
-            for row in rows:
-                rel = library_relpath(
-                    row["artist"],
-                    row["mb_artist_name"],
-                    row["genre"],
-                    row["album"],
-                    row["title"],
-                    Path(row["file_path"]).suffix,
-                    filing,
-                    row["audio_hash"],
-                )
-                if len(rel.parts) >= 3:
-                    acts_seen.add(act_key(rel.parts[-3]))  # .../Act/Album/file
-            unmatched = sorted(act for key, act in person_acts.items() if key not in acts_seen)
-            for act in unmatched:
-                note = f"person_folders.tsv: {act!r} matches no song -- check the spelling"
-                logger.warning("[organize] %s", note)
-                result.notes.append(note)
-            if unmatched and not dry_run:
-                result.success = False
-                result.errors.append(
-                    f"person_folders.tsv names {len(unmatched)} act(s) no song files under; "
-                    f"nothing was moved -- correct the list and run again"
-                )
-                ctx.record_stage(result)
-                return result
+        # Checked before anything moves: the dry run names a listed act no
+        # song files under, and a real run refuses (Codex review of #208).
+        if refuse_unmatched_person_acts(ctx.conn, filing, result, "organize"):
+            ctx.record_stage(result)
+            return result
 
         renamed = 0
         moved = 0

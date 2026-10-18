@@ -120,6 +120,15 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = MusicConfig.from_env()
+    # This tool files Act/Album only. With a person list the car holds
+    # Person/Act/Album, and a refile here would pull songs out of their person
+    # folder (Codex review of #208): the edition build moves car copies now.
+    if (Path(cfg.meta_dir) / filing.PERSONS_FILENAME).exists():
+        print(
+            f"refused: {filing.PERSONS_FILENAME} is in use and this tool would flatten "
+            f"person folders. Use 'musaeus edition-build car' to refile the car copies."
+        )
+        return 2
     moves, problems = plan(cfg)
     car_root = Path(cfg.vault_root) / "Libraries" / "CAR_Library"
 

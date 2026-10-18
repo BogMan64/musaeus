@@ -161,7 +161,8 @@ def test_organize_moves_the_path_named_in_the_side_tables_too(tmp_path):
     upsert_archive(ctx.conn, {"file_path": str(solo), "status": "CATALOGUED", "genre": "Rock",
                               "artist": "Bob Seger", "album": "Live", "title": "Turn The Page"})  # fmt: skip
     ctx.conn.execute(
-        "INSERT INTO validation_issues (file_path, issue) VALUES (?, ?)", (str(old), "x")
+        "INSERT INTO validation_issues (file_path, issue, severity) VALUES (?, 'x', 'error')",
+        (str(old),),
     )
     ctx.conn.execute(
         "INSERT INTO archive_tier_hashes (path, sha256) VALUES (?, 'MOVED_FILE')", (str(old),)
@@ -179,7 +180,8 @@ def test_organize_moves_the_path_named_in_the_side_tables_too(tmp_path):
     # carries is not written twice.
     ctx.conn.execute("INSERT INTO duplicates (group_id, file_path) VALUES ('g1', ?)", (str(stale),))
     ctx.conn.execute(
-        "INSERT INTO validation_issues (file_path, issue) VALUES (?, 'x')", (str(stale),)
+        "INSERT INTO validation_issues (file_path, issue, severity) VALUES (?, 'x', 'warning')",
+        (str(stale),),
     )
     ctx.conn.execute(
         "INSERT INTO validation_issues (file_path, issue) VALUES (?, 'y')", (str(stale),)
@@ -196,6 +198,10 @@ def test_organize_moves_the_path_named_in_the_side_tables_too(tmp_path):
         tuple(r) for r in ctx.conn.execute("SELECT file_path, issue FROM validation_issues")
     )
     assert issues == [(new, "x"), (new, "y")], "an issue was lost or still names the old place"
+    # Codex review of #208 (third round): the moved file's own row is current;
+    # a stale twin at the destination must not replace its severity.
+    sev = ctx.conn.execute("SELECT severity FROM validation_issues WHERE issue = 'x'").fetchone()[0]
+    assert sev == "error", "the moved file's error became a stale warning"
     groups = [tuple(r) for r in ctx.conn.execute("SELECT group_id, file_path FROM duplicates")]
     assert groups == [("g1", new)], "a pending duplicate review was wiped"
     baselines = [tuple(r) for r in ctx.conn.execute("SELECT path, sha256 FROM archive_tier_hashes")]
@@ -326,3 +332,24 @@ def test_the_old_car_script_keeps_the_person_level_too(tmp_path):
     track = SimpleNamespace(file_path=str(masters / "Rock/Bob Seger/Bob Seger/Live/x.m4a"))
     got = editions.output_path_for(track, None, car, masters)  # type: ignore[arg-type]
     assert got == car / "Bob Seger/Bob Seger/Live/x.m4a"
+
+
+def test_the_old_car_refile_tool_refuses_while_person_folders_are_in_use(tmp_path, monkeypatch):
+    # Codex review of #208: it built Car/Act/Album and would pull songs out of
+    # their person folders.
+    import importlib.util
+    import sys
+    from types import SimpleNamespace
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "refile_car", root / "scripts/car_library/refile_car_by_catalogue.py"
+    )
+    mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    (tmp_path / filing.PERSONS_FILENAME).write_text("A\tX\tRock\nB\tX\n", encoding="utf-8")
+    cfg = SimpleNamespace(meta_dir=tmp_path, vault_root=tmp_path)
+    monkeypatch.setattr(mod.MusicConfig, "from_env", staticmethod(lambda: cfg))
+    monkeypatch.setattr(mod, "plan", lambda c: pytest.fail("planned moves despite the list"))
+    monkeypatch.setattr(sys, "argv", ["refile_car_by_catalogue.py", "--execute"])
+    assert mod.main() == 2
