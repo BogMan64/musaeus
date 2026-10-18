@@ -163,3 +163,16 @@ def test_organize_moves_the_path_named_in_the_side_tables_too(tmp_path):
     assert "/Bob Seger/Bob Seger & The Silver Bullet Band/" in new
     named = [r[0] for r in ctx.conn.execute("SELECT file_path FROM validation_issues")]
     assert named == [new], "a side table still names the old place"
+
+
+def test_a_dated_batch_folder_is_not_mistaken_for_a_person(tmp_path):
+    # Codex review of #208: with MUSAEUS_BATCH_FOLDERS the masters sit under a
+    # dated folder; depth alone read the date level as a person.
+    masters, car = tmp_path / "ALAC-Archival", tmp_path / "CAR_Library"
+    flat = masters / "2026-01-15/Rock/Adele/21/x.m4a"
+    nested = masters / "2026-01-15A/Rock/Bob Seger/Bob Seger/Night Moves/y.m4a"
+    assert editions.artist_album_path(flat, car, masters) == car / "Adele/21/x.m4a"
+    assert (
+        editions.artist_album_path(nested, car, masters)
+        == car / "Bob Seger/Bob Seger/Night Moves/y.m4a"
+    )

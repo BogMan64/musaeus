@@ -326,8 +326,16 @@ def artist_album_path(master: Path, root: Path, masters_root: Path | None = None
             rel = master.relative_to(masters_root)
         except ValueError:
             rel = None
-        if rel is not None and len(rel.parts) == 5:  # Genre/Person/Act/Album/song
-            return root / rel.parts[1] / grand / parent / (master.stem + ".m4a")
+        if rel is not None:
+            from .stages.organize import _BATCH_DIR_RE
+
+            parts = rel.parts
+            # A dated batch folder in front (MUSAEUS_BATCH_FOLDERS) is not a
+            # level of the layout (Codex review of #208).
+            if parts and _BATCH_DIR_RE.match(parts[0]):
+                parts = parts[1:]
+            if len(parts) == 5:  # Genre/Person/Act/Album/song
+                return root / parts[1] / grand / parent / (master.stem + ".m4a")
     return root / grand / parent / (master.stem + ".m4a")
 
 
