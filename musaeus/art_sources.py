@@ -33,6 +33,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator, Mapping
@@ -169,23 +170,101 @@ def _parts(credit: str) -> list[str]:
     return [p for p in _SPLIT.split(credit or "") if p.strip()]
 
 
+#: A classical credit also runs "Vivaldi - I Musici" or "Handel: Arias".
+_COMPOSER_SPLIT = re.compile(r"\s+[-–]\s+|\s*:\s*")
+#: Words that make a name an ensemble, never the composer it may be named
+#: after ("Franz Liszt Chamber Orchestra", "Josef Suk Chamber Orchestra").
+_ENSEMBLE_WORDS = frozenset(
+    [
+        "orchestra",
+        "orchester",
+        "orchestre",
+        "orquesta",
+        "chamber",
+        "kammerorchester",
+        "ensemble",
+        "consort",
+        "choir",
+        "chor",
+        "chorus",
+        "players",
+        "soloists",
+        "academy",
+        "akademie",
+        "philharmonic",
+        "philharmoniker",
+        "symphony",
+        "sinfonia",
+        "sinfonietta",
+        "quartet",
+        "quintet",
+        "trio",
+        "band",
+        "musici",
+        "camerata",
+    ]
+)
+
+
+def _words(name: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", unicodedata.normalize("NFKD", (name or "").translate(_FOLD))
+                      .encode("ascii", "ignore").decode().lower())  # fmt: skip
+
+
+def _names_composer(part: str, asked: Asked) -> bool:
+    """Is this one name in a credit the composer we asked about?
+
+    Not merely "the composer canon maps it there": the canon also maps
+    performers so ClassicalComposer can file their tracks (András Schiff ->
+    Bach, the Academy of St Martin in the Fields -> Purcell), and Grey's rule
+    is that the performers never count (review of #199, second pass). So the
+    name must carry the composer's surname, be no ensemble, and be either one
+    of the composer's spellings in the canon or an initials form ("J.S. Bach",
+    "G.F. Handel") whose initials are the composer's."""
+    composer = asked.composer or ""
+    mine, theirs = _words(composer), _words(part)
+    if not mine or not theirs or mine[-1] not in theirs or _ENSEMBLE_WORDS & set(theirs):
+        return False
+    if _key(part) == _key(composer):
+        return True
+    spellings = {_key(v) for v, c in asked.composer_canon.items() if c == composer}
+    if _key(part) in spellings:
+        return True
+    given = theirs[: theirs.index(mine[-1])]
+    initials = "".join(w for w in given if len(w) <= 3)  # "j s" or "js" from "J.S."
+    return (
+        bool(given)
+        and all(len(w) <= 3 for w in given)
+        and (initials == "".join(w[0] for w in mine[:-1]))
+    )
+
+
 def _is_ours(credit: str, asked: Asked) -> bool:
     """Is a source's *credit* the act we asked about?"""
     if not credit or not asked.artist:
         return False
     if asked.composer:
-        want = _key(asked.composer)
         return any(
-            asked.composer_canon.get(part.strip().lower()) == asked.composer or _key(part) == want
+            _names_composer(name, asked)
             for part in _parts(credit)
+            for name in _COMPOSER_SPLIT.split(part)
+            if name.strip()
         )
-    ours = {_key(asked.artist), _key(_lead(asked.artist)), _key(folder_artist(asked.artist))}
+    ours = {_key(asked.artist), _key(folder_artist(asked.artist))}
+    # Our own name is cut to its lead only when a real name is left: "Sly &
+    # The Family Stone" is not "Sly", and "The Band" is not "The" (review of
+    # #199, second pass).
+    lead = _lead(asked.artist)
+    if len([w for w in _words(lead) if w not in ("the", "a", "an")]) >= 2:
+        ours.add(_key(lead))
     theirs: set[str] = set()
+    # The canon alias for the whole credit only: its one-word repairs ("Paul",
+    # "Peter") must not fire inside another act's credit.
     for whole in {credit, asked.alias(credit) or credit}:
         theirs |= {_key(whole), _key(_lead(whole)), _key(folder_artist(whole))}
     # Any one name in their credit that is our act: "Queen + Adam Lambert",
     # "Johnny Mathis & Deniece Williams" asked for Deniece Williams.
-    theirs |= {_key(_lead(asked.alias(p) or p)) for p in _parts(credit)}
+    theirs |= {_key(p) for p in _parts(credit)}
     return bool((ours & theirs) - {""})
 
 

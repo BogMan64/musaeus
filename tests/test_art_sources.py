@@ -460,3 +460,61 @@ def test_the_stage_reads_a_composer_row_from_the_composer_canon(tmp_path):
     assert _asked(ctx, HANDEL).composer == HANDEL
     plain = _asked(ctx, "Paul McCartney")
     assert plain.composer is None and plain.alias("Wings") == "Paul McCartney"
+
+
+# Second review of #199: the live Composer_Canon.tsv maps PERFORMERS too, so
+# ClassicalComposer can file their tracks. They must never count as the composer.
+LIVE_CANON = {
+    v.lower(): c
+    for v, c in (
+        ("J.S. Bach", "Johann Sebastian Bach"), ("Bach", "Johann Sebastian Bach"),
+        ("Georg Friedrich Händel", HANDEL), ("Handel", HANDEL),
+        ("Academy of St Martin In the Fields", "Henry Purcell"),
+        ("Akademie Für Alte Musik Berlin", HANDEL),
+        ("András Schiff", "Johann Sebastian Bach"), ("Barbara Bonney", "Henry Purcell"),
+    )
+}  # fmt: skip
+
+
+def _live(name):
+    return A.Asked(name, composer=name, composer_canon=LIVE_CANON)
+
+
+@pytest.mark.parametrize(
+    "composer,credit",
+    [
+        ("Johann Sebastian Bach", "András Schiff"),
+        ("Henry Purcell", "Academy of St Martin In the Fields"),
+        ("Henry Purcell", "Academy of St Martin in the Fields & Neville Marriner"),
+        (HANDEL, "Akademie Für Alte Musik Berlin"),
+        ("Johann Sebastian Bach", "C.P.E. Bach"),
+        ("Franz Liszt", "Franz Liszt Chamber Orchestra"),
+    ],
+)
+def test_a_performer_the_canon_files_under_a_composer_is_not_the_composer(composer, credit):
+    assert not A._is_ours(credit, _live(composer)), credit
+
+
+@pytest.mark.parametrize(
+    "composer,credit",
+    [
+        ("Johann Sebastian Bach", "J.S. Bach; András Schiff"),
+        (HANDEL, "Händel"),
+        (HANDEL, "G.F. Handel, Akademie Für Alte Musik Berlin"),
+        ("Wolfgang Amadeus Mozart", "W.A. Mozart"),
+        ("Antonio Vivaldi", "Antonio Vivaldi - I Musici"),
+        (HANDEL, "Handel: Arias"),
+    ],
+)
+def test_the_composer_is_found_however_the_credit_writes_him(composer, credit):
+    assert A._is_ours(credit, _live(composer)), credit
+
+
+@pytest.mark.parametrize(
+    "ours,theirs",
+    [("Sly & The Family Stone", "Sly & Robbie"), ("The Band", "The Who"),
+     ("Kool & The Gang", "Kool Keith"), ("Paul & Paula", "Peter, Paul and Mary")],
+)  # fmt: skip
+def test_our_band_name_is_not_cut_to_a_word_that_matches_another_act(ours, theirs):
+    canon = _alias({"paul": "Paul & Paula", "kool": "Kool & The Gang"})
+    assert not A._is_ours(theirs, A.Asked(ours, alias=canon)), (ours, theirs)
