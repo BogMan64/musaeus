@@ -244,7 +244,8 @@ def plan_merge(
             plan.rows.append(rp)
             continue
 
-        rel = library_relpath(new, mb_name, g or row["genre"], row["album"], row["title"], fp.suffix, filing)
+        rel = library_relpath(new, mb_name, g or row["genre"], row["album"], row["title"], fp.suffix, filing,
+                              row["audio_hash"] if "audio_hash" in set(row.keys()) else None)
         plan.dest_folders[str(Path(*rel.parts[:2]))] += 1
         if keep_both and rel != rel_now:
             free = _free_name(rel, lambda r: (arch / r).exists() or arch / r in claimed)

@@ -80,16 +80,19 @@ def test_stages_that_only_report_are_never_marked_unverified(ctx):
     assert r.verified is None
 
 
-def test_a_broken_verifier_cannot_fail_a_good_run(ctx):
-    """Verification is a safety net, not a new way to break the pipeline."""
+def test_a_broken_verifier_means_the_stage_is_not_done(ctx):
+    """Reversed 2026-10-17 (Codex audit, F13). It was "a safety net, not a new
+    way to break the pipeline", so a crashed check left the stage a success:
+    exit 0, and a resume skipped it with its effect unknown. A crashed check
+    proves nothing, so the stage is not done."""
 
     class Exploding(_Stage):
         def verify_effect(self, ctx, result):
             raise RuntimeError("verifier bug")
 
     r = Exploding(changed=5).execute(ctx)
-    assert r.success is True
-    assert r.verified is None
+    assert r.success is False
+    assert r.verified is False
     assert any("verification errored" in n for n in r.verify_notes)
 
 

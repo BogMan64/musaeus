@@ -88,7 +88,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import sqlite3
 from pathlib import Path
 
@@ -96,6 +95,7 @@ from ..context import RunContext, StageResult, elision
 from ..db import open_hash_index, record_finalized_hash
 from ..filing import load as filing_load
 from ..hasher import audio_hash_safe, file_hash
+from ..safe_save import copy_to_new
 from ..safety.mutation import MutationBoundary, PreconditionError, UnmanagedPathError
 from ..safety.recovery import (
     JOURNAL_FILENAME,
@@ -147,7 +147,7 @@ def _copy_then_verify_then_swap(source: Path, target: Path) -> None:
     tmp_target = target.with_name(target.name + ".finalize_tmp")
 
     try:
-        shutil.copy2(str(source), str(tmp_target))
+        copy_to_new(source, tmp_target)  # never through a link at the temp name (F1)
 
         src_size = source.stat().st_size
         tmp_size = tmp_target.stat().st_size
@@ -449,7 +449,9 @@ class FinalizeStage(BaseStage):
             loaded: dict[str, str] = filing_load(ctx.config.meta_dir)
             ctx.set("_artist_filing", loaded)
             return loaded
-        return dict(cached)
+        # The map itself, not dict(cached): a plain copy dropped FilingMap.songs,
+        # Grey's per-song folders, for every track after the first (Codex review of #206).
+        return cached  # type: ignore[no-any-return]
 
     def _target_path(self, ctx: RunContext, row: dict, source: Path) -> Path:
         # One rule with OrganizeStage: organize.library_relpath(), which also
@@ -470,6 +472,7 @@ class FinalizeStage(BaseStage):
             row.get("title"),
             source.suffix,
             self._filing(ctx),
+            row.get("audio_hash"),
         )
         batch = self._batch_date(ctx)
         # The MASTER, in ALAC-Archival (Grey 2026-08-18, confirmed 2026-09-25);

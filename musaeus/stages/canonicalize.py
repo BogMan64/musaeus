@@ -531,7 +531,9 @@ class CanonicalizeStage(BaseStage):
                 continue
             try:
                 probe = _probe_streams(p)
-            except CanonicalizeError as exc:
+            except (CanonicalizeError, subprocess.TimeoutExpired) as exc:
+                # A stalled ffprobe is "cannot probe", like a failed one, not
+                # a crash of the check (review of #196, finding 4).
                 problems.append(f"{p.name}: cannot probe after canonicalize: {exc}")
                 continue
             # _probe_streams returns the whole ffprobe document, so the codec

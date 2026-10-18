@@ -226,14 +226,25 @@ class BaseStage(ABC):
             return
         try:
             problems = self.verify_effect(ctx, result)
-        except Exception as exc:  # a checker's bug must not fail a good run
+        except Exception as exc:
             logger.error("[%s] effect verification errored: %s", self.NAME, exc)
             result.verify_notes.append(f"verification errored: {exc}")
-            # ...but a check that crashed is not a check that passed. It read
-            # as "no claim", and the run's report as "nothing went wrong"
-            # (review of slice D, finding 4): it is now one of the stage's
-            # errors, which every report counts.
+            # A check that crashed is not a check that passed. It read as "no
+            # claim" (review of slice D, finding 4), then as an error that
+            # still left the stage a success, so the run exited 0 and a resume
+            # skipped it (Codex audit 2026-10-16, F13). Whether the stage did
+            # its job is unknown, so it is not done: the run fails and a resume
+            # runs the stage again -- every stage selects only unfinished work.
             result.errors.append(f"the effect check failed to run: {type(exc).__name__}: {exc}")
+            result.verified = False
+            result.success = False
+            log_event = getattr(ctx, "log_event", None)
+            if log_event is not None:
+                log_event(
+                    "STAGE_UNVERIFIED",
+                    stage=result.stage_name,
+                    note=f"the effect check failed to run: {type(exc).__name__}: {exc}"[:500],
+                )
             return
         # isinstance, not `is`: both are exact here -- _NoVerification has
         # __slots__ and exactly one instance -- but only isinstance narrows the

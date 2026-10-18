@@ -771,3 +771,29 @@ def test_a_multibyte_name_is_never_cut_mid_codepoint(tmp_path: Path) -> None:
     out = unique_path(f)
     assert len(out.name.encode("utf-8")) <= 255
     assert out.name.encode("utf-8").decode("utf-8") == out.name
+
+
+class TestGreysPerSongFolders:
+    """Grey, 2026-10-17 (MetaData/folder_names.tsv). Codex review of #206: the
+    stage's own query never fetched the song's audio hash, so organize filed a
+    listed song by its artist -- every run would have moved Grey's choice back."""
+
+    def test_organize_files_a_listed_song_in_greys_folder(self, ctx):
+        jet = _make_track(ctx, "flat/jet.m4a", "Paul McCartney", "Band On The Run", "Jet")
+        other = _make_track(ctx, "flat/ram.m4a", "Paul McCartney", "Ram", "Too Many People")
+        ctx.conn.execute(
+            "UPDATE archive SET audio_hash = ? WHERE file_path = ?", ("j" * 64, str(jet))
+        )
+        ctx.conn.execute(
+            "UPDATE archive SET audio_hash = ? WHERE file_path = ?", ("r" * 64, str(other))
+        )
+        ctx.conn.commit()
+        ctx.config.meta_dir.mkdir(parents=True, exist_ok=True)
+        (ctx.config.meta_dir / "folder_names.tsv").write_text(
+            f"{'j' * 64}\tWings\tJet\n", encoding="utf-8"
+        )
+
+        OrganizeStage().run(ctx)
+
+        assert (ctx.inbox / "Unsorted" / "Wings" / "Band On The Run").is_dir(), "Jet not in Wings"
+        assert (ctx.inbox / "Unsorted" / "Paul McCartney" / "Ram").is_dir()
