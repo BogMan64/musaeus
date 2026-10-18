@@ -254,3 +254,44 @@ def test_a_second_run_on_the_same_drive_waits_its_turn(vault, tmp_path):
         os.close(fd)
     assert r.problems == ["another backup run is using this drive"]
     assert mb.dated_copies(root) == []
+
+
+def _drop_one(vault):
+    for p in sorted((vault / "Libraries" / "ALAC-Archival").rglob("*.m4a"))[:1]:
+        p.unlink()
+
+
+def test_masters_drained_a_little_each_month_never_rotate_the_full_copy_away(vault, tmp_path):
+    # Re-review of #200: each run within the floor of the NEWEST copy.
+    root = tmp_path / "NUC"
+    root.mkdir()
+    masters = vault / "Libraries" / "ALAC-Archival"
+    for i in range(18):  # 20 masters in all
+        (masters / f"Extra/A/{i}.m4a").parent.mkdir(parents=True, exist_ok=True)
+        (masters / f"Extra/A/{i}.m4a").write_bytes(b"audio" * 100 + bytes([i]))
+    full = mb.run(vault, root, today="20261001").dest
+    _drop_one(vault)
+    _drop_one(vault)  # 18 of 20: 90%, within the floor
+    assert mb.run(vault, root, today="20261101").problems == []
+    _drop_one(vault)  # 17: within 90% of 18, not of 20
+
+    r = mb.run(vault, root, today="20261201")
+
+    assert r.problems and full in mb.dated_copies(root), "the full copy was rotated away"
+
+
+def test_empty_masters_are_never_a_backup_even_with_allow_shrink(vault, tmp_path):
+    root = tmp_path / "NUC"
+    root.mkdir()
+    first = mb.run(vault, root, today="20261101").dest
+    _empty_the_masters(vault)
+    assert mb.run(vault, root, today="20261201", allow_shrink=True).problems
+    assert mb.dated_copies(root) == [first]
+
+
+def test_empty_masters_are_not_a_first_backup_either(vault, tmp_path):
+    root = tmp_path / "NUC"
+    root.mkdir()
+    _empty_the_masters(vault)
+    assert mb.run(vault, root, today="20261101").problems
+    assert mb.dated_copies(root) == []

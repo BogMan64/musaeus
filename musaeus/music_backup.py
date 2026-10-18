@@ -229,7 +229,11 @@ def run(
 def _run(vault: Path, root: Path, keep: int, today: str | None, allow_shrink: bool) -> Report:
     today = today or date.today().strftime("%Y%m%d")
     _recover(root)  # before counting: a copy set aside is still the last copy
-    newest = next(iter(dated_copies(root)), None)
+    # The LARGEST copy kept, not the newest: compared only with the newest,
+    # masters drained a little each month (100 -> 91 -> 82) passed every run
+    # and rotated the last full copy away (re-review of #200). A shrink that
+    # was meant needs --allow-shrink until the big copy has rotated out.
+    newest = max(dated_copies(root), key=_files, default=None)
     had = _files(newest) if newest else 0
     work, problems = make_copy(vault, root, today)
     files, more = verify_copy(vault, work)
