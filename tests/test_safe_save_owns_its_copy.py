@@ -121,6 +121,10 @@ def test_the_album_art_stage_never_writes_a_cover_through_a_link(tmp_path, monke
     AlbumArtStage().run(ctx)
 
     assert not outside.exists(), "the cover was written outside the library through a link"
+    # And the stage really did its work: the link was replaced by the fetched
+    # image, not skipped (Codex review of #205).
+    sidecar = song.parent / "cover.jpg"
+    assert not sidecar.is_symlink() and sidecar.read_bytes() == cover.read_bytes()
 
 
 def test_copy_to_new_never_writes_through_and_leaks_nothing(tmp_path):
