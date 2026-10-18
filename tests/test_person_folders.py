@@ -315,6 +315,8 @@ def test_a_listed_act_that_matches_no_song_is_named_before_anything_moves(tmp_pa
     assert any("Bob Segre & The Silver Bullet Band" in n for n in result.notes)
     assert not any("'Bob Seger'" in n for n in result.notes), "a matched act was named"
     assert song.exists(), "a dry run moved a file"
+    # Codex review of #208 (fourth round): the dry run must not look ready.
+    assert not result.success, "the dry run reported OK for a run that will refuse"
 
     # Codex review of #208 (second round): a note after the moves came too
     # late. A real run refuses before moving anything.

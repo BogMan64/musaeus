@@ -539,14 +539,20 @@ def refuse_unmatched_person_acts(
         note = f"person_folders.tsv: {act!r} matches no song -- check the spelling"
         logger.warning("[%s] %s", stage, note)
         result.notes.append(note)
-    if unmatched and not result.dry_run:
-        result.success = False
-        result.errors.append(
-            f"person_folders.tsv names {len(unmatched)} act(s) no song files under; "
-            f"nothing was moved -- correct the list and run again"
+    if not unmatched:
+        return False
+    # The dry run fails too: it must not look ready for a run that will
+    # refuse (Codex review of #208).
+    result.success = False
+    result.errors.append(
+        f"person_folders.tsv names {len(unmatched)} act(s) no song files under; "
+        + (
+            "a real run would refuse -- correct the list first"
+            if result.dry_run
+            else "nothing was moved -- correct the list and run again"
         )
-        return True
-    return False
+    )
+    return not result.dry_run
 
 
 def folder_spelling(name: str) -> str:
