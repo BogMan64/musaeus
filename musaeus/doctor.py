@@ -89,7 +89,12 @@ def song_key(artist: str | None, title: str | None) -> tuple[str, str]:
     "500 songs lost" report.
     """
     t = _EDITION_RE.sub("", strip_bracketed(title or ""))
-    return (_NOISE_RE.sub("", (artist or "").lower()), _NOISE_RE.sub("", t.lower()))
+    # "&" and "and" are one spelling (Grey, 2026-10-12): "Jack & Diane" and
+    # "Jack And Diane" are one song, not a sole copy each.
+    return (
+        _NOISE_RE.sub("", (artist or "").lower().replace("&", "and")),
+        _NOISE_RE.sub("", t.lower().replace("&", "and")),
+    )
 
 
 @dataclass

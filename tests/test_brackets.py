@@ -123,3 +123,14 @@ def test_the_alphabet_constants_cover_all_three_styles() -> None:
         assert ch in OPEN.replace("\\", "")
     for ch in ")]}":
         assert ch in CLOSE.replace("\\", "")
+
+
+def test_song_key_reads_ampersand_and_the_word_and_as_one():
+    # Doctor called "Jack And Diane" a sole copy while "Jack & Diane" sat in
+    # the library (2026-10-18).
+    from musaeus.doctor import song_key
+
+    assert song_key("John Mellencamp", "Jack And Diane") == song_key(
+        "John Mellencamp", "Jack & Diane"
+    )
+    assert song_key("Simon & Garfunkel", "X") == song_key("Simon and Garfunkel", "X")
