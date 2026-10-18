@@ -1534,9 +1534,10 @@ def _one_act_two_spellings(cfg: MusicConfig, rep: Report) -> None:
     try:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
         mb = "mb_artist_name" if "mb_artist_name" in cols else "NULL"
+        # Per song: a song Grey filed in a folder of its own (folder_names.tsv)
+        # counts in that folder, not its artist's.
         rows = conn.execute(
-            f"SELECT artist, {mb}, COUNT(*) FROM archive WHERE status = 'CATALOGUED' "
-            "GROUP BY artist, 2"
+            f"SELECT artist, {mb}, audio_hash FROM archive WHERE status = 'CATALOGUED'"
         ).fetchall()
     finally:
         conn.close()
@@ -1548,8 +1549,8 @@ def _one_act_two_spellings(cfg: MusicConfig, rep: Report) -> None:
     # one folder since 2026-10-12, so not "two spellings" (pre-merge review
     # of #192).
     folders: dict[str, int] = defaultdict(int)
-    for artist, mb_name, n in rows:
-        folders[folder_spelling(library_artist(artist, mb_name, filing))] += int(n)
+    for artist, mb_name, h in rows:
+        folders[folder_spelling(library_artist(artist, mb_name, filing, h))] += 1
     groups: dict[str, list[tuple[str, int]]] = defaultdict(list)
     for folder, n in folders.items():
         key = _spelling_key(folder)

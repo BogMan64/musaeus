@@ -182,12 +182,13 @@ def test_a_copy_cut_short_by_a_full_disk_is_removed(tmp_path, monkeypatch):
     master = _m4a(tmp_path / "song.m4a")
     before = master.read_bytes()
 
-    def disk_full(src, dst):
-        with open(dst, "wb") as fh:
-            fh.write(b"half")
+    def disk_full(src, dst, *a, **k):
+        dst.write(b"half")
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(safe_save.shutil, "copy2", disk_full)
+    # The copy is made by safe_save.copy_to_new (Codex audit F1), which fills
+    # its own new file with copyfileobj.
+    monkeypatch.setattr(safe_save.shutil, "copyfileobj", disk_full)
     with pytest.raises(OSError):
         write_tags(str(master), {RG_KEY: b"+1.00 dB"})
     assert master.read_bytes() == before

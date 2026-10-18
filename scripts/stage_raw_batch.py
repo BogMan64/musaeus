@@ -28,6 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, "/mnt/FORGE2TB/Projects/MUSAEUS")
 from musaeus.config import MusicConfig
+from musaeus.safe_save import copy_to_new
 
 RAW_ROOT = Path("/media/grey/USB1/2.- Curated.RAW.Files")
 MANIFEST_NAME = "raw_rebuild_manifest.csv"
@@ -116,7 +117,7 @@ def copy_verified(src: Path, dest: Path) -> None:
     """Write to .part, verify size, then rename. Never leave a partial file
     at the final name -- it would look finished and be skipped for ever."""
     part = dest.with_suffix(dest.suffix + ".part")
-    shutil.copy2(src, part)
+    copy_to_new(src, part)  # never through a link at .part (Codex audit F1)
     if part.stat().st_size != src.stat().st_size:
         part.unlink(missing_ok=True)
         raise OSError(f"short copy: {src.name}")

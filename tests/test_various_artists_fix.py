@@ -304,3 +304,15 @@ class TestCompoundVariousArtists:
         assert is_various("VA") is True
         assert is_various("VA Beach Band") is False
         assert is_various("Various Production") is False
+
+
+def test_the_candidates_carry_the_songs_hash_for_greys_folder_list(ctx):
+    # Review of #206: the destination call reads the song's audio hash (Grey's
+    # per-song folders, MetaData/folder_names.tsv); the query must fetch it.
+    from musaeus.stages.various_artists_fix import VariousArtistsFixStage
+
+    path = _make_row(ctx, "Various Artists/Hits/song.m4a", "Various Artists", "Song")
+    ctx.conn.execute("UPDATE archive SET audio_hash = 'h1' WHERE file_path = ?", (str(path),))
+    ctx.conn.commit()
+    rows = VariousArtistsFixStage()._get_candidates(ctx)
+    assert rows and rows[0]["audio_hash"] == "h1"

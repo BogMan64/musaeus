@@ -374,12 +374,26 @@ def _remove_emptied_dirs(start: Path, stop: Path) -> None:
 
 
 def library_artist(
-    artist: str | None, mb_artist_name: str | None, filing: dict[str, str] | None = None
+    artist: str | None,
+    mb_artist_name: str | None,
+    filing: dict[str, str] | None = None,
+    audio_hash: str | None = None,
 ) -> str:
-    """The artist folder a track files under, in the sort form: Grey's ruling
-    in MetaData/artist_filing.tsv first, then folder_artist (MusicBrainz
-    agreement, feat./with, "& The ...", a personal-name tail). One function,
-    used by library_relpath and by Curator's export (review of #163)."""
+    """The artist folder a track files under: Grey's per-song folder first
+    (MetaData/folder_names.tsv), then Grey's ruling in artist_filing.tsv, then
+    folder_artist (MusicBrainz agreement, feat./with, "& The ...", a
+    personal-name tail). One function, used by library_relpath and by
+    Curator's export (review of #163).
+
+    In the sort form, "Alan Parsons Project, The": a folder view sorts by the
+    literal name, and Grey wants "The" bands under the main word (2026-10-18;
+    tags keep the natural form, which is what MusicBrainz reads).
+    """
+    from ..filing import song_folder
+
+    chosen = song_folder(filing, audio_hash)
+    if chosen:
+        return sort_form(stored_artist(chosen))
     ruled = ruling_for(filing, artist)
     if ruled:
         # The ruled folder in the stored form, so it and the artist's other
@@ -397,6 +411,7 @@ def library_relpath(
     title: str | None,
     ext: str,
     filing: dict[str, str] | None = None,
+    audio_hash: str | None = None,
 ) -> Path:
     """Where a track belongs, relative to a library root: Genre/Artist/Album/file.
 
@@ -440,7 +455,10 @@ def library_relpath(
     # FinalizeStage alone, so finalize and organize filed the same credit in
     # different folders and organize moved every such file straight back out
     # -- R2, measured 2026-09-24: all 389 files of the first fresh batch.
-    path_artist = library_artist(artist, mb_artist_name, filing)
+    path_artist = library_artist(artist, mb_artist_name, filing, audio_hash)
+    from ..filing import song_genre
+
+    genre = song_genre(filing, audio_hash) or genre
 
     # The genre level MUST match FinalizeStage. On 2026-09-18 it did
     # not: finalize was changed to file under Genre/Artist/Album and
@@ -766,7 +784,7 @@ class OrganizeStage(BaseStage):
 
         rows = ctx.conn.execute(
             f"""
-            SELECT id, file_path, artist, album, title, genre, {_mb_sql}
+            SELECT id, file_path, artist, album, title, genre, {_mb_sql}, audio_hash
             FROM archive
             WHERE status = 'CATALOGUED'
               AND artist IS NOT NULL
@@ -838,6 +856,7 @@ class OrganizeStage(BaseStage):
                 row["title"],
                 current_path.suffix,
                 filing,
+                row["audio_hash"] if "audio_hash" in set(row.keys()) else None,
             )
             candidate_path = dest_root / rel
             target_dir = candidate_path.parent
