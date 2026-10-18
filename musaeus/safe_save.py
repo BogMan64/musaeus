@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
@@ -36,10 +37,24 @@ def change_beside(
     many files say so before they run.
     """
     tmp = path.with_name(path.name + suffix)
+    # Whatever is at the copy's name is not the copy (Codex audit 2026-10-16,
+    # F1): shutil.copy2 followed a link planted there and overwrote ANOTHER
+    # recording, and the rename then put the link in the song's place. The
+    # name is cleared -- a link or hardlink loses its name, never its target's
+    # bytes -- and the copy is created by us, O_EXCL|O_NOFOLLOW: if anything
+    # claims the name again first, the open fails and nothing is written.
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(tmp)
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        raise OSError(f"{tmp} was claimed by something else while it was being made") from None
     try:
         # Inside the try: a copy cut short (disk full) is removed too
-        # (review of #135-#139, finding 6). Replaces a copy a killed run left.
-        shutil.copy2(path, tmp)
+        # (review of #135-#139, finding 6).
+        with open(path, "rb") as src, os.fdopen(fd, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        shutil.copystat(path, tmp)
         change(tmp)
         if check is not None:
             check(tmp)
@@ -55,6 +70,30 @@ def change_beside(
         os.fsync(dir_fd)
     finally:
         os.close(dir_fd)
+
+
+def write_new(path: Path, data: bytes) -> None:
+    """Write *data* as *path* without ever writing through what is there.
+
+    A cover beside a song was written with write_bytes, which follows a link:
+    a planted `<song>.musaeus_cover.jpg` or dangling `cover.jpg` link sent
+    the image into a file elsewhere (Codex audit 2026-10-16, F1). The bytes
+    go to a private, exclusively created file in the same folder, are flushed,
+    and that file is renamed onto the name -- replacing a link, not following
+    it.
+    """
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".part", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(name, 0o644)
+        os.replace(name, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(name)
+        raise
 
 
 T = TypeVar("T")
