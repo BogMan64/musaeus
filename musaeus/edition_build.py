@@ -1002,9 +1002,14 @@ def execute(
     out = Outcome()
 
     # The command line has already done this before planning (Codex audit
-    # 2026-10-16, F11); here for any other caller, and for what a plan made
-    # elsewhere may find.
-    recover_stepped_aside(edition_root, ledger, kind)
+    # 2026-10-16, F11); here for any other caller. Anything put back NOW
+    # was left by a build stopped after this plan was made: the plan may bake
+    # it again as missing, so it is not carried out (review of #201).
+    if recover_stepped_aside(edition_root, ledger, kind) and (plan.bake or plan.move):
+        raise RuntimeError(
+            "copies a stopped build had left aside were put back after this plan was "
+            "made; nothing else was done -- run the build again"
+        )
 
     for c in plan.forget:
         forget(ledger, kind.name, c.master_hash)

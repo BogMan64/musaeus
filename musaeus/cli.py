@@ -1435,7 +1435,7 @@ def _cmd_edition_build_inner(args) -> int:
             print(f"\n  Dry run -- nothing was written. List: {log}\n")
             return 0
         if moved:
-            return 1  # nothing was written
+            return 1  # nothing built (a stopped build's copies may have been put back)
 
         need = eb.space_needed(plan if args.limit is None else _limited(plan, args.limit))
         if need > free:
