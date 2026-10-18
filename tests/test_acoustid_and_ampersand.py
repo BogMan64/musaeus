@@ -6,3 +6,9 @@ from musaeus.stages.acousticid import _pick_matching_recording
 def test_a_title_spelled_with_ampersand_agrees_with_the_word_and():
     recordings = [{"id": "r1", "title": "Jack and Diane", "artists": [{"name": "John Mellencamp"}]}]
     assert _pick_matching_recording(recordings, "John Mellencamp", "Jack & Diane") == "r1"
+
+
+def test_a_title_that_is_only_an_ampersand_matches_nothing():
+    # Review of #209: "&" alone became "and" and picked "Band On The Run".
+    recordings = [{"id": "r1", "title": "Band On The Run", "artists": [{"name": "Wings"}]}]
+    assert _pick_matching_recording(recordings, "Wings", "&") is None

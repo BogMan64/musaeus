@@ -185,8 +185,10 @@ def _norm_for_match(value: str) -> str:
     """Letters and digits only -- punctuation and case are not identity, and
     "&" is the word "and" (Grey, 2026-10-12): "Jack & Diane" is the recording
     MusicBrainz calls "Jack and Diane"."""
-    folded = unicodedata.normalize("NFKD", value or "").lower().replace("&", "and")
-    return re.sub(r"[^a-z0-9]", "", folded)
+    text = unicodedata.normalize("NFKD", value or "").lower()
+    if not re.search(r"[a-z0-9]", text):
+        return ""  # "&" alone is no title to match ("and" is in "Band On The Run")
+    return re.sub(r"[^a-z0-9]", "", text.replace("&", "and"))
 
 
 def _artist_key(name: str) -> str:
