@@ -1,0 +1,56 @@
+"""Codex audit 2026-10-16, F5: a credential in a request URL (Last.fm's api_key,
+AcoustID's client) reached DEBUG logs, exception texts and the network gateway's
+record of attempts and denials. None of them may hold the key."""
+
+from __future__ import annotations
+
+import io
+import json
+import urllib.error
+
+import pytest
+
+from musaeus import art_sources as A
+from musaeus import network_policy as np
+
+SECRET = "AUDIT_DUMMY_LASTFM_CREDENTIAL"
+URL = f"https://ws.audioscrobbler.com/2.0/?method=album.getinfo&api_key={SECRET}&artist=A"
+
+
+@pytest.fixture
+def gateway():
+    np._gateway.reset()
+    yield np._gateway
+    np._gateway.reset()
+
+
+def test_redact_hides_every_credential_parameter():
+    url = f"https://x/?api_key={SECRET}&client={SECRET}&token={SECRET}&artist=Keep"
+    out = np.redact(url)
+    assert SECRET not in out and "artist=Keep" in out and out.count("REDACTED") == 3
+
+
+def test_a_denied_request_records_and_reports_no_key(gateway):
+    with np.policy(np.NetworkPolicy.LOCAL_ONLY), pytest.raises(A.ArtUnavailable) as err:
+        A._get(URL)
+    assert SECRET not in str(err.value)
+    assert all(SECRET not in t for t in gateway.attempts + gateway.denials)
+
+
+def test_an_http_failure_and_bad_json_name_no_key(gateway, monkeypatch, caplog):
+    def http_503(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 503, "busy", {}, io.BytesIO(b""))
+
+    with np.policy(np.NetworkPolicy.ALLOWED):
+        monkeypatch.setattr(A.urllib.request, "urlopen", http_503)
+        with caplog.at_level("DEBUG"), pytest.raises(A.ArtUnavailable) as err:
+            A._get(URL)
+        assert SECRET not in str(err.value)
+        monkeypatch.setattr(A, "_get", lambda url, accept=None: b"not json")
+        with pytest.raises(A.ArtUnavailable) as err2:
+            A._get_json(URL)
+        assert SECRET not in str(err2.value)
+    assert SECRET not in caplog.text
+    assert all(SECRET not in t for t in gateway.attempts)
+    assert json.dumps(gateway.attempts)  # still a usable record: service and endpoint kept
+    assert any("ws.audioscrobbler.com" in t for t in gateway.attempts)

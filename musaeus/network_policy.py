@@ -31,6 +31,7 @@ Two things follow:
 
 from __future__ import annotations
 
+import re
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -41,6 +42,20 @@ from enum import Enum
 class NetworkPolicy(Enum):
     LOCAL_ONLY = "local-only"  # preview and any unattended default
     ALLOWED = "allowed"  # explicit, execute-mode only
+
+
+#: Query parameters that carry a credential. Their values never reach a log,
+#: an exception text or the gateway's record (Codex audit 2026-10-16, F5:
+#: Last.fm's api_key appeared in DEBUG logs and in the gateway's denials).
+_SECRET_PARAMS = re.compile(
+    r"([?&](?:api_?key|apikey|key|client|client_secret|token|access_token|secret|password)=)[^&#]*",
+    re.I,
+)
+
+
+def redact(url: str) -> str:
+    """*url* with every credential-looking query value replaced."""
+    return _SECRET_PARAMS.sub(r"\1REDACTED", url or "")
 
 
 class NetworkDenied(RuntimeError):
@@ -63,13 +78,14 @@ class Gateway:
         in `except Exception` cannot erase the evidence -- see the module
         docstring.
         """
+        shown = redact(target)
         with self._lock:
-            self.attempts.append(target)
+            self.attempts.append(shown)
             if self.policy is NetworkPolicy.LOCAL_ONLY:
-                self.denials.append(target)
+                self.denials.append(shown)
         if self.policy is NetworkPolicy.LOCAL_ONLY:
             raise NetworkDenied(
-                f"network access to {target!r} refused: policy is local-only. "
+                f"network access to {shown!r} refused: policy is local-only. "
                 "Preview never performs external lookups."
             )
 

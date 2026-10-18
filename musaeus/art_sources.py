@@ -43,6 +43,7 @@ from urllib.parse import quote, urlencode
 from .art_quality import MIN_EDGE_PX, describe, image_dimensions, is_too_small
 from .artist_form import act_key, folder_artist
 from .network_policy import check as _network_check
+from .network_policy import redact
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,7 @@ def _get(url: str, *, accept: str | None = None) -> bytes | None:
     except urllib.error.HTTPError as exc:
         if exc.code in (404, 400):
             return None  # answered: nothing there
-        raise ArtUnavailable(f"HTTP {exc.code} for {url}") from exc
+        raise ArtUnavailable(f"HTTP {exc.code} for {redact(url)}") from exc
     except Exception as exc:
         raise ArtUnavailable(str(exc)) from exc
 
@@ -100,7 +101,7 @@ def _get_json(url: str) -> dict | None:
         parsed: dict = json.loads(raw.decode("utf-8"))
         return parsed
     except Exception as exc:
-        raise ArtUnavailable(f"unparseable JSON from {url}: {exc}") from exc
+        raise ArtUnavailable(f"unparseable JSON from {redact(url)}: {exc}") from exc
 
 
 def _looks_like_image(blob: bytes | None) -> bool:
