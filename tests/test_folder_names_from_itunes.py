@@ -87,3 +87,17 @@ def test_finalize_keeps_the_per_song_list_for_every_track_of_a_run(tmp_path):
     first, second = stage._filing(ctx), stage._filing(ctx)
     assert filing.song_folder(first, H) == "Wings"
     assert filing.song_folder(second, H) == "Wings", "the list was lost after the first track"
+
+
+def test_a_listed_song_takes_the_acts_genre_when_the_list_gives_one(tmp_path):
+    # Grey, 2026-10-18: one genre per act -- Jimi Hendrix is Blues Rock.
+    f = filing.load(_meta(tmp_path, songs=f"{H}\tJimi Hendrix\tBlues Rock\tFoxy Lady\n"))
+    rel = library_relpath("The Jimi Hendrix Experience", None, "Psychedelic Rock",
+                          "Are You Experienced", "Foxy Lady", ".m4a", f, H)  # fmt: skip
+    assert rel.parts[:2] == ("Blues Rock", "Jimi Hendrix")
+
+
+def test_a_blank_genre_keeps_the_songs_own(tmp_path):
+    f = filing.load(_meta(tmp_path, songs=f"{H}\tWings\t\tJet\n"))
+    rel = library_relpath("Paul McCartney", None, "Pop", "Band On The Run", "Jet", ".m4a", f, H)
+    assert rel.parts[:2] == ("Pop", "Wings")

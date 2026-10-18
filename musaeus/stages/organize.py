@@ -447,6 +447,9 @@ def library_relpath(
     # different folders and organize moved every such file straight back out
     # -- R2, measured 2026-09-24: all 389 files of the first fresh batch.
     path_artist = library_artist(artist, mb_artist_name, filing, audio_hash)
+    from ..filing import song_genre
+
+    genre = song_genre(filing, audio_hash) or genre
 
     # The genre level MUST match FinalizeStage. On 2026-09-18 it did
     # not: finalize was changed to file under Genre/Artist/Album and
