@@ -67,7 +67,9 @@ def test_finalize_files_the_master_and_the_row_points_at_it(tmp_path):
     assert FinalizeStage().execute(ctx).success
     (fp,) = ctx.conn.execute("SELECT file_path FROM archive").fetchone()
     rel = Path(fp).relative_to(ctx.config.alac_archive)
-    assert str(rel) == "Hip Hop/Black Eyed Peas, The/Album/Black Eyed Peas, The - Hey Mama.m4a"
+    assert (
+        str(rel) == "Hip Hop/The Black Eyed Peas/Album/The Black Eyed Peas - Hey Mama.m4a"
+    )  # Grey 2026-10-17: "The X"
     assert not any(ctx.config.alac_library.rglob("*.m4a")), "finalize must not write a library copy"
 
 

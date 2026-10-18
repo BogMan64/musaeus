@@ -470,6 +470,7 @@ class FinalizeStage(BaseStage):
             row.get("title"),
             source.suffix,
             self._filing(ctx),
+            row.get("audio_hash"),
         )
         batch = self._batch_date(ctx)
         # The MASTER, in ALAC-Archival (Grey 2026-08-18, confirmed 2026-09-25);

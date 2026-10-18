@@ -48,6 +48,10 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 FILENAME = "artist_filing.tsv"
+#: Grey, 2026-10-17: per-song folder names, from Grey's Windows-iTunes folders.
+#: audio_hash TAB folder TAB note. Only songs whose folder is a different act;
+#: the folder's spelling style is the rule's. Folder only: tag and title stay.
+SONGS_FILENAME = "folder_names.tsv"
 
 HEADER = """\
 # MUSAEUS Artist Filing — artist_tag TAB folder_name
@@ -82,8 +86,9 @@ def load(meta_dir: Path) -> dict[str, str]:
     caller falls back to anyway.
     """
     path = Path(meta_dir) / FILENAME
+    songs = _load_songs(meta_dir)
     if not path.exists():
-        return FilingMap({})
+        return FilingMap({}, songs)
     out: dict[str, str] = {}
     folded: dict[str, str] = {}
     try:
@@ -126,7 +131,7 @@ def load(meta_dir: Path) -> dict[str, str]:
             )
         folded.setdefault(tag.casefold(), tag)
         out[tag] = folder
-    return FilingMap(out)
+    return FilingMap(out, songs)
 
 
 def ruling_for(filing: dict[str, str] | None, artist: str | None) -> str | None:
@@ -152,9 +157,47 @@ def ruling_for(filing: dict[str, str] | None, artist: str | None) -> str | None:
 class FilingMap(dict[str, str]):
     """tag -> folder, with a casefolded index built once rather than per track."""
 
-    def __init__(self, entries: dict[str, str]) -> None:
+    def __init__(self, entries: dict[str, str], songs: dict[str, str] | None = None) -> None:
         super().__init__(entries)
         self.folded = {tag.casefold(): tag for tag in entries}
+        #: audio_hash -> folder (folder_names.tsv); checked before any ruling.
+        self.songs = dict(songs or {})
+
+
+def song_folder(filing: dict[str, str] | None, audio_hash: str | None) -> str | None:
+    """Grey's per-song folder for *audio_hash*, or None."""
+    songs = getattr(filing, "songs", None)
+    if not songs or not audio_hash:
+        return None
+    folder = songs.get(audio_hash)
+    return str(folder) if folder else None
+
+
+def _load_songs(meta_dir: Path) -> dict[str, str]:
+    path = Path(meta_dir) / SONGS_FILENAME
+    if not path.exists():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise FilingError(f"{SONGS_FILENAME} could not be read: {exc}") from exc
+    out: dict[str, str] = {}
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        parts = raw.split("\t")
+        h, folder = (parts[0].strip(), parts[1].strip()) if len(parts) >= 2 else ("", "")
+        if not h or not folder:
+            raise FilingError(
+                f"{SONGS_FILENAME} line {lineno}: expected 'audio_hash<TAB>folder', got {raw!r}"
+            )
+        if h in out and out[h] != folder:
+            raise FilingError(
+                f"{SONGS_FILENAME} line {lineno}: that song is already filed under "
+                f"{out[h]!r}; a second answer {folder!r} makes the file ambiguous."
+            )
+        out[h] = folder
+    return out
 
 
 def folder_for(artist: str | None, filing: dict[str, str]) -> str:

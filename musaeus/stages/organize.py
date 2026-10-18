@@ -83,7 +83,7 @@ import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
 
-from ..artist_form import folder_artist, sort_form
+from ..artist_form import folder_artist, natural_form
 from ..canon.protected_artists import PROTECTED_ARTIST_NAMES
 from ..context import RunContext, StageResult
 from ..filing import load as filing_load
@@ -374,19 +374,32 @@ def _remove_emptied_dirs(start: Path, stop: Path) -> None:
 
 
 def library_artist(
-    artist: str | None, mb_artist_name: str | None, filing: dict[str, str] | None = None
+    artist: str | None,
+    mb_artist_name: str | None,
+    filing: dict[str, str] | None = None,
+    audio_hash: str | None = None,
 ) -> str:
-    """The artist folder a track files under, in the sort form: Grey's ruling
-    in MetaData/artist_filing.tsv first, then folder_artist (MusicBrainz
-    agreement, feat./with, "& The ...", a personal-name tail). One function,
-    used by library_relpath and by Curator's export (review of #163)."""
+    """The artist folder a track files under: Grey's per-song folder first
+    (MetaData/folder_names.tsv), then Grey's ruling in artist_filing.tsv, then
+    folder_artist (MusicBrainz agreement, feat./with, "& The ...", a
+    personal-name tail). One function, used by library_relpath and by
+    Curator's export (review of #163).
+
+    In the NATURAL form, "The Alan Parsons Project" -- Grey, 2026-10-17, from
+    the folders Grey made in iTunes. It was the sort form ("Alan Parsons
+    Project, The") until then."""
+    from ..filing import song_folder
+
+    chosen = song_folder(filing, audio_hash)
+    if chosen:
+        return natural_form(stored_artist(chosen))
     ruled = ruling_for(filing, artist)
     if ruled:
         # The ruled folder in the stored form, so it and the artist's other
         # tracks land in ONE folder (cloud review of #38: "Hootie & the
         # Blowfish" beside "Hootie & The Blowfish").
-        return sort_form(stored_artist(ruled))
-    return sort_form(folder_artist(artist or "Unknown Artist", mb_artist_name))
+        return natural_form(stored_artist(ruled))
+    return natural_form(folder_artist(artist or "Unknown Artist", mb_artist_name))
 
 
 def library_relpath(
@@ -397,6 +410,7 @@ def library_relpath(
     title: str | None,
     ext: str,
     filing: dict[str, str] | None = None,
+    audio_hash: str | None = None,
 ) -> Path:
     """Where a track belongs, relative to a library root: Genre/Artist/Album/file.
 
@@ -415,18 +429,10 @@ def library_relpath(
     """
     from .finalize import genre_folder
 
-    # Paths use the SORT form, always, whichever form the tag holds.
-    #
-    # The `artist` tag is moving to the natural form ("The Stooges")
-    # because that is what MusicBrainz and every player expect. The
-    # filesystem wants the other one: "Stooges, The" sorts under S,
-    # which is the whole reason the convention exists.
-    #
-    # Deriving the path from sort_form rather than from the tag keeps
-    # the two decisions independent -- the on-disk layout is byte
-    # identical before and after the tag migration, so no file moves
-    # because of it. Both directions are idempotent, so this is also
-    # correct for a library holding a mix of the two forms.
+    # Paths use the NATURAL form, "The Stooges" (Grey, 2026-10-17, from the
+    # folders Grey made in iTunes). Until then they used the sort form
+    # ("Stooges, The") whatever the tag held; the tag and the path are still
+    # decided independently, so a tag in either form files the same.
     # A duet files under its PRIMARY artist while the tag keeps the
     # full credit -- "Johnny Mathis & Deniece Williams" made a
     # one-track folder of its own. folder_artist() refuses to take a
@@ -440,7 +446,7 @@ def library_relpath(
     # FinalizeStage alone, so finalize and organize filed the same credit in
     # different folders and organize moved every such file straight back out
     # -- R2, measured 2026-09-24: all 389 files of the first fresh batch.
-    path_artist = library_artist(artist, mb_artist_name, filing)
+    path_artist = library_artist(artist, mb_artist_name, filing, audio_hash)
 
     # The genre level MUST match FinalizeStage. On 2026-09-18 it did
     # not: finalize was changed to file under Genre/Artist/Album and
@@ -838,6 +844,7 @@ class OrganizeStage(BaseStage):
                 row["title"],
                 current_path.suffix,
                 filing,
+                row["audio_hash"] if "audio_hash" in set(row.keys()) else None,
             )
             candidate_path = dest_root / rel
             target_dir = candidate_path.parent

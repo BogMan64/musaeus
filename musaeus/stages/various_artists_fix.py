@@ -500,7 +500,14 @@ class VariousArtistsFixStage(BaseStage):
             if root is None or not source.is_relative_to(root):
                 continue
             rel = library_relpath(
-                real_artist, None, genre, row.get("album"), row.get("title"), source.suffix, filing
+                real_artist,
+                None,
+                genre,
+                row.get("album"),
+                row.get("title"),
+                source.suffix,
+                filing,
+                row.get("audio_hash"),
             )
             candidate = Path(root) / rel
             if candidate == source or _is_collision_name_for(source, candidate):

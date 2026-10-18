@@ -78,6 +78,7 @@ drift apart.
     python3 scripts/consolidate_artist_folders.py "Simon" "Simon & Garfunkel" --execute
     python3 scripts/consolidate_artist_folders.py "Delerium" "Delerium" --genre Celtic
 """
+
 from __future__ import annotations
 
 import argparse
@@ -128,7 +129,9 @@ class MergePlan:
         return [m for r in self.rows for m in r.moves]
 
 
-def target_genre(conn: sqlite3.Connection, old: str, new: str, override: str | None) -> tuple[str | None, list[str]]:
+def target_genre(
+    conn: sqlite3.Connection, old: str, new: str, override: str | None
+) -> tuple[str | None, list[str]]:
     """The genre the moved rows file under, and anything worth saying about it.
 
     MasterLaw rules genre per ARTIST, so the target's own rows already say
@@ -140,7 +143,8 @@ def target_genre(conn: sqlite3.Connection, old: str, new: str, override: str | N
     if old == new:
         return None, []
     found = collections.Counter(
-        g for (g,) in conn.execute(
+        g
+        for (g,) in conn.execute(
             "SELECT genre FROM archive WHERE artist = ? AND status = 'CATALOGUED' AND COALESCE(genre,'') <> ''",
             (new,),
         )
@@ -149,11 +153,15 @@ def target_genre(conn: sqlite3.Connection, old: str, new: str, override: str | N
         return None, [f"{new!r} has no filed rows yet; each moved row keeps its own genre"]
     notes = []
     if len(found) > 1:
-        notes.append(f"{new!r} is filed under {len(found)} genres {dict(found)}; using the commonest")
+        notes.append(
+            f"{new!r} is filed under {len(found)} genres {dict(found)}; using the commonest"
+        )
     return found.most_common(1)[0][0], notes
 
 
-def target_identity(conn: sqlite3.Connection, old: str, new: str) -> tuple[str | None, str | None] | None:
+def target_identity(
+    conn: sqlite3.Connection, old: str, new: str
+) -> tuple[str | None, str | None] | None:
     """The MusicBrainz identity a merged row takes on: the target's own.
 
     folder_artist() reads mb_artist_name to decide whether a credit is one act
@@ -211,7 +219,12 @@ def _free_name(rel: Path, taken) -> Path:
 
 
 def plan_merge(
-    cfg, conn: sqlite3.Connection, old: str, new: str, genre: str | None = None, keep_both: bool = False
+    cfg,
+    conn: sqlite3.Connection,
+    old: str,
+    new: str,
+    genre: str | None = None,
+    keep_both: bool = False,
 ) -> MergePlan:
     """Everything an --execute would do, computed without touching anything.
 
@@ -230,12 +243,16 @@ def plan_merge(
     meta = getattr(cfg, "meta_dir", None)
     filing = filing_load(Path(meta)) if meta and Path(meta).is_dir() else {}
     claimed: dict[Path, int] = {}  # dst -> row id, so two rows cannot land on one path
-    for row in conn.execute("SELECT * FROM archive WHERE artist = ? ORDER BY id", (old,)).fetchall():
+    for row in conn.execute(
+        "SELECT * FROM archive WHERE artist = ? ORDER BY id", (old,)
+    ).fetchall():
         rp = RowPlan(row["id"], identity=ident)
         mb_name = ident[0] if ident else row["mb_artist_name"]
         fp = Path(row["file_path"]) if row["file_path"] else None
         if fp is not None and fp.is_relative_to(lib):
-            plan.clashes.append(f"id={row['id']}: names a Lossless edition copy, not its master: {fp}")
+            plan.clashes.append(
+                f"id={row['id']}: names a Lossless edition copy, not its master: {fp}"
+            )
             plan.rows.append(rp)
             continue
         rel_now = fp.relative_to(arch) if fp is not None and fp.is_relative_to(arch) else None
@@ -244,7 +261,16 @@ def plan_merge(
             plan.rows.append(rp)
             continue
 
-        rel = library_relpath(new, mb_name, g or row["genre"], row["album"], row["title"], fp.suffix, filing)
+        rel = library_relpath(
+            new,
+            mb_name,
+            g or row["genre"],
+            row["album"],
+            row["title"],
+            fp.suffix,
+            filing,
+            row["audio_hash"] if "audio_hash" in set(row.keys()) else None,
+        )
         plan.dest_folders[str(Path(*rel.parts[:2]))] += 1
         if keep_both and rel != rel_now:
             free = _free_name(rel, lambda r: (arch / r).exists() or arch / r in claimed)
@@ -345,8 +371,11 @@ def execute_plan(cfg, conn: sqlite3.Connection, plan: MergePlan) -> dict[str, in
     emptied: set[Path] = set()
 
     path_tables = [
-        (t, c) for t, c in _PATH_COLUMNS
-        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone()
+        (t, c)
+        for t, c in _PATH_COLUMNS
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)
+        ).fetchone()
     ]
     for rp in plan.rows:
         done: list[tuple[Path, Path]] = []
@@ -403,8 +432,10 @@ def _write_canon_entry(canon: Path, old: str, new: str) -> int:
     while new.lower() in targets and new.lower() not in seen:
         seen.add(new.lower())
         dest = targets[new.lower()]
-        print(f"  note: {new!r} is itself a canon key pointing at {dest!r}; "
-              f"writing {old!r} -> {dest!r} instead")
+        print(
+            f"  note: {new!r} is itself a canon key pointing at {dest!r}; "
+            f"writing {old!r} -> {dest!r} instead"
+        )
         new = dest
 
     # Every entry that lands on `old`, in any letter case, now lands on `new`;
@@ -437,13 +468,17 @@ def _write_canon_entry(canon: Path, old: str, new: str) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("old", help="the artist name to retire (tag form)")
     ap.add_argument("new", help="the artist name to keep (tag form)")
     ap.add_argument("--genre", help="file the moved rows under this genre")
-    ap.add_argument("--keep-both", action="store_true",
-                    help='a destination taken by a different recording gets " (N)" instead of refusing')
+    ap.add_argument(
+        "--keep-both",
+        action="store_true",
+        help='a destination taken by a different recording gets " (N)" instead of refusing',
+    )
     ap.add_argument("--execute", action="store_true")
     args = ap.parse_args()
     if args.execute:  # the masters lock (review of #87, findings 9 and 10)
@@ -461,9 +496,13 @@ def main() -> int:
     plan = plan_merge(cfg, conn, args.old, args.new, args.genre, keep_both=args.keep_both)
     n_lib = sum(1 for r in plan.rows if r.file_path is not None)
     print(f"  {args.old!r} -> {args.new!r}" + (f"  [genre: {plan.genre}]" if plan.genre else ""))
-    print(f"  rows: {len(plan.rows)}  ({n_lib} master(s) to move, {plan.relabel_only} outside the library, relabel only)")
+    print(
+        f"  rows: {len(plan.rows)}  ({n_lib} master(s) to move, {plan.relabel_only} outside the library, relabel only)"
+    )
     if n_lib:
-        print("  edition copies (Lossless, car, iPhone) follow their masters on the next edition-build")
+        print(
+            "  edition copies (Lossless, car, iPhone) follow their masters on the next edition-build"
+        )
     for folder, n in plan.dest_folders.most_common():
         print(f"  into {folder}/  ({n})")
     for n in plan.notes:
@@ -472,7 +511,9 @@ def main() -> int:
         print(f"  keep both: {k}")
     filing = filing_load(Path(cfg.meta_dir))
     if args.old in filing:
-        print(f"  note: artist_filing.tsv files {args.old!r} under {filing[args.old]!r}; that line is now stale")
+        print(
+            f"  note: artist_filing.tsv files {args.old!r} under {filing[args.old]!r}; that line is now stale"
+        )
 
     if plan.clashes:
         print(f"\nREFUSED: {len(plan.clashes)} clash(es), nothing moved, nothing relabelled:")
@@ -491,11 +532,15 @@ def main() -> int:
         if canon.is_file():
             n_chain = _write_canon_entry(canon, args.old, args.new)
             if n_chain:
-                print(f"  artist_canon.tsv: re-pointed {n_chain} entry(ies) that would "
-                      f"otherwise chain through {args.old!r}")
-    print(f"\nDONE: {counts.get('files', 0)} file(s), {counts.get('rows', 0)} row(s), "
-          f"{counts.get('other_paths', 0)} other table path(s), "
-          f"{counts.get('dirs_removed', 0)} empty folder(s) removed")
+                print(
+                    f"  artist_canon.tsv: re-pointed {n_chain} entry(ies) that would "
+                    f"otherwise chain through {args.old!r}"
+                )
+    print(
+        f"\nDONE: {counts.get('files', 0)} file(s), {counts.get('rows', 0)} row(s), "
+        f"{counts.get('other_paths', 0)} other table path(s), "
+        f"{counts.get('dirs_removed', 0)} empty folder(s) removed"
+    )
     return 0
 
 
