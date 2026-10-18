@@ -33,6 +33,7 @@ from pathlib import Path
 from ..art_quality import MIN_EDGE_PX, describe, image_dimensions
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
+from ..safe_save import write_new
 from .base import BaseStage, StageError
 
 logger = logging.getLogger(__name__)
@@ -347,7 +348,7 @@ def _fetch_sidecar(
         else Path(fp).parent / "cover.jpg"
     )
     try:
-        target.write_bytes(blob)
+        write_new(target, blob)
     except OSError as exc:
         logger.warning("[albumart] could not write %s: %s", target, exc)
         return None
@@ -584,7 +585,7 @@ class AlbumArtStage(BaseStage):
                         # other songs in the folder take (review of slice A).
                         target = Path(fp).with_name(Path(fp).stem + _PRIVATE_COVER_SUFFIX)
                         try:
-                            target.write_bytes(blob)
+                            write_new(target, blob)
                         except OSError as exc:
                             logger.warning("[albumart] could not write %s: %s", target, exc)
                         else:
