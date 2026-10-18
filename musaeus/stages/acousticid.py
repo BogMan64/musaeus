@@ -191,6 +191,31 @@ def _norm_for_match(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.replace("&", "and"))
 
 
+def _titles_agree(a: str, b: str) -> bool:
+    """One title is the other, or part of it.
+
+    The part-of test is the old one, "&" simply dropped. "&" read as "and"
+    counts only in whole words, and only with a word besides "and": spelled
+    out, "and" sits inside "Jack and Diane", so a recording called "And"
+    would have agreed with it (Codex review of #209)."""
+    pa, pb = (
+        re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", x or "").lower()) for x in (a, b)
+    )
+    if not pa or not pb:
+        return False
+    if pa in pb or pb in pa:
+        return True
+    ta, tb = (
+        re.findall(r"[a-z0-9]+", unicodedata.normalize("NFKD", x).lower().replace("&", " and "))
+        for x in (a, b)
+    )
+    short, long_ = sorted((ta, tb), key=len)
+    if not set(short) - {"and"}:
+        return False
+    n = len(short)
+    return any(long_[i : i + n] == short for i in range(len(long_) - n + 1))
+
+
 def _artist_key(name: str) -> str:
     """An artist name with what does not tell two acts apart taken out
     (artist_form.act_key): "Beyonce" == "Beyoncé", "The Beatles" ==
@@ -239,7 +264,7 @@ def _pick_matching_recording(
         if not rid:
             continue
         rt = _norm_for_match(rec.get("title", ""))
-        if not rt or (rt not in wt and wt not in rt):
+        if not rt or not _titles_agree(rec.get("title", ""), want_title):
             continue
         names = [str(x.get("name", "")) for x in rec.get("artists", []) if x.get("name")]
         if wa and names and not _artist_agrees(want_artist, names):
@@ -352,7 +377,7 @@ def name_from_results(
         for rec in r.get("recordings", []) or []:
             title = (rec.get("title") or "").strip()
             rt = _norm_for_match(title)
-            if not rt or (rt not in hint and hint not in rt):
+            if not rt or not _titles_agree(title, title_hint):
                 continue
             artist = _credit(rec.get("artists") or [])
             if artist:

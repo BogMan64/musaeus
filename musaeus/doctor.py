@@ -91,10 +91,16 @@ def song_key(artist: str | None, title: str | None) -> tuple[str, str]:
     t = _EDITION_RE.sub("", strip_bracketed(title or ""))
     # "&" and "and" are one spelling (Grey, 2026-10-12): "Jack & Diane" and
     # "Jack And Diane" are one song, not a sole copy each.
-    return (
-        _NOISE_RE.sub("", (artist or "").lower().replace("&", "and")),
-        _NOISE_RE.sub("", t.lower().replace("&", "and")),
-    )
+    return (_and_key(artist or ""), _and_key(t))
+
+
+def _and_key(text: str) -> str:
+    # "&" alone is no name: as "and" it would be the song "And" (Codex
+    # review of #209), and a quarantined sole copy would look held.
+    text = text.lower()
+    if not _NOISE_RE.sub("", text):
+        return ""
+    return _NOISE_RE.sub("", text.replace("&", "and"))
 
 
 @dataclass

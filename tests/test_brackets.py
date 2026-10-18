@@ -134,3 +134,10 @@ def test_song_key_reads_ampersand_and_the_word_and_as_one():
         "John Mellencamp", "Jack & Diane"
     )
     assert song_key("Simon & Garfunkel", "X") == song_key("Simon and Garfunkel", "X")
+
+
+def test_song_key_of_a_bare_ampersand_is_not_the_song_and():
+    # Codex review of #209: a quarantined "&" looked held by a catalogued "And".
+    from musaeus.doctor import song_key
+
+    assert song_key("Wings", "&") != song_key("Wings", "And")
