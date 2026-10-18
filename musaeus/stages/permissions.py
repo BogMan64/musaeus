@@ -115,7 +115,9 @@ def _chmod_no_follow(path: Path, mode: int, want_dir: bool) -> None:
     try:
         os.chmod(path, mode, follow_symlinks=False)
     except NotImplementedError as exc:  # a link swapped in after the lstat
-        raise OSError(f"could not chmod without following links (a link, or no support here): {path}") from exc
+        raise OSError(
+            f"could not chmod without following links (a link, or no support here): {path}"
+        ) from exc
 
 
 def _scan_all(ctx: RunContext) -> tuple[list[Path], list[Path]]:
