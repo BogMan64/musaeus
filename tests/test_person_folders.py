@@ -29,6 +29,7 @@ def f(tmp_path: Path):
     meta = tmp_path / "MetaData"
     meta.mkdir()
     (meta / filing.PERSONS_FILENAME).write_text(LIST, encoding="utf-8")
+    (meta / "Genre_Allowed.txt").write_text("Rock\nPop\nBlues Rock\n", encoding="utf-8")
     return filing.load(meta)
 
 
@@ -143,6 +144,7 @@ def test_organize_moves_the_path_named_in_the_side_tables_too(tmp_path):
     )  # fmt: skip
     cfg.inbox.mkdir(parents=True)
     cfg.meta_dir.mkdir()
+    (cfg.meta_dir / "Genre_Allowed.txt").write_text("Rock\n", encoding="utf-8")
     (cfg.meta_dir / filing.PERSONS_FILENAME).write_text(
         "Bob Seger\tBob Seger\tRock\nBob Seger & The Silver Bullet Band\tBob Seger\n",
         encoding="utf-8",
@@ -242,3 +244,48 @@ def test_a_database_error_mid_move_puts_the_file_and_its_row_back(tmp_path):
     assert old.exists(), "the file was left at the new place"
     row = ctx.conn.execute("SELECT file_path FROM archive").fetchone()[0]
     assert row == str(old), "the row names a place the file is not"
+
+
+def test_a_person_list_without_the_allowed_genre_list_is_refused(tmp_path):
+    # Codex review of #208: with Genre_Allowed.txt missing, "Rokc" made a new
+    # top-level folder.
+    meta = tmp_path / "MetaData"
+    meta.mkdir()
+    (meta / filing.PERSONS_FILENAME).write_text("A\tX\tRokc\nA & The B\tX\n", encoding="utf-8")
+    with pytest.raises(filing.FilingError):
+        filing.load(meta)
+
+
+def test_a_listed_act_that_matches_no_song_is_named_before_anything_moves(tmp_path):
+    # Codex review of #208: "Bob Segre & The Silver Bullet Band" (a typo) left
+    # the band flat while the solo songs nested, without a word.
+    from musaeus.config import MusicConfig
+    from musaeus.context import RunContext
+    from musaeus.db import open_db, upsert_archive
+    from musaeus.stages.organize import OrganizeStage
+
+    cfg = MusicConfig(
+        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "Q", runs_root=tmp_path / "RUNS", meta_dir=tmp_path / "Meta",
+        alac_library=tmp_path / "ALAC-Library", db_path=tmp_path / "musaeus.db",
+    )  # fmt: skip
+    cfg.inbox.mkdir(parents=True)
+    cfg.meta_dir.mkdir()
+    (cfg.meta_dir / "Genre_Allowed.txt").write_text("Rock\n", encoding="utf-8")
+    (cfg.meta_dir / filing.PERSONS_FILENAME).write_text(
+        "Bob Seger\tBob Seger\tRock\nBob Segre & The Silver Bullet Band\tBob Seger\n",
+        encoding="utf-8",
+    )
+    ctx = RunContext.new(cfg, open_db(cfg.db_path), dry_run=True)
+    song = cfg.inbox / "flat" / "s.m4a"
+    song.parent.mkdir()
+    song.write_bytes(b"AUDIO")
+    upsert_archive(ctx.conn, {"file_path": str(song), "status": "CATALOGUED", "genre": "Rock",
+                              "artist": "Bob Seger", "album": "Live", "title": "Turn The Page"})  # fmt: skip
+    ctx.conn.commit()
+
+    result = OrganizeStage().dry_run(ctx)
+
+    assert any("Bob Segre & The Silver Bullet Band" in n for n in result.notes)
+    assert not any("'Bob Seger'" in n for n in result.notes), "a matched act was named"
+    assert song.exists(), "a dry run moved a file"

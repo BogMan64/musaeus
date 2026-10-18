@@ -866,6 +866,9 @@ class OrganizeStage(BaseStage):
         renamed = 0
         moved = 0
         skipped = 0
+        from ..artist_form import act_key
+
+        acts_seen: set[str] = set()  # act_key of every act folder a song files under
 
         for row in rows:
             result.files_processed += 1
@@ -915,6 +918,8 @@ class OrganizeStage(BaseStage):
                 row["audio_hash"] if "audio_hash" in set(row.keys()) else None,
             )
             candidate_path = dest_root / rel
+            if len(rel.parts) >= 3:
+                acts_seen.add(act_key(rel.parts[-3]))  # .../Act/Album/file
             target_dir = candidate_path.parent
 
             # unique_path() checks disk existence to avoid collisions, but
@@ -988,6 +993,14 @@ class OrganizeStage(BaseStage):
 
         prefix = "Would" if dry_run else "Done"
         result.notes.append(f"{prefix}: renamed={renamed}, moved={moved}, skipped={skipped}")
+        # A listed act no song files under is most likely a typo: its songs
+        # stay flat while the person's other acts nest (Codex review of #208).
+        # Said in the dry run, before anything moves.
+        for key, act in sorted(getattr(filing, "person_acts", {}).items()):
+            if key not in acts_seen:
+                note = f"person_folders.tsv: {act!r} matches no song -- check the spelling"
+                logger.warning("[organize] %s", note)
+                result.notes.append(note)
 
         ctx.record_stage(result)
         return result

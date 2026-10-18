@@ -94,7 +94,7 @@ def load(meta_dir: Path) -> dict[str, str]:
     if not path.exists():
         empty = FilingMap({}, songs)
         empty.song_genres = song_genres
-        empty.persons = _load_persons(meta_dir)
+        empty.persons, empty.person_acts = _load_persons(meta_dir)
         return empty
     out: dict[str, str] = {}
     folded: dict[str, str] = {}
@@ -140,7 +140,7 @@ def load(meta_dir: Path) -> dict[str, str]:
         out[tag] = folder
     loaded = FilingMap(out, songs)
     loaded.song_genres = song_genres
-    loaded.persons = _load_persons(meta_dir)
+    loaded.persons, loaded.person_acts = _load_persons(meta_dir)
     return loaded
 
 
@@ -177,6 +177,8 @@ class FilingMap(dict[str, str]):
         self.song_genres: dict[str, str] = {}
         #: act_key(act folder) -> (person, person's genre or None).
         self.persons: dict[str, tuple[str, str | None]] = {}
+        #: act_key(act folder) -> the act as the person list spells it.
+        self.person_acts: dict[str, str] = {}
 
 
 def song_folder(filing: dict[str, str] | None, audio_hash: str | None) -> str | None:
@@ -228,8 +230,11 @@ def _genre_key(genre: str) -> str:
     return genre.strip().casefold().replace("-", "/").replace("_", " ")
 
 
-def _load_persons(meta_dir: Path) -> dict[str, tuple[str, str | None]]:
-    """act_key(act) -> (person, the person's ONE genre).
+def _load_persons(
+    meta_dir: Path,
+) -> tuple[dict[str, tuple[str, str | None]], dict[str, str]]:
+    """act_key(act) -> (person, the person's ONE genre), and act_key(act) ->
+    the act as listed (for naming a listed act that matches no song).
 
     Refused rather than guessed (review of #208): a person with no genre
     or two, a genre outside Genre_Allowed.txt (a typo would make a new
@@ -237,10 +242,11 @@ def _load_persons(meta_dir: Path) -> dict[str, tuple[str, str | None]]:
     person column makes exactly that), and one person spelled two ways."""
     path = Path(meta_dir) / PERSONS_FILENAME
     if not path.exists():
-        return {}
+        return {}, {}
     from .artist_form import act_key
 
     acts: dict[str, tuple[str, int]] = {}  # act_key -> (person, line)
+    listed: dict[str, str] = {}  # act_key -> act as written
     spelled: dict[str, str] = {}  # person casefold -> spelling
     genres: dict[str, set[str]] = {}
     for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -265,9 +271,17 @@ def _load_persons(meta_dir: Path) -> dict[str, tuple[str, str | None]]:
                 f"{acts[key][0]!r}; a second person makes the file ambiguous."
             )
         acts[key] = (person, lineno)
+        listed.setdefault(key, act)
         if len(parts) >= 3 and parts[2]:
             genres.setdefault(person, set()).add(parts[2])
     allowed = _allowed_genres(meta_dir)
+    if allowed is None and acts:
+        # Without it a typo ("Rokc") would make a new top-level folder
+        # (Codex review of #208).
+        raise FilingError(
+            f"{PERSONS_FILENAME} needs Genre_Allowed.txt beside it to check each "
+            f"person's genre; it was not found in {meta_dir}"
+        )
     per_person: dict[str, str | None] = {}
     for person in set(spelled.values()):
         named = genres.get(person, set())
@@ -287,7 +301,7 @@ def _load_persons(meta_dir: Path) -> dict[str, tuple[str, str | None]]:
         # own spelling, so "rock" cannot make a "rock" folder beside "Rock"
         # (review of #208).
         genre = min(named)
-        if allowed is not None:
+        if allowed is not None:  # always, once a person is listed (above)
             if _genre_key(genre) not in allowed:
                 raise FilingError(
                     f"{PERSONS_FILENAME}: {person!r}'s genre {genre!r} is not in "
@@ -300,7 +314,8 @@ def _load_persons(meta_dir: Path) -> dict[str, tuple[str, str | None]]:
                 f"for two or more (a typo in the person column?)"
             )
         per_person[person] = genre
-    return {key: (person, per_person[person]) for key, (person, _) in acts.items()}
+    persons = {key: (person, per_person[person]) for key, (person, _) in acts.items()}
+    return persons, listed
 
 
 def _load_songs(meta_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
