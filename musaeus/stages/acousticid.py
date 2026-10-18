@@ -182,8 +182,11 @@ def _row_get(row: object, key: str) -> str:
 
 
 def _norm_for_match(value: str) -> str:
-    """Letters and digits only -- punctuation and case are not identity."""
-    return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", value or "").lower())
+    """Letters and digits only -- punctuation and case are not identity, and
+    "&" is the word "and" (Grey, 2026-10-12): "Jack & Diane" is the recording
+    MusicBrainz calls "Jack and Diane"."""
+    folded = unicodedata.normalize("NFKD", value or "").lower().replace("&", "and")
+    return re.sub(r"[^a-z0-9]", "", folded)
 
 
 def _artist_key(name: str) -> str:
