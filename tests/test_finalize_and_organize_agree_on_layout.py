@@ -168,9 +168,7 @@ def test_finalize_files_under_the_genre_and_honours_the_filing_rulings(tmp_path)
         r[0]: str(Path(r[1]).relative_to(lib))
         for r in ctx.conn.execute("SELECT artist, file_path FROM archive")
     }
-    assert rel["The Black Eyed Peas"].startswith(
-        "Hip Hop/The Black Eyed Peas/"
-    )  # Grey 2026-10-17: "The X"
+    assert rel["The Black Eyed Peas"].startswith("Hip Hop/Black Eyed Peas, The/")
     assert rel["Benny Goodman & His Orchestra"].startswith("Jazz/Benny Goodman/"), (
         "artist_filing.tsv ruling ignored"
     )

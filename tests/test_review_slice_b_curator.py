@@ -19,7 +19,7 @@ from musaeus.stages.curator import CuratorStage, _dest_path, _primary_artist
     [
         ("KC & The Sunshine Band", "KC & The Sunshine Band"),
         ("Peter, Paul and Mary", "Peter, Paul and Mary"),
-        ("Beatles, The", "The Beatles"),  # folders are "The X" since 2026-10-17
+        ("Beatles, The", "Beatles, The"),
         ("Elton John & Kiki Dee", "Elton John"),
         ("Al Green feat. Someone", "Al Green"),
     ],

@@ -400,20 +400,21 @@ class TestOrganizeStaysInsideItsRoot:
 # the on-disk layout identical before and after that migration.
 
 
-class TestPathsUseTheNaturalForm:
-    """Grey, 2026-10-17: folders are "The Stooges", as Grey made them in iTunes.
-    Until then they were the sort form, "Stooges, The"."""
-
-    def test_a_natural_form_artist_files_under_the_natural_form(self, ctx):
+class TestPathsUseTheSortForm:
+    def test_a_natural_form_artist_still_files_under_the_sort_form(self, ctx):
+        """THE guard on the tag migration: no file moves because of it."""
         _make_track(ctx, "flat.m4a", "The Stooges", "Fun House", "Down on the Street")
         OrganizeStage().run(ctx)
 
         expected = (
-            ctx.inbox / "Unsorted" / "The Stooges" / "Fun House"
-            / "The Stooges - Down on the Street.m4a"
-        )  # fmt: skip
-        assert expected.exists()
-        assert not (ctx.inbox / "Unsorted" / "Stooges, The").exists()
+            ctx.inbox
+            / "Unsorted"
+            / "Stooges, The"
+            / "Fun House"
+            / "Stooges, The - Down on the Street.m4a"
+        )
+        assert expected.exists(), "path must not follow the natural form"
+        assert not (ctx.inbox / "Unsorted" / "The Stooges").exists()
 
     def test_both_artist_forms_land_on_the_same_path(self, ctx):
         """A library mid-migration holds both; they must not split in two."""
@@ -421,12 +422,12 @@ class TestPathsUseTheNaturalForm:
         _make_track(ctx, "b.m4a", "The Stooges", "Fun House", "Dirt")
         OrganizeStage().run(ctx)
 
-        folder = ctx.inbox / "Unsorted" / "The Stooges" / "Fun House"
+        folder = ctx.inbox / "Unsorted" / "Stooges, The" / "Fun House"
         assert sorted(f.name for f in folder.glob("*.m4a")) == [
-            "The Stooges - Dirt.m4a",
-            "The Stooges - Loose.m4a",
+            "Stooges, The - Dirt.m4a",
+            "Stooges, The - Loose.m4a",
         ]
-        assert not (ctx.inbox / "Unsorted" / "Stooges, The").exists()
+        assert not (ctx.inbox / "Unsorted" / "The Stooges").exists()
 
     def test_a_stylized_name_is_not_rearranged_into_a_folder(self, ctx):
         """ "De La Soul" -> "La Soul, De" was live corruption, 2026-08-16."""
@@ -540,12 +541,12 @@ class TestBatchTierIsPreserved:
 
     def test_an_already_organized_finalized_file_is_left_alone(self, ctx):
         ctx.alac_library.mkdir(parents=True, exist_ok=True)
-        src = self._finalized(ctx, "2026-08-27A", "The Cranberries", "Unsorted", "Zombie")
+        src = self._finalized(ctx, "2026-08-27A", "Cranberries, The", "Unsorted", "Zombie")
 
         OrganizeStage().run(ctx)
 
         assert src.exists(), "the batch directory was flattened"
-        assert not (ctx.alac_library / "Unsorted" / "The Cranberries").exists()
+        assert not (ctx.alac_library / "Unsorted" / "Cranberries, The").exists()
 
     def test_a_messy_file_is_tidied_inside_its_own_batch(self, ctx):
         ctx.alac_library.mkdir(parents=True, exist_ok=True)

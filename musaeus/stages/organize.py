@@ -83,7 +83,7 @@ import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
 
-from ..artist_form import folder_artist, natural_form
+from ..artist_form import folder_artist, sort_form
 from ..canon.protected_artists import PROTECTED_ARTIST_NAMES
 from ..context import RunContext, StageResult
 from ..filing import load as filing_load
@@ -385,21 +385,22 @@ def library_artist(
     personal-name tail). One function, used by library_relpath and by
     Curator's export (review of #163).
 
-    In the NATURAL form, "The Alan Parsons Project" -- Grey, 2026-10-17, from
-    the folders Grey made in iTunes. It was the sort form ("Alan Parsons
-    Project, The") until then."""
+    In the sort form, "Alan Parsons Project, The": a folder view sorts by the
+    literal name, and Grey wants "The" bands under the main word (2026-10-18;
+    tags keep the natural form, which is what MusicBrainz reads).
+    """
     from ..filing import song_folder
 
     chosen = song_folder(filing, audio_hash)
     if chosen:
-        return natural_form(stored_artist(chosen))
+        return sort_form(stored_artist(chosen))
     ruled = ruling_for(filing, artist)
     if ruled:
         # The ruled folder in the stored form, so it and the artist's other
         # tracks land in ONE folder (cloud review of #38: "Hootie & the
         # Blowfish" beside "Hootie & The Blowfish").
-        return natural_form(stored_artist(ruled))
-    return natural_form(folder_artist(artist or "Unknown Artist", mb_artist_name))
+        return sort_form(stored_artist(ruled))
+    return sort_form(folder_artist(artist or "Unknown Artist", mb_artist_name))
 
 
 def library_relpath(
@@ -429,10 +430,18 @@ def library_relpath(
     """
     from .finalize import genre_folder
 
-    # Paths use the NATURAL form, "The Stooges" (Grey, 2026-10-17, from the
-    # folders Grey made in iTunes). Until then they used the sort form
-    # ("Stooges, The") whatever the tag held; the tag and the path are still
-    # decided independently, so a tag in either form files the same.
+    # Paths use the SORT form, always, whichever form the tag holds.
+    #
+    # The `artist` tag is moving to the natural form ("The Stooges")
+    # because that is what MusicBrainz and every player expect. The
+    # filesystem wants the other one: "Stooges, The" sorts under S,
+    # which is the whole reason the convention exists.
+    #
+    # Deriving the path from sort_form rather than from the tag keeps
+    # the two decisions independent -- the on-disk layout is byte
+    # identical before and after the tag migration, so no file moves
+    # because of it. Both directions are idempotent, so this is also
+    # correct for a library holding a mix of the two forms.
     # A duet files under its PRIMARY artist while the tag keeps the
     # full credit -- "Johnny Mathis & Deniece Williams" made a
     # one-track folder of its own. folder_artist() refuses to take a

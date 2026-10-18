@@ -1,6 +1,6 @@
 """Grey, 2026-10-17: artist FOLDER names follow the folders Grey made in Windows
-iTunes, song by song (MetaData/folder_names.tsv), and are written in the natural
-form -- "The Alan Parsons Project", not "Alan Parsons Project, The". Folder only:
+iTunes, song by song (MetaData/folder_names.tsv), still in the sort form --
+"Alan Parsons Project, The" (Grey, 2026-10-18: folders sort under the main word). Folder only:
 the artist tag and the title are not changed. "&" stays (2026-10-12 ruling).
 """
 
@@ -26,16 +26,17 @@ def _meta(tmp_path: Path, songs: str = "", rulings: str = "") -> Path:
     return meta
 
 
-def test_a_band_folder_is_written_the_x(tmp_path):
+def test_a_band_folder_keeps_the_sort_form(tmp_path):
+    # Grey, 2026-10-18: folders sort under the main word ("Four Seasons, The").
     rel = library_relpath("The Alan Parsons Project", None, "Rock", "Eye In The Sky",
                           "Sirius", ".m4a", filing.load(_meta(tmp_path)))  # fmt: skip
-    assert rel.parts[1] == "The Alan Parsons Project"
+    assert rel.parts[1] == "Alan Parsons Project, The"
 
 
-def test_a_tag_in_the_old_sort_form_files_the_same(tmp_path):
+def test_a_tag_in_either_form_files_the_same(tmp_path):
     rel = library_relpath("Alan Parsons Project, The", None, "Rock", "Eye In The Sky",
                           "Sirius", ".m4a", filing.load(_meta(tmp_path)))  # fmt: skip
-    assert rel.parts[1] == "The Alan Parsons Project"
+    assert rel.parts[1] == "Alan Parsons Project, The"
 
 
 def test_greys_song_folder_wins_over_the_artist_and_any_ruling(tmp_path):
