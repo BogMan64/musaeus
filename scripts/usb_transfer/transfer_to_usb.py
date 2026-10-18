@@ -784,15 +784,22 @@ def _copy_one(src: Path, dst: Path, dest_root: Path | None = None) -> float:
     way that is really elsewhere (a linked folder) is refused before anything
     is created through it.
     """
-    _owned_folder(dest_root, dst.parent)
     start = time.monotonic()
-    # The source first: unreadable, nothing is created on the stick and no
-    # handle is left open (review of #204, finding 1).
-    with open(src, "rb") as rf, os.fdopen(_new_file(_part(dst)), "wb") as wf:
-        while chunk := rf.read(_COPY_CHUNK_BYTES):
-            wf.write(chunk)
-        wf.flush()
-        os.fsync(wf.fileno())
+    # The source first: unreadable, nothing is created on the stick -- not
+    # even its folder -- and no handle is left open (review of #204).
+    with open(src, "rb") as rf:
+        _owned_folder(dest_root, dst.parent)
+        part = _part(dst)
+        if part.is_dir() and not part.is_symlink():
+            # A .part that is a folder is not ours to remove: that file is
+            # refused, the run goes on (re-review of #204, finding 1).
+            raise UnsafeDestination(f"{part} is a folder, not a partial copy")
+        wf = os.fdopen(_new_file(part), "wb")
+        with wf:
+            while chunk := rf.read(_COPY_CHUNK_BYTES):
+                wf.write(chunk)
+            wf.flush()
+            os.fsync(wf.fileno())
     return time.monotonic() - start
 
 

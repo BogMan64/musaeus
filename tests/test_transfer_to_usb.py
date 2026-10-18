@@ -2033,7 +2033,7 @@ def test_an_unreadable_source_leaves_no_handle_and_no_part(tmp_path):
     with pytest.raises(OSError):
         usb_mod._copy_one(tmp_path / "gone.m4a", stick / "A" / "gone.m4a", stick)
     assert len(os.listdir("/proc/self/fd")) == before, "a file handle was left open"
-    assert not (stick / "A" / "gone.m4a.part").exists()
+    assert not (stick / "A").exists(), "a folder was made for a source that cannot be read"
 
 
 def test_a_part_that_is_a_folder_fails_that_file_not_the_run(tmp_path, monkeypatch):
@@ -2041,9 +2041,13 @@ def test_a_part_that_is_a_folder_fails_that_file_not_the_run(tmp_path, monkeypat
     (src_root / "A").mkdir(parents=True)
     (stick / "A" / "song.m4a.part").mkdir(parents=True)
     (src_root / "A" / "song.m4a").write_bytes(b"X")
+    (src_root / "A" / "next.m4a").write_bytes(b"Y")
     monkeypatch.setattr(usb_mod.time, "sleep", lambda s: None)  # the retry's pause
-    r = copy_with_verification([src_root / "A" / "song.m4a"], src_root, stick)
-    assert r.failed and not r.ok
+    r = copy_with_verification(
+        [src_root / "A" / "song.m4a", src_root / "A" / "next.m4a"], src_root, stick
+    )
+    assert len(r.failed) == 1 and "folder" in r.failed[0][1]
+    assert (stick / "A" / "next.m4a").read_bytes() == b"Y", "the run stopped at the bad .part"
 
 
 def test_the_manifest_and_playlists_are_never_written_through_a_link(tmp_path):
