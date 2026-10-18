@@ -2000,3 +2000,66 @@ def test_a_folder_on_the_stick_that_leads_elsewhere_is_refused(tmp_path):
 
     assert list(outside.iterdir()) == [], "a write landed outside the stick"
     assert not r.ok and "refused" in r.failed[0][1]
+
+
+# Review of #204.
+
+
+def test_a_refused_folder_creates_nothing_outside_and_the_next_file_still_copies(tmp_path):
+    src_root, stick, outside = tmp_path / "src", tmp_path / "stick", tmp_path / "elsewhere"
+    (src_root / "A" / "B").mkdir(parents=True)
+    (src_root / "Z").mkdir()
+    stick.mkdir()
+    outside.mkdir()
+    (src_root / "A" / "B" / "s.m4a").write_bytes(b"CAR COPY")
+    (src_root / "Z" / "t.m4a").write_bytes(b"NEXT")
+    (stick / "A").symlink_to(outside, target_is_directory=True)
+
+    r = copy_with_verification(
+        [src_root / "A" / "B" / "s.m4a", src_root / "Z" / "t.m4a"], src_root, stick
+    )
+
+    assert list(outside.iterdir()) == [], "a folder was made outside the stick"
+    assert (stick / "Z" / "t.m4a").read_bytes() == b"NEXT", "a refusal stopped the run"
+    assert len(r.failed) == 1 and len(r.ok) == 1
+
+
+def test_an_unreadable_source_leaves_no_handle_and_no_part(tmp_path):
+    import os
+
+    stick = tmp_path / "stick"
+    stick.mkdir()
+    before = len(os.listdir("/proc/self/fd"))
+    with pytest.raises(OSError):
+        usb_mod._copy_one(tmp_path / "gone.m4a", stick / "A" / "gone.m4a", stick)
+    assert len(os.listdir("/proc/self/fd")) == before, "a file handle was left open"
+    assert not (stick / "A" / "gone.m4a.part").exists()
+
+
+def test_a_part_that_is_a_folder_fails_that_file_not_the_run(tmp_path, monkeypatch):
+    src_root, stick = tmp_path / "src", tmp_path / "stick"
+    (src_root / "A").mkdir(parents=True)
+    (stick / "A" / "song.m4a.part").mkdir(parents=True)
+    (src_root / "A" / "song.m4a").write_bytes(b"X")
+    monkeypatch.setattr(usb_mod.time, "sleep", lambda s: None)  # the retry's pause
+    r = copy_with_verification([src_root / "A" / "song.m4a"], src_root, stick)
+    assert r.failed and not r.ok
+
+
+def test_the_manifest_and_playlists_are_never_written_through_a_link(tmp_path):
+    vault, src_root, stick, outside = (tmp_path / n for n in ("V", "src", "stick", "out"))
+    for d in (vault / "Playlists", src_root / "A", stick / "Playlists", outside):
+        d.mkdir(parents=True)
+    song = src_root / "A" / "s.m4a"
+    song.write_bytes(b"X")
+    victim = outside / "victim.txt"
+    victim.write_text("PRIVATE")
+    (stick / (usb_mod._SYNC_MANIFEST + usb_mod._PART_SUFFIX)).symlink_to(victim)
+    usb_mod.update_sync_manifest(stick, src_root, [song])
+    assert victim.read_text() == "PRIVATE"
+    assert not (stick / usb_mod._SYNC_MANIFEST).is_symlink()
+
+    (vault / "Playlists" / "Mix.m3u8").write_text(f"#EXTM3U\n{song}\n", encoding="utf-8")
+    (stick / "Playlists" / "Mix.m3u8").symlink_to(victim)
+    usb_mod.copy_playlists(vault, src_root, stick)
+    assert victim.read_text() == "PRIVATE"
