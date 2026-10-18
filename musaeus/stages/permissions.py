@@ -30,6 +30,7 @@ reviving that file.
 from __future__ import annotations
 
 import logging
+import os
 import stat
 from pathlib import Path
 
@@ -68,11 +69,18 @@ def _scan_permissions(root: Path) -> tuple[list[Path], list[Path]]:
     if not root.exists():
         return bad_files, bad_dirs
 
-    for path in root.rglob("*"):
+    # Never through a link (Codex audit 2026-10-16, F4): a link dropped into
+    # INBOX to a private file elsewhere had its TARGET opened up to 0644.
+    # os.walk does not follow linked folders, and lstat sees the link itself;
+    # a link is neither a regular file nor a directory, so it is skipped.
+    paths: list[Path] = []
+    for top, dirs, files in os.walk(root, followlinks=False):
+        paths.extend(Path(top) / n for n in dirs + files)
+    for path in paths:
         if "_history" in path.parts:
             continue
         try:
-            st = path.stat()
+            st = path.lstat()
         except OSError as e:
             logger.warning("[permissions] cannot stat %s: %s", path, e)
             continue
@@ -85,6 +93,31 @@ def _scan_permissions(root: Path) -> tuple[list[Path], list[Path]]:
             bad_files.append(path)
 
     return bad_files, bad_dirs
+
+
+def _chmod_no_follow(path: Path, mode: int, want_dir: bool) -> None:
+    """chmod *path* only if it is still the regular file or folder the scan
+    saw -- through a handle opened without following a link, so one swapped
+    in after the scan is never followed (Linux has no lchmod)."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | (os.O_DIRECTORY if want_dir else 0)
+    try:
+        fd = os.open(path, flags)
+    except PermissionError:
+        # Unreadable to its owner (e.g. 0200): no handle to be had. Checked
+        # again just before, which leaves only a vanishingly small window.
+        st = path.lstat()
+        if stat.S_ISDIR(st.st_mode) != want_dir or stat.S_ISLNK(st.st_mode):
+            raise
+        path.chmod(mode)
+        return
+    try:
+        st = os.fstat(fd)
+        if (stat.S_ISDIR if want_dir else stat.S_ISREG)(st.st_mode):
+            os.fchmod(fd, mode)
+        else:
+            raise OSError(f"no longer a {'folder' if want_dir else 'file'}: {path}")
+    finally:
+        os.close(fd)
 
 
 def _scan_all(ctx: RunContext) -> tuple[list[Path], list[Path]]:
@@ -170,7 +203,7 @@ class PermissionsStage(BaseStage):
 
         for f in bad_files:
             try:
-                f.chmod(FILE_MODE)
+                _chmod_no_follow(f, FILE_MODE, want_dir=False)
                 fixed_files += 1
                 result.files_changed += 1
                 ctx.log_event(
@@ -190,7 +223,7 @@ class PermissionsStage(BaseStage):
 
         for d in bad_dirs:
             try:
-                d.chmod(DIR_MODE)
+                _chmod_no_follow(d, DIR_MODE, want_dir=True)
                 fixed_dirs += 1
                 result.files_changed += 1
                 ctx.log_event(
