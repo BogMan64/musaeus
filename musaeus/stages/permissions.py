@@ -30,6 +30,7 @@ reviving that file.
 from __future__ import annotations
 
 import logging
+import os
 import stat
 from pathlib import Path
 
@@ -68,11 +69,26 @@ def _scan_permissions(root: Path) -> tuple[list[Path], list[Path]]:
     if not root.exists():
         return bad_files, bad_dirs
 
-    for path in root.rglob("*"):
+    # Never through a link (Codex audit 2026-10-16, F4): a link dropped into
+    # INBOX to a private file elsewhere had its TARGET opened up to 0644.
+    # os.walk does not follow linked folders, and lstat sees the link itself;
+    # a link is neither a regular file nor a directory, so it is skipped.
+    paths: list[Path] = []
+    links = 0
+    for top, dirs, files in os.walk(root, followlinks=False):
+        for n in dirs + files:
+            p = Path(top) / n
+            if p.is_symlink():
+                links += 1
+                continue
+            paths.append(p)
+    if links:
+        logger.info("[permissions] %s: %d link(s) left alone", root, links)
+    for path in paths:
         if "_history" in path.parts:
             continue
         try:
-            st = path.stat()
+            st = path.lstat()
         except OSError as e:
             logger.warning("[permissions] cannot stat %s: %s", path, e)
             continue
@@ -85,6 +101,21 @@ def _scan_permissions(root: Path) -> tuple[list[Path], list[Path]]:
             bad_files.append(path)
 
     return bad_files, bad_dirs
+
+
+def _chmod_no_follow(path: Path, mode: int, want_dir: bool) -> None:
+    """chmod *path* only if it is still the regular file or folder the scan saw,
+    and never through a link: fchmodat with AT_SYMLINK_NOFOLLOW. Nothing is
+    opened, so a FIFO swapped in cannot hang the stage (review of #203,
+    finding 1). This covers the last part of the path only: a parent folder
+    swapped for a link mid-run is still followed (finding 3)."""
+    st = path.lstat()
+    if not (stat.S_ISDIR if want_dir else stat.S_ISREG)(st.st_mode):
+        raise OSError(f"no longer a {'folder' if want_dir else 'file'}: {path}")
+    try:
+        os.chmod(path, mode, follow_symlinks=False)
+    except NotImplementedError as exc:  # a link swapped in after the lstat
+        raise OSError(f"became a link, left alone: {path}") from exc
 
 
 def _scan_all(ctx: RunContext) -> tuple[list[Path], list[Path]]:
@@ -128,7 +159,7 @@ class PermissionsStage(BaseStage):
             for p in (bad_files + bad_dirs)[:20]:
                 kind = "dir " if p in bad_dirs else "file"
                 try:
-                    mode = oct(stat.S_IMODE(p.stat().st_mode))
+                    mode = oct(stat.S_IMODE(p.lstat().st_mode))
                 except OSError:
                     mode = "?"
                 want = oct(DIR_MODE) if p in bad_dirs else oct(FILE_MODE)
@@ -170,7 +201,7 @@ class PermissionsStage(BaseStage):
 
         for f in bad_files:
             try:
-                f.chmod(FILE_MODE)
+                _chmod_no_follow(f, FILE_MODE, want_dir=False)
                 fixed_files += 1
                 result.files_changed += 1
                 ctx.log_event(
@@ -190,7 +221,7 @@ class PermissionsStage(BaseStage):
 
         for d in bad_dirs:
             try:
-                d.chmod(DIR_MODE)
+                _chmod_no_follow(d, DIR_MODE, want_dir=True)
                 fixed_dirs += 1
                 result.files_changed += 1
                 ctx.log_event(
