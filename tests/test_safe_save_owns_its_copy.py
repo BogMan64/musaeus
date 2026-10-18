@@ -78,3 +78,66 @@ def test_a_cover_is_never_written_through_a_link(tmp_path, dangling):
     assert not (tmp_path / "masters" / "nowhere.jpg").exists()
     assert not cover.is_symlink() and cover.read_bytes() == b"\xff\xd8\xff IMAGE"
     assert {p.name for p in song.parent.iterdir()} == {"cover.jpg", "song.m4a"}, "temp left"
+
+
+def test_the_album_art_stage_never_writes_a_cover_through_a_link(tmp_path, monkeypatch):
+    # Review of #205: the stage's own two sidecar writes, end to end. A dangling
+    # cover.jpg link sent a fetched cover to a new file outside the library.
+    import shutil
+    import subprocess
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("needs ffmpeg")
+    from musaeus import art_sources
+    from musaeus.config import MusicConfig
+    from musaeus.context import RunContext
+    from musaeus.db import open_db, upsert_archive
+    from musaeus.stages.albumart import AlbumArtStage
+
+    cfg = MusicConfig(
+        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "ALAC-Library",
+        db_path=tmp_path / "musaeus.db",
+    )  # fmt: skip
+    cfg.ensure_dirs()
+    ctx = RunContext.new(cfg, open_db(cfg.db_path), dry_run=False)
+    song = cfg.alac_library / "A" / "Album" / "A - Song.m4a"
+    song.parent.mkdir(parents=True)
+    subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=d=1",
+                    "-c:a", "alac", str(song)], check=True)  # fmt: skip
+    cover = tmp_path / "cover_src.jpg"
+    subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i",
+                    "testsrc=size=800x800:rate=1", "-frames:v", "1", str(cover)], check=True)  # fmt: skip
+    upsert_archive(ctx.conn, {"file_path": str(song), "status": "CATALOGUED", "artist": "A",
+                              "album": "Album", "title": "Song"})  # fmt: skip
+    ctx.conn.commit()
+    outside = tmp_path / "elsewhere" / "planted.jpg"
+    outside.parent.mkdir()
+    (song.parent / "cover.jpg").symlink_to(outside)  # dangling
+    monkeypatch.setattr(art_sources, "fetch_album_art", lambda *a, **k: (cover.read_bytes(), "x"))
+    monkeypatch.setattr(art_sources, "fetch_artist_picture", lambda *a, **k: None)
+
+    AlbumArtStage().run(ctx)
+
+    assert not outside.exists(), "the cover was written outside the library through a link"
+
+
+def test_copy_to_new_never_writes_through_and_leaks_nothing(tmp_path):
+    # Shared by change_beside, Finalize's .finalize_tmp and the bit-rot repair's
+    # .restoring (review of #205: the same pattern lived there too).
+    from musaeus.safe_save import copy_to_new
+
+    song, other = _pair(tmp_path)
+    dst = song.with_name("song.m4a.finalize_tmp")
+    dst.symlink_to(other)
+    copy_to_new(song, dst)
+    assert other.read_bytes() == b"ANOTHER RECORDING"
+    assert not dst.is_symlink() and dst.read_bytes() == b"SONG"
+
+    before = len(os.listdir("/proc/self/fd"))
+    for _ in range(5):
+        with pytest.raises(OSError):
+            copy_to_new(tmp_path / "missing.m4a", tmp_path / "x.tmp")
+    assert len(os.listdir("/proc/self/fd")) == before, "a handle leaked"
+    assert not (tmp_path / "x.tmp").exists()

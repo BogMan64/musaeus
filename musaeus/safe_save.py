@@ -21,6 +21,30 @@ from pathlib import Path
 from typing import TypeVar
 
 
+def copy_to_new(src: Path | str, dst: Path | str) -> None:
+    """Copy *src* (bytes, then mode and times) to a NEW file at *dst*.
+
+    Whatever is at *dst* is not written through (Codex audit 2026-10-16, F1):
+    shutil.copy2 followed a link planted there and overwrote the file it
+    named. The name is cleared -- a link or hardlink loses its name, never its
+    target's bytes -- and the file is created here with O_EXCL|O_NOFOLLOW: if
+    anything claims the name again first, the open fails and nothing is
+    written. The source is opened first, so a source that cannot be read
+    leaves no handle and no file behind.
+    """
+    src, dst = Path(src), Path(dst)
+    with open(src, "rb") as rf:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(dst)
+        try:
+            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            raise OSError(f"{dst} was claimed by something else while it was being made") from None
+        with os.fdopen(fd, "wb") as wf:
+            shutil.copyfileobj(rf, wf)
+    shutil.copystat(src, dst)
+
+
 def change_beside(
     path: Path,
     change: Callable[[Path], None],
@@ -37,24 +61,11 @@ def change_beside(
     many files say so before they run.
     """
     tmp = path.with_name(path.name + suffix)
-    # Whatever is at the copy's name is not the copy (Codex audit 2026-10-16,
-    # F1): shutil.copy2 followed a link planted there and overwrote ANOTHER
-    # recording, and the rename then put the link in the song's place. The
-    # name is cleared -- a link or hardlink loses its name, never its target's
-    # bytes -- and the copy is created by us, O_EXCL|O_NOFOLLOW: if anything
-    # claims the name again first, the open fails and nothing is written.
-    with contextlib.suppress(FileNotFoundError):
-        os.unlink(tmp)
-    try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    except FileExistsError:
-        raise OSError(f"{tmp} was claimed by something else while it was being made") from None
     try:
         # Inside the try: a copy cut short (disk full) is removed too
-        # (review of #135-#139, finding 6).
-        with open(path, "rb") as src, os.fdopen(fd, "wb") as dst:
-            shutil.copyfileobj(src, dst)
-        shutil.copystat(path, tmp)
+        # (review of #135-#139, finding 6). Never written through what was at
+        # the name (copy_to_new; Codex audit 2026-10-16, F1).
+        copy_to_new(path, tmp)
         change(tmp)
         if check is not None:
             check(tmp)
