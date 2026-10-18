@@ -148,8 +148,16 @@ def test_itunes_prefers_an_exact_album_match(monkeypatch):
     def fake_json(url):
         return {
             "results": [
-                {"collectionName": "Wrong Album", "artworkUrl100": "http://x/wrong100x100bb.png"},
-                {"collectionName": "Right Album", "artworkUrl100": "http://x/right100x100bb.png"},
+                {
+                    "artistName": "Artist",
+                    "collectionName": "Wrong Album",
+                    "artworkUrl100": "http://x/wrong100x100bb.png",
+                },
+                {
+                    "artistName": "Artist",
+                    "collectionName": "Right Album",
+                    "artworkUrl100": "http://x/right100x100bb.png",
+                },
             ]
         }
 
@@ -162,3 +170,351 @@ def test_itunes_prefers_an_exact_album_match(monkeypatch):
     A.fetch_itunes("Artist", "Right Album")
     assert "right" in seen["url"], f"took the wrong album: {seen['url']}"
     assert "1200x1200" in seen["url"], "did not upgrade the thumbnail size"
+
+
+# ── Codex audit 2026-10-16, F12: whose album is it ────────────────────────────
+# A search ranks; it does not say whose album a result is. Asked for Right
+# Artist's "Greatest Hits", each source could answer with Wrong Artist's first,
+# and the title check alone took it. The live catalogue has "Greatest Hits" by
+# 21 different acts.
+
+
+def _sources(monkeypatch, itunes=(), deezer=(), tracks=None, groups=()):
+    """Fake answers by URL; returns the image URLs fetched."""
+    fetched = []
+    tracks = tracks or {}
+
+    def fake_json(url):
+        if "itunes.apple.com/search" in url:
+            return {"results": list(itunes)}
+        if "itunes.apple.com/lookup" in url:
+            cid = url.split("id=")[1].split("&")[0]
+            return {
+                "results": [{"wrapperType": "track", "artistName": a} for a in tracks.get(cid, [])]
+            }
+        if "api.deezer.com/search" in url:
+            return {"data": list(deezer)}
+        if "api.deezer.com/album/" in url:
+            aid = url.split("/album/")[1].split("/")[0]
+            return {"data": [{"artist": {"name": a}} for a in tracks.get(aid, [])]}
+        if "musicbrainz.org" in url:
+            return {"release-groups": list(groups)}
+        raise AssertionError(url)
+
+    def fake_get(url, accept=None):
+        fetched.append(url)
+        return _png(1200, 1200)
+
+    monkeypatch.setattr(A, "_get_json", fake_json)
+    monkeypatch.setattr(A, "_get", fake_get)
+    monkeypatch.setattr(A.time, "sleep", lambda s: None)
+    return fetched
+
+
+def _it(artist, album="Greatest Hits", cid="1"):
+    return {
+        "artistName": artist,
+        "collectionName": album,
+        "collectionId": cid,
+        "artworkUrl100": f"http://x/{artist.replace(' ', '')}100x100bb.png",
+    }
+
+
+def _dz(artist, album="Greatest Hits", aid="1"):
+    return {
+        "id": aid,
+        "title": album,
+        "artist": {"name": artist},
+        "cover_xl": f"http://dz/{artist.replace(' ', '')}.png",
+    }
+
+
+def test_itunes_skips_another_acts_album_of_the_same_title(monkeypatch):
+    got = _sources(monkeypatch, itunes=[_it("Wrong Artist"), _it("Right Artist", cid="2")])
+    assert A.fetch_itunes("Right Artist", "Greatest Hits")
+    assert got == ["http://x/RightArtist1200x1200bb.png"]
+
+
+def test_itunes_takes_nothing_when_only_another_act_has_the_title(monkeypatch):
+    got = _sources(monkeypatch, itunes=[_it("Wrong Artist")])
+    assert A.fetch_itunes("Right Artist", "Greatest Hits") is None
+    assert got == [], "another act's cover was downloaded"
+
+
+def test_deezer_skips_another_acts_album_of_the_same_title(monkeypatch):
+    got = _sources(monkeypatch, deezer=[_dz("Wrong Artist"), _dz("Right Artist", aid="2")])
+    assert A.fetch_deezer("Right Artist", "Greatest Hits")
+    assert got == ["http://dz/RightArtist.png"]
+
+
+def test_deezer_takes_nothing_when_only_another_act_has_the_title(monkeypatch):
+    got = _sources(monkeypatch, deezer=[_dz("Wrong Artist")])
+    assert A.fetch_deezer("Right Artist", "Greatest Hits") is None
+    assert got == []
+
+
+def test_the_act_is_matched_however_its_name_is_written(monkeypatch):
+    got = _sources(monkeypatch, itunes=[_it("The Beatles", "1")])
+    assert A.fetch_itunes("Beatles, The", "1")
+    got = _sources(monkeypatch, deezer=[_dz("Simon and Garfunkel", "Bookends")])
+    assert A.fetch_deezer("Simon & Garfunkel", "Bookends") and got
+
+
+def test_a_compilation_that_lists_the_act_is_its_album(monkeypatch):
+    album = "Grosse Pointe Blank - Music From The Film"
+    _sources(
+        monkeypatch,
+        itunes=[_it("Various Artists", album, cid="7")],
+        deezer=[_dz("Various Artists", album, aid="7")],
+        tracks={"7": ["The Clash", "Right Artist", "The Specials"]},
+    )
+    assert A.fetch_itunes("Right Artist", album)
+    assert A.fetch_deezer("Right Artist", album)
+
+
+def test_a_compilation_that_does_not_list_the_act_is_not(monkeypatch):
+    got = _sources(
+        monkeypatch,
+        itunes=[_it("Various Artists", "Gold", cid="7")],
+        deezer=[_dz("Various Artists", "Gold", aid="7")],
+        tracks={"7": ["ABBA", "Wrong Artist"]},
+    )
+    assert A.fetch_itunes("Right Artist", "Gold") is None
+    assert A.fetch_deezer("Right Artist", "Gold") is None
+    assert got == []
+
+
+def _rg(rgid, *credit):
+    return {"id": rgid, "artist-credit": list(credit)}
+
+
+def test_cover_art_archive_skips_another_acts_release_group(monkeypatch):
+    got = _sources(
+        monkeypatch,
+        groups=[
+            _rg("wrong", {"name": "Wrong Artist", "joinphrase": ""}),
+            _rg("right", {"name": "Paul McCartney", "joinphrase": " & "}, {"name": "Wings"}),
+        ],
+    )
+    assert A.fetch_coverartarchive("Paul McCartney & Wings", "Greatest Hits")
+    assert got == ["https://coverartarchive.org/release-group/right/front"]
+    got.clear()
+    assert A.fetch_coverartarchive("Wings", "Greatest Hits")
+    assert got == ["https://coverartarchive.org/release-group/right/front"]
+
+
+# ── Review of #199 ────────────────────────────────────────────────────────────
+
+
+def _alias(table):
+    return lambda credit: table.get(" ".join(credit.lower().split()))
+
+
+def test_a_band_credit_the_canon_files_under_its_lead_act_is_ours(monkeypatch):
+    # Finding 1: artist_canon.tsv shortened these on the way in; the sources
+    # still credit the band.
+    canon = _alias({
+        "tom petty and the heartbreakers": "Tom Petty",
+        "wings": "Paul McCartney",
+        "daryl hall & john oates": "Hall & Oates",
+    })  # fmt: skip
+    for ours, theirs in (
+        ("Tom Petty", "Tom Petty And The Heartbreakers"),
+        ("Paul McCartney", "Wings"),
+        ("Hall & Oates", "Daryl Hall & John Oates"),
+    ):
+        got = _sources(monkeypatch, itunes=[_it(theirs, "An Album")])
+        assert A.fetch_itunes(ours, "An Album", A.Asked(ours, alias=canon)), theirs
+        assert got, theirs
+
+
+def test_a_backing_band_or_ensemble_word_does_not_hide_the_lead_act(monkeypatch):
+    for ours, theirs in (
+        ("Billie Holiday", "Billie Holiday and Her Orchestra"),
+        ("Miles Davis", "Miles Davis Quintet"),
+        ("Bob Marley", "Bob Marley & The Wailers"),
+        ("Joan Jett, The Blackhearts", "Joan Jett & The Blackhearts"),
+        ("Queen", "Queen + Adam Lambert"),
+        ("Røyksopp", "Royksopp"),
+    ):
+        _sources(monkeypatch, deezer=[_dz(theirs, "An Album")])
+        assert A.fetch_deezer(ours, "An Album"), (ours, theirs)
+
+
+def test_another_act_is_still_not_ours(monkeypatch):
+    for ours, theirs in (("Prince", "Prince Buster"), ("Earth, Wind & Fire", "Earth")):
+        got = _sources(monkeypatch, itunes=[_it(theirs, "Gold", cid="")])
+        assert A.fetch_itunes(ours, "Gold") is None and got == [], (ours, theirs)
+
+
+def test_our_own_cover_is_fetched_before_any_track_list(monkeypatch):
+    # Finding 2: every compilation's track list was fetched first, and one
+    # failed lookup threw away our own cover.
+    calls = []
+    fetched = _sources(monkeypatch, itunes=[_it("Right Artist"), _it("Various Artists", cid="7")])
+
+    def boom(cid, asked):
+        calls.append(cid)
+        raise A.ArtUnavailable("HTTP 403")
+
+    monkeypatch.setattr(A, "_itunes_lists", boom)
+    assert A.fetch_itunes("Right Artist", "Greatest Hits")
+    assert fetched == ["http://x/RightArtist1200x1200bb.png"] and calls == []
+
+
+def test_a_failed_track_list_with_nothing_else_is_could_not_ask(monkeypatch):
+    _sources(monkeypatch, itunes=[_it("Various Artists", cid="7")])
+    monkeypatch.setattr(
+        A, "_itunes_lists", lambda cid, asked: (_ for _ in ()).throw(A.ArtUnavailable("403"))
+    )
+    with pytest.raises(A.ArtUnavailable):
+        A.fetch_itunes("Right Artist", "Greatest Hits")
+
+
+def test_a_soundtrack_credited_to_its_composer_is_ours_when_it_lists_us(monkeypatch):
+    # Finding 3: not only "Various Artists" releases carry other acts.
+    album = "Marley: The Original Soundtrack"
+    _sources(
+        monkeypatch,
+        itunes=[_it("Some Film Composer", album, cid="9")],
+        tracks={"9": ["Bob Marley & The Wailers"]},
+    )
+    assert A.fetch_itunes("Bob Marley", album)
+
+
+def test_the_track_list_asks_for_the_whole_list_and_survives_null(monkeypatch):
+    # Findings 5 and 7.
+    seen = []
+
+    def fake_json(url):
+        seen.append(url)
+        return {"results": None}
+
+    monkeypatch.setattr(A, "_get_json", fake_json)
+    assert A._itunes_lists("7", A.Asked("Right Artist")) is False
+    assert "limit=200" in seen[0]
+
+
+# ── Grey, 2026-10-17: "for classical albums only composer instead of artists" ──
+
+HANDEL = "George Frideric Handel"
+COMPOSERS = {"george frideric handel": HANDEL, "georg friedrich händel": HANDEL,
+             "handel": HANDEL, "franz liszt": "Franz Liszt"}  # fmt: skip
+
+
+def _composer(name):
+    return A.Asked(name, composer=name, composer_canon=COMPOSERS)
+
+
+def test_a_composers_album_credited_only_to_its_performer_is_not_taken(monkeypatch):
+    album = "Handel: Oboe Concertos"
+    got = _sources(monkeypatch, itunes=[_it("Andreas Scholl", album, cid="3")],
+                   tracks={"3": [HANDEL]})  # fmt: skip
+    assert A.fetch_itunes(HANDEL, album, _composer(HANDEL)) is None
+    assert got == [], "a performer's credit was taken for the composer"
+
+
+def test_a_credit_that_names_the_composer_is_taken_in_any_canon_spelling(monkeypatch):
+    album = "Handel: Oboe Concertos"
+    for credit in ("Andreas Scholl, George Frideric Handel", "Georg Friedrich Händel & AAM"):
+        got = _sources(monkeypatch, deezer=[_dz(credit, album)])
+        assert A.fetch_deezer(HANDEL, album, _composer(HANDEL)) and got, credit
+
+
+def test_an_ensemble_named_after_a_composer_is_not_the_composer(monkeypatch):
+    got = _sources(monkeypatch, itunes=[_it("Franz Liszt Chamber Orchestra", "Liszt")])
+    assert A.fetch_itunes("Franz Liszt", "Liszt", _composer("Franz Liszt")) is None
+    assert got == []
+
+
+def test_the_cover_art_archive_answers_for_the_composer(monkeypatch):
+    got = _sources(
+        monkeypatch,
+        groups=[
+            _rg("performer", {"name": "Andreas Scholl"}),
+            _rg("composer", {"name": "George Frideric Handel", "joinphrase": "; "},
+                {"name": "Andreas Scholl"}),
+        ],
+    )  # fmt: skip
+    assert A.fetch_coverartarchive(HANDEL, "The Voice", _composer(HANDEL))
+    assert got == ["https://coverartarchive.org/release-group/composer/front"]
+
+
+def test_the_stage_reads_a_composer_row_from_the_composer_canon(tmp_path):
+    from musaeus.stages.albumart import _asked
+
+    (tmp_path / "Composer_Canon.tsv").write_text(f"Handel\t{HANDEL}\n", encoding="utf-8")
+    (tmp_path / "artist_canon.tsv").write_text("Wings\tPaul McCartney\n", encoding="utf-8")
+
+    class Ctx:
+        config = type("C", (), {"meta_dir": tmp_path})()
+        store: dict = {}
+
+        def get(self, k, d=None):
+            return self.store.get(k, d)
+
+        def set(self, k, v):
+            self.store[k] = v
+
+    ctx = Ctx()
+    assert _asked(ctx, HANDEL).composer == HANDEL
+    plain = _asked(ctx, "Paul McCartney")
+    assert plain.composer is None and plain.alias("Wings") == "Paul McCartney"
+
+
+# Second review of #199: the live Composer_Canon.tsv maps PERFORMERS too, so
+# ClassicalComposer can file their tracks. They must never count as the composer.
+LIVE_CANON = {
+    v.lower(): c
+    for v, c in (
+        ("J.S. Bach", "Johann Sebastian Bach"), ("Bach", "Johann Sebastian Bach"),
+        ("Georg Friedrich Händel", HANDEL), ("Handel", HANDEL),
+        ("Academy of St Martin In the Fields", "Henry Purcell"),
+        ("Akademie Für Alte Musik Berlin", HANDEL),
+        ("András Schiff", "Johann Sebastian Bach"), ("Barbara Bonney", "Henry Purcell"),
+    )
+}  # fmt: skip
+
+
+def _live(name):
+    return A.Asked(name, composer=name, composer_canon=LIVE_CANON)
+
+
+@pytest.mark.parametrize(
+    "composer,credit",
+    [
+        ("Johann Sebastian Bach", "András Schiff"),
+        ("Henry Purcell", "Academy of St Martin In the Fields"),
+        ("Henry Purcell", "Academy of St Martin in the Fields & Neville Marriner"),
+        (HANDEL, "Akademie Für Alte Musik Berlin"),
+        ("Johann Sebastian Bach", "C.P.E. Bach"),
+        ("Franz Liszt", "Franz Liszt Chamber Orchestra"),
+    ],
+)
+def test_a_performer_the_canon_files_under_a_composer_is_not_the_composer(composer, credit):
+    assert not A._is_ours(credit, _live(composer)), credit
+
+
+@pytest.mark.parametrize(
+    "composer,credit",
+    [
+        ("Johann Sebastian Bach", "J.S. Bach; András Schiff"),
+        (HANDEL, "Händel"),
+        (HANDEL, "G.F. Handel, Akademie Für Alte Musik Berlin"),
+        ("Wolfgang Amadeus Mozart", "W.A. Mozart"),
+        ("Antonio Vivaldi", "Antonio Vivaldi - I Musici"),
+        (HANDEL, "Handel: Arias"),
+    ],
+)
+def test_the_composer_is_found_however_the_credit_writes_him(composer, credit):
+    assert A._is_ours(credit, _live(composer)), credit
+
+
+@pytest.mark.parametrize(
+    "ours,theirs",
+    [("Sly & The Family Stone", "Sly & Robbie"), ("The Band", "The Who"),
+     ("Kool & The Gang", "Kool Keith"), ("Paul & Paula", "Peter, Paul and Mary")],
+)  # fmt: skip
+def test_our_band_name_is_not_cut_to_a_word_that_matches_another_act(ours, theirs):
+    canon = _alias({"paul": "Paul & Paula", "kool": "Kool & The Gang"})
+    assert not A._is_ours(theirs, A.Asked(ours, alias=canon)), (ours, theirs)

@@ -268,6 +268,26 @@ def _embed_art(audio_path: str, art_path: Path) -> bool:
 # ── Stage ─────────────────────────────────────────────────────────────────────
 
 
+def _asked(ctx: RunContext, artist: str):
+    """How the art sources read their credits for *artist* (art_sources.Asked):
+    the artist canon, and -- Grey, 2026-10-17, "for classical albums only
+    composer instead of artists" -- the composer, when the row is filed under
+    one. A composer row is recognised the way ClassicalComposer filed it: its
+    artist is a Composer_Canon.tsv composer. Loaded once per run."""
+    from ..art_sources import Asked
+    from ..canon.artist import ArtistCanon
+    from .classical_composer import CANON_FILENAME, load_composer_canon
+
+    cache = ctx.get("_albumart_canons")
+    if cache is None:
+        meta = Path(ctx.config.meta_dir)
+        cache = (ArtistCanon(meta / "artist_canon.tsv"), load_composer_canon(meta / CANON_FILENAME))
+        ctx.set("_albumart_canons", cache)
+    artists, composers = cache
+    composer = artist if artist in set(composers.values()) else None
+    return Asked(artist, alias=artists.resolve_exact, composer=composer, composer_canon=composers)
+
+
 def _ask_again(ctx: RunContext, fp: str) -> None:
     """Leave *fp* unchecked: nothing could be asked, which is not "no cover".
 
@@ -299,7 +319,9 @@ def _fetch_sidecar(
         return None
 
     try:
-        got = fetch_album_art(artist, album, ctx.config.lastfm_api_key or "")
+        got = fetch_album_art(
+            artist, album, ctx.config.lastfm_api_key or "", asked=_asked(ctx, artist)
+        )
     except ArtUnavailable as exc:
         logger.debug("[albumart] could not ask for %r/%r: %s", artist, album, exc)
         result.notes.append(f"art lookup unavailable for {artist} — {album}")
@@ -368,6 +390,7 @@ def _replace_undersized(
             album,
             ctx.config.lastfm_api_key or "",
             min_edge=max(current_px + 1, MIN_EDGE_PX),
+            asked=_asked(ctx, artist),
         )
     except ArtUnavailable as exc:
         logger.debug("[albumart] could not ask for %r/%r: %s", artist, album, exc)
