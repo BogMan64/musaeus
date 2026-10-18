@@ -67,7 +67,9 @@ def _inherited(lock_file: Path):
     try:
         if not os.path.samestat(os.fstat(int(raw)), os.stat(lock_file)):
             return None
-        return os.fdopen(int(raw), "a+")
+        # A copy of the handle: the same lock, but closing it (a nested hold
+        # ending) never closes the parent's (re-review of #202).
+        return os.fdopen(os.dup(int(raw)), "a+")
     except OSError:
         return None
 
