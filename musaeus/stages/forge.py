@@ -669,6 +669,7 @@ class ForgeStage(BaseStage):
             "silence": 0,
             "json_fail": 0,
             "ffmpeg_fail": 0,
+            "damaged": 0,
             "tag_fail": 0,
             "missing": 0,
         }
@@ -685,6 +686,10 @@ class ForgeStage(BaseStage):
                 result.files_skipped += 1
             else:
                 result.files_errored += 1
+                if status == "damaged":
+                    # Named where a person looks first, the problems sheet, not
+                    # only the run log (review of #198, finding 2).
+                    result.errors.append(f"{Path(fp).name}: damaged audio, not measured")
 
             if i % _COMMIT_EVERY == 0:
                 ctx.conn.commit()
@@ -700,7 +705,10 @@ class ForgeStage(BaseStage):
             f"  (measured via ffmpeg: {counters['ok']}, from existing tags: {counters['tag_shortcut']})"
         )
 
-        if counters.get("ffmpeg_fail", 0) + counters.get("tag_fail", 0) > 0:
+        # "damaged": the audio is broken inside its stream (a truncated file),
+        # so no measurement was stored -- a master that needs a person
+        # (Codex audit 2026-10-16, F10).
+        if sum(counters.get(k, 0) for k in ("ffmpeg_fail", "damaged", "tag_fail")) > 0:
             result.success = False
 
         ctx.record_stage(result)
