@@ -191,3 +191,54 @@ def test_a_dated_batch_folder_is_not_mistaken_for_a_person(tmp_path):
         editions.artist_album_path(nested, car, masters)
         == car / "Bob Seger/Bob Seger/Night Moves/y.m4a"
     )
+
+
+def test_the_genre_takes_the_allowed_lists_spelling(tmp_path):
+    # Review of #208: a lone "rock" passed the check and made a "rock" folder
+    # beside "Rock"; "Rock" and "rock" together picked either, run to run.
+    f = _load(tmp_path, "A\tX\trock\nA & The B\tX\tRock\n")
+    rel = library_relpath("A & The B", None, "Pop", "Album", "Song", ".m4a", f)
+    assert rel.parts[:2] == ("Rock", "X")
+
+
+def test_a_database_error_mid_move_puts_the_file_and_its_row_back(tmp_path):
+    # Review of #208: only a collision was caught. Any other database error
+    # ("database is locked") left the file moved, the row naming the old
+    # place, and the savepoint open for the next commit to keep half of.
+    import contextlib
+    import sqlite3
+
+    from musaeus.config import MusicConfig
+    from musaeus.context import RunContext
+    from musaeus.db import open_db, upsert_archive
+    from musaeus.stages.organize import OrganizeStage
+
+    cfg = MusicConfig(
+        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "Q", runs_root=tmp_path / "RUNS", meta_dir=tmp_path / "Meta",
+        alac_library=tmp_path / "ALAC-Library", db_path=tmp_path / "musaeus.db",
+    )  # fmt: skip
+    cfg.inbox.mkdir(parents=True)
+    cfg.meta_dir.mkdir()
+    ctx = RunContext.new(cfg, open_db(cfg.db_path), dry_run=False)
+    old = cfg.inbox / "flat" / "s.m4a"
+    old.parent.mkdir()
+    old.write_bytes(b"AUDIO")
+    upsert_archive(ctx.conn, {"file_path": str(old), "status": "CATALOGUED", "genre": "Pop",
+                              "artist": "Adele", "album": "21", "title": "Hello"})  # fmt: skip
+    ctx.conn.commit()
+
+    def deny(action, table, *_):
+        refuse = action == sqlite3.SQLITE_DELETE and table == "metadata_cache"
+        return sqlite3.SQLITE_DENY if refuse else sqlite3.SQLITE_OK
+
+    ctx.conn.set_authorizer(deny)
+    # Stopping is right; what matters is what it left behind.
+    with contextlib.suppress(sqlite3.Error):
+        OrganizeStage().run(ctx)
+    ctx.conn.set_authorizer(None)
+    ctx.conn.commit()  # what a later commit would keep
+
+    assert old.exists(), "the file was left at the new place"
+    row = ctx.conn.execute("SELECT file_path FROM archive").fetchone()[0]
+    assert row == str(old), "the row names a place the file is not"

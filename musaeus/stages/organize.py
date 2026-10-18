@@ -773,11 +773,15 @@ class OrganizeStage(BaseStage):
                         (str(target_path), str(current_path)),
                     )
             ctx.conn.execute("RELEASE organize_move")
-        except sqlite3.IntegrityError as exc:
+        except sqlite3.Error as exc:
+            # Any database error, not only a collision: "database is locked"
+            # left the file moved, the row at the old place and the savepoint
+            # open for the next commit to keep (review of #208).
             ctx.conn.execute("ROLLBACK TO organize_move")
             ctx.conn.execute("RELEASE organize_move")
             logger.error(
-                "[organize] DB collision for %s -> %s (%s); reverting move",
+                "[organize] DB %s for %s -> %s (%s); reverting move",
+                "collision" if isinstance(exc, sqlite3.IntegrityError) else "error",
                 current_path,
                 target_path,
                 exc,
@@ -791,6 +795,8 @@ class OrganizeStage(BaseStage):
                     current_path,
                     revert_exc,
                 )
+            if not isinstance(exc, sqlite3.IntegrityError):
+                raise  # not this file's problem: stop rather than carry on
             return False
 
         ctx.log_event(

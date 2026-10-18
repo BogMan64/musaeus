@@ -211,12 +211,13 @@ def person_for(
     return (str(found[0]), found[1]) if found else None
 
 
-def _allowed_genres(meta_dir: Path) -> set[str] | None:
+def _allowed_genres(meta_dir: Path) -> dict[str, str] | None:
+    """_genre_key -> the spelling Genre_Allowed.txt gives it, or None."""
     path = Path(meta_dir) / "Genre_Allowed.txt"
     if not path.exists():
         return None
     return {
-        _genre_key(line)
+        _genre_key(line): line.strip()
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     }
@@ -282,12 +283,17 @@ def _load_persons(meta_dir: Path) -> dict[str, tuple[str, str | None]]:
                 f"{PERSONS_FILENAME}: {person!r} has no genre; give one on any of "
                 f"their lines so all their acts sit in one place."
             )
-        genre = next(iter(named))
-        if allowed is not None and _genre_key(genre) not in allowed:
-            raise FilingError(
-                f"{PERSONS_FILENAME}: {person!r}'s genre {genre!r} is not in "
-                f"Genre_Allowed.txt -- check the spelling"
-            )
+        # min(): one answer whatever the set's order. Then the allowed list's
+        # own spelling, so "rock" cannot make a "rock" folder beside "Rock"
+        # (review of #208).
+        genre = min(named)
+        if allowed is not None:
+            if _genre_key(genre) not in allowed:
+                raise FilingError(
+                    f"{PERSONS_FILENAME}: {person!r}'s genre {genre!r} is not in "
+                    f"Genre_Allowed.txt -- check the spelling"
+                )
+            genre = allowed[_genre_key(genre)]
         if sum(1 for p, _ in acts.values() if p == person) < 2:
             raise FilingError(
                 f"{PERSONS_FILENAME}: {person!r} has only one act; a person folder is "
