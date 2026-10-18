@@ -33,6 +33,7 @@ def test_redact_hides_every_credential_parameter():
 def test_a_denied_request_records_and_reports_no_key(gateway):
     with np.policy(np.NetworkPolicy.LOCAL_ONLY), pytest.raises(A.ArtUnavailable) as err:
         A._get(URL)
+    assert gateway.denials, "no denial was recorded"
     assert SECRET not in str(err.value)
     assert all(SECRET not in t for t in gateway.attempts + gateway.denials)
 
@@ -54,3 +55,16 @@ def test_an_http_failure_and_bad_json_name_no_key(gateway, monkeypatch, caplog):
     assert all(SECRET not in t for t in gateway.attempts)
     assert json.dumps(gateway.attempts)  # still a usable record: service and endpoint kept
     assert any("ws.audioscrobbler.com" in t for t in gateway.attempts)
+
+
+def test_a_transport_error_carrying_the_url_names_no_key(gateway, monkeypatch, caplog):
+    # Codex review of #207: some URLError texts embed the URL itself.
+    def down(req, timeout=None):
+        raise urllib.error.URLError(f"cannot reach {req.full_url}")
+
+    with np.policy(np.NetworkPolicy.ALLOWED):
+        monkeypatch.setattr(A.urllib.request, "urlopen", down)
+        with caplog.at_level("DEBUG"), pytest.raises(A.ArtUnavailable) as err:
+            A._get(URL)
+    assert SECRET not in str(err.value) and err.value.__cause__ is None
+    assert SECRET not in caplog.text

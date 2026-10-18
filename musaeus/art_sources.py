@@ -90,7 +90,8 @@ def _get(url: str, *, accept: str | None = None) -> bytes | None:
             return None  # answered: nothing there
         raise ArtUnavailable(f"HTTP {exc.code} for {redact(url)}") from exc
     except Exception as exc:
-        raise ArtUnavailable(str(exc)) from exc
+        # A transport error's own text can carry the URL (Codex review of #207).
+        raise ArtUnavailable(redact(str(exc))) from None
 
 
 def _get_json(url: str) -> dict | None:
