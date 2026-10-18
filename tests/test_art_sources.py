@@ -301,3 +301,162 @@ def test_cover_art_archive_skips_another_acts_release_group(monkeypatch):
     got.clear()
     assert A.fetch_coverartarchive("Wings", "Greatest Hits")
     assert got == ["https://coverartarchive.org/release-group/right/front"]
+
+
+# ── Review of #199 ────────────────────────────────────────────────────────────
+
+
+def _alias(table):
+    return lambda credit: table.get(" ".join(credit.lower().split()))
+
+
+def test_a_band_credit_the_canon_files_under_its_lead_act_is_ours(monkeypatch):
+    # Finding 1: artist_canon.tsv shortened these on the way in; the sources
+    # still credit the band.
+    canon = _alias({
+        "tom petty and the heartbreakers": "Tom Petty",
+        "wings": "Paul McCartney",
+        "daryl hall & john oates": "Hall & Oates",
+    })  # fmt: skip
+    for ours, theirs in (
+        ("Tom Petty", "Tom Petty And The Heartbreakers"),
+        ("Paul McCartney", "Wings"),
+        ("Hall & Oates", "Daryl Hall & John Oates"),
+    ):
+        got = _sources(monkeypatch, itunes=[_it(theirs, "An Album")])
+        assert A.fetch_itunes(ours, "An Album", A.Asked(ours, alias=canon)), theirs
+        assert got, theirs
+
+
+def test_a_backing_band_or_ensemble_word_does_not_hide_the_lead_act(monkeypatch):
+    for ours, theirs in (
+        ("Billie Holiday", "Billie Holiday and Her Orchestra"),
+        ("Miles Davis", "Miles Davis Quintet"),
+        ("Bob Marley", "Bob Marley & The Wailers"),
+        ("Joan Jett, The Blackhearts", "Joan Jett & The Blackhearts"),
+        ("Queen", "Queen + Adam Lambert"),
+        ("Røyksopp", "Royksopp"),
+    ):
+        _sources(monkeypatch, deezer=[_dz(theirs, "An Album")])
+        assert A.fetch_deezer(ours, "An Album"), (ours, theirs)
+
+
+def test_another_act_is_still_not_ours(monkeypatch):
+    for ours, theirs in (("Prince", "Prince Buster"), ("Earth, Wind & Fire", "Earth")):
+        got = _sources(monkeypatch, itunes=[_it(theirs, "Gold", cid="")])
+        assert A.fetch_itunes(ours, "Gold") is None and got == [], (ours, theirs)
+
+
+def test_our_own_cover_is_fetched_before_any_track_list(monkeypatch):
+    # Finding 2: every compilation's track list was fetched first, and one
+    # failed lookup threw away our own cover.
+    calls = []
+    fetched = _sources(monkeypatch, itunes=[_it("Right Artist"), _it("Various Artists", cid="7")])
+
+    def boom(cid, asked):
+        calls.append(cid)
+        raise A.ArtUnavailable("HTTP 403")
+
+    monkeypatch.setattr(A, "_itunes_lists", boom)
+    assert A.fetch_itunes("Right Artist", "Greatest Hits")
+    assert fetched == ["http://x/RightArtist1200x1200bb.png"] and calls == []
+
+
+def test_a_failed_track_list_with_nothing_else_is_could_not_ask(monkeypatch):
+    _sources(monkeypatch, itunes=[_it("Various Artists", cid="7")])
+    monkeypatch.setattr(
+        A, "_itunes_lists", lambda cid, asked: (_ for _ in ()).throw(A.ArtUnavailable("403"))
+    )
+    with pytest.raises(A.ArtUnavailable):
+        A.fetch_itunes("Right Artist", "Greatest Hits")
+
+
+def test_a_soundtrack_credited_to_its_composer_is_ours_when_it_lists_us(monkeypatch):
+    # Finding 3: not only "Various Artists" releases carry other acts.
+    album = "Marley: The Original Soundtrack"
+    _sources(
+        monkeypatch,
+        itunes=[_it("Some Film Composer", album, cid="9")],
+        tracks={"9": ["Bob Marley & The Wailers"]},
+    )
+    assert A.fetch_itunes("Bob Marley", album)
+
+
+def test_the_track_list_asks_for_the_whole_list_and_survives_null(monkeypatch):
+    # Findings 5 and 7.
+    seen = []
+
+    def fake_json(url):
+        seen.append(url)
+        return {"results": None}
+
+    monkeypatch.setattr(A, "_get_json", fake_json)
+    assert A._itunes_lists("7", A.Asked("Right Artist")) is False
+    assert "limit=200" in seen[0]
+
+
+# ── Grey, 2026-10-17: "for classical albums only composer instead of artists" ──
+
+HANDEL = "George Frideric Handel"
+COMPOSERS = {"george frideric handel": HANDEL, "georg friedrich händel": HANDEL,
+             "handel": HANDEL, "franz liszt": "Franz Liszt"}  # fmt: skip
+
+
+def _composer(name):
+    return A.Asked(name, composer=name, composer_canon=COMPOSERS)
+
+
+def test_a_composers_album_credited_only_to_its_performer_is_not_taken(monkeypatch):
+    album = "Handel: Oboe Concertos"
+    got = _sources(monkeypatch, itunes=[_it("Andreas Scholl", album, cid="3")],
+                   tracks={"3": [HANDEL]})  # fmt: skip
+    assert A.fetch_itunes(HANDEL, album, _composer(HANDEL)) is None
+    assert got == [], "a performer's credit was taken for the composer"
+
+
+def test_a_credit_that_names_the_composer_is_taken_in_any_canon_spelling(monkeypatch):
+    album = "Handel: Oboe Concertos"
+    for credit in ("Andreas Scholl, George Frideric Handel", "Georg Friedrich Händel & AAM"):
+        got = _sources(monkeypatch, deezer=[_dz(credit, album)])
+        assert A.fetch_deezer(HANDEL, album, _composer(HANDEL)) and got, credit
+
+
+def test_an_ensemble_named_after_a_composer_is_not_the_composer(monkeypatch):
+    got = _sources(monkeypatch, itunes=[_it("Franz Liszt Chamber Orchestra", "Liszt")])
+    assert A.fetch_itunes("Franz Liszt", "Liszt", _composer("Franz Liszt")) is None
+    assert got == []
+
+
+def test_the_cover_art_archive_answers_for_the_composer(monkeypatch):
+    got = _sources(
+        monkeypatch,
+        groups=[
+            _rg("performer", {"name": "Andreas Scholl"}),
+            _rg("composer", {"name": "George Frideric Handel", "joinphrase": "; "},
+                {"name": "Andreas Scholl"}),
+        ],
+    )  # fmt: skip
+    assert A.fetch_coverartarchive(HANDEL, "The Voice", _composer(HANDEL))
+    assert got == ["https://coverartarchive.org/release-group/composer/front"]
+
+
+def test_the_stage_reads_a_composer_row_from_the_composer_canon(tmp_path):
+    from musaeus.stages.albumart import _asked
+
+    (tmp_path / "Composer_Canon.tsv").write_text(f"Handel\t{HANDEL}\n", encoding="utf-8")
+    (tmp_path / "artist_canon.tsv").write_text("Wings\tPaul McCartney\n", encoding="utf-8")
+
+    class Ctx:
+        config = type("C", (), {"meta_dir": tmp_path})()
+        store: dict = {}
+
+        def get(self, k, d=None):
+            return self.store.get(k, d)
+
+        def set(self, k, v):
+            self.store[k] = v
+
+    ctx = Ctx()
+    assert _asked(ctx, HANDEL).composer == HANDEL
+    plain = _asked(ctx, "Paul McCartney")
+    assert plain.composer is None and plain.alias("Wings") == "Paul McCartney"
