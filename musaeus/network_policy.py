@@ -48,7 +48,7 @@ class NetworkPolicy(Enum):
 #: an exception text or the gateway's record (Codex audit 2026-10-16, F5:
 #: Last.fm's api_key appeared in DEBUG logs and in the gateway's denials).
 _SECRET_PARAMS = re.compile(
-    r"([?&](?:api_?key|apikey|key|client|client_secret|token|access_token|secret|password)=)[^&#]*",
+    r"([?&;](?:api[-_]?key|apikey|key|client|client_id|client_secret|api_?sig|sig|token|access_token|secret|password)=)[^&#;]*",
     re.I,
 )
 

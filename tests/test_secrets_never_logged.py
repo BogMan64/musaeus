@@ -68,3 +68,23 @@ def test_a_transport_error_carrying_the_url_names_no_key(gateway, monkeypatch, c
             A._get(URL)
     assert SECRET not in str(err.value) and err.value.__cause__ is None
     assert SECRET not in caplog.text
+
+
+def test_the_album_art_debug_log_names_no_key(gateway, monkeypatch, caplog):
+    # Review of #207: the DEBUG line that actually prints a source's failure is
+    # fetch_album_art's. Driven end to end with only Last.fm able to answer.
+    def down(req, timeout=None):
+        raise urllib.error.URLError(f"cannot reach {req.full_url}")
+
+    for name in ("fetch_itunes", "fetch_deezer", "fetch_coverartarchive"):
+        monkeypatch.setattr(A, name, lambda *a, **k: None)
+    with np.policy(np.NetworkPolicy.ALLOWED):
+        monkeypatch.setattr(A.urllib.request, "urlopen", down)
+        with caplog.at_level("DEBUG"):
+            A.fetch_album_art("Artist", "Album", lastfm_key=SECRET)
+    assert "lastfm" in caplog.text and SECRET not in caplog.text
+
+
+@pytest.mark.parametrize("form", ["api-key", "client_id", "api_sig", "API_KEY"])
+def test_other_spellings_of_a_key_are_hidden_too(form):
+    assert SECRET not in np.redact(f"https://x/?a=1&{form}={SECRET}&b=2")
