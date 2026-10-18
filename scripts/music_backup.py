@@ -28,6 +28,10 @@ def main() -> int:
     ap.add_argument("--root", type=Path, default=Path("/mnt/NUC8TB_BACKUP"))
     ap.add_argument("--keep", type=int, default=KEEP)
     ap.add_argument("--execute", action="store_true")
+    ap.add_argument(
+        "--allow-shrink", action="store_true",
+        help="accept a copy with far fewer files than the last one (masters really were removed)",
+    )  # fmt: skip
     args = ap.parse_args()
     if args.execute:  # the masters lock (review of #87, findings 9 and 10)
         from musaeus.masters_lock import hold_for_process
@@ -46,7 +50,7 @@ def main() -> int:
         print(f"DRY RUN: would make {PREFIX}<today> (linked to {copies[0].name if copies else 'nothing'}), "
               f"check it, then keep the newest {args.keep}")  # fmt: skip
         return 0
-    report = run(vault, args.root, args.keep)
+    report = run(vault, args.root, args.keep, allow_shrink=args.allow_shrink)
     if report.problems:
         print(
             f"BACKUP NOT CONFIRMED -- nothing removed. {report.dest.name}: "

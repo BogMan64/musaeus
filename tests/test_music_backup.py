@@ -171,16 +171,86 @@ def test_a_retry_after_a_failed_run_does_not_inherit_its_leftovers(vault, tmp_pa
     assert r.problems == [] and r.files == 2
 
 
-def test_a_swap_cut_short_is_put_right_on_the_next_run(vault, tmp_path):
+def test_a_swap_cut_short_is_put_right_on_the_next_run(vault, tmp_path, monkeypatch):
     # Killed between taking the old copy aside and naming the new one: the
-    # verified old copy is the day's copy again, before anything else.
+    # verified old copy is the day's copy again, before anything else -- even
+    # when the next run's own copy then fails its check.
     root = tmp_path / "NUC"
     root.mkdir()
     final = mb.run(vault, root, today="20261101").dest
     final.rename(final.with_name(final.name + mb.SUPERSEDED))
     assert mb.dated_copies(root) == []
+    monkeypatch.setattr(mb, "verify_copy", lambda vault, dest: (0, ["the copy differs"]))
 
     r = mb.run(vault, root, today="20261101")
 
-    assert r.problems == [] and mb.dated_copies(root) == [final]
-    assert [d.name for d in root.iterdir()] == [final.name], "leftovers"
+    assert r.problems and mb.dated_copies(root) == [final]
+
+
+def test_a_swap_cut_short_on_an_earlier_day_is_put_right_too(vault, tmp_path):
+    # Review of #200, finding 3: the next run is usually next month.
+    root = tmp_path / "NUC"
+    root.mkdir()
+    old = mb.run(vault, root, today="20261001").dest
+    old.rename(old.with_name(old.name + mb.SUPERSEDED))
+
+    r = mb.run(vault, root, today="20261101")
+
+    assert r.problems == [] and mb.dated_copies(root) == [r.dest, old]
+    assert not list(root.glob(f"*{mb.SUPERSEDED}"))
+
+
+# Review of #200, finding 1: masters moved or emptied "verified" against
+# themselves -- an empty copy replaced the day's full one, and two empty
+# months rotated every good copy away. On 2026-10-13 the masters WERE moved.
+
+
+def _empty_the_masters(vault):
+    for p in sorted((vault / "Libraries" / "ALAC-Archival").rglob("*"), reverse=True):
+        p.unlink() if p.is_file() else p.rmdir()
+
+
+def test_an_empty_masters_folder_replaces_and_removes_nothing(vault, tmp_path):
+    root = tmp_path / "NUC"
+    root.mkdir()
+    first = mb.run(vault, root, today="20261101").dest
+    _empty_the_masters(vault)
+
+    for day in ("20261101", "20261201", "20270101"):
+        r = mb.run(vault, root, today=day)
+        assert r.problems, day
+
+    assert mb.dated_copies(root) == [first]
+    assert (first / "ALAC-Archival" / SONG).is_file()
+
+
+def test_masters_that_shrank_need_allow_shrink(vault, tmp_path):
+    root = tmp_path / "NUC"
+    root.mkdir()
+    first = mb.run(vault, root, today="20261101").dest
+    (vault / "Libraries" / "ALAC-Archival" / SONG).unlink()  # 2 -> 1 file
+
+    r = mb.run(vault, root, today="20261201")
+    assert r.problems and "allow-shrink" in r.problems[-1]
+    assert mb.dated_copies(root) == [first]
+
+    r = mb.run(vault, root, today="20261201", allow_shrink=True)
+    assert r.problems == [] and r.files == 1
+
+
+def test_a_second_run_on_the_same_drive_waits_its_turn(vault, tmp_path):
+    # Review of #200, finding 4.
+    import fcntl
+
+    root = tmp_path / "NUC"
+    root.mkdir()
+    import os
+
+    fd = os.open(root, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        r = mb.run(vault, root, today="20261101")
+    finally:
+        os.close(fd)
+    assert r.problems == ["another backup run is using this drive"]
+    assert mb.dated_copies(root) == []

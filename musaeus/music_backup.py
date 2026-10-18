@@ -36,6 +36,8 @@ agreed again and every retry that day failed.
 
 from __future__ import annotations
 
+import fcntl
+import os
 import re
 import shutil
 import sqlite3
@@ -53,6 +55,11 @@ PARTIAL = ".partial"
 #: The day's previous verified copy, for the moment between setting it aside
 #: and naming the new one. Never counted; put back or removed by the next run.
 SUPERSEDED = ".superseded"
+#: A new copy with fewer files than this share of the newest dated copy is
+#: not trusted to replace or rotate anything without --allow-shrink: masters
+#: that were moved or emptied would otherwise "verify" against themselves
+#: (review of #200, finding 1 -- on 2026-10-13 every master WAS moved away).
+SHRINK_FLOOR = 0.9
 
 
 @dataclass
@@ -96,16 +103,18 @@ def _rsync(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["rsync", "-a", *args], capture_output=True, text=True, check=False)
 
 
-def _recover(root: Path, today: str) -> None:
-    """Finish a swap a crash cut short (see _replace)."""
-    final = root / f"{PREFIX}{today}"
-    aside = root / f"{PREFIX}{today}{SUPERSEDED}"
-    if not aside.is_dir():
-        return
-    if final.is_dir():
-        shutil.rmtree(aside)  # the new copy was named: the old one was on its way out
-    else:
-        aside.rename(final)  # the new one never was: the verified old one is the day's copy
+def _recover(root: Path) -> None:
+    """Finish any swap a crash cut short (see _replace), whatever its day --
+    a run on another day would otherwise leave it for ever (review of #200,
+    finding 3)."""
+    for aside in sorted(root.glob(f"{PREFIX}*{SUPERSEDED}")):
+        final = aside.with_name(aside.name[: -len(SUPERSEDED)])
+        if not (aside.is_dir() and _NAME_RE.match(final.name)):
+            continue
+        if final.is_dir():
+            shutil.rmtree(aside)  # the new copy was named: the old one was on its way out
+        else:
+            aside.rename(final)  # the new one never was: the verified old one is the copy
 
 
 def _replace(work: Path, final: Path) -> None:
@@ -128,7 +137,7 @@ def make_copy(vault: Path, root: Path, today: str) -> tuple[Path, list[str]]:
     (F7); the .partial is this run's own, so files that have left the masters
     are deleted from it.
     """
-    _recover(root, today)
+    _recover(root)
     dest = root / f"{PREFIX}{today}{PARTIAL}"
     previous = next(iter(dated_copies(root)), None)
     (dest / "vault_state").mkdir(parents=True, exist_ok=True)
@@ -190,14 +199,53 @@ def verify_copy(vault: Path, dest: Path) -> tuple[int, list[str]]:
     return n_dst, problems
 
 
-def run(vault: Path, root: Path, keep: int = KEEP, today: str | None = None) -> Report:
-    """Make, check, and only then rotate. Never removes anything after a problem."""
+def _files(copy: Path) -> int:
+    return sum(1 for p in (copy / "ALAC-Archival").rglob("*") if p.is_file())
+
+
+def run(
+    vault: Path,
+    root: Path,
+    keep: int = KEEP,
+    today: str | None = None,
+    allow_shrink: bool = False,
+) -> Report:
+    """Make, check, and only then rotate. Never removes anything after a problem.
+
+    One run at a time on a root: two would build in the same .partial and
+    race in _replace (review of #200, finding 4). The lock is on the root
+    folder itself, so no file is added to the drive."""
+    fd = os.open(root, os.O_RDONLY)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return Report(root, ["another backup run is using this drive"])
+        return _run(vault, root, keep, today, allow_shrink)
+    finally:
+        os.close(fd)
+
+
+def _run(vault: Path, root: Path, keep: int, today: str | None, allow_shrink: bool) -> Report:
     today = today or date.today().strftime("%Y%m%d")
+    _recover(root)  # before counting: a copy set aside is still the last copy
+    newest = next(iter(dated_copies(root)), None)
+    had = _files(newest) if newest else 0
     work, problems = make_copy(vault, root, today)
     files, more = verify_copy(vault, work)
+    if files == 0:
+        more.append("the masters folder holds no files: not a backup")
+    elif had and files < had * SHRINK_FLOOR and not allow_shrink:
+        more.append(
+            f"{files} files against {had} in {newest.name if newest else 'the last copy'}: "
+            f"the masters shrank by more than {1 - SHRINK_FLOOR:.0%} -- moved or emptied? "
+            f"If it was meant, run again with --allow-shrink"
+        )
     report = Report(work, problems + more, files=files)
     report.unverified = sorted(
-        d for d in root.iterdir() if d.is_dir() and d.name.endswith(PARTIAL) and d != work
+        d
+        for d in root.iterdir()
+        if d.is_dir() and d != work and d.name.endswith((PARTIAL, SUPERSEDED))
     )
     if report.problems:
         return report  # stays .partial: an old copy is the only good one; keep them all
