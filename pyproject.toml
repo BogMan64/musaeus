@@ -9,10 +9,10 @@ description = "Music library pipeline framework — clean-room reference impleme
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Grey + Claude" }]
+authors = [{ name = "MUSAEUS contributors" }]
 
 dependencies = [
-    "mutagen>=1.47",
+    "mutagen>=1.46",
 ]
 
 [project.optional-dependencies]

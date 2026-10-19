@@ -55,16 +55,6 @@ REJECTED = "rejected"
 
 CLASSIFICATIONS: frozenset[str] = frozenset({FIXTURE, INBOX, CANONICAL, REJECTED})
 
-# Real roots this P0 work may never take a mutation lock on. Recorded as
-# text and compared as text: normpath is pure string manipulation, while
-# Path.resolve() calls readlink() and .exists() calls stat(), and the
-# whole point is to classify these paths without touching them.
-CANONICAL_REAL_ROOTS: tuple[str, ...] = (
-    "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT",
-    "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/ALAC-Library",
-)
-INBOX_REAL_ROOTS: tuple[str, ...] = ("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/INBOX",)
-
 
 class ScopeError(StateError):
     reason_code = "scope_invalid"
@@ -102,11 +92,18 @@ def canonicalise(path: str | Path) -> str:
 def classify(root: str | Path) -> str:
     """Classify a scope root by text alone. Never stats, never resolves."""
     normalised = canonicalise(root)
-    for inbox_root in INBOX_REAL_ROOTS:
-        if _is_at_or_under(normalised, os.path.normpath(inbox_root)):
+    configured_vault = os.environ.get("MUSAEUS_VAULT_ROOT", "").strip()
+    if configured_vault:
+        vault = canonicalise(os.path.expandvars(os.path.expanduser(configured_vault)))
+        configured_inbox = os.environ.get("MUSAEUS_INBOX", "").strip()
+        inbox = canonicalise(
+            os.path.expandvars(os.path.expanduser(configured_inbox))
+            if configured_inbox
+            else os.path.join(vault, "INBOX")
+        )
+        if _is_at_or_under(normalised, inbox):
             return INBOX
-    for canonical_root in CANONICAL_REAL_ROOTS:
-        if _is_at_or_under(normalised, os.path.normpath(canonical_root)):
+        if _is_at_or_under(normalised, vault):
             return CANONICAL
     if normalised in ("/", "/home", "/mnt", "/tmp"):
         return REJECTED
@@ -128,16 +125,19 @@ class Scope:
 
     root: str
     domain: str
+    declared_classification: str | None = None
 
     @classmethod
-    def build(cls, root: str | Path, domain: str) -> Scope:
+    def build(cls, root: str | Path, domain: str, *, classification: str | None = None) -> Scope:
         if not domain:
             raise ScopeError("scope domain is required")
-        return cls(root=canonicalise(root), domain=domain)
+        if classification is not None and classification not in CLASSIFICATIONS:
+            raise ScopeError(f"unknown scope classification: {classification!r}")
+        return cls(root=canonicalise(root), domain=domain, declared_classification=classification)
 
     @property
     def classification(self) -> str:
-        return classify(self.root)
+        return self.declared_classification or classify(self.root)
 
     @property
     def scope_id(self) -> str:

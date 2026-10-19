@@ -25,7 +25,9 @@ from musaeus.cli_gate import (
     enforce_execution_gate,
     gate_enabled,
 )
+from musaeus.safety.lock import CANONICAL, FIXTURE
 from musaeus.state.migrator import migrate
+from musaeus.state.policy import FUTURE_RECOVERY_ROOT
 
 
 @pytest.fixture
@@ -85,6 +87,21 @@ class TestGateIsOptIn:
 
 
 class TestGateBlocks:
+    def test_another_users_configured_vault_is_not_a_fixture(self, ready_vault):
+        """The real CLI config must be classified by its role, not its path."""
+        out = io.StringIO()
+        code = enforce_execution_gate(
+            ready_vault.cfg,
+            argv=["musaeus", "run", GATE_FLAG],
+            env={},
+            stream=out,
+            response="y",
+            response_supplied=True,
+        )
+        assert code == EXIT_SAFETY_BLOCKED
+        assert "scope_classification" in out.getvalue()
+        assert not list((ready_vault.cfg.runs_root / "locks").iterdir())
+
     def test_a_blocked_preflight_exits_2_and_says_nothing_changed(self, ready_vault):
         out = io.StringIO()
         code = enforce_execution_gate(
@@ -107,7 +124,7 @@ class TestGateBlocks:
         )
         text = out.getvalue()
         assert "100 GB" in text
-        assert "/home/grey/Projects/MUSAEUS_RECOVERY" in text
+        assert FUTURE_RECOVERY_ROOT in text
         assert "not created or probed" in text
 
 
@@ -119,6 +136,7 @@ class TestGateAuthority:
         out = io.StringIO()
         code = enforce_execution_gate(
             ready_vault.cfg,
+            scope_classification=FIXTURE,
             argv=["musaeus", "run", GATE_FLAG],
             env={},
             stream=out,
@@ -135,6 +153,7 @@ class TestGateAuthority:
         assert (
             enforce_execution_gate(
                 ready_vault.cfg,
+                scope_classification=FIXTURE,
                 argv=["musaeus", "run", GATE_FLAG],
                 env={},
                 stream=io.StringIO(),
@@ -149,6 +168,7 @@ class TestGateAuthority:
         assert (
             enforce_execution_gate(
                 ready_vault.cfg,
+                scope_classification=FIXTURE,
                 argv=["musaeus", "run", GATE_FLAG],
                 env={},
                 stream=io.StringIO(),
@@ -162,6 +182,7 @@ class TestGateAuthority:
         """The overnight script's case: no tty, no operator."""
         code = enforce_execution_gate(
             ready_vault.cfg,
+            scope_classification=FIXTURE,
             argv=["musaeus", "run", GATE_FLAG],
             env={},
             stream=io.StringIO(),
@@ -187,6 +208,7 @@ class TestGateAuthority:
 
         code = enforce_execution_gate(
             ready_vault.cfg,
+            scope_classification=FIXTURE,
             argv=["musaeus", "run", GATE_FLAG],
             env={},
             stream=io.StringIO(),
@@ -200,6 +222,7 @@ class TestGateAuthority:
         monkeypatch.setattr("sys.stdin", io.StringIO(""))
         code = enforce_execution_gate(
             ready_vault.cfg,
+            scope_classification=FIXTURE,
             argv=["musaeus", "run", GATE_FLAG],
             env={},
             stream=io.StringIO(),
@@ -212,6 +235,7 @@ class TestGateAuthority:
         assert (
             enforce_execution_gate(
                 ready_vault.cfg,
+                scope_classification=FIXTURE,
                 argv=["musaeus", "run", GATE_FLAG],
                 env={},
                 stream=io.StringIO(),
@@ -230,3 +254,4 @@ class TestRequestConstruction:
         assert request.destination_root == ready_vault.cfg.alac_library
         assert request.db_path == ready_vault.cfg.db_path
         assert request.scope.root == str(ready_vault.cfg.vault_root)
+        assert request.scope.classification == CANONICAL

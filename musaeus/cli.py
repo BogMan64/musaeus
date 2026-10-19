@@ -435,9 +435,17 @@ def _run_pipeline(
     if dry_run:
         return _run_pipeline_inner(stages, dry_run, stash)
     try:
-        runs_root = get_config().runs_root
+        cfg = get_config()
     except ValueError:
         return _run_pipeline_inner(stages, dry_run, stash)  # it reports the error
+    # Check authority before masters_lock creates any lock files or folders.
+    from .cli_gate import enforce_execution_gate
+
+    gate_exit = enforce_execution_gate(cfg, dry_run=dry_run)
+    if gate_exit is not None:
+        return gate_exit
+
+    runs_root = cfg.runs_root
     from .masters_lock import EXIT_BUSY, MastersBusy, masters_lock
 
     names = ", ".join(cls.__name__ for cls in stages)
@@ -491,21 +499,11 @@ def _run_pipeline_inner(
 
     try:
         cfg = get_config()
-        cfg.ensure_dirs()
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    # P0-11 execution-authority gate. OFF unless MUSAEUS_P0_SAFETY_GATE=1
-    # or --safety-gate: enabling it by default would make every run stop
-    # to ask, and would correctly make the unattended overnight script do
-    # nothing every night. Both are the right behaviours and both need to
-    # be adopted deliberately, not arrive with a merge.
-    from .cli_gate import enforce_execution_gate
-
-    gate_exit = enforce_execution_gate(cfg, dry_run=dry_run)
-    if gate_exit is not None:
-        return gate_exit
+    cfg.ensure_dirs()
 
     conn = open_db(cfg.db_path)
     ctx = RunContext.new(cfg, conn, dry_run=dry_run)

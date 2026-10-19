@@ -38,7 +38,7 @@ _GIT_TIMEOUT = 15
 # The documentation archive is a plain folder, not a checkout, and is not
 # under version control (see its own README). Overridable, like every other
 # path in this project.
-_DEFAULT_DOC_ROOT = "/mnt/FORGE2TB/DOCUMENTATION"
+_DEFAULT_DOC_ROOT = str(Path.home() / "Documents" / "MUSAEUS")
 
 
 def _git(args: list[str], cwd: Path) -> str:

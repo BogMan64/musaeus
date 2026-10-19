@@ -7,27 +7,24 @@ a *value* so preflight (P0-11) and the recovery primitives (P0-12) can
 report it, compare against it, and refuse to exceed it -- all while
 operating exclusively on disposable fixture roots.
 
-The spec is unusually specific about this (MCR-002, DR-05): the root is
-exactly `/home/grey/Projects/MUSAEUS_RECOVERY` and the cap is exactly
-100 GB. Both are fixed values, not defaults to be negotiated at runtime,
-and recording them "does not create or probe the directory or grant live
-authority".
+The future root is a per-user policy marker, not a configured recovery
+target. Recording it does not create or probe the directory or grant live
+authority. The capacity cap is 100 GB.
 
-`tests/disposable_vault.py` lists the same path in PROTECTED_REAL_ROOTS,
-so the session-wide PathGuard raises RealPathAccessError if any test ever
-does reach for it. That guard is the enforcement; this module is the
-declaration.
+The migrator compares the path as text and refuses it before probing the
+filesystem. The policy only declares the value.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Final
 
 # The fixed future recovery root. A string, deliberately NOT a Path --
 # Path itself is inert, but keeping it as a string makes it visibly a
 # recorded policy value rather than something a caller can casually
 # .mkdir() or .exists() on by reflex.
-FUTURE_RECOVERY_ROOT: Final[str] = "/home/grey/Projects/MUSAEUS_RECOVERY"
+FUTURE_RECOVERY_ROOT: Final[str] = str(Path.home() / ".local/state/musaeus/recovery")
 
 # The fixed capacity cap: exactly 100 GB.
 #
