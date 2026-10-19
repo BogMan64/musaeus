@@ -182,8 +182,61 @@ def _row_get(row: object, key: str) -> str:
 
 
 def _norm_for_match(value: str) -> str:
-    """Letters and digits only -- punctuation and case are not identity."""
-    return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", value or "").lower())
+    """Letters and digits only -- punctuation and case are not identity, and
+    "&" is the word "and" (Grey, 2026-10-12): "Jack & Diane" is the recording
+    MusicBrainz calls "Jack and Diane"."""
+    text = unicodedata.normalize("NFKD", value or "").lower()
+    if not re.search(r"[a-z0-9]", text):
+        return ""  # "&" alone is no title to match ("and" is in "Band On The Run")
+    return re.sub(r"[^a-z0-9]", "", text.replace("&", "and"))
+
+
+def _spellings(name: str) -> set[str]:
+    """A name with "&" read as "and" and with "&" simply dropped: a tag that
+    lost its "&" ("Hall Oates") is still the act (Codex review of #209)."""
+    plain = re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", name or "").lower())
+    return {k for k in (plain, _norm_for_match(name)) if k}
+
+
+def _base_title(title: str) -> str:
+    """A title without its version: brackets and a " - " suffix set aside."""
+    from ..brackets import strip_bracketed
+
+    return strip_bracketed(title or "").split(" - ", 1)[0]
+
+
+def _titles_agree(a: str, b: str) -> bool:
+    """One title is the other, or part of it.
+
+    The same title in either spelling agrees ("AT&T", "ATandT"). For part of
+    a title the old test holds ("&" simply dropped), and "&" read as "and"
+    counts only in whole words. A title that is only "and" is part of too
+    much ("Jack and Diane" holds it) and agrees with nothing but itself
+    (Codex review of #209)."""
+    ka, kb = _norm_for_match(a), _norm_for_match(b)
+    if not ka or not kb:
+        return False
+    if ka == kb:
+        return True
+    # The same title once its version is set aside: "AT&T" and "ATandT
+    # (Live)", "And" and "And - 2011 Remaster" (Codex review of #209).
+    base_a, base_b = _norm_for_match(_base_title(a)), _norm_for_match(_base_title(b))
+    if base_a and base_a == base_b:
+        return True
+    ta, tb = (
+        re.findall(r"[a-z0-9]+", unicodedata.normalize("NFKD", x).lower().replace("&", " and "))
+        for x in (a, b)
+    )
+    short, long_ = sorted((ta, tb), key=len)
+    if not set(short) - {"and"}:
+        return False  # "and" inside another title; the song "And" agreed above
+    pa, pb = (
+        re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", x or "").lower()) for x in (a, b)
+    )
+    if pa and pb and (pa in pb or pb in pa):
+        return True
+    n = len(short)
+    return any(long_[i : i + n] == short for i in range(len(long_) - n + 1))
 
 
 def _artist_key(name: str) -> str:
@@ -234,7 +287,7 @@ def _pick_matching_recording(
         if not rid:
             continue
         rt = _norm_for_match(rec.get("title", ""))
-        if not rt or (rt not in wt and wt not in rt):
+        if not rt or not _titles_agree(rec.get("title", ""), want_title):
             continue
         names = [str(x.get("name", "")) for x in rec.get("artists", []) if x.get("name")]
         if wa and names and not _artist_agrees(want_artist, names):
@@ -347,7 +400,7 @@ def name_from_results(
         for rec in r.get("recordings", []) or []:
             title = (rec.get("title") or "").strip()
             rt = _norm_for_match(title)
-            if not rt or (rt not in hint and hint not in rt):
+            if not rt or not _titles_agree(title, title_hint):
                 continue
             artist = _credit(rec.get("artists") or [])
             if artist:
@@ -775,14 +828,12 @@ class AcousticIDStage(BaseStage):
                         # -- same song, same length, different act -- and a cover
                         # is a different recording.
                         other_artist = _row_get(other, "artist") if other else ""
-                        mine = _norm_for_match(_row_get(row, "artist"))
-                        theirs = _norm_for_match(other_artist)
+                        mine = _spellings(_row_get(row, "artist"))
+                        theirs = _spellings(other_artist)
                         if (
                             mine
                             and theirs
-                            and mine != theirs
-                            and mine not in theirs
-                            and theirs not in mine
+                            and not any(m in t or t in m for m in mine for t in theirs)
                         ):
                             logger.info(
                                 "[acousticid] REJECTED pair, cross-artist (%s vs %s): %s == %s",
