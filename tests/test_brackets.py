@@ -123,3 +123,47 @@ def test_the_alphabet_constants_cover_all_three_styles() -> None:
         assert ch in OPEN.replace("\\", "")
     for ch in ")]}":
         assert ch in CLOSE.replace("\\", "")
+
+
+def test_song_key_reads_ampersand_and_the_word_and_as_one():
+    # Doctor called "Jack And Diane" a sole copy while "Jack & Diane" sat in
+    # the library (2026-10-18).
+    from musaeus.doctor import song_key
+
+    assert song_key("John Mellencamp", "Jack And Diane") == song_key(
+        "John Mellencamp", "Jack & Diane"
+    )
+    assert song_key("Simon & Garfunkel", "X") == song_key("Simon and Garfunkel", "X")
+
+
+def test_song_key_of_a_bare_ampersand_is_not_the_song_and():
+    # Codex review of #209: a quarantined "&" looked held by a catalogued "And".
+    from musaeus.doctor import song_key
+
+    assert song_key("Wings", "&") != song_key("Wings", "And")
+
+
+def test_the_word_and_is_never_dropped_from_a_song_key():
+    # Codex review of #209: dropping the WORD "and" made "And I Love Her" look
+    # held by "I Love Her", so a quarantined sole copy passed as a duplicate.
+    from musaeus.doctor import song_key
+
+    assert song_key("X", "And I Love Her") != song_key("X", "I Love Her")
+
+
+def test_a_tag_that_lost_its_ampersand_is_still_held():
+    # "Hall Oates" matched "Hall & Oates" while "&" was dropped; it still does.
+    from musaeus.doctor import song_keys
+
+    assert set(song_keys("Hall & Oates", "Maneater")) & set(song_keys("Hall Oates", "Maneater"))
+    assert not set(song_keys("X", "And I Love Her")) & set(song_keys("X", "I Love Her"))
+
+
+def test_artist_and_title_spellings_are_chosen_independently():
+    # Codex review of #209: "Hall & Oates - Rock & Roll" against "Hall and
+    # Oates - Rock Roll" shared no key.
+    from musaeus.doctor import song_keys
+
+    assert set(song_keys("Hall & Oates", "Rock & Roll")) & set(
+        song_keys("Hall and Oates", "Rock Roll")
+    )
