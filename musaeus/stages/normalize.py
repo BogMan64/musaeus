@@ -134,6 +134,9 @@ ARTICLE_LOOKALIKE_ARTISTS: frozenset[str] = frozenset(
         "die ärzte",
         "die toten hosen",
         "das efx",
+        # A first name, not French "les": the library filed him as "Paul,
+        # Les" until 2026-10-19 (found by a ChatGPT review of the folders).
+        "les paul",
     }
 )
 
