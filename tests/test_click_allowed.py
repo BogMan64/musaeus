@@ -6,8 +6,8 @@ through), and the encoder's overshoot on those flat tops is what the check
 flags. Lowering the loudness or the limiter changed nothing. Grey listened
 to the full-band copies, heard no click, and said "yes allow".
 
-MetaData/click_allowed.tsv lists such masters by audio hash: their
-full-band copy is kept, flagged or not. Every other song is still refused.
+MetaData/click_allowed.tsv lists such masters by audio hash and edition:
+that edition's full-band copy is kept, flagged or not. Every other song is still refused.
 """
 
 from __future__ import annotations
@@ -93,8 +93,8 @@ def _copies(cfg: MusicConfig) -> list[Path]:
 def test_a_listed_song_gets_its_iphone_copy_though_the_check_flags_it(cfg, tmp_path):
     _catalogue_one_master(cfg)
     (cfg.meta_dir / "click_allowed.tsv").write_text(
-        "# audio hash<TAB>song: Grey listened, no click\n"
-        f"{H}\tA - Song (no click heard, 2026-10-19)\n"
+        "# audio hash<TAB>edition<TAB>song: Grey listened, no click\n"
+        f"{H}\tiphone\tA - Song (no click heard, 2026-10-19)\n"
     )
 
     r = _build_iphone(cfg, tmp_path)
@@ -106,7 +106,7 @@ def test_a_listed_song_gets_its_iphone_copy_though_the_check_flags_it(cfg, tmp_p
 @needs_encoders
 def test_a_song_not_on_the_list_is_still_refused(cfg, tmp_path):
     _catalogue_one_master(cfg)
-    (cfg.meta_dir / "click_allowed.tsv").write_text(f"{'0' * 64}\tsomeone else\n")
+    (cfg.meta_dir / "click_allowed.tsv").write_text(f"{'0' * 64}\tiphone\tsomeone else\n")
 
     r = _build_iphone(cfg, tmp_path)
 
@@ -142,11 +142,25 @@ def test_a_listed_song_keeps_the_full_band_copy_grey_heard(tmp_path, monkeypatch
     assert widths == [bake.AAC_BANDWIDTH_HZ], widths
 
 
-def test_the_list_reads_the_first_column_and_skips_notes(tmp_path):
+@needs_encoders
+def test_a_song_allowed_for_the_iphone_is_not_allowed_in_the_car(cfg, tmp_path):
+    # Codex review of #210: Grey listened to the iPhone copy; a car copy
+    # nobody heard is still checked.
+    _catalogue_one_master(cfg)
+    (cfg.meta_dir / "click_allowed.tsv").write_text(f"{H}\tcar\tA - Song\n")
+
+    r = _build_iphone(cfg, tmp_path)
+
+    assert "Baked 0" in r.stdout and "1 failed" in r.stdout, r.stdout + r.stderr
+    assert _copies(cfg) == []
+
+
+def test_the_list_reads_hash_and_edition_and_skips_notes(tmp_path):
     f = tmp_path / "click_allowed.tsv"
-    f.write_text(f"# a note\n\n{H}\tA - Song\n  {'1' * 64}  \n")
-    assert eb.load_click_allowed(f) == frozenset({H, "1" * 64})
-    assert eb.load_click_allowed(tmp_path / "none.tsv") == frozenset()
+    f.write_text(f"# a note\n\n{H}\tiphone\tA - Song\n  {'1' * 64}  \t car \n{'2' * 64}\n")
+    assert eb.load_click_allowed(f, "iphone") == frozenset({H})
+    assert eb.load_click_allowed(f, "car") == frozenset({"1" * 64})
+    assert eb.load_click_allowed(tmp_path / "none.tsv", "iphone") == frozenset()
 
 
 def test_the_lossless_bake_is_called_as_before(tmp_path, monkeypatch):

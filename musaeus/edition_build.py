@@ -123,13 +123,19 @@ LOSSLESS_KIND = Kind(
 def _bake_car(
     src: Path, tmp: Path, known: Mapping[str, dict], allow_click: bool = False
 ) -> edition_bake.BakeResult:
-    return edition_bake.bake_aac(src, tmp, noise=True, known=known, allow_click=allow_click)
+    # Passed only when set: tests stand in for bake_aac without it.
+    if allow_click:
+        return edition_bake.bake_aac(src, tmp, noise=True, known=known, allow_click=True)
+    return edition_bake.bake_aac(src, tmp, noise=True, known=known)
 
 
 def _bake_iphone(
     src: Path, tmp: Path, known: Mapping[str, dict], allow_click: bool = False
 ) -> edition_bake.BakeResult:
-    return edition_bake.bake_aac(src, tmp, noise=False, known=known, allow_click=allow_click)
+    # Passed only when set: tests stand in for bake_aac without it.
+    if allow_click:
+        return edition_bake.bake_aac(src, tmp, noise=False, known=known, allow_click=True)
+    return edition_bake.bake_aac(src, tmp, noise=False, known=known)
 
 
 #: Grey, 2026-09-28: car and iPhone include the lossy masters (re-encoded
@@ -869,20 +875,24 @@ def _known_measurements(ledger: sqlite3.Connection, m: Master) -> dict[str, dict
     return have
 
 
-def load_click_allowed(path: Path) -> frozenset[str]:
-    """The masters (audio hash, first column) whose AAC copy is kept though
-    the click check flags it: Grey listened and heard no click (2026-10-19,
-    Muddy Waters' "You Need Love", Smokey Robinson's "Going To A Go Go").
-    Blank lines and lines starting with '#' are skipped. No file: none."""
+def load_click_allowed(path: Path, edition: str) -> frozenset[str]:
+    """The masters whose *edition* copy is kept though the click check flags
+    it: Grey listened to that copy and heard no click (2026-10-19, Muddy
+    Waters' "You Need Love", Smokey Robinson's "Going To A Go Go", iPhone).
+
+    One line each: audio hash, TAB, edition (car or iphone), then anything.
+    A line counts for the edition it names only: an iPhone copy Grey heard
+    says nothing about a car copy nobody did (Codex review of #210). Blank
+    lines and lines starting with '#' are skipped. No file: none."""
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return frozenset()
     hashes = set()
     for line in text.splitlines():
-        first = line.split("\t", 1)[0].strip()
-        if first and not first.startswith("#"):
-            hashes.add(first)
+        cols = [c.strip() for c in line.split("\t")]
+        if len(cols) >= 2 and cols[0] and not cols[0].startswith("#") and cols[1] == edition:
+            hashes.add(cols[0])
     return frozenset(hashes)
 
 
@@ -1133,9 +1143,10 @@ def execute(
             # never touch the record.
             known = {m.audio_hash: _known_measurements(ledger, m) for m, _ in todo}
             for m, target in todo:
+                # The flag only when set: tests stand in for _bake_one without it.
+                allowed = m.audio_hash in click_allowed and kind.settings is not None
                 fut = pool.submit(
-                    _bake_one, m, target, kind, known[m.audio_hash],
-                    m.audio_hash in click_allowed and kind.settings is not None,
+                    _bake_one, m, target, kind, known[m.audio_hash], *([True] if allowed else []),
                 )  # fmt: skip
                 futures[fut] = (m, target)
             done = 0
