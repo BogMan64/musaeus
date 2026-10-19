@@ -355,3 +355,12 @@ def test_the_old_car_refile_tool_refuses_while_person_folders_are_in_use(tmp_pat
     monkeypatch.setattr(mod, "plan", lambda c: pytest.fail("planned moves despite the list"))
     monkeypatch.setattr(sys, "argv", ["refile_car_by_catalogue.py", "--execute"])
     assert mod.main() == 2
+
+
+def test_the_curator_export_keeps_the_person_level(f):
+    # Codex review of #208: musaeus curator exported Wings flat.
+    from musaeus.stages.curator import _dest_path
+
+    row = {"artist": "Wings", "album": "Band On The Run", "title": "Jet", "file_path": "/m/x.m4a"}
+    parts = _dest_path(Path("/export"), row, filing=f).relative_to("/export").parts
+    assert parts[:3] == ("Paul McCartney", "Wings", "Band On The Run")
