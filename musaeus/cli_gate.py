@@ -36,7 +36,7 @@ from musaeus.preflight import (
     render_report,
     run_preflight,
 )
-from musaeus.safety.lock import Scope
+from musaeus.safety.lock import CANONICAL, Scope
 
 GATE_ENV = "MUSAEUS_P0_SAFETY_GATE"
 GATE_FLAG = "--safety-gate"
@@ -84,6 +84,7 @@ def _default_response(interactive: bool) -> str | None:
 def build_request(
     config: Any,
     *,
+    scope_classification: str = CANONICAL,
     lock_dir: Path | None = None,
     estimated_checkpoint_bytes: int = 0,
     estimated_quarantine_bytes: int = 0,
@@ -93,7 +94,11 @@ def build_request(
 ) -> PreflightRequest:
     """Build the preflight request from a live MusicConfig."""
     return PreflightRequest(
-        scope=Scope.build(config.vault_root, DOMAIN_LIBRARY_MUTATION),
+        # A configured user's vault is real data regardless of its location.
+        # Path-only classification cannot distinguish it from a test fixture.
+        scope=Scope.build(
+            config.vault_root, DOMAIN_LIBRARY_MUTATION, classification=scope_classification
+        ),
         source_root=config.inbox,
         destination_root=config.alac_library,
         recovery_root=config.runs_root / "recovery",

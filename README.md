@@ -12,16 +12,20 @@ single `musaeus` command.
 ## Quick Start
 
 ```bash
-# 1. Drop audio files into your inbox
-cp ~/Downloads/*.flac /mnt/FORGE2TB/Projects/MUSAEUS_VAULT/INBOX/
+# 1. Choose a vault location and create its folders
+musaeus setup
 
-# 2. Run the full pipeline
+# 2. Drop audio files into your inbox
+cp ~/Downloads/*.flac ~/Music/MUSAEUS_VAULT/INBOX/
+
+# 3. Preview, then run the pipeline when you are ready
+musaeus run --dry-run
 musaeus run
 
-# 3. Check status
+# 4. Check status
 musaeus status
 
-# 4. Launch the interactive console
+# 5. Launch the interactive console
 musaeus
 ```
 
@@ -46,13 +50,27 @@ before a first real run — especially if the files are not yours.
 
 The database lives on a Docker named volume rather than in `vault/`, because
 SQLite's WAL mode needs locking that Docker Desktop's Windows and macOS bind
-mounts do not reliably provide. The full test suite (2,123 tests) passes
-inside the image.
+mounts do not reliably provide.
 
 ## Installation
 
+### Debian 12
+
+Download the `.deb` from the [GitHub Releases page](https://github.com/BogMan64/musaeus/releases), then install the downloaded file:
+
 ```bash
-cd /mnt/FORGE2TB/Projects/MUSAEUS
+sudo apt install ./musaeus_0.1.0-1_all.deb
+musaeus setup
+musaeus run --dry-run
+```
+
+The package installs the CLI and its required helpers. It does not include
+music, a vault, credentials, or a background service. Setup is per user.
+
+### From source
+
+```bash
+cd musaeus
 pip3 install --user -e .
 ```
 
@@ -64,9 +82,9 @@ pip3 install --user -e .
 
 **Configuration** (`~/.config/musaeus/settings.env`):
 ```env
-MUSAEUS_VAULT_ROOT=/mnt/FORGE2TB/Projects/MUSAEUS_VAULT
-MUSAEUS_DB_PATH=/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db
-GROQ_API_KEY=gsk_...          # optional — AI features
+MUSAEUS_VAULT_ROOT=/home/you/Music/MUSAEUS_VAULT
+MUSAEUS_DB_PATH=/home/you/Music/MUSAEUS_VAULT/musaeus.db
+LASTFM_API_KEY=...             # optional — genre enrichment
 ```
 
 ---

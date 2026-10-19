@@ -184,7 +184,7 @@ class TestRegistryDeclaration:
 
 class TestRecoveryPolicy:
     def test_fixed_values_are_exact(self):
-        assert policy.FUTURE_RECOVERY_ROOT == "/home/grey/Projects/MUSAEUS_RECOVERY"
+        assert str(Path.home() / ".local/state/musaeus/recovery") == policy.FUTURE_RECOVERY_ROOT
         assert policy.RECOVERY_CAP_BYTES == 100 * 10**9
 
     def test_cap_is_decimal_gb_not_gib(self):

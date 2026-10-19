@@ -1453,7 +1453,7 @@ def test_g7_lock_conflict(seeded_vault, fixture_home, tmp_path):
         )
 
         locks = tmp_path / "locks"
-        scope = Scope.build(seeded_vault.root, "library-mutation")
+        scope = Scope.build(seeded_vault.root, "library-mutation", classification="fixture")
 
         handle = acquire(scope, locks, run_id="run-A", now=NOW)
         try:
@@ -1470,7 +1470,7 @@ def test_g7_lock_conflict(seeded_vault, fixture_home, tmp_path):
                 f"""
                 from pathlib import Path
                 from musaeus.safety.lock import LockConflictError, Scope, acquire
-                scope = Scope.build(Path({str(seeded_vault.root)!r}), "library-mutation")
+                scope = Scope.build(Path({str(seeded_vault.root)!r}), "library-mutation", classification="fixture")
                 try:
                     acquire(scope, Path({str(locks)!r}), run_id="run-C")
                 except LockConflictError as exc:
@@ -1487,7 +1487,9 @@ def test_g7_lock_conflict(seeded_vault, fixture_home, tmp_path):
             # Descendant scope: a lock on /vault and a lock on
             # /vault/ALAC-Library cover the same files. The module's own
             # docstring calls this "the important half".
-            descendant = Scope.build(seeded_vault.cfg.alac_library, "library-mutation")
+            descendant = Scope.build(
+                seeded_vault.cfg.alac_library, "library-mutation", classification="fixture"
+            )
             predicate_says_conflict = scopes_conflict(scope, descendant)
             descendant_refused = False
             descendant_handle = None
@@ -1866,7 +1868,10 @@ def test_g10_scheduled_run_is_preview_or_review_only(fixture_home):
             if not cand or not os.path.isdir(cand):
                 continue
             if shutil.disk_usage(cand).free // 10**9 >= 50:
-                wrapper_root = Path(tempfile.mkdtemp(prefix="musaeus_p0_19_wrapper_", dir=cand))
+                try:
+                    wrapper_root = Path(tempfile.mkdtemp(prefix="musaeus_p0_19_wrapper_", dir=cand))
+                except OSError:
+                    continue  # a sandbox may make a large filesystem read-only
                 break
         if wrapper_root is None:
             pytest.skip("no scratch dir with 50 GB free; the wrapper's disk guard would abort")

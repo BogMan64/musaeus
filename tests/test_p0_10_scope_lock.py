@@ -44,6 +44,12 @@ from musaeus.safety.lock import (
 DOMAIN = "library-mutation"
 
 
+@pytest.fixture(autouse=True)
+def configured_real_scope(monkeypatch):
+    monkeypatch.setenv("MUSAEUS_VAULT_ROOT", "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT")
+    monkeypatch.setenv("MUSAEUS_INBOX", "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/INBOX")
+
+
 @pytest.fixture
 def lock_dir(tmp_path: Path) -> Path:
     d = tmp_path / "locks"

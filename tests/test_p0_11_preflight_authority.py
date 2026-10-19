@@ -35,7 +35,7 @@ from musaeus.preflight import (
     render_report,
     run_preflight,
 )
-from musaeus.safety.lock import Scope, acquire
+from musaeus.safety.lock import CANONICAL, INBOX, Scope, acquire
 from musaeus.state.migrator import migrate
 from musaeus.state.policy import FUTURE_RECOVERY_ROOT
 from tests.disposable_vault import snapshot_vault_state
@@ -146,7 +146,7 @@ class TestBlockingConditions:
     def test_canonical_scope_is_blocked(self, request_bits):
         req = _replace(
             request_bits,
-            scope=Scope.build("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/ALAC-Library", DOMAIN),
+            scope=Scope.build(request_bits.destination_root, DOMAIN, classification=CANONICAL),
         )
         report = run_preflight(req)
         check = report.check("scope_classification")
@@ -159,7 +159,7 @@ class TestBlockingConditions:
         """MCR-002: 'the locked INBOX/canonical boundary must be reported,
         not treated as live approval'."""
         req = _replace(
-            request_bits, scope=Scope.build("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/INBOX", DOMAIN)
+            request_bits, scope=Scope.build(request_bits.source_root, DOMAIN, classification=INBOX)
         )
         report = run_preflight(req)
         assert report.check("scope_classification").measured == "inbox"

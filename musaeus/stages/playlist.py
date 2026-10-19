@@ -203,7 +203,7 @@ class PlaylistStage(BaseStage):
             CAR_Library/Playlists, a row with no car_export_path falls back
             to its ALAC_Library path, which is outside that tree -- so every
             un-exported track would have shipped to the car USB as an
-            absolute /mnt/FORGE2TB/... line. Skipped and counted instead.
+            absolute path from another machine. Skipped and counted instead.
             """
             try:
                 rel = Path(source).relative_to(playlist_dir.parent)
