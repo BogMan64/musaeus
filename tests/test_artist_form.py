@@ -30,7 +30,7 @@ ARTICLE_NAMES = [
 ]
 
 # Stylized names whose leading word only looks like an article.
-PROTECTED = ["De La Soul", "Los Lobos", "La Roux", "Los Lonely Boys"]
+PROTECTED = ["De La Soul", "Los Lobos", "La Roux", "Los Lonely Boys", "Les Paul"]
 
 NO_ARTICLE = ["Refused", "Dusty Springfield", "AC/DC", "TLC"]
 

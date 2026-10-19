@@ -86,6 +86,11 @@ class TestMoveArticleToSuffixProtectedNames:
     def test_die_aerzte_not_split(self):
         assert _move_article_to_suffix("Die Ärzte") == "Die Ärzte"
 
+    def test_les_paul_is_a_first_name_not_an_article(self):
+        # 2026-10-19: his folder read "Paul, Les" -- "Les" taken for French "the".
+        assert _move_article_to_suffix("Les Paul") == "Les Paul"
+        assert _move_article_to_suffix("Les Négresses Vertes") == "Négresses Vertes, Les"
+
     def test_protected_set_contents(self):
         # Guards against someone silently trimming this list back down
         # without realizing why each entry is there.
