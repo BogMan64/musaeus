@@ -124,7 +124,9 @@ def _read_tags(path: Path) -> tuple[str | None, str | None]:
     try:
         out = subprocess.run(
             ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", str(path)],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         data = json.loads(out.stdout)
         tags = {k.lower(): v for k, v in (data.get("format", {}).get("tags", {}) or {}).items()}
@@ -248,8 +250,11 @@ def _clean_up_on_termination() -> None:
 
 
 def stage_from_catalogue(
-    conn, staging_dir: Path, limit: int | None = None,
-    edition: str = "car", budget_bytes: int | None = None,
+    conn,
+    staging_dir: Path,
+    limit: int | None = None,
+    edition: str = "car",
+    budget_bytes: int | None = None,
     only_missing: bool = False,
 ) -> tuple[list[Path], list, dict[Path, object], int]:
     """Symlink the MASTER behind every CATALOGUED row into *staging_dir*.
@@ -285,9 +290,11 @@ def stage_from_catalogue(
     spec = EDITIONS[edition]
     sel = select_edition(conn, spec, budget_bytes=budget_bytes)
     if sel.skipped_for_budget:
-        print(f"  {len(sel.skipped_for_budget):,} track(s) do not fit the "
-              f"{budget_bytes / 1_000_000_000:.0f} GB budget; lowest-priority "
-              "genres are dropped first.")
+        print(
+            f"  {len(sel.skipped_for_budget):,} track(s) do not fit the "
+            f"{budget_bytes / 1_000_000_000:.0f} GB budget; lowest-priority "
+            "genres are dropped first."
+        )
     tracks = sel.included
 
     # --only-missing: the tracks the edition does not yet contain.
@@ -299,15 +306,17 @@ def stage_from_catalogue(
     # every one of them to find out. Asking the catalogue is one query.
     if only_missing:
         have = {
-            r[0] for r in conn.execute(
+            r[0]
+            for r in conn.execute(
                 "SELECT file_path FROM archive WHERE status='CATALOGUED' "
                 "AND COALESCE(car_export_path,'') <> ''"
             )
         }
         before = len(tracks)
         tracks = [t for t in tracks if str(t.file_path) not in have]
-        print(f"  --only-missing: {len(tracks):,} of {before:,} track(s) have no "
-              f"{edition} file yet")
+        print(
+            f"  --only-missing: {len(tracks):,} of {before:,} track(s) have no {edition} file yet"
+        )
 
     tracks = tracks[:limit] if limit else tracks
 
@@ -335,7 +344,15 @@ def stage_from_catalogue(
             from_master += 1
         else:
             fell_back += 1
-        link = output_path_for(t, spec, staging_dir)
+        tree = next(
+            (
+                r
+                for r in (cfg.alac_archive, cfg.alac_library)
+                if r is not None and Path(t.file_path).is_relative_to(r)
+            ),
+            None,
+        )
+        link = output_path_for(t, spec, staging_dir, tree)
         link.parent.mkdir(parents=True, exist_ok=True)
         if link.is_symlink() or link.exists():
             link.unlink()
@@ -348,8 +365,10 @@ def stage_from_catalogue(
         # Never silent. A fallback means this many tracks are being built
         # from an edition rather than from a master, which is the thing the
         # ruling forbids -- the operator has to be told, not reassured.
-        print(f"  ! {fell_back:,} track(s) have NO master on disk and were "
-              f"sourced from their library copy instead (-18 LUFS, not a master).")
+        print(
+            f"  ! {fell_back:,} track(s) have NO master on disk and were "
+            f"sourced from their library copy instead (-18 LUFS, not a master)."
+        )
     # fell_back is returned, not just printed: a track built from the -18
     # library copy instead of its master is the scope rule being broken,
     # and the handoff must be able to say so.
@@ -403,8 +422,9 @@ def _sort_artist_folders(root: Path) -> int:
     return moved
 
 
-def _copy_edition_from_car(cfg, conn, dest_root: Path, budget_bytes: int | None,
-                           dry_run: bool) -> int:
+def _copy_edition_from_car(
+    cfg, conn, dest_root: Path, budget_bytes: int | None, dry_run: bool
+) -> int:
     """Build the iPhone edition by COPYING the car edition.
 
     The two specs are byte-identical -- AAC, -14.0 LUFS, 256 kbps, 48 kHz cap
@@ -443,8 +463,7 @@ def _copy_edition_from_car(cfg, conn, dest_root: Path, budget_bytes: int | None,
 
     masked = [r for r in rows if r[1] and r[1] != "clean"]
     if masked:
-        print(f"  REFUSED: {len(masked):,} car track(s) are masked "
-              f"(noise_profile != 'clean').")
+        print(f"  REFUSED: {len(masked):,} car track(s) are masked (noise_profile != 'clean').")
         print("  Masking is for road noise; on headphones it is noise mixed into")
         print("  the music. Re-encode the iPhone edition from the masters instead.")
         return 1
@@ -509,28 +528,51 @@ def _main_legacy() -> int:  # the old entry point, kept for reference
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--mask", action="store_true", help="Apply noise masking, skip the prompt")
     group.add_argument("--no-mask", action="store_true", help="Skip masking, skip the prompt")
-    parser.add_argument("--from-catalogue", action="store_true",
-                        help="Build from every CATALOGUED master rather than from "
-                             "files hand-dropped into the input folder")
-    parser.add_argument("--source", choices=("masters", "car"), default="masters",
-                        help="iphone only: 'car' copies the car edition instead of "
-                             "re-encoding (identical specs); refuses if it is masked")
-    parser.add_argument("--only-missing", action="store_true",
-                        help="Only tracks that have no file in this edition yet "
-                             "(fills the gap a previous build left)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Report the plan and encode nothing")
-    parser.add_argument("--limit", type=int, metavar="N", default=None,
-                        help="Stage at most N tracks (for a test build)")
-    parser.add_argument("--edition", choices=("car", "iphone"), default="car",
-                        help="Which edition to build. iPhone is the same format "
-                             "(AAC 256k, -14 LUFS, <=48 kHz) with a size budget "
-                             "and no masking -- headphones have no road noise to "
-                             "mask. Not a fourth script with its own spelling of "
-                             "--execute; an edition differing only in selection.")
-    parser.add_argument("--budget-gb", type=float, metavar="GB", default=None,
-                        help="Device budget. Required in practice for iphone: "
-                             "81.7 GB of library does not fit a 30 GB phone.")
+    parser.add_argument(
+        "--from-catalogue",
+        action="store_true",
+        help="Build from every CATALOGUED master rather than from "
+        "files hand-dropped into the input folder",
+    )
+    parser.add_argument(
+        "--source",
+        choices=("masters", "car"),
+        default="masters",
+        help="iphone only: 'car' copies the car edition instead of "
+        "re-encoding (identical specs); refuses if it is masked",
+    )
+    parser.add_argument(
+        "--only-missing",
+        action="store_true",
+        help="Only tracks that have no file in this edition yet "
+        "(fills the gap a previous build left)",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Report the plan and encode nothing")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        metavar="N",
+        default=None,
+        help="Stage at most N tracks (for a test build)",
+    )
+    parser.add_argument(
+        "--edition",
+        choices=("car", "iphone"),
+        default="car",
+        help="Which edition to build. iPhone is the same format "
+        "(AAC 256k, -14 LUFS, <=48 kHz) with a size budget "
+        "and no masking -- headphones have no road noise to "
+        "mask. Not a fourth script with its own spelling of "
+        "--execute; an edition differing only in selection.",
+    )
+    parser.add_argument(
+        "--budget-gb",
+        type=float,
+        metavar="GB",
+        default=None,
+        help="Device budget. Required in practice for iphone: "
+        "81.7 GB of library does not fit a 30 GB phone.",
+    )
     args = parser.parse_args()
 
     # --limit and --budget-gb only do anything inside the --from-catalogue
@@ -542,15 +584,20 @@ def _main_legacy() -> int:  # the old entry point, kept for reference
     # spent), so it is not one of the cases where the flag would be ignored.
     # --limit still is.
     if not args.from_catalogue:
-        ignored = [n for n, v in (("--limit", args.limit),
-                                  ("--budget-gb",
-                                   None if args.source == "car" else args.budget_gb))
-                   if v is not None]
+        ignored = [
+            n
+            for n, v in (
+                ("--limit", args.limit),
+                ("--budget-gb", None if args.source == "car" else args.budget_gb),
+            )
+            if v is not None
+        ]
         if ignored:
             parser.error(
                 f"{' and '.join(ignored)} only applies with --from-catalogue; "
                 "selection happens there. Re-run with --from-catalogue, or drop "
-                "the flag.")
+                "the flag."
+            )
 
     cfg = get_config()
     input_dir = cfg.runs_root / "AAC-Car-Masked"
@@ -577,9 +624,12 @@ def _main_legacy() -> int:  # the old entry point, kept for reference
         conn_c = open_db(cfg.db_path)
         try:
             return _copy_edition_from_car(
-                cfg, conn_c, dest,
+                cfg,
+                conn_c,
+                dest,
                 int(args.budget_gb * 1_000_000_000) if args.budget_gb else None,
-                args.dry_run)
+                args.dry_run,
+            )
         finally:
             conn_c.close()
 
@@ -612,7 +662,9 @@ def _main_legacy() -> int:  # the old entry point, kept for reference
         conn_sel = open_db(cfg.db_path)
         try:
             files, tracks, link_to_track, fell_back_count = stage_from_catalogue(
-                conn_sel, staging_dir, args.limit,
+                conn_sel,
+                staging_dir,
+                args.limit,
                 edition=args.edition,
                 budget_bytes=int(args.budget_gb * 1_000_000_000) if args.budget_gb else None,
                 only_missing=args.only_missing,
@@ -620,11 +672,11 @@ def _main_legacy() -> int:  # the old entry point, kept for reference
         finally:
             conn_sel.close()
         input_dir = staging_dir
-        est_gb = sum(
-            t.duration * 256 * 1000 / 8 * 1.02 for t in tracks
-        ) / 1_000_000_000
-        print(f"Staged {len(files):,} master(s) from the catalogue "
-              f"(~{est_gb:.1f} GB of AAC to write).")
+        est_gb = sum(t.duration * 256 * 1000 / 8 * 1.02 for t in tracks) / 1_000_000_000
+        print(
+            f"Staged {len(files):,} master(s) from the catalogue "
+            f"(~{est_gb:.1f} GB of AAC to write)."
+        )
         if args.dry_run:
             print("\n[DRY RUN] Nothing encoded. First 10 of the plan:")
             for t in tracks[:10]:
@@ -656,8 +708,10 @@ def _main_legacy() -> int:  # the old entry point, kept for reference
     # anything reads, decodes, prompts or writes, so the flag now means what
     # it says whichever mode it is used in.
     if args.dry_run:
-        print(f"\n[DRY RUN] Nothing encoded. {len(files):,} file(s) would be "
-              f"processed for the {args.edition} edition.")
+        print(
+            f"\n[DRY RUN] Nothing encoded. {len(files):,} file(s) would be "
+            f"processed for the {args.edition} edition."
+        )
         print("    Nothing was read, decoded, prompted for or written.")
         return 0
 
@@ -702,7 +756,9 @@ def _main_legacy() -> int:  # the old entry point, kept for reference
             # not the master the link resolves to -- it is the key every other
             # table and query uses, so it is what must be written back.
             source_rows[Path(link)] = {
-                "file_path": t.file_path, "artist": t.artist, "title": t.title,
+                "file_path": t.file_path,
+                "artist": t.artist,
+                "title": t.title,
             }
     else:
         # Hand-dropped files: identity has to be rediscovered from the audio
@@ -718,8 +774,9 @@ def _main_legacy() -> int:  # the old entry point, kept for reference
             ).fetchone()
             source_rows[src] = dict(row) if row else None
             if row is None:
-                print(f"  WARNING: {src.name} has no matching archive row "
-                      "(not a known MUSAEUS file)")
+                print(
+                    f"  WARNING: {src.name} has no matching archive row (not a known MUSAEUS file)"
+                )
 
     # Stage 1: encode
     encoded_dir.mkdir(parents=True, exist_ok=True)
@@ -771,8 +828,13 @@ def _main_legacy() -> int:  # the old entry point, kept for reference
     # use the machine through. MUSAEUS_NO_IDLE_THROTTLE=1 opts out.
     with IdleThrottle():
         result = subprocess.run(
-            [sys.executable, str(VENDOR_DIR / "build_aac_library.py"),
-             "--profile", "car", "--apply"],
+            [
+                sys.executable,
+                str(VENDOR_DIR / "build_aac_library.py"),
+                "--profile",
+                "car",
+                "--apply",
+            ],
             cwd=str(VENDOR_DIR),
             env=env,
         )
@@ -792,8 +854,14 @@ def _main_legacy() -> int:  # the old entry point, kept for reference
         with IdleThrottle():
             result = subprocess.run(
                 [
-                    sys.executable, str(VENDOR_DIR / "orpheus_noise_masker.py"),
-                    "--apply", "--src", str(encoded_dir), "--out", str(masked_dir), "--yes",
+                    sys.executable,
+                    str(VENDOR_DIR / "orpheus_noise_masker.py"),
+                    "--apply",
+                    "--src",
+                    str(encoded_dir),
+                    "--out",
+                    str(masked_dir),
+                    "--yes",
                 ],
                 cwd=str(VENDOR_DIR),
                 env=env,
@@ -841,7 +909,9 @@ def _main_legacy() -> int:  # the old entry point, kept for reference
             continue
         out_path = output_index.get((artist, title))
         if out_path is None:
-            unmatched.append((src, f"no output file found under {final_dir} matching artist/title tags"))
+            unmatched.append(
+                (src, f"no output file found under {final_dir} matching artist/title tags")
+            )
             continue
         cfg_db.execute(
             "UPDATE archive SET car_export_path = ?, noise_profile = ? WHERE file_path = ?",

@@ -81,7 +81,7 @@ def _mirror(masters_root: Path, edition_root: Path, master: Path) -> Path:
 
 def _artist_album(masters_root: Path, edition_root: Path, master: Path) -> Path:
     """The AAC editions: Artist/Album/Title.m4a (no genre level)."""
-    return editions.artist_album_path(master, edition_root)
+    return editions.artist_album_path(master, edition_root, masters_root)
 
 
 @dataclass(frozen=True)

@@ -134,6 +134,15 @@ def _dest_path(
 
     filename = f"{int(track):02d} - {title}{ext}" if track else f"{title}{ext}"
 
+    # A person with two or more acts holds them, as in the library and the
+    # car edition (Grey 2026-10-18; Codex review of #208).
+    from ..artist_form import sort_form
+    from ..filing import person_for
+    from .normalize import stored_artist
+
+    person = person_for(filing, artist)
+    if person:
+        export_root = export_root / _sanitise(folder_spelling(sort_form(stored_artist(person[0]))))
     return export_root / artist / album / filename
 
 

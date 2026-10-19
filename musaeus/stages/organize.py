@@ -456,9 +456,14 @@ def library_relpath(
     # different folders and organize moved every such file straight back out
     # -- R2, measured 2026-09-24: all 389 files of the first fresh batch.
     path_artist = library_artist(artist, mb_artist_name, filing, audio_hash)
-    from ..filing import song_genre
+    from ..filing import person_for, song_genre
 
     genre = song_genre(filing, audio_hash) or genre
+    # Grey, 2026-10-18: a person with two or more act folders holds them in a
+    # person folder, under the person's one genre (MetaData/person_folders.tsv).
+    person = person_for(filing, path_artist)
+    if person:
+        genre = person[1] or genre
 
     # The genre level MUST match FinalizeStage. On 2026-09-18 it did
     # not: finalize was changed to file under Genre/Artist/Album and
@@ -471,15 +476,83 @@ def library_relpath(
     # as the car encoder filing by album-artist while the catalogue
     # filed by artist. Both call genre_folder() now, so there is one
     # rule rather than two that happen to agree.
+    top = Path(genre_folder(genre))
+    if person:
+        top = top / sanitize_path_component(folder_spelling(sort_form(stored_artist(person[0]))))
     return (
-        Path(genre_folder(genre))
+        top
         / sanitize_path_component(folder_spelling(path_artist))
         / sanitize_path_component(folder_spelling(album or "Unsorted"))
         / build_track_filename(path_artist, title or "Unknown Title", ext)
     )
 
 
+#: Tables whose rows are keyed by the path alone: a row already naming a free
+#: destination describes a file that is not there, and would block the move.
+_PATH_KEYED = frozenset({"archive_tier_hashes", "metadata_cache"})
+
+#: Tables that name a master by path (scripts/consolidate_artist_folders.py
+#: keeps the same list).
+_PATH_COLUMNS = (
+    ("archive_tier_hashes", "path"),
+    ("duplicates", "file_path"),
+    ("validation_issues", "file_path"),
+    ("metadata_cache", "file_path"),
+)
+
 _AND_WORD = re.compile(r"\s+and\s+", re.I)
+
+
+def unmatched_person_acts(conn: sqlite3.Connection, filing: dict[str, str] | None) -> list[str]:
+    """Acts in MetaData/person_folders.tsv that no catalogued song files under.
+
+    Most likely a typo: that act's songs would stay flat while the person's
+    other acts nest. Organize and Finalize both ask before moving anything
+    (Codex review of #208): Finalize runs first and files by the same rule.
+    """
+    person_acts = getattr(filing, "person_acts", {})
+    if not person_acts:
+        return []
+    from ..artist_form import act_key
+
+    has_mb = "mb_artist_name" in {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
+    mb = "mb_artist_name" if has_mb else "NULL"
+    seen: set[str] = set()
+    for artist, mb_name, genre, album, title, path, audio_hash in conn.execute(
+        f"SELECT artist, {mb}, genre, album, title, file_path, audio_hash FROM archive "
+        "WHERE status = 'CATALOGUED' AND artist IS NOT NULL AND title IS NOT NULL"
+    ):
+        rel = library_relpath(
+            artist, mb_name, genre, album, title, Path(path).suffix, filing, audio_hash
+        )
+        if len(rel.parts) >= 3:
+            seen.add(act_key(rel.parts[-3]))  # .../Act/Album/file
+    return sorted(act for key, act in person_acts.items() if key not in seen)
+
+
+def refuse_unmatched_person_acts(
+    conn: sqlite3.Connection, filing: dict[str, str] | None, result: StageResult, stage: str
+) -> bool:
+    """Name every unmatched listed act in *result*; True when a real run must stop."""
+    unmatched = unmatched_person_acts(conn, filing)
+    for act in unmatched:
+        note = f"person_folders.tsv: {act!r} matches no song -- check the spelling"
+        logger.warning("[%s] %s", stage, note)
+        result.notes.append(note)
+    if not unmatched:
+        return False
+    # The dry run fails too: it must not look ready for a run that will
+    # refuse (Codex review of #208).
+    result.success = False
+    result.errors.append(
+        f"person_folders.tsv names {len(unmatched)} act(s) no song files under; "
+        + (
+            "a real run would refuse -- correct the list first"
+            if result.dry_run
+            else "nothing was moved -- correct the list and run again"
+        )
+    )
+    return not result.dry_run
 
 
 def folder_spelling(name: str) -> str:
@@ -720,14 +793,66 @@ class OrganizeStage(BaseStage):
         False so the caller can skip this row and keep processing the rest.
         """
         current_path.rename(target_path)
+        # One savepoint: a failure part-way undoes the archive row as well as
+        # the file, so the row never names a place the file is not.
+        ctx.conn.execute("SAVEPOINT organize_move")
         try:
             ctx.conn.execute(
                 "UPDATE archive SET file_path = ? WHERE rowid = ?",
                 (str(target_path), row_id),
             )
-        except sqlite3.IntegrityError as exc:
+            # The tables that name a master by path follow it, as the
+            # consolidate script does (review of #208: a large move left them
+            # naming the old place, and a possible-duplicate pair waiting on
+            # AcoustID was offered again as new).
+            for table, col in _PATH_COLUMNS:
+                if ctx.conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                ).fetchone():
+                    # The target was a free name (unique_path), so a baseline or
+                    # cache row that already names it describes a file that is
+                    # not there. Left in place it would win over the moved
+                    # file's own row -- bitrot would check the master against a
+                    # stale baseline (Codex review of #208). Review records
+                    # (duplicates, validation_issues) are not the file's
+                    # identity and are kept; only an issue the moved file
+                    # already carries is not written twice.
+                    if table in _PATH_KEYED:
+                        stale = ctx.conn.execute(
+                            f"DELETE FROM {table} WHERE {col} = ?", (str(target_path),)
+                        ).rowcount
+                    elif table == "validation_issues":
+                        # The moved file's own row wins over a stale twin at the
+                        # destination: it carries the current severity and
+                        # details (Codex review of #208).
+                        stale = ctx.conn.execute(
+                            "DELETE FROM validation_issues WHERE file_path = ? AND issue IN "
+                            "(SELECT issue FROM validation_issues WHERE file_path = ?)",
+                            (str(target_path), str(current_path)),
+                        ).rowcount
+                    else:
+                        stale = 0
+                    if stale:
+                        logger.warning(
+                            "[organize] %s: dropped %d row(s) at %s already covered",
+                            table,
+                            stale,
+                            target_path,
+                        )
+                    ctx.conn.execute(
+                        f"UPDATE {table} SET {col} = ? WHERE {col} = ?",
+                        (str(target_path), str(current_path)),
+                    )
+            ctx.conn.execute("RELEASE organize_move")
+        except sqlite3.Error as exc:
+            # Any database error, not only a collision: "database is locked"
+            # left the file moved, the row at the old place and the savepoint
+            # open for the next commit to keep (review of #208).
+            ctx.conn.execute("ROLLBACK TO organize_move")
+            ctx.conn.execute("RELEASE organize_move")
             logger.error(
-                "[organize] DB collision for %s -> %s (%s); reverting move",
+                "[organize] DB %s for %s -> %s (%s); reverting move",
+                "collision" if isinstance(exc, sqlite3.IntegrityError) else "error",
                 current_path,
                 target_path,
                 exc,
@@ -741,6 +866,8 @@ class OrganizeStage(BaseStage):
                     current_path,
                     revert_exc,
                 )
+            if not isinstance(exc, sqlite3.IntegrityError):
+                raise  # not this file's problem: stop rather than carry on
             return False
 
         ctx.log_event(
@@ -806,6 +933,12 @@ class OrganizeStage(BaseStage):
         filing = (
             filing_load(cfg.meta_dir) if cfg is not None and getattr(cfg, "meta_dir", None) else {}
         )
+
+        # Checked before anything moves: the dry run names a listed act no
+        # song files under, and a real run refuses (Codex review of #208).
+        if refuse_unmatched_person_acts(ctx.conn, filing, result, "organize"):
+            ctx.record_stage(result)
+            return result
 
         renamed = 0
         moved = 0

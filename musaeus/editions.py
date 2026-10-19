@@ -306,19 +306,42 @@ def master_path_for(
     return MasterResolution(p, False)
 
 
-def artist_album_path(master: Path, root: Path) -> Path:
+def artist_album_path(master: Path, root: Path, masters_root: Path | None = None) -> Path:
     """Where a master lands in an AAC edition: Artist/Album/Title.m4a.
 
     Mirrors the master's own Artist/Album shape rather than inventing one,
     so an edition is diffable against the masters it came from. The one
     statement of the rule: the car and iPhone builds and the selection
     preview all come here (cloud review of #53: it had been copied).
+
+    A master filed under a person folder (Genre/Person/Act/Album/song,
+    MetaData/person_folders.tsv; Grey, 2026-10-18) keeps that level in the
+    car and on the iPhone too: Person/Act/Album/Title.m4a. Telling the two
+    shapes apart needs *masters_root*; without it the layout is Act/Album.
     """
     parent = master.parent.name or "Unknown Album"
     grand = master.parent.parent.name or "Unknown Artist"
+    if masters_root is not None:
+        try:
+            rel = master.relative_to(masters_root)
+        except ValueError:
+            rel = None
+        if rel is not None:
+            from .stages.organize import _BATCH_DIR_RE
+
+            parts = rel.parts
+            # A dated batch folder in front (MUSAEUS_BATCH_FOLDERS) is not a
+            # level of the layout (Codex review of #208).
+            if parts and _BATCH_DIR_RE.match(parts[0]):
+                parts = parts[1:]
+            if len(parts) == 5:  # Genre/Person/Act/Album/song
+                return root / parts[1] / grand / parent / (master.stem + ".m4a")
     return root / grand / parent / (master.stem + ".m4a")
 
 
-def output_path_for(track: Track, spec: EditionSpec, root: Path) -> Path:
-    """Where *track* lands in the edition."""
-    return artist_album_path(Path(track.file_path), root)
+def output_path_for(
+    track: Track, spec: EditionSpec, root: Path, masters_root: Path | None = None
+) -> Path:
+    """Where *track* lands in the edition. *masters_root* (the tree the track
+    lives in) keeps a person level, as the car build does (Codex review of #208)."""
+    return artist_album_path(Path(track.file_path), root, masters_root)
