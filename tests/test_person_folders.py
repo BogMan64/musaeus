@@ -264,7 +264,7 @@ def test_a_database_error_mid_move_puts_the_file_and_its_row_back(tmp_path):
     # Stopping is right; what matters is what it left behind.
     with contextlib.suppress(sqlite3.Error):
         OrganizeStage().run(ctx)
-    ctx.conn.set_authorizer(None)
+    ctx.conn.set_authorizer(lambda *_: sqlite3.SQLITE_OK)  # None needs Python 3.11
     ctx.conn.commit()  # what a later commit would keep
 
     assert old.exists(), "the file was left at the new place"
