@@ -118,21 +118,31 @@ LOSSLESS_KIND = Kind(
     include_lossy=False, list_compressed=True, label="Lossless",
     recipe_family=edition_bake.LOSSLESS_RECIPE,
 )  # fmt: skip
+
+
+def _bake_car(
+    src: Path, tmp: Path, known: Mapping[str, dict], allow_click: bool = False
+) -> edition_bake.BakeResult:
+    return edition_bake.bake_aac(src, tmp, noise=True, known=known, allow_click=allow_click)
+
+
+def _bake_iphone(
+    src: Path, tmp: Path, known: Mapping[str, dict], allow_click: bool = False
+) -> edition_bake.BakeResult:
+    return edition_bake.bake_aac(src, tmp, noise=False, known=known, allow_click=allow_click)
+
+
 #: Grey, 2026-09-28: car and iPhone include the lossy masters (re-encoded
 #: once); the car has the noise under every song.
 CAR_KIND = Kind(
     "car", edition_bake.AAC_TARGET_I, "car_library", _artist_album,
-    lambda src, tmp, known, allow_click=False: edition_bake.bake_aac(
-        src, tmp, noise=True, known=known, allow_click=allow_click
-    ),
+    _bake_car,
     include_lossy=True, label="Car", recipe_family=edition_bake.AAC_RECIPE_FAMILY,
     settings=lambda: edition_bake.aac_settings(noise=True),
 )  # fmt: skip
 IPHONE_KIND = Kind(
     "iphone", edition_bake.AAC_TARGET_I, "iphone_library", _artist_album,
-    lambda src, tmp, known, allow_click=False: edition_bake.bake_aac(
-        src, tmp, noise=False, known=known, allow_click=allow_click
-    ),
+    _bake_iphone,
     include_lossy=True, label="iPhone", recipe_family=edition_bake.AAC_RECIPE_FAMILY,
     settings=lambda: edition_bake.aac_settings(noise=False),
 )  # fmt: skip
