@@ -118,17 +118,37 @@ LOSSLESS_KIND = Kind(
     include_lossy=False, list_compressed=True, label="Lossless",
     recipe_family=edition_bake.LOSSLESS_RECIPE,
 )  # fmt: skip
+
+
+def _bake_car(
+    src: Path, tmp: Path, known: Mapping[str, dict], allow_click: bool = False
+) -> edition_bake.BakeResult:
+    # Passed only when set: tests stand in for bake_aac without it.
+    if allow_click:
+        return edition_bake.bake_aac(src, tmp, noise=True, known=known, allow_click=True)
+    return edition_bake.bake_aac(src, tmp, noise=True, known=known)
+
+
+def _bake_iphone(
+    src: Path, tmp: Path, known: Mapping[str, dict], allow_click: bool = False
+) -> edition_bake.BakeResult:
+    # Passed only when set: tests stand in for bake_aac without it.
+    if allow_click:
+        return edition_bake.bake_aac(src, tmp, noise=False, known=known, allow_click=True)
+    return edition_bake.bake_aac(src, tmp, noise=False, known=known)
+
+
 #: Grey, 2026-09-28: car and iPhone include the lossy masters (re-encoded
 #: once); the car has the noise under every song.
 CAR_KIND = Kind(
     "car", edition_bake.AAC_TARGET_I, "car_library", _artist_album,
-    lambda src, tmp, known: edition_bake.bake_aac(src, tmp, noise=True, known=known),
+    _bake_car,
     include_lossy=True, label="Car", recipe_family=edition_bake.AAC_RECIPE_FAMILY,
     settings=lambda: edition_bake.aac_settings(noise=True),
 )  # fmt: skip
 IPHONE_KIND = Kind(
     "iphone", edition_bake.AAC_TARGET_I, "iphone_library", _artist_album,
-    lambda src, tmp, known: edition_bake.bake_aac(src, tmp, noise=False, known=known),
+    _bake_iphone,
     include_lossy=True, label="iPhone", recipe_family=edition_bake.AAC_RECIPE_FAMILY,
     settings=lambda: edition_bake.aac_settings(noise=False),
 )  # fmt: skip
@@ -855,8 +875,33 @@ def _known_measurements(ledger: sqlite3.Connection, m: Master) -> dict[str, dict
     return have
 
 
+def load_click_allowed(path: Path, edition: str) -> frozenset[str]:
+    """The masters whose *edition* copy is kept though the click check flags
+    it: Grey listened to that copy and heard no click (2026-10-19, Muddy
+    Waters' "You Need Love", Smokey Robinson's "Going To A Go Go", iPhone).
+
+    One line each: audio hash, TAB, edition (car or iphone), then anything.
+    A line counts for the edition it names only: an iPhone copy Grey heard
+    says nothing about a car copy nobody did (Codex review of #210). Blank
+    lines and lines starting with '#' are skipped. No file: none."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return frozenset()
+    hashes = set()
+    for line in text.splitlines():
+        cols = [c.strip() for c in line.split("\t")]
+        if len(cols) >= 2 and cols[0] and not cols[0].startswith("#") and cols[1] == edition:
+            hashes.add(cols[0])
+    return frozenset(hashes)
+
+
 def _bake_one(
-    m: Master, target: Path, kind: Kind, known: Mapping[str, dict]
+    m: Master,
+    target: Path,
+    kind: Kind,
+    known: Mapping[str, dict],
+    allow_click: bool = False,
 ) -> tuple[Path, edition_bake.BakeResult]:
     """Worker: decode-check, bake, verify, tag, under a temporary name. No database."""
     if m.decode_ok != 1:
@@ -868,7 +913,7 @@ def _bake_one(
     tmp.unlink(missing_ok=True)
     try:
         try:
-            result = kind.bake(m.path, tmp, known)
+            result = _call_bake(kind, m.path, tmp, known, allow_click)
         except edition_bake.BakeError as exc:
             # Only when the failure came on a KEPT measurement, and never
             # while the build is stopping (second review of #53).
@@ -878,12 +923,22 @@ def _bake_one(
             # every build: once more on a fresh one, which the build then
             # keeps in its place (cloud review of #53).
             tmp.unlink(missing_ok=True)
-            result = kind.bake(m.path, tmp, {})
+            result = _call_bake(kind, m.path, tmp, {}, allow_click)
         edition_bake.copy_tags(m.path, tmp, marker_for(m.audio_hash, kind))
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
     return tmp, result
+
+
+def _call_bake(
+    kind: Kind, src: Path, tmp: Path, known: Mapping[str, dict], allow_click: bool
+) -> edition_bake.BakeResult:
+    """The edition's bake; *allow_click* is passed only when set, so a bake
+    without the click check (Lossless, tests' stand-ins) is called as before."""
+    if allow_click:
+        return kind.bake(src, tmp, known, allow_click=True)  # type: ignore[call-arg]
+    return kind.bake(src, tmp, known)
 
 
 def _move_all(
@@ -991,12 +1046,16 @@ def execute(
     progress: Callable[[str], None] = print,
     wanted_csv: Path | None = None,
     kind: Kind | None = None,
+    click_allowed: frozenset[str] = frozenset(),
 ) -> Outcome:
     """Carry out *plan*. Removals and moves first, so space is freed before
     it is spent; then the bakes, recorded one by one as they land.
 
     *wanted_csv*: each master whose copy had to be compressed goes on that
     wanted list (Grey, 2026-09-27: "also add them to TuneMyMusic.csv").
+
+    *click_allowed*: audio hashes whose AAC copy is kept though the click
+    check flags it (load_click_allowed).
     """
     kind = kind or LOSSLESS_KIND
     out = Outcome()
@@ -1084,7 +1143,11 @@ def execute(
             # never touch the record.
             known = {m.audio_hash: _known_measurements(ledger, m) for m, _ in todo}
             for m, target in todo:
-                fut = pool.submit(_bake_one, m, target, kind, known[m.audio_hash])
+                # The flag only when set: tests stand in for _bake_one without it.
+                allowed = m.audio_hash in click_allowed and kind.settings is not None
+                fut = pool.submit(
+                    _bake_one, m, target, kind, known[m.audio_hash], *([True] if allowed else []),
+                )  # fmt: skip
                 futures[fut] = (m, target)
             done = 0
             for fut in as_completed(futures):

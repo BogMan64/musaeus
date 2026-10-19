@@ -1455,6 +1455,9 @@ def _cmd_edition_build_inner(args) -> int:
                     limit=args.limit,
                     wanted_csv=cfg.tunemymusic_csv_path,
                     kind=kind,
+                    click_allowed=eb.load_click_allowed(
+                        cfg.meta_dir / "click_allowed.tsv", kind.name
+                    ),
                 )
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import math
 import os
 import re
@@ -38,6 +39,8 @@ from typing import Any
 
 from .duration import REENCODE_TOLERANCE_SEC, tolerance_for
 from .editions import CAR, LOSSLESS
+
+logger = logging.getLogger(__name__)
 
 FFMPEG = "ffmpeg"
 FDKAAC = "fdkaac"
@@ -1026,20 +1029,35 @@ def _run_pipeline(
 
 
 def bake_aac(
-    source: Path, tmp_output: Path, *, noise: bool, known: Mapping[str, dict] | None = None
+    source: Path,
+    tmp_output: Path,
+    *,
+    noise: bool,
+    known: Mapping[str, dict] | None = None,
+    allow_click: bool = False,
 ) -> BakeResult:
     """Bake *source* into an AAC edition copy at *tmp_output*, verified."""
-    return _noting_reuse(lambda: _bake_aac(source, tmp_output, noise=noise, known=known))
+    return _noting_reuse(
+        lambda: _bake_aac(source, tmp_output, noise=noise, known=known, allow_click=allow_click)
+    )
 
 
 def _bake_aac(
-    source: Path, tmp_output: Path, *, noise: bool, known: Mapping[str, dict] | None = None
+    source: Path,
+    tmp_output: Path,
+    *,
+    noise: bool,
+    known: Mapping[str, dict] | None = None,
+    allow_click: bool = False,
 ) -> BakeResult:
     """Bake *source* into an AAC edition copy at *tmp_output*, verified.
 
     The music is what lands on -14 (the loudness loudnorm reports is before
     the noise is added); the noise makes the finished file a little louder,
     as the old car edition's was.
+
+    *allow_click*: Grey listened to this song's full-band copy and heard no
+    click (MetaData/click_allowed.tsv): that copy is kept, flagged or not.
     """
     info = probe(source)
     rate = target_rate(sample_rate_of(info))
@@ -1086,11 +1104,16 @@ def _bake_aac(
             click = _click_in(
                 _peaks_in(tap.read_text()), window_peaks(tmp_output, rate, _deadline(seconds))
             )
-            if click is None:
+            if click is None or allow_click:
                 break
     finally:
         tap.unlink(missing_ok=True)
-    if click is not None:
+    if click is not None and allow_click:
+        at, over = click
+        logger.warning(
+            "%s: kept on the allowed list despite +%.1f dB at %.1f s", source, over, at / 10
+        )
+    elif click is not None:
         at, over = click
         raise BakeError(f"the encoder put a click in the copy: +{over:.1f} dB at {at / 10:.1f} s")
     return result
