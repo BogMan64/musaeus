@@ -1,5 +1,7 @@
 """AcoustID's title check reads "&" as "and" (Grey, 2026-10-12)."""
 
+import pytest
+
 from musaeus.stages.acousticid import _pick_matching_recording
 
 
@@ -53,3 +55,13 @@ def test_a_song_called_and_still_matches_its_own_versions():
     # and the stage then stamped it checked.
     recordings = [{"id": "r1", "title": "And (Live)", "artists": [{"name": "X"}]}]
     assert _pick_matching_recording(recordings, "X", "And") == "r1"
+
+
+@pytest.mark.parametrize(
+    "want, recorded",
+    [("And", "And - 2011 Remaster"), ("AT&T", "ATandT (Live)")],
+)
+def test_a_title_agrees_with_its_versions_in_either_spelling(want, recorded):
+    # Codex review of #209.
+    recordings = [{"id": "r1", "title": recorded, "artists": [{"name": "X"}]}]
+    assert _pick_matching_recording(recordings, "X", want) == "r1"

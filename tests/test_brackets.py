@@ -157,3 +157,13 @@ def test_a_tag_that_lost_its_ampersand_is_still_held():
 
     assert set(song_keys("Hall & Oates", "Maneater")) & set(song_keys("Hall Oates", "Maneater"))
     assert not set(song_keys("X", "And I Love Her")) & set(song_keys("X", "I Love Her"))
+
+
+def test_artist_and_title_spellings_are_chosen_independently():
+    # Codex review of #209: "Hall & Oates - Rock & Roll" against "Hall and
+    # Oates - Rock Roll" shared no key.
+    from musaeus.doctor import song_keys
+
+    assert set(song_keys("Hall & Oates", "Rock & Roll")) & set(
+        song_keys("Hall and Oates", "Rock Roll")
+    )

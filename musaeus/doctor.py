@@ -34,6 +34,7 @@ still describe what is actually on the disk?
 
 from __future__ import annotations
 
+import itertools
 import re
 import shutil
 import sqlite3
@@ -105,8 +106,16 @@ def song_keys(artist: str | None, title: str | None) -> list[tuple[str, str]]:
     a = (artist or "").lower()
     t = t.lower()
     folded = (_amp_as_and(a), _amp_as_and(t))
-    dropped = (_NOISE_RE.sub("", a), _NOISE_RE.sub("", t))
-    return [folded] if dropped == folded else [folded, dropped]
+    # Each spelling chosen on its own for artist and title: "Hall & Oates -
+    # Rock & Roll" is held by "Hall and Oates - Rock Roll" (Codex review of #209).
+    keys = [folded]
+    for k in itertools.product(
+        dict.fromkeys((folded[0], _NOISE_RE.sub("", a))),
+        dict.fromkeys((folded[1], _NOISE_RE.sub("", t))),
+    ):
+        if k not in keys:
+            keys.append(k)
+    return keys
 
 
 def _amp_as_and(text: str) -> str:

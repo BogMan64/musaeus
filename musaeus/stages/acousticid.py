@@ -198,6 +198,13 @@ def _spellings(name: str) -> set[str]:
     return {k for k in (plain, _norm_for_match(name)) if k}
 
 
+def _base_title(title: str) -> str:
+    """A title without its version: brackets and a " - " suffix set aside."""
+    from ..brackets import strip_bracketed
+
+    return strip_bracketed(title or "").split(" - ", 1)[0]
+
+
 def _titles_agree(a: str, b: str) -> bool:
     """One title is the other, or part of it.
 
@@ -211,17 +218,18 @@ def _titles_agree(a: str, b: str) -> bool:
         return False
     if ka == kb:
         return True
+    # The same title once its version is set aside: "AT&T" and "ATandT
+    # (Live)", "And" and "And - 2011 Remaster" (Codex review of #209).
+    base_a, base_b = _norm_for_match(_base_title(a)), _norm_for_match(_base_title(b))
+    if base_a and base_a == base_b:
+        return True
     ta, tb = (
         re.findall(r"[a-z0-9]+", unicodedata.normalize("NFKD", x).lower().replace("&", " and "))
         for x in (a, b)
     )
     short, long_ = sorted((ta, tb), key=len)
     if not set(short) - {"and"}:
-        # Only the song really called "And", in a version: "And (Live)"
-        # (Codex review of #209) -- never "and" inside another title.
-        from ..brackets import strip_bracketed
-
-        return _norm_for_match(strip_bracketed(a)) == _norm_for_match(strip_bracketed(b))
+        return False  # "and" inside another title; the song "And" agreed above
     pa, pb = (
         re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", x or "").lower()) for x in (a, b)
     )
