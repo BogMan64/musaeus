@@ -509,6 +509,33 @@ def test_a_car_build_writes_the_playlists_that_travel_with_it(cfg):
     assert not (playlists / "Holiday.m3u8").exists(), "a stale playlist travelled on"
 
 
+def test_an_unchanged_playlist_is_left_as_it_was(cfg):
+    # 2026-10-19: every build rewrote all 49 car playlists with the same lines,
+    # so each got a new time and every stick sync copied all 49 again. One
+    # already right is left alone -- and is not swept out as stale for it.
+    import os
+
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    conn = sqlite3.connect(cfg.db_path)
+    conn.execute(
+        "UPDATE archive SET genre = 'Rock', artist = 'The Rolling Stones', title = 'Angie'"
+    )
+    conn.commit()
+    conn.close()
+    r = _cli(cfg, "car")
+    assert r.returncode == 0, r.stdout + r.stderr
+    rock = cfg.car_library / "Playlists" / "Rock.m3u8"
+    before = rock.read_text()
+    os.utime(rock, ns=(1_000_000_000, 1_000_000_000))
+
+    r = _cli(cfg, "car")
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert rock.is_file(), "an unchanged playlist was swept out as stale"
+    assert rock.read_text() == before
+    assert rock.stat().st_mtime_ns == 1_000_000_000, "rewritten with the same lines"
+
+
 def test_the_index_script_writes_where_the_car_edition_is(cfg, tmp_path):
     # ...and write_car_index.py built its folder from the vault's Libraries,
     # ignoring MUSAEUS_CAR_LIBRARY.
