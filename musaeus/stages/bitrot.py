@@ -95,7 +95,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-from ..config import AUDIO_EXTENSIONS
+from ..config import AUDIO_EXTENSIONS, MusicConfig
 from ..context import RunContext, StageResult, elision
 from ..hasher import HasherTimeout, audio_hash, file_hash
 from .base import NO_VERIFICATION, BaseStage, VerifyResult
@@ -173,6 +173,22 @@ def _notify(repaired: list, unrepaired: list, lost: list | None = None) -> None:
         )  # fmt: skip
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("[bitrot] notification not sent: %s", exc)
+
+
+def _denied_hashes(cfg: MusicConfig) -> set[str]:
+    """Audio deleted on purpose: the deny list in the hash ledger. Read-only;
+    a missing or unreadable ledger has nothing to add."""
+    path = Path(cfg.hash_index_path)
+    if not path.exists():
+        return set()
+    try:
+        led = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            return {r[0] for r in led.execute("SELECT audio_hash FROM denied_hashes") if r[0]}
+        finally:
+            led.close()
+    except sqlite3.Error:
+        return set()
 
 
 class BitRotStage(BaseStage):
@@ -386,17 +402,39 @@ class BitRotStage(BaseStage):
         return result
 
     def _drop_gone(self, ctx: RunContext, result: StageResult, scanned: set[str]) -> None:
-        """Forget baseline rows whose file is no longer there.
+        """Forget baseline rows whose file is gone -- when its audio is accounted for.
 
         A rebaseline records the archive as it is now, but it only ever added
         and updated rows: every refile left its old path behind, and a verify
         reported each as "missing from disk" for ever after (5,476 of them on
         2026-10-19: 5,450 old paths of moved songs, 26 duplicates set aside).
-        Only after a whole-archive pass (never with --limit), and only rows
-        whose file does not exist: one the scan missed but is on disk stays.
+
+        A row goes only when its file does not exist AND its audio is known to
+        be somewhere: baselined at a path this pass scanned (it moved), in the
+        catalogue at a file that exists (set aside, e.g. REVIEW), or on the
+        deny list (deleted on purpose). Any other missing file keeps its row,
+        so a verify still reports a loss nobody recorded (Codex review of
+        #214). Only after a whole-archive pass, never with --limit; an empty
+        scan returns before this -- most likely the drive is not there.
         """
-        rows = ctx.conn.execute("SELECT path FROM archive_tier_hashes").fetchall()
-        gone = [r[0] for r in rows if r[0] not in scanned and not Path(r[0]).exists()]
+        rows = ctx.conn.execute("SELECT path, audio_hash FROM archive_tier_hashes").fetchall()
+        here = {r[1] for r in rows if r[1] and r[0] in scanned}
+        catalogued = {
+            r[1]
+            for r in ctx.conn.execute(
+                "SELECT file_path, audio_hash FROM archive WHERE audio_hash IS NOT NULL"
+            )
+            if r[1] and r[0] and Path(r[0]).exists()
+        }
+        accounted = here | catalogued | _denied_hashes(ctx.config)
+        gone, kept = [], 0
+        for path, ah in rows:
+            if path in scanned or Path(path).exists():
+                continue
+            if ah and ah in accounted:
+                gone.append(path)
+            else:
+                kept += 1
         for path in gone:
             ctx.conn.execute("DELETE FROM archive_tier_hashes WHERE path = ?", (path,))
         ctx.conn.commit()
@@ -406,6 +444,11 @@ class BitRotStage(BaseStage):
                 result.notes.append(f"  {Path(path).name}")
             if len(gone) > 5:
                 result.notes.append(f"  {elision(len(gone) - 5)}")
+        if kept:
+            result.notes.append(
+                f"kept, missing with no record of where the audio went: {kept} "
+                "(a verify still reports them)"
+            )
 
     def _verify(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)

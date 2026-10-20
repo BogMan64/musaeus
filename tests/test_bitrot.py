@@ -64,6 +64,31 @@ def _baseline(ctx: RunContext, path: Path) -> None:
     ctx.conn.commit()
 
 
+def _audio_file(ctx: RunContext, relpath: str, frequency: int = 440) -> Path:
+    """A real (tiny) ALAC file: the PCM identity needs audio that decodes."""
+    import subprocess
+
+    path = ctx.config.alac_archive / relpath
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+         "-i", f"sine=frequency={frequency}:duration=1", "-c:a", "alac", str(path)],
+        check=True, stdin=subprocess.DEVNULL,
+    )  # fmt: skip
+    return path
+
+
+def _baseline_with_audio(ctx: RunContext, path: Path) -> None:
+    from musaeus.hasher import audio_hash
+
+    ctx.conn.execute(
+        "INSERT INTO archive_tier_hashes (path, sha256, audio_hash, size_bytes) "
+        "VALUES (?, ?, ?, ?)",
+        (str(path), file_hash(path), audio_hash(path, strict=True), path.stat().st_size),
+    )
+    ctx.conn.commit()
+
+
 class TestRebaseline:
     def test_establishes_baseline_for_all_archive_files(self, ctx):
         _archive_file(ctx, "Artist/Album/a.m4a", b"CONTENT A")
@@ -93,8 +118,8 @@ class TestRebaseline:
     def test_rebaseline_forgets_a_path_whose_file_moved(self, ctx):
         # 2026-10-19: refiles left 5,476 old paths in the baseline, each
         # reported "missing from disk" by every verify after.
-        old = _archive_file(ctx, "Pop/Artist/Album/a.m4a", b"SONG")
-        _baseline(ctx, old)
+        old = _audio_file(ctx, "Pop/Artist/Album/a.m4a")
+        _baseline_with_audio(ctx, old)
         new = ctx.config.alac_archive / "Rock" / "Artist" / "Album" / "a.m4a"
         new.parent.mkdir(parents=True)
         old.rename(new)
@@ -105,6 +130,63 @@ class TestRebaseline:
         paths = [r[0] for r in ctx.conn.execute("SELECT path FROM archive_tier_hashes")]
         assert paths == [str(new)]
         assert any("no longer on disk: 1" in n for n in result.notes)
+
+    def test_rebaseline_keeps_a_file_lost_without_a_trace(self, ctx):
+        # Codex review of #214: a file deleted by accident is not a move.
+        # Its row stays, so the next verify still reports it missing.
+        lost = _audio_file(ctx, "Pop/Artist/Album/a.m4a")
+        _baseline_with_audio(ctx, lost)
+        lost.unlink()
+        _audio_file(ctx, "Rock/Other/Album/b.m4a", frequency=660)
+        ctx.set("bitrot_rebaseline", True)
+
+        result = BitRotStage().run(ctx)
+
+        paths = {r[0] for r in ctx.conn.execute("SELECT path FROM archive_tier_hashes")}
+        assert str(lost) in paths
+        assert any("no record of where the audio went: 1" in n for n in result.notes)
+
+    def test_rebaseline_forgets_a_file_set_aside_in_the_catalogue(self, ctx, tmp_path):
+        # The 26 duplicates moved to REVIEW: catalogued at a file that exists.
+        old = _audio_file(ctx, "Pop/Artist/Album/a.m4a")
+        _baseline_with_audio(ctx, old)
+        aside = tmp_path / "REVIEW" / "DUPES_MOVED" / "a.m4a"
+        aside.parent.mkdir(parents=True, exist_ok=True)
+        old.rename(aside)
+        ah = ctx.conn.execute("SELECT audio_hash FROM archive_tier_hashes").fetchone()[0]
+        upsert_archive(ctx.conn, {"file_path": str(aside), "audio_hash": ah,
+                                  "status": "DUPE_REVIEW"})  # fmt: skip
+        ctx.conn.commit()
+        _audio_file(ctx, "Rock/Other/Album/b.m4a", frequency=660)
+        ctx.set("bitrot_rebaseline", True)
+
+        BitRotStage().run(ctx)
+
+        paths = {r[0] for r in ctx.conn.execute("SELECT path FROM archive_tier_hashes")}
+        assert str(old) not in paths
+
+    def test_rebaseline_forgets_a_file_deleted_on_purpose(self, ctx):
+        # delete_reviewed_tracks denies the audio: a deliberate removal.
+        import sqlite3
+
+        gone = _audio_file(ctx, "Pop/Artist/Album/a.m4a")
+        _baseline_with_audio(ctx, gone)
+        ah = ctx.conn.execute("SELECT audio_hash FROM archive_tier_hashes").fetchone()[0]
+        gone.unlink()
+        _audio_file(ctx, "Rock/Other/Album/b.m4a", frequency=660)
+        led_path = ctx.config.hash_index_path
+        led_path.parent.mkdir(parents=True, exist_ok=True)
+        led = sqlite3.connect(led_path)
+        led.execute("CREATE TABLE denied_hashes (audio_hash TEXT PRIMARY KEY, reason TEXT)")
+        led.execute("INSERT INTO denied_hashes VALUES (?, 'deleted by Grey')", (ah,))
+        led.commit()
+        led.close()
+        ctx.set("bitrot_rebaseline", True)
+
+        BitRotStage().run(ctx)
+
+        paths = {r[0] for r in ctx.conn.execute("SELECT path FROM archive_tier_hashes")}
+        assert str(gone) not in paths
 
     def test_a_limited_rebaseline_forgets_nothing(self, ctx):
         old = _archive_file(ctx, "Pop/Artist/Album/a.m4a", b"SONG")
