@@ -246,11 +246,13 @@ class PlaylistStage(BaseStage):
                 lines.append(rel)
             content = "\n".join(lines) + "\n"
 
+            changed = True  # a preview counts what a run would write
             if dry_run:
                 result.notes.append(f"  [DRY] {out.name}  ({len(tracks)} tracks)")
             else:
                 self.produced.append(out)
-                if _write_if_changed(out, content):
+                changed = _write_if_changed(out, content)
+                if changed:
                     ctx.log_event(
                         "PLAYLIST_WRITTEN",
                         file_path=str(out),
@@ -263,7 +265,8 @@ class PlaylistStage(BaseStage):
                     unchanged += 1
 
             result.files_processed += len(tracks)
-            result.files_changed += len(tracks)
+            if changed:
+                result.files_changed += len(tracks)
 
         # Per-decade era playlists. These re-list tracks already counted by the
         # genre pass, so files_processed/files_changed are deliberately not
@@ -342,22 +345,27 @@ class PlaylistStage(BaseStage):
         return result
 
     def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
-        """A playlist this stage says it wrote must exist and have content.
+        """A playlist this stage stands behind must exist and have content.
 
-        The event records the path and the track count. A write that
-        failed, or produced an empty file because the track query returned
-        nothing, leaves the count in the log and nothing on disk.
+        Every playlist the run produced, rewritten or left as it was already
+        right -- not only the ones it wrote: when all were right, nothing was
+        written and the check had nothing to look at (Codex review of #213).
+        The events record what was written; a write that failed, or produced
+        an empty file because the track query returned nothing, leaves the
+        count in the log and nothing on disk.
         """
         rows = ctx.conn.execute(
             "SELECT file_path FROM events WHERE run_id = ? "
             " AND event_type = 'PLAYLIST_WRITTEN' ORDER BY id DESC LIMIT 10",
             (ctx.run_id,),
         ).fetchall()
-        if not rows:
+        paths = dict.fromkeys(
+            [*(Path(r["file_path"]) for r in rows), *getattr(self, "produced", [])]
+        )
+        if not paths:
             return []
         problems: list[str] = []
-        for r in rows:
-            p = Path(r["file_path"])
+        for p in paths:
             if not p.exists():
                 problems.append(f"playlist was not written: {p.name}")
             elif p.stat().st_size == 0:

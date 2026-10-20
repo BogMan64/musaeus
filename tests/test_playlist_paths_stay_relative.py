@@ -163,3 +163,35 @@ def test_a_car_playlist_points_at_the_car_copy_from_the_edition_record(tmp_path)
     ctx.finish()
     conn.close()
     assert _entries(edition / "Playlists" / "Rock.m3u8") == ["../The Beatles/Revolver/Taxman.m4a"]
+
+
+class TestAPlaylistAlreadyRight:
+    """2026-10-19 (#213): a playlist already right is left as it was."""
+
+    @staticmethod
+    def _second_run(cfg, conn):
+        from musaeus.context import RunContext
+
+        ctx = RunContext.new(cfg, conn)
+        PlaylistStage().run(ctx)
+        ctx.finish()
+        ctx = RunContext.new(cfg, open_db(cfg.db_path))  # finish() closed the first
+        stage = PlaylistStage()
+        return ctx, stage, stage.run(ctx)
+
+    def test_a_second_run_counts_nothing_as_changed(self, vault_with_one_inside_and_one_outside):
+        dv, cfg, conn, edition = vault_with_one_inside_and_one_outside
+        ctx, _, result = self._second_run(cfg, conn)
+        ctx.finish()
+        assert result.files_changed == 0, "nothing was rewritten, nothing changed"
+
+    def test_a_second_run_still_checks_the_playlists(self, vault_with_one_inside_and_one_outside):
+        # Codex review of #213: with every playlist already right nothing was
+        # written, no event logged, and verify_effect had nothing to check --
+        # "verified" while a playlist could be gone.
+        dv, cfg, conn, edition = vault_with_one_inside_and_one_outside
+        ctx, stage, result = self._second_run(cfg, conn)
+        (edition / "Playlists" / "Rock.m3u8").unlink()
+        problems = stage.verify_effect(ctx, result)
+        ctx.finish()
+        assert any("Rock.m3u8" in p for p in problems), problems
