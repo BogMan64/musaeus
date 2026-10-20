@@ -76,6 +76,8 @@ def test_a_title_agrees_with_its_versions_in_either_spelling(want, recorded):
         # "Live", and "songpart1" is a run of letters inside "songpart10".
         ("Song - Part 2 Live", "Song - Part 1 Live"),
         ("Song - Part 10", "Song - Part 1"),
+        # Round two: a part is not the whole either.
+        ("Song - Part 2", "Song"),
     ],
 )
 def test_another_part_of_a_song_is_not_its_version(want, recorded):

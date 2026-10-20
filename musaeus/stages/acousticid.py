@@ -224,8 +224,9 @@ def _titles_agree(a: str, b: str) -> bool:
     # as a run of letters, part of "Part 10" (Codex review of #216).
     from ..brackets import part_numbers
 
-    parts_a, parts_b = part_numbers(a), part_numbers(b)
-    if parts_a and parts_b and parts_a != parts_b:
+    # A title that names a part agrees only with the same part: "Song -
+    # Part 2" is not plain "Song" either (round two).
+    if part_numbers(a) != part_numbers(b):
         return False
     # The same title once its version is set aside: "AT&T" and "ATandT
     # (Live)", "And" and "And - 2011 Remaster" (Codex review of #209).

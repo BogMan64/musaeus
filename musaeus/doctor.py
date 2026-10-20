@@ -41,11 +41,9 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .brackets import EDITION_SUFFIX, strip_bracketed
+from .brackets import base_title
 from .config import MusicConfig
 
-# The version ending ("Slow Ride - 2016 Remaster"): one rule, in brackets.py.
-_EDITION_RE = EDITION_SUFFIX
 _NOISE_RE = re.compile(r"[^a-z0-9]")
 
 
@@ -96,7 +94,7 @@ def song_keys(artist: str | None, title: str | None) -> list[tuple[str, str]]:
     Asking whether a copy is HELD takes either key. The word "and" itself is
     never dropped: "And I Love Her" is not "I Love Her" (Codex review of
     #209), and a quarantined sole copy must not look held."""
-    t = _EDITION_RE.sub("", strip_bracketed(title or ""))
+    t = base_title(title or "")
     a = (artist or "").lower()
     t = t.lower()
     folded = (_amp_as_and(a), _amp_as_and(t))

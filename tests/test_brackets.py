@@ -167,3 +167,15 @@ def test_artist_and_title_spellings_are_chosen_independently():
     assert set(song_keys("Hall & Oates", "Rock & Roll")) & set(
         song_keys("Hall and Oates", "Rock Roll")
     )
+
+
+def test_a_version_ending_is_set_aside_and_a_part_is_kept():
+    # Codex review of #216, round two: "Song - Part 1 Live" is the doctor's
+    # "Song - Part 1"; the part stays, the version goes.
+    from musaeus.brackets import base_title
+    from musaeus.doctor import song_key
+
+    assert base_title("Song - Part 1 Live") == "Song - Part 1"
+    assert base_title("Layla - Acoustic Live") == "Layla"
+    assert song_key("A", "Song - Part 1 Live") == song_key("A", "Song - Part 1")
+    assert song_key("A", "Song - Part 1") != song_key("A", "Song - Part 2")
