@@ -100,13 +100,57 @@ EDITION_SUFFIX = re.compile(
 )
 
 
-#: "Part 2", "Pt. 3", "Part IV": which piece of a work a title names.
-_PART = re.compile(r"\b(?:part|pt)\.?\s*(\d+|[ivxlc]+)\b", re.IGNORECASE)
+_PART_WORDS = {
+    w: str(n)
+    for n, w in enumerate(
+        [
+            "one",
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+            "eleven",
+            "twelve",
+        ],
+        1,
+    )
+}
+_ROMAN = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100}
+
+#: "Part 2", "Pt. 3", "Part IV", "Part Two": which piece of a work a title names.
+_PART = re.compile(
+    r"\b(?:part|pt)\.?\s*(\d+|[ivxlc]+|" + "|".join(_PART_WORDS) + r")\b", re.IGNORECASE
+)
+
+
+def _part_number(label: str) -> str:
+    """'2', 'II', 'two' -> '2'."""
+    label = label.lower()
+    if label.isdigit():
+        return str(int(label))
+    if label in _PART_WORDS:
+        return _PART_WORDS[label]
+    total = 0
+    for here, after in zip(label, [*label[1:], ""], strict=True):
+        value = _ROMAN[here]
+        total += -value if after and _ROMAN[after] > value else value
+    return str(total)
+
+
+def same_part_spelling(text: str) -> str:
+    """Every part label written one way: "Song - Pt. II" -> "Song - Part 2"."""
+    return _PART.sub(lambda m: f"Part {_part_number(m.group(1))}", text or "")
 
 
 def part_numbers(text: str) -> tuple[str, ...]:
-    """The part numbers a title names, lower-cased: ("1",) for "Song - Part 1"."""
-    return tuple(m.lower() for m in _PART.findall(text or ""))
+    """The parts a title names, as numbers: ("1",) for "Song - Part One"
+    (Codex review of #216: "Part I" is "Part 1", "Part One" is a part)."""
+    return tuple(_part_number(m) for m in _PART.findall(text or ""))
 
 
 def base_title(text: str) -> str:

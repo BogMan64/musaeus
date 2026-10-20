@@ -215,6 +215,10 @@ def _titles_agree(a: str, b: str) -> bool:
     counts only in whole words. A title that is only "and" is part of too
     much ("Jack and Diane" holds it) and agrees with nothing but itself
     (Codex review of #209)."""
+    from ..brackets import part_numbers, same_part_spelling
+
+    # "Pt. I" and "Part 1" are one label (Codex review of #216, round 3).
+    a, b = same_part_spelling(a), same_part_spelling(b)
     ka, kb = _norm_for_match(a), _norm_for_match(b)
     if not ka or not kb:
         return False
@@ -222,8 +226,6 @@ def _titles_agree(a: str, b: str) -> bool:
         return True
     # Two parts of one work are two recordings: "Part 1" is not "Part 2" nor,
     # as a run of letters, part of "Part 10" (Codex review of #216).
-    from ..brackets import part_numbers
-
     # A title that names a part agrees only with the same part: "Song -
     # Part 2" is not plain "Song" either (round two).
     if part_numbers(a) != part_numbers(b):
