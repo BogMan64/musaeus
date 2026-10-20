@@ -194,7 +194,9 @@ def test_a_part_in_brackets_is_kept_in_the_song_key():
 @pytest.mark.parametrize(
     "bracketed, dashed",
     [("Song (Pt. 1)", "Song - Pt. 1"), ("Song (Part II)", "Song - Part II"),
-     ("Song (Part One)", "Song - Part One Live")],
+     ("Song (Part One)", "Song - Part One Live"),
+     # Codex review of #217, round 2: the part keeps its place in the title.
+     ("Song (Part 1) and Part 2", "Song Part 1 and Part 2")],
 )  # fmt: skip
 def test_a_part_is_one_song_key_in_any_spelling(bracketed, dashed):
     # Codex review of #217: the part from brackets was spelled "Part 1", the

@@ -156,12 +156,16 @@ def part_numbers(text: str) -> tuple[str, ...]:
 def base_title(text: str) -> str:
     """A title without its version: brackets and a version " - " ending set
     aside, a part kept ("Song - Part 1 Live" -> "Song - Part 1"), also from
-    brackets ("Song (Part 2)" -> "Song - Part 2", review of #216). Every part
-    is spelled one way: "Pt. II" is "Part 2" (Codex review of #217)."""
-    title = strip_bracketed(same_part_spelling(text))
+    brackets ("Song (Part 2)" -> "Song - Part 2", review of #216), where it
+    stands (Codex review of #217). Every part is spelled one way: "Pt. II" is
+    "Part 2"."""
+    title = BRACKETED.sub(
+        lambda b: "".join(f" - Part {n}" for n in part_numbers(b.group())),
+        same_part_spelling(text),
+    )
+    title = _WS.sub(" ", title).strip()
     m = EDITION_SUFFIX.search(title)
     if m is not None:
         part = m.group("part")
         title = title[: m.start()] + (f" - {part.strip()}" if part else "")
-    kept = part_numbers(title)
-    return title + "".join(f" - Part {n}" for n in part_numbers(text) if n not in kept)
+    return title
