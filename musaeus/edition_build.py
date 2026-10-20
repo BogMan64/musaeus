@@ -509,7 +509,7 @@ def make_plan(
                 and h not in click_allowed
                 and Path(c.output_path).exists()
             ):
-                # Taken off the allow list: this copy clicks. Removed first,
+                # Taken off the allow list: this copy may click. Removed first,
                 # wherever it is and whatever it was made with, then made
                 # again at today's place -- refused unless the encode now
                 # comes out clean, and never moved or kept meanwhile (Codex
@@ -520,6 +520,19 @@ def make_plan(
                 plan.click_revoked += 1
                 continue
             made_with = made_with[: -len(CLICK_ALLOWED_MARK)]
+        elif (
+            click_allowed is not None
+            and h in click_allowed
+            and settings_now is not None
+            and c is not None
+            and made_with == settings_now
+            and c.output_path == str(target)
+            and target.exists()
+        ):
+            # Listed, but made before copies were marked: made once more under
+            # the list, so it carries the mark and a later removal from the
+            # list reaches it.
+            made_with = None
         if (
             settings_now is not None
             and c is not None
@@ -1194,7 +1207,11 @@ def execute(
                         raise edition_bake.BakeError(f"something appeared at {target}")
                     os.replace(tmp, target)
                     settings = None
-                    if getattr(result, "click_kept", False) and kind.settings is not None:
+                    # Made under the allow list, flagged or not: marked, so
+                    # taking it off the list makes it again (Codex review of
+                    # #215, round 2 -- an unmarked listed copy was never
+                    # re-checked).
+                    if m.audio_hash in click_allowed and kind.settings is not None:
                         settings = kind.settings() + CLICK_ALLOWED_MARK
                     record(
                         ledger,

@@ -24,7 +24,6 @@ records what was made.
 from __future__ import annotations
 
 import contextlib
-import dataclasses
 import json
 import logging
 import math
@@ -85,10 +84,6 @@ class BakeResult:
     #: a song is measured once). Empty when a stand-in bake did not say.
     recipe: str = ""
     measured: dict | None = None
-    #: The click check flagged this copy and it was kept: the master is on
-    #: Grey's allow list (click_allowed.tsv). Recorded with the copy, so
-    #: taking it off the list makes it again.
-    click_kept: bool = False
 
 
 #: The fields build_second_pass_filter reads. A kept measurement missing any
@@ -1118,8 +1113,7 @@ def _bake_aac(
         logger.warning(
             "%s: kept on the allowed list despite +%.1f dB at %.1f s", source, over, at / 10
         )
-        return dataclasses.replace(result, click_kept=True)
-    if click is not None:
+    elif click is not None:
         at, over = click
         raise BakeError(f"the encoder put a click in the copy: +{over:.1f} dB at {at / 10:.1f} s")
     return result

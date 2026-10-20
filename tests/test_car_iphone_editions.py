@@ -847,3 +847,28 @@ def test_a_copy_off_the_click_list_goes_though_its_master_moved(cfg, every_copy_
 
     assert _phone_files(cfg) == [] and "h1" not in phone
     assert len(out.failed) == 1
+
+
+def test_a_listed_copy_made_before_the_mark_is_made_again_and_then_revocable(
+    cfg, every_copy_clicks
+):
+    # Codex review of #215, round 2: the two live allowed copies were made
+    # before copies were marked, so taking them off the list never reached
+    # them. A listed, unmarked copy is made once more under the list.
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    _build_listed(cfg, frozenset({"h1"}))
+    ledger = open_ledger(ledger_path(cfg))
+    ledger.execute(
+        "UPDATE copy_settings SET settings = replace(settings, ?, '') WHERE edition = 'iphone'",
+        (eb.CLICK_ALLOWED_MARK,),
+    )
+    ledger.commit()
+    ledger.close()
+
+    out, phone = _build_listed(cfg, frozenset({"h1"}))
+    assert out.baked == 1 and phone["h1"].settings.endswith(eb.CLICK_ALLOWED_MARK)
+    out, phone = _build_listed(cfg, frozenset({"h1"}))
+    assert out.baked == 0, "marked: not made again while listed"
+
+    out, phone = _build_listed(cfg, frozenset())
+    assert _phone_files(cfg) == [] and "h1" not in phone
