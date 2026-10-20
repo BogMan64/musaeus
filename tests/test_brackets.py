@@ -179,3 +179,13 @@ def test_a_version_ending_is_set_aside_and_a_part_is_kept():
     assert base_title("Layla - Acoustic Live") == "Layla"
     assert song_key("A", "Song - Part 1 Live") == song_key("A", "Song - Part 1")
     assert song_key("A", "Song - Part 1") != song_key("A", "Song - Part 2")
+
+
+def test_a_part_in_brackets_is_kept_in_the_song_key():
+    # Review of #216: brackets went with the part inside them, so a missing
+    # "(Part 2)" looked held by "(Part 1)".
+    from musaeus.doctor import song_key
+
+    assert song_key("A", "Song (Part 1)") != song_key("A", "Song (Part 2)")
+    assert song_key("A", "Song (Part 1)") == song_key("A", "Song - Part 1")
+    assert song_key("A", "Song (Pt. 1) (Live)") == song_key("A", "Song (Part 1)")

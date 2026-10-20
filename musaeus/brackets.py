@@ -155,10 +155,12 @@ def part_numbers(text: str) -> tuple[str, ...]:
 
 def base_title(text: str) -> str:
     """A title without its version: brackets and a version " - " ending set
-    aside, a part kept ("Song - Part 1 Live" -> "Song - Part 1")."""
+    aside, a part kept ("Song - Part 1 Live" -> "Song - Part 1"), also from
+    brackets ("Song (Part 2)" -> "Song - Part 2", review of #216)."""
     title = strip_bracketed(text or "")
     m = EDITION_SUFFIX.search(title)
-    if m is None:
-        return title
-    part = m.group("part")
-    return title[: m.start()] + (f" - {part.strip()}" if part else "")
+    if m is not None:
+        part = m.group("part")
+        title = title[: m.start()] + (f" - {part.strip()}" if part else "")
+    kept = part_numbers(title)
+    return title + "".join(f" - Part {n}" for n in part_numbers(text) if n not in kept)

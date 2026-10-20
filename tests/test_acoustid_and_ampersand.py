@@ -110,3 +110,13 @@ def test_one_part_in_any_spelling_agrees(want, recorded):
     # never retried, so "Part I" must find "Part 1".
     recordings = [{"id": "r1", "title": recorded, "artists": [{"name": "X"}]}]
     assert _pick_matching_recording(recordings, "X", want) == "r1"
+
+
+def test_one_part_in_another_spelling_is_picked_among_its_pressings():
+    # Review of #216: the exact-title pick skipped the part spelling, so
+    # "Pt. 2" beside a remaster of "Part 2" was a guess, refused for good.
+    recordings = [
+        {"id": "r1", "title": "Song, Part 2", "artists": [{"name": "X"}]},
+        {"id": "r2", "title": "Song, Part 2 - 2011 Remaster", "artists": [{"name": "X"}]},
+    ]
+    assert _pick_matching_recording(recordings, "X", "Song, Pt. 2") == "r1"
