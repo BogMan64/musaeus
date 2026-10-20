@@ -220,9 +220,14 @@ class BaseStage(ABC):
     #: read "no claim" rather than a hollow "verified".
     CLAIMS_EFFECT: bool = True
 
+    def _has_effect_to_check(self, result: StageResult) -> bool:
+        """Whether this run left something verify_effect can check: by
+        default, that it changed files."""
+        return result.files_changed > 0
+
     def _check_effect(self, ctx: RunContext, result: StageResult) -> None:
         """Run verify_effect and fold the outcome into the result."""
-        if not self.CLAIMS_EFFECT or result.files_changed <= 0:
+        if not self.CLAIMS_EFFECT or not self._has_effect_to_check(result):
             return
         try:
             problems = self.verify_effect(ctx, result)

@@ -64,6 +64,23 @@ def _decade(year: str | None) -> str | None:
     return f"{y[:3]}0s"
 
 
+def _write_if_changed(path: Path, content: str) -> bool:
+    """Write *content* to *path* unless it already holds exactly that.
+
+    A playlist rewritten with the same lines still gets a new time, and the
+    stick sync copies every file whose time changed: all 49 car playlists went
+    down the stick again after every build (found 2026-10-19). True when
+    written.
+    """
+    try:
+        if path.read_text(encoding="utf-8") == content:
+            return False
+    except (OSError, UnicodeDecodeError):
+        pass
+    path.write_text(content, encoding="utf-8")
+    return True
+
+
 def _extinf_line(artist: str | None, title: str | None, source: str) -> str:
     """Build a #EXTINF:-1,Artist - Title line from DB metadata or filename."""
     if artist and title:
@@ -98,6 +115,9 @@ class PlaylistStage(BaseStage):
 
     def _build(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
+        #: Every playlist this run stands behind, rewritten or already right:
+        #: what edition_index keeps when it sweeps out stale ones.
+        self.produced: list[Path] = []
         assert ctx.config is not None
 
         playlist_dir = ctx.config.playlists
@@ -183,6 +203,7 @@ class PlaylistStage(BaseStage):
             playlist_dir.mkdir(parents=True, exist_ok=True)
 
         written = 0
+        unchanged = 0
 
         # A set, not a list: every source is offered to _make_rel once per
         # genre pass, once per era pass and once for All, so a list would
@@ -225,21 +246,27 @@ class PlaylistStage(BaseStage):
                 lines.append(rel)
             content = "\n".join(lines) + "\n"
 
+            changed = True  # a preview counts what a run would write
             if dry_run:
                 result.notes.append(f"  [DRY] {out.name}  ({len(tracks)} tracks)")
             else:
-                out.write_text(content, encoding="utf-8")
-                ctx.log_event(
-                    "PLAYLIST_WRITTEN",
-                    file_path=str(out),
-                    new_value=f"{len(tracks)} tracks",
-                    stage=self.NAME,
-                )
-                result.notes.append(f"  {out.name}  ({len(tracks)} tracks)")
-                written += 1
+                self.produced.append(out)
+                changed = _write_if_changed(out, content)
+                if changed:
+                    ctx.log_event(
+                        "PLAYLIST_WRITTEN",
+                        file_path=str(out),
+                        new_value=f"{len(tracks)} tracks",
+                        stage=self.NAME,
+                    )
+                    result.notes.append(f"  {out.name}  ({len(tracks)} tracks)")
+                    written += 1
+                else:
+                    unchanged += 1
 
             result.files_processed += len(tracks)
-            result.files_changed += len(tracks)
+            if changed:
+                result.files_changed += len(tracks)
 
         # Per-decade era playlists. These re-list tracks already counted by the
         # genre pass, so files_processed/files_changed are deliberately not
@@ -258,15 +285,18 @@ class PlaylistStage(BaseStage):
             if dry_run:
                 result.notes.append(f"  [DRY] {out.name}  ({len(tracks)} tracks)")
             else:
-                out.write_text(content, encoding="utf-8")
-                ctx.log_event(
-                    "PLAYLIST_WRITTEN",
-                    file_path=str(out),
-                    new_value=f"{len(tracks)} tracks",
-                    stage=self.NAME,
-                )
-                result.notes.append(f"  {out.name}  ({len(tracks)} tracks)")
-                written += 1
+                self.produced.append(out)
+                if _write_if_changed(out, content):
+                    ctx.log_event(
+                        "PLAYLIST_WRITTEN",
+                        file_path=str(out),
+                        new_value=f"{len(tracks)} tracks",
+                        stage=self.NAME,
+                    )
+                    result.notes.append(f"  {out.name}  ({len(tracks)} tracks)")
+                    written += 1
+                else:
+                    unchanged += 1
 
         # All.m3u8 — every matched source once
         if all_sources:
@@ -288,15 +318,18 @@ class PlaylistStage(BaseStage):
             elif dry_run:
                 result.notes.append(f"  [DRY] All.m3u8  ({n_all} tracks)")
             else:
-                out_all.write_text(all_content, encoding="utf-8")
-                ctx.log_event(
-                    "PLAYLIST_WRITTEN",
-                    file_path=str(out_all),
-                    new_value=f"{n_all} tracks",
-                    stage=self.NAME,
-                )
-                result.notes.append(f"  All.m3u8  ({n_all} tracks)")
-                written += 1
+                self.produced.append(out_all)
+                if _write_if_changed(out_all, all_content):
+                    ctx.log_event(
+                        "PLAYLIST_WRITTEN",
+                        file_path=str(out_all),
+                        new_value=f"{n_all} tracks",
+                        stage=self.NAME,
+                    )
+                    result.notes.append(f"  All.m3u8  ({n_all} tracks)")
+                    written += 1
+                else:
+                    unchanged += 1
 
         if outside:
             result.notes.append(
@@ -305,27 +338,39 @@ class PlaylistStage(BaseStage):
             )
         if not dry_run:
             result.notes.append(f"playlists written: {written}")
+            if unchanged:
+                result.notes.append(f"playlists already right, left as they were: {unchanged}")
 
         ctx.record_stage(result)
         return result
 
-    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
-        """A playlist this stage says it wrote must exist and have content.
+    def _has_effect_to_check(self, result: StageResult) -> bool:
+        """Playlists left as they were are still the run's to stand behind:
+        checked even when nothing was rewritten (Codex review of #213)."""
+        return result.files_changed > 0 or bool(getattr(self, "produced", None))
 
-        The event records the path and the track count. A write that
-        failed, or produced an empty file because the track query returned
-        nothing, leaves the count in the log and nothing on disk.
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """A playlist this stage stands behind must exist and have content.
+
+        Every playlist the run produced, rewritten or left as it was already
+        right -- not only the ones it wrote: when all were right, nothing was
+        written and the check had nothing to look at (Codex review of #213).
+        The events record what was written; a write that failed, or produced
+        an empty file because the track query returned nothing, leaves the
+        count in the log and nothing on disk.
         """
         rows = ctx.conn.execute(
             "SELECT file_path FROM events WHERE run_id = ? "
             " AND event_type = 'PLAYLIST_WRITTEN' ORDER BY id DESC LIMIT 10",
             (ctx.run_id,),
         ).fetchall()
-        if not rows:
+        paths = dict.fromkeys(
+            [*(Path(r["file_path"]) for r in rows), *getattr(self, "produced", [])]
+        )
+        if not paths:
             return []
         problems: list[str] = []
-        for r in rows:
-            p = Path(r["file_path"])
+        for p in paths:
             if not p.exists():
                 problems.append(f"playlist was not written: {p.name}")
             elif p.stat().st_size == 0:
