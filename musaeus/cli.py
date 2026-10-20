@@ -1370,10 +1370,11 @@ def _cmd_edition_build_inner(args) -> int:
                 return 1
             if aside:
                 print(f"  Put back {aside:,} finished copy(ies) a stopped build left aside.")
+        click_allowed = eb.load_click_allowed(cfg.meta_dir / "click_allowed.tsv", kind.name)
         if budget is not None:
             plan, _ = eb.budgeted(
                 conn, ledger, masters_root, edition_root, kind,
-                budget, rebake_compressed=args.rebake_compressed,
+                budget, rebake_compressed=args.rebake_compressed, click_allowed=click_allowed,
             )  # fmt: skip
         else:
             plan = eb.make_plan(
@@ -1384,6 +1385,7 @@ def _cmd_edition_build_inner(args) -> int:
                 kind=kind,
                 include_lossy=(args.lossy == "alac") if kind.name == "lossless" else None,
                 rebake_compressed=args.rebake_compressed,
+                click_allowed=click_allowed,
             )
         free = eb.free_bytes(edition_root)
         print()
@@ -1455,9 +1457,7 @@ def _cmd_edition_build_inner(args) -> int:
                     limit=args.limit,
                     wanted_csv=cfg.tunemymusic_csv_path,
                     kind=kind,
-                    click_allowed=eb.load_click_allowed(
-                        cfg.meta_dir / "click_allowed.tsv", kind.name
-                    ),
+                    click_allowed=click_allowed,
                 )
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
