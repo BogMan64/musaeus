@@ -368,6 +368,8 @@ class BitRotStage(BaseStage):
 
         ctx.conn.commit()
         result.notes.append(f"baselined: {result.files_changed}")
+        if not limit:
+            self._drop_gone(ctx, result, {str(p) for p in files})
         if unhashable:
             result.notes.append(
                 f"no PCM identity recorded for {len(unhashable)} file(s) — these "
@@ -382,6 +384,28 @@ class BitRotStage(BaseStage):
 
         ctx.record_stage(result)
         return result
+
+    def _drop_gone(self, ctx: RunContext, result: StageResult, scanned: set[str]) -> None:
+        """Forget baseline rows whose file is no longer there.
+
+        A rebaseline records the archive as it is now, but it only ever added
+        and updated rows: every refile left its old path behind, and a verify
+        reported each as "missing from disk" for ever after (5,476 of them on
+        2026-10-19: 5,450 old paths of moved songs, 26 duplicates set aside).
+        Only after a whole-archive pass (never with --limit), and only rows
+        whose file does not exist: one the scan missed but is on disk stays.
+        """
+        rows = ctx.conn.execute("SELECT path FROM archive_tier_hashes").fetchall()
+        gone = [r[0] for r in rows if r[0] not in scanned and not Path(r[0]).exists()]
+        for path in gone:
+            ctx.conn.execute("DELETE FROM archive_tier_hashes WHERE path = ?", (path,))
+        ctx.conn.commit()
+        if gone:
+            result.notes.append(f"forgotten, no longer on disk: {len(gone)}")
+            for path in gone[:5]:
+                result.notes.append(f"  {Path(path).name}")
+            if len(gone) > 5:
+                result.notes.append(f"  {elision(len(gone) - 5)}")
 
     def _verify(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)

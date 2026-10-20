@@ -90,6 +90,35 @@ class TestRebaseline:
         ).fetchone()
         assert row["sha256"] == file_hash(path)
 
+    def test_rebaseline_forgets_a_path_whose_file_moved(self, ctx):
+        # 2026-10-19: refiles left 5,476 old paths in the baseline, each
+        # reported "missing from disk" by every verify after.
+        old = _archive_file(ctx, "Pop/Artist/Album/a.m4a", b"SONG")
+        _baseline(ctx, old)
+        new = ctx.config.alac_archive / "Rock" / "Artist" / "Album" / "a.m4a"
+        new.parent.mkdir(parents=True)
+        old.rename(new)
+        ctx.set("bitrot_rebaseline", True)
+
+        result = BitRotStage().run(ctx)
+
+        paths = [r[0] for r in ctx.conn.execute("SELECT path FROM archive_tier_hashes")]
+        assert paths == [str(new)]
+        assert any("no longer on disk: 1" in n for n in result.notes)
+
+    def test_a_limited_rebaseline_forgets_nothing(self, ctx):
+        old = _archive_file(ctx, "Pop/Artist/Album/a.m4a", b"SONG")
+        _baseline(ctx, old)
+        old.unlink()
+        _archive_file(ctx, "Rock/Artist/Album/b.m4a", b"OTHER")
+        ctx.set("bitrot_rebaseline", True)
+        ctx.set("bitrot_limit", 1)
+
+        BitRotStage().run(ctx)
+
+        paths = {r[0] for r in ctx.conn.execute("SELECT path FROM archive_tier_hashes")}
+        assert str(old) in paths, "a --limit pass saw only part of the archive"
+
     def test_empty_archive_reports_nothing_to_do(self, ctx):
         ctx.set("bitrot_rebaseline", True)
         result = BitRotStage().run(ctx)
