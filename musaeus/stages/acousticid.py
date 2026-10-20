@@ -199,10 +199,12 @@ def _spellings(name: str) -> set[str]:
 
 
 def _base_title(title: str) -> str:
-    """A title without its version: brackets and a " - " suffix set aside."""
-    from ..brackets import strip_bracketed
+    """A title without its version: brackets and a version " - " ending set
+    aside. Only a version ending: "Song - Part 1" is not "Song - Part 2"
+    (Codex review of #209)."""
+    from ..brackets import base_title
 
-    return strip_bracketed(title or "").split(" - ", 1)[0]
+    return base_title(title)
 
 
 def _titles_agree(a: str, b: str) -> bool:
@@ -213,11 +215,21 @@ def _titles_agree(a: str, b: str) -> bool:
     counts only in whole words. A title that is only "and" is part of too
     much ("Jack and Diane" holds it) and agrees with nothing but itself
     (Codex review of #209)."""
+    from ..brackets import part_numbers, same_part_spelling
+
+    # "Pt. I" and "Part 1" are one label (Codex review of #216, round 3).
+    a, b = same_part_spelling(a), same_part_spelling(b)
     ka, kb = _norm_for_match(a), _norm_for_match(b)
     if not ka or not kb:
         return False
     if ka == kb:
         return True
+    # Two parts of one work are two recordings: "Part 1" is not "Part 2" nor,
+    # as a run of letters, part of "Part 10" (Codex review of #216).
+    # A title that names a part agrees only with the same part: "Song -
+    # Part 2" is not plain "Song" either (round two).
+    if part_numbers(a) != part_numbers(b):
+        return False
     # The same title once its version is set aside: "AT&T" and "ATandT
     # (Live)", "And" and "And - 2011 Remaster" (Codex review of #209).
     base_a, base_b = _norm_for_match(_base_title(a)), _norm_for_match(_base_title(b))

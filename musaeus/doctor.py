@@ -41,17 +41,9 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .brackets import strip_bracketed
+from .brackets import base_title
 from .config import MusicConfig
 
-# The marker is often preceded by a year or a qualifier: "Slow Ride - 2016
-# Remaster", "Layla - Acoustic Live". Allow a short run of words before it
-# rather than requiring the marker to follow the dash immediately.
-_EDITION_RE = re.compile(
-    r"\s*-\s*(?:\w+\s+){0,2}"
-    r"(remaster|remastered|live|mono|stereo|single|album|radio|rerecorded|version|mix|edit)\b.*$",
-    re.IGNORECASE,
-)
 _NOISE_RE = re.compile(r"[^a-z0-9]")
 
 
@@ -102,7 +94,7 @@ def song_keys(artist: str | None, title: str | None) -> list[tuple[str, str]]:
     Asking whether a copy is HELD takes either key. The word "and" itself is
     never dropped: "And I Love Her" is not "I Love Her" (Codex review of
     #209), and a quarantined sole copy must not look held."""
-    t = _EDITION_RE.sub("", strip_bracketed(title or ""))
+    t = base_title(title or "")
     a = (artist or "").lower()
     t = t.lower()
     folded = (_amp_as_and(a), _amp_as_and(t))
