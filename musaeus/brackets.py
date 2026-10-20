@@ -93,7 +93,7 @@ def has_bracketed(text: str) -> bool:
 EDITION_SUFFIX = re.compile(
     # A part before the words is kept, the version after it is not: "Song -
     # Part 1 Live" is "Song - Part 1" (Codex review of #216, two rounds).
-    r"\s*-\s*(?P<part>(?:part|pt)\.?\s*(?:\d+|[ivxlc]+)\s+)?"
+    r"\s*-\s*(?:(?:part|pt)\.?\s*(?:\d+|[ivxlc]+)\s+)?"
     r"(?:(?!(?:part|pt)\b)\w+\s+){0,2}"
     r"(remaster|remastered|live|mono|stereo|single|album|radio|rerecorded|version|mix|edit)\b.*$",
     re.IGNORECASE,
@@ -155,10 +155,18 @@ def part_numbers(text: str) -> tuple[str, ...]:
 
 def base_title(text: str) -> str:
     """A title without its version: brackets and a version " - " ending set
-    aside, a part kept ("Song - Part 1 Live" -> "Song - Part 1")."""
-    title = strip_bracketed(text or "")
+    aside, a part kept ("Song - Part 1 Live" -> "Song - Part 1"), also from
+    brackets ("Song (Part 2)" -> "Song - Part 2", review of #216), where it
+    stands (Codex review of #217). Every part is spelled one way: "Pt. II" is
+    "Part 2"."""
+    title = BRACKETED.sub(
+        lambda b: "".join(f" - Part {n}" for n in part_numbers(b.group())),
+        same_part_spelling(text),
+    )
+    title = _WS.sub(" ", title).strip()
     m = EDITION_SUFFIX.search(title)
-    if m is None:
-        return title
-    part = m.group("part")
-    return title[: m.start()] + (f" - {part.strip()}" if part else "")
+    if m is not None:
+        # The parts in the cut ending stay: "Song - Live (Part 1)" (Codex review of #217).
+        cut = part_numbers(title[m.start() :])
+        title = title[: m.start()] + "".join(f" - Part {n}" for n in cut)
+    return title

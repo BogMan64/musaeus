@@ -48,6 +48,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
+from ..brackets import base_title, part_numbers, same_part_spelling
 from ..context import RunContext, StageResult, elision
 from ..db import SET_ASIDE_STATUSES, ensure_columns
 from ..network_policy import check as _network_check
@@ -198,15 +199,6 @@ def _spellings(name: str) -> set[str]:
     return {k for k in (plain, _norm_for_match(name)) if k}
 
 
-def _base_title(title: str) -> str:
-    """A title without its version: brackets and a version " - " ending set
-    aside. Only a version ending: "Song - Part 1" is not "Song - Part 2"
-    (Codex review of #209)."""
-    from ..brackets import base_title
-
-    return base_title(title)
-
-
 def _titles_agree(a: str, b: str) -> bool:
     """One title is the other, or part of it.
 
@@ -215,8 +207,6 @@ def _titles_agree(a: str, b: str) -> bool:
     counts only in whole words. A title that is only "and" is part of too
     much ("Jack and Diane" holds it) and agrees with nothing but itself
     (Codex review of #209)."""
-    from ..brackets import part_numbers, same_part_spelling
-
     # "Pt. I" and "Part 1" are one label (Codex review of #216, round 3).
     a, b = same_part_spelling(a), same_part_spelling(b)
     ka, kb = _norm_for_match(a), _norm_for_match(b)
@@ -232,7 +222,7 @@ def _titles_agree(a: str, b: str) -> bool:
         return False
     # The same title once its version is set aside: "AT&T" and "ATandT
     # (Live)", "And" and "And - 2011 Remaster" (Codex review of #209).
-    base_a, base_b = _norm_for_match(_base_title(a)), _norm_for_match(_base_title(b))
+    base_a, base_b = _norm_for_match(base_title(a)), _norm_for_match(base_title(b))
     if base_a and base_a == base_b:
         return True
     ta, tb = (
@@ -284,7 +274,8 @@ def _pick_matching_recording(
     several recordings it is" -- which is not the same as an answer, and
     must not be recorded as one.
     """
-    wa, wt = _norm_for_match(want_artist), _norm_for_match(want_title)
+    # One part spelling, so "Pt. 2" is the exact title "Part 2" (review of #216).
+    wa, wt = _norm_for_match(want_artist), _norm_for_match(same_part_spelling(want_title))
     if not wt:
         return None  # nothing to check against; refusing beats guessing
 
@@ -298,7 +289,7 @@ def _pick_matching_recording(
         rid = rec.get("id")
         if not rid:
             continue
-        rt = _norm_for_match(rec.get("title", ""))
+        rt = _norm_for_match(same_part_spelling(rec.get("title", "")))
         if not rt or not _titles_agree(rec.get("title", ""), want_title):
             continue
         names = [str(x.get("name", "")) for x in rec.get("artists", []) if x.get("name")]

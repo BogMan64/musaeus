@@ -179,3 +179,37 @@ def test_a_version_ending_is_set_aside_and_a_part_is_kept():
     assert base_title("Layla - Acoustic Live") == "Layla"
     assert song_key("A", "Song - Part 1 Live") == song_key("A", "Song - Part 1")
     assert song_key("A", "Song - Part 1") != song_key("A", "Song - Part 2")
+
+
+def test_a_part_in_brackets_is_kept_in_the_song_key():
+    # Review of #216: brackets went with the part inside them, so a missing
+    # "(Part 2)" looked held by "(Part 1)".
+    from musaeus.doctor import song_key
+
+    assert song_key("A", "Song (Part 1)") != song_key("A", "Song (Part 2)")
+    assert song_key("A", "Song (Part 1)") == song_key("A", "Song - Part 1")
+    assert song_key("A", "Song (Pt. 1) (Live)") == song_key("A", "Song (Part 1)")
+
+
+@pytest.mark.parametrize(
+    "bracketed, dashed",
+    [("Song (Pt. 1)", "Song - Pt. 1"), ("Song (Part II)", "Song - Part II"),
+     ("Song (Part One)", "Song - Part One Live"),
+     # Codex review of #217, round 2: the part keeps its place in the title.
+     ("Song (Part 1) and Part 2", "Song Part 1 and Part 2")],
+)  # fmt: skip
+def test_a_part_is_one_song_key_in_any_spelling(bracketed, dashed):
+    # Codex review of #217: the part from brackets was spelled "Part 1", the
+    # one after a dash was left as written, so one recording had two keys.
+    from musaeus.doctor import song_key
+
+    assert song_key("A", bracketed) == song_key("A", dashed)
+
+
+def test_a_part_after_a_version_ending_is_kept():
+    # Codex review of #217, round 3: the version ending took the part after it.
+    from musaeus.doctor import song_key
+
+    assert song_key("A", "Song - Live (Part 1)") != song_key("A", "Song - Live (Part 2)")
+    assert song_key("A", "Song - Live (Part 1)") == song_key("A", "Song - Part 1")
+    assert song_key("A", "Song - Part 1 2011 Remaster") == song_key("A", "Song - Part 1")
