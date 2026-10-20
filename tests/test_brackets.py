@@ -189,3 +189,16 @@ def test_a_part_in_brackets_is_kept_in_the_song_key():
     assert song_key("A", "Song (Part 1)") != song_key("A", "Song (Part 2)")
     assert song_key("A", "Song (Part 1)") == song_key("A", "Song - Part 1")
     assert song_key("A", "Song (Pt. 1) (Live)") == song_key("A", "Song (Part 1)")
+
+
+@pytest.mark.parametrize(
+    "bracketed, dashed",
+    [("Song (Pt. 1)", "Song - Pt. 1"), ("Song (Part II)", "Song - Part II"),
+     ("Song (Part One)", "Song - Part One Live")],
+)  # fmt: skip
+def test_a_part_is_one_song_key_in_any_spelling(bracketed, dashed):
+    # Codex review of #217: the part from brackets was spelled "Part 1", the
+    # one after a dash was left as written, so one recording had two keys.
+    from musaeus.doctor import song_key
+
+    assert song_key("A", bracketed) == song_key("A", dashed)
