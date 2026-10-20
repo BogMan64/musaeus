@@ -503,22 +503,23 @@ def make_plan(
     for h, (m, target) in selected.items():
         c = recorded.get(h)
         made_with = c.settings if c is not None else None
-        if settings_now is not None and made_with == settings_now + CLICK_ALLOWED_MARK:
+        if c is not None and made_with and made_with.endswith(CLICK_ALLOWED_MARK):
             if (
                 click_allowed is not None
                 and h not in click_allowed
-                and c is not None
-                and c.output_path == str(target)
-                and target.exists()
+                and Path(c.output_path).exists()
             ):
                 # Taken off the allow list: this copy clicks. Removed first,
-                # then made again -- refused unless the encode now comes out
-                # clean, and never left in the edition meanwhile.
+                # wherever it is and whatever it was made with, then made
+                # again at today's place -- refused unless the encode now
+                # comes out clean, and never moved or kept meanwhile (Codex
+                # review of #215: a settings change or a moved master
+                # carried the clicking copy on).
                 plan.remove.append(c)
                 plan.bake.append((m, target))
                 plan.click_revoked += 1
                 continue
-            made_with = settings_now
+            made_with = made_with[: -len(CLICK_ALLOWED_MARK)]
         if (
             settings_now is not None
             and c is not None

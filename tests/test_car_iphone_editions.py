@@ -784,3 +784,66 @@ def test_copies_stepped_aside_by_a_stopped_move_do_not_look_moved(cfg):
         assert eb.missing_copies(ledger, eb.CAR_KIND) == (0, 1)
     finally:
         ledger.close()
+
+
+def _build_listed(cfg, listed: frozenset[str]):
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    ledger = open_ledger(ledger_path(cfg))
+    root = eb.IPHONE_KIND.root(cfg)
+    try:
+        plan = eb.make_plan(
+            conn, ledger, cfg.alac_archive, root, kind=eb.IPHONE_KIND, click_allowed=listed
+        )
+        out = eb.execute(
+            plan, ledger, root, kind=eb.IPHONE_KIND, progress=lambda s: None, click_allowed=listed
+        )
+        return out, copies(ledger, "iphone")
+    finally:
+        conn.close()
+        ledger.close()
+
+
+@pytest.fixture
+def every_copy_clicks(monkeypatch):
+    monkeypatch.setattr(edition_bake, "_click_in", lambda went_in, came_out: (10, 5.6))
+
+
+def _phone_files(cfg):
+    return sorted(p for p in cfg.iphone_library.rglob("*.m4a"))
+
+
+def test_a_copy_off_the_click_list_goes_though_the_settings_changed(
+    cfg, monkeypatch, every_copy_clicks
+):
+    # Codex review of #215: kept for the list, then the settings changed and
+    # the hash came off the list -- planned as a plain re-make, the refused
+    # encode left the clicking copy in place.
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    out, phone = _build_listed(cfg, frozenset({"h1"}))
+    assert out.baked == 1 and phone["h1"].settings.endswith(eb.CLICK_ALLOWED_MARK)
+    monkeypatch.setattr(edition_bake, "AAC_BITRATE", "192k")
+
+    out, phone = _build_listed(cfg, frozenset())
+
+    assert _phone_files(cfg) == [] and "h1" not in phone
+    assert len(out.failed) == 1
+
+
+def test_a_copy_off_the_click_list_goes_though_its_master_moved(cfg, every_copy_clicks):
+    # Codex review of #215: the master refiled as its hash came off the list
+    # -- the clicking copy was moved to the new place instead.
+    old = _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    _build_listed(cfg, frozenset({"h1"}))
+    new = cfg.alac_archive / "Rock" / "Stones" / "Goats Head Soup" / old.name
+    new.parent.mkdir(parents=True)
+    old.rename(new)
+    conn = sqlite3.connect(cfg.db_path)
+    conn.execute("UPDATE archive SET file_path = ? WHERE audio_hash = 'h1'", (str(new),))
+    conn.commit()
+    conn.close()
+
+    out, phone = _build_listed(cfg, frozenset())
+
+    assert _phone_files(cfg) == [] and "h1" not in phone
+    assert len(out.failed) == 1
