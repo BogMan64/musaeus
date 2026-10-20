@@ -180,3 +180,31 @@ def test_the_lossless_bake_is_called_as_before(tmp_path, monkeypatch):
     m = eb.Master(tmp_path / "m.m4a", H, "alac", None, None, 1, None, decode_ok=1)
     eb._bake_one(m, tmp_path / "out" / "m.m4a", kind, {}, False)
     assert len(calls) == 1
+
+
+@needs_encoders
+def test_a_kept_copy_is_not_made_again_while_it_stays_listed(cfg, tmp_path):
+    _catalogue_one_master(cfg)
+    (cfg.meta_dir / "click_allowed.tsv").write_text(f"{H}\tiphone\tA - Song\n")
+    assert "Baked 1" in _build_iphone(cfg, tmp_path).stdout
+
+    r = _build_iphone(cfg, tmp_path)
+
+    assert "Baked 0" in r.stdout and "failed" not in r.stdout, r.stdout + r.stderr
+    assert len(_copies(cfg)) == 1
+
+
+@needs_encoders
+def test_a_copy_taken_off_the_list_leaves_the_edition(cfg, tmp_path):
+    # Codex review of #210: removing the hash left the kept copy recorded as
+    # up to date, so a copy nobody allows any more stayed on the iPhone.
+    _catalogue_one_master(cfg)
+    listed = cfg.meta_dir / "click_allowed.tsv"
+    listed.write_text(f"{H}\tiphone\tA - Song\n")
+    assert "Baked 1" in _build_iphone(cfg, tmp_path).stdout
+    listed.write_text("# nothing allowed now\n")
+
+    r = _build_iphone(cfg, tmp_path)
+
+    assert _copies(cfg) == [], r.stdout + r.stderr
+    assert "1 failed" in r.stdout, r.stdout

@@ -116,10 +116,9 @@ def write_index(cfg: MusicConfig, edition_root: Path, apply: bool) -> tuple[list
     already runs on.
     """
     index_dir = index_dir_for(edition_root)
-    # What was there before, by exact timestamp: a playlist this run leaves
-    # untouched is stale. (It was 'older than the start less 1 s', and a
-    # build faster than that second kept a stale one: the ffmpeg 6.1 container.)
-    before = {f: f.stat().st_mtime_ns for f in index_dir.glob("*.m3u8")}
+    # Whether there were playlists before: when the stage stands behind
+    # none, they are left as they were and still checked.
+    before = any(index_dir.glob("*.m3u8"))
     # dataclasses.replace, not mutation: the stage reads cfg.playlists and
     # nothing else should see this override.
     cfg = dataclasses.replace(cfg, playlists=index_dir)
@@ -147,7 +146,11 @@ def write_index(cfg: MusicConfig, edition_root: Path, apply: bool) -> tuple[list
         #
         # An index that lists what is gone is worse than no index: in the car
         # it is a dead entry, and here it looked exactly like a build failure.
-        fresh = {f for f in index_dir.glob("*.m3u8") if before.get(f) != f.stat().st_mtime_ns}
+        # What the stage stands behind, rewritten or already right. Not "whose
+        # time changed": an unchanged playlist is no longer rewritten (so the
+        # stick does not copy all 49 again after every build), and by time it
+        # would read as stale and be deleted.
+        fresh = {f for f in stage.produced if f.exists()}
         if not fresh:
             # Nothing written: nothing catalogued with a genre (after a
             # wipe, say). Sweeping against nothing would delete every
