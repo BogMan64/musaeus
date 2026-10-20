@@ -91,10 +91,21 @@ def has_bracketed(text: str) -> bool:
 #: #209 -- AcoustID took "Song - Part 1" for "Song - Part 2"). Doctor's rule
 #: since the possible-duplicates report; one copy now, here.
 EDITION_SUFFIX = re.compile(
-    r"\s*-\s*(?:\w+\s+){0,2}"
+    # The words before the marker never include a part ("Song - Part 1
+    # Live" keeps "Part 1": Codex review of #216).
+    r"\s*-\s*(?:(?!(?:part|pt)\b)\w+\s+){0,2}"
     r"(remaster|remastered|live|mono|stereo|single|album|radio|rerecorded|version|mix|edit)\b.*$",
     re.IGNORECASE,
 )
+
+
+#: "Part 2", "Pt. 3", "Part IV": which piece of a work a title names.
+_PART = re.compile(r"\b(?:part|pt)\.?\s*(\d+|[ivxlc]+)\b", re.IGNORECASE)
+
+
+def part_numbers(text: str) -> tuple[str, ...]:
+    """The part numbers a title names, lower-cased: ("1",) for "Song - Part 1"."""
+    return tuple(m.lower() for m in _PART.findall(text or ""))
 
 
 def base_title(text: str) -> str:

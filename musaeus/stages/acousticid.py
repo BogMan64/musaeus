@@ -220,6 +220,13 @@ def _titles_agree(a: str, b: str) -> bool:
         return False
     if ka == kb:
         return True
+    # Two parts of one work are two recordings: "Part 1" is not "Part 2" nor,
+    # as a run of letters, part of "Part 10" (Codex review of #216).
+    from ..brackets import part_numbers
+
+    parts_a, parts_b = part_numbers(a), part_numbers(b)
+    if parts_a and parts_b and parts_a != parts_b:
+        return False
     # The same title once its version is set aside: "AT&T" and "ATandT
     # (Live)", "And" and "And - 2011 Remaster" (Codex review of #209).
     base_a, base_b = _norm_for_match(_base_title(a)), _norm_for_match(_base_title(b))
