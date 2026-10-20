@@ -123,6 +123,7 @@ class TestRebaseline:
         new = ctx.config.alac_archive / "Rock" / "Artist" / "Album" / "a.m4a"
         new.parent.mkdir(parents=True)
         old.rename(new)
+        ctx.log_event("ORGANIZE_MOVE", file_path=str(old), old_value=str(old), new_value=str(new))
         ctx.set("bitrot_rebaseline", True)
 
         result = BitRotStage().run(ctx)
@@ -153,6 +154,9 @@ class TestRebaseline:
         aside = tmp_path / "REVIEW" / "DUPES_MOVED" / "a.m4a"
         aside.parent.mkdir(parents=True, exist_ok=True)
         old.rename(aside)
+        ctx.log_event(
+            "DUPE_MOVED_FOR_REVIEW", file_path=str(old), old_value=str(old), new_value=str(aside)
+        )
         ah = ctx.conn.execute("SELECT audio_hash FROM archive_tier_hashes").fetchone()[0]
         upsert_archive(ctx.conn, {"file_path": str(aside), "audio_hash": ah,
                                   "status": "DUPE_REVIEW"})  # fmt: skip
@@ -173,6 +177,7 @@ class TestRebaseline:
         _baseline_with_audio(ctx, gone)
         ah = ctx.conn.execute("SELECT audio_hash FROM archive_tier_hashes").fetchone()[0]
         gone.unlink()
+        ctx.log_event("DELETED_BY_REVIEW", file_path=str(gone))
         _audio_file(ctx, "Rock/Other/Album/b.m4a", frequency=660)
         led_path = ctx.config.hash_index_path
         led_path.parent.mkdir(parents=True, exist_ok=True)
@@ -187,6 +192,24 @@ class TestRebaseline:
 
         paths = {r[0] for r in ctx.conn.execute("SELECT path FROM archive_tier_hashes")}
         assert str(gone) not in paths
+
+    def test_rebaseline_keeps_a_lost_copy_though_its_audio_survives(self, ctx):
+        # Codex review of #214, round 2: the same audio elsewhere says nothing
+        # about this file. With no record of it leaving, its row stays.
+        import shutil
+
+        lost = _audio_file(ctx, "Pop/Artist/Album/a.m4a")
+        _baseline_with_audio(ctx, lost)
+        twin = ctx.config.alac_archive / "Rock" / "Artist" / "Album" / "a.m4a"
+        twin.parent.mkdir(parents=True)
+        shutil.copy2(lost, twin)
+        lost.unlink()
+        ctx.set("bitrot_rebaseline", True)
+
+        BitRotStage().run(ctx)
+
+        paths = {r[0] for r in ctx.conn.execute("SELECT path FROM archive_tier_hashes")}
+        assert str(lost) in paths
 
     def test_a_limited_rebaseline_forgets_nothing(self, ctx):
         old = _archive_file(ctx, "Pop/Artist/Album/a.m4a", b"SONG")

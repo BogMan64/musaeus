@@ -409,13 +409,16 @@ class BitRotStage(BaseStage):
         reported each as "missing from disk" for ever after (5,476 of them on
         2026-10-19: 5,450 old paths of moved songs, 26 duplicates set aside).
 
-        A row goes only when its file does not exist AND its audio is known to
-        be somewhere: baselined at a path this pass scanned (it moved), in the
-        catalogue at a file that exists (set aside, e.g. REVIEW), or on the
-        deny list (deleted on purpose). Any other missing file keeps its row,
-        so a verify still reports a loss nobody recorded (Codex review of
-        #214). Only after a whole-archive pass, never with --limit; an empty
-        scan returns before this -- most likely the drive is not there.
+        A row goes only when its file does not exist, the event log records
+        that file leaving THAT path (moved or renamed away, or deleted), AND
+        its audio is accounted for: baselined at a path this pass scanned, in
+        the catalogue at a file that exists (set aside, e.g. REVIEW), or on
+        the deny list (deleted on purpose). Same audio elsewhere alone is not
+        enough -- a second copy surviving says nothing about this one (Codex
+        review of #214, two rounds). Any other missing file keeps its row, so
+        a verify still reports a loss nobody recorded. Only after a
+        whole-archive pass, never with --limit; an empty scan returns before
+        this -- most likely the drive is not there.
         """
         rows = ctx.conn.execute("SELECT path, audio_hash FROM archive_tier_hashes").fetchall()
         here = {r[1] for r in rows if r[1] and r[0] in scanned}
@@ -427,11 +430,20 @@ class BitRotStage(BaseStage):
             if r[1] and r[0] and Path(r[0]).exists()
         }
         accounted = here | catalogued | _denied_hashes(ctx.config)
+        missing = {r[0] for r in rows if r[0] not in scanned and not Path(r[0]).exists()}
+        left = set()
+        for event_type, file_path, old, new in ctx.conn.execute(
+            "SELECT event_type, file_path, old_value, new_value FROM events"
+        ):
+            if old in missing and new and new != old:
+                left.add(old)  # moved or renamed away from it
+            elif file_path in missing and str(event_type).startswith("DELETED"):
+                left.add(file_path)
         gone, kept = [], 0
         for path, ah in rows:
-            if path in scanned or Path(path).exists():
+            if path not in missing:
                 continue
-            if ah and ah in accounted:
+            if path in left and ah and ah in accounted:
                 gone.append(path)
             else:
                 kept += 1
