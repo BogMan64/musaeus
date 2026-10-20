@@ -368,6 +368,10 @@ class BitRotStage(BaseStage):
 
         ctx.conn.commit()
         result.notes.append(f"baselined: {result.files_changed}")
+        if not limit and not result.files_errored:
+            # A file that could not be hashed has no new row: an old path
+            # pointing at it must not go either (Codex review of #214, round 4).
+            self._drop_gone(ctx, result, {str(p) for p in files})
         if unhashable:
             result.notes.append(
                 f"no PCM identity recorded for {len(unhashable)} file(s) — these "
@@ -382,6 +386,74 @@ class BitRotStage(BaseStage):
 
         ctx.record_stage(result)
         return result
+
+    def _drop_gone(self, ctx: RunContext, result: StageResult, scanned: set[str]) -> None:
+        """Forget baseline rows whose file is gone -- when the log says where it went.
+
+        A rebaseline records the archive as it is now, but it only ever added
+        and updated rows: every refile left its old path behind, and a verify
+        reported each as "missing from disk" for ever after (5,476 of them on
+        2026-10-19: moved songs, duplicates set aside in REVIEW, deletions).
+
+        A missing row goes only when the event log follows that file from its
+        path -- through every later move or rename -- to a file that exists
+        now, or to a recorded deletion. Not "the same audio is somewhere": a
+        surviving twin says nothing about this copy, and a transcoded master
+        keys its audio differently in the catalogue (Codex review of #214,
+        three rounds). Anything else keeps its row, so a verify still reports
+        a loss nobody recorded. Only after a whole-archive pass, never with
+        --limit; an empty scan returns before this -- most likely the drive
+        is not there.
+        """
+        baselined = dict(ctx.conn.execute("SELECT path, baselined_at FROM archive_tier_hashes"))
+        missing = {p for p in baselined if p not in scanned and not Path(p).exists()}
+        if not missing:
+            return
+        moved_to: dict[str, str] = {}
+        deleted: set[str] = set()
+        for event_type, file_path, old, new, ts in ctx.conn.execute(
+            "SELECT event_type, file_path, old_value, new_value, ts FROM events ORDER BY id"
+        ):
+            # Only what happened to the file baselined there: an event from
+            # before its baseline was about an earlier file at the same path
+            # (round 4). A destination path has no baseline of its own here.
+            since = baselined.get(old or file_path or "")
+            if since and ts and ts < since:
+                continue
+            if old and new and old != new and old.startswith("/") and new.startswith("/"):
+                moved_to[old] = new  # the latest move from a path wins
+            elif file_path and str(event_type).startswith("DELETED"):
+                deleted.add(file_path)
+
+        def accounted_for(path: str) -> bool:
+            seen: set[str] = set()
+            while path not in seen:
+                seen.add(path)
+                if path in deleted:
+                    return True
+                if path not in missing and Path(path).exists():
+                    return True
+                if path not in moved_to:
+                    return False
+                path = moved_to[path]
+            return False  # a loop of moves proves nothing
+
+        gone = [p for p in sorted(missing) if accounted_for(p)]
+        kept = len(missing) - len(gone)
+        for path in gone:
+            ctx.conn.execute("DELETE FROM archive_tier_hashes WHERE path = ?", (path,))
+        ctx.conn.commit()
+        if gone:
+            result.notes.append(f"forgotten, no longer on disk: {len(gone)}")
+            for path in gone[:5]:
+                result.notes.append(f"  {Path(path).name}")
+            if len(gone) > 5:
+                result.notes.append(f"  {elision(len(gone) - 5)}")
+        if kept:
+            result.notes.append(
+                f"kept, missing with no record of where the file went: {kept} "
+                "(a verify still reports them)"
+            )
 
     def _verify(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
