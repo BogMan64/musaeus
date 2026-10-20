@@ -229,6 +229,10 @@ class Plan:
     forget: list[Copy] = field(default_factory=list)
     rebake: list[Copy] = field(default_factory=list)  # copies baked again, in place
     resettled: int = 0  # of those, the ones made with other settings
+    click_revoked: int = 0  # copies kept for the click allow list, taken off it
+    #: Masters whose old copy is removed only to be made again in this run:
+    #: a --limit run removes only those it will also bake.
+    remove_then_bake: set[str] = field(default_factory=set)
     up_to_date: int = 0
     kept_unselected: int = 0
     #: Those copies: their masters are on disk but not in this catalogue.
@@ -343,8 +347,14 @@ def make_plan(
     include_lossy: bool | None = None,
     rebake_compressed: bool = False,
     allowed: set[str] | None = None,
+    click_allowed: frozenset[str] | None = None,
 ) -> Plan:
     """Decide what the build does. Reads only; changes nothing.
+
+    *click_allowed*: the masters on the click allow list for this edition.
+    None (a preview that did not read it): a copy kept for the list counts as
+    current. A set: one whose master is no longer listed is removed and made
+    again, so the click check decides afresh.
 
     *allowed*: the master paths a size-budgeted edition (iPhone) selected. A
     live master outside it is left out, and its copy removed -- dropped for
@@ -495,10 +505,47 @@ def make_plan(
     settings_now = kind.settings() if kind.settings is not None else None
     for h, (m, target) in selected.items():
         c = recorded.get(h)
+        made_with = c.settings if c is not None else None
+        if c is not None and made_with and made_with.endswith(CLICK_ALLOWED_MARK):
+            if (
+                click_allowed is not None
+                and h not in click_allowed
+                and Path(c.output_path).exists()
+            ):
+                # Taken off the allow list: this copy may click. Removed first,
+                # wherever it is and whatever it was made with, then made
+                # again at today's place -- refused unless the encode now
+                # comes out clean, and never moved or kept meanwhile (Codex
+                # review of #215: a settings change or a moved master
+                # carried the clicking copy on).
+                plan.remove.append(c)
+                plan.bake.append((m, target))
+                plan.remove_then_bake.add(h)
+                plan.click_revoked += 1
+                continue
+            made_with = made_with[: -len(CLICK_ALLOWED_MARK)]
+        elif (
+            click_allowed is not None
+            and h in click_allowed
+            and settings_now is not None
+            and c is not None
+            and made_with == settings_now
+        ):
+            # Listed, but made before copies were marked: made once more under
+            # the list, so it carries the mark and a later removal from the
+            # list reaches it -- at today's place when its master moved,
+            # rather than moving the unmarked copy on (round 3).
+            if c.output_path == str(target) and target.exists():
+                made_with = None
+            elif Path(c.output_path).exists():
+                plan.remove.append(c)
+                plan.bake.append((m, target))
+                plan.remove_then_bake.add(h)
+                continue
         if (
             settings_now is not None
             and c is not None
-            and c.settings != settings_now
+            and made_with != settings_now
             and c.output_path == str(target)
             and target.exists()
         ):
@@ -647,6 +694,7 @@ def budgeted(
     budget_bytes: int,
     *,
     rebake_compressed: bool = False,
+    click_allowed: frozenset[str] | None = None,
 ) -> tuple[Plan, editions.Selection]:
     """The plan for a budgeted edition, and the selection that fills it."""
     whole, sel = _whole_and_selection(conn, ledger, masters_root, edition_root, kind, budget_bytes)
@@ -656,6 +704,7 @@ def budgeted(
     plan = make_plan(
         conn, ledger, masters_root, edition_root,
         kind=kind, allowed=allowed, rebake_compressed=rebake_compressed,
+        click_allowed=click_allowed,
     )  # fmt: skip
     return plan, sel
 
@@ -875,6 +924,13 @@ def _known_measurements(ledger: sqlite3.Connection, m: Master) -> dict[str, dict
     return have
 
 
+#: Added to a copy's recorded settings when the click check flagged it and
+#: it was kept for the allow list. The copy stays current while its master is
+#: listed; taken off the list, it is removed and made again (Codex review of
+#: #210: a revoked copy otherwise stayed in the edition for good).
+CLICK_ALLOWED_MARK = " click-allowed"
+
+
 def load_click_allowed(path: Path, edition: str) -> frozenset[str]:
     """The masters whose *edition* copy is kept though the click check flags
     it: Grey listened to that copy and heard no click (2026-10-19, Muddy
@@ -1073,7 +1129,12 @@ def execute(
     for c in plan.forget:
         forget(ledger, kind.name, c.master_hash)
 
+    # A copy removed only to be made again goes only when this run makes it:
+    # with --limit, the rest wait for a later run (Codex review of #215).
+    baking = {m.audio_hash for m, _ in (plan.bake[:limit] if limit is not None else plan.bake)}
     for c in plan.remove:
+        if c.master_hash in plan.remove_then_bake and c.master_hash not in baking:
+            continue
         p = Path(c.output_path)
         if p.exists():
             if edition_bake.read_marker(p) != marker_for(c.master_hash, kind):
@@ -1159,7 +1220,17 @@ def execute(
                     if target.exists() and not may_replace(target, m.audio_hash):
                         raise edition_bake.BakeError(f"something appeared at {target}")
                     os.replace(tmp, target)
-                    record(ledger, _copy(m, target, result.achieved_lufs, result.mode, kind))
+                    settings = None
+                    # Made under the allow list, flagged or not: marked, so
+                    # taking it off the list makes it again (Codex review of
+                    # #215, round 2 -- an unmarked listed copy was never
+                    # re-checked).
+                    if m.audio_hash in click_allowed and kind.settings is not None:
+                        settings = kind.settings() + CLICK_ALLOWED_MARK
+                    record(
+                        ledger,
+                        _copy(m, target, result.achieved_lufs, result.mode, kind, settings),
+                    )
                     if (
                         result.recipe
                         and result.measured is not None
@@ -1314,6 +1385,8 @@ def plan_lines(plan: Plan, *, workers: int, free: int | None = None) -> list[str
         lines.append(f"  Over budget   : {len(plan.over_budget):,} track(s) left out for space")
     if plan.resettled:
         lines.append(f"  Re-make       : {plan.resettled:,} copy(ies) made with other settings")
+    if plan.click_revoked:
+        lines.append(f"  Off click list: {plan.click_revoked:,} copy(ies) removed and made again")
     if len(plan.rebake) > plan.resettled:
         lines.append(
             f"  Re-bake       : {len(plan.rebake) - plan.resettled:,} compressed copy(ies), "
