@@ -230,6 +230,9 @@ class Plan:
     rebake: list[Copy] = field(default_factory=list)  # copies baked again, in place
     resettled: int = 0  # of those, the ones made with other settings
     click_revoked: int = 0  # copies kept for the click allow list, taken off it
+    #: Masters whose old copy is removed only to be made again in this run:
+    #: a --limit run removes only those it will also bake.
+    remove_then_bake: set[str] = field(default_factory=set)
     up_to_date: int = 0
     kept_unselected: int = 0
     #: Those copies: their masters are on disk but not in this catalogue.
@@ -517,6 +520,7 @@ def make_plan(
                 # carried the clicking copy on).
                 plan.remove.append(c)
                 plan.bake.append((m, target))
+                plan.remove_then_bake.add(h)
                 plan.click_revoked += 1
                 continue
             made_with = made_with[: -len(CLICK_ALLOWED_MARK)]
@@ -526,13 +530,18 @@ def make_plan(
             and settings_now is not None
             and c is not None
             and made_with == settings_now
-            and c.output_path == str(target)
-            and target.exists()
         ):
             # Listed, but made before copies were marked: made once more under
             # the list, so it carries the mark and a later removal from the
-            # list reaches it.
-            made_with = None
+            # list reaches it -- at today's place when its master moved,
+            # rather than moving the unmarked copy on (round 3).
+            if c.output_path == str(target) and target.exists():
+                made_with = None
+            elif Path(c.output_path).exists():
+                plan.remove.append(c)
+                plan.bake.append((m, target))
+                plan.remove_then_bake.add(h)
+                continue
         if (
             settings_now is not None
             and c is not None
@@ -1120,7 +1129,12 @@ def execute(
     for c in plan.forget:
         forget(ledger, kind.name, c.master_hash)
 
+    # A copy removed only to be made again goes only when this run makes it:
+    # with --limit, the rest wait for a later run (Codex review of #215).
+    baking = {m.audio_hash for m, _ in (plan.bake[:limit] if limit is not None else plan.bake)}
     for c in plan.remove:
+        if c.master_hash in plan.remove_then_bake and c.master_hash not in baking:
+            continue
         p = Path(c.output_path)
         if p.exists():
             if edition_bake.read_marker(p) != marker_for(c.master_hash, kind):

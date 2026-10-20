@@ -786,7 +786,7 @@ def test_copies_stepped_aside_by_a_stopped_move_do_not_look_moved(cfg):
         ledger.close()
 
 
-def _build_listed(cfg, listed: frozenset[str]):
+def _build_listed(cfg, listed: frozenset[str], limit: int | None = None):
     conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     ledger = open_ledger(ledger_path(cfg))
@@ -796,8 +796,9 @@ def _build_listed(cfg, listed: frozenset[str]):
             conn, ledger, cfg.alac_archive, root, kind=eb.IPHONE_KIND, click_allowed=listed
         )
         out = eb.execute(
-            plan, ledger, root, kind=eb.IPHONE_KIND, progress=lambda s: None, click_allowed=listed
-        )
+            plan, ledger, root, kind=eb.IPHONE_KIND, progress=lambda s: None,
+            click_allowed=listed, limit=limit,
+        )  # fmt: skip
         return out, copies(ledger, "iphone")
     finally:
         conn.close()
@@ -872,3 +873,48 @@ def test_a_listed_copy_made_before_the_mark_is_made_again_and_then_revocable(
 
     out, phone = _build_listed(cfg, frozenset())
     assert _phone_files(cfg) == [] and "h1" not in phone
+
+
+def _unmark(cfg):
+    ledger = open_ledger(ledger_path(cfg))
+    ledger.execute(
+        "UPDATE copy_settings SET settings = replace(settings, ?, '') WHERE edition = 'iphone'",
+        (eb.CLICK_ALLOWED_MARK,),
+    )
+    ledger.commit()
+    ledger.close()
+
+
+def test_a_limited_build_removes_only_the_revoked_copies_it_makes_again(cfg, every_copy_clicks):
+    # Codex review of #215, round 3: --limit 1 removed every revoked copy
+    # and made one; the rest were gone without an encode.
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Wild Horses.m4a", "h2")
+    _build_listed(cfg, frozenset({"h1", "h2"}))
+
+    _build_listed(cfg, frozenset(), limit=1)
+
+    assert len(_phone_files(cfg)) == 1, "the copy not made again this run must stay"
+
+
+def test_an_unmarked_listed_copy_whose_master_moved_is_made_at_its_new_place(
+    cfg, every_copy_clicks
+):
+    # Round 3: the old unmarked copy was moved on, still unmarked, so taking
+    # it off the list later never reached it.
+    old = _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    _build_listed(cfg, frozenset({"h1"}))
+    _unmark(cfg)
+    new = cfg.alac_archive / "Rock" / "Stones" / "Goats Head Soup" / old.name
+    new.parent.mkdir(parents=True)
+    old.rename(new)
+    conn = sqlite3.connect(cfg.db_path)
+    conn.execute("UPDATE archive SET file_path = ? WHERE audio_hash = 'h1'", (str(new),))
+    conn.commit()
+    conn.close()
+
+    out, phone = _build_listed(cfg, frozenset({"h1"}))
+    assert phone["h1"].settings.endswith(eb.CLICK_ALLOWED_MARK)
+    assert "Goats Head Soup" in phone["h1"].output_path
+    _build_listed(cfg, frozenset())
+    assert _phone_files(cfg) == []
