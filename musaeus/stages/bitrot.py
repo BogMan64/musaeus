@@ -95,7 +95,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-from ..config import AUDIO_EXTENSIONS, MusicConfig
+from ..config import AUDIO_EXTENSIONS
 from ..context import RunContext, StageResult, elision
 from ..hasher import HasherTimeout, audio_hash, file_hash
 from .base import NO_VERIFICATION, BaseStage, VerifyResult
@@ -173,22 +173,6 @@ def _notify(repaired: list, unrepaired: list, lost: list | None = None) -> None:
         )  # fmt: skip
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("[bitrot] notification not sent: %s", exc)
-
-
-def _denied_hashes(cfg: MusicConfig) -> set[str]:
-    """Audio deleted on purpose: the deny list in the hash ledger. Read-only;
-    a missing or unreadable ledger has nothing to add."""
-    path = Path(cfg.hash_index_path)
-    if not path.exists():
-        return set()
-    try:
-        led = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-        try:
-            return {r[0] for r in led.execute("SELECT audio_hash FROM denied_hashes") if r[0]}
-        finally:
-            led.close()
-    except sqlite3.Error:
-        return set()
 
 
 class BitRotStage(BaseStage):
@@ -402,51 +386,52 @@ class BitRotStage(BaseStage):
         return result
 
     def _drop_gone(self, ctx: RunContext, result: StageResult, scanned: set[str]) -> None:
-        """Forget baseline rows whose file is gone -- when its audio is accounted for.
+        """Forget baseline rows whose file is gone -- when the log says where it went.
 
         A rebaseline records the archive as it is now, but it only ever added
         and updated rows: every refile left its old path behind, and a verify
         reported each as "missing from disk" for ever after (5,476 of them on
-        2026-10-19: 5,450 old paths of moved songs, 26 duplicates set aside).
+        2026-10-19: moved songs, duplicates set aside in REVIEW, deletions).
 
-        A row goes only when its file does not exist, the event log records
-        that file leaving THAT path (moved or renamed away, or deleted), AND
-        its audio is accounted for: baselined at a path this pass scanned, in
-        the catalogue at a file that exists (set aside, e.g. REVIEW), or on
-        the deny list (deleted on purpose). Same audio elsewhere alone is not
-        enough -- a second copy surviving says nothing about this one (Codex
-        review of #214, two rounds). Any other missing file keeps its row, so
-        a verify still reports a loss nobody recorded. Only after a
-        whole-archive pass, never with --limit; an empty scan returns before
-        this -- most likely the drive is not there.
+        A missing row goes only when the event log follows that file from its
+        path -- through every later move or rename -- to a file that exists
+        now, or to a recorded deletion. Not "the same audio is somewhere": a
+        surviving twin says nothing about this copy, and a transcoded master
+        keys its audio differently in the catalogue (Codex review of #214,
+        three rounds). Anything else keeps its row, so a verify still reports
+        a loss nobody recorded. Only after a whole-archive pass, never with
+        --limit; an empty scan returns before this -- most likely the drive
+        is not there.
         """
-        rows = ctx.conn.execute("SELECT path, audio_hash FROM archive_tier_hashes").fetchall()
-        here = {r[1] for r in rows if r[1] and r[0] in scanned}
-        catalogued = {
-            r[1]
-            for r in ctx.conn.execute(
-                "SELECT file_path, audio_hash FROM archive WHERE audio_hash IS NOT NULL"
-            )
-            if r[1] and r[0] and Path(r[0]).exists()
-        }
-        accounted = here | catalogued | _denied_hashes(ctx.config)
-        missing = {r[0] for r in rows if r[0] not in scanned and not Path(r[0]).exists()}
-        left = set()
+        rows = [r[0] for r in ctx.conn.execute("SELECT path FROM archive_tier_hashes")]
+        missing = {p for p in rows if p not in scanned and not Path(p).exists()}
+        if not missing:
+            return
+        moved_to: dict[str, str] = {}
+        deleted: set[str] = set()
         for event_type, file_path, old, new in ctx.conn.execute(
-            "SELECT event_type, file_path, old_value, new_value FROM events"
+            "SELECT event_type, file_path, old_value, new_value FROM events ORDER BY id"
         ):
-            if old in missing and new and new != old:
-                left.add(old)  # moved or renamed away from it
-            elif file_path in missing and str(event_type).startswith("DELETED"):
-                left.add(file_path)
-        gone, kept = [], 0
-        for path, ah in rows:
-            if path not in missing:
-                continue
-            if path in left and ah and ah in accounted:
-                gone.append(path)
-            else:
-                kept += 1
+            if old and new and old != new and old.startswith("/") and new.startswith("/"):
+                moved_to[old] = new  # the latest move from a path wins
+            elif file_path and str(event_type).startswith("DELETED"):
+                deleted.add(file_path)
+
+        def accounted_for(path: str) -> bool:
+            seen: set[str] = set()
+            while path not in seen:
+                seen.add(path)
+                if path in deleted:
+                    return True
+                if path not in missing and Path(path).exists():
+                    return True
+                if path not in moved_to:
+                    return False
+                path = moved_to[path]
+            return False  # a loop of moves proves nothing
+
+        gone = [p for p in sorted(missing) if accounted_for(p)]
+        kept = len(missing) - len(gone)
         for path in gone:
             ctx.conn.execute("DELETE FROM archive_tier_hashes WHERE path = ?", (path,))
         ctx.conn.commit()
@@ -458,7 +443,7 @@ class BitRotStage(BaseStage):
                 result.notes.append(f"  {elision(len(gone) - 5)}")
         if kept:
             result.notes.append(
-                f"kept, missing with no record of where the audio went: {kept} "
+                f"kept, missing with no record of where the file went: {kept} "
                 "(a verify still reports them)"
             )
 

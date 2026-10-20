@@ -145,7 +145,7 @@ class TestRebaseline:
 
         paths = {r[0] for r in ctx.conn.execute("SELECT path FROM archive_tier_hashes")}
         assert str(lost) in paths
-        assert any("no record of where the audio went: 1" in n for n in result.notes)
+        assert any("no record of where the file went: 1" in n for n in result.notes)
 
     def test_rebaseline_forgets_a_file_set_aside_in_the_catalogue(self, ctx, tmp_path):
         # The 26 duplicates moved to REVIEW: catalogued at a file that exists.
@@ -157,8 +157,9 @@ class TestRebaseline:
         ctx.log_event(
             "DUPE_MOVED_FOR_REVIEW", file_path=str(old), old_value=str(old), new_value=str(aside)
         )
-        ah = ctx.conn.execute("SELECT audio_hash FROM archive_tier_hashes").fetchone()[0]
-        upsert_archive(ctx.conn, {"file_path": str(aside), "audio_hash": ah,
+        # A transcoded master keys its audio differently in the catalogue
+        # (Codex review of #214, round 3): the move record alone decides.
+        upsert_archive(ctx.conn, {"file_path": str(aside), "audio_hash": "source-hash",
                                   "status": "DUPE_REVIEW"})  # fmt: skip
         ctx.conn.commit()
         _audio_file(ctx, "Rock/Other/Album/b.m4a", frequency=660)
@@ -210,6 +211,30 @@ class TestRebaseline:
 
         paths = {r[0] for r in ctx.conn.execute("SELECT path FROM archive_tier_hashes")}
         assert str(lost) in paths
+
+    def test_rebaseline_keeps_a_moved_file_lost_at_its_new_place(self, ctx):
+        # Codex review of #214, round 3: moved A -> B, B lost, a twin C
+        # survives. The move record does not end at a file: A's row stays.
+        import shutil
+
+        a_path = _audio_file(ctx, "Pop/Artist/Album/a.m4a")
+        _baseline_with_audio(ctx, a_path)
+        b_path = ctx.config.alac_archive / "Rock" / "Artist" / "Album" / "a.m4a"
+        b_path.parent.mkdir(parents=True)
+        a_path.rename(b_path)
+        ctx.log_event(
+            "ORGANIZE_MOVE", file_path=str(a_path), old_value=str(a_path), new_value=str(b_path)
+        )
+        twin = ctx.config.alac_archive / "Jazz" / "Artist" / "Album" / "a.m4a"
+        twin.parent.mkdir(parents=True)
+        shutil.copy2(b_path, twin)
+        b_path.unlink()
+        ctx.set("bitrot_rebaseline", True)
+
+        BitRotStage().run(ctx)
+
+        paths = {r[0] for r in ctx.conn.execute("SELECT path FROM archive_tier_hashes")}
+        assert str(a_path) in paths
 
     def test_a_limited_rebaseline_forgets_nothing(self, ctx):
         old = _archive_file(ctx, "Pop/Artist/Album/a.m4a", b"SONG")
