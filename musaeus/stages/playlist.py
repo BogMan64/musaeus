@@ -344,6 +344,11 @@ class PlaylistStage(BaseStage):
         ctx.record_stage(result)
         return result
 
+    def _has_effect_to_check(self, result: StageResult) -> bool:
+        """Playlists left as they were are still the run's to stand behind:
+        checked even when nothing was rewritten (Codex review of #213)."""
+        return result.files_changed > 0 or bool(getattr(self, "produced", None))
+
     def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
         """A playlist this stage stands behind must exist and have content.
 

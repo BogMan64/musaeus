@@ -192,6 +192,7 @@ class TestAPlaylistAlreadyRight:
         dv, cfg, conn, edition = vault_with_one_inside_and_one_outside
         ctx, stage, result = self._second_run(cfg, conn)
         (edition / "Playlists" / "Rock.m3u8").unlink()
-        problems = stage.verify_effect(ctx, result)
+        stage._check_effect(ctx, result)  # the gate a pipeline run goes through
         ctx.finish()
-        assert any("Rock.m3u8" in p for p in problems), problems
+        assert result.verified is False, result.verify_notes
+        assert any("Rock.m3u8" in n for n in result.verify_notes), result.verify_notes
