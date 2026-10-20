@@ -65,3 +65,20 @@ def test_a_title_agrees_with_its_versions_in_either_spelling(want, recorded):
     # Codex review of #209.
     recordings = [{"id": "r1", "title": recorded, "artists": [{"name": "X"}]}]
     assert _pick_matching_recording(recordings, "X", want) == "r1"
+
+
+@pytest.mark.parametrize(
+    "want, recorded",
+    [("Song - Part 2", "Song - Part 1"), ("Shout - Part 2", "Shout - Part 1")],
+)
+def test_another_part_of_a_song_is_not_its_version(want, recorded):
+    # Codex review of #209 (after merge): the base title dropped any " - "
+    # ending, so "Song - Part 1" was taken for "Song - Part 2" -- a wrong
+    # recording id, and a pair that could be staged as one song twice.
+    recordings = [{"id": "r1", "title": recorded, "artists": [{"name": "X"}]}]
+    assert _pick_matching_recording(recordings, "X", want) is None
+
+
+def test_a_version_ending_after_a_dash_still_agrees():
+    recordings = [{"id": "r1", "title": "Slow Ride - 2016 Remaster", "artists": [{"name": "X"}]}]
+    assert _pick_matching_recording(recordings, "X", "Slow Ride") == "r1"

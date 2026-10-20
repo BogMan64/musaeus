@@ -199,10 +199,12 @@ def _spellings(name: str) -> set[str]:
 
 
 def _base_title(title: str) -> str:
-    """A title without its version: brackets and a " - " suffix set aside."""
-    from ..brackets import strip_bracketed
+    """A title without its version: brackets and a version " - " ending set
+    aside. Only a version ending: "Song - Part 1" is not "Song - Part 2"
+    (Codex review of #209)."""
+    from ..brackets import base_title
 
-    return strip_bracketed(title or "").split(" - ", 1)[0]
+    return base_title(title)
 
 
 def _titles_agree(a: str, b: str) -> bool:

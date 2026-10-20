@@ -83,3 +83,20 @@ def strip_bracketed(text: str) -> str:
 def has_bracketed(text: str) -> bool:
     """True when *text* carries at least one bracketed annotation."""
     return bool(text) and BRACKETED.search(text) is not None
+
+
+#: A " - " ending that names a version of the same recording: "Slow Ride -
+#: 2016 Remaster", "Layla - Acoustic Live". A short run of words may come
+#: before the marker. Not "Part 2": that is another piece (Codex review of
+#: #209 -- AcoustID took "Song - Part 1" for "Song - Part 2"). Doctor's rule
+#: since the possible-duplicates report; one copy now, here.
+EDITION_SUFFIX = re.compile(
+    r"\s*-\s*(?:\w+\s+){0,2}"
+    r"(remaster|remastered|live|mono|stereo|single|album|radio|rerecorded|version|mix|edit)\b.*$",
+    re.IGNORECASE,
+)
+
+
+def base_title(text: str) -> str:
+    """A title without its version: brackets and a version " - " ending set aside."""
+    return EDITION_SUFFIX.sub("", strip_bracketed(text or ""))

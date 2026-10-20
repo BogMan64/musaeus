@@ -41,17 +41,11 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .brackets import strip_bracketed
+from .brackets import EDITION_SUFFIX, strip_bracketed
 from .config import MusicConfig
 
-# The marker is often preceded by a year or a qualifier: "Slow Ride - 2016
-# Remaster", "Layla - Acoustic Live". Allow a short run of words before it
-# rather than requiring the marker to follow the dash immediately.
-_EDITION_RE = re.compile(
-    r"\s*-\s*(?:\w+\s+){0,2}"
-    r"(remaster|remastered|live|mono|stereo|single|album|radio|rerecorded|version|mix|edit)\b.*$",
-    re.IGNORECASE,
-)
+# The version ending ("Slow Ride - 2016 Remaster"): one rule, in brackets.py.
+_EDITION_RE = EDITION_SUFFIX
 _NOISE_RE = re.compile(r"[^a-z0-9]")
 
 
