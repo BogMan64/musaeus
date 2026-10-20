@@ -64,6 +64,23 @@ def _decade(year: str | None) -> str | None:
     return f"{y[:3]}0s"
 
 
+def _write_if_changed(path: Path, content: str) -> bool:
+    """Write *content* to *path* unless it already holds exactly that.
+
+    A playlist rewritten with the same lines still gets a new time, and the
+    stick sync copies every file whose time changed: all 49 car playlists went
+    down the stick again after every build (found 2026-10-19). True when
+    written.
+    """
+    try:
+        if path.read_text(encoding="utf-8") == content:
+            return False
+    except (OSError, UnicodeDecodeError):
+        pass
+    path.write_text(content, encoding="utf-8")
+    return True
+
+
 def _extinf_line(artist: str | None, title: str | None, source: str) -> str:
     """Build a #EXTINF:-1,Artist - Title line from DB metadata or filename."""
     if artist and title:
@@ -98,6 +115,9 @@ class PlaylistStage(BaseStage):
 
     def _build(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
+        #: Every playlist this run stands behind, rewritten or already right:
+        #: what edition_index keeps when it sweeps out stale ones.
+        self.produced: list[Path] = []
         assert ctx.config is not None
 
         playlist_dir = ctx.config.playlists
@@ -183,6 +203,7 @@ class PlaylistStage(BaseStage):
             playlist_dir.mkdir(parents=True, exist_ok=True)
 
         written = 0
+        unchanged = 0
 
         # A set, not a list: every source is offered to _make_rel once per
         # genre pass, once per era pass and once for All, so a list would
@@ -228,15 +249,18 @@ class PlaylistStage(BaseStage):
             if dry_run:
                 result.notes.append(f"  [DRY] {out.name}  ({len(tracks)} tracks)")
             else:
-                out.write_text(content, encoding="utf-8")
-                ctx.log_event(
-                    "PLAYLIST_WRITTEN",
-                    file_path=str(out),
-                    new_value=f"{len(tracks)} tracks",
-                    stage=self.NAME,
-                )
-                result.notes.append(f"  {out.name}  ({len(tracks)} tracks)")
-                written += 1
+                self.produced.append(out)
+                if _write_if_changed(out, content):
+                    ctx.log_event(
+                        "PLAYLIST_WRITTEN",
+                        file_path=str(out),
+                        new_value=f"{len(tracks)} tracks",
+                        stage=self.NAME,
+                    )
+                    result.notes.append(f"  {out.name}  ({len(tracks)} tracks)")
+                    written += 1
+                else:
+                    unchanged += 1
 
             result.files_processed += len(tracks)
             result.files_changed += len(tracks)
@@ -258,15 +282,18 @@ class PlaylistStage(BaseStage):
             if dry_run:
                 result.notes.append(f"  [DRY] {out.name}  ({len(tracks)} tracks)")
             else:
-                out.write_text(content, encoding="utf-8")
-                ctx.log_event(
-                    "PLAYLIST_WRITTEN",
-                    file_path=str(out),
-                    new_value=f"{len(tracks)} tracks",
-                    stage=self.NAME,
-                )
-                result.notes.append(f"  {out.name}  ({len(tracks)} tracks)")
-                written += 1
+                self.produced.append(out)
+                if _write_if_changed(out, content):
+                    ctx.log_event(
+                        "PLAYLIST_WRITTEN",
+                        file_path=str(out),
+                        new_value=f"{len(tracks)} tracks",
+                        stage=self.NAME,
+                    )
+                    result.notes.append(f"  {out.name}  ({len(tracks)} tracks)")
+                    written += 1
+                else:
+                    unchanged += 1
 
         # All.m3u8 — every matched source once
         if all_sources:
@@ -288,15 +315,18 @@ class PlaylistStage(BaseStage):
             elif dry_run:
                 result.notes.append(f"  [DRY] All.m3u8  ({n_all} tracks)")
             else:
-                out_all.write_text(all_content, encoding="utf-8")
-                ctx.log_event(
-                    "PLAYLIST_WRITTEN",
-                    file_path=str(out_all),
-                    new_value=f"{n_all} tracks",
-                    stage=self.NAME,
-                )
-                result.notes.append(f"  All.m3u8  ({n_all} tracks)")
-                written += 1
+                self.produced.append(out_all)
+                if _write_if_changed(out_all, all_content):
+                    ctx.log_event(
+                        "PLAYLIST_WRITTEN",
+                        file_path=str(out_all),
+                        new_value=f"{n_all} tracks",
+                        stage=self.NAME,
+                    )
+                    result.notes.append(f"  All.m3u8  ({n_all} tracks)")
+                    written += 1
+                else:
+                    unchanged += 1
 
         if outside:
             result.notes.append(
@@ -305,6 +335,8 @@ class PlaylistStage(BaseStage):
             )
         if not dry_run:
             result.notes.append(f"playlists written: {written}")
+            if unchanged:
+                result.notes.append(f"playlists already right, left as they were: {unchanged}")
 
         ctx.record_stage(result)
         return result
