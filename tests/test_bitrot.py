@@ -236,11 +236,59 @@ class TestRebaseline:
         paths = {r[0] for r in ctx.conn.execute("SELECT path FROM archive_tier_hashes")}
         assert str(a_path) in paths
 
+    def test_an_old_move_from_a_path_says_nothing_about_a_later_file_there(self, ctx):
+        # Codex review of #214, round 4: song A moved away from a path;
+        # another song was baselined there later and lost unrecorded.
+        old = ctx.config.alac_archive / "Pop" / "Artist" / "Album" / "a.m4a"
+        new = _audio_file(ctx, "Rock/Artist/Album/a.m4a")
+        ctx.log_event("ORGANIZE_MOVE", file_path=str(old), old_value=str(old), new_value=str(new))
+        ctx.conn.commit()
+        later = _audio_file(ctx, "Pop/Artist/Album/a.m4a", frequency=660)
+        ctx.conn.execute(
+            "INSERT INTO archive_tier_hashes (path, sha256, size_bytes, baselined_at) "
+            "VALUES (?, ?, ?, datetime('now', '+1 minute'))",
+            (str(later), file_hash(later), later.stat().st_size),
+        )
+        ctx.conn.commit()
+        later.unlink()
+        ctx.set("bitrot_rebaseline", True)
+
+        BitRotStage().run(ctx)
+
+        paths = {r[0] for r in ctx.conn.execute("SELECT path FROM archive_tier_hashes")}
+        assert str(later) in paths
+
+    def test_no_cleanup_after_a_file_could_not_be_hashed(self, ctx, monkeypatch):
+        # Round 4: the moved file's new row was not written, so its old row
+        # is all the coverage left.
+        from musaeus.stages import bitrot
+
+        old = _audio_file(ctx, "Pop/Artist/Album/a.m4a")
+        _baseline_with_audio(ctx, old)
+        new = ctx.config.alac_archive / "Rock" / "Artist" / "Album" / "a.m4a"
+        new.parent.mkdir(parents=True)
+        old.rename(new)
+        ctx.log_event("ORGANIZE_MOVE", file_path=str(old), old_value=str(old), new_value=str(new))
+
+        def unreadable(path):
+            raise OSError("read error")
+
+        monkeypatch.setattr(bitrot, "file_hash", unreadable)
+        ctx.set("bitrot_rebaseline", True)
+
+        BitRotStage().run(ctx)
+
+        paths = {r[0] for r in ctx.conn.execute("SELECT path FROM archive_tier_hashes")}
+        assert str(old) in paths
+
     def test_a_limited_rebaseline_forgets_nothing(self, ctx):
+        # Round 4: with a recorded move to an existing file, only the --limit
+        # guard keeps this row.
         old = _archive_file(ctx, "Pop/Artist/Album/a.m4a", b"SONG")
         _baseline(ctx, old)
+        new = _archive_file(ctx, "Rock/Artist/Album/b.m4a", b"OTHER")
         old.unlink()
-        _archive_file(ctx, "Rock/Artist/Album/b.m4a", b"OTHER")
+        ctx.log_event("ORGANIZE_MOVE", file_path=str(old), old_value=str(old), new_value=str(new))
         ctx.set("bitrot_rebaseline", True)
         ctx.set("bitrot_limit", 1)
 

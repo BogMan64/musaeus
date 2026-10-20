@@ -368,7 +368,9 @@ class BitRotStage(BaseStage):
 
         ctx.conn.commit()
         result.notes.append(f"baselined: {result.files_changed}")
-        if not limit:
+        if not limit and not result.files_errored:
+            # A file that could not be hashed has no new row: an old path
+            # pointing at it must not go either (Codex review of #214, round 4).
             self._drop_gone(ctx, result, {str(p) for p in files})
         if unhashable:
             result.notes.append(
@@ -403,15 +405,21 @@ class BitRotStage(BaseStage):
         --limit; an empty scan returns before this -- most likely the drive
         is not there.
         """
-        rows = [r[0] for r in ctx.conn.execute("SELECT path FROM archive_tier_hashes")]
-        missing = {p for p in rows if p not in scanned and not Path(p).exists()}
+        baselined = dict(ctx.conn.execute("SELECT path, baselined_at FROM archive_tier_hashes"))
+        missing = {p for p in baselined if p not in scanned and not Path(p).exists()}
         if not missing:
             return
         moved_to: dict[str, str] = {}
         deleted: set[str] = set()
-        for event_type, file_path, old, new in ctx.conn.execute(
-            "SELECT event_type, file_path, old_value, new_value FROM events ORDER BY id"
+        for event_type, file_path, old, new, ts in ctx.conn.execute(
+            "SELECT event_type, file_path, old_value, new_value, ts FROM events ORDER BY id"
         ):
+            # Only what happened to the file baselined there: an event from
+            # before its baseline was about an earlier file at the same path
+            # (round 4). A destination path has no baseline of its own here.
+            since = baselined.get(old or file_path or "")
+            if since and ts and ts < since:
+                continue
             if old and new and old != new and old.startswith("/") and new.startswith("/"):
                 moved_to[old] = new  # the latest move from a path wins
             elif file_path and str(event_type).startswith("DELETED"):
