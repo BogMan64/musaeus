@@ -204,3 +204,12 @@ def test_a_part_is_one_song_key_in_any_spelling(bracketed, dashed):
     from musaeus.doctor import song_key
 
     assert song_key("A", bracketed) == song_key("A", dashed)
+
+
+def test_a_part_after_a_version_ending_is_kept():
+    # Codex review of #217, round 3: the version ending took the part after it.
+    from musaeus.doctor import song_key
+
+    assert song_key("A", "Song - Live (Part 1)") != song_key("A", "Song - Live (Part 2)")
+    assert song_key("A", "Song - Live (Part 1)") == song_key("A", "Song - Part 1")
+    assert song_key("A", "Song - Part 1 2011 Remaster") == song_key("A", "Song - Part 1")
