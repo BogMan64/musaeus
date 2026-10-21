@@ -238,3 +238,19 @@ def test_a_three_digit_number_after_pt_is_not_a_part():
     assert base_title("Pt 109") == "Pt 109"
     # Codex review of #218: only the short "Pt" is read this way; "Part 100" is a part.
     assert part_numbers("Song - Part 100") == ("100",)
+
+
+def test_the_same_part_of_two_songs_in_a_medley_is_kept():
+    # Codex review of #218, round 2: one part per title dropped Song B's part.
+    from musaeus.doctor import song_key
+
+    assert song_key("A", "Song A - Part 1 / Song B - Part 1") != song_key(
+        "A", "Song A - Part 1 / Song B"
+    )
+
+
+def test_a_version_after_pt_109_is_set_aside():
+    # Codex review of #218, round 2: "Pt 109" kept the version after it.
+    from musaeus.doctor import song_key
+
+    assert song_key("A", "Song - Pt 109 Live") == song_key("A", "Song - Pt 109")

@@ -93,7 +93,8 @@ def has_bracketed(text: str) -> bool:
 EDITION_SUFFIX = re.compile(
     # A part before the words is kept, the version after it is not: "Song -
     # Part 1 Live" is "Song - Part 1" (Codex review of #216, two rounds).
-    r"\s*-\s*(?:(?:part|pt(?!\.?\s*\d{3}))\.?\s*(?:\d+|[ivxlc]+)\s+)?"
+    # base_title keeps the label as written, so "Pt 109" stays (review of #218).
+    r"\s*-\s*(?P<label>(?:part|pt)\.?\s*(?:\d+|[ivxlc]+)\s+)?"
     r"(?:(?!(?:part|pt)\b)\w+\s+){0,2}"
     r"(remaster|remastered|live|mono|stereo|single|album|radio|rerecorded|version|mix|edit)\b.*$",
     re.IGNORECASE,
@@ -150,28 +151,15 @@ def same_part_spelling(text: str) -> str:
 
 
 def part_numbers(text: str) -> tuple[str, ...]:
-    """The parts a title names, as numbers, each once: ("1",) for "Song -
-    Part One" (Codex review of #216: "Part I" is "Part 1", "Part One" is a
-    part) and for "Song - Part 1 Live (Part 1)" (Codex review of #218)."""
-    return tuple(dict.fromkeys(_part_number(m) for m in _PART.findall(text or "")))
+    """The parts a title names, as numbers: ("1",) for "Song - Part One"
+    (Codex review of #216: "Part I" is "Part 1", "Part One" is a part)."""
+    return tuple(_part_number(m) for m in _PART.findall(text or ""))
 
 
-#: A part as base_title spells it, with the " - " before it.
-_SPELLED_PART = re.compile(r"(?:\s*-\s*)?\bPart (\d+)\b")
-
-
-def _each_part_once(title: str) -> str:
-    """A part named twice is one part: "Song - Part 1 - Part 1" is "Song -
-    Part 1" (Codex review of #217, round 4, and #218)."""
-    seen: set[str] = set()
-
-    def first(m: re.Match[str]) -> str:
-        if m.group(1) in seen:
-            return ""
-        seen.add(m.group(1))
-        return m.group()
-
-    return _SPELLED_PART.sub(first, title)
+#: One part written twice in a row, as base_title puts it back from brackets
+#: or a cut ending: "Song - Part 1 - Part 1" (Codex review of #217, round 4).
+#: Only in a row: in "A - Part 1 / B - Part 1" each song has its part (#218).
+_REPEATED_PART = re.compile(r"\bPart (\d+)(?:\s*-\s*Part \1\b)+")
 
 
 def base_title(text: str) -> str:
@@ -188,6 +176,7 @@ def base_title(text: str) -> str:
     m = EDITION_SUFFIX.search(title)
     if m is not None:
         # The parts in the cut ending stay: "Song - Live (Part 1)" (Codex review of #217).
-        cut = part_numbers(title[m.start() :])
-        title = title[: m.start()] + "".join(f" - Part {n}" for n in cut)
-    return _each_part_once(title)
+        keep = m.end("label") if m.group("label") else m.start()
+        cut = part_numbers(title[keep:])
+        title = title[:keep].rstrip() + "".join(f" - Part {n}" for n in cut)
+    return _REPEATED_PART.sub(r"Part \1", title)

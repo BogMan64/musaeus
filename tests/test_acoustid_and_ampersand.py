@@ -139,3 +139,9 @@ def test_part_100_is_not_the_plain_song():
     # Codex review of #218: a two-digit limit on every part label let "Part 100" match "Song".
     recordings = [{"id": "r1", "title": "Song", "artists": [{"name": "X"}]}]
     assert _pick_matching_recording(recordings, "X", "Song - Part 100") is None
+
+
+def test_a_medley_is_not_matched_to_one_without_its_second_part():
+    # Codex review of #218, round 2.
+    recordings = [{"id": "r1", "title": "Song A - Part 1 / Song B", "artists": [{"name": "X"}]}]
+    assert _pick_matching_recording(recordings, "X", "Song A - Part 1 / Song B - Part 1") is None
