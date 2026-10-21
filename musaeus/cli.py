@@ -102,6 +102,7 @@ Examples:
     musaeus upgrade-check --csv
     musaeus dedupe
     musaeus dedupe --auto
+    musaeus dedupe --sheet decided.csv            # dry run; add --execute to move
     musaeus health-report
     musaeus status
 """
@@ -1026,13 +1027,23 @@ def _cmd_runs() -> int:
 # ── Dedupe command ────────────────────────────────────────────────────────────
 
 
-def _cmd_dedupe(auto: bool = False, report_only: bool = False) -> int:
+def _cmd_dedupe(
+    auto: bool = False, report_only: bool = False, sheet: str | None = None, execute: bool = False
+) -> int:
     try:
         cfg = get_config()
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
+    if sheet:
+        from .dedupe import apply_sheet
+
+        try:
+            return apply_sheet(cfg, Path(sheet), execute=execute)
+        except (OSError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
     conn = open_db(cfg.db_path)
     try:
         from .dedupe import carry_out_with, print_dedupe_report, run_dedupe_console
@@ -2340,6 +2351,14 @@ def _build_parser() -> argparse.ArgumentParser:
     dedupe_p.add_argument(
         "--report", action="store_true", help="Show report only, no interactive review"
     )
+    dedupe_p.add_argument(
+        "--sheet",
+        metavar="FILE",
+        help="Carry out a decided sheet (Group, Action KEEP/REMOVE, DB id, Master file); dry run",
+    )
+    dedupe_p.add_argument(
+        "--execute", action="store_true", help="With --sheet: move the REMOVE copies to review"
+    )
 
     # status
     sub.add_parser("status", help="Show library status")
@@ -2854,6 +2873,8 @@ def main() -> None:
                 _cmd_dedupe(
                     auto=getattr(args, "auto", False),
                     report_only=getattr(args, "report", False),
+                    sheet=getattr(args, "sheet", None),
+                    execute=getattr(args, "execute", False),
                 )
             )
 
