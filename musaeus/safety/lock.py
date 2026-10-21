@@ -113,9 +113,9 @@ def classify(root: str | Path) -> str:
 
 
 def _in_temp(normalised: str) -> bool:
-    """Is the path in the temp folder? By text, like classify()."""
-    temp = next((os.environ[k] for k in ("TMPDIR", "TEMP", "TMP") if os.environ.get(k)), "/tmp")
-    return _is_at_or_under(normalised, canonicalise(temp))
+    """Is the path in the system temp folder? By text, like classify(). Not
+    TMPDIR: it can name a home folder (Codex review of #219, round 3)."""
+    return any(_is_at_or_under(normalised, temp) for temp in ("/tmp", "/var/tmp"))
 
 
 def _is_at_or_under(candidate: str, ancestor: str) -> bool:

@@ -11,6 +11,12 @@ dpkg-deb --extract "$package" "$stage/root"
 export HOME="$stage/home"
 export MUSAEUS_VAULT_ROOT="$stage/new-user-vault"
 export PYTHONPATH="$stage/root/usr/lib/musaeus"
+# Away from any checkout, so Python imports the package (Codex review of #219).
+cd "$stage"
+case $(python3 -c 'import musaeus; print(musaeus.__file__)') in
+  "$PYTHONPATH"/*) ;;
+  *) echo "Imported musaeus from outside the package" >&2; exit 1 ;;
+esac
 
 python3 -m musaeus --help > "$stage/help.txt"
 python3 -m musaeus --version > "$stage/version.txt"
