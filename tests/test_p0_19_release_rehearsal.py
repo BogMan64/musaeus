@@ -777,7 +777,8 @@ def test_g3_recovery_cap_and_space_blocking(seeded_vault, fixture_home, tmp_path
         minimum_viable_coverage=(
             "the cap value read as an exact integer, both blocks observed to "
             "fire (cap and capacity), the recovery root confirmed not created, "
-            "and /home/grey/Projects/MUSAEUS_RECOVERY confirmed still absent"
+            "and the policy recovery root under the test HOME confirmed still "
+            "absent (G11 checks Grey's real one)"
         ),
     )
     try:
@@ -854,6 +855,8 @@ def test_g3_recovery_cap_and_space_blocking(seeded_vault, fixture_home, tmp_path
             "PreflightRequest directly (import)."
         )
 
+        # The policy root follows HOME, which conftest points at a temp folder,
+        # so this is not Grey's real root: G11 checks that (Codex review of #221).
         recovery_root_absent = not Path(FUTURE_RECOVERY_ROOT).exists()
 
         gate.cover(
