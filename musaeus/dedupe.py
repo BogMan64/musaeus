@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import signal
+import sqlite3
 import threading
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -221,7 +222,10 @@ def _check_group(
     """(kept paths, removed paths, every copy with its audio) for one group, or why not.
 
     The sheet was made earlier: each copy must still be the catalogued row at
-    the path the sheet names, and a copy a person kept is never removed by it.
+    the path the sheet names, holding the recording the sheet names, and a
+    copy a person kept is never removed by it. A REMOVE copy already in review
+    is done: a group moved part way finishes on a second run (Codex review of
+    #222).
     """
     kept: list[str] = []
     removed: list[str] = []
@@ -231,6 +235,8 @@ def _check_group(
             "SELECT file_path, status, audio_hash, kept_by_person_at FROM archive WHERE id = ?",
             (rid,),
         ).fetchone()
+        if action == "REMOVE" and r is not None and r[1] == "DUPE_REVIEW" and r[2] == audio:
+            continue
         if r is None or r[1] != "CATALOGUED":
             return [], [], [], f"copy {rid} is no longer in the catalogue"
         if r[0] != path:
@@ -240,6 +246,17 @@ def _check_group(
             return [], [], [], f"copy {rid} is not the recording the sheet was made from"
         if action == "REMOVE" and r[3]:
             return [], [], [], f"copy {rid} was kept by a person"
+        # Act 2's keep rule decides an open group, perhaps against the sheet:
+        # a kept mark protects a copy only in a group of kept copies.
+        if conn.execute(
+            "SELECT 1 FROM duplicates WHERE file_path = ? AND status = 'pending'", (path,)
+        ).fetchone():
+            return (
+                [],
+                [],
+                [],
+                f"copy {rid} is in an open duplicate group: settle it in musaeus dedupe first",
+            )
         (kept if action == "KEEP" else removed).append(path)
         members.append((path, r[2]))
     if not kept:
@@ -247,6 +264,25 @@ def _check_group(
     if not removed:
         return [], [], [], NOTHING_TO_REMOVE
     return kept, removed, members, None
+
+
+def _preview(
+    conn, groups: dict[str, list[tuple[str, int, str, str]]], out: Callable[[str], object]
+) -> int:
+    """The dry run: what --execute would move, and the groups it would skip."""
+    would = skipped = 0
+    for name, rows in groups.items():
+        _, removed, _, why = _check_group(conn, rows)
+        if why:
+            skipped += 1
+            out(f"  skip group {name}: {why}")
+        else:
+            would += len(removed)
+    out(
+        f"DRY RUN: {would} copies in {len(groups) - skipped} groups would move to review; "
+        f"{skipped} groups skipped. Nothing changed. Run again with --execute."
+    )
+    return 0
 
 
 def apply_sheet(
@@ -269,23 +305,18 @@ def apply_sheet(
     from .stages.dupe_resolver import DupeResolverStage
 
     groups = _read_sheet(sheet)
+    if not execute:
+        # Read-only: open_db would create a missing catalogue or migrate one.
+        if not Path(config.db_path).is_file():
+            raise ValueError(f"no catalogue at {config.db_path}")
+        ro = sqlite3.connect(f"file:{config.db_path}?mode=ro", uri=True)
+        try:
+            return _preview(ro, groups, out)
+        finally:
+            ro.close()
     conn = open_db(config.db_path)
     moved = failed = skipped = 0
     try:
-        if not execute:
-            would = 0
-            for name, rows in groups.items():
-                _, removed, _, why = _check_group(conn, rows)
-                if why:
-                    skipped += 1
-                    out(f"  skip group {name}: {why}")
-                else:
-                    would += len(removed)
-            out(
-                f"DRY RUN: {would} copies in {len(groups) - skipped} groups would move to review; "
-                f"{skipped} groups skipped. Nothing changed. Run again with --execute."
-            )
-            return 0
         try:
             with (
                 _not_interrupted(),

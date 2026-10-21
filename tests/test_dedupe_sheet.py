@@ -159,6 +159,49 @@ def test_a_kept_pair_with_nothing_to_remove_is_not_a_failure(cfg, tmp_path):
     assert code == 0 and "nothing to remove" in said
 
 
+def test_a_dry_run_does_not_create_a_catalogue(cfg, tmp_path):
+    """open_db creates a missing catalogue and migrates one (Codex review of #222)."""
+    assert not cfg.db_path.exists()
+    sheet = _sheet(
+        tmp_path, [("1", "KEEP", 1, tmp_path / "a.m4a"), ("1", "REMOVE", 2, tmp_path / "b.m4a")]
+    )
+    with pytest.raises(ValueError, match="no catalogue"):
+        dedupe.apply_sheet(cfg, sheet, execute=False, out=lambda s: None)
+    assert not cfg.db_path.exists()
+
+
+def test_a_group_moved_part_way_finishes_on_a_second_run(cfg, tmp_path):
+    """The copy already in review is done; the rest of the group still moves
+    (Codex review of #222)."""
+    k, kp = _copy(cfg, "studio.m4a")
+    r1, rp1 = _copy(cfg, "live.m4a")
+    r2, rp2 = _copy(cfg, "demo.m4a")
+    _run(cfg, _sheet(tmp_path, [("1", "KEEP", k, kp), ("1", "REMOVE", r1, rp1)]), True)
+    assert not rp1.exists() and rp2.exists()
+    whole = [("1", "KEEP", k, kp), ("1", "REMOVE", r1, rp1), ("1", "REMOVE", r2, rp2)]
+    code, said = _run(cfg, _sheet(tmp_path, whole), True)
+    assert code == 0, said
+    assert kp.exists() and not rp2.exists()
+
+
+def test_a_copy_in_an_open_duplicate_group_is_left_for_the_console(cfg, tmp_path):
+    """A kept mark protects a copy only in a group of kept copies: Act 2 would
+    rank the open group and might move the sheet's keeper (Codex review of #222)."""
+    k, kp = _copy(cfg, "studio.m4a")
+    r, rp = _copy(cfg, "live.m4a")
+    conn = open_db(cfg.db_path)
+    conn.execute(
+        "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, audio_hash) "
+        "VALUES ('near_x', ?, 'NEAR', 0.9, 'r', 'pcm:studio.m4a')",
+        (str(kp),),
+    )
+    conn.commit()
+    conn.close()
+    code, said = _run(cfg, _sheet(tmp_path, [("1", "KEEP", k, kp), ("1", "REMOVE", r, rp)]), True)
+    assert code == 1 and "open duplicate group" in said
+    assert kp.exists() and rp.exists()
+
+
 def test_a_group_not_carried_out_is_not_left_for_act_2(cfg, tmp_path):
     """A pending group would be decided by the keep rule at the next Act 2,
     perhaps the other way round."""
