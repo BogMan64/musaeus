@@ -30,7 +30,7 @@ empty measurements, and one whole subsystem that no live caller reaches:
 
 Nothing here reads or writes anything under `/mnt/FORGE2TB/Projects/
 MUSAEUS_VAULT`, `/home/grey/Music`, `/home/grey/.config/musaeus`, or
-`/home/grey/Projects/MUSAEUS_RECOVERY`. The session-wide `PathGuard` and
+`/home/grey/.local/state/musaeus/recovery`. The session-wide `PathGuard` and
 `TransportDenialHarness` from `tests/conftest.py` stay installed and
 enabled throughout; no gate here disables, narrows, or skips either one.
 """
@@ -777,7 +777,7 @@ def test_g3_recovery_cap_and_space_blocking(seeded_vault, fixture_home, tmp_path
         minimum_viable_coverage=(
             "the cap value read as an exact integer, both blocks observed to "
             "fire (cap and capacity), the recovery root confirmed not created, "
-            "and /home/grey/Projects/MUSAEUS_RECOVERY confirmed still absent"
+            "and /home/grey/.local/state/musaeus/recovery confirmed still absent"
         ),
     )
     try:
@@ -847,11 +847,11 @@ def test_g3_recovery_cap_and_space_blocking(seeded_vault, fixture_home, tmp_path
             "unless --safety-gate or MUSAEUS_P0_SAFETY_GATE=1 (cli_gate.gate_enabled "
             "has no third branch); and (2) `enforce_execution_gate(cfg, dry_run=...)` "
             "passes no request_kwargs, so estimated_checkpoint_bytes, "
-            "estimated_quarantine_bytes and estimated_items are all 0 — confirmed by "
-            "the child output above. The required figure therefore reduces to the "
-            "database file size, and the 100 GB cap block cannot fire from the CLI "
-            "unless musaeus.db itself exceeds 100 GB. The blocks were exercised by "
-            "constructing a PreflightRequest directly (import)."
+            "estimated_quarantine_bytes and estimated_items are all None (not sized) — "
+            "confirmed by the child output above. An unsized run blocks both recovery "
+            "checks rather than being sized by its database alone (Codex review of "
+            "#219). The size-driven blocks were exercised by constructing a "
+            "PreflightRequest directly (import)."
         )
 
         recovery_root_absent = not Path(FUTURE_RECOVERY_ROOT).exists()
@@ -881,7 +881,7 @@ def test_g3_recovery_cap_and_space_blocking(seeded_vault, fixture_home, tmp_path
         assert recovery_root_absent, (
             f"{FUTURE_RECOVERY_ROOT} exists — this rehearsal must neither create nor probe it"
         )
-        assert cli_estimates.get("CLI_REQUEST_checkpoint_bytes") == "0"
+        assert cli_estimates.get("CLI_REQUEST_checkpoint_bytes") == "None"
 
         gate.find(
             "The cap is 100 * 10**9 (decimal GB), not GiB. A GiB reading would be "
@@ -889,12 +889,11 @@ def test_g3_recovery_cap_and_space_blocking(seeded_vault, fixture_home, tmp_path
             "permissive direction."
         )
         gate.find(
-            "CONTRADICTS a hedged mark: P0-12 is marked [x], and the primitives do "
-            "block correctly when asked. But the only CLI caller asks with all "
-            "estimates at zero, so from `musaeus run --safety-gate` the cap check "
-            "reports PASS having measured only the database file size. The block is "
-            "implemented and reachable; the *estimate that would trip it* is never "
-            "computed. Recorded as a finding for Grey, not silently resolved."
+            "P0-12's primitives block correctly when asked. The only CLI caller "
+            "does not size the run, so from `musaeus run --safety-gate` both recovery "
+            "checks block as unknown. Before the Codex review of #219 they passed, "
+            "having measured only the database file size. The estimate that would "
+            "let a sized run pass is still never computed."
         )
         gate.verdict = "PASS for the primitive (asserted and held); the CLI-driven form is INERT"
     finally:
@@ -2222,7 +2221,7 @@ def test_g11_no_live_data_operation_audit(path_guard, transport_harness):
             except FileNotFoundError:
                 observed[root] = "absent"
 
-        recovery_root = "/home/grey/Projects/MUSAEUS_RECOVERY"
+        recovery_root = "/home/grey/.local/state/musaeus/recovery"
         recovery_absent = not os.path.exists(recovery_root)
 
         live_db = "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db"

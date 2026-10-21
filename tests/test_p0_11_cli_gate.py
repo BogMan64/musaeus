@@ -29,6 +29,9 @@ from musaeus.safety.lock import CANONICAL, FIXTURE
 from musaeus.state.migrator import migrate
 from musaeus.state.policy import FUTURE_RECOVERY_ROOT
 
+# A run that says how big it is. Without this the recovery checks block.
+SIZED = {"estimated_checkpoint_bytes": 0, "estimated_quarantine_bytes": 0, "estimated_items": 0}
+
 
 @pytest.fixture
 def ready_vault(disposable_vault):
@@ -117,6 +120,23 @@ class TestGateBlocks:
         assert "Nothing was changed" in text
         assert "provider_consent" in text
 
+    def test_an_unsized_run_is_refused_by_the_recovery_checks(self, ready_vault):
+        """No estimate is not a run of zero bytes. Sized by its database
+        alone, a 150 GB run passed the 100 GB cap (Codex review of #219)."""
+        out = io.StringIO()
+        code = enforce_execution_gate(
+            ready_vault.cfg,
+            scope_classification=FIXTURE,
+            argv=["musaeus", "run", GATE_FLAG],
+            env={},
+            stream=out,
+            response="y",
+            response_supplied=True,
+        )
+        assert code == EXIT_SAFETY_BLOCKED
+        assert "[BLOCK] recovery_cap:" in out.getvalue()
+        assert "[BLOCK] recovery_capacity:" in out.getvalue()
+
     def test_the_report_is_printed_with_measurements(self, ready_vault):
         out = io.StringIO()
         enforce_execution_gate(
@@ -137,6 +157,7 @@ class TestGateAuthority:
         code = enforce_execution_gate(
             ready_vault.cfg,
             scope_classification=FIXTURE,
+            **SIZED,
             argv=["musaeus", "run", GATE_FLAG],
             env={},
             stream=out,
@@ -154,6 +175,7 @@ class TestGateAuthority:
             enforce_execution_gate(
                 ready_vault.cfg,
                 scope_classification=FIXTURE,
+                **SIZED,
                 argv=["musaeus", "run", GATE_FLAG],
                 env={},
                 stream=io.StringIO(),
@@ -169,6 +191,7 @@ class TestGateAuthority:
             enforce_execution_gate(
                 ready_vault.cfg,
                 scope_classification=FIXTURE,
+                **SIZED,
                 argv=["musaeus", "run", GATE_FLAG],
                 env={},
                 stream=io.StringIO(),
@@ -183,6 +206,7 @@ class TestGateAuthority:
         code = enforce_execution_gate(
             ready_vault.cfg,
             scope_classification=FIXTURE,
+            **SIZED,
             argv=["musaeus", "run", GATE_FLAG],
             env={},
             stream=io.StringIO(),
@@ -209,6 +233,7 @@ class TestGateAuthority:
         code = enforce_execution_gate(
             ready_vault.cfg,
             scope_classification=FIXTURE,
+            **SIZED,
             argv=["musaeus", "run", GATE_FLAG],
             env={},
             stream=io.StringIO(),
@@ -223,6 +248,7 @@ class TestGateAuthority:
         code = enforce_execution_gate(
             ready_vault.cfg,
             scope_classification=FIXTURE,
+            **SIZED,
             argv=["musaeus", "run", GATE_FLAG],
             env={},
             stream=io.StringIO(),
@@ -236,6 +262,7 @@ class TestGateAuthority:
             enforce_execution_gate(
                 ready_vault.cfg,
                 scope_classification=FIXTURE,
+                **SIZED,
                 argv=["musaeus", "run", GATE_FLAG],
                 env={},
                 stream=io.StringIO(),
