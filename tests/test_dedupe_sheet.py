@@ -285,3 +285,30 @@ def test_a_sheet_that_cannot_be_read_is_refused_before_anything(
     )
     with pytest.raises(ValueError, match=problem):
         dedupe.apply_sheet(cfg, path, execute=True, out=lambda s: None)
+
+
+def test_a_copy_in_two_groups_is_refused_before_anything(cfg, tmp_path):
+    """Group 1 removes B, group 2 keeps it: carried out one by one, B would be
+    gone before group 2 (Codex review of #222)."""
+    a, ap = _copy(cfg, "a.m4a")
+    b, bp = _copy(cfg, "b.m4a")
+    c, cp = _copy(cfg, "c.m4a")
+    rows = [
+        ("1", "KEEP", a, ap),
+        ("1", "REMOVE", b, bp),
+        ("2", "KEEP", b, bp),
+        ("2", "REMOVE", c, cp),
+    ]
+    with pytest.raises(ValueError, match="twice"):
+        dedupe.apply_sheet(cfg, _sheet(tmp_path, rows), execute=True, out=lambda s: None)
+    assert ap.exists() and bp.exists() and cp.exists()
+
+
+def test_a_row_with_no_group_is_refused(cfg, tmp_path):
+    """Blank groups would gather unrelated songs into one (Codex review of #222)."""
+    a, ap = _copy(cfg, "a.m4a")
+    b, bp = _copy(cfg, "b.m4a")
+    with pytest.raises(ValueError, match="no group"):
+        dedupe.apply_sheet(cfg, _sheet(tmp_path, [("", "KEEP", a, ap), ("", "REMOVE", b, bp)]), execute=True,
+                           out=lambda s: None)  # fmt: skip
+    assert ap.exists() and bp.exists()

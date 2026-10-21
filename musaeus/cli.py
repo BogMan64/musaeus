@@ -2354,7 +2354,7 @@ def _build_parser() -> argparse.ArgumentParser:
     dedupe_p.add_argument(
         "--sheet",
         metavar="FILE",
-        help="Carry out a decided sheet (Group, Action KEEP/REMOVE, DB id, Master file); dry run",
+        help="Carry out a decided sheet (Group, Action KEEP/REMOVE, DB id, Master file, Audio hash); dry run",
     )
     dedupe_p.add_argument(
         "--execute", action="store_true", help="With --sheet: move the REMOVE copies to review"

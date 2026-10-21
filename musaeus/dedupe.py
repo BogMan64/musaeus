@@ -196,7 +196,9 @@ NOTHING_TO_REMOVE = "nothing to remove"
 
 def _read_sheet(path: Path) -> dict[str, list[tuple[str, int, str, str]]]:
     """Group -> [(KEEP or REMOVE, catalogue id, master path, audio hash)].
-    "REMOVE?" reads as REMOVE."""
+    "REMOVE?" reads as REMOVE. A row with no group, or a copy listed twice, is
+    refused: groups are carried out one by one, so a copy kept by one group
+    could already be gone through another (Codex review of #222)."""
     import csv
 
     with open(path, encoding="utf-8-sig", newline="") as f:
@@ -205,15 +207,21 @@ def _read_sheet(path: Path) -> dict[str, list[tuple[str, int, str, str]]]:
         if missing:
             raise ValueError(f"the sheet has no column {', '.join(missing)}")
         groups: dict[str, list[tuple[str, int, str, str]]] = {}
+        seen: set[int] = set()
         for row in reader:
+            name = row["Group"].strip()
+            if not name:
+                raise ValueError(f"copy {row['DB id']} has no group")
+            rid = int(row["DB id"])
+            if rid in seen:
+                raise ValueError(f"copy {rid} is in the sheet twice")
+            seen.add(rid)
             action = row["Action"].strip().upper().rstrip("?")
             if action not in ("KEEP", "REMOVE"):
                 raise ValueError(
                     f"group {row['Group']}: {row['Action']!r} is neither KEEP nor REMOVE"
                 )
-            groups.setdefault(row["Group"], []).append(
-                (action, int(row["DB id"]), row["Master file"], row["Audio hash"])
-            )
+            groups.setdefault(name, []).append((action, rid, row["Master file"], row["Audio hash"]))
     return groups
 
 
