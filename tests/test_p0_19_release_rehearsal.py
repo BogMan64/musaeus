@@ -30,7 +30,7 @@ empty measurements, and one whole subsystem that no live caller reaches:
 
 Nothing here reads or writes anything under `/mnt/FORGE2TB/Projects/
 MUSAEUS_VAULT`, `/home/grey/Music`, `/home/grey/.config/musaeus`, or
-`/home/grey/.local/state/musaeus/recovery`. The session-wide `PathGuard` and
+`/home/grey/Projects/MUSAEUS_RECOVERY`. The session-wide `PathGuard` and
 `TransportDenialHarness` from `tests/conftest.py` stay installed and
 enabled throughout; no gate here disables, narrows, or skips either one.
 """
@@ -777,7 +777,8 @@ def test_g3_recovery_cap_and_space_blocking(seeded_vault, fixture_home, tmp_path
         minimum_viable_coverage=(
             "the cap value read as an exact integer, both blocks observed to "
             "fire (cap and capacity), the recovery root confirmed not created, "
-            "and /home/grey/.local/state/musaeus/recovery confirmed still absent"
+            "and the policy recovery root under the test HOME confirmed still "
+            "absent (G11 checks Grey's real one)"
         ),
     )
     try:
@@ -854,6 +855,8 @@ def test_g3_recovery_cap_and_space_blocking(seeded_vault, fixture_home, tmp_path
             "PreflightRequest directly (import)."
         )
 
+        # The policy root follows HOME, which conftest points at a temp folder,
+        # so this is not Grey's real root: G11 checks that (Codex review of #221).
         recovery_root_absent = not Path(FUTURE_RECOVERY_ROOT).exists()
 
         gate.cover(
@@ -2221,7 +2224,7 @@ def test_g11_no_live_data_operation_audit(path_guard, transport_harness):
             except FileNotFoundError:
                 observed[root] = "absent"
 
-        recovery_root = "/home/grey/.local/state/musaeus/recovery"
+        recovery_root = "/home/grey/Projects/MUSAEUS_RECOVERY"
         recovery_absent = not os.path.exists(recovery_root)
 
         live_db = "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db"
