@@ -28,6 +28,7 @@ import sqlite3
 import threading
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -241,6 +242,8 @@ def _check_group(
             return [], [], [], f"copy {rid} is no longer in the catalogue"
         if r[0] != path:
             return [], [], [], f"copy {rid} has moved since the sheet was made"
+        if not Path(path).exists():
+            return [], [], [], f"copy {rid} is not on disk"
         # A path can take another recording (Codex review of #222).
         if not audio or r[2] != audio:
             return [], [], [], f"copy {rid} is not the recording the sheet was made from"
@@ -262,7 +265,7 @@ def _check_group(
     if not kept:
         return [], [], [], "no copy is kept"
     if not removed:
-        return [], [], [], NOTHING_TO_REMOVE
+        return kept, [], members, NOTHING_TO_REMOVE
     return kept, removed, members, None
 
 
@@ -314,18 +317,29 @@ def apply_sheet(
             return _preview(ro, groups, out)
         finally:
             ro.close()
-    conn = open_db(config.db_path)
     moved = failed = skipped = 0
     try:
-        try:
-            with (
-                _not_interrupted(),
-                masters_lock(config.runs_root, exclusive=True, what="musaeus dedupe --sheet"),
-            ):
+        with (
+            _not_interrupted(),
+            masters_lock(config.runs_root, exclusive=True, what="musaeus dedupe --sheet"),
+        ):
+            # Opened under the lock: open_db may migrate the catalogue (Codex review of #222).
+            conn = open_db(config.db_path)
+            try:
                 ctx = RunContext.new(config, conn, dry_run=False)
                 stage = DupeResolverStage()
                 for name, rows in groups.items():
                     kept, removed, members, why = _check_group(conn, rows)
+                    if why == NOTHING_TO_REMOVE:
+                        # Every REMOVE copy is already in review: a run stopped
+                        # before marking the keep, which is marked now.
+                        now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+                        conn.executemany(
+                            "UPDATE archive SET kept_by_person_at = ? "
+                            "WHERE file_path = ? AND kept_by_person_at IS NULL",
+                            [(now, k) for k in kept],
+                        )
+                        conn.commit()
                     if why:
                         skipped += why != NOTHING_TO_REMOVE
                         out(f"  skip group {name}: {why}")
@@ -348,11 +362,11 @@ def apply_sheet(
                         failed += 1
                         out(f"  group {name}: {'; '.join(result.errors)}")
                 ctx.finish()
-        except MastersBusy as exc:
-            out(f"nothing moved: {exc}")
-            return EXIT_BUSY
-    finally:
-        conn.close()
+            finally:
+                conn.close()
+    except MastersBusy as exc:
+        out(f"nothing moved: {exc}")
+        return EXIT_BUSY
     out(f"Moved {moved} copies to review; {skipped} groups skipped; {failed} not carried out.")
     return 1 if failed or skipped else 0
 

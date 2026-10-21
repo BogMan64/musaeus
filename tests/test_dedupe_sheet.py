@@ -202,16 +202,58 @@ def test_a_copy_in_an_open_duplicate_group_is_left_for_the_console(cfg, tmp_path
     assert kp.exists() and rp.exists()
 
 
-def test_a_group_not_carried_out_is_not_left_for_act_2(cfg, tmp_path):
+def test_a_group_not_carried_out_is_not_left_for_act_2(cfg, tmp_path, monkeypatch):
     """A pending group would be decided by the keep rule at the next Act 2,
     perhaps the other way round."""
+    from musaeus.context import StageResult
+
+    def refused(self, ctx, groups, kept, archived):
+        return StageResult(
+            stage_name="dupe_resolver", success=False, errors=["nothing moved: refused"]
+        )
+
+    monkeypatch.setattr(DupeResolverStage, "carry_out", refused)
     k, kp = _copy(cfg, "studio.m4a")
     r, rp = _copy(cfg, "live.m4a")
-    kp.unlink()  # the kept copy is gone from disk: carry_out refuses
     code, said = _run(cfg, _sheet(tmp_path, [("1", "KEEP", k, kp), ("1", "REMOVE?", r, rp)]), True)
-    assert code == 1 and "no kept copy is on disk" in said
+    assert code == 1 and "refused" in said
     assert rp.exists()
     assert _row(cfg, r)[1] == 0, "a refused group was left pending"
+
+
+def test_a_run_stopped_before_the_keep_mark_marks_it_on_the_next_run(cfg, tmp_path):
+    """Codex review of #222: the REMOVE copy moved, the keep not yet marked."""
+    k, kp = _copy(cfg, "studio.m4a")
+    r, rp = _copy(cfg, "live.m4a")
+    sheet = _sheet(tmp_path, [("1", "KEEP", k, kp), ("1", "REMOVE", r, rp)])
+    _run(cfg, sheet, True)
+    conn = open_db(cfg.db_path)
+    conn.execute("UPDATE archive SET kept_by_person_at = NULL WHERE id = ?", (k,))
+    conn.commit()
+    conn.close()
+    code, said = _run(cfg, sheet, True)
+    assert code == 0, said
+    assert _row(cfg, k)[0][1], "the keep was not marked"
+
+
+def test_a_copy_missing_from_disk_does_not_count_as_would_move(cfg, tmp_path):
+    k, kp = _copy(cfg, "studio.m4a")
+    r, rp = _copy(cfg, "live.m4a")
+    rp.unlink()
+    code, said = _run(cfg, _sheet(tmp_path, [("1", "KEEP", k, kp), ("1", "REMOVE", r, rp)]), False)
+    assert "is not on disk" in said and "DRY RUN: 0 copies" in said
+
+
+def test_a_busy_lock_does_not_open_or_create_the_catalogue(cfg, tmp_path):
+    """open_db migrates (or creates) the catalogue: not while another job holds
+    the lock (Codex review of #222)."""
+    sheet = _sheet(
+        tmp_path, [("1", "KEEP", 1, tmp_path / "a.m4a"), ("1", "REMOVE", 2, tmp_path / "b.m4a")]
+    )
+    with masters_lock(cfg.runs_root, exclusive=True, what="a bit-rot check"):
+        code, said = _run(cfg, sheet, True)
+    assert code == EXIT_BUSY
+    assert not cfg.db_path.exists()
 
 
 def test_a_busy_masters_lock_moves_and_writes_nothing(cfg, tmp_path):
