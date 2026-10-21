@@ -24,6 +24,8 @@ cannot be mistaken for a release build.
 The package depends on Debian's Python 3, `python3-mutagen` (Debian 12 ships
 1.46), and `ffmpeg`. `libchromaprint-tools` supplies the optional `fpcalc`
 command. The BPM command additionally requires Essentia, which is not bundled.
+The car and iPhone editions encode with `fdkaac` (Debian non-free, suggested);
+`musaeus preflight` reports it when it is missing.
 Automatic bit-rot repair has no backup source until the user sets
 `MUSAEUS_BACKUP_ROOTS` to a colon-separated list of their backup folders.
 

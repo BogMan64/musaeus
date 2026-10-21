@@ -84,6 +84,15 @@ class TestScopeIdentity:
     def test_bare_system_roots_are_rejected(self, root, expected):
         assert classify(root) == expected
 
+    def test_a_vault_with_no_setting_is_still_real_data(self, monkeypatch, path_guard):
+        """A process that never read settings.env (a script, a test, a new
+        caller) must not find a real vault lockable: only a path in the temp
+        folder is a disposable fixture (review of #211)."""
+        monkeypatch.delenv("MUSAEUS_VAULT_ROOT")
+        monkeypatch.delenv("MUSAEUS_INBOX")
+        assert classify("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/ALAC-Library") == CANONICAL
+        assert classify("/srv/music/vault") == CANONICAL
+
     def test_scope_id_depends_on_root_and_domain(self, tmp_path):
         a = _scope(tmp_path, "vault", "library-mutation")
         b = _scope(tmp_path, "vault", "preview")

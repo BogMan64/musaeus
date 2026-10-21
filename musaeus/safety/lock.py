@@ -107,7 +107,12 @@ def classify(root: str | Path) -> str:
             return CANONICAL
     if normalised in ("/", "/home", "/mnt", "/tmp"):
         return REJECTED
-    return FIXTURE
+    # Only the temp folder holds disposable fixtures. Any other path may be
+    # someone's music, so with no vault set it is real data (review of #211).
+    temp = next((os.environ[k] for k in ("TMPDIR", "TEMP", "TMP") if os.environ.get(k)), "/tmp")
+    if _is_at_or_under(normalised, canonicalise(temp)):
+        return FIXTURE
+    return CANONICAL
 
 
 def _is_at_or_under(candidate: str, ancestor: str) -> bool:

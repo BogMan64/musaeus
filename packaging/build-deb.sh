@@ -91,6 +91,8 @@ Start with:
 Review the project safety documentation before running any command that writes
 to a music library. Optional integrations require user-supplied credentials.
 The BPM command requires the optional Essentia Python package.
+The car and iPhone editions encode with fdkaac (Debian non-free);
+"musaeus preflight" reports it when it is missing.
 "musaeus run" can move and retag music. Keep a backup of source files.
 Set MUSAEUS_BACKUP_ROOTS to your backup folders before using automatic
 bit-rot repair; no backup locations are chosen by the package.
@@ -105,6 +107,7 @@ Architecture: all
 Maintainer: $DEB_MAINTAINER_NAME <$DEB_MAINTAINER_EMAIL>
 Depends: python3 (>= 3.10), python3-mutagen (>= 1.46), ffmpeg
 Recommends: libchromaprint-tools, git, procps, curl
+Suggests: fdkaac
 Description: music library management pipeline
  MUSAEUS ingests and catalogs audio files, measures loudness, manages tags,
  and builds selected library exports. It is a command-line application.

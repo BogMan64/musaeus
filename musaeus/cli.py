@@ -438,6 +438,11 @@ def _run_pipeline(
         cfg = get_config()
     except ValueError:
         return _run_pipeline_inner(stages, dry_run, stash)  # it reports the error
+    # P0-11 execution-authority gate. OFF unless MUSAEUS_P0_SAFETY_GATE=1
+    # or --safety-gate: enabling it by default would make every run stop
+    # to ask, and would correctly make the unattended overnight script do
+    # nothing every night. Both are the right behaviours and both need to
+    # be adopted deliberately, not arrive with a merge.
     # Check authority before masters_lock creates any lock files or folders.
     from .cli_gate import enforce_execution_gate
 
