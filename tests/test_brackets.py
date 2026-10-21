@@ -217,7 +217,9 @@ def test_a_part_after_a_version_ending_is_kept():
 
 @pytest.mark.parametrize(
     "title",
-    ["Song - Part 1 Live (Part 1)", "Song - Part 1 (Live) (Part 1)", "Song (Part 1) - Part 1 Live"],
+    ["Song - Part 1 Live (Part 1)", "Song - Part 1 (Live) (Part 1)", "Song (Part 1) - Part 1 Live",
+     # Codex review of #218: the part after the brackets, with no version ending.
+     "Song (Part 1) - Part 1"],
 )  # fmt: skip
 def test_a_part_named_twice_is_one_part_in_the_song_key(title):
     # Codex review of #217, round 4: the part was added again from the
@@ -234,3 +236,5 @@ def test_a_three_digit_number_after_pt_is_not_a_part():
 
     assert part_numbers("Pt 109") == ()
     assert base_title("Pt 109") == "Pt 109"
+    # Codex review of #218: only the short "Pt" is read this way; "Part 100" is a part.
+    assert part_numbers("Song - Part 100") == ("100",)

@@ -127,3 +127,15 @@ def test_a_title_with_a_number_after_pt_finds_its_recording():
     # part 109, the file agreed with no recording and was stamped for good.
     recordings = [{"id": "r1", "title": "P.T. 109", "artists": [{"name": "Jimmy Dean"}]}]
     assert _pick_matching_recording(recordings, "Jimmy Dean", "Pt 109") == "r1"
+
+
+def test_a_part_named_twice_agrees_with_the_part():
+    # Codex review of #218: ("1", "1") was not ("1",), so the file found no recording.
+    recordings = [{"id": "r1", "title": "Song - Part 1", "artists": [{"name": "X"}]}]
+    assert _pick_matching_recording(recordings, "X", "Song - Part 1 Live (Part 1)") == "r1"
+
+
+def test_part_100_is_not_the_plain_song():
+    # Codex review of #218: a two-digit limit on every part label let "Part 100" match "Song".
+    recordings = [{"id": "r1", "title": "Song", "artists": [{"name": "X"}]}]
+    assert _pick_matching_recording(recordings, "X", "Song - Part 100") is None

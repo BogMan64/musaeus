@@ -93,7 +93,7 @@ def has_bracketed(text: str) -> bool:
 EDITION_SUFFIX = re.compile(
     # A part before the words is kept, the version after it is not: "Song -
     # Part 1 Live" is "Song - Part 1" (Codex review of #216, two rounds).
-    r"\s*-\s*(?:(?:part|pt)\.?\s*(?:\d{1,2}|[ivxlc]+)\s+)?"
+    r"\s*-\s*(?:(?:part|pt(?!\.?\s*\d{3}))\.?\s*(?:\d+|[ivxlc]+)\s+)?"
     r"(?:(?!(?:part|pt)\b)\w+\s+){0,2}"
     r"(remaster|remastered|live|mono|stereo|single|album|radio|rerecorded|version|mix|edit)\b.*$",
     re.IGNORECASE,
@@ -123,9 +123,10 @@ _PART_WORDS = {
 _ROMAN = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100}
 
 #: "Part 2", "Pt. 3", "Part IV", "Part Two": which piece of a work a title names.
-#: At most two digits: Jimmy Dean's "Pt 109" is a boat, not part 109.
+#: "Pt" before three digits is no part: Jimmy Dean's "Pt 109" is a boat.
 _PART = re.compile(
-    r"\b(?:part|pt)\.?\s*(\d{1,2}|[ivxlc]+|" + "|".join(_PART_WORDS) + r")\b", re.IGNORECASE
+    r"\b(?:part|pt(?!\.?\s*\d{3}))\.?\s*(\d+|[ivxlc]+|" + "|".join(_PART_WORDS) + r")\b",
+    re.IGNORECASE,
 )
 
 
@@ -149,16 +150,28 @@ def same_part_spelling(text: str) -> str:
 
 
 def part_numbers(text: str) -> tuple[str, ...]:
-    """The parts a title names, as numbers: ("1",) for "Song - Part One"
-    (Codex review of #216: "Part I" is "Part 1", "Part One" is a part)."""
-    return tuple(_part_number(m) for m in _PART.findall(text or ""))
+    """The parts a title names, as numbers, each once: ("1",) for "Song -
+    Part One" (Codex review of #216: "Part I" is "Part 1", "Part One" is a
+    part) and for "Song - Part 1 Live (Part 1)" (Codex review of #218)."""
+    return tuple(dict.fromkeys(_part_number(m) for m in _PART.findall(text or "")))
 
 
-def _parts_not_in(before: str, text: str) -> str:
-    """The " - Part N" for each part *text* names that *before* does not: a
-    part named twice is one part (Codex review of #217, round 4)."""
-    have = set(part_numbers(before))
-    return "".join(f" - Part {n}" for n in dict.fromkeys(part_numbers(text)) if n not in have)
+#: A part as base_title spells it, with the " - " before it.
+_SPELLED_PART = re.compile(r"(?:\s*-\s*)?\bPart (\d+)\b")
+
+
+def _each_part_once(title: str) -> str:
+    """A part named twice is one part: "Song - Part 1 - Part 1" is "Song -
+    Part 1" (Codex review of #217, round 4, and #218)."""
+    seen: set[str] = set()
+
+    def first(m: re.Match[str]) -> str:
+        if m.group(1) in seen:
+            return ""
+        seen.add(m.group(1))
+        return m.group()
+
+    return _SPELLED_PART.sub(first, title)
 
 
 def base_title(text: str) -> str:
@@ -168,11 +181,13 @@ def base_title(text: str) -> str:
     stands (Codex review of #217). Every part is spelled one way: "Pt. II" is
     "Part 2"."""
     title = BRACKETED.sub(
-        lambda b: _parts_not_in(b.string[: b.start()], b.group()), same_part_spelling(text)
+        lambda b: "".join(f" - Part {n}" for n in part_numbers(b.group())),
+        same_part_spelling(text),
     )
     title = _WS.sub(" ", title).strip()
     m = EDITION_SUFFIX.search(title)
     if m is not None:
         # The parts in the cut ending stay: "Song - Live (Part 1)" (Codex review of #217).
-        title = title[: m.start()] + _parts_not_in(title[: m.start()], title[m.start() :])
-    return title
+        cut = part_numbers(title[m.start() :])
+        title = title[: m.start()] + "".join(f" - Part {n}" for n in cut)
+    return _each_part_once(title)
