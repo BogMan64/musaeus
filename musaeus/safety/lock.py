@@ -109,10 +109,13 @@ def classify(root: str | Path) -> str:
         return REJECTED
     # Only the temp folder holds disposable fixtures. Any other path may be
     # someone's music, so with no vault set it is real data (review of #211).
+    return FIXTURE if _in_temp(normalised) else CANONICAL
+
+
+def _in_temp(normalised: str) -> bool:
+    """Is the path in the temp folder? By text, like classify()."""
     temp = next((os.environ[k] for k in ("TMPDIR", "TEMP", "TMP") if os.environ.get(k)), "/tmp")
-    if _is_at_or_under(normalised, canonicalise(temp)):
-        return FIXTURE
-    return CANONICAL
+    return _is_at_or_under(normalised, canonicalise(temp))
 
 
 def _is_at_or_under(candidate: str, ancestor: str) -> bool:
@@ -142,7 +145,12 @@ class Scope:
 
     @property
     def classification(self) -> str:
-        return self.declared_classification or classify(self.root)
+        declared = self.declared_classification
+        # A declaration never makes a real path lockable: only a temp-folder
+        # path may be declared a fixture (Codex review of #219).
+        if declared is None or (declared == FIXTURE and not _in_temp(self.root)):
+            return classify(self.root)
+        return declared
 
     @property
     def scope_id(self) -> str:

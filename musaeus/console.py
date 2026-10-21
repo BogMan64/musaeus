@@ -198,6 +198,12 @@ def _network_authority(dry_run: bool) -> Iterator[None]:
         yield
 
 
+#: The USB transfer script, in the source checkout only.
+_USB_SCRIPT = (
+    Path(__file__).resolve().parent.parent / "scripts" / "usb_transfer" / "transfer_to_usb.py"
+)
+
+
 class Console:
     """
     Interactive Musaeus pipeline console.
@@ -1608,12 +1614,7 @@ class Console:
         import subprocess
 
         _section("USB Transfer")
-        script = (
-            Path(__file__).resolve().parent.parent
-            / "scripts"
-            / "usb_transfer"
-            / "transfer_to_usb.py"
-        )
+        script = _USB_SCRIPT
         if not script.exists():
             _err(f"Script not found: {script}")
             return
@@ -1675,6 +1676,9 @@ class Console:
             ("Misc. Options…  (screensaver jobs — these can run for HOURS)", self._misc_menu),
             ("Quit", self._quit),
         ]
+        # The Debian package has no scripts/: offer only what is there (Codex review of #219).
+        if not _USB_SCRIPT.exists():
+            options = [o for o in options if o[1] != self._usb_menu]
 
         _header(f"MUSAEUS  v{self.VERSION}")
         choice = _choose("Select action", [label for label, _ in options])

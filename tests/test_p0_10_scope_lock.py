@@ -156,6 +156,13 @@ class TestClassificationIsNotAuthority:
             acquire(scope, lock_dir, run_id="run-A")
         assert list(lock_dir.iterdir()) == []
 
+    def test_a_real_path_declared_a_fixture_is_not_lockable(self, lock_dir):
+        """A declaration never makes a real path lockable (Codex review of #219)."""
+        scope = Scope.build("/srv/real/vault", DOMAIN, classification=FIXTURE)
+        with pytest.raises(ScopeNotLockableError):
+            acquire(scope, lock_dir, run_id="run-A")
+        assert list(lock_dir.iterdir()) == []
+
     def test_a_fixture_scope_is_lockable(self, tmp_path, lock_dir):
         """Negative control: the gate must be able to open."""
         with acquire(_scope(tmp_path), lock_dir, run_id="run-A") as handle:

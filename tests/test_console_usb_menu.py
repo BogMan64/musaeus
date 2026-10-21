@@ -129,3 +129,18 @@ class TestUSBMenu:
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
         con._usb_menu()
         assert "--device" not in rec.calls[0]
+
+
+def test_the_entry_is_hidden_when_the_script_is_not_installed(cfg, monkeypatch, tmp_path) -> None:
+    # Codex review of #219: the Debian package has no scripts/, so the
+    # entry led only to "Script not found".
+    import musaeus.console as console
+
+    seen: list[str] = []
+    monkeypatch.setattr(console, "_USB_SCRIPT", tmp_path / "missing.py", raising=False)
+    monkeypatch.setattr(
+        console, "_choose", lambda prompt, labels, *a, **k: seen.extend(labels) or "x"
+    )
+    _console(cfg)._main_menu()
+    assert "Quit" in seen
+    assert "Transfer to USB…" not in seen
