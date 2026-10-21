@@ -168,3 +168,19 @@ def test_edit_guard_never_leaks_settings_secrets(tmp_path, monkeypatch):
     strings may be read, and no message may echo a secret."""
     ok, warn, fail = _guard_env(tmp_path, monkeypatch, registered=False)
     assert not any("must-not-leak" in m for m in ok + warn + fail)
+
+
+def test_a_missing_fdkaac_is_reported_as_a_fail(monkeypatch):
+    # Grey, 2026-10-19: the car and iPhone editions encode with fdkaac, so a
+    # fresh install must be told before its first edition build fails.
+    # Preflight is report-only: the FAIL line is the whole effect (review of #219).
+    from musaeus.stages import preflight
+
+    monkeypatch.setattr(
+        preflight.shutil, "which", lambda cmd: None if cmd == "fdkaac" else f"/usr/bin/{cmd}"
+    )
+    ok, warn, fail = [], [], []
+    preflight.PreflightStage()._check_commands(ok, warn, fail)
+    assert [f for f in fail if f.startswith("fdkaac:")] == [
+        "fdkaac: not found on PATH -- required by edition-build car, iphone. Fix: sudo apt install fdkaac"
+    ]

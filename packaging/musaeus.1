@@ -1,0 +1,34 @@
+.TH MUSAEUS 1 "October 2026" "MUSAEUS 0.1.0" "User Commands"
+.SH NAME
+musaeus \- music library pipeline
+.SH SYNOPSIS
+.B musaeus
+.RI [ command ]
+.RI [ options ]
+.SH DESCRIPTION
+MUSAEUS ingests and catalogs audio, measures loudness, writes tags, and
+builds selected library exports. It uses a per-user vault configured through
+.BR "musaeus setup" .
+A real pipeline run can move and retag files. Keep a backup before using it.
+.SH COMMANDS
+.TP
+.B setup
+Configure the vault path and optional integration credentials.
+.TP
+.B run --dry-run
+Show a read-only plan for the configured vault.
+.TP
+.B run
+Run the pipeline against the configured vault.
+.TP
+.B status
+Show library status.
+.TP
+.B --help
+List all commands and options.
+.SH FILES
+.I ~/.config/musaeus/settings.env
+.br
+.I ~/.config/musaeus/credentials.env
+.SH SEE ALSO
+Project documentation: https://github.com/BogMan64/musaeus

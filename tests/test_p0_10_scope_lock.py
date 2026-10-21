@@ -44,6 +44,12 @@ from musaeus.safety.lock import (
 DOMAIN = "library-mutation"
 
 
+@pytest.fixture(autouse=True)
+def configured_real_scope(monkeypatch):
+    monkeypatch.setenv("MUSAEUS_VAULT_ROOT", "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT")
+    monkeypatch.setenv("MUSAEUS_INBOX", "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/INBOX")
+
+
 @pytest.fixture
 def lock_dir(tmp_path: Path) -> Path:
     d = tmp_path / "locks"
@@ -77,6 +83,23 @@ class TestScopeIdentity:
     @pytest.mark.parametrize("root, expected", [("/", REJECTED), ("/tmp", REJECTED)])
     def test_bare_system_roots_are_rejected(self, root, expected):
         assert classify(root) == expected
+
+    def test_a_vault_with_no_setting_is_still_real_data(self, monkeypatch, path_guard):
+        """A process that never read settings.env (a script, a test, a new
+        caller) must not find a real vault lockable: only a path in the temp
+        folder is a disposable fixture (review of #211)."""
+        monkeypatch.delenv("MUSAEUS_VAULT_ROOT")
+        monkeypatch.delenv("MUSAEUS_INBOX")
+        assert classify("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/ALAC-Library") == CANONICAL
+        assert classify("/srv/music/vault") == CANONICAL
+
+    def test_tmpdir_does_not_make_a_home_folder_a_fixture(self, monkeypatch):
+        """The fixture area is the system temp folder, not whatever TMPDIR
+        names: TMPDIR=/home/alex made /home/alex/Music lockable (Codex
+        review of #219, round 3)."""
+        monkeypatch.delenv("MUSAEUS_VAULT_ROOT")
+        monkeypatch.setenv("TMPDIR", "/home/alex")
+        assert classify("/home/alex/Music") == CANONICAL
 
     def test_scope_id_depends_on_root_and_domain(self, tmp_path):
         a = _scope(tmp_path, "vault", "library-mutation")
@@ -137,6 +160,13 @@ class TestClassificationIsNotAuthority:
 
     def test_refusal_creates_no_lock_artefacts(self, lock_dir):
         scope = Scope.build("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/INBOX", DOMAIN)
+        with pytest.raises(ScopeNotLockableError):
+            acquire(scope, lock_dir, run_id="run-A")
+        assert list(lock_dir.iterdir()) == []
+
+    def test_a_real_path_declared_a_fixture_is_not_lockable(self, lock_dir):
+        """A declaration never makes a real path lockable (Codex review of #219)."""
+        scope = Scope.build("/srv/real/vault", DOMAIN, classification=FIXTURE)
         with pytest.raises(ScopeNotLockableError):
             acquire(scope, lock_dir, run_id="run-A")
         assert list(lock_dir.iterdir()) == []

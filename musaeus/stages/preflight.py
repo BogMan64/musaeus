@@ -17,7 +17,8 @@ What it checks, in order:
      runs, meta_dir) and are writable.
   2. External commands MUSAEUS actually depends on are on PATH: ffmpeg,
      ffprobe (loudness/transcode/integrity/auditor/albumart), fpcalc
-     (acousticid). Each failure includes a concrete install hint.
+     (acousticid), fdkaac (car and iPhone editions). Each failure includes
+     a concrete install hint.
   3. Python packages MUSAEUS actually imports: mutagen (hard dependency),
      rapidfuzz (soft dependency -- neardupe/canon degrade without it, not a
      hard failure, matching how those modules already guard the import).
@@ -86,6 +87,7 @@ _REQUIRED_COMMANDS: tuple[tuple[str, str, str], ...] = (
     ("ffmpeg", "forge, transcode, integrity, auditor, albumart", "ffmpeg"),
     ("ffprobe", "forge, transcode, integrity, auditor, albumart", "ffmpeg"),
     ("fpcalc", "acousticid", "libchromaprint-tools"),
+    ("fdkaac", "edition-build car, iphone", "fdkaac"),
 )
 
 # Claude Code's edit-guard hook. A long-running Python process executes the

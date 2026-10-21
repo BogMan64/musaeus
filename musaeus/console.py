@@ -198,6 +198,12 @@ def _network_authority(dry_run: bool) -> Iterator[None]:
         yield
 
 
+#: The USB transfer script, in the source checkout only.
+_USB_SCRIPT = (
+    Path(__file__).resolve().parent.parent / "scripts" / "usb_transfer" / "transfer_to_usb.py"
+)
+
+
 class Console:
     """
     Interactive Musaeus pipeline console.
@@ -1178,6 +1184,12 @@ class Console:
                 "                     # add --wipe to clear the phone first",
             ),
         ]
+        repo = Path(__file__).resolve().parent.parent
+        tools = [tool for tool in tools if (repo / tool[1]).is_file()]
+        if not tools:
+            _info("Standalone tools are available from the source checkout.")
+            _prompt("Press Enter to go back")
+            return
         labels = [t[0] for t in tools] + ["Back"]
         # default=Back, not _choose's "0". On EOF -- piped stdin exhausted, a
         # non-interactive run -- "0" would SELECT the first tool rather than
@@ -1191,7 +1203,6 @@ class Console:
             return
 
         name, script, what, hint = tools[idx]
-        repo = Path(__file__).resolve().parent.parent
         _section(name)
         _info(what)
         print()
@@ -1335,10 +1346,10 @@ class Console:
         _section("Build an Edition")
         names = ["lossless", "car", "iphone"]
         labels = [
-            # A fixed string (Grey, 2026-09-09). It named /home/grey/Music
+            # A fixed string once named a maintainer's personal music folder
             # until Grey changed it on 2026-09-27: the Lossless edition is
             # built into the vault's Libraries/ALAC_Library, and MUSAEUS must
-            # never be pointed at /home/grey/Music.
+            # never be pointed at a personal music folder by default.
             "Lossless  — ALAC, -18 LUFS  → vault Libraries/ALAC_Library",
             "Car       — AAC 256k, -14 LUFS, ≤48 kHz  → USB",
             "iPhone    — AAC 256k, -14 LUFS, size-budgeted",
@@ -1603,12 +1614,7 @@ class Console:
         import subprocess
 
         _section("USB Transfer")
-        script = (
-            Path(__file__).resolve().parent.parent
-            / "scripts"
-            / "usb_transfer"
-            / "transfer_to_usb.py"
-        )
+        script = _USB_SCRIPT
         if not script.exists():
             _err(f"Script not found: {script}")
             return
@@ -1670,6 +1676,9 @@ class Console:
             ("Misc. Options…  (screensaver jobs — these can run for HOURS)", self._misc_menu),
             ("Quit", self._quit),
         ]
+        # The Debian package has no scripts/: offer only what is there (Codex review of #219).
+        if not _USB_SCRIPT.exists():
+            options = [o for o in options if o[1] != self._usb_menu]
 
         _header(f"MUSAEUS  v{self.VERSION}")
         choice = _choose("Select action", [label for label, _ in options])

@@ -21,4 +21,4 @@ Version: 0.1.0
 """
 
 __version__ = "0.1.0"
-__author__ = "Grey + Claude"
+__author__ = "MUSAEUS contributors"

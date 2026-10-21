@@ -32,8 +32,9 @@ from pathlib import Path
 from .hasher import audio_hash
 from .safe_save import copy_to_new
 
-#: Where the backup copies live; overridable with MUSAEUS_BACKUP_ROOTS (":"-separated).
-DEFAULT_BACKUP_ROOTS = ("/mnt/NUC8TB_BACKUP", "/media/grey/USB2")
+#: Backup locations must be chosen by each user. An unset variable means
+#: automatic repair has no backup source and cannot replace a master.
+DEFAULT_BACKUP_ROOTS: tuple[str, ...] = ()
 
 
 @dataclass
