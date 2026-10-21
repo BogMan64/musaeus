@@ -170,9 +170,10 @@ def test_edit_guard_never_leaks_settings_secrets(tmp_path, monkeypatch):
     assert not any("must-not-leak" in m for m in ok + warn + fail)
 
 
-def test_a_missing_fdkaac_fails_preflight(monkeypatch):
+def test_a_missing_fdkaac_is_reported_as_a_fail(monkeypatch):
     # Grey, 2026-10-19: the car and iPhone editions encode with fdkaac, so a
     # fresh install must be told before its first edition build fails.
+    # Preflight is report-only: the FAIL line is the whole effect (review of #219).
     from musaeus.stages import preflight
 
     monkeypatch.setattr(
