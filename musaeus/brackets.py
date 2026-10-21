@@ -93,7 +93,7 @@ def has_bracketed(text: str) -> bool:
 EDITION_SUFFIX = re.compile(
     # A part before the words is kept, the version after it is not: "Song -
     # Part 1 Live" is "Song - Part 1" (Codex review of #216, two rounds).
-    r"\s*-\s*(?:(?:part|pt)\.?\s*(?:\d+|[ivxlc]+)\s+)?"
+    r"\s*-\s*(?:(?:part|pt)\.?\s*(?:\d{1,2}|[ivxlc]+)\s+)?"
     r"(?:(?!(?:part|pt)\b)\w+\s+){0,2}"
     r"(remaster|remastered|live|mono|stereo|single|album|radio|rerecorded|version|mix|edit)\b.*$",
     re.IGNORECASE,
@@ -123,8 +123,9 @@ _PART_WORDS = {
 _ROMAN = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100}
 
 #: "Part 2", "Pt. 3", "Part IV", "Part Two": which piece of a work a title names.
+#: At most two digits: Jimmy Dean's "Pt 109" is a boat, not part 109.
 _PART = re.compile(
-    r"\b(?:part|pt)\.?\s*(\d+|[ivxlc]+|" + "|".join(_PART_WORDS) + r")\b", re.IGNORECASE
+    r"\b(?:part|pt)\.?\s*(\d{1,2}|[ivxlc]+|" + "|".join(_PART_WORDS) + r")\b", re.IGNORECASE
 )
 
 
@@ -153,6 +154,13 @@ def part_numbers(text: str) -> tuple[str, ...]:
     return tuple(_part_number(m) for m in _PART.findall(text or ""))
 
 
+def _parts_not_in(before: str, text: str) -> str:
+    """" - Part N" for each part *text* names that *before* does not: a part
+    named twice is one part (Codex review of #217, round 4)."""
+    have = set(part_numbers(before))
+    return "".join(f" - Part {n}" for n in dict.fromkeys(part_numbers(text)) if n not in have)
+
+
 def base_title(text: str) -> str:
     """A title without its version: brackets and a version " - " ending set
     aside, a part kept ("Song - Part 1 Live" -> "Song - Part 1"), also from
@@ -160,13 +168,11 @@ def base_title(text: str) -> str:
     stands (Codex review of #217). Every part is spelled one way: "Pt. II" is
     "Part 2"."""
     title = BRACKETED.sub(
-        lambda b: "".join(f" - Part {n}" for n in part_numbers(b.group())),
-        same_part_spelling(text),
+        lambda b: _parts_not_in(b.string[: b.start()], b.group()), same_part_spelling(text)
     )
     title = _WS.sub(" ", title).strip()
     m = EDITION_SUFFIX.search(title)
     if m is not None:
         # The parts in the cut ending stay: "Song - Live (Part 1)" (Codex review of #217).
-        cut = part_numbers(title[m.start() :])
-        title = title[: m.start()] + "".join(f" - Part {n}" for n in cut)
+        title = title[: m.start()] + _parts_not_in(title[: m.start()], title[m.start() :])
     return title

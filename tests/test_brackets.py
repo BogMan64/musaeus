@@ -213,3 +213,24 @@ def test_a_part_after_a_version_ending_is_kept():
     assert song_key("A", "Song - Live (Part 1)") != song_key("A", "Song - Live (Part 2)")
     assert song_key("A", "Song - Live (Part 1)") == song_key("A", "Song - Part 1")
     assert song_key("A", "Song - Part 1 2011 Remaster") == song_key("A", "Song - Part 1")
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Song - Part 1 Live (Part 1)", "Song - Part 1 (Live) (Part 1)", "Song (Part 1) - Part 1 Live"],
+)  # fmt: skip
+def test_a_part_named_twice_is_one_part_in_the_song_key(title):
+    # Codex review of #217, round 4: the part was added again from the
+    # brackets or the cut ending, so this recording keyed "Song - Part 1 -
+    # Part 1" and looked lost while "Song - Part 1" was held.
+    from musaeus.doctor import song_key
+
+    assert song_key("A", title) == song_key("A", "Song - Part 1")
+
+
+def test_a_three_digit_number_after_pt_is_not_a_part():
+    # Jimmy Dean's "Pt 109" is a boat, not part 109 of a work.
+    from musaeus.brackets import base_title, part_numbers
+
+    assert part_numbers("Pt 109") == ()
+    assert base_title("Pt 109") == "Pt 109"

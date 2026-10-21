@@ -120,3 +120,10 @@ def test_one_part_in_another_spelling_is_picked_among_its_pressings():
         {"id": "r2", "title": "Song, Part 2 - 2011 Remaster", "artists": [{"name": "X"}]},
     ]
     assert _pick_matching_recording(recordings, "X", "Song, Pt. 2") == "r1"
+
+
+def test_a_title_with_a_number_after_pt_finds_its_recording():
+    # Jimmy Dean's file says "Pt 109", MusicBrainz says "P.T. 109". Read as
+    # part 109, the file agreed with no recording and was stamped for good.
+    recordings = [{"id": "r1", "title": "P.T. 109", "artists": [{"name": "Jimmy Dean"}]}]
+    assert _pick_matching_recording(recordings, "Jimmy Dean", "Pt 109") == "r1"
