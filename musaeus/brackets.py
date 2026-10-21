@@ -155,8 +155,8 @@ def part_numbers(text: str) -> tuple[str, ...]:
 
 
 def _parts_not_in(before: str, text: str) -> str:
-    """" - Part N" for each part *text* names that *before* does not: a part
-    named twice is one part (Codex review of #217, round 4)."""
+    """The " - Part N" for each part *text* names that *before* does not: a
+    part named twice is one part (Codex review of #217, round 4)."""
     have = set(part_numbers(before))
     return "".join(f" - Part {n}" for n in dict.fromkeys(part_numbers(text)) if n not in have)
 
