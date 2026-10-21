@@ -160,11 +160,11 @@ def test_a_busy_masters_lock_moves_and_writes_nothing(cfg, tmp_path):
     assert _row(cfg, r)[1] == 0
 
 
-@pytest.mark.parametrize(
-    "header, action, problem",
-    [(["Group", "Action", "Master file"], "KEEP", "no column DB id"),
-     (["Group", "Action", "DB id", "Master file"], "MAYBE", "neither KEEP nor REMOVE")],
-)  # fmt: skip
+NO_ID_COLUMN = (["Group", "Action", "Master file"], "KEEP", "no column DB id")
+UNKNOWN_ACTION = (["Group", "Action", "DB id", "Master file"], "MAYBE", "neither KEEP nor REMOVE")
+
+
+@pytest.mark.parametrize("header, action, problem", [NO_ID_COLUMN, UNKNOWN_ACTION])
 def test_a_sheet_that_cannot_be_read_is_refused_before_anything(
     cfg, tmp_path, header, action, problem
 ):
