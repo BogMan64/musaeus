@@ -21,11 +21,13 @@ from pathlib import Path
 
 import pytest
 
+from musaeus.state.policy import FUTURE_RECOVERY_ROOT
 from tests.disposable_vault import (
     FakeClock,
     NetworkAccessDeniedError,
     RealPathAccessError,
     TransportDenialHarness,
+    _is_under_protected_root,
     make_disposable_vault,
     snapshot_vault_state,
 )
@@ -76,13 +78,14 @@ class TestPathGuardBlocksRealPaths:
 
     def test_blocks_mkdir_under_future_recovery_root(self, path_guard):
         """
-        /home/grey/Projects/MUSAEUS_RECOVERY is the fixed FUTURE recovery
-        root per both requirements.md and design.md: "no task creates or
+        /home/grey/.local/state/musaeus/recovery is the fixed FUTURE
+        recovery root (policy.FUTURE_RECOVERY_ROOT for Grey; it was
+        /home/grey/Projects/MUSAEUS_RECOVERY before #219): "no task creates or
         probes that directory". It must not exist on disk at all right
         now — this test both proves the guard blocks it AND documents
         that expectation as an executable assertion, not just prose.
         """
-        real_recovery_root = Path("/home/grey/Projects/MUSAEUS_RECOVERY")
+        real_recovery_root = Path("/home/grey/.local/state/musaeus/recovery")
         assert not real_recovery_root.exists(), (
             "the future-only recovery root must never be created; if this "
             "assertion fails, something in this repo violated that policy "
@@ -91,6 +94,14 @@ class TestPathGuardBlocksRealPaths:
         with pytest.raises(RealPathAccessError):
             real_recovery_root.mkdir()
         assert not real_recovery_root.exists()
+
+    def test_the_guard_follows_the_policy_recovery_root(self):
+        """The policy root moved in #219 and the guard kept the old one
+        (Codex review of #219). Tests run with a fake HOME, so take the
+        policy's path below HOME and put it under Grey's real one."""
+        below_home = Path(FUTURE_RECOVERY_ROOT).relative_to(Path.home())
+        grey_root = str(Path("/home/grey") / below_home)
+        assert _is_under_protected_root(grey_root) == grey_root
 
     def test_blocks_sqlite_connect_to_real_vault_db(self, path_guard):
         """

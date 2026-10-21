@@ -86,9 +86,11 @@ def build_request(
     *,
     scope_classification: str = CANONICAL,
     lock_dir: Path | None = None,
-    estimated_checkpoint_bytes: int = 0,
-    estimated_quarantine_bytes: int = 0,
-    estimated_items: int = 0,
+    # No estimate means not sized, not zero: the recovery checks block
+    # until a caller sizes the run (Codex review of #219).
+    estimated_checkpoint_bytes: int | None = None,
+    estimated_quarantine_bytes: int | None = None,
+    estimated_items: int | None = None,
     required_providers: Sequence[str] = (),
     consented_providers: frozenset[str] = frozenset(),
 ) -> PreflightRequest:

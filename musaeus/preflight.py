@@ -151,9 +151,10 @@ class PreflightRequest:
     recovery_root: Path
     db_path: Path
     lock_dir: Path
-    estimated_checkpoint_bytes: int = 0
-    estimated_quarantine_bytes: int = 0
-    estimated_items: int = 0
+    # None: the run was not sized, so the recovery checks cannot pass.
+    estimated_checkpoint_bytes: int | None = 0
+    estimated_quarantine_bytes: int | None = 0
+    estimated_items: int | None = 0
     configuration: Mapping[str, Any] = field(default_factory=dict)
     required_configuration_keys: Sequence[str] = ()
     required_providers: Sequence[str] = ()
@@ -259,19 +260,22 @@ def _check_recovery_target(request: PreflightRequest) -> CheckResult:
     )
 
 
-def estimate_recovery_requirement(request: PreflightRequest) -> int:
-    """Total bytes the recovery target must be able to hold.
+def estimate_recovery_requirement(request: PreflightRequest) -> int | None:
+    """Total bytes the recovery target must be able to hold, or None when
+    the run was not sized.
 
     Checkpoint plus quarantine plus the database plus manifest/journal
     overhead. Counting only the file bytes would under-estimate exactly
     the material that makes a rollback possible."""
+    checkpoint = request.estimated_checkpoint_bytes
+    quarantine = request.estimated_quarantine_bytes
+    items = request.estimated_items
+    # Unknown is not zero: zero would size the run as its database alone
+    # (Codex review of #219).
+    if checkpoint is None or quarantine is None or items is None:
+        return None
     db_bytes = request.db_path.stat().st_size if request.db_path.is_file() else 0
-    return (
-        request.estimated_checkpoint_bytes
-        + request.estimated_quarantine_bytes
-        + db_bytes
-        + request.estimated_items * MANIFEST_BYTES_PER_ITEM
-    )
+    return checkpoint + quarantine + db_bytes + items * MANIFEST_BYTES_PER_ITEM
 
 
 def safely_usable_bytes(path: Path, request: PreflightRequest) -> int:
@@ -281,7 +285,17 @@ def safely_usable_bytes(path: Path, request: PreflightRequest) -> int:
     return max(0, usage.free - reserve)
 
 
-def _check_recovery_cap(request: PreflightRequest, required: int) -> CheckResult:
+def _check_recovery_cap(request: PreflightRequest, required: int | None) -> CheckResult:
+    if required is None:
+        return CheckResult(
+            "recovery_cap",
+            BLOCK,
+            reason_code="recovery_capacity_exceeded",
+            measured=None,
+            required=RECOVERY_CAP_BYTES,
+            remediation="this run was not sized, so it cannot be checked against the cap",
+            detail={"cap_label": RECOVERY_CAP_LABEL},
+        )
     if required > RECOVERY_CAP_BYTES:
         return CheckResult(
             "recovery_cap",
@@ -304,7 +318,7 @@ def _check_recovery_cap(request: PreflightRequest, required: int) -> CheckResult
     )
 
 
-def _check_recovery_capacity(request: PreflightRequest, required: int) -> CheckResult:
+def _check_recovery_capacity(request: PreflightRequest, required: int | None) -> CheckResult:
     if not request.recovery_root.is_dir():
         return CheckResult(
             "recovery_capacity",
@@ -315,6 +329,15 @@ def _check_recovery_capacity(request: PreflightRequest, required: int) -> CheckR
             remediation="the recovery target is unavailable, so its capacity is unknown",
         )
     usable = safely_usable_bytes(request.recovery_root, request)
+    if required is None:
+        return CheckResult(
+            "recovery_capacity",
+            BLOCK,
+            reason_code="recovery_capacity_exceeded",
+            measured=usable,
+            required=None,
+            remediation="this run was not sized, so the space it needs is unknown",
+        )
     if required > usable:
         return CheckResult(
             "recovery_capacity",
