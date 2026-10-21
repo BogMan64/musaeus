@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import logging
 import signal
+import sqlite3
 import threading
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -182,6 +184,199 @@ def carry_out_with(config) -> CarryOut:
         return carried, "; ".join(result.errors + result.notes) or "done"
 
     return carry_out
+
+
+# ── A decided sheet (Grey, 2026-10-21) ────────────────────────────────────────
+
+#: The columns `musaeus dedupe --sheet` reads. A sheet may have more.
+SHEET_COLUMNS = ("Group", "Action", "DB id", "Master file", "Audio hash")
+#: A group with no REMOVE copy (a pair a person kept): nothing to do, not a failure.
+NOTHING_TO_REMOVE = "nothing to remove"
+
+
+def _read_sheet(path: Path) -> dict[str, list[tuple[str, int, str, str]]]:
+    """Group -> [(KEEP or REMOVE, catalogue id, master path, audio hash)].
+    "REMOVE?" reads as REMOVE. A row with no group, or a copy listed twice, is
+    refused: groups are carried out one by one, so a copy kept by one group
+    could already be gone through another (Codex review of #222)."""
+    import csv
+
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        missing = [c for c in SHEET_COLUMNS if c not in (reader.fieldnames or [])]
+        if missing:
+            raise ValueError(f"the sheet has no column {', '.join(missing)}")
+        groups: dict[str, list[tuple[str, int, str, str]]] = {}
+        seen: set[int] = set()
+        for row in reader:
+            name = row["Group"].strip()
+            if not name:
+                raise ValueError(f"copy {row['DB id']} has no group")
+            rid = int(row["DB id"])
+            if rid in seen:
+                raise ValueError(f"copy {rid} is in the sheet twice")
+            seen.add(rid)
+            action = row["Action"].strip().upper().rstrip("?")
+            if action not in ("KEEP", "REMOVE"):
+                raise ValueError(
+                    f"group {row['Group']}: {row['Action']!r} is neither KEEP nor REMOVE"
+                )
+            groups.setdefault(name, []).append((action, rid, row["Master file"], row["Audio hash"]))
+    return groups
+
+
+def _check_group(
+    conn, rows: list[tuple[str, int, str, str]]
+) -> tuple[list[str], list[str], list[tuple[str, str]], str | None]:
+    """(kept paths, removed paths, every copy with its audio) for one group, or why not.
+
+    The sheet was made earlier: each copy must still be the catalogued row at
+    the path the sheet names, holding the recording the sheet names, and a
+    copy a person kept is never removed by it. A REMOVE copy already in review
+    is done: a group moved part way finishes on a second run (Codex review of
+    #222).
+    """
+    kept: list[str] = []
+    removed: list[str] = []
+    members: list[tuple[str, str]] = []
+    for action, rid, path, audio in rows:
+        r = conn.execute(
+            "SELECT file_path, status, audio_hash, kept_by_person_at FROM archive WHERE id = ?",
+            (rid,),
+        ).fetchone()
+        if action == "REMOVE" and r is not None and r[1] == "DUPE_REVIEW" and r[2] == audio:
+            continue
+        if r is None or r[1] != "CATALOGUED":
+            return [], [], [], f"copy {rid} is no longer in the catalogue"
+        if r[0] != path:
+            return [], [], [], f"copy {rid} has moved since the sheet was made"
+        if not Path(path).exists():
+            return [], [], [], f"copy {rid} is not on disk"
+        # A path can take another recording (Codex review of #222).
+        if not audio or r[2] != audio:
+            return [], [], [], f"copy {rid} is not the recording the sheet was made from"
+        if action == "REMOVE" and r[3]:
+            return [], [], [], f"copy {rid} was kept by a person"
+        # Act 2's keep rule decides an open group, perhaps against the sheet:
+        # a kept mark protects a copy only in a group of kept copies.
+        if conn.execute(
+            "SELECT 1 FROM duplicates WHERE file_path = ? AND status = 'pending'", (path,)
+        ).fetchone():
+            return (
+                [],
+                [],
+                [],
+                f"copy {rid} is in an open duplicate group: settle it in musaeus dedupe first",
+            )
+        (kept if action == "KEEP" else removed).append(path)
+        members.append((path, r[2]))
+    if not kept:
+        return [], [], [], "no copy is kept"
+    if not removed:
+        return kept, [], members, NOTHING_TO_REMOVE
+    return kept, removed, members, None
+
+
+def _preview(
+    conn, groups: dict[str, list[tuple[str, int, str, str]]], out: Callable[[str], object]
+) -> int:
+    """The dry run: what --execute would move, and the groups it would skip."""
+    would = skipped = 0
+    for name, rows in groups.items():
+        _, removed, _, why = _check_group(conn, rows)
+        if why:
+            skipped += 1
+            out(f"  skip group {name}: {why}")
+        else:
+            would += len(removed)
+    out(
+        f"DRY RUN: {would} copies in {len(groups) - skipped} groups would move to review; "
+        f"{skipped} groups skipped. Nothing changed. Run again with --execute."
+    )
+    return 0
+
+
+def apply_sheet(
+    config, sheet: Path, *, execute: bool = False, out: Callable[[str], object] = print
+) -> int:
+    """`musaeus dedupe --sheet FILE [--execute]`: carry out a decided sheet.
+
+    Each group's REMOVE copies move to review by the resolver's own carry-out,
+    as a choice made in the console does (restore script; the kept copies are
+    marked kept by a person). Without --execute nothing is written. With it,
+    every group is checked again under the masters lock, so no pipeline run
+    meets a half-written group, and a group not carried out is closed rather
+    than left pending for Act 2 to decide its own way.
+    Returns 0, 1 when an approved removal was skipped or not carried out
+    (Codex review of #222), or EXIT_BUSY.
+    """
+    from .context import RunContext
+    from .db import open_db
+    from .masters_lock import EXIT_BUSY, MastersBusy, masters_lock
+    from .stages.dupe_resolver import DupeResolverStage
+
+    groups = _read_sheet(sheet)
+    if not execute:
+        # Read-only: open_db would create a missing catalogue or migrate one.
+        if not Path(config.db_path).is_file():
+            raise ValueError(f"no catalogue at {config.db_path}")
+        ro = sqlite3.connect(f"file:{config.db_path}?mode=ro", uri=True)
+        try:
+            return _preview(ro, groups, out)
+        finally:
+            ro.close()
+    moved = failed = skipped = 0
+    try:
+        with (
+            _not_interrupted(),
+            masters_lock(config.runs_root, exclusive=True, what="musaeus dedupe --sheet"),
+        ):
+            # Opened under the lock: open_db may migrate the catalogue (Codex review of #222).
+            conn = open_db(config.db_path)
+            try:
+                ctx = RunContext.new(config, conn, dry_run=False)
+                stage = DupeResolverStage()
+                for name, rows in groups.items():
+                    kept, removed, members, why = _check_group(conn, rows)
+                    if why == NOTHING_TO_REMOVE:
+                        # Every REMOVE copy is already in review: a run stopped
+                        # before marking the keep, which is marked now.
+                        now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+                        conn.executemany(
+                            "UPDATE archive SET kept_by_person_at = ? "
+                            "WHERE file_path = ? AND kept_by_person_at IS NULL",
+                            [(now, k) for k in kept],
+                        )
+                        conn.commit()
+                    if why:
+                        skipped += why != NOTHING_TO_REMOVE
+                        out(f"  skip group {name}: {why}")
+                        continue
+                    gid = f"sheet_{ctx.run_id}_{name}"
+                    conn.executemany(
+                        "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, "
+                        "run_id, audio_hash) VALUES (?, ?, 'PERSON', 1.0, ?, ?)",
+                        [(gid, p, ctx.run_id, h) for p, h in members],
+                    )
+                    conn.commit()
+                    result = stage.carry_out(ctx, [gid], kept, removed)
+                    conn.execute(
+                        "UPDATE duplicates SET status = 'stale' WHERE group_id = ? AND status = 'pending'",
+                        (gid,),
+                    )
+                    conn.commit()
+                    moved += result.files_changed
+                    if not result.success:
+                        failed += 1
+                        out(f"  group {name}: {'; '.join(result.errors)}")
+                ctx.finish()
+            finally:
+                conn.close()
+    except MastersBusy as exc:
+        out(f"nothing moved: {exc}")
+        return EXIT_BUSY
+    out(f"Moved {moved} copies to review; {skipped} groups skipped; {failed} not carried out.")
+    return 1 if failed or skipped else 0
 
 
 HELP = """
