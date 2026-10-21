@@ -217,8 +217,9 @@ def _titles_agree(a: str, b: str) -> bool:
     # Two parts of one work are two recordings: "Part 1" is not "Part 2" nor,
     # as a run of letters, part of "Part 10" (Codex review of #216).
     # A title that names a part agrees only with the same part: "Song -
-    # Part 2" is not plain "Song" either (round two).
-    if part_numbers(a) != part_numbers(b):
+    # Part 2" is not plain "Song" either (round two). Parts as base_title
+    # keeps them: "Song - Part 1 Live (Part 1)" names one (review of #218).
+    if part_numbers(base_title(a)) != part_numbers(base_title(b)):
         return False
     # The same title once its version is set aside: "AT&T" and "ATandT
     # (Live)", "And" and "And - 2011 Remaster" (Codex review of #209).
