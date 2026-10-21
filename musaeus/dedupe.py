@@ -187,11 +187,14 @@ def carry_out_with(config) -> CarryOut:
 # ── A decided sheet (Grey, 2026-10-21) ────────────────────────────────────────
 
 #: The columns `musaeus dedupe --sheet` reads. A sheet may have more.
-SHEET_COLUMNS = ("Group", "Action", "DB id", "Master file")
+SHEET_COLUMNS = ("Group", "Action", "DB id", "Master file", "Audio hash")
+#: A group with no REMOVE copy (a pair a person kept): nothing to do, not a failure.
+NOTHING_TO_REMOVE = "nothing to remove"
 
 
-def _read_sheet(path: Path) -> dict[str, list[tuple[str, int, str]]]:
-    """Group -> [(KEEP or REMOVE, catalogue id, master path)]. "REMOVE?" reads as REMOVE."""
+def _read_sheet(path: Path) -> dict[str, list[tuple[str, int, str, str]]]:
+    """Group -> [(KEEP or REMOVE, catalogue id, master path, audio hash)].
+    "REMOVE?" reads as REMOVE."""
     import csv
 
     with open(path, encoding="utf-8-sig", newline="") as f:
@@ -199,7 +202,7 @@ def _read_sheet(path: Path) -> dict[str, list[tuple[str, int, str]]]:
         missing = [c for c in SHEET_COLUMNS if c not in (reader.fieldnames or [])]
         if missing:
             raise ValueError(f"the sheet has no column {', '.join(missing)}")
-        groups: dict[str, list[tuple[str, int, str]]] = {}
+        groups: dict[str, list[tuple[str, int, str, str]]] = {}
         for row in reader:
             action = row["Action"].strip().upper().rstrip("?")
             if action not in ("KEEP", "REMOVE"):
@@ -207,13 +210,13 @@ def _read_sheet(path: Path) -> dict[str, list[tuple[str, int, str]]]:
                     f"group {row['Group']}: {row['Action']!r} is neither KEEP nor REMOVE"
                 )
             groups.setdefault(row["Group"], []).append(
-                (action, int(row["DB id"]), row["Master file"])
+                (action, int(row["DB id"]), row["Master file"], row["Audio hash"])
             )
     return groups
 
 
 def _check_group(
-    conn, rows: list[tuple[str, int, str]]
+    conn, rows: list[tuple[str, int, str, str]]
 ) -> tuple[list[str], list[str], list[tuple[str, str]], str | None]:
     """(kept paths, removed paths, every copy with its audio) for one group, or why not.
 
@@ -223,7 +226,7 @@ def _check_group(
     kept: list[str] = []
     removed: list[str] = []
     members: list[tuple[str, str]] = []
-    for action, rid, path in rows:
+    for action, rid, path, audio in rows:
         r = conn.execute(
             "SELECT file_path, status, audio_hash, kept_by_person_at FROM archive WHERE id = ?",
             (rid,),
@@ -232,6 +235,9 @@ def _check_group(
             return [], [], [], f"copy {rid} is no longer in the catalogue"
         if r[0] != path:
             return [], [], [], f"copy {rid} has moved since the sheet was made"
+        # A path can take another recording (Codex review of #222).
+        if not audio or r[2] != audio:
+            return [], [], [], f"copy {rid} is not the recording the sheet was made from"
         if action == "REMOVE" and r[3]:
             return [], [], [], f"copy {rid} was kept by a person"
         (kept if action == "KEEP" else removed).append(path)
@@ -239,7 +245,7 @@ def _check_group(
     if not kept:
         return [], [], [], "no copy is kept"
     if not removed:
-        return [], [], [], "nothing to remove"
+        return [], [], [], NOTHING_TO_REMOVE
     return kept, removed, members, None
 
 
@@ -254,7 +260,8 @@ def apply_sheet(
     every group is checked again under the masters lock, so no pipeline run
     meets a half-written group, and a group not carried out is closed rather
     than left pending for Act 2 to decide its own way.
-    Returns 0, 1 when a group was not carried out, or EXIT_BUSY.
+    Returns 0, 1 when an approved removal was skipped or not carried out
+    (Codex review of #222), or EXIT_BUSY.
     """
     from .context import RunContext
     from .db import open_db
@@ -289,7 +296,7 @@ def apply_sheet(
                 for name, rows in groups.items():
                     kept, removed, members, why = _check_group(conn, rows)
                     if why:
-                        skipped += 1
+                        skipped += why != NOTHING_TO_REMOVE
                         out(f"  skip group {name}: {why}")
                         continue
                     gid = f"sheet_{ctx.run_id}_{name}"
@@ -316,7 +323,7 @@ def apply_sheet(
     finally:
         conn.close()
     out(f"Moved {moved} copies to review; {skipped} groups skipped; {failed} not carried out.")
-    return 1 if failed else 0
+    return 1 if failed or skipped else 0
 
 
 HELP = """

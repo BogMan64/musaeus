@@ -56,9 +56,9 @@ def _sheet(tmp_path, rows) -> Path:
     path = tmp_path / "decided.csv"
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["Group", "Action", "Why", "DB id", "Master file"])
+        w.writerow(["Group", "Action", "Why", "DB id", "Master file", "Audio hash"])
         for group, action, rid, p in rows:
-            w.writerow([group, action, "", rid, str(p)])
+            w.writerow([group, action, "", rid, str(p), "pcm:" + Path(p).name])
     return path
 
 
@@ -125,7 +125,7 @@ def test_a_copy_moved_since_the_sheet_was_made_skips_its_group(cfg, tmp_path):
     conn.commit()
     conn.close()
     code, said = _run(cfg, sheet, True)
-    assert "has moved since the sheet was made" in said
+    assert code == 1 and "has moved since the sheet was made" in said
     assert kp.exists() and refiled.exists()
 
 
@@ -133,8 +133,30 @@ def test_a_copy_a_person_kept_is_never_removed(cfg, tmp_path):
     k, kp = _copy(cfg, "studio.m4a")
     r, rp = _copy(cfg, "live.m4a", kept_by_person="2026-10-20T00:00:00+00:00")
     code, said = _run(cfg, _sheet(tmp_path, [("1", "KEEP", k, kp), ("1", "REMOVE?", r, rp)]), True)
-    assert "was kept by a person" in said
+    assert code == 1 and "was kept by a person" in said
     assert kp.exists() and rp.exists()
+
+
+def test_another_recording_at_the_same_path_skips_its_group(cfg, tmp_path):
+    """Same row, same path, another recording (Codex review of #222): the
+    group must not be written with the new audio as its identity."""
+    k, kp = _copy(cfg, "studio.m4a")
+    r, rp = _copy(cfg, "live.m4a")
+    sheet = _sheet(tmp_path, [("1", "KEEP", k, kp), ("1", "REMOVE?", r, rp)])
+    conn = open_db(cfg.db_path)
+    conn.execute("UPDATE archive SET audio_hash = 'pcm:another' WHERE id = ?", (r,))
+    conn.commit()
+    conn.close()
+    code, said = _run(cfg, sheet, True)
+    assert code == 1 and "not the recording the sheet was made from" in said
+    assert kp.exists() and rp.exists()
+
+
+def test_a_kept_pair_with_nothing_to_remove_is_not_a_failure(cfg, tmp_path):
+    k, kp = _copy(cfg, "one.m4a")
+    k2, kp2 = _copy(cfg, "two.m4a")
+    code, said = _run(cfg, _sheet(tmp_path, [("1", "KEEP", k, kp), ("1", "KEEP", k2, kp2)]), True)
+    assert code == 0 and "nothing to remove" in said
 
 
 def test_a_group_not_carried_out_is_not_left_for_act_2(cfg, tmp_path):
@@ -160,8 +182,12 @@ def test_a_busy_masters_lock_moves_and_writes_nothing(cfg, tmp_path):
     assert _row(cfg, r)[1] == 0
 
 
-NO_ID_COLUMN = (["Group", "Action", "Master file"], "KEEP", "no column DB id")
-UNKNOWN_ACTION = (["Group", "Action", "DB id", "Master file"], "MAYBE", "neither KEEP nor REMOVE")
+NO_ID_COLUMN = (["Group", "Action", "Master file", "Audio hash"], "KEEP", "no column DB id")
+UNKNOWN_ACTION = (
+    ["Group", "Action", "DB id", "Master file", "Audio hash"],
+    "MAYBE",
+    "neither KEEP nor REMOVE",
+)
 
 
 @pytest.mark.parametrize("header, action, problem", [NO_ID_COLUMN, UNKNOWN_ACTION])
@@ -170,7 +196,7 @@ def test_a_sheet_that_cannot_be_read_is_refused_before_anything(
 ):
     path = tmp_path / "bad.csv"
     path.write_text(
-        ",".join(header) + "\n" + ",".join(["1", action, "7", "/x"][: len(header)]) + "\n"
+        ",".join(header) + "\n" + ",".join(["1", action, "7", "/x", "pcm:x"][: len(header)]) + "\n"
     )
     with pytest.raises(ValueError, match=problem):
         dedupe.apply_sheet(cfg, path, execute=True, out=lambda s: None)
