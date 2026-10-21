@@ -84,7 +84,7 @@ PROTECTED_REAL_ROOTS: tuple[str, ...] = (
     "/home/grey/.config/musaeus",  # real settings.env / credentials.env / resume_state.json
     "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT",  # real live working vault (musaeus.db, INBOX, ALAC-Library)
     "/mnt/FORGE2TB/Projects/MUSAEUS_TEST_VAULT",  # Grey's manual/persistent test vault — not disposable-per-test
-    "/home/grey/.local/state/musaeus/recovery",  # policy.FUTURE_RECOVERY_ROOT for Grey; never create/probe this
+    "/home/grey/Projects/MUSAEUS_RECOVERY",  # policy.FUTURE_RECOVERY_ROOT for Grey; never create/probe this
 )
 
 

@@ -30,7 +30,7 @@ empty measurements, and one whole subsystem that no live caller reaches:
 
 Nothing here reads or writes anything under `/mnt/FORGE2TB/Projects/
 MUSAEUS_VAULT`, `/home/grey/Music`, `/home/grey/.config/musaeus`, or
-`/home/grey/.local/state/musaeus/recovery`. The session-wide `PathGuard` and
+`/home/grey/Projects/MUSAEUS_RECOVERY`. The session-wide `PathGuard` and
 `TransportDenialHarness` from `tests/conftest.py` stay installed and
 enabled throughout; no gate here disables, narrows, or skips either one.
 """
@@ -777,7 +777,7 @@ def test_g3_recovery_cap_and_space_blocking(seeded_vault, fixture_home, tmp_path
         minimum_viable_coverage=(
             "the cap value read as an exact integer, both blocks observed to "
             "fire (cap and capacity), the recovery root confirmed not created, "
-            "and /home/grey/.local/state/musaeus/recovery confirmed still absent"
+            "and /home/grey/Projects/MUSAEUS_RECOVERY confirmed still absent"
         ),
     )
     try:
@@ -2221,7 +2221,7 @@ def test_g11_no_live_data_operation_audit(path_guard, transport_harness):
             except FileNotFoundError:
                 observed[root] = "absent"
 
-        recovery_root = "/home/grey/.local/state/musaeus/recovery"
+        recovery_root = "/home/grey/Projects/MUSAEUS_RECOVERY"
         recovery_absent = not os.path.exists(recovery_root)
 
         live_db = "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db"
