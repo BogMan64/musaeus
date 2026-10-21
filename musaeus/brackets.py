@@ -93,7 +93,8 @@ def has_bracketed(text: str) -> bool:
 EDITION_SUFFIX = re.compile(
     # A part before the words is kept, the version after it is not: "Song -
     # Part 1 Live" is "Song - Part 1" (Codex review of #216, two rounds).
-    r"\s*-\s*(?:(?:part|pt)\.?\s*(?:\d+|[ivxlc]+)\s+)?"
+    # base_title keeps the label as written, so "Pt 109" stays (review of #218).
+    r"\s*-\s*(?P<label>(?:part|pt)\.?\s*(?:\d+|[ivxlc]+)\s+)?"
     r"(?:(?!(?:part|pt)\b)\w+\s+){0,2}"
     r"(remaster|remastered|live|mono|stereo|single|album|radio|rerecorded|version|mix|edit)\b.*$",
     re.IGNORECASE,
@@ -123,8 +124,10 @@ _PART_WORDS = {
 _ROMAN = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100}
 
 #: "Part 2", "Pt. 3", "Part IV", "Part Two": which piece of a work a title names.
+#: "Pt" before three digits is no part: Jimmy Dean's "Pt 109" is a boat.
 _PART = re.compile(
-    r"\b(?:part|pt)\.?\s*(\d+|[ivxlc]+|" + "|".join(_PART_WORDS) + r")\b", re.IGNORECASE
+    r"\b(?:part|pt(?!\.?\s*\d{3}))\.?\s*(\d+|[ivxlc]+|" + "|".join(_PART_WORDS) + r")\b",
+    re.IGNORECASE,
 )
 
 
@@ -153,6 +156,12 @@ def part_numbers(text: str) -> tuple[str, ...]:
     return tuple(_part_number(m) for m in _PART.findall(text or ""))
 
 
+#: One part written twice in a row, as base_title puts it back from brackets
+#: or a cut ending: "Song - Part 1 - Part 1" (Codex review of #217, round 4).
+#: Only in a row: in "A - Part 1 / B - Part 1" each song has its part (#218).
+_REPEATED_PART = re.compile(r"\bPart (\d+)(?:\s*-\s*Part \1\b)+")
+
+
 def base_title(text: str) -> str:
     """A title without its version: brackets and a version " - " ending set
     aside, a part kept ("Song - Part 1 Live" -> "Song - Part 1"), also from
@@ -167,6 +176,7 @@ def base_title(text: str) -> str:
     m = EDITION_SUFFIX.search(title)
     if m is not None:
         # The parts in the cut ending stay: "Song - Live (Part 1)" (Codex review of #217).
-        cut = part_numbers(title[m.start() :])
-        title = title[: m.start()] + "".join(f" - Part {n}" for n in cut)
-    return title
+        keep = m.end("label") if m.group("label") else m.start()
+        cut = part_numbers(title[keep:])
+        title = title[:keep].rstrip() + "".join(f" - Part {n}" for n in cut)
+    return _REPEATED_PART.sub(r"Part \1", title)

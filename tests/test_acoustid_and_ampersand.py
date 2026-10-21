@@ -120,3 +120,28 @@ def test_one_part_in_another_spelling_is_picked_among_its_pressings():
         {"id": "r2", "title": "Song, Part 2 - 2011 Remaster", "artists": [{"name": "X"}]},
     ]
     assert _pick_matching_recording(recordings, "X", "Song, Pt. 2") == "r1"
+
+
+def test_a_title_with_a_number_after_pt_finds_its_recording():
+    # Jimmy Dean's file says "Pt 109", MusicBrainz says "P.T. 109". Read as
+    # part 109, the file agreed with no recording and was stamped for good.
+    recordings = [{"id": "r1", "title": "P.T. 109", "artists": [{"name": "Jimmy Dean"}]}]
+    assert _pick_matching_recording(recordings, "Jimmy Dean", "Pt 109") == "r1"
+
+
+def test_a_part_named_twice_agrees_with_the_part():
+    # Codex review of #218: ("1", "1") was not ("1",), so the file found no recording.
+    recordings = [{"id": "r1", "title": "Song - Part 1", "artists": [{"name": "X"}]}]
+    assert _pick_matching_recording(recordings, "X", "Song - Part 1 Live (Part 1)") == "r1"
+
+
+def test_part_100_is_not_the_plain_song():
+    # Codex review of #218: a two-digit limit on every part label let "Part 100" match "Song".
+    recordings = [{"id": "r1", "title": "Song", "artists": [{"name": "X"}]}]
+    assert _pick_matching_recording(recordings, "X", "Song - Part 100") is None
+
+
+def test_a_medley_is_not_matched_to_one_without_its_second_part():
+    # Codex review of #218, round 2.
+    recordings = [{"id": "r1", "title": "Song A - Part 1 / Song B", "artists": [{"name": "X"}]}]
+    assert _pick_matching_recording(recordings, "X", "Song A - Part 1 / Song B - Part 1") is None
