@@ -15,8 +15,8 @@ single `musaeus` command.
 # 1. Choose a vault location and create its folders
 musaeus setup
 
-# 2. Drop audio files into your inbox
-cp ~/Downloads/*.flac ~/Music/MUSAEUS_VAULT/INBOX/
+# 2. Drop audio files into the inbox you chose in setup
+cp ~/Downloads/*.flac /path/to/your/INBOX/
 
 # 3. Preview, then run the pipeline when you are ready
 musaeus run --dry-run
