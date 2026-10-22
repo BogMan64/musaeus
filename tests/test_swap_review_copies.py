@@ -18,7 +18,7 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "swap_review_copies.py"
 COLS = (
     "id INTEGER PRIMARY KEY, file_path TEXT, audio_hash TEXT, artist TEXT, album TEXT, "
-    "title TEXT, genre TEXT, codec TEXT, sample_rate INTEGER, duration REAL, status TEXT, "
+    "title TEXT, genre TEXT, codec TEXT, sample_rate INTEGER, duration REAL, lufs REAL, status TEXT, "
     "mb_artist_name TEXT, mb_artist_id TEXT, canonicalized_at TEXT, finalized_at TEXT"
 )
 
@@ -250,6 +250,23 @@ def test_the_longest_of_copies_tied_with_each_other_is_the_one_judged(vault):
     vault.row(paths[0], "DUPE_REVIEW", "A", codec="flac", album="Toto IV", duration=201.9)
     longer = vault.row(paths[1], "DUPE_REVIEW", "B", codec="flac", album="Toto IV", duration=202.1)
     for p in paths:
+        vault.set_aside(p, lib_path)
+    wins, _ = vault.mod.review_wins(vault.conn)
+    assert [(p.review["id"], p.library["id"], p.step) for p in wins] == [(longer, lib, "length")]
+
+
+def test_a_copy_with_the_masters_audio_is_ranked_as_baked_as_the_master(vault):
+    """Ranked apart from the master, an unmeasured copy of a -18 LUFS master never
+    looked baked and hid a longer copy that beats it (Codex review of #226, round 2)."""
+    lib_path = vault.masters / "Rock/Toto/Toto IV/Toto - Rosanna.m4a"
+    lib = vault.row(lib_path, "CATALOGUED", "L", album="Toto IV", duration=200.0, lufs=-18.0)
+    same = vault.review_dir / "Toto/a/Toto - Rosanna.flac"
+    other = vault.review_dir / "Toto/b/Toto - Rosanna.flac"
+    vault.row(same, "DUPE_REVIEW", "L", codec="flac", album="Toto IV", duration=200.0)
+    longer = vault.row(
+        other, "DUPE_REVIEW", "B", codec="flac", album="Toto IV", duration=202.1, lufs=-18.0
+    )
+    for p in (same, other):
         vault.set_aside(p, lib_path)
     wins, _ = vault.mod.review_wins(vault.conn)
     assert [(p.review["id"], p.library["id"], p.step) for p in wins] == [(longer, lib, "length")]
