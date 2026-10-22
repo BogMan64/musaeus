@@ -9,6 +9,7 @@ searched by text. The network is stood in for; the rules are what is tested.
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -18,6 +19,9 @@ from musaeus.db import open_db, upsert_archive
 from musaeus.stages import album_fill as af
 from musaeus.stages.acousticid import _ensure_columns as fingerprint_columns
 from musaeus.stages.album_fill import AlbumFillStage, Unavailable
+
+# The fixture stands in for it; a test that checks the real one puts it back.
+_REAL_ACOUSTID_RELEASE_GROUPS = af.acoustid_release_groups
 
 
 @pytest.fixture
@@ -41,7 +45,7 @@ def env(tmp_path, monkeypatch):
         "itunes": [],
     }
 
-    def _aid(fp, dur, key):
+    def _aid(fp, dur, key, artist, title):
         calls["acoustid"].append(fp)
         a = answers["acoustid"]
         if isinstance(a, Exception):
@@ -116,6 +120,49 @@ def test_the_earliest_release_wins_and_each_album_is_dated_once(env):
     env.run()
     assert env.album(p1)[0] == env.album(p2)[0] == "Who's Next"
     assert sorted(env.calls["mb"]) == ["fd", "who"], "one MusicBrainz lookup per album, cached"
+
+
+def _acoustid_reply(meta):
+    """AcoustID as it answers: one fingerprint linked to two recordings, one of
+    them wrong. Asked for recordings, the albums come per recording; asked for
+    release groups alone, every linked recording's albums come as one list."""
+    recs = [
+        {"id": "soul", "title": "All About Soul", "artists": [{"name": "Billy Joel"}],
+         "releasegroups": [_rg("rod", "River of Dreams", "Billy Joel")]},
+        {"id": "falls", "title": "Summer, Highland Falls", "artists": [{"name": "Billy Joel"}],
+         "releasegroups": [_rg("turn", "Turnstiles", "Billy Joel")]},
+    ]  # fmt: skip
+    if "recordings" in meta.split():
+        return {"status": "ok", "results": [{"score": 0.98, "recordings": recs}]}
+    groups = [g for r in recs for g in r["releasegroups"]]
+    return {"status": "ok", "results": [{"score": 0.98, "releasegroups": groups}]}
+
+
+def test_only_the_albums_of_the_recording_that_matches_the_song(env, monkeypatch):
+    # Grey, 2026-10-22: "All About Soul" was filed under Turnstiles, an album
+    # of a recording the fingerprint is wrongly linked to, because the
+    # earliest album of every linked recording won.
+    monkeypatch.setattr(af, "acoustid_release_groups", _REAL_ACOUSTID_RELEASE_GROUPS)
+    monkeypatch.setattr(
+        af, "_get_json", lambda url: _acoustid_reply(parse_qs(urlparse(url).query)["meta"][0])
+    )
+    p = env.add("All About Soul", artist="Billy Joel")
+    env.answers["mb"] = {"rod": "1993-08-10", "turn": "1976-05-19"}
+    env.run()
+    assert env.album(p)[0] == "River of Dreams"
+
+
+def test_no_recording_matching_the_song_gives_no_album_from_the_fingerprint(env, monkeypatch):
+    monkeypatch.setattr(af, "acoustid_release_groups", _REAL_ACOUSTID_RELEASE_GROUPS)
+    monkeypatch.setattr(
+        af, "_get_json", lambda url: _acoustid_reply(parse_qs(urlparse(url).query)["meta"][0])
+    )
+    p = env.add("Piano Man", artist="Billy Joel")
+    env.answers["mb"] = {"rod": "1993-08-10", "turn": "1976-05-19"}
+    env.run()
+    assert env.album(p)[0] is None and env.calls["deezer"] == ["Piano Man"], (
+        "the text sites are asked instead"
+    )
 
 
 def test_an_album_crediting_someone_else_is_left_empty(env):

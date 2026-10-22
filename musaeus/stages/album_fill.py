@@ -9,7 +9,8 @@ tracks to 688 and were never wired in. This is them, as one stage, with
 their rules unchanged:
 
   1. AcoustID   the recording's release groups, looked up with the
-                fingerprint the AcoustID stage already stored (no fpcalc).
+                fingerprint the AcoustID stage already stored (no fpcalc),
+                from the one linked recording whose artist and title agree.
                 Only a plain "Album" with no secondary type, crediting our
                 artist; more than one -> MusicBrainz first-release date,
                 earliest wins (one lookup per release group, cached).
@@ -66,6 +67,7 @@ from ..db import ensure_columns
 from ..network_policy import check as _network_check
 from ..network_policy import redact
 from ..playlist_album import is_playlist_album
+from .acousticid import _pick_matching_recording
 from .base import BaseStage
 
 logger = logging.getLogger(__name__)
@@ -137,19 +139,29 @@ def _get_json(url: str, headers: dict[str, str] | None = None) -> dict:
 # ── The network, one function per question (tests stand in for these) ──────
 
 
-def acoustid_release_groups(fingerprint: str, duration: float, api_key: str) -> list[dict]:
+def acoustid_release_groups(
+    fingerprint: str, duration: float, api_key: str, artist: str, title: str
+) -> list[dict]:
+    """The albums of the one recording that is this song (artist and title agree).
+
+    A fingerprint can be linked to several recordings, wrong ones too. Asked
+    for release groups alone, AcoustID returns all of theirs as one list, and
+    the earliest won: "All About Soul" became Turnstiles (Grey, 2026-10-22).
+    """
     params = {
         "client": api_key,
         "fingerprint": fingerprint,
         "duration": str(int(duration)),
-        "meta": "releasegroups",
+        "meta": "recordings releasegroups",
         "format": "json",
     }
     data = _get_json(f"{_ACOUSTID_URL}?{urlencode(params)}")
     if data.get("status") != "ok":
         raise Unavailable(f"status={data.get('status')!r}")
     results = sorted(data.get("results") or [], key=lambda x: x.get("score", 0), reverse=True)
-    return (results[0].get("releasegroups") or []) if results else []
+    recordings = (results[0].get("recordings") or []) if results else []
+    rid = _pick_matching_recording(recordings, artist, title)
+    return next((r.get("releasegroups") or [] for r in recordings if r.get("id") == rid), [])
 
 
 def mb_first_release(release_group_id: str) -> str | None:
@@ -462,7 +474,7 @@ class AlbumFillStage(BaseStage):
                 if aid_key and row["chromaprint"] and row["chromaprint_duration"]:
                     time.sleep(_AID_RATE_S)
                     groups = acoustid_release_groups(
-                        row["chromaprint"], row["chromaprint_duration"], aid_key
+                        row["chromaprint"], row["chromaprint_duration"], aid_key, artist, title
                     )
                     album, reason = (
                         choose_from_release_groups(groups, artist, first_release)
