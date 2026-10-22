@@ -201,16 +201,27 @@ def test_a_song_with_no_artist_is_not_asked_and_not_stamped(env, monkeypatch):
     assert env.album(p) == (None, None), "nothing to check it against: asked again later"
 
 
-def test_an_album_with_no_credit_of_its_own_takes_the_recordings(monkeypatch):
-    # Codex review of #223, round 3.
+def test_an_album_with_no_credit_of_its_own_is_not_ours(monkeypatch):
+    # Codex review of #223, rounds 3 and 4: it could be a various-artists
+    # album. Unknown is left empty; a wrong album is worse than none.
     rod = {**_rg("rod", "River of Dreams"), "artists": []}
     monkeypatch.setattr(af, "_get_json", lambda url: {"status": "ok", "results": [
         {"score": 0.99, "recordings": [_aid_rec("s", "All About Soul", "Billy Joel", rod)]},
     ]})  # fmt: skip
     groups = af.acoustid_release_groups("FP", 200.0, "k", "Billy Joel", "All About Soul")
-    assert af.choose_from_release_groups(groups, "Billy Joel", lambda _: None)[0] == (
-        "River of Dreams"
-    )
+    assert af.choose_from_release_groups(groups, "Billy Joel", lambda _: None)[0] is None
+
+
+def test_a_matching_recording_with_no_albums_does_not_hide_one_with_albums(monkeypatch):
+    # Codex review of #223, round 4.
+    monkeypatch.setattr(af, "_get_json", lambda url: {"status": "ok", "results": [
+        {"score": 0.99, "recordings": [
+            _aid_rec("bare", "All About Soul", "Billy Joel"),
+            _aid_rec("s", "All About Soul", "Billy Joel", _rg("rod", "River of Dreams", "Billy Joel")),
+        ]},
+    ]})  # fmt: skip
+    groups = af.acoustid_release_groups("FP", 200.0, "k", "Billy Joel", "All About Soul")
+    assert [g["title"] for g in groups] == ["River of Dreams"]
 
 
 def test_a_song_with_no_title_is_not_asked_and_not_stamped(env):
