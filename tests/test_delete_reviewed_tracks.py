@@ -162,10 +162,12 @@ class TestItDeletesEveryCopy:
         _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
         _add(vault, 2, "Blur", "Beetlebum", "Blur/Blur/y.m4a")
         conn = sqlite3.connect(vault / "musaeus.db")
-        conn.execute("CREATE TABLE duplicates (group_id TEXT, file_path TEXT, duplicate_type TEXT)")
+        conn.execute(
+            "CREATE TABLE duplicates (group_id TEXT, file_path TEXT, duplicate_type TEXT, status TEXT)"
+        )
         for rid in (1, 2):
             path = conn.execute("SELECT file_path FROM archive WHERE id=?", (rid,)).fetchone()[0]
-            conn.execute("INSERT INTO duplicates VALUES ('g', ?, 'CROSS_BATCH')", (path,))
+            conn.execute("INSERT INTO duplicates VALUES ('g', ?, 'CROSS_BATCH', 'review')", (path,))
         conn.commit()
         survivor = conn.execute("SELECT file_path FROM archive WHERE id=2").fetchone()[0]
         conn.close()
@@ -183,12 +185,14 @@ class TestItDeletesEveryCopy:
         _add(vault, 2, "Blur", "Beetlebum", "Blur/Blur/y.m4a")
         conn = sqlite3.connect(vault / "musaeus.db")
         conn.execute(
-            "CREATE TABLE duplicates (group_id TEXT, file_path TEXT, duplicate_type TEXT, audio_hash TEXT)"
+            "CREATE TABLE duplicates (group_id TEXT, file_path TEXT, duplicate_type TEXT, audio_hash TEXT, status TEXT)"
         )
         inbox = str(vault / "INBOX" / "Odds" / "01. Blur - Song 2.flac")
         survivor_h = conn.execute("SELECT audio_hash FROM archive WHERE id=2").fetchone()[0]
-        conn.execute("INSERT INTO duplicates VALUES ('g', ?, 'NEAR', ?)", (inbox, h))
-        conn.execute("INSERT INTO duplicates VALUES ('g', 'elsewhere', 'NEAR', ?)", (survivor_h,))
+        conn.execute("INSERT INTO duplicates VALUES ('g', ?, 'NEAR', ?, 'review')", (inbox, h))
+        conn.execute(
+            "INSERT INTO duplicates VALUES ('g', 'elsewhere', 'NEAR', ?, 'keep')", (survivor_h,)
+        )
         conn.commit()
         conn.close()
         r = _run(vault, [1], extra=("--no-deny",))
@@ -197,6 +201,29 @@ class TestItDeletesEveryCopy:
         left = [p for (p,) in conn.execute("SELECT file_path FROM duplicates")]
         conn.close()
         assert left == ["elsewhere"]
+
+    def test_no_deny_keeps_a_persons_keep_both_decision(self, vault):
+        """Both recordings marked keep is Grey's ruling: it outlives a reset, as a
+        denial does (Codex review of #225, round 3)."""
+        h = _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
+        conn = sqlite3.connect(vault / "musaeus.db")
+        conn.execute(
+            "CREATE TABLE duplicates (group_id TEXT, file_path TEXT, duplicate_type TEXT, "
+            "audio_hash TEXT, status TEXT)"
+        )
+        path = conn.execute("SELECT file_path FROM archive WHERE id=1").fetchone()[0]
+        conn.execute("INSERT INTO duplicates VALUES ('both', ?, 'NEAR', ?, 'keep')", (path, h))
+        conn.execute("INSERT INTO duplicates VALUES ('both', 'other', 'NEAR', 'h2', 'keep')")
+        conn.execute("INSERT INTO duplicates VALUES ('one', ?, 'NEAR', ?, 'keep')", (path, h))
+        conn.execute("INSERT INTO duplicates VALUES ('one', 'loser', 'NEAR', 'h3', 'archive')")
+        conn.commit()
+        conn.close()
+        r = _run(vault, [1], extra=("--no-deny",))
+        assert r.returncode == 0, r.stderr
+        conn = sqlite3.connect(vault / "musaeus.db")
+        left = sorted(conn.execute("SELECT group_id, file_path FROM duplicates"))
+        conn.close()
+        assert left == [("both", path), ("both", "other"), ("one", "loser")]
 
     def test_a_dry_run_changes_nothing(self, vault):
         _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")

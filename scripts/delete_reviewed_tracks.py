@@ -453,10 +453,21 @@ def main() -> int:
                 # path it has flagged (Codex review of #225). Finalize leaves its
                 # records at the INBOX path it arrived at, so they go by its audio
                 # too -- unless a survivor carries that audio: those are the survivor's.
+                # A person's "keep both" (every member of a NEAR or ACOUSTIC group
+                # marked keep, as NearDupe reads it) stays, as a denial does: it
+                # is Grey's ruling, not this batch's (Codex review of #225, round 3).
+                not_decided = (
+                    " AND NOT (duplicate_type IN ('NEAR', 'ACOUSTIC') AND group_id IN ("
+                    "SELECT group_id FROM duplicates GROUP BY group_id"
+                    " HAVING SUM(COALESCE(status, '') <> 'keep') = 0))"
+                )
                 with contextlib.suppress(sqlite3.OperationalError):  # no duplicates table yet
-                    conn.execute("DELETE FROM duplicates WHERE file_path = ?", (row["file_path"],))
+                    conn.execute(
+                        "DELETE FROM duplicates WHERE file_path = ?" + not_decided,
+                        (row["file_path"],),
+                    )
                     if h and not audio_kept:
-                        conn.execute("DELETE FROM duplicates WHERE audio_hash = ?", (h,))
+                        conn.execute("DELETE FROM duplicates WHERE audio_hash = ?" + not_decided, (h,))
             conn.execute("DELETE FROM archive WHERE id=?", (i,))
         n_rows += 1
 
