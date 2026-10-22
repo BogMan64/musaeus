@@ -168,7 +168,12 @@ def acoustid_release_groups(
         recordings = [r for r in result.get("recordings") or [] if r.get("artists")]
         rid = _pick_matching_recording(recordings, artist, title)
         if rid:
-            return next(r.get("releasegroups") or [] for r in recordings if r.get("id") == rid)
+            rec = next(r for r in recordings if r.get("id") == rid)
+            # An album with no credit of its own is the recording's (round 3).
+            return [
+                {**g, "artists": g.get("artists") or rec["artists"]}
+                for g in rec.get("releasegroups") or []
+            ]
     return []
 
 
@@ -479,9 +484,10 @@ class AlbumFillStage(BaseStage):
             artist, title = (row["artist"] or "").strip(), (row["title"] or "").strip()
             album, source, reason, answered = None, "", "", False
             try:
-                # No artist, no way to tell which recording is ours: not asked,
-                # not stamped (Codex review of #223, round 2).
-                if aid_key and artist and row["chromaprint"] and row["chromaprint_duration"]:
+                # No artist or no title, no way to tell which recording is ours:
+                # not asked, not stamped (Codex review of #223, rounds 2 and 3).
+                fingerprint = row["chromaprint"] and row["chromaprint_duration"]
+                if aid_key and artist and title and fingerprint:
                     time.sleep(_AID_RATE_S)
                     groups = acoustid_release_groups(
                         row["chromaprint"], row["chromaprint_duration"], aid_key, artist, title

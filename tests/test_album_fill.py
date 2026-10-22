@@ -201,6 +201,26 @@ def test_a_song_with_no_artist_is_not_asked_and_not_stamped(env, monkeypatch):
     assert env.album(p) == (None, None), "nothing to check it against: asked again later"
 
 
+def test_an_album_with_no_credit_of_its_own_takes_the_recordings(monkeypatch):
+    # Codex review of #223, round 3.
+    rod = {**_rg("rod", "River of Dreams"), "artists": []}
+    monkeypatch.setattr(af, "_get_json", lambda url: {"status": "ok", "results": [
+        {"score": 0.99, "recordings": [_aid_rec("s", "All About Soul", "Billy Joel", rod)]},
+    ]})  # fmt: skip
+    groups = af.acoustid_release_groups("FP", 200.0, "k", "Billy Joel", "All About Soul")
+    assert af.choose_from_release_groups(groups, "Billy Joel", lambda _: None)[0] == (
+        "River of Dreams"
+    )
+
+
+def test_a_song_with_no_title_is_not_asked_and_not_stamped(env):
+    # Codex review of #223, round 3: no title, no recording can agree.
+    p = env.add("", artist="Billy Joel")
+    env.answers["acoustid"] = [_rg("rod", "River of Dreams", "Billy Joel")]
+    env.run()
+    assert env.album(p) == (None, None) and env.calls["acoustid"] == []
+
+
 def test_one_clean_album_crediting_someone_else_is_not_ours():
     groups = [_rg("d", "The Downward Spiral", "Nine Inch Nails")]
     assert af.choose_from_release_groups(groups, "Johnny Cash", lambda _: None)[0] is None
