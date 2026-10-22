@@ -176,6 +176,28 @@ class TestItDeletesEveryCopy:
         conn.close()
         assert left == [survivor]
 
+    def test_no_deny_drops_its_records_left_at_the_path_it_arrived_at(self, vault):
+        """Finalize moves the row, not its duplicate records: they stay at the
+        INBOX path, where the same file arrives again (Codex review of #225)."""
+        h = _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
+        _add(vault, 2, "Blur", "Beetlebum", "Blur/Blur/y.m4a")
+        conn = sqlite3.connect(vault / "musaeus.db")
+        conn.execute(
+            "CREATE TABLE duplicates (group_id TEXT, file_path TEXT, duplicate_type TEXT, audio_hash TEXT)"
+        )
+        inbox = str(vault / "INBOX" / "Odds" / "01. Blur - Song 2.flac")
+        survivor_h = conn.execute("SELECT audio_hash FROM archive WHERE id=2").fetchone()[0]
+        conn.execute("INSERT INTO duplicates VALUES ('g', ?, 'NEAR', ?)", (inbox, h))
+        conn.execute("INSERT INTO duplicates VALUES ('g', 'elsewhere', 'NEAR', ?)", (survivor_h,))
+        conn.commit()
+        conn.close()
+        r = _run(vault, [1], extra=("--no-deny",))
+        assert r.returncode == 0, r.stderr
+        conn = sqlite3.connect(vault / "musaeus.db")
+        left = [p for (p,) in conn.execute("SELECT file_path FROM duplicates")]
+        conn.close()
+        assert left == ["elsewhere"]
+
     def test_a_dry_run_changes_nothing(self, vault):
         _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
         _run(vault, [1], execute=False)

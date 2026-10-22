@@ -450,10 +450,13 @@ def main() -> int:
             if args.no_deny:
                 # The audio may come back to the same path: a duplicate record
                 # left behind would be read as the new row's -- CrossDupe skips a
-                # path it has flagged (Codex review of #225). A survivor's records
-                # stay.
+                # path it has flagged (Codex review of #225). Finalize leaves its
+                # records at the INBOX path it arrived at, so they go by its audio
+                # too -- unless a survivor carries that audio: those are the survivor's.
                 with contextlib.suppress(sqlite3.OperationalError):  # no duplicates table yet
                     conn.execute("DELETE FROM duplicates WHERE file_path = ?", (row["file_path"],))
+                    if h and not audio_kept:
+                        conn.execute("DELETE FROM duplicates WHERE audio_hash = ?", (h,))
             conn.execute("DELETE FROM archive WHERE id=?", (i,))
         n_rows += 1
 
