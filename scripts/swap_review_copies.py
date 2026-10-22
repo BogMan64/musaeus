@@ -59,7 +59,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from musaeus.config import MusicConfig  # noqa: E402
 from musaeus.hasher import audio_hash_safe  # noqa: E402
-from musaeus.keep_rule import decide  # noqa: E402
+from musaeus.keep_rule import decide, keep_key  # noqa: E402
 
 EVENT = "SWAP_PROMOTED"
 #: The library row's facts the promoted copy takes, so it files where L is.
@@ -166,6 +166,14 @@ def review_wins(
         ranked = sorted(
             reviews, key=functools.cmp_to_key(better_first)
         )  # stable: ties keep id order
+        # A 2 s tie is not transitive: 201.9 s ties 202.1 s, but only 202.1 s
+        # beats a 200.0 s master. Among copies tied on every step before
+        # length, the longest goes first, as the resolver's _rank does (Codex
+        # review of #226: FLAC copies now reach the length step).
+        tied = [r for r in ranked if keep_key(dict(r)) == keep_key(dict(ranked[0]))]
+        longest = max(tied, key=lambda r: float(r["duration"] or 0))
+        ranked.remove(longest)
+        ranked.insert(0, longest)
         best, rest = ranked[0], ranked[1:]
         winner, step = decide(dict(best), dict(library))
         tally[f"{winner} ({step})" if step else winner] += 1
