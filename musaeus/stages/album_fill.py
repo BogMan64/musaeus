@@ -22,9 +22,13 @@ their rules unchanged:
                 hits, collections, live-at...), one unambiguous album.
   4. iTunes     the same strict rules (Grey, 2026-10-03): exact artist and
                 title, no single/EP/compilation/reissue/live album, earliest
-                release -- and only if MusicBrainz confirms the song is on that
-                official studio album (iTunes alone picked "Built for Speed",
-                dated 1974, for a 1981 Stray Cats song).
+                release (iTunes alone picked "Built for Speed", dated 1974,
+                for a 1981 Stray Cats song).
+
+The album a text source (2, 3, 4) names is taken only if MusicBrainz confirms
+the song is on that official studio album; otherwise the next source is asked.
+Their own filters let compilations through ("Special Collection", "Recorded
+Live", a film soundtrack: the Odds & Sods songs, Grey, 2026-10-22).
 
 Text sources (2, 3) never try a title naming a specific version -- live,
 remix, acoustic, demo, edit...: the searches ignore the qualifier and return
@@ -203,10 +207,16 @@ def mb_confirm(artist: str, album: str, title: str) -> tuple[bool, str]:
     Album? Raises Unavailable when it cannot answer (a 503 is not "no").
     """
     q = lambda x: strip_bracketed(x).replace("\\", " ").replace('"', " ").strip()  # noqa: E731
-    query = f'recording:"{q(title)}" AND artist:"{q(artist)}" AND release:"{q(album)}"'
+    # Official albums only, in the search itself: unfiltered, the first ten
+    # answers for "Brilliant Disguise" on "Tunnel Of Love" were all bootlegs
+    # ("Tunnel of Love Express Tour"), and the studio album was never seen.
+    query = (
+        f'recording:"{q(title)}" AND artist:"{q(artist)}" AND release:"{q(album)}"'
+        " AND status:official AND primarytype:album"
+    )
     time.sleep(_MB_RATE_S)
     data = _get_json(
-        f"{_MB_RECORDING_URL}?{urlencode({'query': query, 'fmt': 'json', 'limit': 10})}"
+        f"{_MB_RECORDING_URL}?{urlencode({'query': query, 'fmt': 'json', 'limit': 25})}"
     )
     return choose_mb_confirmation(data.get("recordings", []), artist, title, album)
 
@@ -398,6 +408,20 @@ def choose_mb_confirmation(
     )
 
 
+def _confirmed(claim: tuple[str | None, str], artist: str, title: str) -> tuple[str | None, str]:
+    """A text search's album, only if MusicBrainz agrees; otherwise none.
+
+    iTunes' catalogue is full of compilations and placeholder dates, and
+    Discogs and Deezer gave the Odds & Sods songs "Special Collection",
+    "Recorded Live" and a film soundtrack (Grey, 2026-10-22).
+    """
+    album, reason = claim
+    if album is None:
+        return claim
+    ok, evidence = mb_confirm(artist, album, title)
+    return (album if ok else None), f"{reason}; {evidence}"
+
+
 def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
     """The column this stage owns, beside the code that reads it."""
     ensure_columns(conn, (("album_fill_checked_at", "TEXT"),))
@@ -501,24 +525,30 @@ class AlbumFillStage(BaseStage):
                 text_ok = artist and title and not _VERSION_QUALIFIER.search(title)
                 if album is None and text_ok and dg_key and dg_secret:
                     time.sleep(_DISCOGS_RATE_S)
-                    album, reason = choose_from_discogs(
-                        discogs_search(artist, title, dg_key, dg_secret), artist
+                    album, reason = _confirmed(
+                        choose_from_discogs(
+                            discogs_search(artist, title, dg_key, dg_secret), artist
+                        ),
+                        artist,
+                        title,
                     )
                     source, answered = "discogs", True
                 if album is None and text_ok:
                     time.sleep(_DEEZER_RATE_S)
-                    album, reason = choose_from_deezer(deezer_search(artist, title), artist, title)
+                    album, reason = _confirmed(
+                        choose_from_deezer(deezer_search(artist, title), artist, title),
+                        artist,
+                        title,
+                    )
                     source, answered = "deezer", True
                 if album is None and text_ok:
                     time.sleep(_ITUNES_RATE_S)
-                    album, reason = choose_from_itunes(itunes_search(artist, title), artist, title)
+                    album, reason = _confirmed(
+                        choose_from_itunes(itunes_search(artist, title), artist, title),
+                        artist,
+                        title,
+                    )
                     source, answered = "itunes", True
-                    if album is not None:
-                        # iTunes' catalogue is full of compilations and placeholder dates:
-                        # its answer is only a claim until MusicBrainz agrees.
-                        confirmed, evidence = mb_confirm(artist, album, title)
-                        reason = f"{reason}; {evidence}"
-                        album = album if confirmed else None
             except Unavailable as exc:
                 # Not an answer: leave the row unstamped, ask again next run.
                 result.files_skipped += 1
