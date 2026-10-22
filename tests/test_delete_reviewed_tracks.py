@@ -156,6 +156,26 @@ class TestItDeletesEveryCopy:
         conn.close()
         assert not _denied(vault, h)
 
+    def test_no_deny_drops_the_rows_duplicate_records_not_a_survivors(self, vault):
+        """Left behind, a record is read as the returning file's: CrossDupe skips a
+        path it has flagged (Codex review of #225)."""
+        _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
+        _add(vault, 2, "Blur", "Beetlebum", "Blur/Blur/y.m4a")
+        conn = sqlite3.connect(vault / "musaeus.db")
+        conn.execute("CREATE TABLE duplicates (group_id TEXT, file_path TEXT, duplicate_type TEXT)")
+        for rid in (1, 2):
+            path = conn.execute("SELECT file_path FROM archive WHERE id=?", (rid,)).fetchone()[0]
+            conn.execute("INSERT INTO duplicates VALUES ('g', ?, 'CROSS_BATCH')", (path,))
+        conn.commit()
+        survivor = conn.execute("SELECT file_path FROM archive WHERE id=2").fetchone()[0]
+        conn.close()
+        r = _run(vault, [1], extra=("--no-deny",))
+        assert r.returncode == 0, r.stderr
+        conn = sqlite3.connect(vault / "musaeus.db")
+        left = [p for (p,) in conn.execute("SELECT file_path FROM duplicates")]
+        conn.close()
+        assert left == [survivor]
+
     def test_a_dry_run_changes_nothing(self, vault):
         _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
         _run(vault, [1], execute=False)

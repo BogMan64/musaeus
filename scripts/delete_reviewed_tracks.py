@@ -60,6 +60,7 @@ Rerunning is safe -- the done ids read as already gone.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sqlite3
 import sys
 import uuid
@@ -446,6 +447,13 @@ def main() -> int:
                     conn.execute("DELETE FROM archive_tier_hashes WHERE path = ?", (row["file_path"],))
             except sqlite3.OperationalError:
                 pass  # a vault with no bit-rot baseline yet
+            if args.no_deny:
+                # The audio may come back to the same path: a duplicate record
+                # left behind would be read as the new row's -- CrossDupe skips a
+                # path it has flagged (Codex review of #225). A survivor's records
+                # stay.
+                with contextlib.suppress(sqlite3.OperationalError):  # no duplicates table yet
+                    conn.execute("DELETE FROM duplicates WHERE file_path = ?", (row["file_path"],))
             conn.execute("DELETE FROM archive WHERE id=?", (i,))
         n_rows += 1
 
