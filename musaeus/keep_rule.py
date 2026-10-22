@@ -4,12 +4,18 @@ Grey, on the duplicate-review list: "keep the copy that is ALAC over FLAC,
 then studio over live, then quality, then length". Asked the same day and
 answered yes to each reading:
 
-  1. format          ALAC, then FLAC, then any other lossless, then lossy
-                     (a copy whose codec is unknown is never taken for lossless)
-  1b. baked          an original beats a copy the retired bake made at
+  1. studio / live   a studio recording beats a live one -- above everything
+                     else, sound quality included (Grey, 2026-10-22: "Studio
+                     beats live. If both are studio, keep the longer one")
+  2. format          ALAC or FLAC, then any other lossless, then lossy (a copy
+                     whose codec is unknown is never taken for lossless).
+                     ALAC and FLAC are equal (Grey, 2026-10-22): a FLAC
+                     arrival becomes ALAC with the same sound, and "ALAC over
+                     FLAC" kept every library copy before length was asked --
+                     Linda Ronstadt's "Somewhere Out There" at 3:07 over 3:58
+  2b. baked          an original beats a copy the retired bake made at
                      -18 LUFS (Grey, 2026-09-26; the resolver's own step,
                      joined to this rule 2026-10-05 so there is ONE rule)
-  2. studio / live   a studio recording beats a live one
   3. original        the original beats a remaster, remix or re-recording --
                      Grey's standing ruling ("the original trumps the
                      remaster"), placed after studio/live: "keep this"
@@ -42,7 +48,7 @@ LOSSY = frozenset({"aac", "mp3", "vorbis", "opus", "wma", "wmav2", "mp2"})
 #: unknown codec is never taken for lossless, as the rule already said.
 LOSSLESS = frozenset({"alac", "flac", "wavpack", "ape", "tta", "mlp", "truehd", "shorten",
                       "mp4als", "als", "wmalossless", "tak", "ralf"})  # fmt: skip
-STEPS = ("format", "original/baked", "studio/live", "original/remaster", "quality", "length")
+STEPS = ("studio/live", "format", "original/baked", "original/remaster", "quality", "length")
 #: Lengths closer than this are the same length (a fade, a gap of silence).
 LENGTH_SLACK_S = 2.0
 
@@ -51,11 +57,9 @@ def _format_rank(codec: str | None) -> int:
     c = (codec or "").lower()
     if not c:
         return 3
-    if c == "alac":
+    if c in ("alac", "flac"):
         return 0
-    if c == "flac":
-        return 1
-    return 2 if c in LOSSLESS or c.startswith("pcm_") else 3
+    return 1 if c in LOSSLESS or c.startswith("pcm_") else 3
 
 
 def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int]:
@@ -69,9 +73,9 @@ def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int]:
     from .stages.dupe_resolver import _is_live, _is_reissue, _looks_baked
 
     return (
+        1 if _is_live(dict(m)) else 0,
         _format_rank(m.get("codec")),
         1 if _looks_baked(dict(m)) else 0,
-        1 if _is_live(dict(m)) else 0,
         1 if _is_reissue(dict(m)) else 0,
         -int(m.get("sample_rate") or 0),
     )
