@@ -165,6 +165,35 @@ def test_no_recording_matching_the_song_gives_no_album_from_the_fingerprint(env,
     )
 
 
+def _aid_rec(rid, title, artist, *groups):
+    return {"id": rid, "title": title, "artists": [{"name": artist}] if artist else [],
+            "releasegroups": list(groups)}  # fmt: skip
+
+
+def test_the_song_is_found_in_a_later_result_as_the_acoustid_stage_finds_it(monkeypatch):
+    # Codex review of #223: only the top result was read.
+    monkeypatch.setattr(af, "_get_json", lambda url: {"status": "ok", "results": [
+        {"score": 0.99, "recordings": [_aid_rec("x", "Piano Man", "Billy Joel", _rg("pm", "Piano Man"))]},
+        {"score": 0.95, "recordings": [_aid_rec("s", "All About Soul", "Billy Joel",
+                                            _rg("rod", "River of Dreams", "Billy Joel"))]},
+    ]})  # fmt: skip
+    groups = af.acoustid_release_groups("FP", 200.0, "k", "Billy Joel", "All About Soul")
+    assert [g["title"] for g in groups] == ["River of Dreams"]
+
+
+def test_a_recording_with_no_artist_credit_is_not_the_song(monkeypatch):
+    # Codex review of #223: "Hurt" with no artist took another act's album.
+    monkeypatch.setattr(af, "_get_json", lambda url: {"status": "ok", "results": [
+        {"score": 0.99, "recordings": [_aid_rec("h", "Hurt", "", _rg("d", "The Downward Spiral", "Nine Inch Nails"))]},
+    ]})  # fmt: skip
+    assert af.acoustid_release_groups("FP", 200.0, "k", "Johnny Cash", "Hurt") == []
+
+
+def test_one_clean_album_crediting_someone_else_is_not_ours():
+    groups = [_rg("d", "The Downward Spiral", "Nine Inch Nails")]
+    assert af.choose_from_release_groups(groups, "Johnny Cash", lambda _: None)[0] is None
+
+
 def test_an_album_crediting_someone_else_is_left_empty(env):
     p = env.add("Bargain", artist="The Who")
     env.answers["acoustid"] = [

@@ -159,9 +159,17 @@ def acoustid_release_groups(
     if data.get("status") != "ok":
         raise Unavailable(f"status={data.get('status')!r}")
     results = sorted(data.get("results") or [], key=lambda x: x.get("score", 0), reverse=True)
-    recordings = (results[0].get("recordings") or []) if results else []
-    rid = _pick_matching_recording(recordings, artist, title)
-    return next((r.get("releasegroups") or [] for r in recordings if r.get("id") == rid), [])
+    # The AcoustID stage's search (_acousticid_lookup): every result scoring
+    # 0.80 or more, the first agreeing recording wins. A recording with no
+    # artist credit cannot agree with ours (Codex review of #223).
+    for result in results:
+        if float(result.get("score", 0)) < 0.80:
+            continue
+        recordings = [r for r in result.get("recordings") or [] if r.get("artists")]
+        rid = _pick_matching_recording(recordings, artist, title)
+        if rid:
+            return next(r.get("releasegroups") or [] for r in recordings if r.get("id") == rid)
+    return []
 
 
 def mb_first_release(release_group_id: str) -> str | None:
@@ -218,10 +226,10 @@ def choose_from_release_groups(
         matched = [
             g for g in clean if any(want in norm(a.get("name")) for a in (g.get("artists") or []))
         ]
-        if matched:
-            clean = matched
-        elif len(clean) > 1:
+        if not matched:
+            # Even when it is the only one (Codex review of #223).
             return None, "no candidate credits our artist"
+        clean = matched
     if len(clean) == 1:
         return clean[0].get("title"), "single clean Album"
     dated = []
