@@ -479,7 +479,9 @@ class AlbumFillStage(BaseStage):
             artist, title = (row["artist"] or "").strip(), (row["title"] or "").strip()
             album, source, reason, answered = None, "", "", False
             try:
-                if aid_key and row["chromaprint"] and row["chromaprint_duration"]:
+                # No artist, no way to tell which recording is ours: not asked,
+                # not stamped (Codex review of #223, round 2).
+                if aid_key and artist and row["chromaprint"] and row["chromaprint_duration"]:
                     time.sleep(_AID_RATE_S)
                     groups = acoustid_release_groups(
                         row["chromaprint"], row["chromaprint_duration"], aid_key, artist, title

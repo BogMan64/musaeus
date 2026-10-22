@@ -189,6 +189,18 @@ def test_a_recording_with_no_artist_credit_is_not_the_song(monkeypatch):
     assert af.acoustid_release_groups("FP", 200.0, "k", "Johnny Cash", "Hurt") == []
 
 
+def test_a_song_with_no_artist_is_not_asked_and_not_stamped(env, monkeypatch):
+    # Codex review of #223, round 2: with no artist to check, any "Hurt" agreed.
+    monkeypatch.setattr(af, "acoustid_release_groups", _REAL_ACOUSTID_RELEASE_GROUPS)
+    monkeypatch.setattr(af, "_get_json", lambda url: {"status": "ok", "results": [
+        {"score": 0.99, "recordings": [_aid_rec("h", "Hurt", "Nine Inch Nails",
+                                                _rg("d", "The Downward Spiral", "Nine Inch Nails"))]},
+    ]})  # fmt: skip
+    p = env.add("Hurt", artist="")
+    env.run()
+    assert env.album(p) == (None, None), "nothing to check it against: asked again later"
+
+
 def test_one_clean_album_crediting_someone_else_is_not_ours():
     groups = [_rg("d", "The Downward Spiral", "Nine Inch Nails")]
     assert af.choose_from_release_groups(groups, "Johnny Cash", lambda _: None)[0] is None
