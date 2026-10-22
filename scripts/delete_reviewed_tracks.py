@@ -453,19 +453,21 @@ def main() -> int:
                 # path it has flagged (Codex review of #225). Finalize leaves its
                 # records at the INBOX path it arrived at, so they go by its audio
                 # too -- unless a survivor carries that audio: those are the survivor's.
-                # A person's "keep both" (every member of a NEAR or ACOUSTIC group
-                # marked keep, as NearDupe reads it) stays, as a denial does: it
-                # is Grey's ruling, not this batch's (Codex review of #225, round 3).
+                # A person's "keep both" stays, as a denial does: it is Grey's
+                # ruling, not this batch's (Codex review of #225, round 3). NearDupe's
+                # own rule: two recordings, every member marked keep (round 4).
                 not_decided = (
                     " AND NOT (duplicate_type IN ('NEAR', 'ACOUSTIC') AND group_id IN ("
-                    "SELECT group_id FROM duplicates GROUP BY group_id"
-                    " HAVING SUM(COALESCE(status, '') <> 'keep') = 0))"
+                    "SELECT group_id FROM duplicates GROUP BY group_id HAVING COUNT(*) > 1"
+                    " AND SUM(COALESCE(status, '') <> 'keep' OR COALESCE(audio_hash, '') = '') = 0"
+                    " AND COUNT(DISTINCT audio_hash) = 2))"
                 )
                 with contextlib.suppress(sqlite3.OperationalError):  # no duplicates table yet
-                    conn.execute(
-                        "DELETE FROM duplicates WHERE file_path = ?" + not_decided,
-                        (row["file_path"],),
-                    )
+                    if str(Path(row["file_path"])) not in keep_paths:  # a survivor's path: its records
+                        conn.execute(
+                            "DELETE FROM duplicates WHERE file_path = ?" + not_decided,
+                            (row["file_path"],),
+                        )
                     if h and not audio_kept:
                         conn.execute("DELETE FROM duplicates WHERE audio_hash = ?" + not_decided, (h,))
             conn.execute("DELETE FROM archive WHERE id=?", (i,))
