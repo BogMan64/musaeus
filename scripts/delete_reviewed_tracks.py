@@ -46,6 +46,11 @@ nothing of it deleted or denied, and it counts as a survivor for the rest
 of the batch. --force-id ID deletes it anyway, for a master that is
 damaged or unreadable; its REFUSED line says what is at the path.
 
+--no-deny forgets a track instead: every copy and the row go, the audio is
+NOT denied, so the same file may be ingested again. For resetting a test
+batch (Grey, 2026-10-22: rerun a batch to see what MUSAEUS does on its own),
+never for a review's removals.
+
 EXIT 1 when any row was refused: the others WERE done (partly done).
 Rerunning is safe -- the done ids read as already gone.
 
@@ -173,6 +178,10 @@ def main() -> int:
     ap.add_argument("ids", type=Path, help="file of archive ids, one per line")
     ap.add_argument("--reason", required=True, help="recorded on every event and deny entry")
     ap.add_argument("--execute", action="store_true", help="actually delete (default: dry run)")
+    ap.add_argument(
+        "--no-deny", action="store_true",
+        help="do not deny the audio: the same file may be ingested again (test batch reset)",
+    )
     ap.add_argument(
         "--force-id", type=int, action="append", default=[], metavar="ID",
         help="delete this id's master even though it cannot be confirmed as this track "
@@ -410,7 +419,7 @@ def main() -> int:
         if audio_kept:
             print(f"     NOT DENIED (another row still carries this audio): {h[:12]}")
             n_kept_audio += 1
-        elif h and led is not None:
+        elif h and led is not None and not args.no_deny:
             if args.execute:
                 deny_hash(led, h, args.reason, row["file_path"])
             n_denied += 1

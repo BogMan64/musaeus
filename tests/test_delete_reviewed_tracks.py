@@ -144,6 +144,18 @@ class TestItDeletesEveryCopy:
         conn.close()
         assert _denied(vault, h)
 
+    def test_no_deny_removes_every_copy_but_lets_the_audio_back_in(self, vault):
+        """A test batch is reset to be run again (Grey, 2026-10-22): gone, not refused."""
+        h = _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a", car="Blur/Parklife/x.m4a")
+        r = _run(vault, [1], extra=("--no-deny",))
+        assert r.returncode == 0, r.stderr
+        for tier in ("ALAC-Archival", "ALAC_Library", "CAR_Library"):
+            assert not (vault / "Libraries" / tier / "Blur" / "Parklife" / "x.m4a").exists(), tier
+        conn = sqlite3.connect(vault / "musaeus.db")
+        assert conn.execute("SELECT COUNT(*) FROM archive WHERE id=1").fetchone()[0] == 0
+        conn.close()
+        assert not _denied(vault, h)
+
     def test_a_dry_run_changes_nothing(self, vault):
         _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
         _run(vault, [1], execute=False)
