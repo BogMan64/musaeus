@@ -568,3 +568,66 @@ def test_discogs_confirms_an_album_release_by_the_artist():
 )
 def test_discogs_does_not_confirm_anything_less(results):
     assert af.choose_discogs_confirmation(results, "Toto", "Toto IV")[0] is False
+
+
+# ── An album a song arrives with: checked with MusicBrainz (Grey, 2026-10-23) ──
+
+
+def _verified(env, path):
+    return env.conn.execute(
+        "SELECT album_verified_at FROM archive WHERE file_path=?", (path,)
+    ).fetchone()[0]
+
+
+def test_an_arriving_album_musicbrainz_confirms_is_kept(env):
+    env.run()  # the column arrives; what was there before is not checked
+    p = env.add("Africa", album="Toto IV")
+    env.answers["confirm"] = {"Toto IV"}
+    env.run()
+    assert env.calls["confirm"] == ["Toto IV"] and env.calls["acoustid"] == []
+    assert env.album(p)[0] == "Toto IV" and _verified(env, p)
+
+
+def test_an_arriving_compilation_is_cleared_and_looked_up_in_the_same_run(env):
+    """The Odds & Ends songs arrived as "70s Hits" and "Greatest Hits" (2026-10-23)."""
+    env.run()
+    p = env.add("Africa", album="70s Hits")
+    env.answers["confirm"] = {"Toto IV"}
+    env.answers["acoustid"] = [_rg("r1", "Toto IV")]
+    env.run()
+    assert env.album(p)[0] == "Toto IV"
+    ev = env.conn.execute(
+        "SELECT old_value FROM events WHERE event_type='ALBUM_CLEARED' AND file_path=?", (p,)
+    ).fetchone()
+    assert ev[0] == "70s Hits"
+
+
+def test_albums_in_the_catalogue_before_the_check_are_left_alone(env):
+    p = env.add("Rosanna", album="Greatest Hits")
+    env.answers["confirm"] = set()
+    env.run()
+    assert env.calls["confirm"] == [] and env.album(p)[0] == "Greatest Hits"
+
+
+def test_no_answer_leaves_the_arriving_album_for_the_next_run(env, monkeypatch):
+    env.run()
+    p = env.add("Africa", album="70s Hits")
+
+    def _down(*_):
+        raise Unavailable("503")
+
+    monkeypatch.setattr(af, "mb_confirm", _down)
+    env.run()
+    assert env.album(p)[0] == "70s Hits" and not _verified(env, p)
+
+
+def test_classical_and_version_titles_are_not_checked(env):
+    env.run()
+    live = env.add("Rosanna (Live)", album="Absolutely Live")
+    bach = env.add("Air", artist="Johann Sebastian Bach", album="Bach: Greatest Hits")
+    env.conn.execute("UPDATE archive SET genre='Classical' WHERE file_path=?", (bach,))
+    env.conn.commit()
+    env.answers["confirm"] = set()
+    env.run()
+    assert env.calls["confirm"] == []
+    assert env.album(live)[0] == "Absolutely Live" and env.album(bach)[0] == "Bach: Greatest Hits"

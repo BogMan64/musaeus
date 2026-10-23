@@ -422,9 +422,19 @@ def _confirmed(claim: tuple[str | None, str], artist: str, title: str) -> tuple[
     return (album if ok else None), f"{reason}; {evidence}"
 
 
+#: album_verified_at for an album already in the catalogue when the arrival
+#: check came: never checked, never cleared by it (Grey, 2026-10-23).
+_BEFORE_THE_CHECK = "before the arrival check (2026-10-23)"
+
+
 def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
-    """The column this stage owns, beside the code that reads it."""
+    """The columns this stage owns, beside the code that reads them."""
     ensure_columns(conn, (("album_fill_checked_at", "TEXT"),))
+    if ensure_columns(conn, (("album_verified_at", "TEXT"),)):
+        conn.execute(
+            "UPDATE archive SET album_verified_at=? WHERE album IS NOT NULL AND TRIM(album)<>''",
+            (_BEFORE_THE_CHECK,),
+        )
 
 
 #: An album that is not an album. Grey, 2026-10-03 ("yes"): a source folder's
@@ -445,6 +455,16 @@ def _playlist_rule(conn) -> None:  # type: ignore[no-untyped-def]
 _CANDIDATES = (
     f"FROM archive WHERE status='CATALOGUED' AND {NO_ALBUM_SQL} "
     "AND (album_fill_checked_at IS NULL OR album_fill_checked_at='')"
+)
+
+#: An album a song ARRIVED with, not yet checked (Grey, 2026-10-23, option B:
+#: the streaming service's names include "70s Hits" and "Greatest Hits").
+#: Classical is left alone: MusicBrainz credits its recordings to performers,
+#: and MUSAEUS files classical by composer, so the check could never agree.
+_TO_CHECK = (
+    "FROM archive WHERE status='CATALOGUED' AND NOT "
+    f"{NO_ALBUM_SQL} AND (album_verified_at IS NULL OR album_verified_at='') "
+    "AND COALESCE(genre, '') NOT LIKE 'Classical%'"
 )
 
 
@@ -490,6 +510,8 @@ class AlbumFillStage(BaseStage):
         cfg = ctx.config
         aid_key = cfg.acousticid_api_key
         dg_key, dg_secret = cfg.discogs_consumer_key, cfg.discogs_consumer_secret
+        tally: dict[str, int] = {}
+        self._check_arrived_albums(ctx, tally)
         rows = ctx.conn.execute(
             f"SELECT id, file_path, artist, title, chromaprint, chromaprint_duration {_CANDIDATES} "
             "ORDER BY artist, title"
@@ -502,7 +524,6 @@ class AlbumFillStage(BaseStage):
                 mb_cache[rg_id] = mb_first_release(rg_id)
             return mb_cache[rg_id]
 
-        tally: dict[str, int] = {}
         for i, row in enumerate(rows, 1):
             result.files_processed += 1
             artist, title = (row["artist"] or "").strip(), (row["title"] or "").strip()
@@ -568,9 +589,9 @@ class AlbumFillStage(BaseStage):
             now = datetime.now(timezone.utc).isoformat(timespec="seconds")
             if album:
                 changed = ctx.conn.execute(
-                    "UPDATE archive SET album=?, album_fill_checked_at=? "
+                    "UPDATE archive SET album=?, album_fill_checked_at=?, album_verified_at=? "
                     f"WHERE id=? AND {NO_ALBUM_SQL}",
-                    (album, now, row["id"]),
+                    (album, now, now, row["id"]),
                 ).rowcount
                 if changed:
                     result.files_changed += 1
@@ -591,6 +612,52 @@ class AlbumFillStage(BaseStage):
             result.notes.append(f"{v:,} {k}")
         ctx.record_stage(result)
         return result
+
+    def _check_arrived_albums(self, ctx: RunContext, tally: dict[str, int]) -> None:
+        """Keep an album a song arrived with only if MusicBrainz confirms it.
+
+        Confirmed: stamped, kept. Not confirmed: cleared, so the fill below looks
+        the album up in this same run. No answer: left as it is, asked next run.
+        A title naming a version (live, remix...) is not asked: its own album
+        is often a live album, which the check, made for studio albums, refuses.
+        """
+        rows = ctx.conn.execute(
+            f"SELECT id, file_path, artist, title, album {_TO_CHECK} ORDER BY artist, title"
+        ).fetchall()
+        for row in rows:
+            artist, title = (row["artist"] or "").strip(), (row["title"] or "").strip()
+            if not artist or not title:
+                continue
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            if _VERSION_QUALIFIER.search(title):
+                ctx.conn.execute(
+                    "UPDATE archive SET album_verified_at=? WHERE id=?",
+                    (f"not asked: the title names a version ({now})", row["id"]),
+                )
+                continue
+            try:
+                ok, evidence = mb_confirm(artist, row["album"], title)
+            except Unavailable as exc:
+                tally["arriving album: no answer (asked again next run)"] = (
+                    tally.get("arriving album: no answer (asked again next run)", 0) + 1
+                )
+                logger.warning("[album-fill] %s: %s", row["file_path"], exc)
+                continue
+            if ok:
+                ctx.conn.execute(
+                    "UPDATE archive SET album_verified_at=? WHERE id=?", (now, row["id"])
+                )
+                tally["arriving album confirmed"] = tally.get("arriving album confirmed", 0) + 1
+                continue
+            ctx.conn.execute(
+                "UPDATE archive SET album=NULL, album_verified_at=? WHERE id=?", (now, row["id"])
+            )
+            ctx.log_event("ALBUM_CLEARED", file_path=row["file_path"], old_value=row["album"],
+                          stage=self.NAME, note=f"arriving album not confirmed: {evidence}")  # fmt: skip
+            tally["arriving album not confirmed, looked up"] = (
+                tally.get("arriving album not confirmed, looked up", 0) + 1
+            )
+        ctx.conn.commit()
 
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._fill(ctx, dry_run=True)
