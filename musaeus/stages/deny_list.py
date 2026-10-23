@@ -111,6 +111,9 @@ class DenyListStage(BaseStage):
                 return [], "no deny-list table; newly ingested files need hashing first"
             reserved: set[Path] = set()
             actions: list[dict[str, str]] = []
+            # A catalogue row at the destination stops the real move (unique
+            # file_path): shown as blocked (Codex review of #230, round 3).
+            owned = {r[0] for r in conn.execute("SELECT file_path FROM archive")}
             for row in rows:
                 entry = lookup_denied_hash(index, row["audio_hash"])
                 if entry is None or _is_advisory(entry["reason"]):
@@ -123,7 +126,7 @@ class DenyListStage(BaseStage):
                 reserved.add(target)
                 actions.append(
                     {
-                        "action": "quarantine",
+                        "action": "blocked" if str(target) in owned else "quarantine",
                         "source": str(source),
                         "destination": str(target),
                         "reason": entry["reason"],

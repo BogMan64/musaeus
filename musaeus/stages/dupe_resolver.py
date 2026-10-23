@@ -648,6 +648,9 @@ class DupeResolverStage(BaseStage):
         reserved: set[Path] = set()
         batch_date = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
         review_dir = cfg.dupes_review_dir
+        # A catalogue row at the destination stops the real move (unique
+        # file_path): shown as blocked (Codex review of #230, round 3).
+        owned = {r[0] for r in conn.execute("SELECT file_path FROM archive")}
 
         def add(loser: dict, keeper: dict | None, group_id: str) -> None:
             source = Path(loser["file_path"])
@@ -668,7 +671,7 @@ class DupeResolverStage(BaseStage):
             moved.add(str(source))
             actions.append(
                 {
-                    "action": "move to REVIEW",
+                    "action": "blocked" if str(target) in owned else "move to REVIEW",
                     "source": str(source),
                     "destination": str(target),
                     "reason": f"duplicate {loser.get('duplicate_type') or 'unknown'}; "

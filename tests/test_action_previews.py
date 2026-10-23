@@ -258,3 +258,24 @@ def test_artist_consolidate_album_spellings_after_a_rename(vault) -> None:
     stage = build_plan(cfg, [ArtistConsolidateStage]).stages[0]
 
     assert any(a["action"] == "album spelling" for a in stage.actions), stage.actions
+
+
+def test_deny_preview_shows_a_destination_the_catalogue_owns_as_blocked(vault) -> None:
+    """A stale row at the quarantine path stops the real move (Codex review of #230, r3)."""
+    cfg, conn = vault
+    source = cfg.inbox / "returning.m4a"
+    add_track(conn, source, status="HASHED", audio_hash="h" * 64)
+    upsert_archive(
+        conn, {"file_path": str(cfg.quarantine / "denied" / source.name), "status": "DELETED"}
+    )
+    conn.commit()
+    cfg.hash_index_path.parent.mkdir(parents=True, exist_ok=True)
+    index = open_hash_index(cfg.hash_index_path)
+    ensure_deny_list(index)
+    deny_hash(index, "h" * 64, "removed by owner decision", str(source))
+    index.commit()
+    index.close()
+
+    stage = build_plan(cfg, [DenyListStage]).stages[0]
+
+    assert stage.actions[0]["action"] == "blocked"
