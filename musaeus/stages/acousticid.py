@@ -200,13 +200,17 @@ def _spellings(name: str) -> set[str]:
 
 
 def _same_song(a: str, b: str) -> bool:
-    """One title once a version label is set aside, part for part.
+    """One title once only its version label is set aside, part for part.
 
-    Stricter than _titles_agree, which lets a title be part of the other:
-    a pair the keep rule may split must be one song by name too.
+    Stricter than _titles_agree, which lets a title be part of the other: a
+    pair the keep rule may split must be one song by name too. Only labels
+    NearDupe knows go ("(Remastered)", "(Original Mix)"); any other bracket is
+    part of the title -- "Medley (A/B)" is not "Medley (C/D)" (Codex review
+    of #228, round 2).
     """
-    ka = _norm_for_match(base_title(same_part_spelling(a or "")))
-    kb = _norm_for_match(base_title(same_part_spelling(b or "")))
+    from .neardupe import _normalise
+
+    ka, kb = (_normalise(same_part_spelling(t or ""), strip_qualifiers=True) for t in (a, b))
     return bool(ka) and ka == kb and part_numbers(a or "") == part_numbers(b or "")
 
 

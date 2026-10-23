@@ -250,3 +250,12 @@ class TestClassicalWorksAreNotDuplicates:
         """
         assert not _is_different_piece("Symphony No. 5", "Symphony")
         assert not _is_different_piece("Sonata - I. Allegro", "Sonata")
+
+
+def test_an_original_mix_label_is_a_version_label():
+    """Sam & Dave "Hold On I'm Comin' (Original Mix)" was paired with "Hold On, I'm
+    Comin'" only by fingerprint, never by name (Odds & Ends, 2026-10-23)."""
+    from musaeus.stages.neardupe import _normalise
+
+    a = _normalise("Hold On I'm Comin' (Original Mix)", strip_qualifiers=True)
+    assert a == _normalise("Hold On, I'm Comin'", strip_qualifiers=True)

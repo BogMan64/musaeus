@@ -74,6 +74,9 @@ STRIP_WORDS: tuple[str, ...] = (
     "radio edit",
     "single version",
     "album version",
+    # Sam & Dave "Hold On I'm Comin' (Original Mix)" was never paired with
+    # "Hold On, I'm Comin'" by name, only by fingerprint (Odds & Ends, 2026-10-23).
+    "original mix",
     "mono",
     "stereo",
     "demo",

@@ -287,6 +287,22 @@ def test_a_pair_whose_titles_differ_stays_for_grey(tmp_path, monkeypatch):
     assert blue.is_file() and sky.is_file(), "two songs by name were split by the keep rule"
 
 
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        ("Hold On I'm Comin' (Original Mix)", "Hold On, I'm Comin'", True),
+        ("Lady (Remastered 2006)", "Lady", True),
+        ("Blue", "Blue Sky", False),
+        ("Medley (A/B)", "Medley (C/D)", False),
+        ("Song - Part 1", "Song - Part 2", False),
+    ],
+)
+def test_only_a_version_label_is_set_aside_before_titles_are_compared(a, b, same):
+    """Codex review of #228, round 2: every bracket was dropped, so two medleys
+    named apart only in brackets were one song."""
+    assert acoustid_mod._same_song(a, b) is same
+
+
 def test_a_copy_already_moved_to_review_is_not_a_pair_to_decide(tmp_path, monkeypatch):
     # Enrichment of 2026-09-27 listed 756 "same recording" pairs for Grey;
     # 718 paired a library file with the copy Act 2 had already moved to the
