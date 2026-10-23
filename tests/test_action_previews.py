@@ -210,3 +210,21 @@ def test_artist_consolidate_lists_album_spellings_too(vault) -> None:
 
     assert any(a["action"] == "album spelling" for a in stage.actions), stage.actions
     assert "1 album spelling(s)" in stage.description
+
+
+def test_tribute_preview_follows_the_known_artist_rule(vault) -> None:
+    """The stage leaves a library artist's compilation track alone (#231);
+    the preview must say the same."""
+    cfg, conn = vault
+    filed = cfg.alac_library / "Soul/Randy Crawford/Now We May Begin/One Day.m4a"
+    add_track(conn, filed, artist="Randy Crawford")
+    conn.execute(
+        "UPDATE archive SET finalized_at='2026-01-01 00:00:00' WHERE file_path=?", (str(filed),)
+    )
+    conn.commit()
+    add_track(conn, cfg.inbox / "street.m4a", artist="Randy Crawford", title="Street Life (Edit)",
+              album="Relaxing Soul Classics")  # fmt: skip
+
+    stage = build_plan(cfg, [TributeQuarantineStage]).stages[0]
+
+    assert stage.actions == ()
