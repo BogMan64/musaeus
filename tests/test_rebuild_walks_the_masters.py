@@ -52,3 +52,58 @@ def test_the_rebuild_reads_the_masters_not_the_edition(tmp_path):
     conn.row_factory = sqlite3.Row
     paths = [r["file_path"] for r in conn.execute("SELECT file_path FROM archive_rebuilt")]
     assert paths == [str(cfg.alac_archive / rel)], paths
+
+
+def test_rebuilt_library_albums_are_not_arrivals_to_check(tmp_path):
+    """After a rebuild every row is new to the catalogue; album-fill's arrival
+    check must not ask MusicBrainz about the whole library (review of #229)."""
+    from mutagen.mp4 import MP4
+
+    from musaeus.db import ALBUM_BEFORE_THE_CHECK
+
+    cfg = MusicConfig(
+        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "Libraries" / "ALAC_Library",
+        db_path=tmp_path / "musaeus.db",
+    )  # fmt: skip
+    cfg.ensure_dirs()
+    song = cfg.alac_archive / "Rock" / "Stones" / "Sticky Fingers" / "Brown Sugar.m4a"
+    _audio(song)
+    tags = MP4(song)
+    tags["\xa9alb"], tags["\xa9ART"], tags["\xa9nam"] = "Sticky Fingers", "Stones", "Brown Sugar"
+    tags.save()
+    conn = open_db(cfg.db_path)
+    scan_and_rebuild(conn, cfg, compute_hashes=False)
+    row = conn.execute("SELECT album, album_verified_at FROM archive_rebuilt").fetchone()
+    assert tuple(row) == ("Sticky Fingers", ALBUM_BEFORE_THE_CHECK), tuple(row)
+
+
+def test_a_rebuild_keeps_the_album_checks_decision_over_a_stale_tag(tmp_path):
+    """The check cleared "Greatest Hits"; the tag still says it until the next
+    Act 3. A rebuild must not bring it back (Codex review of #229, round 4)."""
+    from mutagen.mp4 import MP4
+
+    from musaeus.db import upsert_archive
+
+    cfg = MusicConfig(
+        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "Libraries" / "ALAC_Library",
+        db_path=tmp_path / "musaeus.db",
+    )  # fmt: skip
+    cfg.ensure_dirs()
+    song = cfg.alac_archive / "Pop" / "Toto" / "Unsorted" / "Africa.m4a"
+    _audio(song)
+    tags = MP4(song)
+    tags["\xa9alb"], tags["\xa9ART"], tags["\xa9nam"] = "Greatest Hits", "Toto", "Africa"
+    tags.save()
+    conn = open_db(cfg.db_path)
+    cleared = "cleared: not confirmed (2026-10-23)"
+    upsert_archive(conn, {"file_path": str(song), "status": "CATALOGUED", "artist": "Toto",
+                          "title": "Africa", "album": None})  # fmt: skip
+    conn.execute("UPDATE archive SET album_verified_at=? WHERE file_path=?", (cleared, str(song)))
+    conn.commit()
+    scan_and_rebuild(conn, cfg, compute_hashes=False)
+    row = conn.execute("SELECT album, album_verified_at FROM archive_rebuilt").fetchone()
+    assert tuple(row) == (None, cleared), tuple(row)

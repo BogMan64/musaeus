@@ -47,6 +47,7 @@ discovering it could not repopulate afterwards.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sqlite3
 from datetime import datetime, timezone
@@ -54,6 +55,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import AUDIO_EXTENSIONS, MusicConfig
+from .db import ALBUM_BEFORE_THE_CHECK
 from .hasher import audio_hash_safe, file_hash
 from .identity_tags import read_identity
 from .stages.bpm import read_existing_tags as _read_bpm_tags
@@ -327,6 +329,17 @@ def scan_and_rebuild(
     create_rebuild_table(conn, table)
 
     cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    # The album check's decisions, kept: a tag still names an album the check
+    # rejected until the next Act 3 rewrites it (Codex review of #229, round 4).
+    decided: dict[str, tuple[Any, Any]] = {}
+    with contextlib.suppress(sqlite3.Error):  # no catalogue, or one from before the check
+        decided = {
+            r[0]: (r[1], r[2])
+            for r in conn.execute(
+                "SELECT file_path, album, album_verified_at FROM archive "
+                "WHERE album_verified_at IS NOT NULL AND album_verified_at <> ''"
+            )
+        }
     now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
 
     for i, path in enumerate(files, 1):
@@ -376,6 +389,12 @@ def scan_and_rebuild(
             if row["status"] == "CATALOGUED":
                 row["finalized_at"] = row["last_modified"]
                 row["canonicalized_at"] = row["last_modified"]
+                # Library songs, not arrivals: the album check (album-fill) must
+                # not ask MusicBrainz about the whole library after a rebuild.
+                if str(path) in decided:
+                    row["album"], row["album_verified_at"] = decided[str(path)]
+                elif str(row.get("album") or "").strip():
+                    row["album_verified_at"] = ALBUM_BEFORE_THE_CHECK
 
             usable = {k: v for k, v in row.items() if k in cols}
             placeholders = ", ".join("?" for _ in usable)

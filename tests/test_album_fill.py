@@ -568,3 +568,122 @@ def test_discogs_confirms_an_album_release_by_the_artist():
 )
 def test_discogs_does_not_confirm_anything_less(results):
     assert af.choose_discogs_confirmation(results, "Toto", "Toto IV")[0] is False
+
+
+# ── An album a song arrives with: checked with MusicBrainz (Grey, 2026-10-23) ──
+
+
+def _verified(env, path):
+    return env.conn.execute(
+        "SELECT album_verified_at FROM archive WHERE file_path=?", (path,)
+    ).fetchone()[0]
+
+
+def test_an_arriving_album_musicbrainz_confirms_is_kept(env):
+    env.run()  # the column arrives; what was there before is not checked
+    p = env.add("Africa", album="Toto IV")
+    env.answers["confirm"] = {"Toto IV"}
+    env.run()
+    assert env.calls["confirm"] == ["Toto IV"] and env.calls["acoustid"] == []
+    assert env.album(p)[0] == "Toto IV" and _verified(env, p)
+
+
+def test_an_arriving_compilation_is_cleared_and_looked_up_in_the_same_run(env):
+    """The Odds & Ends songs arrived as "70s Hits" and "Greatest Hits" (2026-10-23)."""
+    env.run()
+    p = env.add("Africa", album="70s Hits")
+    env.answers["confirm"] = {"Toto IV"}
+    env.answers["acoustid"] = [_rg("r1", "Toto IV")]
+    env.run()
+    assert env.album(p)[0] == "Toto IV"
+    ev = env.conn.execute(
+        "SELECT old_value FROM events WHERE event_type='ALBUM_CLEARED' AND file_path=?", (p,)
+    ).fetchone()
+    assert ev[0] == "70s Hits"
+
+
+def test_albums_in_the_catalogue_before_the_check_are_left_alone(tmp_path):
+    """open_db adds the column before any intake and stamps the albums already
+    there, so they are never checked (Codex review of #229, round 2)."""
+    db = tmp_path / "old.db"
+    conn = open_db(db)
+    conn.execute("ALTER TABLE archive DROP COLUMN album_verified_at")  # a catalogue from before
+    upsert_archive(conn, {"file_path": "/x/a.m4a", "status": "CATALOGUED",
+                          "artist": "Toto", "title": "Rosanna", "album": "Greatest Hits"})  # fmt: skip
+    conn.commit()
+    conn.close()
+    conn = open_db(db)
+    stamp = conn.execute("SELECT album_verified_at FROM archive").fetchone()[0]
+    assert stamp and stamp.startswith("before the arrival check")
+    n, _ = AlbumFillStage.plan_candidates(conn, None)
+    assert n == 0, "an album from before the check is not one to check"
+
+
+def test_no_answer_leaves_the_arriving_album_for_the_next_run(env, monkeypatch):
+    env.run()
+    p = env.add("Africa", album="70s Hits")
+
+    def _down(*_):
+        raise Unavailable("503")
+
+    monkeypatch.setattr(af, "mb_confirm", _down)
+    env.run()
+    assert env.album(p)[0] == "70s Hits" and not _verified(env, p)
+
+
+def test_classical_and_version_titles_are_not_checked(env):
+    env.run()
+    live = env.add("Rosanna (Live)", album="Absolutely Live")
+    bach = env.add("Air", artist="Johann Sebastian Bach", album="Bach: Greatest Hits")
+    env.conn.execute("UPDATE archive SET genre='Classical' WHERE file_path=?", (bach,))
+    env.conn.commit()
+    env.answers["confirm"] = set()
+    env.run()
+    assert env.calls["confirm"] == []
+    assert env.album(live)[0] == "Absolutely Live" and env.album(bach)[0] == "Bach: Greatest Hits"
+
+
+def test_an_arrival_never_finalized_is_still_checked(env):
+    """Held back by Finalize, or catalogued by a run that stopped and resumed:
+    an arrival is told from an old album by when the catalogue was opened, not
+    by finalized_at (Codex review of #229, round 2)."""
+    new = env.add("Africa", album="70s Hits")
+    env.answers["confirm"] = set()
+    env.run()
+    assert env.calls["confirm"] == ["70s Hits"] and env.album(new)[0] is None
+
+
+def test_the_preview_counts_arriving_albums_to_check(env):
+    env.run()
+    env.add("Africa", album="70s Hits")
+    n, what = AlbumFillStage.plan_candidates(env.conn, env.cfg)
+    assert n == 1 and "arriving album" in what
+
+
+def test_the_tagger_removes_an_album_the_check_cleared():
+    """Left in the tag, a rebuild from the files would bring it back (Codex review of #229)."""
+    from musaeus.stages.tagger import TaggerStage
+
+    cleared = {"album": None, "album_verified_at": f"{af.CLEARED_BY_CHECK} (2026-10-23)"}
+    assert TaggerStage()._compute_changes(cleared, {"album": "Greatest Hits"}).get("album") == ""
+    kept = {"album": None, "album_verified_at": None}
+    assert "album" not in TaggerStage()._compute_changes(kept, {"album": "Greatest Hits"})
+
+
+def test_a_title_with_live_as_a_word_is_still_checked(env):
+    """Only a version LABEL is skipped -- "(Live)" -- not the word in a title
+    (Codex review of #229, round 3)."""
+    p = env.add("Live and Let Die", artist="Wings", album="Greatest Hits")
+    env.answers["confirm"] = {"Red Rose Speedway"}
+    env.run()
+    assert env.calls["confirm"] == ["Greatest Hits"] and env.album(p)[0] is None
+
+
+def test_a_clear_counts_as_a_change_and_is_verified(env):
+    p = env.add("Africa", album="70s Hits")
+    env.answers["confirm"] = set()
+    result, ctx = env.run()
+    assert result.files_changed == 1 and env.album(p)[0] is None
+    assert AlbumFillStage().verify_effect(ctx, result) == []
+    env.conn.execute("UPDATE archive SET album='70s Hits' WHERE file_path=?", (p,))
+    assert AlbumFillStage().verify_effect(ctx, result), "the rejected name came back unnoticed"
