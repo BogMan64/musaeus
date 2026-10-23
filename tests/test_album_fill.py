@@ -698,3 +698,19 @@ def test_a_cleared_album_filled_back_by_a_source_is_verified(env):
     result, ctx = env.run()
     assert env.album(p)[0] == "Toto IV"
     assert AlbumFillStage().verify_effect(ctx, result) == []
+
+
+def test_an_edit_keeps_its_arriving_album_and_is_not_searched_by_text(env):
+    """An "(Edit)" is its own cut: neither the arrival check nor a text search
+    may give it the studio album by name (Codex review of #232). "Original"
+    is not a version here: the original is the studio recording."""
+    p = env.add("Rosanna (Edit)", album="Rosanna - Single")
+    q = env.add("Africa (Edit)")
+    env.answers["confirm"] = set()
+    env.answers["acoustid"] = []
+    env.answers["deezer"] = [
+        {"artist": {"name": "Toto"}, "title": "Africa", "album": {"title": "Toto IV"}}
+    ]
+    env.run()
+    assert env.calls["confirm"] == [] and env.calls["deezer"] == []
+    assert env.album(p)[0] == "Rosanna - Single" and env.album(q)[0] is None

@@ -96,7 +96,7 @@ _MB_CANDIDATES_MAX = 6  # cap MusicBrainz calls per track
 _DISCOGS_BAD = {"single", "ep", "compilation", "unofficial release", "promo", "sampler"}
 _VERSION_QUALIFIER = re.compile(
     r"\b(live|unplugged|in concert|remix|re-?recorded|acoustic|demo|"
-    r"radio edit|single version|extended|instrumental|karaoke|reprise|"
+    r"radio edit|edit|single version|extended|instrumental|karaoke|reprise|"
     r"mono|stereo version|alternate)\b",
     re.I,
 )
