@@ -32,7 +32,7 @@ import re
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from ..album_spelling import unify_album_spelling
+from ..album_spelling import plan_album_spelling, unify_album_spelling
 from ..canon import ArtistCanon
 from ..context import StageResult, elision
 from .base import BaseStage
@@ -258,10 +258,92 @@ def _preferred_name(names_with_counts: list[tuple[str, int]]) -> str:
     return CANON_ARTIST_DISPLAY.get(best_key, _smart_title(best_name))
 
 
+def _proposed_artist_changes(
+    rows, meta_dir
+) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    """Use one artist decision for both the preview and the real stage."""
+    canon_changes: dict[str, str] = {}
+    try:
+        artist_canon = ArtistCanon(meta_dir / "artist_canon.tsv")
+    except Exception as exc:
+        logger.warning("[artist-consolidate] artist canon unavailable: %s", exc)
+        artist_canon = None
+    if artist_canon is not None:
+        for row in rows:
+            raw = row["artist"]
+            canonical = artist_canon.resolve_exact(raw)
+            if canonical:
+                canonical = stored_artist(canonical)
+            if canonical and canonical != raw:
+                canon_changes[raw] = canonical
+
+    grouped: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    for row in rows:
+        key = _normalize_key(row["artist"])
+        if key:
+            grouped[key].append((row["artist"], row["track_count"]))
+    group_changes: dict[str, str] = {}
+    for variants in grouped.values():
+        if len(variants) < 2:
+            continue
+        canonical = stored_artist(_preferred_name(variants))
+        for old_name, _ in variants:
+            if old_name != canonical:
+                group_changes[old_name] = canonical
+
+    changes = {**group_changes, **canon_changes}
+    return changes, group_changes, canon_changes
+
+
 class ArtistConsolidateStage(BaseStage):
     """Normalize artist names to canonical forms."""
 
     NAME = "artist-consolidate"
+
+    @classmethod
+    def plan_actions(cls, conn, cfg) -> tuple[list[dict[str, str]], str]:
+        """List current artist metadata rewrites, before folder moves."""
+        rows = conn.execute(
+            "SELECT artist, COUNT(*) AS track_count FROM archive "
+            "WHERE status='CATALOGUED' AND artist IS NOT NULL "
+            "GROUP BY artist ORDER BY artist"
+        ).fetchall()
+        changes, _, _ = _proposed_artist_changes(rows, cfg.meta_dir)
+        counts = {r["artist"]: r["track_count"] for r in rows}
+        actions = [
+            {
+                "action": "artist rename",
+                "source": old,
+                "destination": new,
+                "reason": f"{counts[old]} catalogued track(s)",
+            }
+            for old, new in changes.items()
+        ]
+        # The stage also gives each album one spelling per artist (_album_spelling);
+        # counted here too, read-only (Codex review of #230). Planned on today's
+        # artist spellings: a rename above can join more albums when it runs.
+        has_mb = "mb_artist_name" in {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
+        album_rows = conn.execute(
+            "SELECT rowid AS rid, file_path, artist, album, finalized_at, "
+            f"{'mb_artist_name' if has_mb else 'NULL AS mb_artist_name'} FROM archive "
+            "WHERE status = 'CATALOGUED' AND album IS NOT NULL AND trim(album) <> ''"
+        ).fetchall()
+        # The run renames artists first, then unifies albums: plan on the new
+        # names, or two spellings across a rename are missed (Codex review, r2).
+        renamed = [{**dict(r), "artist": changes.get(r["artist"], r["artist"])} for r in album_rows]
+        albums = [
+            {
+                "action": "album spelling",
+                "source": r["album"],
+                "destination": best,
+                "reason": r["file_path"],
+            }
+            for r, best in plan_album_spelling(renamed)
+        ]
+        return actions + albums, (
+            f"{len(actions)} artist spelling(s) and {len(albums)} album spelling(s) would "
+            "change on current DB; organize may subsequently move their files"
+        )
 
     def validate(self, ctx: RunContext) -> None:
         count = ctx.conn.execute(
@@ -314,64 +396,26 @@ class ArtistConsolidateStage(BaseStage):
         # rewrites real artist metadata unattended, so the canon file is the
         # sole authority. A name changes because someone wrote that mapping
         # down deliberately, never because a similarity score cleared a bar.
-        canon_changes: dict[str, str] = {}
-        try:
-            artist_canon = ArtistCanon(ctx.config.meta_dir / "artist_canon.tsv")
-        except Exception as exc:  # missing/unreadable canon must not fail the run
-            logger.warning("[%s] artist canon unavailable: %s", self.NAME, exc)
-            artist_canon = None  # type: ignore[assignment]
-
-        # Written in the every-word form (Grey, 2026-09-25). Normalize puts
-        # every name in that form first; a canon spelling written as-is
-        # ("Peter, Paul and Mary") would be changed by Normalize on the next
-        # run and changed back here, renaming the tracks on every Act 3.
-        if artist_canon is not None:
-            for row in rows:
-                raw = row["artist"]
-                canonical = artist_canon.resolve_exact(raw)
-                if canonical:
-                    canonical = stored_artist(canonical)
-                if canonical and canonical != raw:
-                    canon_changes[raw] = canonical
-
-        # Group artists by normalized key
-        grouped: dict[str, list[tuple[str, int]]] = defaultdict(list)
-        for row in rows:
-            artist = row["artist"]
-            track_count = row["track_count"]
-            key = _normalize_key(artist)
-            if key:
-                grouped[key].append((artist, track_count))
-
-        # Find groups with multiple variants
-        changes: dict[str, str] = {}  # old_name → new_name
-        for _key, variants in grouped.items():
-            if len(variants) == 1:
-                continue  # No consolidation needed
-
-            # Pick canonical name (variants is already list[(name, track_count)]),
-            # in the every-word form for the same reason as the canon above.
-            canonical = stored_artist(_preferred_name(variants))
-
-            # Map all non-canonical variants to canonical
-            for variant_name, track_count in variants:
-                if variant_name != canonical:
-                    changes[variant_name] = canonical
-                    logger.info(
-                        f"[{self.NAME}] '{variant_name}' ({track_count} tracks) → '{canonical}'"
-                    )
-                    result.files_changed += track_count
+        changes, group_changes, canon_changes = _proposed_artist_changes(rows, ctx.config.meta_dir)
+        counts = {r["artist"]: r["track_count"] for r in rows}
+        for old_name, new_name in group_changes.items():
+            logger.info(
+                "[%s] '%s' (%d tracks) → '%s'",
+                self.NAME,
+                old_name,
+                counts[old_name],
+                new_name,
+            )
+            result.files_changed += counts[old_name]
 
         # Explicit canon mappings win over the grouping heuristic: a
         # hand-written canon entry is a deliberate decision, whereas
         # _preferred_name() is a track-count tiebreak.
         if canon_changes:
-            counts = {r["artist"]: r["track_count"] for r in rows}
             for old_name, new_name in canon_changes.items():
-                if changes.get(old_name) != new_name:
+                if group_changes.get(old_name) != new_name:
                     result.files_changed += counts.get(old_name, 0)
                     logger.info("[%s] canon: '%s' → '%s'", self.NAME, old_name, new_name)
-                changes[old_name] = new_name
             result.notes.append(f"artist canon: {len(canon_changes)} explicit mapping(s) applied")
 
         if not changes:

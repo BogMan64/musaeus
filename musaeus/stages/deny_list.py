@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import sqlite3
 from pathlib import Path
 
 from ..context import RunContext, StageResult
@@ -83,6 +84,67 @@ class DenyListStage(BaseStage):
     """Quarantine freshly hashed files whose audio was deliberately removed."""
 
     NAME = "deny-list"
+
+    @classmethod
+    def plan_actions(cls, conn, cfg) -> tuple[list[dict[str, str]], str]:
+        """List already-hashed arrivals that the current deny list would hold."""
+        rows = conn.execute(
+            "SELECT file_path, audio_hash FROM archive WHERE status='HASHED' "
+            "AND audio_hash IS NOT NULL AND trim(audio_hash) != ''"
+        ).fetchall()
+        if not cfg.hash_index_path.exists():
+            return [], "no hash index; newly ingested files need hashing before this can decide"
+        # SQLite may need to create WAL sidecars even for mode=ro. A
+        # checkpointed index on a read-only mount has no sidecars and cannot
+        # be opened that way; immutable reads that stable file without writes.
+        # Never ignore a live WAL: doing so would miss fresh deny decisions.
+        wal = Path(str(cfg.hash_index_path) + "-wal")
+        stable_file = cfg.hash_index_path.stat()
+        immutable = not wal.exists()
+        suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
+        index = sqlite3.connect(f"file:{cfg.hash_index_path}{suffix}", uri=True)
+        index.row_factory = sqlite3.Row
+        try:
+            if not index.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='denied_hashes'"
+            ).fetchone():
+                return [], "no deny-list table; newly ingested files need hashing first"
+            reserved: set[Path] = set()
+            actions: list[dict[str, str]] = []
+            # A catalogue row at the destination stops the real move (unique
+            # file_path): shown as blocked (Codex review of #230, round 3).
+            owned = {r[0] for r in conn.execute("SELECT file_path FROM archive")}
+            for row in rows:
+                entry = lookup_denied_hash(index, row["audio_hash"])
+                if entry is None or _is_advisory(entry["reason"]):
+                    continue
+                source = Path(row["file_path"])
+                if not source.exists():
+                    continue
+                candidate = cfg.quarantine / "denied" / source.name
+                target = unique_path(candidate, exists=lambda p: p.exists() or p in reserved)
+                reserved.add(target)
+                actions.append(
+                    {
+                        "action": "blocked" if str(target) in owned else "quarantine",
+                        "source": str(source),
+                        "destination": str(target),
+                        "reason": entry["reason"],
+                    }
+                )
+        finally:
+            index.close()
+        if immutable:
+            after = cfg.hash_index_path.stat()
+            if (after.st_size, after.st_mtime_ns) != (
+                stable_file.st_size,
+                stable_file.st_mtime_ns,
+            ) or wal.exists():
+                raise RuntimeError("deny-list index changed during preview; retry")
+        return actions, (
+            f"{len(actions)} currently hashed arrival(s) on deny list; "
+            "unhashed arrivals cannot be decided yet"
+        )
 
     def validate(self, ctx: RunContext) -> None:
         if not ctx.config.hash_index_path.exists():

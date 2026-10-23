@@ -229,9 +229,9 @@ def is_junk(artist: str, title: str, album: str, *, known_artist: bool = False) 
     return False, ""
 
 
-def _library_artists(ctx: RunContext) -> set[str]:
+def _library_artists(conn) -> set[str]:  # type: ignore[no-untyped-def]
     """Artists the library already holds (filed masters), by comparison key."""
-    rows = ctx.conn.execute(
+    rows = conn.execute(
         "SELECT DISTINCT artist FROM archive WHERE status='CATALOGUED' "
         "AND finalized_at IS NOT NULL AND artist IS NOT NULL"
     ).fetchall()
@@ -252,6 +252,57 @@ class TributeQuarantineStage(BaseStage):
     """
 
     NAME = "tribute-quarantine"
+
+    @classmethod
+    def plan_actions(cls, conn, cfg) -> tuple[list[dict[str, str]], str]:
+        """List currently eligible arrivals matching the real quarantine rule."""
+        rows = conn.execute(
+            "SELECT file_path, artist, title, album FROM archive "
+            "WHERE status='CATALOGUED' AND finalized_at IS NULL"
+        ).fetchall()
+        batch_date = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+        reserved: set[Path] = set()
+        actions: list[dict[str, str]] = []
+        missing = 0
+        # The stage's own rule, known artists included (#231).
+        known = _library_artists(conn)
+        for row in rows:
+            matched, reason = is_junk(
+                row["artist"] or "",
+                row["title"] or "",
+                row["album"] or "",
+                known_artist=comparison_key(row["artist"] or "") in known,
+            )
+            if not matched:
+                continue
+            source = Path(row["file_path"])
+            if not source.exists():
+                missing += 1
+                continue
+            artist = row["artist"] or "Unknown Artist"
+            album = row["album"] or "Unsorted"
+            title = row["title"] or "Unknown Title"
+            candidate = (
+                cfg.tribute_review_dir
+                / batch_date
+                / sanitize_path_component(artist)
+                / sanitize_path_component(album)
+                / build_track_filename(artist, title, source.suffix)
+            )
+            target = unique_path(candidate, exists=lambda p: p.exists() or p in reserved)
+            reserved.add(target)
+            actions.append(
+                {
+                    "action": "quarantine",
+                    "source": str(source),
+                    "destination": str(target),
+                    "reason": reason,
+                }
+            )
+        desc = f"{len(actions)} current arrival(s) matching tribute/junk rules"
+        if missing:
+            desc += f"; {missing} matching file(s) missing on disk"
+        return actions, desc
 
     def validate(self, ctx: RunContext) -> None:
         """No external dependency to check -- pure Python regex matching
@@ -440,7 +491,7 @@ class TributeQuarantineStage(BaseStage):
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)
         candidates = self._get_candidates(ctx)
-        known = _library_artists(ctx)
+        known = _library_artists(ctx.conn)
 
         matches: list[tuple[dict, str]] = []
         for row in candidates:
@@ -552,7 +603,7 @@ class TributeQuarantineStage(BaseStage):
     def dry_run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=True)
         candidates = self._get_candidates(ctx)
-        known = _library_artists(ctx)
+        known = _library_artists(ctx.conn)
 
         matches = []
         for row in candidates:

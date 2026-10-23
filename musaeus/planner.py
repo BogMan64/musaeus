@@ -117,6 +117,7 @@ class StagePlan:
     stage: str
     candidates: int | None  # None = this stage cannot be previewed
     description: str
+    actions: tuple[dict[str, str], ...] = ()
 
     @property
     def previewable(self) -> bool:
@@ -142,6 +143,15 @@ class Plan:
         for s in self.stages:
             count = "—" if s.candidates is None else f"{s.candidates:,}"
             lines.append(f"  {s.stage:<{width}}  {count:>8}  {s.description}")
+            for action in s.actions[:10]:
+                reason = f" ({action['reason']})" if action.get("reason") else ""
+                lines.append(
+                    f"    {action['action']}: {action['source']} → {action['destination']}{reason}"
+                )
+            if len(s.actions) > 10:
+                lines.append(
+                    f"    … {len(s.actions) - 10} more; use `musaeus plan --json` for all paths"
+                )
         lines.append("")
         for n in self.notes:
             lines.append(f"  ! {n}")
@@ -158,7 +168,12 @@ class Plan:
                 "safety": SAFETY_STATEMENT,
                 "notes": self.notes,
                 "stages": [
-                    {"stage": s.stage, "candidates": s.candidates, "description": s.description}
+                    {
+                        "stage": s.stage,
+                        "candidates": s.candidates,
+                        "description": s.description,
+                        **({"actions": list(s.actions)} if s.actions else {}),
+                    }
                     for s in self.stages
                 ],
             },
@@ -170,12 +185,22 @@ class Plan:
         )
 
 
-def build_plan(cfg: MusicConfig, pipeline: list[type], mode: RunMode = RunMode.PREVIEW) -> Plan:
+def build_plan(
+    cfg: MusicConfig,
+    pipeline: list[type],
+    mode: RunMode = RunMode.PREVIEW,
+    *,
+    deep: bool = False,
+) -> Plan:
     """Compute what `pipeline` would do, touching nothing.
 
     Deliberately takes stage CLASSES and never instantiates them. Reading a
     classmethod off a type cannot run a stage; constructing one is the step
     that would make mutation possible, so the guarantee is structural.
+
+    *deep*: also run the previews that read every file (PLAN_ACTIONS_DEEP --
+    Corrupt decodes audio). Without it a plan took about 3 minutes on the
+    live library instead of seconds (Grey, 2026-10-23: only when asked).
     """
     plan = Plan(mode=mode, vault_root=cfg.vault_root)
 
@@ -199,6 +224,14 @@ def build_plan(cfg: MusicConfig, pipeline: list[type], mode: RunMode = RunMode.P
     conn.row_factory = sqlite3.Row
     try:
         for st in pipeline:
+            action_fn = getattr(st, "plan_actions", None)
+            if action_fn is not None and (deep or not getattr(st, "PLAN_ACTIONS_DEEP", False)):
+                try:
+                    actions, desc = action_fn(conn, cfg)
+                    plan.stages.append(StagePlan(_name(st), len(actions), desc, tuple(actions)))
+                except Exception as exc:
+                    plan.stages.append(StagePlan(_name(st), None, f"preview failed: {exc}"))
+                continue
             fn = getattr(st, "plan_candidates", None)
             if fn is None:
                 plan.stages.append(

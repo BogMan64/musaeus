@@ -417,7 +417,12 @@ def ffmpeg_decode_check(path: Path, seconds: int = 0) -> tuple[bool, str]:
     return True, ""
 
 
-def _quarantine_dest(conn: sqlite3.Connection, quarantine_dir: Path, src: Path) -> Path:
+def _quarantine_dest(
+    conn: sqlite3.Connection,
+    quarantine_dir: Path,
+    src: Path,
+    reserved: set[Path] | None = None,
+) -> Path:
     """A name in quarantine that is free on disk AND in the catalogue.
 
     Review of slice B, finding 5: only the disk was asked, so an old DELETED
@@ -428,6 +433,7 @@ def _quarantine_dest(conn: sqlite3.Connection, quarantine_dir: Path, src: Path) 
     n = 1
     while (
         dest.exists()
+        or (reserved is not None and dest in reserved)
         or conn.execute("SELECT 1 FROM archive WHERE file_path = ?", (str(dest),)).fetchone()
     ):
         dest = quarantine_dir / f"{src.stem}_{n}{src.suffix}"
@@ -446,6 +452,87 @@ class CorruptStage(BaseStage):
     #: use site in _scan for why this exists and how the number was picked.
     NEW_ARRIVAL_DECODE_BUDGET = 200
 
+    #: plan_actions reads and decodes audio: only `musaeus plan --deep` asks it.
+    PLAN_ACTIONS_DEEP = True
+
+    @classmethod
+    def plan_actions(cls, conn, cfg) -> tuple[list[dict[str, str]], str]:
+        """Decode the same current candidates as the run, without recording verdicts.
+
+        This can take minutes when the new-arrival decode budget is full.
+        Files catalogued later in the pipeline cannot be predicted here.
+        """
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
+        decode_cols = (
+            "decode_ok, decode_checked_at"
+            if {"decode_ok", "decode_checked_at"} <= cols
+            else "NULL AS decode_ok, NULL AS decode_checked_at"
+        )
+        rows = conn.execute(
+            f"SELECT file_path, codec, duration, artist, title, {decode_cols} "
+            "FROM archive WHERE status = 'CATALOGUED' AND file_path IS NOT NULL "
+            "ORDER BY artist, album"
+        ).fetchall()
+        longest: dict[tuple[str, str], float] = {}
+        for row in rows:
+            if row["duration"]:
+                key = song_key(row["artist"], row["title"])
+                longest[key] = max(longest.get(key, 0.0), row["duration"])
+        quarantine_dir = cfg.quarantine / "corrupted"
+        reserved: set[Path] = set()
+        actions: list[dict[str, str]] = []
+        unchecked_decodes = 0
+        undecodable = 0
+        for row in rows:
+            source = Path(row["file_path"])
+            if not source.exists():
+                continue
+            suspect, reason = check_file(
+                source,
+                row["codec"],
+                row["duration"],
+                _longest_sibling(row, longest),
+                title=row["title"],
+            )
+            should_decode = suspect or row["decode_ok"] == 0
+            if row["decode_ok"] == 0 and not suspect:
+                reason = "marked undecodable on an earlier decode"
+            if (
+                not suspect
+                and row["decode_checked_at"] is None
+                and unchecked_decodes < cls.NEW_ARRIVAL_DECODE_BUDGET
+            ):
+                should_decode = True
+                unchecked_decodes += 1
+            if not should_decode:
+                continue
+            try:
+                decoded_ok, decode_err = ffmpeg_decode_check(source, seconds=0)
+            except DecodeUnavailable:
+                undecodable += 1
+                continue
+            if decoded_ok:
+                continue
+            reason = (
+                f"{reason}; decode failed: {decode_err}"
+                if suspect or row["decode_ok"] == 0
+                else f"decode failed: {decode_err}"
+            )
+            target = _quarantine_dest(conn, quarantine_dir, source, reserved)
+            reserved.add(target)
+            actions.append(
+                {
+                    "source": str(source),
+                    "destination": str(target),
+                    "reason": reason,
+                    "action": "quarantine",
+                }
+            )
+        description = "current files confirmed corrupt by full audio decode"
+        if undecodable:
+            description += f"; {undecodable} could not be decoded and remain unknown"
+        return actions, description
+
     @classmethod
     def plan_candidates(cls, conn, cfg) -> tuple[int, str]:
         """Rows this stage would act on. Read-only; see planner.py.
@@ -460,8 +547,9 @@ class CorruptStage(BaseStage):
             "SELECT COUNT(*) FROM archive WHERE status = 'CATALOGUED' AND file_path IS NOT NULL"
         ).fetchone()[0]
         return int(n), (
-            f"CATALOGUED tracks to scan; at most {cls.NEW_ARRIVAL_DECODE_BUDGET} "
-            "never-checked files are decoded per run"
+            f"CATALOGUED tracks to scan; quarantine destinations are unknown "
+            f"until audio decoding (up to {cls.NEW_ARRIVAL_DECODE_BUDGET} "
+            "never-checked files per run; `musaeus plan --deep` decodes them now)"
         )
 
     def validate(self, ctx: RunContext) -> None:

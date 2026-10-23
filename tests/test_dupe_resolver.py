@@ -105,6 +105,25 @@ def _stage_duplicate_pair(
 
 
 class TestDupeResolverSameBatchGroup:
+    def test_plan_names_loser_without_moving_it(self, ctx):
+        from musaeus.planner import build_plan
+
+        high = _make_archive_row(
+            ctx, "high.flac", "Artist", "Album", "Title", bitrate=900_000, size_bytes=500
+        )
+        low = _make_archive_row(
+            ctx, "low.m4a", "Artist", "Album", "Title", bitrate=128_000, size_bytes=200
+        )
+        _stage_duplicate_pair(ctx, "preview_pair", high, low)
+
+        plan = build_plan(ctx.config, [DupeResolverStage]).stages[0]
+
+        assert plan.candidates == 1
+        assert plan.actions[0]["source"] == str(low)
+        assert plan.actions[0]["destination"].endswith("Artist/Album/Artist - Title.m4a")
+        assert str(high) in plan.actions[0]["reason"]
+        assert high.exists() and low.exists()
+
     def test_keeps_highest_bitrate_moves_the_rest(self, ctx):
         high = _make_archive_row(
             ctx, "high.flac", "Artist", "Album", "Title", bitrate=900_000, size_bytes=500
