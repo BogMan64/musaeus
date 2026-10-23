@@ -179,3 +179,34 @@ def test_corrupt_decodes_only_in_a_deep_plan(vault, monkeypatch) -> None:
     assert decoded == [] and stage.previewable and not stage.actions
     build_plan(cfg, [CorruptStage], deep=True)
     assert decoded == ["x"]
+
+
+def test_organize_shows_a_move_onto_a_path_the_catalogue_owns_as_blocked(vault) -> None:
+    """The real move hits the unique file_path and is undone (Codex review of #230)."""
+    cfg, conn = vault
+    source = cfg.inbox / "flat.m4a"
+    add_track(conn, source)
+    first = build_plan(cfg, [OrganizeStage]).stages[0].actions[0]["destination"]
+    upsert_archive(conn, {"file_path": first, "status": "DELETED"})  # a stale row, no file
+    conn.commit()
+
+    stage = build_plan(cfg, [OrganizeStage]).stages[0]
+
+    assert stage.actions[0]["action"] == "blocked"
+    assert "blocked" in stage.description
+
+
+def test_artist_consolidate_lists_album_spellings_too(vault) -> None:
+    """The stage also unifies album spellings per artist (Codex review of #230)."""
+    cfg, conn = vault
+    add_track(
+        conn, cfg.inbox / "a.m4a", artist="Miles Davis", album="Kind of Blue", title="So What"
+    )
+    add_track(
+        conn, cfg.inbox / "b.m4a", artist="Miles Davis", album="Kind Of Blue", title="Blue in Green"
+    )
+
+    stage = build_plan(cfg, [ArtistConsolidateStage]).stages[0]
+
+    assert any(a["action"] == "album spelling" for a in stage.actions), stage.actions
+    assert "1 album spelling(s)" in stage.description

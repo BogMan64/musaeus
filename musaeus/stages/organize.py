@@ -773,8 +773,11 @@ class OrganizeStage(BaseStage):
         def exists(path: Path) -> bool:
             return path in reserved or (path not in vacated and path.exists())
 
+        # A path another catalogue row owns: the real move hits the unique
+        # file_path and is undone, so it is shown as blocked (Codex review of #230).
+        owned = {r[0] for r in conn.execute("SELECT file_path FROM archive")}
         actions: list[dict[str, str]] = []
-        missing = outside = set_aside = 0
+        missing = outside = set_aside = blocked = 0
         for row in rows:
             current = Path(row["file_path"])
             if not exists(current):
@@ -800,6 +803,17 @@ class OrganizeStage(BaseStage):
             if candidate == current or _is_collision_name_for(current, candidate, exists=exists):
                 continue
             target = unique_path(candidate, exists=exists)
+            if str(target) in owned:
+                blocked += 1
+                actions.append(
+                    {
+                        "action": "blocked",
+                        "source": str(current),
+                        "destination": str(target),
+                        "reason": "another catalogue row owns this path; the move would be undone",
+                    }
+                )
+                continue
             actions.append(
                 {
                     "action": "rename" if current.parent == target.parent else "move",
@@ -810,8 +824,10 @@ class OrganizeStage(BaseStage):
             vacated.add(current)
             reserved.add(target)
         moves = sum(a["action"] == "move" for a in actions)
-        renames = len(actions) - moves
+        renames = sum(a["action"] == "rename" for a in actions)
         desc = f"{moves} move(s), {renames} rename(s) on current disk/DB"
+        if blocked:
+            desc += f", {blocked} blocked by a catalogue row at the destination"
         if missing or outside or set_aside:
             desc += (
                 f"; skipped: {missing} missing, {outside} outside managed roots, "

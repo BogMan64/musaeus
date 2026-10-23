@@ -32,7 +32,7 @@ import re
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from ..album_spelling import unify_album_spelling
+from ..album_spelling import plan_album_spelling, unify_album_spelling
 from ..canon import ArtistCanon
 from ..context import StageResult, elision
 from .base import BaseStage
@@ -319,9 +319,27 @@ class ArtistConsolidateStage(BaseStage):
             }
             for old, new in changes.items()
         ]
-        return actions, (
-            f"{len(actions)} artist spelling(s) would change on current DB; "
-            "organize may subsequently move their files"
+        # The stage also gives each album one spelling per artist (_album_spelling);
+        # counted here too, read-only (Codex review of #230). Planned on today's
+        # artist spellings: a rename above can join more albums when it runs.
+        has_mb = "mb_artist_name" in {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
+        album_rows = conn.execute(
+            "SELECT rowid AS rid, file_path, artist, album, finalized_at, "
+            f"{'mb_artist_name' if has_mb else 'NULL AS mb_artist_name'} FROM archive "
+            "WHERE status = 'CATALOGUED' AND album IS NOT NULL AND trim(album) <> ''"
+        ).fetchall()
+        albums = [
+            {
+                "action": "album spelling",
+                "source": r["album"],
+                "destination": best,
+                "reason": r["file_path"],
+            }
+            for r, best in plan_album_spelling(album_rows)
+        ]
+        return actions + albums, (
+            f"{len(actions)} artist spelling(s) and {len(albums)} album spelling(s) would "
+            "change on current DB; organize may subsequently move their files"
         )
 
     def validate(self, ctx: RunContext) -> None:
