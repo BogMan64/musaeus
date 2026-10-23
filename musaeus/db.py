@@ -148,6 +148,10 @@ CREATE TABLE IF NOT EXISTS archive_tier_hashes (
 
 # ── Live migrations ───────────────────────────────────────────────────────────
 
+#: album_verified_at of an album already in the catalogue when the arrival
+#: check came (album-fill): never checked, never cleared by it.
+ALBUM_BEFORE_THE_CHECK = "before the arrival check (2026-10-23)"
+
 # Each entry: (table, column_name, column_def)
 # Applied in order every time open_db() is called — idempotent.
 _MIGRATIONS: list[tuple[str, str, str]] = [
@@ -175,6 +179,11 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # follows the file; the resolver never moves a copy so marked (Grey,
     # 2026-10-09: choices are carried out at once, not saved by path).
     ("archive", "kept_by_person_at", "TEXT"),
+    # An album a song ARRIVED with, checked with MusicBrainz by album-fill
+    # (Grey, 2026-10-23). Added here, when the catalogue is opened and before
+    # any intake, so the albums already there can be told from arrivals: they
+    # are stamped ALBUM_BEFORE_THE_CHECK and never checked (Codex review of #229).
+    ("archive", "album_verified_at", "TEXT"),
     ("archive", "lufs", "REAL"),
     ("archive", "lufs_tp", "REAL"),
     ("archive", "rg_gain", "REAL"),
@@ -451,6 +460,12 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         for table, col, coltype in _MIGRATIONS:
             if col not in _columns(conn, table):
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
+                if (table, col) == ("archive", "album_verified_at"):
+                    conn.execute(
+                        "UPDATE archive SET album_verified_at=? "
+                        "WHERE album IS NOT NULL AND TRIM(album)<>''",
+                        (ALBUM_BEFORE_THE_CHECK,),
+                    )
 
         # A constraint change, not a column addition -- the loop above cannot
         # express it. Idempotent: once the key is rebuilt this is a no-op.

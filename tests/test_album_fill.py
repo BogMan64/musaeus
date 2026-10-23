@@ -602,11 +602,21 @@ def test_an_arriving_compilation_is_cleared_and_looked_up_in_the_same_run(env):
     assert ev[0] == "70s Hits"
 
 
-def test_albums_in_the_catalogue_before_the_check_are_left_alone(env):
-    p = env.add("Rosanna", album="Greatest Hits")
-    env.answers["confirm"] = set()
-    env.run()
-    assert env.calls["confirm"] == [] and env.album(p)[0] == "Greatest Hits"
+def test_albums_in_the_catalogue_before_the_check_are_left_alone(tmp_path):
+    """open_db adds the column before any intake and stamps the albums already
+    there, so they are never checked (Codex review of #229, round 2)."""
+    db = tmp_path / "old.db"
+    conn = open_db(db)
+    conn.execute("ALTER TABLE archive DROP COLUMN album_verified_at")  # a catalogue from before
+    upsert_archive(conn, {"file_path": "/x/a.m4a", "status": "CATALOGUED",
+                          "artist": "Toto", "title": "Rosanna", "album": "Greatest Hits"})  # fmt: skip
+    conn.commit()
+    conn.close()
+    conn = open_db(db)
+    stamp = conn.execute("SELECT album_verified_at FROM archive").fetchone()[0]
+    assert stamp and stamp.startswith("before the arrival check")
+    n, _ = AlbumFillStage.plan_candidates(conn, None)
+    assert n == 0, "an album from before the check is not one to check"
 
 
 def test_no_answer_leaves_the_arriving_album_for_the_next_run(env, monkeypatch):
@@ -633,19 +643,14 @@ def test_classical_and_version_titles_are_not_checked(env):
     assert env.album(live)[0] == "Absolutely Live" and env.album(bach)[0] == "Bach: Greatest Hits"
 
 
-def test_the_first_runs_own_arrivals_are_checked_not_stamped_as_before(env):
-    """Scholar catalogues a run's arrivals before this stage adds its column:
-    they must not be stamped as old albums (Codex review of #229)."""
-    old = env.add("Rosanna", album="Greatest Hits")
+def test_an_arrival_never_finalized_is_still_checked(env):
+    """Held back by Finalize, or catalogued by a run that stopped and resumed:
+    an arrival is told from an old album by when the catalogue was opened, not
+    by finalized_at (Codex review of #229, round 2)."""
     new = env.add("Africa", album="70s Hits")
-    env.conn.execute(
-        "UPDATE archive SET finalized_at='2999-01-01 00:00:00' WHERE file_path=?", (new,)
-    )
-    env.conn.commit()
     env.answers["confirm"] = set()
     env.run()
-    assert env.calls["confirm"] == ["70s Hits"]
-    assert env.album(old)[0] == "Greatest Hits" and env.album(new)[0] is None
+    assert env.calls["confirm"] == ["70s Hits"] and env.album(new)[0] is None
 
 
 def test_the_preview_counts_arriving_albums_to_check(env):

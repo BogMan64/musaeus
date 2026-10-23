@@ -422,32 +422,18 @@ def _confirmed(claim: tuple[str | None, str], artist: str, title: str) -> tuple[
     return (album if ok else None), f"{reason}; {evidence}"
 
 
-#: album_verified_at for an album already in the catalogue when the arrival
-#: check came: never checked, never cleared by it (Grey, 2026-10-23).
-_BEFORE_THE_CHECK = "before the arrival check (2026-10-23)"
-
-
 #: album_verified_at of an album the check cleared; the tagger then removes
 #: the album tag too, so a rebuild from the files cannot bring it back.
 CLEARED_BY_CHECK = "cleared: not confirmed"
 
 
-def _ensure_columns(conn, run_started: str | None = None) -> None:  # type: ignore[no-untyped-def]
-    """The columns this stage owns, beside the code that reads them.
+def _ensure_columns(conn) -> None:  # type: ignore[type-arg]
+    """The column this stage owns, beside the code that reads it.
 
-    When album_verified_at arrives, the albums already there are stamped as
-    before the check -- all but this run's own arrivals, finalized after it
-    started, which Scholar catalogued before this stage ran (Codex review of
-    #229). finalized_at is UTC "YYYY-MM-DD HH:MM:SS".
+    album_verified_at is added by db.open_db instead, before any intake, so
+    the albums already in the catalogue can be told from arrivals.
     """
     ensure_columns(conn, (("album_fill_checked_at", "TEXT"),))
-    if ensure_columns(conn, (("album_verified_at", "TEXT"),)):
-        since = (run_started or "9999")[:19].replace("T", " ")
-        conn.execute(
-            "UPDATE archive SET album_verified_at=? WHERE album IS NOT NULL AND TRIM(album)<>'' "
-            "AND (finalized_at IS NULL OR finalized_at='' OR finalized_at < ?)",
-            (_BEFORE_THE_CHECK, since),
-        )
 
 
 #: An album that is not an album. Grey, 2026-10-03 ("yes"): a source folder's
@@ -491,12 +477,14 @@ class AlbumFillStage(BaseStage):
         """Rows this stage would act on. Read-only; see planner.py."""
         what = "catalogued rows with no album, not yet asked"
         _playlist_rule(conn)
-        try:  # arriving albums to check; none before album_verified_at exists
+        # Arriving albums to check. Before album_verified_at exists every album
+        # in the catalogue is old (open_db stamps them all), so none; songs
+        # still in INBOX are counted by ingest, and checked when they arrive.
+        try:
             to_check = int(conn.execute(f"SELECT COUNT(*) {_TO_CHECK}").fetchone()[0])
         except sqlite3.OperationalError:
             to_check = 0
-        if to_check:
-            what += f", plus {to_check:,} arriving album(s) to check with MusicBrainz"
+        what += f", plus {to_check:,} arriving album(s) to check with MusicBrainz"
         for query in (
             f"SELECT COUNT(*) {_CANDIDATES}",
             # album_fill_checked_at arrives on the first real run
@@ -524,7 +512,7 @@ class AlbumFillStage(BaseStage):
         from .acousticid import _ensure_columns as _fingerprint_columns
 
         _fingerprint_columns(ctx.conn)  # read below; AcoustID may never have run here
-        _ensure_columns(ctx.conn, ctx.started_at)
+        _ensure_columns(ctx.conn)
         _playlist_rule(ctx.conn)
         cfg = ctx.config
         aid_key = cfg.acousticid_api_key
