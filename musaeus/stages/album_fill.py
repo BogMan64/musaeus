@@ -65,7 +65,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from ..brackets import BRACKETED, strip_bracketed
+from ..brackets import BRACKETED, CLOSE, OPEN, strip_bracketed
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
 from ..network_policy import check as _network_check
@@ -101,15 +101,19 @@ _VERSION_QUALIFIER = re.compile(
     re.I,
 )
 
-#: "Edit" names a cut only as a label -- "(Edit)", "- Edit" -- never as a word of
-#: the title: "Edit the Sad Parts" is a song (Codex review of #232).
-_EDIT_WORD = re.compile(r"\bedit\b", re.I)
+#: "Edit" names a cut only as a whole label -- "(Edit)", "(Single Edit)", "- Edit"
+#: -- never as a word of the title or of a longer bracket: "Edit the Sad Parts"
+#: and "Song (Edit the Script)" are songs (Codex review of #232, rounds 2-3).
+_EDIT_LABEL = re.compile(
+    rf"[{OPEN}]\s*(?:[\w'.\"]+\s+)?edit(?:\s+version)?\s*[{CLOSE}]"
+    r"|\s-\s+(?:[\w'.\"]+\s+)?edit(?:\s+version)?\s*$",
+    re.I,
+)
 
 
 def _names_a_version(title: str) -> bool:
     """A live take, a remix ... or an "(Edit)" -- a title naming a version."""
-    label = " ".join(BRACKETED.findall(title or "")) + " " + (title or "").partition(" - ")[2]
-    return bool(_VERSION_QUALIFIER.search(title or "") or _EDIT_WORD.search(label))
+    return bool(_VERSION_QUALIFIER.search(title or "") or _EDIT_LABEL.search(title or ""))
 
 
 _DEEZER_BAD_ALBUM = re.compile(
@@ -653,7 +657,7 @@ class AlbumFillStage(BaseStage):
             # The version as a label -- "(Live)", "- Live 1972" -- not a word of
             # the title: "Live and Let Die" is checked (Codex review of #229, round 3).
             label = " ".join(BRACKETED.findall(title)) + " " + title.partition(" - ")[2]
-            if _VERSION_QUALIFIER.search(label) or _EDIT_WORD.search(label):
+            if _VERSION_QUALIFIER.search(label) or _EDIT_LABEL.search(title):
                 ctx.conn.execute(
                     "UPDATE archive SET album_verified_at=? WHERE id=?",
                     (f"not asked: the title names a version ({now})", row["id"]),

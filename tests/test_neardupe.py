@@ -285,3 +285,10 @@ def test_edit_and_original_are_labels_never_title_words():
     assert _normalise("Original Sin", strip_qualifiers=True) == "original sin"
     assert _normalise("Edit the Sad Parts", strip_qualifiers=True) == "edit the sad parts"
     assert not _same_song("Original Sin", "Sin")
+
+
+def test_a_suffix_and_a_bracket_label_both_go():
+    """ "Song - Original (Live)": brackets first, then the suffix (Codex review of #232, r3)."""
+    from musaeus.stages.neardupe import _normalise
+
+    assert _normalise("Song - Original (Live)", strip_qualifiers=True) == "song"

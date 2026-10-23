@@ -195,8 +195,10 @@ def _is_different_piece(title_a: str, title_b: str) -> bool:
 
 def _strip_title_qualifiers(s: str) -> str:
     """Remove version/edition brackets and suffixes, and bare STRIP_WORDS, from a title."""
-    s = VERSION_SUFFIX.sub("", s)
+    # Brackets first: "Song - Original (Live)" ends in its suffix only once the
+    # bracket is gone (Codex review of #232, round 3).
     s = _VERSION_BRACKET_WORDS.sub(" ", s)
+    s = VERSION_SUFFIX.sub("", s)
     s = _YEAR_BRACKET_RE.sub(" ", s)
     s = _NUM_BRACKET_RE.sub(" ", s)
     s = _STRIP_WORDS_RE.sub(" ", s)

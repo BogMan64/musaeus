@@ -729,3 +729,13 @@ def test_edit_as_a_word_of_the_title_is_not_a_version(env):
     ]
     env.run()
     assert env.calls["deezer"] == ["Edit the Sad Parts"] and env.album(q)[0] == "Studio LP"
+
+
+@pytest.mark.parametrize(
+    ("title", "version"),
+    [("Song (Edit)", True), ("Song (Single Edit)", True), ("Song - Edit", True),
+     ("Song (Edit the Script)", False), ("Edit the Sad Parts", False)],
+)  # fmt: skip
+def test_edit_is_a_version_only_as_a_whole_label(title, version):
+    """Codex review of #232, round 3: "(Edit the Script)" is part of the title."""
+    assert af._names_a_version(title) is version
