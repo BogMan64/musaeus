@@ -687,3 +687,55 @@ def test_a_clear_counts_as_a_change_and_is_verified(env):
     assert AlbumFillStage().verify_effect(ctx, result) == []
     env.conn.execute("UPDATE archive SET album='70s Hits' WHERE file_path=?", (p,))
     assert AlbumFillStage().verify_effect(ctx, result), "the rejected name came back unnoticed"
+
+
+def test_a_cleared_album_filled_back_by_a_source_is_verified(env):
+    """AcoustID found Santana's "Shaman" after the text check could not; the
+    self-check flagged it as the rejected album come back (2026-10-23)."""
+    p = env.add("Africa", album="Toto IV")
+    env.answers["confirm"] = set()
+    env.answers["acoustid"] = [_rg("r1", "Toto IV")]
+    result, ctx = env.run()
+    assert env.album(p)[0] == "Toto IV"
+    assert AlbumFillStage().verify_effect(ctx, result) == []
+
+
+def test_an_edit_keeps_its_arriving_album_and_is_not_searched_by_text(env):
+    """An "(Edit)" is its own cut: neither the arrival check nor a text search
+    may give it the studio album by name (Codex review of #232). "Original"
+    is not a version here: the original is the studio recording."""
+    p = env.add("Rosanna (Edit)", album="Rosanna - Single")
+    q = env.add("Africa (Edit)")
+    env.answers["confirm"] = set()
+    env.answers["acoustid"] = []
+    env.answers["deezer"] = [
+        {"artist": {"name": "Toto"}, "title": "Africa", "album": {"title": "Toto IV"}}
+    ]
+    env.run()
+    assert env.calls["confirm"] == [] and env.calls["deezer"] == []
+    assert env.album(p)[0] == "Rosanna - Single" and env.album(q)[0] is None
+
+
+def test_edit_as_a_word_of_the_title_is_not_a_version(env):
+    """ "Edit the Sad Parts" is a song: searched by text like any other (Codex review of #232)."""
+    q = env.add("Edit the Sad Parts", artist="Fiona")
+    env.answers["acoustid"] = []
+    env.answers["deezer"] = [
+        {
+            "artist": {"name": "Fiona"},
+            "title": "Edit the Sad Parts",
+            "album": {"title": "Studio LP"},
+        }
+    ]
+    env.run()
+    assert env.calls["deezer"] == ["Edit the Sad Parts"] and env.album(q)[0] == "Studio LP"
+
+
+@pytest.mark.parametrize(
+    ("title", "version"),
+    [("Song (Edit)", True), ("Song (Single Edit)", True), ("Song - Edit", True),
+     ("Song (Edit the Script)", False), ("Edit the Sad Parts", False)],
+)  # fmt: skip
+def test_edit_is_a_version_only_as_a_whole_label(title, version):
+    """Codex review of #232, round 3: "(Edit the Script)" is part of the title."""
+    assert af._names_a_version(title) is version

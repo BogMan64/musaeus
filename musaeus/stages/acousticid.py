@@ -210,18 +210,11 @@ def _same_song(a: str, b: str) -> bool:
     (2020)" not "Interlude (2021)", "Live and Let Die" not "And Let Die"
     (Codex review of #228, rounds 2 to 4).
     """
-    from .neardupe import _VERSION_BRACKET_WORDS, STRIP_WORDS
-
-    suffix = re.compile(
-        r"\s+-\s+(?:(?:19|20)\d{2}\s+)?(?:"
-        + "|".join(re.escape(w) for w in sorted(STRIP_WORDS, key=len, reverse=True))
-        + r")(?:\s+(?:19|20)\d{2})?\s*$",
-        re.IGNORECASE,
-    )
+    from .neardupe import _VERSION_BRACKET_WORDS, VERSION_SUFFIX
 
     def key(title: str) -> str:
         t = _VERSION_BRACKET_WORDS.sub(" ", same_part_spelling(title or ""))
-        return _norm_for_match(suffix.sub("", t))
+        return _norm_for_match(VERSION_SUFFIX.sub("", t))
 
     ka, kb = key(a), key(b)
     return bool(ka) and ka == kb and part_numbers(a or "") == part_numbers(b or "")
