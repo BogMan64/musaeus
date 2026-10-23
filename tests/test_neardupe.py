@@ -292,3 +292,19 @@ def test_a_suffix_and_a_bracket_label_both_go():
     from musaeus.stages.neardupe import _normalise
 
     assert _normalise("Song - Original (Live)", strip_qualifiers=True) == "song"
+
+
+@pytest.mark.parametrize(
+    ("artist", "leader"),
+    [
+        ("The Jimi Hendrix Experience", "jimi hendrix"),
+        ("Bob Seger & The Silver Bullet Band", "bob seger"),
+        ("The Band", ""),
+        ("Jimi Hendrix", ""),
+    ],
+)
+def test_a_band_named_after_its_leader_is_compared_with_the_leader(artist, leader):
+    """Grey, 2026-10-23: "Jimi Hendrix" and "The Jimi Hendrix Experience" are one act."""
+    from musaeus.stages.neardupe import _primary_artist_key
+
+    assert _primary_artist_key(artist) == leader
