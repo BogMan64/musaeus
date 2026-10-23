@@ -631,3 +631,35 @@ def test_classical_and_version_titles_are_not_checked(env):
     env.run()
     assert env.calls["confirm"] == []
     assert env.album(live)[0] == "Absolutely Live" and env.album(bach)[0] == "Bach: Greatest Hits"
+
+
+def test_the_first_runs_own_arrivals_are_checked_not_stamped_as_before(env):
+    """Scholar catalogues a run's arrivals before this stage adds its column:
+    they must not be stamped as old albums (Codex review of #229)."""
+    old = env.add("Rosanna", album="Greatest Hits")
+    new = env.add("Africa", album="70s Hits")
+    env.conn.execute(
+        "UPDATE archive SET finalized_at='2999-01-01 00:00:00' WHERE file_path=?", (new,)
+    )
+    env.conn.commit()
+    env.answers["confirm"] = set()
+    env.run()
+    assert env.calls["confirm"] == ["70s Hits"]
+    assert env.album(old)[0] == "Greatest Hits" and env.album(new)[0] is None
+
+
+def test_the_preview_counts_arriving_albums_to_check(env):
+    env.run()
+    env.add("Africa", album="70s Hits")
+    n, what = AlbumFillStage.plan_candidates(env.conn, env.cfg)
+    assert n == 1 and "arriving album" in what
+
+
+def test_the_tagger_removes_an_album_the_check_cleared():
+    """Left in the tag, a rebuild from the files would bring it back (Codex review of #229)."""
+    from musaeus.stages.tagger import TaggerStage
+
+    cleared = {"album": None, "album_verified_at": f"{af.CLEARED_BY_CHECK} (2026-10-23)"}
+    assert TaggerStage()._compute_changes(cleared, {"album": "Greatest Hits"}).get("album") == ""
+    kept = {"album": None, "album_verified_at": None}
+    assert "album" not in TaggerStage()._compute_changes(kept, {"album": "Greatest Hits"})
