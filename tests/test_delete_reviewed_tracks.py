@@ -144,6 +144,117 @@ class TestItDeletesEveryCopy:
         conn.close()
         assert _denied(vault, h)
 
+    def test_no_deny_removes_every_copy_but_lets_the_audio_back_in(self, vault):
+        """A test batch is reset to be run again (Grey, 2026-10-22): gone, not refused."""
+        h = _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a", car="Blur/Parklife/x.m4a")
+        r = _run(vault, [1], extra=("--no-deny",))
+        assert r.returncode == 0, r.stderr
+        for tier in ("ALAC-Archival", "ALAC_Library", "CAR_Library"):
+            assert not (vault / "Libraries" / tier / "Blur" / "Parklife" / "x.m4a").exists(), tier
+        conn = sqlite3.connect(vault / "musaeus.db")
+        assert conn.execute("SELECT COUNT(*) FROM archive WHERE id=1").fetchone()[0] == 0
+        conn.close()
+        assert not _denied(vault, h)
+
+    def test_no_deny_drops_the_rows_duplicate_records_not_a_survivors(self, vault):
+        """Left behind, a record is read as the returning file's: CrossDupe skips a
+        path it has flagged (Codex review of #225)."""
+        _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
+        _add(vault, 2, "Blur", "Beetlebum", "Blur/Blur/y.m4a")
+        conn = sqlite3.connect(vault / "musaeus.db")
+        conn.execute(
+            "CREATE TABLE duplicates (group_id TEXT, file_path TEXT, duplicate_type TEXT, status TEXT, audio_hash TEXT)"
+        )
+        for rid in (1, 2):
+            path = conn.execute("SELECT file_path FROM archive WHERE id=?", (rid,)).fetchone()[0]
+            conn.execute(
+                "INSERT INTO duplicates VALUES ('g', ?, 'CROSS_BATCH', 'review', NULL)", (path,)
+            )
+        conn.commit()
+        survivor = conn.execute("SELECT file_path FROM archive WHERE id=2").fetchone()[0]
+        conn.close()
+        r = _run(vault, [1], extra=("--no-deny",))
+        assert r.returncode == 0, r.stderr
+        conn = sqlite3.connect(vault / "musaeus.db")
+        left = [p for (p,) in conn.execute("SELECT file_path FROM duplicates")]
+        conn.close()
+        assert left == [survivor]
+
+    def test_no_deny_drops_its_records_left_at_the_path_it_arrived_at(self, vault):
+        """Finalize moves the row, not its duplicate records: they stay at the
+        INBOX path, where the same file arrives again (Codex review of #225)."""
+        h = _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
+        _add(vault, 2, "Blur", "Beetlebum", "Blur/Blur/y.m4a")
+        conn = sqlite3.connect(vault / "musaeus.db")
+        conn.execute(
+            "CREATE TABLE duplicates (group_id TEXT, file_path TEXT, duplicate_type TEXT, audio_hash TEXT, status TEXT)"
+        )
+        inbox = str(vault / "INBOX" / "Odds" / "01. Blur - Song 2.flac")
+        survivor_h = conn.execute("SELECT audio_hash FROM archive WHERE id=2").fetchone()[0]
+        conn.execute("INSERT INTO duplicates VALUES ('g', ?, 'NEAR', ?, 'review')", (inbox, h))
+        conn.execute(
+            "INSERT INTO duplicates VALUES ('g', 'elsewhere', 'NEAR', ?, 'keep')", (survivor_h,)
+        )
+        conn.commit()
+        conn.close()
+        r = _run(vault, [1], extra=("--no-deny",))
+        assert r.returncode == 0, r.stderr
+        conn = sqlite3.connect(vault / "musaeus.db")
+        left = [p for (p,) in conn.execute("SELECT file_path FROM duplicates")]
+        conn.close()
+        assert left == ["elsewhere"]
+
+    def test_no_deny_keeps_a_persons_keep_both_decision(self, vault):
+        """Both recordings marked keep is Grey's ruling: it outlives a reset, as a
+        denial does (Codex review of #225, round 3)."""
+        h = _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
+        conn = sqlite3.connect(vault / "musaeus.db")
+        conn.execute(
+            "CREATE TABLE duplicates (group_id TEXT, file_path TEXT, duplicate_type TEXT, "
+            "audio_hash TEXT, status TEXT)"
+        )
+        path = conn.execute("SELECT file_path FROM archive WHERE id=1").fetchone()[0]
+        conn.execute("INSERT INTO duplicates VALUES ('both', ?, 'NEAR', ?, 'keep')", (path, h))
+        conn.execute("INSERT INTO duplicates VALUES ('both', 'other', 'NEAR', 'h2', 'keep')")
+        conn.execute("INSERT INTO duplicates VALUES ('one', ?, 'NEAR', ?, 'keep')", (path, h))
+        conn.execute("INSERT INTO duplicates VALUES ('one', 'loser', 'NEAR', 'h3', 'archive')")
+        # Its partner reset earlier: one keep member left is not "keep both" (round 4)
+        conn.execute("INSERT INTO duplicates VALUES ('alone', ?, 'NEAR', ?, 'keep')", (path, h))
+        conn.commit()
+        conn.close()
+        r = _run(vault, [1], extra=("--no-deny",))
+        assert r.returncode == 0, r.stderr
+        conn = sqlite3.connect(vault / "musaeus.db")
+        left = sorted(conn.execute("SELECT group_id, file_path FROM duplicates"))
+        conn.close()
+        assert left == [("both", path), ("both", "other"), ("one", "loser")]
+
+    def test_no_deny_leaves_the_records_of_a_path_a_survivor_still_names(self, vault):
+        """The file stays for the survivor, and so do the records at its path (round 4)."""
+        _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
+        conn = sqlite3.connect(vault / "musaeus.db")
+        path = conn.execute("SELECT file_path FROM archive WHERE id=1").fetchone()[0]
+        conn.execute(
+            "INSERT INTO archive (id, artist, title, status, audio_hash, file_path) "
+            "VALUES (2, 'Blur', 'Song 2', 'CATALOGUED', 'other', ?)",
+            (path,),
+        )
+        conn.execute(
+            "CREATE TABLE duplicates (group_id TEXT, file_path TEXT, duplicate_type TEXT, "
+            "audio_hash TEXT, status TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO duplicates VALUES ('g', ?, 'CROSS_BATCH', 'other', 'review')", (path,)
+        )
+        conn.commit()
+        conn.close()
+        r = _run(vault, [1], extra=("--no-deny",))
+        assert r.returncode == 0, r.stderr
+        conn = sqlite3.connect(vault / "musaeus.db")
+        left = [p for (p,) in conn.execute("SELECT file_path FROM duplicates")]
+        conn.close()
+        assert left == [path]
+
     def test_a_dry_run_changes_nothing(self, vault):
         _add(vault, 1, "Blur", "Song 2", "Blur/Parklife/x.m4a")
         _run(vault, [1], execute=False)

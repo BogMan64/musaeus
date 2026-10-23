@@ -46,6 +46,11 @@ nothing of it deleted or denied, and it counts as a survivor for the rest
 of the batch. --force-id ID deletes it anyway, for a master that is
 damaged or unreadable; its REFUSED line says what is at the path.
 
+--no-deny forgets a track instead: every copy and the row go, the audio is
+NOT denied, so the same file may be ingested again. For resetting a test
+batch (Grey, 2026-10-22: rerun a batch to see what MUSAEUS does on its own),
+never for a review's removals.
+
 EXIT 1 when any row was refused: the others WERE done (partly done).
 Rerunning is safe -- the done ids read as already gone.
 
@@ -55,6 +60,7 @@ Rerunning is safe -- the done ids read as already gone.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sqlite3
 import sys
 import uuid
@@ -173,6 +179,10 @@ def main() -> int:
     ap.add_argument("ids", type=Path, help="file of archive ids, one per line")
     ap.add_argument("--reason", required=True, help="recorded on every event and deny entry")
     ap.add_argument("--execute", action="store_true", help="actually delete (default: dry run)")
+    ap.add_argument(
+        "--no-deny", action="store_true",
+        help="do not deny the audio: the same file may be ingested again (test batch reset)",
+    )
     ap.add_argument(
         "--force-id", type=int, action="append", default=[], metavar="ID",
         help="delete this id's master even though it cannot be confirmed as this track "
@@ -410,7 +420,7 @@ def main() -> int:
         if audio_kept:
             print(f"     NOT DENIED (another row still carries this audio): {h[:12]}")
             n_kept_audio += 1
-        elif h and led is not None:
+        elif h and led is not None and not args.no_deny:
             if args.execute:
                 deny_hash(led, h, args.reason, row["file_path"])
             n_denied += 1
@@ -437,6 +447,29 @@ def main() -> int:
                     conn.execute("DELETE FROM archive_tier_hashes WHERE path = ?", (row["file_path"],))
             except sqlite3.OperationalError:
                 pass  # a vault with no bit-rot baseline yet
+            if args.no_deny:
+                # The audio may come back to the same path: a duplicate record
+                # left behind would be read as the new row's -- CrossDupe skips a
+                # path it has flagged (Codex review of #225). Finalize leaves its
+                # records at the INBOX path it arrived at, so they go by its audio
+                # too -- unless a survivor carries that audio: those are the survivor's.
+                # A person's "keep both" stays, as a denial does: it is Grey's
+                # ruling, not this batch's (Codex review of #225, round 3). NearDupe's
+                # own rule: two recordings, every member marked keep (round 4).
+                not_decided = (
+                    " AND NOT (duplicate_type IN ('NEAR', 'ACOUSTIC') AND group_id IN ("
+                    "SELECT group_id FROM duplicates GROUP BY group_id HAVING COUNT(*) > 1"
+                    " AND SUM(COALESCE(status, '') <> 'keep' OR COALESCE(audio_hash, '') = '') = 0"
+                    " AND COUNT(DISTINCT audio_hash) = 2))"
+                )
+                with contextlib.suppress(sqlite3.OperationalError):  # no duplicates table yet
+                    if str(Path(row["file_path"])) not in keep_paths:  # a survivor's path: its records
+                        conn.execute(
+                            "DELETE FROM duplicates WHERE file_path = ?" + not_decided,
+                            (row["file_path"],),
+                        )
+                    if h and not audio_kept:
+                        conn.execute("DELETE FROM duplicates WHERE audio_hash = ?" + not_decided, (h,))
             conn.execute("DELETE FROM archive WHERE id=?", (i,))
         n_rows += 1
 
