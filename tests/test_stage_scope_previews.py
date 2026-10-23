@@ -96,12 +96,16 @@ class TestCorruptPreview:
         `library files with no row: 0` failure in a new place."""
         plan = build_plan(cfg, [CorruptStage])
 
-        # The planner now reports confirmed quarantine actions; these test
-        # paths are absent, so there are no current files to move.
-        assert plan.stages[0].candidates == 0
+        # A plain plan counts the tracks to scan; decoding waits for --deep.
+        assert plan.stages[0].candidates == 2
         assert plan.stages[0].previewable
-        assert plan.stages[0].actions == ()
         assert "no preview available" not in plan.stages[0].description
+
+        # A deep plan reports confirmed quarantine actions; these test paths
+        # are absent, so there are no current files to move.
+        deep = build_plan(cfg, [CorruptStage], deep=True)
+        assert deep.stages[0].candidates == 0
+        assert deep.stages[0].actions == ()
 
 
 class TestBitRotPreview:

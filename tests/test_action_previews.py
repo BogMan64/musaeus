@@ -155,7 +155,7 @@ def test_corrupt_preview_decodes_and_names_quarantine(vault, monkeypatch) -> Non
         lambda *a, **k: (False, "bad audio"),
     )
 
-    stage = build_plan(cfg, [CorruptStage]).stages[0]
+    stage = build_plan(cfg, [CorruptStage], deep=True).stages[0]
 
     assert stage.candidates == 1
     assert stage.actions[0]["source"] == str(source)
@@ -163,3 +163,19 @@ def test_corrupt_preview_decodes_and_names_quarantine(vault, monkeypatch) -> Non
     assert "bad audio" in stage.actions[0]["reason"]
     assert source.exists()
     assert conn.execute("SELECT status FROM archive").fetchone()[0] == "CATALOGUED"
+
+
+def test_corrupt_decodes_only_in_a_deep_plan(vault, monkeypatch) -> None:
+    """A plain plan took about 3 minutes on the live library while Corrupt decoded
+    audio (Grey, 2026-10-23: only when asked, `musaeus plan --deep`)."""
+    cfg, _ = vault
+    decoded: list[str] = []
+    monkeypatch.setattr(
+        CorruptStage,
+        "plan_actions",
+        classmethod(lambda cls, conn, c: decoded.append("x") or ([], "")),
+    )
+    stage = build_plan(cfg, [CorruptStage]).stages[0]
+    assert decoded == [] and stage.previewable and not stage.actions
+    build_plan(cfg, [CorruptStage], deep=True)
+    assert decoded == ["x"]

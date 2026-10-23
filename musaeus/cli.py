@@ -2066,6 +2066,11 @@ def _build_parser() -> argparse.ArgumentParser:
     plan_p.add_argument("--json", action="store_true", help="Machine-readable plan")
     plan_p.add_argument("--full", action="store_true", help="Plan the full pipeline")
     plan_p.add_argument("--maintain", action="store_true", help="Plan the maintenance pipeline")
+    plan_p.add_argument(
+        "--deep",
+        action="store_true",
+        help="Also decode audio to name the files Corrupt would quarantine (takes minutes)",
+    )
 
     sub.add_parser("doctor", help="Read-only library integrity report (DB vs disk vs hash ledger)")
 
@@ -2890,7 +2895,7 @@ def main() -> None:
                 if getattr(args, "maintain", False)
                 else DEFAULT_PIPELINE
             )
-            plan = build_plan(get_config(), list(pipe), mode)
+            plan = build_plan(get_config(), list(pipe), mode, deep=getattr(args, "deep", False))
             print(
                 plan.to_json()
                 if getattr(args, "json", False)

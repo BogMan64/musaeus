@@ -452,6 +452,9 @@ class CorruptStage(BaseStage):
     #: use site in _scan for why this exists and how the number was picked.
     NEW_ARRIVAL_DECODE_BUDGET = 200
 
+    #: plan_actions reads and decodes audio: only `musaeus plan --deep` asks it.
+    PLAN_ACTIONS_DEEP = True
+
     @classmethod
     def plan_actions(cls, conn, cfg) -> tuple[list[dict[str, str]], str]:
         """Decode the same current candidates as the run, without recording verdicts.
@@ -546,7 +549,7 @@ class CorruptStage(BaseStage):
         return int(n), (
             f"CATALOGUED tracks to scan; quarantine destinations are unknown "
             f"until audio decoding (up to {cls.NEW_ARRIVAL_DECODE_BUDGET} "
-            "never-checked files per run)"
+            "never-checked files per run; `musaeus plan --deep` decodes them now)"
         )
 
     def validate(self, ctx: RunContext) -> None:

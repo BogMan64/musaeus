@@ -185,12 +185,22 @@ class Plan:
         )
 
 
-def build_plan(cfg: MusicConfig, pipeline: list[type], mode: RunMode = RunMode.PREVIEW) -> Plan:
+def build_plan(
+    cfg: MusicConfig,
+    pipeline: list[type],
+    mode: RunMode = RunMode.PREVIEW,
+    *,
+    deep: bool = False,
+) -> Plan:
     """Compute what `pipeline` would do, touching nothing.
 
     Deliberately takes stage CLASSES and never instantiates them. Reading a
     classmethod off a type cannot run a stage; constructing one is the step
     that would make mutation possible, so the guarantee is structural.
+
+    *deep*: also run the previews that read every file (PLAN_ACTIONS_DEEP --
+    Corrupt decodes audio). Without it a plan took about 3 minutes on the
+    live library instead of seconds (Grey, 2026-10-23: only when asked).
     """
     plan = Plan(mode=mode, vault_root=cfg.vault_root)
 
@@ -215,7 +225,7 @@ def build_plan(cfg: MusicConfig, pipeline: list[type], mode: RunMode = RunMode.P
     try:
         for st in pipeline:
             action_fn = getattr(st, "plan_actions", None)
-            if action_fn is not None:
+            if action_fn is not None and (deep or not getattr(st, "PLAN_ACTIONS_DEEP", False)):
                 try:
                     actions, desc = action_fn(conn, cfg)
                     plan.stages.append(StagePlan(_name(st), len(actions), desc, tuple(actions)))
