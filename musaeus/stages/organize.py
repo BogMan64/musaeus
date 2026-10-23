@@ -823,6 +823,10 @@ class OrganizeStage(BaseStage):
             )
             vacated.add(current)
             reserved.add(target)
+            # The real stage updates the row as it moves the file: a later move
+            # into the path just left is not blocked (Codex review of #230, r2).
+            owned.discard(str(current))
+            owned.add(str(target))
         moves = sum(a["action"] == "move" for a in actions)
         renames = sum(a["action"] == "rename" for a in actions)
         desc = f"{moves} move(s), {renames} rename(s) on current disk/DB"

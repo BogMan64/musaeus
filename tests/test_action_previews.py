@@ -228,3 +228,33 @@ def test_tribute_preview_follows_the_known_artist_rule(vault) -> None:
     stage = build_plan(cfg, [TributeQuarantineStage]).stages[0]
 
     assert stage.actions == ()
+
+
+def test_organize_a_move_into_a_path_an_earlier_move_frees_is_not_blocked(vault) -> None:
+    """The real stage updates the earlier row as it moves; the later move goes
+    ahead (Codex review of #230, round 2)."""
+    cfg, conn = vault
+    first = cfg.inbox / "a.m4a"
+    add_track(conn, first, title="Song A")
+    target = build_plan(cfg, [OrganizeStage]).stages[0].actions[0]["destination"]
+    # A second row sits where the first will go, and is itself filed elsewhere.
+    squatter = Path(target)
+    add_track(conn, squatter, artist="Other Artist", title="Other")
+
+    actions = build_plan(cfg, [OrganizeStage]).stages[0].actions
+
+    assert all(a["action"] != "blocked" for a in actions), actions
+
+
+def test_artist_consolidate_album_spellings_after_a_rename(vault) -> None:
+    """The run renames first, then unifies albums (Codex review of #230, round 2)."""
+    cfg, conn = vault
+    (cfg.meta_dir / "artist_canon.tsv").write_text("Old Name\tNew Name\n")
+    add_track(conn, cfg.inbox / "a.m4a", artist="Old Name", album="Kind of Blue", title="So What")
+    add_track(
+        conn, cfg.inbox / "b.m4a", artist="New Name", album="Kind Of Blue", title="Blue in Green"
+    )
+
+    stage = build_plan(cfg, [ArtistConsolidateStage]).stages[0]
+
+    assert any(a["action"] == "album spelling" for a in stage.actions), stage.actions

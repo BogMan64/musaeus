@@ -328,6 +328,9 @@ class ArtistConsolidateStage(BaseStage):
             f"{'mb_artist_name' if has_mb else 'NULL AS mb_artist_name'} FROM archive "
             "WHERE status = 'CATALOGUED' AND album IS NOT NULL AND trim(album) <> ''"
         ).fetchall()
+        # The run renames artists first, then unifies albums: plan on the new
+        # names, or two spellings across a rename are missed (Codex review, r2).
+        renamed = [{**dict(r), "artist": changes.get(r["artist"], r["artist"])} for r in album_rows]
         albums = [
             {
                 "action": "album spelling",
@@ -335,7 +338,7 @@ class ArtistConsolidateStage(BaseStage):
                 "destination": best,
                 "reason": r["file_path"],
             }
-            for r, best in plan_album_spelling(album_rows)
+            for r, best in plan_album_spelling(renamed)
         ]
         return actions + albums, (
             f"{len(actions)} artist spelling(s) and {len(albums)} album spelling(s) would "
