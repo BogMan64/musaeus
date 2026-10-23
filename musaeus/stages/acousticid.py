@@ -199,6 +199,34 @@ def _spellings(name: str) -> set[str]:
     return {k for k in (plain, _norm_for_match(name)) if k}
 
 
+def _same_song(a: str, b: str) -> bool:
+    """One title once only its version label is set aside, part for part.
+
+    Stricter than _titles_agree, which lets a title be part of the other: a
+    pair the keep rule may split must be one song by name too. Only a version
+    label goes -- a bracket NearDupe knows ("(Remastered 2006)", "(Original
+    Mix)") or the same as a " - " suffix ("- 2011 Remaster"); every other word,
+    bracket and number stays: "Medley (A/B)" is not "Medley (C/D)", "Interlude
+    (2020)" not "Interlude (2021)", "Live and Let Die" not "And Let Die"
+    (Codex review of #228, rounds 2 to 4).
+    """
+    from .neardupe import _VERSION_BRACKET_WORDS, STRIP_WORDS
+
+    suffix = re.compile(
+        r"\s+-\s+(?:(?:19|20)\d{2}\s+)?(?:"
+        + "|".join(re.escape(w) for w in sorted(STRIP_WORDS, key=len, reverse=True))
+        + r")(?:\s+(?:19|20)\d{2})?\s*$",
+        re.IGNORECASE,
+    )
+
+    def key(title: str) -> str:
+        t = _VERSION_BRACKET_WORDS.sub(" ", same_part_spelling(title or ""))
+        return _norm_for_match(suffix.sub("", t))
+
+    ka, kb = key(a), key(b)
+    return bool(ka) and ka == kb and part_numbers(a or "") == part_numbers(b or "")
+
+
 def _titles_agree(a: str, b: str) -> bool:
     """One title is the other, or part of it.
 
@@ -671,6 +699,7 @@ class AcousticIDStage(BaseStage):
         reused = 0
         dupes_found = 0
         pairs: list[tuple[str, str]] = []
+        to_decide: list[tuple[str, str]] = []
 
         from datetime import datetime, timezone
 
@@ -822,7 +851,8 @@ class AcousticIDStage(BaseStage):
                         # on 2026-08-31 included pairs 212s vs 207s and 218s
                         # vs 198s, every one of which this rejects.
                         other = ctx.conn.execute(
-                            "SELECT duration, artist FROM archive WHERE file_path=?", (other_fp,)
+                            "SELECT duration, artist, title FROM archive WHERE file_path=?",
+                            (other_fp,),
                         ).fetchone()
                         other_dur = (other["duration"] if other else None) or 0.0
 
@@ -858,7 +888,26 @@ class AcousticIDStage(BaseStage):
                             )
                             continue
                         dupes_found += 1
-                        pairs.append((Path(other_fp).name, Path(fp).name))
+                        # The keep rule decides only a pair whose titles agree once
+                        # a version label is set aside ("Hold On I'm Comin'
+                        # (Original Mix)"). A fingerprint can name "Blue" and "Blue
+                        # Sky" one recording; that pair stays a person's to decide
+                        # (Codex review of #228).
+                        same_song = _same_song(
+                            _row_get(row, "title"), _row_get(other, "title") if other else ""
+                        )
+                        # Both lengths measured, or the 3 s check above never ran
+                        # (Codex review of #228, round 3): unsure stays a person's.
+                        # Two known artists too: a blank one skipped the cover check
+                        # above (Codex review of #228, round 4).
+                        sure = (
+                            same_song
+                            and bool(other_dur)
+                            and bool(duration)
+                            and bool(mine and theirs)
+                        )
+                        status = "pending" if sure else "review"
+                        (pairs if sure else to_decide).append((Path(other_fp).name, Path(fp).name))
                         group_id = f"acoustic_{uuid.uuid4().hex[:8]}"
                         logger.info(
                             "[acousticid] DUPE  %s  ==  %s  (recording=%s)",
@@ -887,10 +936,10 @@ class AcousticIDStage(BaseStage):
                                     INSERT OR IGNORE INTO duplicates
                                         (group_id, file_path, duplicate_type,
                                          confidence, status, run_id, staged_at, audio_hash)
-                                    VALUES (?, ?, 'ACOUSTIC', ?, 'review', ?, ?,
+                                    VALUES (?, ?, 'ACOUSTIC', ?, ?, ?, ?,
                                             (SELECT audio_hash FROM archive WHERE file_path = ?))
                                     """,
-                                    (group_id, member, score, ctx.run_id, now, member),
+                                    (group_id, member, score, status, ctx.run_id, now, member),
                                 )
                             ctx.log_event(
                                 "ACOUSTIC_DUPE_FOUND",
@@ -930,20 +979,33 @@ class AcousticIDStage(BaseStage):
                 "Fingerprints stored for future use; rows left unmarked so a "
                 "later run with a key still asks about them."
             )
-        if dupes_found:
-            # Status 'review', not 'pending': DupeResolver acts on every pending
-            # group, and these are Grey's to decide (2026-09-25, choice (b)). A
-            # radio edit or an extended mix can be the same recording to
-            # AcoustID and still a different track to keep. So they are listed
-            # here, by name, and nothing moves them.
+        if pairs:
+            # Status 'pending': the next duplicates step (Act 2) decides them by
+            # the keep rule, like every other duplicate. Grey, 2026-10-23, reversing
+            # choice (b) of 2026-09-25 (his to decide): "one copy of each song, the
+            # longer if both are studio" already settles a radio edit against an
+            # extended mix. A pair a person marked keep-both stays kept.
             result.notes.append(
-                f"{dupes_found} same-recording pair(s) for you to decide -- nothing moved:"
+                f"{len(pairs)} same-recording pair(s) -- the keep rule decides them "
+                "at the next duplicates step (Act 2):"
             )
             for a, b in pairs[:10]:
                 result.notes.append(f"    {a}  ==  {b}")
             if len(pairs) > 10:
                 result.notes.append(
-                    "    " + elision(len(pairs) - 10, suffix="(duplicates table, status 'review')")
+                    "    " + elision(len(pairs) - 10, suffix="(duplicates table, status 'pending')")
+                )
+        if to_decide:
+            result.notes.append(
+                f"{len(to_decide)} same-recording pair(s) whose titles differ, for you to decide "
+                "-- nothing moved:"
+            )
+            for a, b in to_decide[:10]:
+                result.notes.append(f"    {a}  ==  {b}")
+            if len(to_decide) > 10:
+                result.notes.append(
+                    "    "
+                    + elision(len(to_decide) - 10, suffix="(duplicates table, status 'review')")
                 )
 
         ctx.record_stage(result)

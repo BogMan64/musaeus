@@ -231,34 +231,111 @@ def test_a_result_that_agrees_wins_even_when_a_weaker_one_holds_covers(tmp_path,
     assert _named(ctx, p) == ("The Beatles", "Yesterday")
 
 
-def test_a_same_recording_pair_is_listed_for_grey_not_moved(tmp_path, monkeypatch):
-    # Grey, 2026-09-25, choice (b): AcoustID's "same recording, different
-    # file" pairs are his to decide -- a radio edit or an extended mix can be
-    # the same recording to AcoustID and still a different track to keep.
+def test_a_same_recording_pair_goes_to_the_keep_rule(tmp_path, monkeypatch):
+    # Grey, 2026-10-23: fingerprint pairs use the same keep rule as the
+    # duplicates step (reversing choice (b) of 2026-09-25, "his to decide").
+    # One copy of each song: the lossless one stays (the stage pairs only
+    # copies of about the same length, so length rarely decides).
     from musaeus.stages.dupe_resolver import DupeResolverStage
 
     monkeypatch.setattr(acoustid_mod, "_fpcalc", lambda p: (200.0, "FP-" + Path(p).name))
     monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", lambda *a, **k: ("rec-1", 0.97))
     ctx = _ctx(tmp_path)
     album = _untagged(
-        ctx, "Jr. Walker - Shotgun.m4a", artist="Jr. Walker", title="Shotgun", duration=200.0
+        ctx,
+        "Jr. Walker - Shotgun.m4a",
+        artist="Jr. Walker",
+        title="Shotgun",
+        duration=200.0,
+        codec="alac",
     )
     mix = _untagged(
         ctx,
-        "Jr. Walker - Shotgun (Extended Mix).m4a",
+        "Jr. Walker - Shotgun (Original Mix).m4a",
         artist="Jr. Walker",
-        title="Shotgun (Extended Mix)",
+        title="Shotgun (Original Mix)",
         duration=200.0,
+        codec="aac",
     )
     result = AcousticIDStage().run(ctx)
-    assert any("for you to decide" in n for n in result.notes), result.notes
-    assert any("Shotgun (Extended Mix)" in n for n in result.notes), "the pair is named"
+    assert any("the keep rule decides" in n for n in result.notes), result.notes
+    assert any("Shotgun (Original Mix)" in n for n in result.notes), "the pair is named"
     DupeResolverStage().run(ctx)
-    assert album.is_file() and mix.is_file(), "Act 2 moved a pair that was Grey's to decide"
+    assert album.is_file(), "the lossless copy stays"
+    assert not mix.is_file(), "the AAC copy was not moved to review"
     pending = ctx.conn.execute(
         "SELECT COUNT(*) FROM duplicates WHERE duplicate_type = 'ACOUSTIC' AND status = 'pending'"
     ).fetchone()[0]
     assert pending == 0
+
+
+def test_a_pair_whose_titles_differ_stays_for_grey(tmp_path, monkeypatch):
+    """A fingerprint can name "Blue" and "Blue Sky" one recording: the keep rule
+    must not split two songs by name (Codex review of #228)."""
+    from musaeus.stages.dupe_resolver import DupeResolverStage
+
+    monkeypatch.setattr(acoustid_mod, "_fpcalc", lambda p: (200.0, "FP-" + Path(p).name))
+    monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", lambda *a, **k: ("rec-1", 0.97))
+    ctx = _ctx(tmp_path)
+    blue = _untagged(ctx, "Joni - Blue.m4a", artist="Joni", title="Blue", duration=200.0)
+    sky = _untagged(
+        ctx, "Joni - Blue Sky.m4a", artist="Joni", title="Blue Sky", duration=200.0, codec="aac"
+    )
+    result = AcousticIDStage().run(ctx)
+    assert any("for you to decide" in n for n in result.notes), result.notes
+    DupeResolverStage().run(ctx)
+    assert blue.is_file() and sky.is_file(), "two songs by name were split by the keep rule"
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        ("Hold On I'm Comin' (Original Mix)", "Hold On, I'm Comin'", True),
+        ("Lady (Remastered 2006)", "Lady", True),
+        ("Blue", "Blue Sky", False),
+        ("Medley (A/B)", "Medley (C/D)", False),
+        ("Song - Part 1", "Song - Part 2", False),
+        ("Interlude (1)", "Interlude (2)", False),
+        ("Interlude (2020)", "Interlude (2021)", False),
+        ("Live and Let Die", "And Let Die", False),
+        ("Song - 2011 Remaster", "Song", True),
+    ],
+)
+def test_only_a_version_label_is_set_aside_before_titles_are_compared(a, b, same):
+    """Codex review of #228, round 2: every bracket was dropped, so two medleys
+    named apart only in brackets were one song."""
+    assert acoustid_mod._same_song(a, b) is same
+
+
+def test_a_pair_with_an_unmeasured_length_stays_for_grey(tmp_path, monkeypatch):
+    """The 3 s check needs both lengths: unsure stays a person's (Codex review of #228, round 3)."""
+    from musaeus.stages.dupe_resolver import DupeResolverStage
+
+    monkeypatch.setattr(acoustid_mod, "_fpcalc", lambda p: (200.0, "FP-" + Path(p).name))
+    monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", lambda *a, **k: ("rec-1", 0.97))
+    ctx = _ctx(tmp_path)
+    a = _untagged(ctx, "Toto - Africa.m4a", artist="Toto", title="Africa", codec="alac")
+    b = _untagged(ctx, "Toto - Africa (2).m4a", artist="Toto", title="Africa", codec="aac")
+    result = AcousticIDStage().run(ctx)
+    assert any("for you to decide" in n for n in result.notes), result.notes
+    DupeResolverStage().run(ctx)
+    assert a.is_file() and b.is_file()
+
+
+def test_a_pair_with_a_blank_artist_stays_for_grey(tmp_path, monkeypatch):
+    """A blank artist skips the cover check: unsure stays a person's (Codex review of #228, round 4)."""
+    from musaeus.stages.dupe_resolver import DupeResolverStage
+
+    monkeypatch.setattr(acoustid_mod, "_fpcalc", lambda p: (200.0, "FP-" + Path(p).name))
+    monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", lambda *a, **k: ("rec-1", 0.97))
+    ctx = _ctx(tmp_path)
+    a = _untagged(
+        ctx, "Toto - Africa.m4a", artist="Toto", title="Africa", duration=200.0, codec="alac"
+    )
+    b = _untagged(ctx, "Africa.m4a", artist="", title="Africa", duration=200.0, codec="aac")
+    AcousticIDStage().run(ctx)
+    DupeResolverStage().run(ctx)
+    assert a.is_file() and b.is_file()
 
 
 def test_a_copy_already_moved_to_review_is_not_a_pair_to_decide(tmp_path, monkeypatch):
