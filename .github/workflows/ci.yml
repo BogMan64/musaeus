@@ -64,8 +64,14 @@ jobs:
       # A green suite that has never executed the file-deleting path is the
       # same failure this project catalogues everywhere else: a check that
       # finds nothing is not a check that found nothing wrong.
+      # Without the recommended extras, and a stalled download retried after
+      # 30 s: on 2026-10-22 Ubuntu's mirror stalled up to 10 minutes per file,
+      # and fetching 94.5 MB took the 3.10 job 50 minutes for 6 of tests.
       - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg fdkaac
+        run: |
+          APT="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"
+          sudo apt-get $APT update
+          sudo apt-get $APT install -y --no-install-recommends ffmpeg fdkaac
       - name: Install dependencies
         run: pip install -e ".[dev,fuzzy]"
       - name: Run tests
