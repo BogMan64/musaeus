@@ -48,7 +48,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
-from ..brackets import CLOSE, OPEN, base_title, part_numbers, same_part_spelling
+from ..brackets import base_title, part_numbers, same_part_spelling
 from ..context import RunContext, StageResult, elision
 from ..db import SET_ASIDE_STATUSES, ensure_columns
 from ..network_policy import check as _network_check
@@ -199,29 +199,32 @@ def _spellings(name: str) -> set[str]:
     return {k for k in (plain, _norm_for_match(name)) if k}
 
 
-_NUMBERED_BRACKET = re.compile(rf"[{OPEN}]\s*(\d{{1,3}})\s*[{CLOSE}]")
-
-
 def _same_song(a: str, b: str) -> bool:
     """One title once only its version label is set aside, part for part.
 
     Stricter than _titles_agree, which lets a title be part of the other: a
-    pair the keep rule may split must be one song by name too. Only labels
-    NearDupe knows go ("(Remastered)", "(Original Mix)"); any other bracket is
-    part of the title -- "Medley (A/B)" is not "Medley (C/D)" (Codex review
-    of #228, round 2).
+    pair the keep rule may split must be one song by name too. Only a version
+    label goes -- a bracket NearDupe knows ("(Remastered 2006)", "(Original
+    Mix)") or the same as a " - " suffix ("- 2011 Remaster"); every other word,
+    bracket and number stays: "Medley (A/B)" is not "Medley (C/D)", "Interlude
+    (2020)" not "Interlude (2021)", "Live and Let Die" not "And Let Die"
+    (Codex review of #228, rounds 2 to 4).
     """
-    from .neardupe import _normalise
+    from .neardupe import _VERSION_BRACKET_WORDS, STRIP_WORDS
 
-    ka, kb = (_normalise(same_part_spelling(t or ""), strip_qualifiers=True) for t in (a, b))
-    # NearDupe drops "(1)" and "(2)": two numbered tracks, never one (round 3).
-    numbered = [_NUMBERED_BRACKET.findall(t or "") for t in (a, b)]
-    return (
-        bool(ka)
-        and ka == kb
-        and part_numbers(a or "") == part_numbers(b or "")
-        and numbered[0] == numbered[1]
+    suffix = re.compile(
+        r"\s+-\s+(?:(?:19|20)\d{2}\s+)?(?:"
+        + "|".join(re.escape(w) for w in sorted(STRIP_WORDS, key=len, reverse=True))
+        + r")(?:\s+(?:19|20)\d{2})?\s*$",
+        re.IGNORECASE,
     )
+
+    def key(title: str) -> str:
+        t = _VERSION_BRACKET_WORDS.sub(" ", same_part_spelling(title or ""))
+        return _norm_for_match(suffix.sub("", t))
+
+    ka, kb = key(a), key(b)
+    return bool(ka) and ka == kb and part_numbers(a or "") == part_numbers(b or "")
 
 
 def _titles_agree(a: str, b: str) -> bool:
@@ -895,7 +898,14 @@ class AcousticIDStage(BaseStage):
                         )
                         # Both lengths measured, or the 3 s check above never ran
                         # (Codex review of #228, round 3): unsure stays a person's.
-                        sure = same_song and bool(other_dur) and bool(duration)
+                        # Two known artists too: a blank one skipped the cover check
+                        # above (Codex review of #228, round 4).
+                        sure = (
+                            same_song
+                            and bool(other_dur)
+                            and bool(duration)
+                            and bool(mine and theirs)
+                        )
                         status = "pending" if sure else "review"
                         (pairs if sure else to_decide).append((Path(other_fp).name, Path(fp).name))
                         group_id = f"acoustic_{uuid.uuid4().hex[:8]}"

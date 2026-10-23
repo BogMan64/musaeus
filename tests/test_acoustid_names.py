@@ -296,6 +296,9 @@ def test_a_pair_whose_titles_differ_stays_for_grey(tmp_path, monkeypatch):
         ("Medley (A/B)", "Medley (C/D)", False),
         ("Song - Part 1", "Song - Part 2", False),
         ("Interlude (1)", "Interlude (2)", False),
+        ("Interlude (2020)", "Interlude (2021)", False),
+        ("Live and Let Die", "And Let Die", False),
+        ("Song - 2011 Remaster", "Song", True),
     ],
 )
 def test_only_a_version_label_is_set_aside_before_titles_are_compared(a, b, same):
@@ -315,6 +318,22 @@ def test_a_pair_with_an_unmeasured_length_stays_for_grey(tmp_path, monkeypatch):
     b = _untagged(ctx, "Toto - Africa (2).m4a", artist="Toto", title="Africa", codec="aac")
     result = AcousticIDStage().run(ctx)
     assert any("for you to decide" in n for n in result.notes), result.notes
+    DupeResolverStage().run(ctx)
+    assert a.is_file() and b.is_file()
+
+
+def test_a_pair_with_a_blank_artist_stays_for_grey(tmp_path, monkeypatch):
+    """A blank artist skips the cover check: unsure stays a person's (Codex review of #228, round 4)."""
+    from musaeus.stages.dupe_resolver import DupeResolverStage
+
+    monkeypatch.setattr(acoustid_mod, "_fpcalc", lambda p: (200.0, "FP-" + Path(p).name))
+    monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", lambda *a, **k: ("rec-1", 0.97))
+    ctx = _ctx(tmp_path)
+    a = _untagged(
+        ctx, "Toto - Africa.m4a", artist="Toto", title="Africa", duration=200.0, codec="alac"
+    )
+    b = _untagged(ctx, "Africa.m4a", artist="", title="Africa", duration=200.0, codec="aac")
+    AcousticIDStage().run(ctx)
     DupeResolverStage().run(ctx)
     assert a.is_file() and b.is_file()
 
