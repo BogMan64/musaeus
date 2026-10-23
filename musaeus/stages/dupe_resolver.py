@@ -657,7 +657,8 @@ class DupeResolverStage(BaseStage):
             album = sanitize_path_component(loser.get("album") or "Unsorted")
             filename = build_track_filename(
                 loser.get("artist") or "Unknown Artist",
-                loser.get("title") or "Unknown Title", source.suffix,
+                loser.get("title") or "Unknown Title",
+                source.suffix,
             )
             target = unique_path(
                 review_dir / batch_date / artist / album / filename,
@@ -665,15 +666,22 @@ class DupeResolverStage(BaseStage):
             )
             reserved.add(target)
             moved.add(str(source))
-            actions.append({
-                "action": "move to REVIEW", "source": str(source), "destination": str(target),
-                "reason": f"duplicate {loser.get('duplicate_type') or 'unknown'}; "
-                          f"keep {keeper['file_path'] if keeper else 'prior library copy'}; "
-                          f"group {group_id}",
-            })
+            actions.append(
+                {
+                    "action": "move to REVIEW",
+                    "source": str(source),
+                    "destination": str(target),
+                    "reason": f"duplicate {loser.get('duplicate_type') or 'unknown'}; "
+                    f"keep {keeper['file_path'] if keeper else 'prior library copy'}; "
+                    f"group {group_id}",
+                }
+            )
 
-        sound = [gid for gid in _get_pending_groups(conn)
-                 if not any(_mismatch(m) for m in _get_group_members(conn, gid))]
+        sound = [
+            gid
+            for gid in _get_pending_groups(conn)
+            if not any(_mismatch(m) for m in _get_group_members(conn, gid))
+        ]
         for component in _connected_groups(conn, sound):
             members = _component_members(conn, component)
             members = [m for m in members if m.get("current_status") not in SET_ASIDE_STATUSES]
@@ -685,9 +693,14 @@ class DupeResolverStage(BaseStage):
             _rank(members)
             keeper, losers = _pick_keeper_and_losers(members)
             qs = ",".join("?" * len(component))
-            cross = {r[0] for r in conn.execute(
-                f"SELECT file_path FROM duplicates WHERE duplicate_type = 'CROSS_BATCH' "
-                f"AND group_id IN ({qs})", list(component))}
+            cross = {
+                r[0]
+                for r in conn.execute(
+                    f"SELECT file_path FROM duplicates WHERE duplicate_type = 'CROSS_BATCH' "
+                    f"AND group_id IN ({qs})",
+                    list(component),
+                )
+            }
             if cross and len(members) > 1:
                 rest = [m for m in members if m["file_path"] not in cross]
                 if rest:

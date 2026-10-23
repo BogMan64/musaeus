@@ -258,7 +258,9 @@ def _preferred_name(names_with_counts: list[tuple[str, int]]) -> str:
     return CANON_ARTIST_DISPLAY.get(best_key, _smart_title(best_name))
 
 
-def _proposed_artist_changes(rows, meta_dir) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+def _proposed_artist_changes(
+    rows, meta_dir
+) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
     """Use one artist decision for both the preview and the real stage."""
     canon_changes: dict[str, str] = {}
     try:
@@ -309,8 +311,12 @@ class ArtistConsolidateStage(BaseStage):
         changes, _, _ = _proposed_artist_changes(rows, cfg.meta_dir)
         counts = {r["artist"]: r["track_count"] for r in rows}
         actions = [
-            {"action": "artist rename", "source": old, "destination": new,
-             "reason": f"{counts[old]} catalogued track(s)"}
+            {
+                "action": "artist rename",
+                "source": old,
+                "destination": new,
+                "reason": f"{counts[old]} catalogued track(s)",
+            }
             for old, new in changes.items()
         ]
         return actions, (
@@ -369,14 +375,15 @@ class ArtistConsolidateStage(BaseStage):
         # rewrites real artist metadata unattended, so the canon file is the
         # sole authority. A name changes because someone wrote that mapping
         # down deliberately, never because a similarity score cleared a bar.
-        changes, group_changes, canon_changes = _proposed_artist_changes(
-            rows, ctx.config.meta_dir
-        )
+        changes, group_changes, canon_changes = _proposed_artist_changes(rows, ctx.config.meta_dir)
         counts = {r["artist"]: r["track_count"] for r in rows}
         for old_name, new_name in group_changes.items():
             logger.info(
                 "[%s] '%s' (%d tracks) → '%s'",
-                self.NAME, old_name, counts[old_name], new_name,
+                self.NAME,
+                old_name,
+                counts[old_name],
+                new_name,
             )
             result.files_changed += counts[old_name]
 

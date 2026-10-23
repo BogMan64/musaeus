@@ -765,9 +765,7 @@ class OrganizeStage(BaseStage):
         filing = filing_load(cfg.meta_dir) if getattr(cfg, "meta_dir", None) else {}
         unmatched = unmatched_person_acts(conn, filing)
         if unmatched:
-            raise ValueError(
-                "person_folders.tsv has unmatched acts: " + ", ".join(unmatched[:5])
-            )
+            raise ValueError("person_folders.tsv has unmatched acts: " + ", ".join(unmatched[:5]))
         roots = cls._roots_for_config(cfg)
         vacated: set[Path] = set()
         reserved: set[Path] = set()
@@ -790,20 +788,25 @@ class OrganizeStage(BaseStage):
                 outside += 1
                 continue
             candidate = root / library_relpath(
-                row["artist"], row["mb_artist_name"], row["genre"],
-                row["album"], row["title"], current.suffix, filing,
+                row["artist"],
+                row["mb_artist_name"],
+                row["genre"],
+                row["album"],
+                row["title"],
+                current.suffix,
+                filing,
                 row["audio_hash"],
             )
-            if candidate == current or _is_collision_name_for(
-                current, candidate, exists=exists
-            ):
+            if candidate == current or _is_collision_name_for(current, candidate, exists=exists):
                 continue
             target = unique_path(candidate, exists=exists)
-            actions.append({
-                "action": "rename" if current.parent == target.parent else "move",
-                "source": str(current),
-                "destination": str(target),
-            })
+            actions.append(
+                {
+                    "action": "rename" if current.parent == target.parent else "move",
+                    "source": str(current),
+                    "destination": str(target),
+                }
+            )
             vacated.add(current)
             reserved.add(target)
         moves = sum(a["action"] == "move" for a in actions)

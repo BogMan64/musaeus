@@ -121,14 +121,21 @@ class DenyListStage(BaseStage):
                 candidate = cfg.quarantine / "denied" / source.name
                 target = unique_path(candidate, exists=lambda p: p.exists() or p in reserved)
                 reserved.add(target)
-                actions.append({"action": "quarantine", "source": str(source),
-                                "destination": str(target), "reason": entry["reason"]})
+                actions.append(
+                    {
+                        "action": "quarantine",
+                        "source": str(source),
+                        "destination": str(target),
+                        "reason": entry["reason"],
+                    }
+                )
         finally:
             index.close()
         if immutable:
             after = cfg.hash_index_path.stat()
             if (after.st_size, after.st_mtime_ns) != (
-                stable_file.st_size, stable_file.st_mtime_ns
+                stable_file.st_size,
+                stable_file.st_mtime_ns,
             ) or wal.exists():
                 raise RuntimeError("deny-list index changed during preview; retry")
         return actions, (

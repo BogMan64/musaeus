@@ -418,7 +418,9 @@ def ffmpeg_decode_check(path: Path, seconds: int = 0) -> tuple[bool, str]:
 
 
 def _quarantine_dest(
-    conn: sqlite3.Connection, quarantine_dir: Path, src: Path,
+    conn: sqlite3.Connection,
+    quarantine_dir: Path,
+    src: Path,
     reserved: set[Path] | None = None,
 ) -> Path:
     """A name in quarantine that is free on disk AND in the catalogue.
@@ -483,14 +485,18 @@ class CorruptStage(BaseStage):
             if not source.exists():
                 continue
             suspect, reason = check_file(
-                source, row["codec"], row["duration"],
-                _longest_sibling(row, longest), title=row["title"],
+                source,
+                row["codec"],
+                row["duration"],
+                _longest_sibling(row, longest),
+                title=row["title"],
             )
             should_decode = suspect or row["decode_ok"] == 0
             if row["decode_ok"] == 0 and not suspect:
                 reason = "marked undecodable on an earlier decode"
             if (
-                not suspect and row["decode_checked_at"] is None
+                not suspect
+                and row["decode_checked_at"] is None
                 and unchecked_decodes < cls.NEW_ARRIVAL_DECODE_BUDGET
             ):
                 should_decode = True
@@ -511,8 +517,14 @@ class CorruptStage(BaseStage):
             )
             target = _quarantine_dest(conn, quarantine_dir, source, reserved)
             reserved.add(target)
-            actions.append({"source": str(source), "destination": str(target),
-                            "reason": reason, "action": "quarantine"})
+            actions.append(
+                {
+                    "source": str(source),
+                    "destination": str(target),
+                    "reason": reason,
+                    "action": "quarantine",
+                }
+            )
         description = "current files confirmed corrupt by full audio decode"
         if undecodable:
             description += f"; {undecodable} could not be decoded and remain unknown"

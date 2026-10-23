@@ -33,14 +33,29 @@ def vault(tmp_path: Path) -> tuple[MusicConfig, object]:
     conn.close()
 
 
-def add_track(conn, path: Path, *, status="CATALOGUED", artist="Test Artist",
-              title="Song", album="Album", audio_hash=None) -> None:
+def add_track(
+    conn,
+    path: Path,
+    *,
+    status="CATALOGUED",
+    artist="Test Artist",
+    title="Song",
+    album="Album",
+    audio_hash=None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"audio")
-    upsert_archive(conn, {
-        "file_path": str(path), "status": status, "artist": artist,
-        "title": title, "album": album, "audio_hash": audio_hash,
-    })
+    upsert_archive(
+        conn,
+        {
+            "file_path": str(path),
+            "status": status,
+            "artist": artist,
+            "title": title,
+            "album": album,
+            "audio_hash": audio_hash,
+        },
+    )
     conn.commit()
 
 
@@ -85,8 +100,14 @@ def test_artist_consolidate_lists_canon_rename(vault) -> None:
 
     stage = build_plan(cfg, [ArtistConsolidateStage]).stages[0]
 
-    assert stage.actions == ({"action": "artist rename", "source": "Old Name",
-                              "destination": "New Name", "reason": "1 catalogued track(s)"},)
+    assert stage.actions == (
+        {
+            "action": "artist rename",
+            "source": "Old Name",
+            "destination": "New Name",
+            "reason": "1 catalogued track(s)",
+        },
+    )
     assert conn.execute("SELECT artist FROM archive").fetchone()[0] == "Old Name"
 
 

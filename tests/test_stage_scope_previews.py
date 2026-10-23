@@ -32,9 +32,12 @@ def cfg(tmp_path):
     archive.mkdir()
     db = tmp_path / "musaeus.db"
     conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE archive (file_path TEXT, status TEXT)")
+    conn.execute(
+        "CREATE TABLE archive (file_path TEXT, status TEXT, codec TEXT, duration REAL, "
+        "artist TEXT, title TEXT, album TEXT, decode_ok INTEGER, decode_checked_at TEXT)"
+    )
     conn.executemany(
-        "INSERT INTO archive VALUES (?,?)",
+        "INSERT INTO archive (file_path, status) VALUES (?,?)",
         [
             ("/a.m4a", "CATALOGUED"),
             ("/b.m4a", "CATALOGUED"),
@@ -49,6 +52,7 @@ def cfg(tmp_path):
         db_path=db,
         alac_library=tmp_path / "lib",
         alac_archive=archive,
+        quarantine=tmp_path / "QUARANTINE",
     )
 
 
@@ -92,8 +96,11 @@ class TestCorruptPreview:
         `library files with no row: 0` failure in a new place."""
         plan = build_plan(cfg, [CorruptStage])
 
-        assert plan.stages[0].candidates == 2
+        # The planner now reports confirmed quarantine actions; these test
+        # paths are absent, so there are no current files to move.
+        assert plan.stages[0].candidates == 0
         assert plan.stages[0].previewable
+        assert plan.stages[0].actions == ()
         assert "no preview available" not in plan.stages[0].description
 
 

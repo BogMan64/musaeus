@@ -168,8 +168,12 @@ class Plan:
                 "safety": SAFETY_STATEMENT,
                 "notes": self.notes,
                 "stages": [
-                    {"stage": s.stage, "candidates": s.candidates, "description": s.description,
-                     **({"actions": list(s.actions)} if s.actions else {})}
+                    {
+                        "stage": s.stage,
+                        "candidates": s.candidates,
+                        "description": s.description,
+                        **({"actions": list(s.actions)} if s.actions else {}),
+                    }
                     for s in self.stages
                 ],
             },
@@ -214,13 +218,9 @@ def build_plan(cfg: MusicConfig, pipeline: list[type], mode: RunMode = RunMode.P
             if action_fn is not None:
                 try:
                     actions, desc = action_fn(conn, cfg)
-                    plan.stages.append(
-                        StagePlan(_name(st), len(actions), desc, tuple(actions))
-                    )
+                    plan.stages.append(StagePlan(_name(st), len(actions), desc, tuple(actions)))
                 except Exception as exc:
-                    plan.stages.append(
-                        StagePlan(_name(st), None, f"preview failed: {exc}")
-                    )
+                    plan.stages.append(StagePlan(_name(st), None, f"preview failed: {exc}"))
                 continue
             fn = getattr(st, "plan_candidates", None)
             if fn is None:

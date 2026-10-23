@@ -254,13 +254,22 @@ class TributeQuarantineStage(BaseStage):
             album = row["album"] or "Unsorted"
             title = row["title"] or "Unknown Title"
             candidate = (
-                cfg.tribute_review_dir / batch_date / sanitize_path_component(artist)
-                / sanitize_path_component(album) / build_track_filename(artist, title, source.suffix)
+                cfg.tribute_review_dir
+                / batch_date
+                / sanitize_path_component(artist)
+                / sanitize_path_component(album)
+                / build_track_filename(artist, title, source.suffix)
             )
             target = unique_path(candidate, exists=lambda p: p.exists() or p in reserved)
             reserved.add(target)
-            actions.append({"action": "quarantine", "source": str(source),
-                            "destination": str(target), "reason": reason})
+            actions.append(
+                {
+                    "action": "quarantine",
+                    "source": str(source),
+                    "destination": str(target),
+                    "reason": reason,
+                }
+            )
         desc = f"{len(actions)} current arrival(s) matching tribute/junk rules"
         if missing:
             desc += f"; {missing} matching file(s) missing on disk"
