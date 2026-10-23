@@ -65,7 +65,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from ..brackets import BRACKETED, strip_bracketed
+from ..brackets import BRACKETED, CLOSE, OPEN, strip_bracketed
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
 from ..network_policy import check as _network_check
@@ -100,6 +100,22 @@ _VERSION_QUALIFIER = re.compile(
     r"mono|stereo version|alternate)\b",
     re.I,
 )
+
+#: "Edit" names a cut only as a whole label -- "(Edit)", "(Single Edit)", "- Edit"
+#: -- never as a word of the title or of a longer bracket: "Edit the Sad Parts"
+#: and "Song (Edit the Script)" are songs (Codex review of #232, rounds 2-3).
+_EDIT_LABEL = re.compile(
+    rf"[{OPEN}]\s*(?:[\w'.\"]+\s+)?edit(?:\s+version)?\s*[{CLOSE}]"
+    r"|\s-\s+(?:[\w'.\"]+\s+)?edit(?:\s+version)?\s*$",
+    re.I,
+)
+
+
+def _names_a_version(title: str) -> bool:
+    """A live take, a remix ... or an "(Edit)" -- a title naming a version."""
+    return bool(_VERSION_QUALIFIER.search(title or "") or _EDIT_LABEL.search(title or ""))
+
+
 _DEEZER_BAD_ALBUM = re.compile(
     r"\b(greatest hits|best of|the collection|essential|anthology|"
     r"compilation|\blive\b|hits|vol\.? ?\d|now that|"
@@ -297,7 +313,7 @@ def choose_from_deezer(items: list[dict], artist: str, title: str) -> tuple[str 
     for t in items:
         if norm((t.get("artist") or {}).get("name")) != want_a or norm(t.get("title")) != want_t:
             continue
-        if _VERSION_QUALIFIER.search(t.get("title") or ""):
+        if _names_a_version(t.get("title") or ""):
             continue  # norm() drops brackets: "Rosanna (Live)" would match "Rosanna"
         alb = (t.get("album") or {}).get("title") or ""
         if not alb or _DEEZER_BAD_ALBUM.search(alb) or norm(alb) == want_t:
@@ -324,7 +340,7 @@ def choose_from_itunes(items: list[dict], artist: str, title: str) -> tuple[str 
     for t in items:
         if norm(t.get("artistName")) != want_a or norm(t.get("trackName")) != want_t:
             continue
-        if _VERSION_QUALIFIER.search(t.get("trackName") or ""):
+        if _names_a_version(t.get("trackName") or ""):
             continue  # norm() drops brackets: "Rosanna (Live)" would match "Rosanna"
         alb = (t.get("collectionName") or "").strip()
         if not alb or norm(alb) == want_t:
@@ -550,7 +566,7 @@ class AlbumFillStage(BaseStage):
                         else (None, "no AcoustID release groups")
                     )
                     source, answered = "acoustid", True
-                text_ok = artist and title and not _VERSION_QUALIFIER.search(title)
+                text_ok = artist and title and not _names_a_version(title)
                 if album is None and text_ok and dg_key and dg_secret:
                     time.sleep(_DISCOGS_RATE_S)
                     album, reason = _confirmed(
@@ -641,7 +657,7 @@ class AlbumFillStage(BaseStage):
             # The version as a label -- "(Live)", "- Live 1972" -- not a word of
             # the title: "Live and Let Die" is checked (Codex review of #229, round 3).
             label = " ".join(BRACKETED.findall(title)) + " " + title.partition(" - ")[2]
-            if _VERSION_QUALIFIER.search(label):
+            if _VERSION_QUALIFIER.search(label) or _EDIT_LABEL.search(title):
                 ctx.conn.execute(
                     "UPDATE archive SET album_verified_at=? WHERE id=?",
                     (f"not asked: the title names a version ({now})", row["id"]),
@@ -692,10 +708,15 @@ class AlbumFillStage(BaseStage):
             problems.append(
                 f"{len(wrong)} filled row(s) do not carry the album written: {wrong[:3]}"
             )
+        # Unless a source filled the same name back in this run: AcoustID found
+        # Santana's "Shaman" and Bobby McFerrin's "The Mozart Sessions" after the
+        # text search could not (the first real batch, 2026-10-23).
         back = ctx.conn.execute(
             "SELECT a.file_path FROM archive a JOIN events e ON e.file_path = a.file_path "
             "WHERE e.run_id = ? AND e.event_type = 'ALBUM_CLEARED' AND e.stage = ? "
-            "AND a.album = e.old_value LIMIT 10",
+            "AND a.album = e.old_value AND NOT EXISTS (SELECT 1 FROM events f "
+            "WHERE f.run_id = e.run_id AND f.file_path = e.file_path "
+            "AND f.event_type = 'ALBUM_FILLED' AND f.new_value = a.album) LIMIT 10",
             (ctx.run_id, self.NAME),
         ).fetchall()
         if back:

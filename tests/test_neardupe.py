@@ -259,3 +259,36 @@ def test_an_original_mix_label_is_a_version_label():
 
     a = _normalise("Hold On I'm Comin' (Original Mix)", strip_qualifiers=True)
     assert a == _normalise("Hold On, I'm Comin'", strip_qualifiers=True)
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("Dancing In The Street (Edit)", "Dancing In The Street (2002 Remaster)"),
+        ("Mean Woman Blues - Original", "Mean Woman Blues"),
+    ],
+)
+def test_edit_and_original_are_version_labels(a, b):
+    """Same recordings by fingerprint, apart by name (first real batch, 2026-10-23)."""
+    from musaeus.stages.acousticid import _same_song
+    from musaeus.stages.neardupe import _normalise
+
+    assert _normalise(a, strip_qualifiers=True) == _normalise(b, strip_qualifiers=True)
+    assert _same_song(a, b)
+
+
+def test_edit_and_original_are_labels_never_title_words():
+    """ "Original Sin" is not "Sin": the new labels count only as a label."""
+    from musaeus.stages.acousticid import _same_song
+    from musaeus.stages.neardupe import _normalise
+
+    assert _normalise("Original Sin", strip_qualifiers=True) == "original sin"
+    assert _normalise("Edit the Sad Parts", strip_qualifiers=True) == "edit the sad parts"
+    assert not _same_song("Original Sin", "Sin")
+
+
+def test_a_suffix_and_a_bracket_label_both_go():
+    """ "Song - Original (Live)": brackets first, then the suffix (Codex review of #232, r3)."""
+    from musaeus.stages.neardupe import _normalise
+
+    assert _normalise("Song - Original (Live)", strip_qualifiers=True) == "song"
