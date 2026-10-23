@@ -52,3 +52,28 @@ def test_the_rebuild_reads_the_masters_not_the_edition(tmp_path):
     conn.row_factory = sqlite3.Row
     paths = [r["file_path"] for r in conn.execute("SELECT file_path FROM archive_rebuilt")]
     assert paths == [str(cfg.alac_archive / rel)], paths
+
+
+def test_rebuilt_library_albums_are_not_arrivals_to_check(tmp_path):
+    """After a rebuild every row is new to the catalogue; album-fill's arrival
+    check must not ask MusicBrainz about the whole library (review of #229)."""
+    from mutagen.mp4 import MP4
+
+    from musaeus.db import ALBUM_BEFORE_THE_CHECK
+
+    cfg = MusicConfig(
+        vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
+        quarantine=tmp_path / "QUARANTINE", runs_root=tmp_path / "RUNS",
+        meta_dir=tmp_path / "MetaData", alac_library=tmp_path / "Libraries" / "ALAC_Library",
+        db_path=tmp_path / "musaeus.db",
+    )  # fmt: skip
+    cfg.ensure_dirs()
+    song = cfg.alac_archive / "Rock" / "Stones" / "Sticky Fingers" / "Brown Sugar.m4a"
+    _audio(song)
+    tags = MP4(song)
+    tags["\xa9alb"], tags["\xa9ART"], tags["\xa9nam"] = "Sticky Fingers", "Stones", "Brown Sugar"
+    tags.save()
+    conn = open_db(cfg.db_path)
+    scan_and_rebuild(conn, cfg, compute_hashes=False)
+    row = conn.execute("SELECT album, album_verified_at FROM archive_rebuilt").fetchone()
+    assert tuple(row) == ("Sticky Fingers", ALBUM_BEFORE_THE_CHECK), tuple(row)

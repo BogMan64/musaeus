@@ -65,7 +65,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from ..brackets import strip_bracketed
+from ..brackets import BRACKETED, strip_bracketed
 from ..context import RunContext, StageResult
 from ..db import ensure_columns
 from ..network_policy import check as _network_check
@@ -518,7 +518,7 @@ class AlbumFillStage(BaseStage):
         aid_key = cfg.acousticid_api_key
         dg_key, dg_secret = cfg.discogs_consumer_key, cfg.discogs_consumer_secret
         tally: dict[str, int] = {}
-        self._check_arrived_albums(ctx, tally)
+        result.files_changed += self._check_arrived_albums(ctx, tally)
         rows = ctx.conn.execute(
             f"SELECT id, file_path, artist, title, chromaprint, chromaprint_duration {_CANDIDATES} "
             "ORDER BY artist, title"
@@ -620,14 +620,16 @@ class AlbumFillStage(BaseStage):
         ctx.record_stage(result)
         return result
 
-    def _check_arrived_albums(self, ctx: RunContext, tally: dict[str, int]) -> None:
+    def _check_arrived_albums(self, ctx: RunContext, tally: dict[str, int]) -> int:
         """Keep an album a song arrived with only if MusicBrainz confirms it.
 
         Confirmed: stamped, kept. Not confirmed: cleared, so the fill below looks
         the album up in this same run. No answer: left as it is, asked next run.
         A title naming a version (live, remix...) is not asked: its own album
         is often a live album, which the check, made for studio albums, refuses.
+        Returns the number of albums cleared.
         """
+        cleared = 0
         rows = ctx.conn.execute(
             f"SELECT id, file_path, artist, title, album {_TO_CHECK} ORDER BY artist, title"
         ).fetchall()
@@ -636,7 +638,10 @@ class AlbumFillStage(BaseStage):
             if not artist or not title:
                 continue
             now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            if _VERSION_QUALIFIER.search(title):
+            # The version as a label -- "(Live)", "- Live 1972" -- not a word of
+            # the title: "Live and Let Die" is checked (Codex review of #229, round 3).
+            label = " ".join(BRACKETED.findall(title)) + " " + title.partition(" - ")[2]
+            if _VERSION_QUALIFIER.search(label):
                 ctx.conn.execute(
                     "UPDATE archive SET album_verified_at=? WHERE id=?",
                     (f"not asked: the title names a version ({now})", row["id"]),
@@ -665,13 +670,17 @@ class AlbumFillStage(BaseStage):
             tally["arriving album not confirmed, looked up"] = (
                 tally.get("arriving album not confirmed, looked up", 0) + 1
             )
+            cleared += 1
         ctx.conn.commit()
+        return cleared
 
     def dry_run(self, ctx: RunContext) -> StageResult:
         return self._fill(ctx, dry_run=True)
 
     def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
-        """A row the stage says it filled must have that album now."""
+        """A row the stage says it filled must have that album now, and a row it
+        cleared must not carry the rejected name (Codex review of #229, round 3)."""
+        problems: list[str] = []
         rows = ctx.conn.execute(
             "SELECT a.file_path, a.album, e.new_value FROM archive a JOIN events e "
             "ON e.file_path = a.file_path WHERE e.run_id = ? AND e.event_type = 'ALBUM_FILLED' "
@@ -679,11 +688,22 @@ class AlbumFillStage(BaseStage):
             (ctx.run_id,),
         ).fetchall()
         wrong = [r["file_path"] for r in rows if (r["album"] or "") != (r["new_value"] or "")]
-        return (
-            [f"{len(wrong)} filled row(s) do not carry the album written: {wrong[:3]}"]
-            if wrong
-            else []
-        )
+        if wrong:
+            problems.append(
+                f"{len(wrong)} filled row(s) do not carry the album written: {wrong[:3]}"
+            )
+        back = ctx.conn.execute(
+            "SELECT a.file_path FROM archive a JOIN events e ON e.file_path = a.file_path "
+            "WHERE e.run_id = ? AND e.event_type = 'ALBUM_CLEARED' AND e.stage = ? "
+            "AND a.album = e.old_value LIMIT 10",
+            (ctx.run_id, self.NAME),
+        ).fetchall()
+        if back:
+            problems.append(
+                f"{len(back)} cleared row(s) still carry the rejected album: "
+                f"{[r[0] for r in back][:3]}"
+            )
+        return problems
 
     def run(self, ctx: RunContext) -> StageResult:
         return self._fill(ctx, dry_run=False)

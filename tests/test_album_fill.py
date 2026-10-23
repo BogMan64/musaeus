@@ -668,3 +668,22 @@ def test_the_tagger_removes_an_album_the_check_cleared():
     assert TaggerStage()._compute_changes(cleared, {"album": "Greatest Hits"}).get("album") == ""
     kept = {"album": None, "album_verified_at": None}
     assert "album" not in TaggerStage()._compute_changes(kept, {"album": "Greatest Hits"})
+
+
+def test_a_title_with_live_as_a_word_is_still_checked(env):
+    """Only a version LABEL is skipped -- "(Live)" -- not the word in a title
+    (Codex review of #229, round 3)."""
+    p = env.add("Live and Let Die", artist="Wings", album="Greatest Hits")
+    env.answers["confirm"] = {"Red Rose Speedway"}
+    env.run()
+    assert env.calls["confirm"] == ["Greatest Hits"] and env.album(p)[0] is None
+
+
+def test_a_clear_counts_as_a_change_and_is_verified(env):
+    p = env.add("Africa", album="70s Hits")
+    env.answers["confirm"] = set()
+    result, ctx = env.run()
+    assert result.files_changed == 1 and env.album(p)[0] is None
+    assert AlbumFillStage().verify_effect(ctx, result) == []
+    env.conn.execute("UPDATE archive SET album='70s Hits' WHERE file_path=?", (p,))
+    assert AlbumFillStage().verify_effect(ctx, result), "the rejected name came back unnoticed"

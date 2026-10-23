@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import AUDIO_EXTENSIONS, MusicConfig
+from .db import ALBUM_BEFORE_THE_CHECK
 from .hasher import audio_hash_safe, file_hash
 from .identity_tags import read_identity
 from .stages.bpm import read_existing_tags as _read_bpm_tags
@@ -376,6 +377,10 @@ def scan_and_rebuild(
             if row["status"] == "CATALOGUED":
                 row["finalized_at"] = row["last_modified"]
                 row["canonicalized_at"] = row["last_modified"]
+                # Library songs, not arrivals: the album check (album-fill) must
+                # not ask MusicBrainz about the whole library after a rebuild.
+                if str(row.get("album") or "").strip():
+                    row["album_verified_at"] = ALBUM_BEFORE_THE_CHECK
 
             usable = {k: v for k, v in row.items() if k in cols}
             placeholders = ", ".join("?" for _ in usable)
