@@ -36,13 +36,17 @@ def env(tmp_path, monkeypatch):
     conn = open_db(cfg.db_path)
     fingerprint_columns(conn)
     monkeypatch.setattr(af.time, "sleep", lambda *_: None)
-    calls: dict[str, list] = {"acoustid": [], "mb": [], "discogs": [], "deezer": [], "itunes": []}
+    calls: dict[str, list] = {
+        "acoustid": [], "mb": [], "discogs": [], "deezer": [], "itunes": [], "confirm": []
+    }  # fmt: skip
     answers: dict[str, object] = {
         "acoustid": [],
         "mb": {},
         "discogs": [],
         "deezer": [],
         "itunes": [],
+        # MusicBrainz's yes or no to a text source's album: a set of album names, or True
+        "confirm": True,
     }
 
     def _aid(fp, dur, key, artist, title):
@@ -70,6 +74,13 @@ def env(tmp_path, monkeypatch):
             or (answers["itunes"](t) if callable(answers["itunes"]) else answers["itunes"])
         ),
     )
+
+    def _confirm(artist, album, title):
+        calls["confirm"].append(album)
+        yes = answers["confirm"]
+        return (yes is True or album in yes), "mb"  # type: ignore[operator]
+
+    monkeypatch.setattr(af, "mb_confirm", _confirm)
 
     def add(title, artist="Toto", album=None, fp="FP"):
         path = str(cfg.vault_root / f"{artist} - {title}.m4a")
@@ -270,6 +281,51 @@ def test_deezer_last_exact_match_studio_album_only(env):
     ]
     env.run()
     assert env.album(p)[0] == "Toto IV"
+
+
+def test_a_discogs_or_deezer_album_is_taken_only_if_musicbrainz_confirms(env):
+    """Grey, 2026-10-22: Discogs and Deezer filled the Odds & Sods songs with
+    "The Golden Cream Of The Country" and a film soundtrack. Unconfirmed, the
+    next source is asked."""
+    p = env.add("Africa")
+    env.answers["acoustid"] = []
+    env.answers["discogs"] = [
+        {"title": "Toto - Golden Cream", "format": ["LP", "Album"], "year": "1969"}
+    ]
+    env.answers["deezer"] = [
+        {"artist": {"name": "Toto"}, "title": "Africa", "album": {"title": "Toto IV"}}
+    ]
+    env.answers["confirm"] = {"Toto IV"}
+    env.run()
+    assert env.calls["confirm"] == ["Golden Cream", "Toto IV"]
+    assert env.album(p)[0] == "Toto IV"
+
+
+def test_an_unconfirmed_text_album_is_left_empty_and_stamped(env):
+    p = env.add("Hold The Line")
+    env.answers["acoustid"] = []
+    env.answers["deezer"] = [
+        {"artist": {"name": "Toto"}, "title": "Hold The Line", "album": {"title": "Mermaids"}}
+    ]
+    env.answers["confirm"] = set()
+    env.run()
+    assert env.calls["confirm"] == ["Mermaids"]
+    assert env.album(p)[0] is None and env.album(p)[1], "answered, so stamped"
+    note = env.conn.execute(
+        "SELECT note FROM events WHERE event_type='ALBUM_LEFT_EMPTY'"
+    ).fetchone()[0]
+    assert note.startswith("itunes:"), "every source was asked"
+
+
+def test_musicbrainz_is_asked_for_official_albums_only(monkeypatch):
+    """Unfiltered, the first answers for "Brilliant Disguise" on "Tunnel Of Love"
+    were all bootlegs, and the studio album was never confirmed (2026-10-22)."""
+    urls = []
+    monkeypatch.setattr(af.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(af, "_get_json", lambda url, headers=None: urls.append(url) or {})
+    af.mb_confirm("Bruce Springsteen", "Tunnel Of Love", "Brilliant Disguise")
+    query = parse_qs(urlparse(urls[0]).query)["query"][0]
+    assert "status:official" in query and "primarytype:album" in query
 
 
 def test_a_version_title_is_never_searched_by_text(env):
