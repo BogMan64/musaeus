@@ -295,12 +295,28 @@ def test_a_pair_whose_titles_differ_stays_for_grey(tmp_path, monkeypatch):
         ("Blue", "Blue Sky", False),
         ("Medley (A/B)", "Medley (C/D)", False),
         ("Song - Part 1", "Song - Part 2", False),
+        ("Interlude (1)", "Interlude (2)", False),
     ],
 )
 def test_only_a_version_label_is_set_aside_before_titles_are_compared(a, b, same):
     """Codex review of #228, round 2: every bracket was dropped, so two medleys
     named apart only in brackets were one song."""
     assert acoustid_mod._same_song(a, b) is same
+
+
+def test_a_pair_with_an_unmeasured_length_stays_for_grey(tmp_path, monkeypatch):
+    """The 3 s check needs both lengths: unsure stays a person's (Codex review of #228, round 3)."""
+    from musaeus.stages.dupe_resolver import DupeResolverStage
+
+    monkeypatch.setattr(acoustid_mod, "_fpcalc", lambda p: (200.0, "FP-" + Path(p).name))
+    monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", lambda *a, **k: ("rec-1", 0.97))
+    ctx = _ctx(tmp_path)
+    a = _untagged(ctx, "Toto - Africa.m4a", artist="Toto", title="Africa", codec="alac")
+    b = _untagged(ctx, "Toto - Africa (2).m4a", artist="Toto", title="Africa", codec="aac")
+    result = AcousticIDStage().run(ctx)
+    assert any("for you to decide" in n for n in result.notes), result.notes
+    DupeResolverStage().run(ctx)
+    assert a.is_file() and b.is_file()
 
 
 def test_a_copy_already_moved_to_review_is_not_a_pair_to_decide(tmp_path, monkeypatch):

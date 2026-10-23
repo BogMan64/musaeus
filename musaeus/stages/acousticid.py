@@ -48,7 +48,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
-from ..brackets import base_title, part_numbers, same_part_spelling
+from ..brackets import CLOSE, OPEN, base_title, part_numbers, same_part_spelling
 from ..context import RunContext, StageResult, elision
 from ..db import SET_ASIDE_STATUSES, ensure_columns
 from ..network_policy import check as _network_check
@@ -199,6 +199,9 @@ def _spellings(name: str) -> set[str]:
     return {k for k in (plain, _norm_for_match(name)) if k}
 
 
+_NUMBERED_BRACKET = re.compile(rf"[{OPEN}]\s*(\d{{1,3}})\s*[{CLOSE}]")
+
+
 def _same_song(a: str, b: str) -> bool:
     """One title once only its version label is set aside, part for part.
 
@@ -211,7 +214,14 @@ def _same_song(a: str, b: str) -> bool:
     from .neardupe import _normalise
 
     ka, kb = (_normalise(same_part_spelling(t or ""), strip_qualifiers=True) for t in (a, b))
-    return bool(ka) and ka == kb and part_numbers(a or "") == part_numbers(b or "")
+    # NearDupe drops "(1)" and "(2)": two numbered tracks, never one (round 3).
+    numbered = [_NUMBERED_BRACKET.findall(t or "") for t in (a, b)]
+    return (
+        bool(ka)
+        and ka == kb
+        and part_numbers(a or "") == part_numbers(b or "")
+        and numbered[0] == numbered[1]
+    )
 
 
 def _titles_agree(a: str, b: str) -> bool:
@@ -883,10 +893,11 @@ class AcousticIDStage(BaseStage):
                         same_song = _same_song(
                             _row_get(row, "title"), _row_get(other, "title") if other else ""
                         )
-                        status = "pending" if same_song else "review"
-                        (pairs if same_song else to_decide).append(
-                            (Path(other_fp).name, Path(fp).name)
-                        )
+                        # Both lengths measured, or the 3 s check above never ran
+                        # (Codex review of #228, round 3): unsure stays a person's.
+                        sure = same_song and bool(other_dur) and bool(duration)
+                        status = "pending" if sure else "review"
+                        (pairs if sure else to_decide).append((Path(other_fp).name, Path(fp).name))
                         group_id = f"acoustic_{uuid.uuid4().hex[:8]}"
                         logger.info(
                             "[acousticid] DUPE  %s  ==  %s  (recording=%s)",
