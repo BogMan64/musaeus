@@ -692,10 +692,15 @@ class AlbumFillStage(BaseStage):
             problems.append(
                 f"{len(wrong)} filled row(s) do not carry the album written: {wrong[:3]}"
             )
+        # Unless a source filled the same name back in this run: AcoustID found
+        # Santana's "Shaman" and Bobby McFerrin's "The Mozart Sessions" after the
+        # text search could not (the first real batch, 2026-10-23).
         back = ctx.conn.execute(
             "SELECT a.file_path FROM archive a JOIN events e ON e.file_path = a.file_path "
             "WHERE e.run_id = ? AND e.event_type = 'ALBUM_CLEARED' AND e.stage = ? "
-            "AND a.album = e.old_value LIMIT 10",
+            "AND a.album = e.old_value AND NOT EXISTS (SELECT 1 FROM events f "
+            "WHERE f.run_id = e.run_id AND f.file_path = e.file_path "
+            "AND f.event_type = 'ALBUM_FILLED' AND f.new_value = a.album) LIMIT 10",
             (ctx.run_id, self.NAME),
         ).fetchall()
         if back:

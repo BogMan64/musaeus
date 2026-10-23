@@ -687,3 +687,14 @@ def test_a_clear_counts_as_a_change_and_is_verified(env):
     assert AlbumFillStage().verify_effect(ctx, result) == []
     env.conn.execute("UPDATE archive SET album='70s Hits' WHERE file_path=?", (p,))
     assert AlbumFillStage().verify_effect(ctx, result), "the rejected name came back unnoticed"
+
+
+def test_a_cleared_album_filled_back_by_a_source_is_verified(env):
+    """AcoustID found Santana's "Shaman" after the text check could not; the
+    self-check flagged it as the rejected album come back (2026-10-23)."""
+    p = env.add("Africa", album="Toto IV")
+    env.answers["confirm"] = set()
+    env.answers["acoustid"] = [_rg("r1", "Toto IV")]
+    result, ctx = env.run()
+    assert env.album(p)[0] == "Toto IV"
+    assert AlbumFillStage().verify_effect(ctx, result) == []

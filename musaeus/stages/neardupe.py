@@ -87,10 +87,21 @@ STRIP_WORDS: tuple[str, ...] = (
 # are safe to strip. Deliberately NOT stripping all bracketed content —
 # arbitrary parentheticals can be part of the real title (e.g. "Here I Am
 # (Come and Take Me)" must not collapse to "Here I Am").
+#: Version labels only as a label -- a whole bracket, or after " - " at the
+#: end -- never as a word of the title: "Original Sin" is not "Sin". The first
+#: real batch (2026-10-23): David Bowie "Dancing In The Street (Edit)" and Jerry
+#: Lee Lewis "Mean Woman Blues - Original" were their pairs' recordings by
+#: fingerprint, but not by name.
+LABEL_WORDS: tuple[str, ...] = (*STRIP_WORDS, "edit", "original")
+_LABELS = r"|".join(re.escape(w) for w in sorted(LABEL_WORDS, key=len, reverse=True))
+
 _VERSION_BRACKET_WORDS = re.compile(
-    rf"[{OPEN}]\s*(?:(?:19|20)\d{{2}}\s+)?(?:"
-    + r"|".join(re.escape(w) for w in sorted(STRIP_WORDS, key=len, reverse=True))
-    + rf")[\s\d,./+-]*[{CLOSE}]",
+    rf"[{OPEN}]\s*(?:(?:19|20)\d{{2}}\s+)?(?:{_LABELS})[\s\d,./+-]*[{CLOSE}]",
+    re.IGNORECASE,
+)
+#: The same label as a " - " suffix: "Song - 2011 Remaster", "Song - Original".
+VERSION_SUFFIX = re.compile(
+    rf"\s+-\s+(?:(?:19|20)\d{{2}}\s+)?(?:{_LABELS})(?:\s+(?:19|20)\d{{2}})?\s*$",
     re.IGNORECASE,
 )
 # Bracket characters come from brackets.py so this file cannot drift
@@ -183,7 +194,8 @@ def _is_different_piece(title_a: str, title_b: str) -> bool:
 
 
 def _strip_title_qualifiers(s: str) -> str:
-    """Remove version/edition brackets and bare STRIP_WORDS from a title."""
+    """Remove version/edition brackets and suffixes, and bare STRIP_WORDS, from a title."""
+    s = VERSION_SUFFIX.sub("", s)
     s = _VERSION_BRACKET_WORDS.sub(" ", s)
     s = _YEAR_BRACKET_RE.sub(" ", s)
     s = _NUM_BRACKET_RE.sub(" ", s)
