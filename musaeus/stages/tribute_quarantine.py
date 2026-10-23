@@ -170,10 +170,19 @@ PROTECTED_ARTISTS: frozenset[str] = frozenset(
 _PROTECTED_KEYS = frozenset(comparison_key(p) for p in PROTECTED_ARTISTS)
 
 
-def is_junk(artist: str, title: str, album: str) -> tuple[bool, str]:
+#: Patterns that also fit a real artist's own release, so they judge only an
+#: artist the library does not hold yet (Grey, 2026-10-23): Randy Crawford's
+#: "Street Life" on a "Relaxing ..." compilation, John Lee Hooker's own
+#: "(Instrumental Version)". Karaoke and tribute names still count for anyone.
+_WEAK_TITLE = {"instrumental version"}
+_STRONG_ALBUM = {r"\bkaraoke\b", r"\btribute\b"}
+
+
+def is_junk(artist: str, title: str, album: str, *, known_artist: bool = False) -> tuple[bool, str]:
     """Check whether a row's metadata matches any junk pattern. Returns
     (is_junk, reason). Protected artists are checked first and always win,
-    even against a matching title/album pattern."""
+    even against a matching title/album pattern. *known_artist*: the library
+    already holds this artist, so the weak patterns are not asked."""
     artist_lower = (artist or "").lower().strip()
     # Match the WHOLE artist name, not a fragment of it.
     #
@@ -206,14 +215,27 @@ def is_junk(artist: str, title: str, album: str) -> tuple[bool, str]:
             return True, f"artist_pattern: {pat.pattern}"
 
     for pat in JUNK_TITLE_PATTERNS:
+        if known_artist and pat.pattern in _WEAK_TITLE:
+            continue
         if pat.search(title or ""):
             return True, f"title_pattern: {pat.pattern}"
 
     for pat in JUNK_ALBUM_PATTERNS:
+        if known_artist and pat.pattern not in _STRONG_ALBUM:
+            continue
         if pat.search(album or ""):
             return True, f"album_pattern: {pat.pattern}"
 
     return False, ""
+
+
+def _library_artists(ctx: RunContext) -> set[str]:
+    """Artists the library already holds (filed masters), by comparison key."""
+    rows = ctx.conn.execute(
+        "SELECT DISTINCT artist FROM archive WHERE status='CATALOGUED' "
+        "AND finalized_at IS NOT NULL AND artist IS NOT NULL"
+    ).fetchall()
+    return {comparison_key(r[0]) for r in rows}
 
 
 # ── Tribute Quarantine Stage ─────────────────────────────────────────────────
@@ -418,11 +440,15 @@ class TributeQuarantineStage(BaseStage):
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)
         candidates = self._get_candidates(ctx)
+        known = _library_artists(ctx)
 
         matches: list[tuple[dict, str]] = []
         for row in candidates:
             matched, reason = is_junk(
-                row.get("artist") or "", row.get("title") or "", row.get("album") or ""
+                row.get("artist") or "",
+                row.get("title") or "",
+                row.get("album") or "",
+                known_artist=comparison_key(row.get("artist") or "") in known,
             )
             if matched:
                 matches.append((row, reason))
@@ -526,11 +552,15 @@ class TributeQuarantineStage(BaseStage):
     def dry_run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=True)
         candidates = self._get_candidates(ctx)
+        known = _library_artists(ctx)
 
         matches = []
         for row in candidates:
             matched, reason = is_junk(
-                row.get("artist") or "", row.get("title") or "", row.get("album") or ""
+                row.get("artist") or "",
+                row.get("title") or "",
+                row.get("album") or "",
+                known_artist=comparison_key(row.get("artist") or "") in known,
             )
             if matched:
                 matches.append((row, reason))

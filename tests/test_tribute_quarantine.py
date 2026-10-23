@@ -379,3 +379,40 @@ class TestTributeInTheTitle:
             "Morse/portnoy/george", "Feelin' Stronger Everyday (2020 Remastered cover version)", ""
         )[0]
         assert not is_junk("Johnny Cash", "Hurt (cover version)", "")[0]
+
+
+# ── A real artist the library holds is not judged by the weak patterns ──
+# Grey, 2026-10-23: Randy Crawford "Street Life (Edit)" was quarantined for its
+# "Relaxing ..." compilation album, John Lee Hooker "Hoogie Boogie (Instrumental
+# Version)" for its title. Karaoke and tribute names still count for anyone.
+
+
+@pytest.mark.parametrize(
+    ("artist", "title", "album", "known", "junk"),
+    [
+        ("Randy Crawford", "Street Life (Edit)", "Relaxing Soul Classics", True, False),
+        ("Randy Crawford", "Street Life (Edit)", "Relaxing Soul Classics", False, True),
+        ("John Lee Hooker", "Hoogie Boogie (Instrumental Version)", "Album", True, False),
+        ("Michael Jackson", "Thriller (Karaoke Version)", "Album", True, True),
+        ("Michael Jackson", "Thriller", "Karaoke Hits Vol. 2", True, True),
+    ],
+)
+def test_weak_patterns_only_judge_an_artist_the_library_lacks(artist, title, album, known, junk):
+    assert is_junk(artist, title, album, known_artist=known)[0] is junk
+
+
+def test_the_stage_leaves_a_library_artists_compilation_track_alone(ctx: RunContext) -> None:
+    filed = _make_row(ctx, "Soul/Randy Crawford/Now We May Begin/One Day.m4a", "Randy Crawford")
+    ctx.conn.execute(
+        "UPDATE archive SET finalized_at='2026-01-01 00:00:00' WHERE file_path=?", (str(filed),)
+    )
+    ctx.conn.commit()
+    arrival = _make_row(
+        ctx, "in/Street Life.m4a", "Randy Crawford", "Street Life (Edit)", "Relaxing Soul Classics"
+    )
+    stranger = _make_row(
+        ctx, "in/Calm.m4a", "Spa Sounds Ensemble", "Calm", "Relaxing Soul Classics"
+    )
+    TributeQuarantineStage().run(ctx)
+    assert arrival.exists(), "a library artist's song was quarantined for its compilation album"
+    assert not stranger.exists(), "an unknown act on a relaxing album should still be caught"
