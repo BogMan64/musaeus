@@ -269,6 +269,24 @@ def test_a_same_recording_pair_goes_to_the_keep_rule(tmp_path, monkeypatch):
     assert pending == 0
 
 
+def test_a_pair_whose_titles_differ_stays_for_grey(tmp_path, monkeypatch):
+    """A fingerprint can name "Blue" and "Blue Sky" one recording: the keep rule
+    must not split two songs by name (Codex review of #228)."""
+    from musaeus.stages.dupe_resolver import DupeResolverStage
+
+    monkeypatch.setattr(acoustid_mod, "_fpcalc", lambda p: (200.0, "FP-" + Path(p).name))
+    monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", lambda *a, **k: ("rec-1", 0.97))
+    ctx = _ctx(tmp_path)
+    blue = _untagged(ctx, "Joni - Blue.m4a", artist="Joni", title="Blue", duration=200.0)
+    sky = _untagged(
+        ctx, "Joni - Blue Sky.m4a", artist="Joni", title="Blue Sky", duration=200.0, codec="aac"
+    )
+    result = AcousticIDStage().run(ctx)
+    assert any("for you to decide" in n for n in result.notes), result.notes
+    DupeResolverStage().run(ctx)
+    assert blue.is_file() and sky.is_file(), "two songs by name were split by the keep rule"
+
+
 def test_a_copy_already_moved_to_review_is_not_a_pair_to_decide(tmp_path, monkeypatch):
     # Enrichment of 2026-09-27 listed 756 "same recording" pairs for Grey;
     # 718 paired a library file with the copy Act 2 had already moved to the
