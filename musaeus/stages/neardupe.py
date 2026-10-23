@@ -349,9 +349,9 @@ class NearDupeStage(BaseStage):
         }
 
         # Keep both: every member of a NEAR or ACOUSTIC group marked 'keep'
-        # (the resolver keeps ONE; both kept is a person's decision -- Grey
-        # decides AcoustID's pairs). Held by the two recordings, not the two
-        # paths, so a rename does not undo it.
+        # (the resolver keeps ONE; both kept is a person's decision, as Grey's
+        # 29 AcoustID keep-boths of 2026-09-27). Held by the two recordings, not
+        # the two paths, so a rename does not undo it.
         decided: dict[str, list] = {}
         for row in ctx.conn.execute(
             "SELECT group_id, status, audio_hash FROM duplicates "

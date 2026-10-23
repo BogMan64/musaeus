@@ -231,30 +231,38 @@ def test_a_result_that_agrees_wins_even_when_a_weaker_one_holds_covers(tmp_path,
     assert _named(ctx, p) == ("The Beatles", "Yesterday")
 
 
-def test_a_same_recording_pair_is_listed_for_grey_not_moved(tmp_path, monkeypatch):
-    # Grey, 2026-09-25, choice (b): AcoustID's "same recording, different
-    # file" pairs are his to decide -- a radio edit or an extended mix can be
-    # the same recording to AcoustID and still a different track to keep.
+def test_a_same_recording_pair_goes_to_the_keep_rule(tmp_path, monkeypatch):
+    # Grey, 2026-10-23: fingerprint pairs use the same keep rule as the
+    # duplicates step (reversing choice (b) of 2026-09-25, "his to decide").
+    # One copy of each song: the lossless one stays (the stage pairs only
+    # copies of about the same length, so length rarely decides).
     from musaeus.stages.dupe_resolver import DupeResolverStage
 
     monkeypatch.setattr(acoustid_mod, "_fpcalc", lambda p: (200.0, "FP-" + Path(p).name))
     monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", lambda *a, **k: ("rec-1", 0.97))
     ctx = _ctx(tmp_path)
     album = _untagged(
-        ctx, "Jr. Walker - Shotgun.m4a", artist="Jr. Walker", title="Shotgun", duration=200.0
+        ctx,
+        "Jr. Walker - Shotgun.m4a",
+        artist="Jr. Walker",
+        title="Shotgun",
+        duration=200.0,
+        codec="alac",
     )
     mix = _untagged(
         ctx,
-        "Jr. Walker - Shotgun (Extended Mix).m4a",
+        "Jr. Walker - Shotgun (Original Mix).m4a",
         artist="Jr. Walker",
-        title="Shotgun (Extended Mix)",
+        title="Shotgun (Original Mix)",
         duration=200.0,
+        codec="aac",
     )
     result = AcousticIDStage().run(ctx)
-    assert any("for you to decide" in n for n in result.notes), result.notes
-    assert any("Shotgun (Extended Mix)" in n for n in result.notes), "the pair is named"
+    assert any("the keep rule decides" in n for n in result.notes), result.notes
+    assert any("Shotgun (Original Mix)" in n for n in result.notes), "the pair is named"
     DupeResolverStage().run(ctx)
-    assert album.is_file() and mix.is_file(), "Act 2 moved a pair that was Grey's to decide"
+    assert album.is_file(), "the lossless copy stays"
+    assert not mix.is_file(), "the AAC copy was not moved to review"
     pending = ctx.conn.execute(
         "SELECT COUNT(*) FROM duplicates WHERE duplicate_type = 'ACOUSTIC' AND status = 'pending'"
     ).fetchone()[0]

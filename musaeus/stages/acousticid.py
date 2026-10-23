@@ -887,7 +887,7 @@ class AcousticIDStage(BaseStage):
                                     INSERT OR IGNORE INTO duplicates
                                         (group_id, file_path, duplicate_type,
                                          confidence, status, run_id, staged_at, audio_hash)
-                                    VALUES (?, ?, 'ACOUSTIC', ?, 'review', ?, ?,
+                                    VALUES (?, ?, 'ACOUSTIC', ?, 'pending', ?, ?,
                                             (SELECT audio_hash FROM archive WHERE file_path = ?))
                                     """,
                                     (group_id, member, score, ctx.run_id, now, member),
@@ -931,13 +931,14 @@ class AcousticIDStage(BaseStage):
                 "later run with a key still asks about them."
             )
         if dupes_found:
-            # Status 'review', not 'pending': DupeResolver acts on every pending
-            # group, and these are Grey's to decide (2026-09-25, choice (b)). A
-            # radio edit or an extended mix can be the same recording to
-            # AcoustID and still a different track to keep. So they are listed
-            # here, by name, and nothing moves them.
+            # Status 'pending': the next duplicates step (Act 2) decides them by
+            # the keep rule, like every other duplicate. Grey, 2026-10-23, reversing
+            # choice (b) of 2026-09-25 (his to decide): "one copy of each song, the
+            # longer if both are studio" already settles a radio edit against an
+            # extended mix. A pair a person marked keep-both stays kept.
             result.notes.append(
-                f"{dupes_found} same-recording pair(s) for you to decide -- nothing moved:"
+                f"{dupes_found} same-recording pair(s) -- the keep rule decides them "
+                "at the next duplicates step (Act 2):"
             )
             for a, b in pairs[:10]:
                 result.notes.append(f"    {a}  ==  {b}")
