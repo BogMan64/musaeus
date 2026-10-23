@@ -636,6 +636,81 @@ class DupeResolverStage(BaseStage):
         ).fetchone()[0]
         return int(n), "duplicate groups awaiting resolution"
 
+    @classmethod
+    def plan_actions(cls, conn, cfg) -> tuple[list[dict[str, str]], str]:
+        """Name today's review moves using the resolver's keeper decisions.
+
+        This deliberately uses only the read-only connection and filesystem
+        probes. New duplicate groups found earlier in a future run are unknown.
+        """
+        actions: list[dict[str, str]] = []
+        moved: set[str] = set()
+        reserved: set[Path] = set()
+        batch_date = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+        review_dir = cfg.dupes_review_dir
+
+        def add(loser: dict, keeper: dict | None, group_id: str) -> None:
+            source = Path(loser["file_path"])
+            if str(source) in moved or not source.exists() or source.is_relative_to(review_dir):
+                return
+            artist = sanitize_path_component(loser.get("artist") or "Unknown Artist")
+            album = sanitize_path_component(loser.get("album") or "Unsorted")
+            filename = build_track_filename(
+                loser.get("artist") or "Unknown Artist",
+                loser.get("title") or "Unknown Title", source.suffix,
+            )
+            target = unique_path(
+                review_dir / batch_date / artist / album / filename,
+                exists=lambda path: path.exists() or path in reserved,
+            )
+            reserved.add(target)
+            moved.add(str(source))
+            actions.append({
+                "action": "move to REVIEW", "source": str(source), "destination": str(target),
+                "reason": f"duplicate {loser.get('duplicate_type') or 'unknown'}; "
+                          f"keep {keeper['file_path'] if keeper else 'prior library copy'}; "
+                          f"group {group_id}",
+            })
+
+        sound = [gid for gid in _get_pending_groups(conn)
+                 if not any(_mismatch(m) for m in _get_group_members(conn, gid))]
+        for component in _connected_groups(conn, sound):
+            members = _component_members(conn, component)
+            members = [m for m in members if m.get("current_status") not in SET_ASIDE_STATUSES]
+            if len(members) < 2 and len(_component_members(conn, component)) > 1:
+                continue
+            if not members:
+                continue
+            _share_loudness(members)
+            _rank(members)
+            keeper, losers = _pick_keeper_and_losers(members)
+            qs = ",".join("?" * len(component))
+            cross = {r[0] for r in conn.execute(
+                f"SELECT file_path FROM duplicates WHERE duplicate_type = 'CROSS_BATCH' "
+                f"AND group_id IN ({qs})", list(component))}
+            if cross and len(members) > 1:
+                rest = [m for m in members if m["file_path"] not in cross]
+                if rest:
+                    keeper = rest[0]
+                    losers = [m for m in members if m is not keeper]
+            live = [m for m in members if m.get("current_row") is not None]
+            if live and all(m.get("kept_by_person_at") for m in live):
+                continue
+            if keeper is not None and not Path(keeper["file_path"]).exists():
+                continue
+            for loser in losers:
+                add(loser, keeper, component[0])
+
+        for index, members in enumerate(_get_live_exact_clusters(conn)):
+            members = [m for m in members if m["file_path"] not in moved]
+            if len(members) < 2 or all(m.get("kept_by_person_at") for m in members):
+                continue
+            for loser in members[1:]:
+                loser["duplicate_type"] = "EXACT"
+                if Path(members[0]["file_path"]).exists():
+                    add(loser, members[0], f"exacthash_{index:06d}")
+        return actions, "current duplicate copies to move to REVIEW; later detections are unknown"
+
     NAME = "dupe-resolver"
 
     def validate(self, ctx: RunContext) -> None:

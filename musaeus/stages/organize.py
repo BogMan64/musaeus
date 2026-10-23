@@ -80,7 +80,7 @@ import logging
 import re
 import sqlite3
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from ..artist_form import folder_artist, sort_form
@@ -600,7 +600,7 @@ def destination_root(current_path: Path, roots: Iterable[Path]) -> Path | None:
     return best
 
 
-def unique_path(target: Path) -> Path:
+def unique_path(target: Path, *, exists: Callable[[Path], bool] | None = None) -> Path:
     """
     Return a unique path by appending (N) if target already exists.
 
@@ -608,7 +608,8 @@ def unique_path(target: Path) -> Path:
       "Beatles, The/Abbey Road/Beatles, The - Come Together.m4a"
       → "Beatles, The/Abbey Road/Beatles, The - Come Together (2).m4a"
     """
-    if not target.exists():
+    exists = exists or Path.exists
+    if not exists(target):
         return target
 
     stem = target.stem
@@ -624,12 +625,14 @@ def unique_path(target: Path) -> Path:
         tag = f" ({counter})"
         budget = _MAX_COMPONENT_BYTES - len((tag + suffix).encode("utf-8"))
         new_path = parent / f"{truncate_to_bytes(stem, budget)}{tag}{suffix}"
-        if not new_path.exists():
+        if not exists(new_path):
             return new_path
         counter += 1
 
 
-def _is_collision_name_for(current: Path, candidate: Path) -> bool:
+def _is_collision_name_for(
+    current: Path, candidate: Path, *, exists: Callable[[Path], bool] | None = None
+) -> bool:
     """True when `current` is the name unique_path() would have given a second
     file for `candidate`: "<candidate stem> (N)<ext>" beside it, `candidate`
     taken, AND every lower slot " (2)" ... " (N-1)" taken too -- unique_path
@@ -646,16 +649,17 @@ def _is_collision_name_for(current: Path, candidate: Path) -> bool:
     FinalizeStage uses this too, so the two stages share one collision rule.
     Plain string checks: bracket regexes belong to musaeus.brackets only.
     """
+    exists = exists or Path.exists
     if current.parent != candidate.parent or current.suffix != candidate.suffix:
         return False
     stem, base = current.stem, candidate.stem
     if not (stem.startswith(base + " (") and stem.endswith(")")):
         return False
     digits = stem[len(base) + 2 : -1]
-    if not digits.isdigit() or int(digits) < 2 or not candidate.exists():
+    if not digits.isdigit() or int(digits) < 2 or not exists(candidate):
         return False
     return all(
-        candidate.with_name(f"{base} ({k}){candidate.suffix}").exists()
+        exists(candidate.with_name(f"{base} ({k}){candidate.suffix}"))
         for k in range(2, int(digits))
     )
 
@@ -740,6 +744,90 @@ class OrganizeStage(BaseStage):
 
     NAME = "organize"
 
+    @classmethod
+    def plan_actions(cls, conn, cfg) -> tuple[list[dict[str, str]], str]:
+        """Show the exact current-path moves using the same filing rule as run().
+
+        Model earlier moves in file-path order so collision suffixes agree
+        with the real stage. The plan describes today's database and disk;
+        later pipeline stages may change either before Organize runs.
+        """
+        mb_column = "mb_artist_name" in {
+            r[1] for r in conn.execute("PRAGMA table_info(archive)").fetchall()
+        }
+        mb_sql = "mb_artist_name" if mb_column else "NULL AS mb_artist_name"
+        rows = conn.execute(
+            f"""SELECT file_path, artist, album, title, genre, {mb_sql}, audio_hash
+                  FROM archive
+                 WHERE status = 'CATALOGUED' AND artist IS NOT NULL
+                   AND title IS NOT NULL ORDER BY file_path"""
+        ).fetchall()
+        filing = filing_load(cfg.meta_dir) if getattr(cfg, "meta_dir", None) else {}
+        unmatched = unmatched_person_acts(conn, filing)
+        if unmatched:
+            raise ValueError(
+                "person_folders.tsv has unmatched acts: " + ", ".join(unmatched[:5])
+            )
+        roots = cls._roots_for_config(cfg)
+        vacated: set[Path] = set()
+        reserved: set[Path] = set()
+
+        def exists(path: Path) -> bool:
+            return path in reserved or (path not in vacated and path.exists())
+
+        actions: list[dict[str, str]] = []
+        missing = outside = set_aside = 0
+        for row in rows:
+            current = Path(row["file_path"])
+            if not exists(current):
+                missing += 1
+                continue
+            if in_non_library_area(current, cfg.alac_library):
+                set_aside += 1
+                continue
+            root = destination_root(current, roots)
+            if root is None:
+                outside += 1
+                continue
+            candidate = root / library_relpath(
+                row["artist"], row["mb_artist_name"], row["genre"],
+                row["album"], row["title"], current.suffix, filing,
+                row["audio_hash"],
+            )
+            if candidate == current or _is_collision_name_for(
+                current, candidate, exists=exists
+            ):
+                continue
+            target = unique_path(candidate, exists=exists)
+            actions.append({
+                "action": "rename" if current.parent == target.parent else "move",
+                "source": str(current),
+                "destination": str(target),
+            })
+            vacated.add(current)
+            reserved.add(target)
+        moves = sum(a["action"] == "move" for a in actions)
+        renames = len(actions) - moves
+        desc = f"{moves} move(s), {renames} rename(s) on current disk/DB"
+        if missing or outside or set_aside:
+            desc += (
+                f"; skipped: {missing} missing, {outside} outside managed roots, "
+                f"{set_aside} set aside"
+            )
+        return actions, desc
+
+    @staticmethod
+    def _roots_for_config(cfg) -> list[Path]:
+        archive = getattr(cfg, "alac_archive", None)
+        tiers = [cfg.alac_library] + ([Path(archive)] if archive is not None else [])
+        roots = [*tiers, cfg.inbox, cfg.staging]
+        for tier in tiers:
+            with contextlib.suppress(OSError):
+                roots.extend(
+                    d for d in tier.iterdir() if d.is_dir() and _BATCH_DIR_RE.match(d.name)
+                )
+        return roots
+
     @staticmethod
     def _roots(ctx: RunContext) -> list[Path]:
         """Every root a managed file may legitimately live under.
@@ -767,16 +855,7 @@ class OrganizeStage(BaseStage):
         # built from the masters and disposable). A genre correction must be
         # able to refile a master; excluding the archive, as this used to,
         # would leave every master where it was first filed.
-        archive = getattr(getattr(ctx, "config", None), "alac_archive", None)
-        tiers = [ctx.alac_library] + ([Path(archive)] if archive is not None else [])
-        roots = [*tiers, ctx.inbox, ctx.staging]
-        # No library yet, or unreadable: the bare roots still answer.
-        for tier in tiers:
-            with contextlib.suppress(OSError):
-                roots.extend(
-                    d for d in tier.iterdir() if d.is_dir() and _BATCH_DIR_RE.match(d.name)
-                )
-        return roots
+        return OrganizeStage._roots_for_config(ctx.config)
 
     def _apply_rename(
         self,

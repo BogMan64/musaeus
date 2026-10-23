@@ -231,6 +231,41 @@ class TributeQuarantineStage(BaseStage):
 
     NAME = "tribute-quarantine"
 
+    @classmethod
+    def plan_actions(cls, conn, cfg) -> tuple[list[dict[str, str]], str]:
+        """List currently eligible arrivals matching the real quarantine rule."""
+        rows = conn.execute(
+            "SELECT file_path, artist, title, album FROM archive "
+            "WHERE status='CATALOGUED' AND finalized_at IS NULL"
+        ).fetchall()
+        batch_date = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+        reserved: set[Path] = set()
+        actions: list[dict[str, str]] = []
+        missing = 0
+        for row in rows:
+            matched, reason = is_junk(row["artist"] or "", row["title"] or "", row["album"] or "")
+            if not matched:
+                continue
+            source = Path(row["file_path"])
+            if not source.exists():
+                missing += 1
+                continue
+            artist = row["artist"] or "Unknown Artist"
+            album = row["album"] or "Unsorted"
+            title = row["title"] or "Unknown Title"
+            candidate = (
+                cfg.tribute_review_dir / batch_date / sanitize_path_component(artist)
+                / sanitize_path_component(album) / build_track_filename(artist, title, source.suffix)
+            )
+            target = unique_path(candidate, exists=lambda p: p.exists() or p in reserved)
+            reserved.add(target)
+            actions.append({"action": "quarantine", "source": str(source),
+                            "destination": str(target), "reason": reason})
+        desc = f"{len(actions)} current arrival(s) matching tribute/junk rules"
+        if missing:
+            desc += f"; {missing} matching file(s) missing on disk"
+        return actions, desc
+
     def validate(self, ctx: RunContext) -> None:
         """No external dependency to check -- pure Python regex matching
         against already-populated archive columns."""
