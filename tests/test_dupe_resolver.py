@@ -917,11 +917,12 @@ class TestStudioOverLive:
         live = self._m(title="Layla", album="Unplugged")
         assert sorted([live, studio], key=_keeper_sort_key)[0] is studio
 
-    def test_lossless_live_still_beats_lossy_studio(self):
-        """Codec is the binding constraint; the room comes far behind it."""
+    def test_studio_beats_live_even_when_the_live_copy_is_lossless(self):
+        """Grey, 2026-10-22: studio over live, above sound quality ("yes").
+        Until then the codec came first and a lossless live take won."""
         lossy_studio = self._m(codec="aac", title="Song")
         lossless_live = self._m(codec="alac", title="Song (Live)")
-        assert sorted([lossy_studio, lossless_live], key=_keeper_sort_key)[0] is lossless_live
+        assert sorted([lossy_studio, lossless_live], key=_keeper_sort_key)[0] is lossy_studio
 
     def test_studio_remaster_beats_live_original(self):
         """Grey's keep rule (2026-10-03, keep_rule.py): studio/live is step 2,

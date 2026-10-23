@@ -59,7 +59,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from musaeus.config import MusicConfig  # noqa: E402
 from musaeus.hasher import audio_hash_safe  # noqa: E402
-from musaeus.keep_rule import decide  # noqa: E402
+from musaeus.keep_rule import decide, keep_key  # noqa: E402
+from musaeus.stages.dupe_resolver import _share_loudness  # noqa: E402
 
 EVENT = "SWAP_PROMOTED"
 #: The library row's facts the promoted copy takes, so it files where L is.
@@ -158,24 +159,39 @@ def review_wins(
             continue
         by_song.setdefault(library["id"], (library, []))[1].append(review)
 
-    def better_first(a: sqlite3.Row, b: sqlite3.Row) -> int:
-        winner, _ = decide(dict(a), dict(b))
+    def better_first(a: dict, b: dict) -> int:
+        winner, _ = decide(a, b)
         return -1 if winner == "review" else 1 if winner == "library" else 0
 
     for library, reviews in by_song.values():
+        # Loudness shared across the master and every copy before ranking, as
+        # decide() shares it for a pair: ranked apart, a copy with the master's
+        # audio never looked baked (Codex review of #226, round 2).
+        rows = {r["id"]: r for r in reviews}
+        lib = dict(library)
+        copies = [dict(r) for r in reviews]
+        _share_loudness([lib, *copies])
         ranked = sorted(
-            reviews, key=functools.cmp_to_key(better_first)
+            copies, key=functools.cmp_to_key(better_first)
         )  # stable: ties keep id order
+        # A 2 s tie is not transitive: 201.9 s ties 202.1 s, but only 202.1 s
+        # beats a 200.0 s master. Among copies tied on every step before
+        # length, the longest goes first, as the resolver's _rank does (Codex
+        # review of #226: FLAC copies now reach the length step).
+        tied = [r for r in ranked if keep_key(r) == keep_key(ranked[0])]
+        longest = max(tied, key=lambda r: float(r["duration"] or 0))
+        ranked.remove(longest)
+        ranked.insert(0, longest)
         best, rest = ranked[0], ranked[1:]
-        winner, step = decide(dict(best), dict(library))
+        winner, step = decide(best, lib)
         tally[f"{winner} ({step})" if step else winner] += 1
         if winner == "review":
-            wins.append(Pair(best, library, step))
+            wins.append(Pair(rows[best["id"]], library, step))
         elif losers is not None:
             losers.append(best["id"])
         for other in rest:
             tally["beaten by a better review copy" if winner == "review" else
-                  ("tie" if decide(dict(other), dict(library))[0] == "tie" else "library (beaten)")] += 1  # fmt: skip
+                  ("tie" if decide(other, lib)[0] == "tie" else "library (beaten)")] += 1  # fmt: skip
             if losers is not None:
                 losers.append(other["id"])
     wins.sort(key=lambda p: p.review["id"])
