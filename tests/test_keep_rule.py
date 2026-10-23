@@ -1,6 +1,6 @@
-"""Grey's keep rule, 2026-10-03: ALAC over FLAC, studio over live, original
-over remaster, then sample rate, then length (2 s or more); a tie keeps the
-library copy."""
+"""Grey's keep rule, 2026-10-03, reordered 2026-10-22: studio over live above
+all, then lossless (ALAC and FLAC equal) over lossy, original over remaster,
+then sample rate, then length (2 s or more); a tie keeps the library copy."""
 
 from __future__ import annotations
 
@@ -18,8 +18,12 @@ def c(**kw):
 @pytest.mark.parametrize(
     ("review", "library", "want"),
     [
-        (c(codec="alac"), c(codec="flac"), ("review", "format")),
-        (c(codec="flac", sample_rate=192000), c(), ("library", "format")),
+        (c(codec="alac"), c(codec="flac"), ("tie", "")),
+        (c(codec="flac", sample_rate=192000), c(), ("review", "quality")),
+        # Linda Ronstadt, "Somewhere Out There": the 3:58 FLAC arrival lost to the
+        # 3:07 ALAC library copy on format before length was asked (2026-10-22)
+        (c(codec="flac", duration=238.2), c(duration=186.5), ("review", "length")),
+        (c(codec="aac"), c(codec="flac", title="Song (Live)"), ("review", "studio/live")),
         (c(codec="aac"), c(codec="flac"), ("library", "format")),
         (c(title="Song (Live)", sample_rate=192000), c(), ("library", "studio/live")),
         (c(), c(album="Unplugged"), ("review", "studio/live")),

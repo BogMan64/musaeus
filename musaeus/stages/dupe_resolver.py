@@ -222,9 +222,8 @@ _REISSUE_RE = re.compile(
 
 # A live recording is a different performance, not a worse copy -- but when
 # a duplicate group holds both and only one can be kept, Grey's rule
-# (confirmed 2026-08-22) is studio first. Ranked BELOW the reissue test so
-# a studio remaster does not beat a live original on this alone; the codec
-# constraint still outranks both.
+# (confirmed 2026-08-22) is studio first: the keep rule's first step, above
+# the codec since Grey, 2026-10-22 (keep_rule.py).
 _LIVE_MARKERS: tuple[str, ...] = (
     "live",
     "in concert",
