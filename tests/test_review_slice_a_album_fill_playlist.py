@@ -22,6 +22,8 @@ def test_album_fill_counts_what_the_shared_rule_calls_a_playlist(tmp_path):
     conn = open_db(tmp_path / "m.db")
     for i, album in enumerate(ALBUMS):
         upsert_archive(conn, {"file_path": f"/m/{i}.m4a", "status": "CATALOGUED", "album": album})
+    # Checked already: only the playlist count is under test, not arriving albums.
+    conn.execute("UPDATE archive SET album_verified_at='checked'")
     conn.commit()
     n, _ = AlbumFillStage.plan_candidates(conn, None)
     assert n == sum(is_playlist_album(a) for a in ALBUMS) == 3

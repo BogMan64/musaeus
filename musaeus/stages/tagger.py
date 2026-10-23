@@ -36,6 +36,7 @@ from ..artist_form import has_article, natural_form, sort_form
 from ..context import RunContext, StageResult
 from ..playlist_album import is_playlist_album
 from ..safe_save import write_beside
+from .album_fill import CLEARED_BY_CHECK
 from .base import NO_VERIFICATION, BaseStage, StageError, VerifyResult
 from .normalize import _move_article_to_suffix
 
@@ -438,9 +439,12 @@ class TaggerStage(BaseStage):
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _get_pending(self, ctx: RunContext) -> list[dict]:
+        # album_verified_at belongs to album-fill and may not exist yet.
+        cols = {r[1] for r in ctx.conn.execute("PRAGMA table_info(archive)")}
+        verified = ", album_verified_at" if "album_verified_at" in cols else ""
         rows = ctx.conn.execute(
-            """
-            SELECT file_path, artist, album, title, genre, year, track
+            f"""
+            SELECT file_path, artist, album, title, genre, year, track{verified}
               FROM archive
              WHERE status = 'CATALOGUED'
              ORDER BY artist, album, track
@@ -490,6 +494,15 @@ class TaggerStage(BaseStage):
         # cannot come back on a rebuild from the files. A real album is never
         # touched, and the catalogue's album, when there is one, wins above.
         if not str(db_row.get("album") or "").strip() and is_playlist_album(file_tags.get("album")):
+            changes["album"] = ""
+        # The same for an album the arrival check cleared (album-fill): left in
+        # the tag, a rebuild from the files would bring it back (Codex review of
+        # #229). The organize that follows files the song as Unsorted.
+        if (
+            not str(db_row.get("album") or "").strip()
+            and str(db_row.get("album_verified_at") or "").startswith(CLEARED_BY_CHECK)
+            and str(file_tags.get("album") or "").strip()
+        ):
             changes["album"] = ""
 
         # ── the two forms of the artist name ──────────────────────────────
