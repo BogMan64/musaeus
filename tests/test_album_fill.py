@@ -714,3 +714,18 @@ def test_an_edit_keeps_its_arriving_album_and_is_not_searched_by_text(env):
     env.run()
     assert env.calls["confirm"] == [] and env.calls["deezer"] == []
     assert env.album(p)[0] == "Rosanna - Single" and env.album(q)[0] is None
+
+
+def test_edit_as_a_word_of_the_title_is_not_a_version(env):
+    """ "Edit the Sad Parts" is a song: searched by text like any other (Codex review of #232)."""
+    q = env.add("Edit the Sad Parts", artist="Fiona")
+    env.answers["acoustid"] = []
+    env.answers["deezer"] = [
+        {
+            "artist": {"name": "Fiona"},
+            "title": "Edit the Sad Parts",
+            "album": {"title": "Studio LP"},
+        }
+    ]
+    env.run()
+    assert env.calls["deezer"] == ["Edit the Sad Parts"] and env.album(q)[0] == "Studio LP"
