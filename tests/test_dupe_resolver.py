@@ -1259,3 +1259,61 @@ def test_every_place_that_records_a_duplicate_stores_its_identity():
             if "audio_hash" not in m.group(1):
                 offenders.append(f"{f.relative_to(root.parent)}: {m.group(0)[:60]}")
     assert not offenders, offenders
+
+
+class TestArrivalTwinOfARejectedCopy:
+    """Grey, 2026-10-24: the 5.1 Beatles "Lucy In The Sky With Diamonds (2017 Mix)"
+    was sent to review on 10-21 (the stereo copy kept). The same audio arrived
+    again and was ADDED: its twin was in review, not denied, so the resolver saw
+    one live copy. An arrival whose twin LOST to another copy goes to review too."""
+
+    def _scene(self, ctx, keeper_is_arrival: bool):
+        arrival = _make_archive_row(
+            ctx, "new/lucy.m4a", "Beatles", "Sgt", "Lucy", 768_000, 300, "h51"
+        )
+        if keeper_is_arrival:
+            keeper = arrival
+        else:
+            keeper = _make_archive_row(
+                ctx, "lib/lucy.m4a", "Beatles", "Sgt", "Lucy", 900_000, 900, "h2"
+            )
+            ctx.conn.execute(
+                "UPDATE archive SET finalized_at = '2026-10-01' WHERE file_path = ?", (str(keeper),)
+            )
+        rejected = ctx.config.dupes_review_dir / "2026-10-21" / "lucy.m4a"
+        rejected.parent.mkdir(parents=True, exist_ok=True)
+        rejected.write_bytes(b"X" * 300)
+        from musaeus.db import upsert_archive
+
+        upsert_archive(ctx.conn, {"file_path": str(rejected), "status": "DUPE_REVIEW", "artist": "Beatles",
+                                  "album": "Sgt", "title": "Lucy", "audio_hash": "h51"})  # fmt: skip
+        rows = [("decided", str(keeper), "keep", "h2" if not keeper_is_arrival else "h51"),
+                ("decided", str(rejected), "archive", "h51"),
+                ("dup_h51", str(rejected), "archive", "h51"),
+                ("dup_h51", str(arrival), "pending", "h51")]  # fmt: skip
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES (?, ?, 'EXACT', 1.0, 'r', ?, ?)",
+            [(g, fp, st, h) for g, fp, st, h in rows],
+        )
+        ctx.conn.commit()
+        return arrival, keeper
+
+    def test_an_arrival_whose_twin_lost_to_a_library_copy_goes_to_review(self, ctx):
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        DupeResolverStage().execute(ctx)
+        status = ctx.conn.execute("SELECT status FROM archive WHERE audio_hash = 'h51' AND file_path NOT LIKE "
+                                  "'%2026-10-21%'").fetchone()[0]  # fmt: skip
+        assert status == "DUPE_REVIEW" and not arrival.exists() and keeper.exists()
+
+    def test_the_keeper_of_that_decision_is_never_moved(self, ctx):
+        """Same batch: Act 2 set the loser aside; the keeper waits in INBOX for Act 3."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=True)
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists()
+        assert (
+            ctx.conn.execute(
+                "SELECT status FROM archive WHERE file_path = ?", (str(arrival),)
+            ).fetchone()[0]
+            == "CATALOGUED"
+        )

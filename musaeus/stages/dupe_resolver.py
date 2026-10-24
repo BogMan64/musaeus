@@ -507,6 +507,31 @@ def _component_members(conn, groups: Sequence[str]) -> list[dict]:
     return members
 
 
+def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
+    """The copy a set-aside twin of this arrival lost to, when it is still catalogued.
+
+    Grey, 2026-10-24: an arrival with the same audio as a copy waiting in review
+    goes to review too -- the decision that put it there stands. Only an arrival
+    (not finalized), and only when that copy lost to ANOTHER copy: in the batch
+    that set it aside, the arrival may be the keeper, waiting in INBOX for Act 3.
+    """
+    h = arrival.get("current_hash")
+    if not h or arrival.get("finalized_at"):
+        return None
+    if not any(
+        m.get("current_status") == "DUPE_REVIEW" and m.get("current_hash") == h for m in aside
+    ):
+        return None
+    row = conn.execute(
+        "SELECT a.* FROM duplicates d "
+        "JOIN duplicates k ON k.group_id = d.group_id AND k.status = 'keep' "
+        "JOIN archive a ON a.file_path = k.file_path AND a.status = 'CATALOGUED' "
+        "WHERE d.audio_hash = ? AND d.status = 'archive' AND k.file_path <> ? LIMIT 1",
+        (h, arrival["file_path"]),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def _pick_keeper_and_losers(members: list[dict]) -> tuple[dict | None, list[dict]]:
     """
     Members are already ranked by Grey's keep rule (_rank, keep_rule.py),
@@ -1247,6 +1272,18 @@ class DupeResolverStage(BaseStage):
                     for m in aside:
                         _mark(ctx, component, m["file_path"], "archive")
                 if len(members) < 2:
+                    won = _lost_to_another(ctx.conn, members[0], aside) if members else None
+                    if won is not None:
+                        result.notes.append(
+                            f"group {group_id}: same audio as a copy in review that lost to "
+                            f"{won['file_path']}: moved to review too"
+                        )
+                        self._move_losers(
+                            ctx, result, batch_date, moved, group_id, won, members,
+                            dry_run=dry_run, update_duplicates_table=True,
+                            already_moved=already_moved, group_ids=component,
+                        )  # fmt: skip
+                        continue
                     result.files_skipped += len(members) + len(aside)
                     if not dry_run:
                         # Closed as 'stale', not 'archive': 'archive' says

@@ -771,3 +771,61 @@ class TestVerifyEffectFailsClosed:
         )
         problems = CanonicalizeStage().verify_effect(ctx, _StageResultStub())
         assert problems, "the row claimed CONVERTED; aac does not honour that"
+
+
+# ── Surround is downmixed to stereo (Grey, 2026-10-24) ────────────────────────
+
+
+def _gen_channels(path: Path, codec: str, channels: int) -> None:
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+         "-ac", str(channels), "-c:a", codec, str(path)],
+        capture_output=True, check=True,
+    )  # fmt: skip
+
+
+def _probe_channels(path: Path) -> int:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+         "stream=channels", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, check=True,
+    )  # fmt: skip
+    return int(out.stdout.strip())
+
+
+class TestSurroundIsDownmixed:
+    """Grey, 2026-10-24: a 5.1 Beatles "Lucy In The Sky With Diamonds (2017 Mix)"
+    became 6-channel AAC in the master library. Surround is downmixed to
+    stereo on the way in; the song is kept. Mono stays mono (2026-09-02)."""
+
+    @pytest.mark.parametrize(
+        ("name", "codec", "ext", "canon_codec"),
+        [("s.flac", "flac", ".flac", "alac"), ("s.m4a", "alac", ".m4a", "alac"),
+         ("s.m4a", "aac", ".m4a", "aac")],
+    )  # fmt: skip
+    def test_six_channels_become_two(self, ctx, name, codec, ext, canon_codec):
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        path = ctx.inbox / name
+        _gen_channels(path, codec, 6)
+        _register_catalogued(ctx, path, codec, ext)
+        ctx.conn.execute("UPDATE archive SET channels = 6")
+        ctx.conn.commit()
+
+        result = CanonicalizeStage().execute(ctx)
+
+        assert result.success is True
+        row = ctx.conn.execute("SELECT file_path, channels FROM archive").fetchone()
+        out = Path(row["file_path"])
+        assert _probe_channels(out) == 2 and _probe_codec(out) == canon_codec
+        assert row["channels"] == 2, "the row says what the file now is"
+
+    def test_mono_stays_mono(self, ctx):
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        path = ctx.inbox / "m.flac"
+        _gen_channels(path, "flac", 1)
+        _register_catalogued(ctx, path, "flac", ".flac")
+
+        CanonicalizeStage().execute(ctx)
+
+        row = ctx.conn.execute("SELECT file_path FROM archive").fetchone()
+        assert _probe_channels(Path(row["file_path"])) == 1
