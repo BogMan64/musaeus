@@ -1415,3 +1415,23 @@ class TestArrivalTwinOfARejectedCopy:
         ctx.conn.commit()
         DupeResolverStage().execute(ctx)
         assert keeper.exists() and self._status(ctx, keeper)[0] == "CATALOGUED"
+
+    def test_a_live_exact_copy_is_ranked_by_the_keep_rule_first(self, ctx):
+        """Codex review of #234, round 10 (reproduced): with another catalogued exact
+        copy, the twin rule moved the studio-tagged arrival before the keep rule
+        could keep it over the live-tagged copy."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=False)
+        live = _make_archive_row(
+            ctx, "lib2/lucy.m4a", "Beatles", "Sgt", "Lucy (Live)", 768_000, 300, "h51"
+        )
+        ctx.conn.execute(
+            "UPDATE archive SET finalized_at = '2026-10-01' WHERE file_path = ?", (str(live),)
+        )
+        ctx.conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('dup_h51', ?, 'EXACT', 1.0, 'r', 'pending', 'h51')",
+            (str(live),),
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists() and self._status(ctx, arrival)[0] == "CATALOGUED"

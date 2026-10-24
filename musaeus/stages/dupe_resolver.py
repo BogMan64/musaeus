@@ -525,6 +525,15 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
     ]
     if not twins:
         return None
+    # An exact copy already filed in the library: those copies are ranked by the
+    # keep rule, which may keep this arrival (Codex review of #234, round 10,
+    # reproduced). Another ARRIVAL of it does not count: both go (round 6).
+    if conn.execute(
+        "SELECT 1 FROM archive WHERE audio_hash = ? AND status = 'CATALOGUED' "
+        "AND COALESCE(finalized_at, '') <> '' AND file_path <> ?",
+        (h, arrival["file_path"]),
+    ).fetchone():
+        return None
     # The decision about THAT copy -- recorded at its path, or at the path it was
     # moved to review from -- not any decision about this audio (Codex review of
     # #234, round 2). Its keeper by recording, not by recorded path: Finalize
