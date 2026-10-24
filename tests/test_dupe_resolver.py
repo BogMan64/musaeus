@@ -1317,3 +1317,31 @@ class TestArrivalTwinOfARejectedCopy:
             ).fetchone()[0]
             == "CATALOGUED"
         )
+
+    def _status(self, ctx, path):
+        return ctx.conn.execute(
+            "SELECT status FROM archive WHERE file_path = ?", (str(path),)
+        ).fetchone()
+
+    def test_a_keeper_filed_since_the_decision_still_counts(self, ctx):
+        """Codex review of #234: the decision recorded the keeper's INBOX path;
+        Finalize filed it since, so a path join no longer found it."""
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        ctx.conn.execute(
+            "UPDATE duplicates SET file_path = ? WHERE group_id = 'decided' AND status = 'keep'",
+            (str(ctx.inbox / "old" / "lucy.m4a"),),
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert not arrival.exists() and keeper.exists()
+
+    def test_a_different_song_now_at_the_keepers_path_is_not_the_keeper(self, ctx):
+        """Codex review of #234: the arrival is the only live copy of its audio
+        when the recorded keeper is gone, whatever now sits at its old path."""
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        ctx.conn.execute(
+            "UPDATE archive SET audio_hash = 'other' WHERE file_path = ?", (str(keeper),)
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists() and self._status(ctx, arrival)[0] == "CATALOGUED"

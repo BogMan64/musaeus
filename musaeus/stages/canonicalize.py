@@ -705,14 +705,17 @@ class CanonicalizeStage(BaseStage):
 
     @staticmethod
     def _resolve_channels(row: dict, source: Path | None) -> int:
-        """The row's channel count, else the file's; 0 when neither is known."""
-        if row.get("channels") or source is None or not source.exists():
-            return int(row.get("channels") or 0)
-        try:
-            return _channels(_probe_streams(source))
-        except Exception as exc:  # unknown channels: decided by the codec alone
-            logger.warning("[canonicalize] channel probe failed for %s: %s", source, exc)
-            return 0
+        """The file's channel count, else the row's; 0 when neither is known.
+
+        The file decides: a stale row saying 2 let 6-channel AAC pass through
+        (Codex review of #234).
+        """
+        if source is not None and source.exists():
+            try:
+                return _channels(_probe_streams(source))
+            except Exception as exc:  # unreadable here: the row is all there is
+                logger.warning("[canonicalize] channel probe failed for %s: %s", source, exc)
+        return int(row.get("channels") or 0)
 
     def _decide_action(self, row: dict, source: Path | None = None) -> str:
         """Return 'PASSTHROUGH' | 'CONVERT' | 'TRANSCODE' | 'UNKNOWN'.

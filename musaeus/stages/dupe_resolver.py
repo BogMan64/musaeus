@@ -522,11 +522,14 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
         m.get("current_status") == "DUPE_REVIEW" and m.get("current_hash") == h for m in aside
     ):
         return None
+    # The keeper by its recording, not its recorded path: Finalize files it after
+    # the decision, and a reused path holds another song (Codex review of #234).
     row = conn.execute(
         "SELECT a.* FROM duplicates d "
         "JOIN duplicates k ON k.group_id = d.group_id AND k.status = 'keep' "
-        "JOIN archive a ON a.file_path = k.file_path AND a.status = 'CATALOGUED' "
-        "WHERE d.audio_hash = ? AND d.status = 'archive' AND k.file_path <> ? LIMIT 1",
+        "JOIN archive a ON a.audio_hash = k.audio_hash AND a.status = 'CATALOGUED' "
+        "WHERE d.audio_hash = ? AND d.status = 'archive' AND k.audio_hash <> '' "
+        "AND a.file_path <> ? LIMIT 1",
         (h, arrival["file_path"]),
     ).fetchone()
     return dict(row) if row else None

@@ -829,3 +829,17 @@ class TestSurroundIsDownmixed:
 
         row = ctx.conn.execute("SELECT file_path FROM archive").fetchone()
         assert _probe_channels(Path(row["file_path"])) == 1
+
+    def test_the_file_decides_not_a_stale_row(self, ctx):
+        """Codex review of #234: a row saying 2 channels let 6-channel AAC pass through."""
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        path = ctx.inbox / "s.m4a"
+        _gen_channels(path, "aac", 6)
+        _register_catalogued(ctx, path, "aac", ".m4a")
+        ctx.conn.execute("UPDATE archive SET channels = 2")
+        ctx.conn.commit()
+
+        CanonicalizeStage().execute(ctx)
+
+        row = ctx.conn.execute("SELECT file_path FROM archive").fetchone()
+        assert _probe_channels(Path(row["file_path"])) == 2
