@@ -379,3 +379,18 @@ def test_a_copy_already_moved_to_review_is_not_a_pair_to_decide(tmp_path, monkey
         "SELECT COUNT(*) FROM duplicates WHERE duplicate_type = 'ACOUSTIC'"
     ).fetchone()[0]
     assert pairs == 0, "a copy already set aside was listed as a pair to decide"
+
+
+@pytest.mark.parametrize(
+    ("want", "credit", "agrees"),
+    [
+        ("Jimi Hendrix", "The Jimi Hendrix Experience", True),
+        ("The Jimi Hendrix Experience", "Jimi Hendrix", True),
+        ("Jimi Hendrix", "The Band", False),
+        ("Dion", "Celine Dion", False),
+    ],
+)
+def test_a_band_named_after_its_leader_agrees_with_the_leader(want, credit, agrees):
+    """Codex review of #233: Hendrix's live "Tax Free" credited to The Experience
+    was refused, and the studio-only check could then clear its live album."""
+    assert acoustid_mod._artist_agrees(want, [credit]) is agrees
