@@ -1375,3 +1375,10 @@ class TestArrivalTwinOfARejectedCopy:
         ctx.conn.commit()
         DupeResolverStage().execute(ctx)
         assert arrival.exists() and self._status(ctx, arrival)[0] == "CATALOGUED"
+
+    def test_the_preview_shows_that_move(self, ctx):
+        """Codex review of #234, round 5: `musaeus plan` showed nothing, then the
+        resolver moved the arrival."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=False)
+        actions, _ = DupeResolverStage.plan_actions(ctx.conn, ctx.config)
+        assert [a["source"] for a in actions] == [str(arrival)]

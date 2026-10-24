@@ -722,9 +722,15 @@ class DupeResolverStage(BaseStage):
             if not any(_mismatch(m) for m in _get_group_members(conn, gid))
         ]
         for component in _connected_groups(conn, sound):
-            members = _component_members(conn, component)
-            members = [m for m in members if m.get("current_status") not in SET_ASIDE_STATUSES]
-            if len(members) < 2 and len(_component_members(conn, component)) > 1:
+            everyone = _component_members(conn, component)
+            members = [m for m in everyone if m.get("current_status") not in SET_ASIDE_STATUSES]
+            if len(members) < 2 and len(everyone) > 1:
+                # The resolver's own exception: an arrival whose twin in review
+                # lost to another copy goes too (Codex review of #234, round 5).
+                aside = [m for m in everyone if m not in members]
+                won = _lost_to_another(conn, members[0], aside) if members else None
+                if won is not None and Path(won["file_path"]).exists():
+                    add(members[0], won, component[0])
                 continue
             if not members:
                 continue
