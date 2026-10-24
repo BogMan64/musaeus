@@ -274,8 +274,11 @@ def deezer_search(artist: str, title: str) -> list[dict]:
     return items
 
 
-def mb_confirm(artist: str, album: str, title: str) -> tuple[bool, str]:
+def mb_confirm(artist: str, album: str, title: str, live_ok: bool = False) -> tuple[bool, str]:
     """Ask MusicBrainz whether this song is on an official studio album of this name.
+
+    live_ok: a live album of that name counts too -- for an arriving album the
+    fingerprint could not place (Codex review of #233, round 4).
 
     A name another source proposed is only a claim. MusicBrainz is asked the
     one question that settles it: is a recording of this title, credited to
@@ -294,7 +297,7 @@ def mb_confirm(artist: str, album: str, title: str) -> tuple[bool, str]:
     data = _get_json(
         f"{_MB_RECORDING_URL}?{urlencode({'query': query, 'fmt': 'json', 'limit': 25})}"
     )
-    return choose_mb_confirmation(data.get("recordings", []), artist, title, album)
+    return choose_mb_confirmation(data.get("recordings", []), artist, title, album, live_ok=live_ok)
 
 
 def itunes_search(artist: str, title: str) -> list[dict]:
@@ -459,7 +462,7 @@ def choose_discogs_confirmation(results: list[dict], artist: str, album: str) ->
 
 
 def choose_mb_confirmation(
-    recordings: list[dict], artist: str, title: str, album: str
+    recordings: list[dict], artist: str, title: str, album: str, live_ok: bool = False
 ) -> tuple[bool, str]:
     """Pure: does any recording carry *title* by *artist* on an official studio album *album*?"""
     want_a, want_t, want_alb = norm(artist), norm(title), norm(album)
@@ -474,7 +477,7 @@ def choose_mb_confirmation(
                 norm(rel.get("title")) == want_alb
                 and rel.get("status") == "Official"
                 and rg.get("primary-type") == "Album"
-                and not rg.get("secondary-types")
+                and set(rg.get("secondary-types") or []) <= ({"Live"} if live_ok else set())
             ):
                 year = (rel.get("date") or "?")[:4]
                 return True, f"MusicBrainz: on the official album '{rel['title']}' ({year})"
@@ -758,10 +761,16 @@ class AlbumFillStage(BaseStage):
                         )
                     except Unavailable:
                         fingerprint_failed = True
-                if _on_its_album(recordings.get(row["id"], []), row["album"]):
+                groups = recordings.get(row["id"], [])
+                if _on_its_album(groups, row["album"]):
                     ok, evidence = True, "fingerprint: the recording is on this album"
+                elif _live_only(groups):
+                    # A live recording keeps its live albums only: a title search
+                    # finds the studio take (Codex review of #233, round 4).
+                    ok, evidence = False, "fingerprint: a live recording, not on this album"
                 else:
-                    ok, evidence = mb_confirm(artist, row["album"], title)
+                    # No fingerprint answer: a live album of that name counts too.
+                    ok, evidence = mb_confirm(artist, row["album"], title, live_ok=not groups)
                     if not ok and fingerprint_failed:
                         # The studio-only search's "no" is not a no for a live album
                         # (Codex review of #233, round 3): ask again next run.

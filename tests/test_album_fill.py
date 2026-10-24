@@ -47,6 +47,8 @@ def env(tmp_path, monkeypatch):
         "itunes": [],
         # MusicBrainz's yes or no to a text source's album: a set of album names, or True
         "confirm": True,
+        # ... and the albums it confirms only when a live album may count
+        "confirm_live": set(),
     }
 
     def _aid(fp, dur, key, artist, title):
@@ -75,10 +77,11 @@ def env(tmp_path, monkeypatch):
         ),
     )
 
-    def _confirm(artist, album, title):
+    def _confirm(artist, album, title, live_ok=False):
         calls["confirm"].append(album)
         yes = answers["confirm"]
-        return (yes is True or album in yes), "mb"  # type: ignore[operator]
+        live = answers["confirm_live"]
+        return (yes is True or album in yes or (live_ok and album in live)), "mb"  # type: ignore[operator]
 
     monkeypatch.setattr(af, "mb_confirm", _confirm)
 
@@ -624,7 +627,7 @@ def test_no_answer_leaves_the_arriving_album_for_the_next_run(env, monkeypatch):
     env.run()
     p = env.add("Africa", album="70s Hits")
 
-    def _down(*_):
+    def _down(*_, **__):
         raise Unavailable("503")
 
     monkeypatch.setattr(af, "mb_confirm", _down)
@@ -800,6 +803,38 @@ def test_a_fingerprint_failure_and_a_musicbrainz_no_keep_the_album_for_next_run(
         "SELECT album_verified_at FROM archive WHERE file_path=?", (p,)
     ).fetchone()[0]
     assert env.album(p)[0] == "Miami Pop Festival" and stamp is None, "asked again next run"
+
+
+def test_a_live_recording_tagged_with_a_studio_album_is_not_confirmed_by_title(env):
+    """Codex review of #233, round 4: the fingerprint knew the live "Tax Free",
+    and a title search still confirmed the studio "War Heroes" it arrived with."""
+    p = env.add("Tax Free", artist="Jimi Hendrix", album="War Heroes")
+    env.answers["acoustid"] = [_rg("m", "Miami Pop Festival", "Jimi Hendrix", secondary=["Live"])]
+    env.answers["confirm"] = {"War Heroes"}
+    env.run()
+    assert env.album(p)[0] != "War Heroes"
+
+
+def test_with_no_fingerprint_answer_a_live_album_still_confirms(env):
+    """Codex review of #233, round 4: AcoustID knew no release for the live take,
+    and the studio-only search cleared "Miami Pop Festival"."""
+    p = env.add("Tax Free", artist="Jimi Hendrix", album="Miami Pop Festival")
+    env.answers["acoustid"] = []
+    env.answers["confirm"] = set()
+    env.answers["confirm_live"] = {"Miami Pop Festival"}
+    env.run()
+    assert env.album(p)[0] == "Miami Pop Festival"
+
+
+@pytest.mark.parametrize(("live_ok", "confirmed"), [(False, False), (True, True)])
+def test_musicbrainz_counts_a_live_album_only_when_asked(live_ok, confirmed):
+    rec = {"score": 100, "title": "Tax Free", "artist-credit": [{"name": "Jimi Hendrix"}],
+           "releases": [{"title": "Miami Pop Festival", "status": "Official", "date": "2013",
+                         "release-group": {"primary-type": "Album", "secondary-types": ["Live"]}}]}  # fmt: skip
+    ok, _ = af.choose_mb_confirmation(
+        [rec], "Jimi Hendrix", "Tax Free", "Miami Pop Festival", live_ok=live_ok
+    )
+    assert ok is confirmed
 
 
 def test_a_live_take_also_on_a_compilation_is_still_live(env):
