@@ -116,6 +116,66 @@ def _names_a_version(title: str) -> bool:
     return bool(_VERSION_QUALIFIER.search(title or "") or _EDIT_LABEL.search(title or ""))
 
 
+#: A classical work by its title: a catalogue number, or a known composer's name
+#: before a colon ("Mozart: ..."). Its credit is often the performers, so
+#: MusicBrainz cannot confirm its album by artist -- Horowitz's "Mozart: Piano
+#: Concerto No. 23 ... K. 488" lost its album to the check. Grey, 2026-10-23,
+#: option B: the composer's name makes it classical; a form word alone does not
+#: ("Symphony of Destruction" is Megadeth's).
+_CATALOGUE_NUMBER = re.compile(r"\b(?:K|KV|BWV|HWV|RV|TWV|WWV|Hob|Op|WoO)\.?\s?\d", re.I)
+
+
+def _composers(conn, meta_dir) -> set[str]:  # type: ignore[no-untyped-def]
+    """Known composers, folded: Composer_Canon.tsv's names and their surnames,
+    and every artist the library files as Classical."""
+    from .classical_composer import CANON_FILENAME, load_composer_canon
+
+    canon = load_composer_canon(meta_dir / CANON_FILENAME) if meta_dir else {}
+    names = set(canon) | {c.lower() for c in canon.values()}
+    names |= {
+        (a or "").lower()
+        for (a,) in conn.execute(
+            "SELECT DISTINCT artist FROM archive WHERE genre LIKE 'Classical%' AND artist IS NOT NULL"
+        )
+    }
+    return {norm(n) for n in names} | {norm(n).split(" ")[-1] for n in names if len(n) > 3} - {""}
+
+
+def _names_a_classical_work(title: str, composers: set[str]) -> bool:
+    """A catalogue number, or "Composer: work" with a composer we know."""
+    if _CATALOGUE_NUMBER.search(title or ""):
+        return True
+    prefix, colon, _ = (title or "").partition(":")
+    return bool(colon) and (norm(prefix) in composers or norm(prefix).split(" ")[-1] in composers)
+
+
+def _live_only(groups: list[dict]) -> bool:
+    """The fingerprint's recording is on live albums only: a live recording."""
+    # A compilation the live take was also put on says nothing (Codex review of #233).
+    albums = [
+        g
+        for g in groups
+        if g.get("type") == "Album" and "Compilation" not in (g.get("secondarytypes") or [])
+    ]
+    return bool(albums) and all("Live" in (g.get("secondarytypes") or []) for g in albums)
+
+
+def _on_its_album(groups: list[dict], album: str) -> bool:
+    """The recording is on this album, a studio or a live one -- not a compilation.
+
+    Grey, 2026-10-23: a live recording keeps its live album -- Jimi Hendrix's
+    "Tax Free" from "Miami Pop Festival" was given the studio "War Heroes".
+    """
+    want = norm(album)
+    return any(
+        g.get("type") == "Album"
+        # Plain or Live only: not a compilation, remix or DJ-mix (Codex review of #233).
+        and set(g.get("secondarytypes") or []) <= {"Live"}
+        and norm(g.get("title")) == want
+        for g in groups
+    )
+
+
 _DEEZER_BAD_ALBUM = re.compile(
     r"\b(greatest hits|best of|the collection|essential|anthology|"
     r"compilation|\blive\b|hits|vol\.? ?\d|now that|"
@@ -214,8 +274,11 @@ def deezer_search(artist: str, title: str) -> list[dict]:
     return items
 
 
-def mb_confirm(artist: str, album: str, title: str) -> tuple[bool, str]:
+def mb_confirm(artist: str, album: str, title: str, live_ok: bool = False) -> tuple[bool, str]:
     """Ask MusicBrainz whether this song is on an official studio album of this name.
+
+    live_ok: a live album of that name counts too -- for an arriving album the
+    fingerprint could not place (Codex review of #233, round 4).
 
     A name another source proposed is only a claim. MusicBrainz is asked the
     one question that settles it: is a recording of this title, credited to
@@ -234,7 +297,7 @@ def mb_confirm(artist: str, album: str, title: str) -> tuple[bool, str]:
     data = _get_json(
         f"{_MB_RECORDING_URL}?{urlencode({'query': query, 'fmt': 'json', 'limit': 25})}"
     )
-    return choose_mb_confirmation(data.get("recordings", []), artist, title, album)
+    return choose_mb_confirmation(data.get("recordings", []), artist, title, album, live_ok=live_ok)
 
 
 def itunes_search(artist: str, title: str) -> list[dict]:
@@ -399,7 +462,7 @@ def choose_discogs_confirmation(results: list[dict], artist: str, album: str) ->
 
 
 def choose_mb_confirmation(
-    recordings: list[dict], artist: str, title: str, album: str
+    recordings: list[dict], artist: str, title: str, album: str, live_ok: bool = False
 ) -> tuple[bool, str]:
     """Pure: does any recording carry *title* by *artist* on an official studio album *album*?"""
     want_a, want_t, want_alb = norm(artist), norm(title), norm(album)
@@ -414,7 +477,7 @@ def choose_mb_confirmation(
                 norm(rel.get("title")) == want_alb
                 and rel.get("status") == "Official"
                 and rg.get("primary-type") == "Album"
-                and not rg.get("secondary-types")
+                and set(rg.get("secondary-types") or []) <= ({"Live"} if live_ok else set())
             ):
                 year = (rel.get("date") or "?")[:4]
                 return True, f"MusicBrainz: on the official album '{rel['title']}' ({year})"
@@ -534,7 +597,8 @@ class AlbumFillStage(BaseStage):
         aid_key = cfg.acousticid_api_key
         dg_key, dg_secret = cfg.discogs_consumer_key, cfg.discogs_consumer_secret
         tally: dict[str, int] = {}
-        result.files_changed += self._check_arrived_albums(ctx, tally)
+        recordings: dict[int, list[dict]] = {}  # the fingerprint's albums, once per row
+        result.files_changed += self._check_arrived_albums(ctx, tally, recordings)
         rows = ctx.conn.execute(
             f"SELECT id, file_path, artist, title, chromaprint, chromaprint_duration {_CANDIDATES} "
             "ORDER BY artist, title"
@@ -555,18 +619,28 @@ class AlbumFillStage(BaseStage):
                 # No artist or no title, no way to tell which recording is ours:
                 # not asked, not stamped (Codex review of #223, rounds 2 and 3).
                 fingerprint = row["chromaprint"] and row["chromaprint_duration"]
+                groups: list[dict] = []
                 if aid_key and artist and title and fingerprint:
-                    time.sleep(_AID_RATE_S)
-                    groups = acoustid_release_groups(
-                        row["chromaprint"], row["chromaprint_duration"], aid_key, artist, title
-                    )
+                    if row["id"] in recordings:
+                        groups = recordings[row["id"]]
+                    else:
+                        time.sleep(_AID_RATE_S)
+                        groups = acoustid_release_groups(
+                            row["chromaprint"], row["chromaprint_duration"], aid_key, artist, title
+                        )
                     album, reason = (
                         choose_from_release_groups(groups, artist, first_release)
                         if groups
                         else (None, "no AcoustID release groups")
                     )
                     source, answered = "acoustid", True
-                text_ok = artist and title and not _names_a_version(title)
+                # A live recording is never given a studio album by name (Grey,
+                # 2026-10-23): the text sources know only the song, not the take.
+                text_ok = (
+                    artist and title and not _names_a_version(title) and not _live_only(groups)
+                )
+                if _live_only(groups) and album is None:
+                    reason = "a live recording: no studio album by name"
                 if album is None and text_ok and dg_key and dg_secret:
                     time.sleep(_DISCOGS_RATE_S)
                     album, reason = _confirmed(
@@ -636,7 +710,9 @@ class AlbumFillStage(BaseStage):
         ctx.record_stage(result)
         return result
 
-    def _check_arrived_albums(self, ctx: RunContext, tally: dict[str, int]) -> int:
+    def _check_arrived_albums(
+        self, ctx: RunContext, tally: dict[str, int], recordings: dict[int, list[dict]]
+    ) -> int:
         """Keep an album a song arrived with only if MusicBrainz confirms it.
 
         Confirmed: stamped, kept. Not confirmed: cleared, so the fill below looks
@@ -646,8 +722,11 @@ class AlbumFillStage(BaseStage):
         Returns the number of albums cleared.
         """
         cleared = 0
+        aid_key = ctx.config.acousticid_api_key
+        composers = _composers(ctx.conn, ctx.config.meta_dir)
         rows = ctx.conn.execute(
-            f"SELECT id, file_path, artist, title, album {_TO_CHECK} ORDER BY artist, title"
+            f"SELECT id, file_path, artist, title, album, chromaprint, chromaprint_duration "
+            f"{_TO_CHECK} ORDER BY artist, title"
         ).fetchall()
         for row in rows:
             artist, title = (row["artist"] or "").strip(), (row["title"] or "").strip()
@@ -663,8 +742,41 @@ class AlbumFillStage(BaseStage):
                     (f"not asked: the title names a version ({now})", row["id"]),
                 )
                 continue
+            if _names_a_classical_work(title, composers):
+                ctx.conn.execute(
+                    "UPDATE archive SET album_verified_at=? WHERE id=?",
+                    (f"not asked: the title names a classical work ({now})", row["id"]),
+                )
+                continue
+            fingerprint_failed = False
             try:
-                ok, evidence = mb_confirm(artist, row["album"], title)
+                # The fingerprint first: it knows which recording this is, a live
+                # one included; MusicBrainz's search knows studio albums only.
+                if aid_key and row["chromaprint"] and row["chromaprint_duration"]:
+                    time.sleep(_AID_RATE_S)
+                    # No fingerprint answer: MusicBrainz still can (Codex review of #233).
+                    try:
+                        recordings[row["id"]] = acoustid_release_groups(
+                            row["chromaprint"], row["chromaprint_duration"], aid_key, artist, title
+                        )
+                    except Unavailable:
+                        fingerprint_failed = True
+                groups = recordings.get(row["id"], [])
+                if _on_its_album(groups, row["album"]):
+                    ok, evidence = True, "fingerprint: the recording is on this album"
+                elif _live_only(groups):
+                    # A live recording keeps its live albums only: a title search
+                    # finds the studio take (Codex review of #233, round 4).
+                    ok, evidence = False, "fingerprint: a live recording, not on this album"
+                else:
+                    # No fingerprint answer: a live album of that name counts too.
+                    ok, evidence = mb_confirm(artist, row["album"], title, live_ok=not groups)
+                    if not ok and fingerprint_failed:
+                        # The studio-only search's "no" is not a no for a live album
+                        # (Codex review of #233, round 3): ask again next run.
+                        raise Unavailable(
+                            "fingerprint lookup failed and MusicBrainz could not confirm"
+                        )
             except Unavailable as exc:
                 tally["arriving album: no answer (asked again next run)"] = (
                     tally.get("arriving album: no answer (asked again next run)", 0) + 1

@@ -283,7 +283,18 @@ def _artist_agrees(want: str, names: list[str]) -> bool:
     if not w:
         return False
     forms = [*names, ", ".join(names), " & ".join(names), " and ".join(names)]
-    return any(w == _artist_key(f) for f in forms)
+    if any(w == _artist_key(f) for f in forms):
+        return True
+    # A band named after its leader is the leader's act (Grey, 2026-10-23): "Jimi
+    # Hendrix" and "The Jimi Hendrix Experience" agree, either way round.
+    from .neardupe import _BAND_OF
+
+    def leader(name: str) -> str:
+        m = _BAND_OF.match(name.strip())
+        return _artist_key(m.group(1)) if m and len(m.group(1).split()) >= 2 else ""
+
+    keys = {_artist_key(f) for f in forms} | {leader(n) for n in names}
+    return bool(keys & ({w, leader(want)} - {""}))
 
 
 def _pick_matching_recording(
