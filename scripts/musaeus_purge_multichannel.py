@@ -76,44 +76,27 @@ def _probe_channels(path: Path) -> int | None:
     return int(first) if first.isdigit() else None
 
 
-def _downmix_to_stereo(src: Path, dest: Path) -> bool:
-    """Write a stereo ALAC copy of a multichannel file.
+def _downmix_to_stereo(src: Path, dest: Path, codec: str) -> bool:
+    """Write a stereo copy with Canonicalize's own encoders (Grey, 2026-10-24).
 
-    -map 0:a:0 is load-bearing, not tidiness: these releases carry embedded
-    cover art as a second stream (h264 or mjpeg), and without the explicit
-    audio-only map ffmpeg tries to copy that stream into an .m4a container
-    that will not hold it, failing with "Could not find tag for codec h264".
-
-    ffmpeg's default downmix matrix is the ITU/ATSC one, which is what a
-    consumer AVR would apply anyway -- so this produces the stereo fold-down
-    the playback chain was going to make regardless, just once and stored,
-    rather than on every play.
+    Cover art and tags are kept, lossless stays ALAC and lossy is AAC, and the
+    copy is verified (length; mono or stereo) before it replaces anything. The
+    hand-rolled command it replaces dropped the art, turned AAC into ALAC, and
+    wrote to a ".tmp" name ffmpeg could not choose a format for -- every
+    downmix failed, and the fallback deleted the song.
     """
-    r = subprocess.run(
-        [
-            "ffmpeg",
-            "-v",
-            "error",
-            "-y",
-            "-i",
-            str(src),
-            "-map",
-            "0:a:0",
-            "-c:a",
-            "alac",
-            "-ac",
-            "2",
-            str(dest),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if r.returncode != 0 or not dest.exists() or dest.stat().st_size == 0:
-        if r.stderr.strip():
-            print(f"    downmix failed: {r.stderr.strip().splitlines()[-1][:90]}")
+    from musaeus.config import LOSSLESS_CODECS
+    from musaeus.stages import canonicalize as canon
+
+    encode = canon._convert_to_alac if codec in LOSSLESS_CODECS else canon._transcode_to_aac
+    try:
+        encode(src, dest)  # writes mp4 whatever the name ("-f mp4")
+        canon._verify_conversion(src, dest)
+    except Exception as exc:  # noqa: BLE001 -- any failure: the song is kept as it is
+        print(f"    downmix failed: {str(exc)[:90]}")
         dest.unlink(missing_ok=True)
         return False
-    return _probe_channels(dest) == 2
+    return True
 
 
 def _purge_row(
@@ -163,8 +146,8 @@ def main() -> int:
     ap.add_argument(
         "--downmix",
         action="store_true",
-        help="Downmix >2ch to stereo IN PLACE instead of deleting. Keeps the "
-        "song. Only falls back to delete-and-log if the downmix fails.",
+        help="Downmix >2ch to stereo IN PLACE instead of deleting (Grey, 2026-10-24). "
+        "Keeps the song; a failed downmix leaves it as it is, never deletes it.",
     )
     ap.add_argument(
         "--include-quarantine",
@@ -174,6 +157,11 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = get_config()
+    if args.apply:  # rewrites or deletes masters
+        from musaeus.masters_lock import hold_for_process
+
+        hold_for_process(exclusive=True, what="scripts/musaeus_purge_multichannel.py",
+                         runs_root=cfg.runs_root)  # fmt: skip
     conn = sqlite3.connect(cfg.db_path)
     conn.row_factory = sqlite3.Row
 
@@ -227,34 +215,38 @@ def main() -> int:
             continue
 
         if args.downmix:
-            tmp = path.with_suffix(path.suffix + ".stereo.tmp")
-            if _downmix_to_stereo(path, tmp):
-                tmp.replace(path)
-                conn.execute(
-                    "UPDATE archive SET channels = 2, audio_hash = NULL, full_hash = NULL, "
-                    "rg_tagged_at = NULL WHERE rowid = ?",
-                    (row["rid"],),
-                )
-                # Hashes and the loudness stamp are cleared, not recomputed
-                # here: the audio genuinely changed, so the stored PCM hash
-                # is now wrong and Forge's "already tagged" shortcut would
-                # skip a file that needs re-measuring. Re-run sentinel and
-                # forge to refill them.
-                conn.execute(
-                    "INSERT INTO events (run_id, ts, event_type, file_path, stage, note) "
-                    "VALUES (?, ?, 'MULTICHANNEL_DOWNMIXED', ?, 'purge-multichannel', ?)",
-                    (
-                        "manual",
-                        datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-                        str(path),
-                        f"{live}ch downmixed to stereo in place",
-                    ),
-                )
-                conn.commit()
-                downmixed += 1
-                print(f"  downmixed {live}ch -> 2ch: {row['artist']} - {row['title']}")
+            tmp = path.with_name(path.name + ".stereo.tmp")
+            if not _downmix_to_stereo(path, tmp, (row["codec"] or "").lower()):
+                print(f"  downmix failed, song kept as it is: {path.name}")
                 continue
-            print(f"  downmix failed, falling back to delete: {path.name}")
+            tmp.replace(path)
+            from musaeus.hasher import file_hash
+
+            # audio_hash stays: it names the recording as it arrived, as
+            # Canonicalize keeps it for a downmixed arrival, so the same
+            # 5.1 file arriving again is still known. The file's own hash
+            # is new, its bit-rot baseline goes (a verify reports it as new,
+            # not corrupt), and Forge re-measures the loudness.
+            conn.execute(
+                "UPDATE archive SET channels = 2, full_hash = ?, size_bytes = ?, "
+                "rg_tagged_at = NULL WHERE rowid = ?",
+                (file_hash(path), path.stat().st_size, row["rid"]),
+            )
+            conn.execute("DELETE FROM archive_tier_hashes WHERE path = ?", (str(path),))
+            conn.execute(
+                "INSERT INTO events (run_id, ts, event_type, file_path, stage, note) "
+                "VALUES (?, ?, 'MULTICHANNEL_DOWNMIXED', ?, 'purge-multichannel', ?)",
+                (
+                    "manual",
+                    datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                    str(path),
+                    f"{live}ch downmixed to stereo in place",
+                ),
+            )
+            conn.commit()
+            downmixed += 1
+            print(f"  downmixed {live}ch -> 2ch: {row['artist']} - {row['title']}")
+            continue
 
         entry = {
             "reason": (
