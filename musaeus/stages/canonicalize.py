@@ -697,15 +697,16 @@ class CanonicalizeStage(BaseStage):
 
     @staticmethod
     def _resolve_codec(row: dict, source: Path | None) -> str:
-        """The codec of this file: the row's if it has one, else ffprobe's.
+        """The codec of this file: ffprobe's when the file is there, else the row's.
 
         Shared by the decision and by the refusal message, so the operator is
         told the codec that was actually determined rather than an empty DB
-        column.
+        column. The file decides: a row saying "aac" for an ALAC file sent
+        lossless audio to a lossy re-encode (Codex review of #234, round 8).
+        An unreadable file gives "" -- refused, never re-encoded.
         """
-        codec = (row.get("codec") or "").lower()
-        if codec or source is None or not source.exists():
-            return codec
+        if source is None or not source.exists():
+            return (row.get("codec") or "").lower()
         try:
             probe = _probe_streams(source)
             audio = [st for st in probe.get("streams", []) if st.get("codec_type") == "audio"]

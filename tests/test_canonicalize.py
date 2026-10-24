@@ -880,3 +880,17 @@ class TestSurroundIsDownmixed:
 
         row = ctx.conn.execute("SELECT canon_action, channels FROM archive").fetchone()
         assert row["canon_action"] == "PASSTHROUGH" and row["channels"] == 2
+
+    def test_a_stale_codec_row_never_sends_lossless_to_aac(self, ctx):
+        """Codex review of #234, round 8: a row saying "aac" for a 6-channel ALAC
+        file sent lossless audio to a lossy re-encode."""
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        path = ctx.inbox / "s.m4a"
+        _gen_channels(path, "alac", 6)
+        _register_catalogued(ctx, path, "aac", ".m4a")
+
+        CanonicalizeStage().execute(ctx)
+
+        row = ctx.conn.execute("SELECT file_path FROM archive").fetchone()
+        out = Path(row["file_path"])
+        assert _probe_codec(out) == "alac" and _probe_channels(out) == 2
