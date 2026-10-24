@@ -1435,3 +1435,19 @@ class TestArrivalTwinOfARejectedCopy:
         ctx.conn.commit()
         DupeResolverStage().execute(ctx)
         assert arrival.exists() and self._status(ctx, arrival)[0] == "CATALOGUED"
+
+    def test_a_filed_copy_missing_from_disk_does_not_count(self, ctx):
+        """Codex review of #234, round 12 (reproduced): a filed row whose file is gone
+        blocked the rule and the arrival stayed."""
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        from musaeus.db import upsert_archive
+
+        upsert_archive(ctx.conn, {"file_path": str(ctx.inbox / "gone" / "lucy.m4a"), "status": "CATALOGUED",
+                                  "artist": "Beatles", "title": "Lucy", "audio_hash": "h51",
+                                  "finalized_at": "2026-10-01"})  # fmt: skip
+        ctx.conn.execute(
+            "UPDATE archive SET finalized_at = '2026-10-01' WHERE file_path LIKE '%/gone/lucy.m4a'"
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert not arrival.exists() and keeper.exists()
