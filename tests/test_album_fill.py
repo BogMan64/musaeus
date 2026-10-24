@@ -778,3 +778,42 @@ def test_a_classical_work_is_not_checked(env):
     env.answers["confirm"] = set()
     env.run()
     assert env.calls["confirm"] == [] and env.album(p)[0] == "Mozart: Piano Concerto No. 23"
+
+
+def test_a_fingerprint_failure_still_lets_musicbrainz_check_the_album(env):
+    """Codex review of #233: an AcoustID timeout skipped MusicBrainz as well."""
+    p = env.add("Africa", album="Toto IV")
+    env.answers["acoustid"] = Unavailable("timeout")
+    env.answers["confirm"] = {"Toto IV"}
+    env.run()
+    assert env.calls["confirm"] == ["Toto IV"] and env.album(p)[0] == "Toto IV"
+
+
+def test_a_live_take_also_on_a_compilation_is_still_live(env):
+    p = env.add("Tax Free", artist="Jimi Hendrix")
+    env.answers["acoustid"] = [
+        _rg("m", "Miami Pop Festival", "Jimi Hendrix", secondary=["Live"]),
+        _rg("c", "Hendrix Best Of", "Jimi Hendrix", secondary=["Compilation"]),
+    ]
+    env.answers["discogs"] = [
+        {"title": "Jimi Hendrix - War Heroes", "format": ["LP", "Album"], "year": "1972"}
+    ]
+    env.run()
+    assert env.calls["discogs"] == [] and env.album(p)[0] is None
+
+
+@pytest.mark.parametrize("secondary", [["Remix"], ["DJ-mix"]])
+def test_a_remix_or_dj_mix_album_is_not_confirmed_by_the_fingerprint(env, secondary):
+    env.add("Africa", album="Africa Remixed")
+    env.answers["acoustid"] = [_rg("r", "Africa Remixed", secondary=secondary)]
+    env.answers["confirm"] = set()
+    env.run()
+    assert env.calls["confirm"] == ["Africa Remixed"], "only MusicBrainz can confirm it"
+
+
+def test_a_classical_form_without_a_catalogue_number_is_not_checked(env):
+    p = env.add("Mozart: Piano Concerto No. 23 in A major: II. Adagio", artist="Vladimir Horowitz",
+                album="Mozart Concertos")  # fmt: skip
+    env.answers["confirm"] = set()
+    env.run()
+    assert env.calls["confirm"] == [] and env.album(p)[0] == "Mozart Concertos"

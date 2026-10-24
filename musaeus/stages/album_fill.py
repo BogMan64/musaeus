@@ -54,6 +54,7 @@ master and organize files it into its album folder.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -116,16 +117,25 @@ def _names_a_version(title: str) -> bool:
     return bool(_VERSION_QUALIFIER.search(title or "") or _EDIT_LABEL.search(title or ""))
 
 
-#: A classical work by its catalogue number. Its credit is often the performers,
-#: so MusicBrainz cannot confirm its album by artist -- Horowitz's "Mozart: Piano
-#: Concerto No. 23 ... K. 488" lost its album to the check (Grey, 2026-10-23:
-#: such titles are not checked).
-_CLASSICAL_WORK = re.compile(r"\b(?:K|KV|BWV|HWV|RV|TWV|WWV|Hob|Op|WoO)\.?\s?\d", re.I)
+#: A classical work by its title: a catalogue number or a form. Its credit is
+#: often the performers, so MusicBrainz cannot confirm its album by artist --
+#: Horowitz's "Mozart: Piano Concerto No. 23 ... K. 488" lost its album to the
+#: check (Grey, 2026-10-23: such titles are not checked).
+_CLASSICAL_WORK = re.compile(
+    r"\b(?:K|KV|BWV|HWV|RV|TWV|WWV|Hob|Op|WoO)\.?\s?\d"
+    r"|\b(?:concerto|symphony|sonata|cantata|oratorio|requiem|fugue|partita|nocturne)\b",
+    re.I,
+)
 
 
 def _live_only(groups: list[dict]) -> bool:
     """The fingerprint's recording is on live albums only: a live recording."""
-    albums = [g for g in groups if g.get("type") == "Album"]
+    # A compilation the live take was also put on says nothing (Codex review of #233).
+    albums = [
+        g
+        for g in groups
+        if g.get("type") == "Album" and "Compilation" not in (g.get("secondarytypes") or [])
+    ]
     return bool(albums) and all("Live" in (g.get("secondarytypes") or []) for g in albums)
 
 
@@ -138,7 +148,8 @@ def _on_its_album(groups: list[dict], album: str) -> bool:
     want = norm(album)
     return any(
         g.get("type") == "Album"
-        and "Compilation" not in (g.get("secondarytypes") or [])
+        # Plain or Live only: not a compilation, remix or DJ-mix (Codex review of #233).
+        and set(g.get("secondarytypes") or []) <= {"Live"}
         and norm(g.get("title")) == want
         for g in groups
     )
@@ -717,9 +728,11 @@ class AlbumFillStage(BaseStage):
                 # one included; MusicBrainz's search knows studio albums only.
                 if aid_key and row["chromaprint"] and row["chromaprint_duration"]:
                     time.sleep(_AID_RATE_S)
-                    recordings[row["id"]] = acoustid_release_groups(
-                        row["chromaprint"], row["chromaprint_duration"], aid_key, artist, title
-                    )
+                    # No fingerprint answer: MusicBrainz still can (Codex review of #233).
+                    with contextlib.suppress(Unavailable):
+                        recordings[row["id"]] = acoustid_release_groups(
+                            row["chromaprint"], row["chromaprint_duration"], aid_key, artist, title
+                        )
                 if _on_its_album(recordings.get(row["id"], []), row["album"]):
                     ok, evidence = True, "fingerprint: the recording is on this album"
                 else:
