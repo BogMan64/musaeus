@@ -1399,3 +1399,19 @@ class TestArrivalTwinOfARejectedCopy:
         assert len(DupeResolverStage.plan_actions(ctx.conn, ctx.config)[0]) == 2
         DupeResolverStage().execute(ctx)
         assert not arrival.exists() and not second.exists() and keeper.exists()
+
+    def test_the_keeper_stays_when_every_copy_is_the_same_audio(self, ctx):
+        """Codex review of #234, round 7: rejected copy, keeper and a new arrival all
+        the same audio -- the keeper was moved and the arrival kept."""
+        keeper, _ = self._scene(ctx, keeper_is_arrival=True)
+        second = _make_archive_row(
+            ctx, "new2/lucy.m4a", "Beatles", "Sgt", "Lucy", 768_000, 300, "h51"
+        )
+        ctx.conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('dup_h51', ?, 'EXACT', 1.0, 'r', 'pending', 'h51')",
+            (str(second),),
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert keeper.exists() and self._status(ctx, keeper)[0] == "CATALOGUED"

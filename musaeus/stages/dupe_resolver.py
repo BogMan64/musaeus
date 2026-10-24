@@ -537,8 +537,11 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
         f"WHERE d.status = 'archive' AND d.audio_hash = ? AND (d.file_path IN ({qs}) OR d.file_path IN ("
         "SELECT old_value FROM events WHERE event_type = 'DUPE_MOVED_FOR_REVIEW' "
         f"AND new_value IN ({qs}))) "
-        "AND k.audio_hash <> '' AND a.file_path <> ? LIMIT 1",
-        (h, *twins, *twins, arrival["file_path"]),
+        # A keeper of the same audio makes the arrival a plain exact copy of a
+        # live one: the keep rule ranks those, and this rule must not pick the
+        # keeper itself out (Codex review of #234, round 7).
+        "AND k.audio_hash <> '' AND k.audio_hash <> ? AND a.file_path <> ? LIMIT 1",
+        (h, *twins, *twins, h, arrival["file_path"]),
     ).fetchone()
     return dict(row) if row else None
 

@@ -179,3 +179,11 @@ def test_a_hidden_surround_stream_counts():
         "streams": [{"codec_type": "audio", "channels": 2}, {"codec_type": "audio", "channels": 6}]
     }
     assert _channels(probe) == 6
+
+
+def test_surround_must_come_out_stereo_not_mono(probes):
+    """Codex review of #234, round 7: a six-channel source made mono passed."""
+    probes["src.flac"] = _probe(10.0, channels=6)
+    probes["out.m4a"] = _probe(10.0, channels=1)
+    with pytest.raises(CanonicalizeError, match="stereo"):
+        _verify_conversion(Path("src.flac"), Path("out.m4a"))

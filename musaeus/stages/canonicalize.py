@@ -251,6 +251,10 @@ def _verify_conversion(source: Path, output: Path) -> int:
             f"verification failed: output has {out_channels or 'an unreadable number of'} "
             f"channels, not mono or stereo"
         )
+    if _channels(src_probe) > 2 and out_channels != 2:  # downmixed to stereo, not mono (round 7)
+        raise CanonicalizeError(
+            f"verification failed: surround came out with {out_channels} channel(s), not stereo"
+        )
 
     src_dur = _duration(src_probe)
     out_dur = _duration(out_probe)
