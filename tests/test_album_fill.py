@@ -811,9 +811,28 @@ def test_a_remix_or_dj_mix_album_is_not_confirmed_by_the_fingerprint(env, second
     assert env.calls["confirm"] == ["Africa Remixed"], "only MusicBrainz can confirm it"
 
 
-def test_a_classical_form_without_a_catalogue_number_is_not_checked(env):
+def test_a_known_composers_name_before_a_colon_is_classical(env):
+    """Grey, 2026-10-23, option B: "Mozart: ..." with Mozart a known composer."""
+    env.cfg.meta_dir.mkdir(parents=True, exist_ok=True)
+    (env.cfg.meta_dir / "Composer_Canon.tsv").write_text(
+        "Wolfgang Amadeus Mozart\tWolfgang Amadeus Mozart\n"
+    )
     p = env.add("Mozart: Piano Concerto No. 23 in A major: II. Adagio", artist="Vladimir Horowitz",
                 album="Mozart Concertos")  # fmt: skip
+    q = env.add("Bach: Goldberg Variations: Aria", artist="Glenn Gould", album="Goldberg")
+    env.conn.execute(
+        "INSERT INTO archive (file_path, status, artist, genre) VALUES ('/c', 'CATALOGUED', 'Johann Sebastian Bach', 'Classical')"
+    )
+    env.conn.commit()
     env.answers["confirm"] = set()
     env.run()
-    assert env.calls["confirm"] == [] and env.album(p)[0] == "Mozart Concertos"
+    assert env.calls["confirm"] == []
+    assert env.album(p)[0] == "Mozart Concertos" and env.album(q)[0] == "Goldberg"
+
+
+def test_a_form_word_alone_is_not_classical(env):
+    """ "Symphony of Destruction" is Megadeth's: its arriving album is checked."""
+    env.add("Symphony of Destruction", artist="Megadeth", album="Greatest Hits")
+    env.answers["confirm"] = set()
+    env.run()
+    assert env.calls["confirm"] == ["Greatest Hits"]

@@ -117,15 +117,37 @@ def _names_a_version(title: str) -> bool:
     return bool(_VERSION_QUALIFIER.search(title or "") or _EDIT_LABEL.search(title or ""))
 
 
-#: A classical work by its title: a catalogue number or a form. Its credit is
-#: often the performers, so MusicBrainz cannot confirm its album by artist --
-#: Horowitz's "Mozart: Piano Concerto No. 23 ... K. 488" lost its album to the
-#: check (Grey, 2026-10-23: such titles are not checked).
-_CLASSICAL_WORK = re.compile(
-    r"\b(?:K|KV|BWV|HWV|RV|TWV|WWV|Hob|Op|WoO)\.?\s?\d"
-    r"|\b(?:concerto|symphony|sonata|cantata|oratorio|requiem|fugue|partita|nocturne)\b",
-    re.I,
-)
+#: A classical work by its title: a catalogue number, or a known composer's name
+#: before a colon ("Mozart: ..."). Its credit is often the performers, so
+#: MusicBrainz cannot confirm its album by artist -- Horowitz's "Mozart: Piano
+#: Concerto No. 23 ... K. 488" lost its album to the check. Grey, 2026-10-23,
+#: option B: the composer's name makes it classical; a form word alone does not
+#: ("Symphony of Destruction" is Megadeth's).
+_CATALOGUE_NUMBER = re.compile(r"\b(?:K|KV|BWV|HWV|RV|TWV|WWV|Hob|Op|WoO)\.?\s?\d", re.I)
+
+
+def _composers(conn, meta_dir) -> set[str]:  # type: ignore[no-untyped-def]
+    """Known composers, folded: Composer_Canon.tsv's names and their surnames,
+    and every artist the library files as Classical."""
+    from .classical_composer import CANON_FILENAME, load_composer_canon
+
+    canon = load_composer_canon(meta_dir / CANON_FILENAME) if meta_dir else {}
+    names = set(canon) | {c.lower() for c in canon.values()}
+    names |= {
+        (a or "").lower()
+        for (a,) in conn.execute(
+            "SELECT DISTINCT artist FROM archive WHERE genre LIKE 'Classical%' AND artist IS NOT NULL"
+        )
+    }
+    return {norm(n) for n in names} | {norm(n).split(" ")[-1] for n in names if len(n) > 3} - {""}
+
+
+def _names_a_classical_work(title: str, composers: set[str]) -> bool:
+    """A catalogue number, or "Composer: work" with a composer we know."""
+    if _CATALOGUE_NUMBER.search(title or ""):
+        return True
+    prefix, colon, _ = (title or "").partition(":")
+    return bool(colon) and (norm(prefix) in composers or norm(prefix).split(" ")[-1] in composers)
 
 
 def _live_only(groups: list[dict]) -> bool:
@@ -699,6 +721,7 @@ class AlbumFillStage(BaseStage):
         """
         cleared = 0
         aid_key = ctx.config.acousticid_api_key
+        composers = _composers(ctx.conn, ctx.config.meta_dir)
         rows = ctx.conn.execute(
             f"SELECT id, file_path, artist, title, album, chromaprint, chromaprint_duration "
             f"{_TO_CHECK} ORDER BY artist, title"
@@ -717,7 +740,7 @@ class AlbumFillStage(BaseStage):
                     (f"not asked: the title names a version ({now})", row["id"]),
                 )
                 continue
-            if _CLASSICAL_WORK.search(title):
+            if _names_a_classical_work(title, composers):
                 ctx.conn.execute(
                     "UPDATE archive SET album_verified_at=? WHERE id=?",
                     (f"not asked: the title names a classical work ({now})", row["id"]),
