@@ -534,11 +534,11 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
         "SELECT a.* FROM duplicates d "
         "JOIN duplicates k ON k.group_id = d.group_id AND k.status = 'keep' "
         "JOIN archive a ON a.audio_hash = k.audio_hash AND a.status = 'CATALOGUED' "
-        f"WHERE d.status = 'archive' AND (d.file_path IN ({qs}) OR d.file_path IN ("
+        f"WHERE d.status = 'archive' AND d.audio_hash = ? AND (d.file_path IN ({qs}) OR d.file_path IN ("
         "SELECT old_value FROM events WHERE event_type = 'DUPE_MOVED_FOR_REVIEW' "
         f"AND new_value IN ({qs}))) "
         "AND k.audio_hash <> '' AND a.file_path <> ? LIMIT 1",
-        (*twins, *twins, arrival["file_path"]),
+        (h, *twins, *twins, arrival["file_path"]),
     ).fetchone()
     return dict(row) if row else None
 

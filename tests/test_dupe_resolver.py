@@ -1365,3 +1365,13 @@ class TestArrivalTwinOfARejectedCopy:
         ctx.conn.commit()
         DupeResolverStage().execute(ctx)
         assert arrival.exists() and self._status(ctx, arrival)[0] == "CATALOGUED"
+
+    def test_a_review_path_reused_by_another_recording_does_not_count(self, ctx):
+        """Codex review of #234, round 3: the decision matched by path must be about
+        the same audio as the copy in review now."""
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        ctx.conn.execute("UPDATE duplicates SET audio_hash = 'older' WHERE group_id = 'decided' "
+                         "AND status = 'archive'")  # fmt: skip
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists() and self._status(ctx, arrival)[0] == "CATALOGUED"

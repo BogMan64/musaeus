@@ -40,11 +40,11 @@ import pytest
 from musaeus.stages.canonicalize import CanonicalizeError, _verify_conversion
 
 
-def _probe(duration=None, *, streams=1, stream_duration=None):
+def _probe(duration=None, *, streams=1, stream_duration=None, channels=2):
     """A minimal ffprobe payload."""
     out = {"streams": [], "format": {}}
     for _ in range(streams):
-        s = {"codec_type": "audio"}
+        s = {"codec_type": "audio", "channels": channels}
         if stream_duration is not None:
             s["duration"] = stream_duration
         out["streams"].append(s)
@@ -158,3 +158,14 @@ def test_drift_inside_the_ruled_tolerance_passes(probes) -> None:
     probes["src.flac"] = _probe(duration="240.0")
     probes["out.m4a"] = _probe(duration=str(240.0 + TOLERANCE_SEC - 0.1))
     _verify_conversion(Path("src.flac"), Path("out.m4a"))
+
+
+@pytest.mark.parametrize("out_channels", [6, 0])
+def test_an_output_that_is_surround_or_unreadable_fails(probes, out_channels):
+    """Codex review of #234, round 3: with the source's channel count unknown, no
+    -ac 2 was added and a surround output passed. A canonical file is never more
+    than stereo, and its channel count must be readable."""
+    probes["src.flac"] = _probe(10.0, channels=0)
+    probes["out.m4a"] = _probe(10.0, channels=out_channels)
+    with pytest.raises(CanonicalizeError, match="channel"):
+        _verify_conversion(Path("src.flac"), Path("out.m4a"))

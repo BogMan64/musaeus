@@ -238,10 +238,13 @@ def _verify_conversion(source: Path, output: Path) -> int:
                 continue
         return None
 
+    # A canonical file is never surround (Grey, 2026-10-24), and an unreadable
+    # count cannot show that it is not (Codex review of #234, round 3).
     out_channels = _channels(out_probe)
-    if _channels(src_probe) > 2 and out_channels != 2:
+    if not 0 < out_channels <= 2:
         raise CanonicalizeError(
-            f"verification failed: surround was not downmixed (output has {out_channels} channels)"
+            f"verification failed: output has {out_channels or 'an unreadable number of'} "
+            f"channels, not mono or stereo"
         )
 
     src_dur = _duration(src_probe)
