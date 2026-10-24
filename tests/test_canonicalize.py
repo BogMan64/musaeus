@@ -865,3 +865,18 @@ class TestSurroundIsDownmixed:
 
         row = ctx.conn.execute("SELECT canon_action, canonicalized_at FROM archive").fetchone()
         assert row["canon_action"] != "PASSTHROUGH" and not row["canonicalized_at"]
+
+    def test_a_stereo_file_with_a_stale_surround_row_is_kept_and_its_row_fixed(self, ctx):
+        """Codex review of #234, round 4: passed through as stereo, the row still said
+        6, and BPM skipped the song for good as multichannel."""
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        path = ctx.inbox / "s.m4a"
+        _gen_channels(path, "alac", 2)
+        _register_catalogued(ctx, path, "alac", ".m4a")
+        ctx.conn.execute("UPDATE archive SET channels = 6")
+        ctx.conn.commit()
+
+        CanonicalizeStage().execute(ctx)
+
+        row = ctx.conn.execute("SELECT canon_action, channels FROM archive").fetchone()
+        assert row["canon_action"] == "PASSTHROUGH" and row["channels"] == 2

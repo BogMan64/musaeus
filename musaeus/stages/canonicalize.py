@@ -812,6 +812,9 @@ class CanonicalizeStage(BaseStage):
         action = self._decide_action(row, source)
 
         if action == "PASSTHROUGH":
+            # The row says what the file is: a stale "6" made BPM skip a stereo
+            # song for good (Codex review of #234, round 4).
+            row["_final_channels"] = self._resolve_channels(row, source)
             # Kept as it is, but a lossy file is still one to find in
             # lossless (Grey, 2026-09-27): 48 of 51 lossy masters were on no
             # list because only CONVERTED files were ever added.
