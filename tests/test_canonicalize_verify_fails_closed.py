@@ -169,3 +169,13 @@ def test_an_output_that_is_surround_or_unreadable_fails(probes, out_channels):
     probes["out.m4a"] = _probe(10.0, channels=out_channels)
     with pytest.raises(CanonicalizeError, match="channel"):
         _verify_conversion(Path("src.flac"), Path("out.m4a"))
+
+
+def test_a_hidden_surround_stream_counts():
+    """Codex review of #234, round 6: a stereo first stream hid a 5.1 second one."""
+    from musaeus.stages.canonicalize import _channels
+
+    probe = {
+        "streams": [{"codec_type": "audio", "channels": 2}, {"codec_type": "audio", "channels": 6}]
+    }
+    assert _channels(probe) == 6

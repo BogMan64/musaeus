@@ -724,13 +724,15 @@ class DupeResolverStage(BaseStage):
         for component in _connected_groups(conn, sound):
             everyone = _component_members(conn, component)
             members = [m for m in everyone if m.get("current_status") not in SET_ASIDE_STATUSES]
-            if len(members) < 2 and len(everyone) > 1:
-                # The resolver's own exception: an arrival whose twin in review
-                # lost to another copy goes too (Codex review of #234, round 5).
-                aside = [m for m in everyone if m not in members]
-                won = _lost_to_another(conn, members[0], aside) if members else None
+            # The resolver's own exception: an arrival whose twin in review lost
+            # to another copy goes too (Codex review of #234, rounds 5-6).
+            aside = [m for m in everyone if m not in members]
+            for m in list(members) if aside else []:
+                won = _lost_to_another(conn, m, aside)
                 if won is not None and Path(won["file_path"]).exists():
-                    add(members[0], won, component[0])
+                    add(m, won, component[0])
+                    members.remove(m)
+            if len(members) < 2 and len(everyone) > 1:
                 continue
             if not members:
                 continue
@@ -1288,19 +1290,27 @@ class DupeResolverStage(BaseStage):
                 if not dry_run:
                     for m in aside:
                         _mark(ctx, component, m["file_path"], "archive")
-                if len(members) < 2:
-                    won = _lost_to_another(ctx.conn, members[0], aside) if members else None
-                    if won is not None:
-                        result.notes.append(
-                            f"group {group_id}: same audio as a copy in review that lost to "
-                            f"{won['file_path']}: moved to review too"
-                        )
-                        self._move_losers(
-                            ctx, result, batch_date, moved, group_id, won, members,
-                            dry_run=dry_run, update_duplicates_table=True,
-                            already_moved=already_moved, group_ids=component,
-                        )  # fmt: skip
+                # An arrival whose twin in review lost to another copy goes too,
+                # each by that decision -- one or several (Grey, 2026-10-24;
+                # Codex review of #234, round 6).
+                arrived = len(members)
+                for m in list(members):
+                    won = _lost_to_another(ctx.conn, m, aside)
+                    if won is None:
                         continue
+                    result.notes.append(
+                        f"group {group_id}: same audio as a copy in review that lost to "
+                        f"{won['file_path']}: moved to review too"
+                    )
+                    self._move_losers(
+                        ctx, result, batch_date, moved, group_id, won, [m],
+                        dry_run=dry_run, update_duplicates_table=True,
+                        already_moved=already_moved, group_ids=component,
+                    )  # fmt: skip
+                    members.remove(m)
+                if arrived and not members:
+                    continue
+                if len(members) < 2:
                     result.files_skipped += len(members) + len(aside)
                     if not dry_run:
                         # Closed as 'stale', not 'archive': 'archive' says

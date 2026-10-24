@@ -176,9 +176,14 @@ def _has_attached_picture(probe: dict) -> bool:
 
 
 def _channels(probe: dict) -> int:
-    """The first audio stream's channel count; 0 when unknown."""
+    """The most channels of any audio stream; 0 when unknown.
+
+    Every stream: a stereo first stream hid a 5.1 second one (Codex review of
+    #234, round 6). Such a file is converted, and the conversion -- which maps
+    the first stream only -- fails its stream-count check and is refused.
+    """
     audio = [s for s in probe.get("streams", []) if s.get("codec_type") == "audio"]
-    return int(audio[0].get("channels") or 0) if audio else 0
+    return max((int(s.get("channels") or 0) for s in audio), default=0)
 
 
 #: Surround is downmixed to stereo and the song kept (Grey, 2026-10-24). Mono

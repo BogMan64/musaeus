@@ -1382,3 +1382,20 @@ class TestArrivalTwinOfARejectedCopy:
         arrival, _ = self._scene(ctx, keeper_is_arrival=False)
         actions, _ = DupeResolverStage.plan_actions(ctx.conn, ctx.config)
         assert [a["source"] for a in actions] == [str(arrival)]
+
+    def test_two_arrivals_of_that_audio_both_go_to_review(self, ctx):
+        """Codex review of #234, round 6: with two live arrivals the rule was skipped
+        and one of them was kept."""
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        second = _make_archive_row(
+            ctx, "new2/lucy.m4a", "Beatles", "Sgt", "Lucy", 768_000, 300, "h51"
+        )
+        ctx.conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('dup_h51', ?, 'EXACT', 1.0, 'r', 'pending', 'h51')",
+            (str(second),),
+        )
+        ctx.conn.commit()
+        assert len(DupeResolverStage.plan_actions(ctx.conn, ctx.config)[0]) == 2
+        DupeResolverStage().execute(ctx)
+        assert not arrival.exists() and not second.exists() and keeper.exists()
