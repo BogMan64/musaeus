@@ -704,17 +704,19 @@ class CanonicalizeStage(BaseStage):
         return ""
 
     @staticmethod
-    def _resolve_channels(row: dict, source: Path | None) -> int:
-        """The file's channel count, else the row's; 0 when neither is known.
+    def _resolve_channels(row: dict, source: Path | None) -> int | None:
+        """The file's channel count; None when the file is there but unreadable.
 
-        The file decides: a stale row saying 2 let 6-channel AAC pass through
-        (Codex review of #234).
+        The file decides: a stale row saying 2 let 6-channel AAC pass through,
+        also when the probe failed (Codex review of #234, rounds 1-2). With no
+        file to read (a preview of a row), the row's count.
         """
         if source is not None and source.exists():
             try:
-                return _channels(_probe_streams(source))
-            except Exception as exc:  # unreadable here: the row is all there is
+                return _channels(_probe_streams(source)) or None
+            except Exception as exc:
                 logger.warning("[canonicalize] channel probe failed for %s: %s", source, exc)
+                return None
         return int(row.get("channels") or 0)
 
     def _decide_action(self, row: dict, source: Path | None = None) -> str:
@@ -748,11 +750,13 @@ class CanonicalizeStage(BaseStage):
             ext = source.suffix.lower()
 
         # Surround is never kept as it is: it is downmixed (Grey, 2026-10-24).
-        canonical = ext == ".m4a" and self._resolve_channels(row, source) <= 2
-        if codec in _ALAC_CODECS and canonical:
-            return "PASSTHROUGH"
-        if codec in _AAC_CODECS and canonical:
-            return "PASSTHROUGH"
+        # Kept as it is only when the file shows it is not surround.
+        if ext == ".m4a" and codec in _ALAC_CODECS | _AAC_CODECS:
+            channels = self._resolve_channels(row, source)
+            if channels is None:
+                return "UNKNOWN"
+            if channels <= 2:
+                return "PASSTHROUGH"
         if codec in _LOSSLESS_CODECS:
             return "CONVERT"
         if codec in _TRANSCODABLE_CODECS:
@@ -820,6 +824,11 @@ class CanonicalizeStage(BaseStage):
             # the column says "(none recorded)" and hides the one fact needed
             # to act: which codec to add to a set.
             probed = self._resolve_codec(row, source)
+            if probed in _ALAC_CODECS | _AAC_CODECS:
+                return "ERROR", (
+                    f"channel count of {source.name} could not be read -- refusing to "
+                    f"keep it as it is unchecked (surround is downmixed)"
+                )
             return "ERROR", (
                 f"unrecognised codec {probed or '(none recorded)'!r} "
                 f"for {source.name} -- refusing to re-encode blindly"
@@ -845,7 +854,9 @@ class CanonicalizeStage(BaseStage):
             row["_final_path"] = str(staged_output)
 
             mixed = (
-                "; surround downmixed to stereo" if self._resolve_channels(row, source) > 2 else ""
+                "; surround downmixed to stereo"
+                if (self._resolve_channels(row, source) or 0) > 2
+                else ""
             )
             if action == "TRANSCODE":
                 _want_lossless(ctx, row, "sub-lossless source, transcoded to AAC")

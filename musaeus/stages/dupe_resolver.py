@@ -518,19 +518,27 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
     h = arrival.get("current_hash")
     if not h or arrival.get("finalized_at"):
         return None
-    if not any(
-        m.get("current_status") == "DUPE_REVIEW" and m.get("current_hash") == h for m in aside
-    ):
+    twins = [
+        m["file_path"]
+        for m in aside
+        if m.get("current_status") == "DUPE_REVIEW" and m.get("current_hash") == h
+    ]
+    if not twins:
         return None
-    # The keeper by its recording, not its recorded path: Finalize files it after
-    # the decision, and a reused path holds another song (Codex review of #234).
+    # The decision about THAT copy -- recorded at its path, or at the path it was
+    # moved to review from -- not any decision about this audio (Codex review of
+    # #234, round 2). Its keeper by recording, not by recorded path: Finalize
+    # files it after the decision, and a reused path holds another song (round 1).
+    qs = ",".join("?" * len(twins))
     row = conn.execute(
         "SELECT a.* FROM duplicates d "
         "JOIN duplicates k ON k.group_id = d.group_id AND k.status = 'keep' "
         "JOIN archive a ON a.audio_hash = k.audio_hash AND a.status = 'CATALOGUED' "
-        "WHERE d.audio_hash = ? AND d.status = 'archive' AND k.audio_hash <> '' "
-        "AND a.file_path <> ? LIMIT 1",
-        (h, arrival["file_path"]),
+        f"WHERE d.status = 'archive' AND (d.file_path IN ({qs}) OR d.file_path IN ("
+        "SELECT old_value FROM events WHERE event_type = 'DUPE_MOVED_FOR_REVIEW' "
+        f"AND new_value IN ({qs}))) "
+        "AND k.audio_hash <> '' AND a.file_path <> ? LIMIT 1",
+        (*twins, *twins, arrival["file_path"]),
     ).fetchone()
     return dict(row) if row else None
 

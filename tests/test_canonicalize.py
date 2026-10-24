@@ -572,7 +572,8 @@ class TestDryRunAgreesWithRun:
         # PASSTHROUGH with the path and TRANSCODE without it. A dts row would
         # be UNKNOWN either way and would not discriminate.
         f = cfg.inbox / "already fine.m4a"
-        f.write_bytes(b"not really audio")
+        # Real audio: an unreadable .m4a is refused, not passed through (#234).
+        _gen_audio(f, "aac")
         upsert_archive(
             conn,
             {
@@ -843,3 +844,24 @@ class TestSurroundIsDownmixed:
 
         row = ctx.conn.execute("SELECT file_path FROM archive").fetchone()
         assert _probe_channels(Path(row["file_path"])) == 2
+
+    def test_an_unreadable_channel_count_is_not_passed_through(self, ctx, monkeypatch):
+        """Codex review of #234, round 2: a failed probe fell back to a stale row
+        saying 2, and 6-channel AAC passed through unchecked."""
+        import musaeus.stages.canonicalize as canon
+
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        path = ctx.inbox / "s.m4a"
+        _gen_channels(path, "aac", 6)
+        _register_catalogued(ctx, path, "aac", ".m4a")
+        ctx.conn.execute("UPDATE archive SET channels = 2")
+        ctx.conn.commit()
+
+        def _fail(_p):
+            raise canon.CanonicalizeError("probe failed")
+
+        monkeypatch.setattr(canon, "_probe_streams", _fail)
+        CanonicalizeStage().execute(ctx)
+
+        row = ctx.conn.execute("SELECT canon_action, canonicalized_at FROM archive").fetchone()
+        assert row["canon_action"] != "PASSTHROUGH" and not row["canonicalized_at"]

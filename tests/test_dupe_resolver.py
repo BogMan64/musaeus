@@ -1345,3 +1345,23 @@ class TestArrivalTwinOfARejectedCopy:
         ctx.conn.commit()
         DupeResolverStage().execute(ctx)
         assert arrival.exists() and self._status(ctx, arrival)[0] == "CATALOGUED"
+
+    def test_only_the_decision_about_the_copy_in_review_counts(self, ctx):
+        """Codex review of #234, round 2: another decision about the same audio, whose
+        keeper is still catalogued, moved the arrival although its own twin's keeper
+        is gone."""
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        ctx.conn.execute(
+            "UPDATE archive SET audio_hash = 'gone' WHERE file_path = ?", (str(keeper),)
+        )
+        other = _make_archive_row(
+            ctx, "lib/other.m4a", "Beatles", "Sgt", "Lucy", 900_000, 900, "h3"
+        )
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('older', ?, 'EXACT', 1.0, 'r', ?, ?)",
+            [(str(other), "keep", "h3"), (str(ctx.inbox / "long-gone.m4a"), "archive", "h51")],
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists() and self._status(ctx, arrival)[0] == "CATALOGUED"
