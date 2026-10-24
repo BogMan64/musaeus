@@ -102,3 +102,11 @@ def test_at_the_copa_is_not_a_live_marker():
     assert not _has_live_marker("Copacabana (At The Copa) (Long Version)")
     assert _has_live_marker("Seventh Son (Live At Whisky A Go-Go)")
     assert _has_live_marker("Crossroads (Live)")
+
+
+def test_a_band_named_after_its_leader_is_compared_with_the_leader(ctx, tmp_path):
+    """Grey, 2026-10-23: "Jimi Hendrix" arrivals were never compared with the
+    library's "The Jimi Hendrix Experience" -- one act."""
+    _add(ctx, str(tmp_path / "a.m4a"), "The Jimi Hendrix Experience", "Up From The Skies", 175.0)
+    _add(ctx, str(tmp_path / "b.m4a"), "Jimi Hendrix", "Up From The Skies", 175.4)
+    assert NearDupeStage().execute(ctx).files_changed == 1

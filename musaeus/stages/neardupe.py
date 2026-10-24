@@ -257,12 +257,24 @@ _COLLAB_SPLIT_RE = re.compile(
 _COLLAB_SECONDS = 3.0
 
 
+#: A band named after its leader: "The Jimi Hendrix Experience" is Jimi Hendrix's
+#: act (Grey, 2026-10-23 -- his songs arrived as "Jimi Hendrix" twice and were
+#: never compared with the library's "The Jimi Hendrix Experience").
+_BAND_OF = re.compile(
+    r"^(?:the\s+)?(.+?)\s+(?:experience|band|orchestra|group|trio|quartet)$", re.I
+)
+
+
 def _primary_artist_key(raw_artist: str) -> str:
-    """The normalised first artist of a credit ("" if it names only one)."""
+    """The normalised first artist of a credit, or the leader a band is named
+    after ("" if it names only one act)."""
     parts = _COLLAB_SPLIT_RE.split(raw_artist.strip(), maxsplit=1)
-    if len(parts) < 2 or not parts[0].strip():
-        return ""
-    return _normalise(parts[0])
+    if len(parts) >= 2 and parts[0].strip():
+        return _normalise(parts[0])
+    m = _BAND_OF.match(raw_artist.strip())
+    # The leader's name keeps two words or more: "The Band", "The Who Band"
+    # name no leader.
+    return _normalise(m.group(1)) if m and len(m.group(1).split()) >= 2 else ""
 
 
 def _without_artist_prefix(norm_title: str, norm_artist: str) -> str:

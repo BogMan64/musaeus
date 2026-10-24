@@ -339,7 +339,8 @@ def test_a_version_title_is_never_searched_by_text(env):
 def test_an_existing_album_is_never_touched(env):
     p = env.add("Rosanna", album="Toto IV")
     env.run()
-    assert env.calls["acoustid"] == [] and env.album(p)[0] == "Toto IV"
+    # Its fingerprint may be asked once, to check the arriving album (2026-10-23).
+    assert len(env.calls["acoustid"]) <= 1 and env.album(p)[0] == "Toto IV"
 
 
 def test_no_answer_is_not_an_answer_ask_again_next_run(env):
@@ -584,7 +585,7 @@ def test_an_arriving_album_musicbrainz_confirms_is_kept(env):
     p = env.add("Africa", album="Toto IV")
     env.answers["confirm"] = {"Toto IV"}
     env.run()
-    assert env.calls["confirm"] == ["Toto IV"] and env.calls["acoustid"] == []
+    assert env.calls["confirm"] == ["Toto IV"] and len(env.calls["acoustid"]) == 1
     assert env.album(p)[0] == "Toto IV" and _verified(env, p)
 
 
@@ -739,3 +740,80 @@ def test_edit_as_a_word_of_the_title_is_not_a_version(env):
 def test_edit_is_a_version_only_as_a_whole_label(title, version):
     """Codex review of #232, round 3: "(Edit the Script)" is part of the title."""
     assert af._names_a_version(title) is version
+
+
+def test_a_live_recording_keeps_its_live_album(env):
+    """Grey, 2026-10-23: Hendrix's live "Tax Free" arrived on "Miami Pop Festival";
+    the studio-only check rejected it and a text search gave it "War Heroes"."""
+    p = env.add("Tax Free", artist="Jimi Hendrix", album="Miami Pop Festival")
+    env.answers["confirm"] = set()
+    env.answers["acoustid"] = [_rg("m", "Miami Pop Festival", "Jimi Hendrix", secondary=["Live"])]
+    env.run()
+    assert env.calls["confirm"] == [], "the fingerprint settled it"
+    assert env.album(p)[0] == "Miami Pop Festival"
+
+
+def test_a_live_recording_is_never_given_a_studio_album_by_name(env):
+    p = env.add("Tax Free", artist="Jimi Hendrix")
+    env.answers["acoustid"] = [_rg("m", "Miami Pop Festival", "Jimi Hendrix", secondary=["Live"])]
+    env.answers["discogs"] = [
+        {"title": "Jimi Hendrix - War Heroes", "format": ["LP", "Album"], "year": "1972"}
+    ]
+    env.run()
+    assert env.calls["discogs"] == [] and env.album(p)[0] is None
+
+
+def test_a_compilation_the_recording_is_on_is_still_not_kept(env):
+    p = env.add("Africa", album="70s Hits")
+    env.answers["confirm"] = set()
+    env.answers["acoustid"] = [_rg("c", "70s Hits", secondary=["Compilation"])]
+    env.run()
+    assert env.album(p)[0] != "70s Hits"
+
+
+def test_a_classical_work_is_not_checked(env):
+    """Horowitz's "Mozart: Piano Concerto No. 23 ... K. 488" lost its album (2026-10-23)."""
+    p = env.add("Mozart: Piano Concerto No. 23 In A Major, K. 488: II. Adagio", artist="Vladimir Horowitz",
+                album="Mozart: Piano Concerto No. 23")  # fmt: skip
+    env.answers["confirm"] = set()
+    env.run()
+    assert env.calls["confirm"] == [] and env.album(p)[0] == "Mozart: Piano Concerto No. 23"
+
+
+def test_a_fingerprint_failure_still_lets_musicbrainz_check_the_album(env):
+    """Codex review of #233: an AcoustID timeout skipped MusicBrainz as well."""
+    p = env.add("Africa", album="Toto IV")
+    env.answers["acoustid"] = Unavailable("timeout")
+    env.answers["confirm"] = {"Toto IV"}
+    env.run()
+    assert env.calls["confirm"] == ["Toto IV"] and env.album(p)[0] == "Toto IV"
+
+
+def test_a_live_take_also_on_a_compilation_is_still_live(env):
+    p = env.add("Tax Free", artist="Jimi Hendrix")
+    env.answers["acoustid"] = [
+        _rg("m", "Miami Pop Festival", "Jimi Hendrix", secondary=["Live"]),
+        _rg("c", "Hendrix Best Of", "Jimi Hendrix", secondary=["Compilation"]),
+    ]
+    env.answers["discogs"] = [
+        {"title": "Jimi Hendrix - War Heroes", "format": ["LP", "Album"], "year": "1972"}
+    ]
+    env.run()
+    assert env.calls["discogs"] == [] and env.album(p)[0] is None
+
+
+@pytest.mark.parametrize("secondary", [["Remix"], ["DJ-mix"]])
+def test_a_remix_or_dj_mix_album_is_not_confirmed_by_the_fingerprint(env, secondary):
+    env.add("Africa", album="Africa Remixed")
+    env.answers["acoustid"] = [_rg("r", "Africa Remixed", secondary=secondary)]
+    env.answers["confirm"] = set()
+    env.run()
+    assert env.calls["confirm"] == ["Africa Remixed"], "only MusicBrainz can confirm it"
+
+
+def test_a_classical_form_without_a_catalogue_number_is_not_checked(env):
+    p = env.add("Mozart: Piano Concerto No. 23 in A major: II. Adagio", artist="Vladimir Horowitz",
+                album="Mozart Concertos")  # fmt: skip
+    env.answers["confirm"] = set()
+    env.run()
+    assert env.calls["confirm"] == [] and env.album(p)[0] == "Mozart Concertos"
