@@ -789,6 +789,19 @@ def test_a_fingerprint_failure_still_lets_musicbrainz_check_the_album(env):
     assert env.calls["confirm"] == ["Toto IV"] and env.album(p)[0] == "Toto IV"
 
 
+def test_a_fingerprint_failure_and_a_musicbrainz_no_keep_the_album_for_next_run(env):
+    """Codex review of #233, round 3: with AcoustID down, the studio-only search
+    said no to "Miami Pop Festival" and the live album was cleared."""
+    p = env.add("Tax Free", artist="Jimi Hendrix", album="Miami Pop Festival")
+    env.answers["acoustid"] = Unavailable("timeout")
+    env.answers["confirm"] = set()
+    env.run()
+    stamp = env.conn.execute(
+        "SELECT album_verified_at FROM archive WHERE file_path=?", (p,)
+    ).fetchone()[0]
+    assert env.album(p)[0] == "Miami Pop Festival" and stamp is None, "asked again next run"
+
+
 def test_a_live_take_also_on_a_compilation_is_still_live(env):
     p = env.add("Tax Free", artist="Jimi Hendrix")
     env.answers["acoustid"] = [

@@ -54,7 +54,6 @@ master and organize files it into its album folder.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import re
@@ -746,20 +745,29 @@ class AlbumFillStage(BaseStage):
                     (f"not asked: the title names a classical work ({now})", row["id"]),
                 )
                 continue
+            fingerprint_failed = False
             try:
                 # The fingerprint first: it knows which recording this is, a live
                 # one included; MusicBrainz's search knows studio albums only.
                 if aid_key and row["chromaprint"] and row["chromaprint_duration"]:
                     time.sleep(_AID_RATE_S)
                     # No fingerprint answer: MusicBrainz still can (Codex review of #233).
-                    with contextlib.suppress(Unavailable):
+                    try:
                         recordings[row["id"]] = acoustid_release_groups(
                             row["chromaprint"], row["chromaprint_duration"], aid_key, artist, title
                         )
+                    except Unavailable:
+                        fingerprint_failed = True
                 if _on_its_album(recordings.get(row["id"], []), row["album"]):
                     ok, evidence = True, "fingerprint: the recording is on this album"
                 else:
                     ok, evidence = mb_confirm(artist, row["album"], title)
+                    if not ok and fingerprint_failed:
+                        # The studio-only search's "no" is not a no for a live album
+                        # (Codex review of #233, round 3): ask again next run.
+                        raise Unavailable(
+                            "fingerprint lookup failed and MusicBrainz could not confirm"
+                        )
             except Unavailable as exc:
                 tally["arriving album: no answer (asked again next run)"] = (
                     tally.get("arriving album: no answer (asked again next run)", 0) + 1
