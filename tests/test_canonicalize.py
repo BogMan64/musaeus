@@ -894,3 +894,16 @@ class TestSurroundIsDownmixed:
         row = ctx.conn.execute("SELECT file_path FROM archive").fetchone()
         out = Path(row["file_path"])
         assert _probe_codec(out) == "alac" and _probe_channels(out) == 2
+
+    @pytest.mark.parametrize("channels", [6, 2])
+    def test_the_row_takes_the_codec_the_file_has(self, ctx, channels):
+        """Codex review of #234, round 11 (reproduced): a row saying "aac" kept saying
+        it for the ALAC file, and the keep rule ranked the lossless copy as lossy."""
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        path = ctx.inbox / "s.m4a"
+        _gen_channels(path, "alac", channels)
+        _register_catalogued(ctx, path, "aac", ".m4a")
+
+        CanonicalizeStage().execute(ctx)
+
+        assert ctx.conn.execute("SELECT codec FROM archive").fetchone()["codec"] == "alac"

@@ -825,6 +825,7 @@ class CanonicalizeStage(BaseStage):
             # The row says what the file is: a stale "6" made BPM skip a stereo
             # song for good (Codex review of #234, round 4).
             row["_final_channels"] = self._resolve_channels(row, source)
+            row["_final_codec"] = self._resolve_codec(row, source)
             # Kept as it is, but a lossy file is still one to find in
             # lossless (Grey, 2026-09-27): 48 of 51 lossy masters were on no
             # list because only CONVERTED files were ever added.
@@ -865,6 +866,9 @@ class CanonicalizeStage(BaseStage):
                 _transcode_to_aac(source, tmp_output)
 
             row["_final_channels"] = _verify_conversion(source, tmp_output)
+            # What the encoder wrote; verify_effect re-probes it (Codex review of
+            # #234, round 11: a stale "aac" made the keep rule rank ALAC as lossy).
+            row["_final_codec"] = "alac" if action == "CONVERT" else "aac"
 
             tmp_output.rename(staged_output)
             row["_final_path"] = str(staged_output)
@@ -1033,10 +1037,17 @@ class CanonicalizeStage(BaseStage):
                        SET file_path = ?, ext = '.m4a',
                            canonicalized_at = datetime('now'),
                            canon_action = ?,
-                           channels = COALESCE(NULLIF(?, 0), channels)
+                           channels = COALESCE(NULLIF(?, 0), channels),
+                           codec = COALESCE(NULLIF(?, ''), codec)
                      WHERE id = ?
                     """,
-                    (new_path, outcome, row.get("_final_channels") or 0, row["id"]),
+                    (
+                        new_path,
+                        outcome,
+                        row.get("_final_channels") or 0,
+                        row.get("_final_codec") or "",
+                        row["id"],
+                    ),
                 )
             except sqlite3.IntegrityError as exc:
                 logger.error(
