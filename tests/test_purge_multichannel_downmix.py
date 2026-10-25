@@ -52,13 +52,21 @@ def vault(tmp_path, monkeypatch):
     cfg.ensure_dirs()
     song = tmp_path / "Libraries" / "Beck - The Paisley Experience.m4a"
     song.parent.mkdir(parents=True)
+    # Audio first, the cover after with mutagen: ffmpeg 6.1 (CI) and 5.1 build
+    # an attached-picture mux differently, and 6.1's had no audio stream.
     subprocess.run(
-        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-f", "lavfi",
-         "-i", "color=c=red:s=32x32:d=1", "-map", "0:a", "-map", "1:v", "-ac", "6", "-c:a", "alac",
-         "-c:v", "mjpeg", "-frames:v", "1", "-disposition:v", "attached_pic",
-         "-metadata", "title=The Paisley Experience", str(song)],
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-ac", "6",
+         "-c:a", "alac", "-metadata", "title=The Paisley Experience", str(song)],
         capture_output=True, check=True,
     )  # fmt: skip
+    cover = tmp_path / "cover.jpg"
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x32:d=1", "-frames:v", "1",
+                    str(cover)], capture_output=True, check=True)  # fmt: skip
+    from mutagen.mp4 import MP4, MP4Cover
+
+    m = MP4(song)
+    m.tags["covr"] = [MP4Cover(cover.read_bytes(), imageformat=MP4Cover.FORMAT_JPEG)]
+    m.save()
     conn = open_db(cfg.db_path)
     from musaeus.hasher import audio_hash
 
