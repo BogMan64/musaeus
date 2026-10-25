@@ -609,15 +609,16 @@ def _held_by_person(conn, members: list[dict], keeper: dict | None) -> dict | No
             or not _is_there(m)
         ):
             continue
-        # The titles of the copies rejected in the PERSON's decisions (the sheet's
-        # PERSON groups) where m was kept -- found by m's recording, not its path,
-        # which filing changes (Codex review of #239); each title as stored with
-        # the decision, not read from a review row that may be gone or another
-        # copy's (rounds 2-5).
+        # The titles of the copies rejected in the person's decisions where m was
+        # kept -- found by m's recording, not its path, which filing changes (Codex
+        # review of #239). Only a person's decision (a sheet's or the console's)
+        # stores titles, as they were then: never read from a review row that may
+        # be gone or another copy's (rounds 1-5).
         rejected = conn.execute(
             "SELECT d.title FROM duplicates k "
             "JOIN duplicates d ON d.group_id = k.group_id AND d.status = 'archive' "
-            "WHERE k.duplicate_type = 'PERSON' AND k.status = 'keep' AND k.audio_hash = ?",
+            "WHERE k.status = 'keep' AND k.title IS NOT NULL AND d.title IS NOT NULL "
+            "AND k.audio_hash = ?",
             (m["current_hash"],),
         ).fetchall()
         # A choice between VERSIONS: the rejected title differs from the kept one
@@ -982,6 +983,14 @@ class DupeResolverStage(BaseStage):
                 (now, by_path[p]["current_row"]),
             )
             _mark(ctx, groups, p, "keep")
+        # Each copy's title, stored with the person's decision: a later copy of
+        # the version they rejected never replaces their choice, even once review
+        # is cleared (Grey, 2026-10-25; Codex review of #239, round 5).
+        ctx.conn.executemany(
+            f"UPDATE duplicates SET title = ? WHERE group_id IN ({','.join('?' * len(groups))}) "
+            "AND file_path = ? AND status IN ('keep', 'archive')",
+            [(by_path[p].get("title"), *groups, p) for p in chosen],
+        )
         # Rows still open that nobody chose: copies set aside or gone since the
         # set was found. A copy whose move failed stays pending for Act 2.
         qs = ",".join("?" * len(groups))

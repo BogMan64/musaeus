@@ -1773,7 +1773,10 @@ class TestThePersonsChoiceStands:
         """Codex review of #239 (reproduced): any old keep counted, not only the
         person's own decision."""
         kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
-        ctx.conn.execute("UPDATE duplicates SET duplicate_type = 'NEAR' WHERE group_id = 'sheet'")
+        # An automatic decision: no PERSON group, and no titles stored with it.
+        ctx.conn.execute(
+            "UPDATE duplicates SET duplicate_type = 'NEAR', title = NULL WHERE group_id = 'sheet'"
+        )
         ctx.conn.commit()
         DupeResolverStage().execute(ctx)
         assert sum(p.exists() for p in (kept, arrival)) == 1 and arrival.exists()
@@ -1858,6 +1861,35 @@ class TestThePersonsChoiceStands:
         ).fetchall():
             Path(p).unlink()
         ctx.conn.execute("DELETE FROM archive WHERE status = 'DUPE_REVIEW'")
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert kept.exists() and not arrival.exists()
+
+    def test_a_choice_made_in_the_console_stands_too(self, ctx):
+        """A choice in `musaeus dedupe` (the console) is the person's as much as a
+        sheet's: carry_out stores the titles with it."""
+        kept = _make_archive_row(ctx, "lib/tide.m4a", "Blondie", "Autoamerican",
+                                 "The Tide Is High (Remastered 2001)", 900_000, 900, "hk")  # fmt: skip
+        edit = _make_archive_row(ctx, "lib/tide-edit.m4a", "Blondie", "Autoamerican",
+                                 "The Tide Is High (Edit)", 900_000, 900, "hr")  # fmt: skip
+        ctx.conn.execute("UPDATE archive SET codec = 'alac', duration = 280.3, finalized_at = '2026-10-01' "
+                         "WHERE file_path = ?", (str(kept),))  # fmt: skip
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, "
+            "audio_hash) VALUES ('c', ?, 'NEAR', 1.0, 'r', ?)",
+            [(str(kept), "hk"), (str(edit), "hr")],
+        )
+        ctx.conn.commit()
+        assert DupeResolverStage().carry_out(ctx, ["c"], [str(kept)], [str(edit)]).success
+        arrival = _make_archive_row(ctx, "new/tide.flac", "Blondie", "Autoamerican",
+                                    "The Tide Is High (Edit)", 900_000, 900, "ha")  # fmt: skip
+        ctx.conn.execute("UPDATE archive SET codec = 'flac', duration = 233.9 WHERE file_path = ?",
+                         (str(arrival),))  # fmt: skip
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('g', ?, 'NEAR', 1.0, 'r', 'pending', ?)",
+            [(str(kept), "hk"), (str(arrival), "ha")],
+        )
         ctx.conn.commit()
         DupeResolverStage().execute(ctx)
         assert kept.exists() and not arrival.exists()

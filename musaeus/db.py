@@ -179,11 +179,12 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # follows the file; the resolver never moves a copy so marked (Grey,
     # 2026-10-09: choices are carried out at once, not saved by path).
     ("archive", "kept_by_person_at", "TEXT"),
-    # Each copy's title in a person's decision, as it was then (Grey, 2026-10-25):
-    # the resolver reads from it which VERSION the person rejected, and the
-    # rejected copy's own row goes when review is cleared (Codex review of #239,
-    # round 5). Older decisions are filled once, from that copy: at the
-    # decision's path or where it was moved for review, and with its audio.
+    # Each copy's title in a person's decision, as it was then (Grey, 2026-10-25),
+    # written only by a person's decision (a sheet or the console): the resolver
+    # reads from it which VERSION the person rejected, and the rejected copy's own
+    # row goes when review is cleared (Codex review of #239, round 5). Older sheet
+    # decisions are filled once, from that copy: at the decision's path or where
+    # it was moved for review, and with its audio.
     ("duplicates", "title", "TEXT"),
     # An album a song ARRIVED with, checked with MusicBrainz by album-fill
     # (Grey, 2026-10-23). Added here, when the catalogue is opened and before
