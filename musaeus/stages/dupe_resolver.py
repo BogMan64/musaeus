@@ -616,7 +616,9 @@ def _held_by_person(conn, members: list[dict], keeper: dict | None) -> dict | No
         # be gone or another copy's (rounds 1-5).
         rejected = conn.execute(
             "SELECT k.title, d.title FROM duplicates k "
-            "JOIN duplicates d ON d.group_id = k.group_id AND d.status = 'archive' "
+            # Not kept is rejected: moved ('archive'), or a move that failed (left
+            # 'pending' by the console, 'stale' by a sheet; Codex review of #239, r7).
+            "JOIN duplicates d ON d.group_id = k.group_id AND d.status <> 'keep' "
             "WHERE k.status = 'keep' AND k.title IS NOT NULL AND d.title IS NOT NULL "
             "AND k.audio_hash = ?",
             (m["current_hash"],),
@@ -986,10 +988,11 @@ class DupeResolverStage(BaseStage):
             _mark(ctx, groups, p, "keep")
         # Each copy's title, stored with the person's decision: a later copy of
         # the version they rejected never replaces their choice, even once review
-        # is cleared (Grey, 2026-10-25; Codex review of #239, round 5).
+        # is cleared (Grey, 2026-10-25; Codex review of #239, round 5) -- a copy
+        # whose move failed included: it is still rejected (round 7).
         ctx.conn.executemany(
             f"UPDATE duplicates SET title = ? WHERE group_id IN ({','.join('?' * len(groups))}) "
-            "AND file_path = ? AND status IN ('keep', 'archive')",
+            "AND file_path = ?",
             [(by_path[p].get("title"), *groups, p) for p in chosen],
         )
         # Rows still open that nobody chose: copies set aside or gone since the

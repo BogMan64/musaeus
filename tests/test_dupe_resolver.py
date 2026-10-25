@@ -1924,6 +1924,43 @@ class TestThePersonsChoiceStands:
             "the better, longer copy of the same title wins"
         )
 
+    def test_a_rejected_copy_that_failed_to_move_is_still_rejected(self, ctx, monkeypatch):
+        """Codex review of #239, round 7 (reproduced): in the console, one rejected
+        copy (another version) moved and a second, the Edit, failed to move; its row stayed pending with no
+        title, and on the next run it replaced the copy the person kept."""
+        import shutil
+
+        kept = _make_archive_row(ctx, "lib/tide.m4a", "Blondie", "Autoamerican",
+                                 "The Tide Is High (Remastered 2001)", 900_000, 900, "hk")  # fmt: skip
+        e1 = _make_archive_row(ctx, "lib/tide-single.m4a", "Blondie", "Autoamerican",
+                               "The Tide Is High (Single Version)", 900_000, 900, "hr")  # fmt: skip
+        e2 = _make_archive_row(ctx, "lib/tide-edit2.flac", "Blondie", "Autoamerican",
+                               "The Tide Is High (Edit)", 900_000, 900, "hs")  # fmt: skip
+        ctx.conn.execute("UPDATE archive SET codec = 'alac', duration = 280.3, finalized_at = '2026-10-01' "
+                         "WHERE file_path = ?", (str(kept),))  # fmt: skip
+        ctx.conn.execute(
+            "UPDATE archive SET codec = 'flac', duration = 233.9 WHERE file_path = ?", (str(e2),)
+        )
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, "
+            "audio_hash) VALUES ('c', ?, 'NEAR', 1.0, 'r', ?)",
+            [(str(kept), "hk"), (str(e1), "hr"), (str(e2), "hs")],
+        )
+        ctx.conn.commit()
+        real_move = shutil.move
+
+        def fails_once_for_e2(src, dst, *a, **k):
+            if src == str(e2):
+                monkeypatch.setattr(shutil, "move", real_move)
+                raise OSError("disk full")
+            return real_move(src, dst, *a, **k)
+
+        monkeypatch.setattr(shutil, "move", fails_once_for_e2)
+        DupeResolverStage().carry_out(ctx, ["c"], [str(kept)], [str(e1), str(e2)])
+        assert e2.exists() and not e1.exists(), "set-up: e1 moved, e2 failed"
+        DupeResolverStage().execute(ctx)
+        assert kept.exists() and not e2.exists(), "the retry carries out the person's choice"
+
 
 def test_older_person_decisions_get_the_title_of_their_own_copy(tmp_path):
     """open_db fills the new title column once, for decisions made before it:
