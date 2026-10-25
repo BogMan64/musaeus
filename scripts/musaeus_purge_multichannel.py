@@ -283,8 +283,11 @@ def main() -> int:
 
     csv_path = cfg.tunemymusic_csv_path
     known = set()
-    if csv_path.exists():
-        known = {r["path"] for r in csv.DictReader(csv_path.open())}
+    # Only the delete mode writes the wanted list; --downmix never reads it.
+    # Its "path" column predates today's Title,Artist,Album list, which made
+    # a downmix fail before touching a song (first real run, 2026-10-25).
+    if csv_path.exists() and not args.downmix:
+        known = {r.get("path") for r in csv.DictReader(csv_path.open())}
 
     deleted = logged = mismatch = missing = downmixed = 0
     freed = 0
