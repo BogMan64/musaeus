@@ -287,7 +287,15 @@ def main() -> int:
     # Its "path" column predates today's Title,Artist,Album list, which made
     # a downmix fail before touching a song (first real run, 2026-10-25).
     if csv_path.exists() and not args.downmix:
-        known = {r.get("path") for r in csv.DictReader(csv_path.open())}
+        with csv_path.open(newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            if "path" not in (reader.fieldnames or []):
+                # Writing this mode's rows into today's Title,Artist,Album list
+                # would corrupt it, and the song would be deleted against the
+                # keep-and-downmix rule (Codex review of #238).
+                print(f"NOT RUN: {csv_path.name} has no 'path' column; use --downmix")
+                return 1
+            known = {r["path"] for r in reader}
 
     deleted = logged = mismatch = missing = downmixed = 0
     freed = 0
