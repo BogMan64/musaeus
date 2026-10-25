@@ -928,3 +928,37 @@ def test_a_retry_by_first_name_needs_every_name_of_the_credit(monkeypatch):
     monkeypatch.setattr(af.time, "sleep", lambda *_: None)
     monkeypatch.setattr(af, "_get_json", _mb)
     assert af.mb_confirm("Earth, Wind & Fire", "All 'N All", "Fantasy")[0] is False
+
+
+def _credit_rec(credit, title="Song", album="Album"):
+    return {"score": 100, "title": title, "artist-credit": [{"name": credit}],
+            "releases": [{"title": album, "status": "Official", "date": "2000",
+                          "release-group": {"primary-type": "Album", "secondary-types": []}}]}  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("full", "retry", "confirmed"),
+    [
+        ([], [_credit_rec("John Paul")], False),  # a solo "John Paul" is not "John, Paul"
+        (
+            [_credit_rec("John & Paul", title="Other Song")],
+            [_credit_rec("John & Paul")],
+            True,
+        ),  # a stray first hit
+    ],
+)
+def test_a_retry_names_the_same_acts_and_is_not_skipped_by_a_stray_hit(
+    monkeypatch, full, retry, confirmed
+):
+    """Codex review of #235, round 2 (both reproduced)."""
+    monkeypatch.setattr(af.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        af,
+        "_get_json",
+        lambda url, headers=None: {
+            "recordings": full
+            if 'artist:"John, Paul"' in parse_qs(urlparse(url).query)["query"][0]
+            else retry
+        },
+    )
+    assert af.mb_confirm("John, Paul", "Album", "Song")[0] is confirmed

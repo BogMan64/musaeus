@@ -301,23 +301,32 @@ def mb_confirm(artist: str, album: str, title: str, live_ok: bool = False) -> tu
         )
         return list(data.get("recordings", []))
 
-    recordings = search(artist)
-    # A joint credit ("Paul McCartney, Wings") found no recording at all, and that
-    # "nothing" cleared a right album (batch 2 rerun, 2026-10-24). Asked again by
-    # its first name; a band with a comma ("Earth, Wind & Fire") is found as it is.
-    if not recordings and "," in artist:
-        # ...and an answer counts only if its credit holds EVERY name: a band
-        # called "Earth" is not "Earth, Wind & Fire" (Codex review of #235).
-        names = [norm(p) for p in artist.split(",") if norm(p)]
-        recordings = [
-            r
-            for r in search(artist.split(",")[0])
-            if all(
-                n in norm(" ".join(c.get("name", "") for c in r.get("artist-credit") or []))
-                for n in names
+    found = choose_mb_confirmation(search(artist), artist, title, album, live_ok=live_ok)
+    if found[0] or "," not in artist:
+        return found
+    # A joint credit ("Paul McCartney, Wings") found nothing that confirms, and
+    # that "nothing" cleared a right album (batch 2 rerun, 2026-10-24). Asked
+    # again by its first name; an answer counts only if its credit names the
+    # same acts -- "Paul McCartney and Wings" does, a band "Earth" or a solo
+    # "John Paul" does not (Codex review of #235, rounds 1-2).
+    from ..art_sources import _key, _parts
+
+    want = {_key(p) for p in _parts(artist)}
+    retry = [
+        r
+        for r in search(artist.split(",")[0])
+        if {
+            _key(p)
+            for p in _parts(
+                "".join(
+                    c.get("name", "") + (c.get("joinphrase") or "")
+                    for c in r.get("artist-credit") or []
+                )
             )
-        ]
-    return choose_mb_confirmation(recordings, artist, title, album, live_ok=live_ok)
+        }
+        == want
+    ]
+    return choose_mb_confirmation(retry, artist, title, album, live_ok=live_ok) if retry else found
 
 
 def itunes_search(artist: str, title: str) -> list[dict]:
