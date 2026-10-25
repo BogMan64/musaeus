@@ -81,18 +81,6 @@ def _probe_channels(path: Path) -> int | None:
 _SWAP_TOLERANCE_S = 0.25
 
 
-def _duration(path: Path) -> float | None:
-    r = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
-        capture_output=True,
-        text=True,
-    )
-    try:
-        return float(r.stdout.strip())
-    except ValueError:
-        return None
-
-
 def _downmix_to_stereo(src: Path, dest: Path) -> str | None:
     """Write a stereo copy with Canonicalize's own encoders (Grey, 2026-10-24).
 
@@ -125,9 +113,14 @@ def _downmix_to_stereo(src: Path, dest: Path) -> str | None:
     try:
         encode(src, dest)  # writes mp4 whatever the name ("-f mp4")
         canon._verify_conversion(src, dest)
-        a, b = _duration(src), _duration(dest)
+        from musaeus.duration import container_seconds, decodes_cleanly
+
+        a, b = container_seconds(src), container_seconds(dest)
         if a is None or b is None or abs(a - b) > _SWAP_TOLERANCE_S:
             raise RuntimeError(f"length changed ({a} s -> {b} s)")
+        ok, err = decodes_cleanly(dest)  # the header can lie; the decode cannot
+        if not ok:
+            raise RuntimeError(f"the new copy does not decode cleanly: {err}")
     except Exception as exc:  # noqa: BLE001 -- any failure: the song is kept as it is
         print(f"    downmix failed: {str(exc)[:90]}")
         dest.unlink(missing_ok=True)
