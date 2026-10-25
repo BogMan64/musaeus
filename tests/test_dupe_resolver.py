@@ -1894,6 +1894,36 @@ class TestThePersonsChoiceStands:
         DupeResolverStage().execute(ctx)
         assert kept.exists() and not arrival.exists()
 
+    def test_a_later_title_fix_on_the_kept_copy_does_not_undo_a_version_choice(self, ctx):
+        """Codex review of #239, round 6 (reproduced): the rejected title was
+        compared with the kept copy's CURRENT title, not the one stored with the
+        decision."""
+        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        ctx.conn.execute("UPDATE archive SET title = 'The Tide Is High (Edit)' WHERE file_path = ?",
+                         (str(kept),))  # fmt: skip
+        # Longer, so the keep rule picks the arrival over the renamed kept copy.
+        ctx.conn.execute("UPDATE archive SET duration = 320.0 WHERE file_path = ?", (str(arrival),))
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert kept.exists() and not arrival.exists()
+
+    def test_a_later_title_fix_does_not_turn_a_copy_choice_into_a_version_choice(self, ctx):
+        """Codex review of #239, round 6 (reproduced): the person chose between two
+        "Remastered 2001" copies; the kept copy's title was tidied since. A better
+        "Remastered 2001" arrival still ranks with it (2026-10-10)."""
+        kept, arrival = self._scene(ctx, "The Tide Is High (Remastered 2001)")
+        ctx.conn.execute(_SAME_TITLE_DECISION)
+        ctx.conn.execute(
+            "UPDATE archive SET title = 'The Tide Is High (2001 Remaster)' WHERE file_path = ?",
+            (str(kept),),
+        )
+        ctx.conn.execute("UPDATE archive SET duration = 320.0 WHERE file_path = ?", (str(arrival),))
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists() and not kept.exists(), (
+            "the better, longer copy of the same title wins"
+        )
+
 
 def test_older_person_decisions_get_the_title_of_their_own_copy(tmp_path):
     """open_db fills the new title column once, for decisions made before it:

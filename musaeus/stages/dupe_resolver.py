@@ -615,18 +615,19 @@ def _held_by_person(conn, members: list[dict], keeper: dict | None) -> dict | No
         # stores titles, as they were then: never read from a review row that may
         # be gone or another copy's (rounds 1-5).
         rejected = conn.execute(
-            "SELECT d.title FROM duplicates k "
+            "SELECT k.title, d.title FROM duplicates k "
             "JOIN duplicates d ON d.group_id = k.group_id AND d.status = 'archive' "
             "WHERE k.status = 'keep' AND k.title IS NOT NULL AND d.title IS NOT NULL "
             "AND k.audio_hash = ?",
             (m["current_hash"],),
         ).fetchall()
-        # A choice between VERSIONS: the rejected title differs from the kept one
-        # ("Edit" vs "Remastered 2001"). Same titles were a choice between copies,
-        # and a better copy may still replace the kept one (2026-10-10).
-        own = " ".join((m.get("title") or "").casefold().split())
-        titles = {" ".join((r[0] or "").casefold().split()) for r in rejected} - {own}
-        if want and want in titles:
+        # A choice between VERSIONS: the rejected title differed from the kept one
+        # when chosen ("Edit" vs "Remastered 2001"), both as stored with the
+        # decision -- a title tidied since changes neither (Codex review of #239,
+        # round 6). Same titles were a choice between copies, and a better copy
+        # may still replace the kept one (2026-10-10).
+        norm = lambda s: " ".join((s or "").casefold().split())  # noqa: E731
+        if want and any(norm(d) == want != norm(k) for k, d in rejected):
             return m
     return None
 
