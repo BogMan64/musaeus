@@ -509,6 +509,23 @@ def test_musicbrainz_does_not_confirm_anything_less(recs):
     assert af.choose_mb_confirmation(recs, "Toto", "Rosanna", "Toto IV")[0] is False
 
 
+@pytest.mark.parametrize("mb_title", ["For Those About to Rock We Salute You",
+                                      "For Those About to Rock (We Salute You)"])  # fmt: skip
+def test_words_in_brackets_on_one_side_only_still_name_the_same_album(mb_title):
+    """Batch 3 (2026-10-25): AC/DC's arriving "For Those About To Rock (We Salute
+    You)" was cleared. Brackets were dropped with their words, and MusicBrainz
+    writes the album without brackets, so "for those about to rock" never met
+    "for those about to rock we salute you"."""
+    name = "For Those About To Rock (We Salute You)"
+    recs = [_rec(title=mb_title, artist="AC/DC", releases=[_rel(mb_title, date="1981")])]
+    assert af.choose_mb_confirmation(recs, "AC/DC", name, name)[0] is True
+
+
+def test_a_bracketed_word_is_still_not_another_album():
+    recs = [_rec(releases=[_rel("Toto IV Live")])]
+    assert af.choose_mb_confirmation(recs, "Toto", "Rosanna", "Toto IV")[0] is False
+
+
 def test_an_album_named_live_is_never_a_studio_answer():
     """MusicBrainz lists "Forever Gold (Live)" as a plain Album, so the name is filtered too."""
     for album in ("Forever Gold (Live)", "Absolutely Live", "Live at the Roxy 1981"):
