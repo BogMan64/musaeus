@@ -550,7 +550,12 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
     # #234, round 2). Its keeper by recording, not by recorded path: Finalize
     # files it after the decision, and a reused path holds another song (round 1).
     rows = conn.execute(
-        "SELECT a.*, d.staged_at AS decided_at FROM duplicates d "
+        # Dated by its own move -- from the decision's path into the twin's review
+        # path -- or, with none recorded, by the decision (Codex review of #236,
+        # round 3): grouped on Oct 2, moved on Oct 21.
+        "SELECT a.*, COALESCE((SELECT MAX(e.ts) FROM events e WHERE e.event_type = "
+        f"'DUPE_MOVED_FOR_REVIEW' AND e.old_value = d.file_path AND e.new_value IN ({qs})), "
+        "d.staged_at) AS decided_at FROM duplicates d "
         "JOIN duplicates k ON k.group_id = d.group_id AND k.status = 'keep' "
         "JOIN archive a ON a.audio_hash = k.audio_hash AND a.status = 'CATALOGUED' "
         f"WHERE d.status = 'archive' AND d.audio_hash = ? AND (d.file_path IN ({qs}) OR d.file_path IN ("
@@ -560,8 +565,8 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
         # live one: the keep rule ranks those, and this rule must not pick the
         # keeper itself out (Codex review of #234, round 7).
         "AND k.audio_hash <> '' AND k.audio_hash <> ? AND a.file_path <> ? "
-        "ORDER BY d.staged_at DESC",
-        (h, *twins, *twins, h, arrival["file_path"]),
+        "ORDER BY decided_at DESC",
+        (*twins, h, *twins, *twins, h, arrival["file_path"]),
     ).fetchall()
     # A keeper whose file is on disk, past any row whose file is gone (round 14).
     won = next((dict(r) for r in rows if Path(r["file_path"]).is_file()), None)

@@ -1656,3 +1656,30 @@ class TestArrivalTwinOfARejectedCopy:
             ).fetchone()[0]
             == "archive"
         )
+
+    def test_the_rejection_is_dated_by_its_own_move(self, ctx):
+        """Codex review of #236, round 3 (reproduced): a decision grouped on Oct 2 moved
+        the copy on Oct 21; a keep from Oct 10 looked newer than the "rejection"."""
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        twin = ctx.config.dupes_review_dir / "2026-10-21" / "lucy.m4a"
+        was = str(ctx.inbox / "was" / "lucy.m4a")
+        ctx.conn.execute(
+            "UPDATE duplicates SET staged_at = '2026-10-02 10:00:00' WHERE group_id = 'decided'"
+        )
+        ctx.conn.execute(
+            "UPDATE duplicates SET file_path = ? WHERE group_id = 'decided' AND status = 'archive'",
+            (was,),
+        )
+        ctx.conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash, staged_at) VALUES ('oct10', ?, 'EXACT', 1.0, 'r', 'keep', 'h51', '2026-10-10 10:00:00')",
+            (str(ctx.inbox / "oct10" / "lucy.m4a"),),
+        )
+        ctx.conn.execute(
+            "INSERT INTO events (run_id, ts, event_type, file_path, old_value, new_value) VALUES "
+            "('sheet', '2026-10-21 22:35:31', 'DUPE_MOVED_FOR_REVIEW', ?, ?, ?)",
+            (str(twin), was, str(twin)),
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert not arrival.exists() and keeper.exists()
