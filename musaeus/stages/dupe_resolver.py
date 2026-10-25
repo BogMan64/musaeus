@@ -850,6 +850,13 @@ class DupeResolverStage(BaseStage):
                     list(component),
                 )
             }
+            # A lone copy moves only as an incoming CROSS_BATCH duplicate, whose
+            # twin is the library master. A lone member of any other group has
+            # lost its partner's row: there is nothing to keep it against, so it
+            # never moves (2026-10-25, Prince "Sign O' The Times": the song's
+            # last library copy went to review with no keeper).
+            if keeper is None and losers and not cross:
+                continue
             pool = members
             if cross and len(members) > 1:
                 rest = [m for m in members if m["file_path"] not in cross]
@@ -1478,6 +1485,20 @@ class DupeResolverStage(BaseStage):
                     list(component),
                 )
             }
+            # A lone copy moves only as an incoming CROSS_BATCH duplicate, whose
+            # twin is the library master. A lone member of any other group has
+            # lost its partner's row: there is nothing to keep it against, so it
+            # never moves (2026-10-25, Prince "Sign O' The Times": the song's
+            # last library copy went to review with no keeper).
+            # Its rows close, so the pair is judged again when it is found.
+            if keeper is None and losers and not cross:
+                if not dry_run:
+                    ctx.conn.executemany(
+                        f"UPDATE duplicates SET status = 'stale' WHERE group_id = ? AND {ACTED_ON_SQL}",
+                        [(gid,) for gid in component],
+                    )
+                result.notes.append(f"group {group_id}: one copy, nothing to keep it against: left")
+                continue
             pool = members
             if cross and len(members) > 1:
                 rest = [m for m in members if m["file_path"] not in cross]

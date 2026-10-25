@@ -202,6 +202,28 @@ class TestNearDupeRun:
         assert result.files_changed == 0
 
 
+class TestAStalePairFoundAgain:
+    def test_a_partner_whose_row_has_gone_is_added_back(self, ctx, tmp_path):
+        """2026-10-25 (Prince "Sign O' The Times"): a stale pair had lost one
+        member's row; found again, only the row left was reopened, and the
+        resolver moved that lone library copy with no keeper. Both rows open."""
+        a, b = str(tmp_path / "a.flac"), str(tmp_path / "b.flac")
+        _insert_catalogued(ctx, a, "The Beatles", "Yesterday")
+        _insert_catalogued(ctx, b, "The Beatles", "Yesterday (Remaster)")
+        gid = _group_id(a, b)
+        ctx.conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status) "
+            "VALUES (?, ?, 'NEAR', 0.9, 'old', 'stale')",
+            (gid, a),
+        )
+        ctx.conn.commit()
+        NearDupeStage().execute(ctx)
+        rows = ctx.conn.execute(
+            "SELECT file_path, status FROM duplicates WHERE group_id = ? ORDER BY file_path", (gid,)
+        ).fetchall()
+        assert [tuple(r) for r in rows] == [(a, "pending"), (b, "pending")]
+
+
 class TestClassicalWorksAreNotDuplicates:
     """Different movements of one work are different pieces of music.
 
