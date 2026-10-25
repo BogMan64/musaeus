@@ -73,6 +73,7 @@ from ..network_policy import redact
 from ..playlist_album import is_playlist_album
 from .acousticid import _pick_matching_recording
 from .base import BaseStage
+from .normalize import stored_album
 
 logger = logging.getLogger(__name__)
 
@@ -732,6 +733,10 @@ class AlbumFillStage(BaseStage):
 
             now = datetime.now(timezone.utc).isoformat(timespec="seconds")
             if album:
+                # As Normalize stores it: every word capitalised (Grey, 2026-10-11),
+                # or the folder took the source's spelling for one run and moved
+                # again on the next ("Exile on Main St", batch 3, 2026-10-25).
+                album = stored_album(album)
                 changed = ctx.conn.execute(
                     "UPDATE archive SET album=?, album_fill_checked_at=?, album_verified_at=? "
                     f"WHERE id=? AND {NO_ALBUM_SQL}",

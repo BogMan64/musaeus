@@ -163,7 +163,7 @@ def test_only_the_albums_of_the_recording_that_matches_the_song(env, monkeypatch
     p = env.add("All About Soul", artist="Billy Joel")
     env.answers["mb"] = {"rod": "1993-08-10", "turn": "1976-05-19"}
     env.run()
-    assert env.album(p)[0] == "River of Dreams"
+    assert env.album(p)[0] == "River Of Dreams"  # stored as Normalize stores it (2026-10-11)
 
 
 def test_no_recording_matching_the_song_gives_no_album_from_the_fingerprint(env, monkeypatch):
@@ -373,6 +373,19 @@ def test_filled_rows_are_recorded_as_events(env):
         "SELECT new_value, note FROM events WHERE event_type='ALBUM_FILLED' AND file_path=?", (p,)
     ).fetchone()
     assert ev[0] == "Toto IV" and ev[1].startswith("acoustid:")
+
+
+def test_a_filled_album_is_stored_with_every_word_capitalised(env):
+    """Grey, 2026-10-11: albums take every word capitalised, in tags and folders.
+    album-fill wrote MusicBrainz's "Exile on Main St." as it came; Act 3 filed the
+    song under "Exile on Main St", and Normalize moved it to "Exile On Main St"
+    on the next run (batch 3, 2026-10-25). Grey: "Exile On Main St" is the standard."""
+    p = env.add("Tumbling Dice")
+    env.answers["acoustid"] = [_rg("r1", "Exile on Main St.")]
+    env.run()
+    assert env.album(p)[0] == "Exile On Main St."
+    ev = env.conn.execute("SELECT new_value FROM events WHERE event_type='ALBUM_FILLED'").fetchone()
+    assert ev[0] == "Exile On Main St."
 
 
 def test_a_playlist_name_is_not_an_album_and_is_replaced(env):
