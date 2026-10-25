@@ -144,3 +144,29 @@ def test_the_preview_of_a_downmix_says_downmix(vault, monkeypatch, capsys):
     mod.main()
     out = capsys.readouterr().out
     assert "would downmix" in out and "would remove" not in out
+
+
+def test_only_an_m4a_is_swapped_in_place_and_its_row_takes_the_new_codec(vault, tmp_path):
+    """Codex review of #237, round 2 (reproduced): a 6-channel .flac would be written
+    back as MP4 under its .flac name, the row still saying "flac"."""
+    mod, cfg, song = vault
+    flac = song.with_suffix(".flac")
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-ac", "6",
+                    "-c:a", "flac", str(flac)], capture_output=True, check=True)  # fmt: skip
+    conn = open_db(cfg.db_path)
+    upsert_archive(conn, {"file_path": str(flac), "status": "CATALOGUED", "artist": "Beck",
+                          "title": "Other", "codec": "flac", "channels": 6, "duration": 2.0,
+                          "audio_hash": "flac-one"})  # fmt: skip
+    conn.execute("UPDATE archive SET codec = 'aac' WHERE file_path = ?", (str(song),))
+    conn.commit()
+    conn.close()
+    mod.main()
+    assert _probe(flac, "stream=channels").split()[0].strip(",") == "6", (
+        "a .flac is left for a person"
+    )
+    conn = open_db(cfg.db_path)
+    codec = conn.execute("SELECT codec FROM archive WHERE file_path = ?", (str(song),)).fetchone()[
+        0
+    ]
+    conn.close()
+    assert codec == "alac", "the swapped .m4a's row says what was written"

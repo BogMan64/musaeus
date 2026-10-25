@@ -93,8 +93,10 @@ def _duration(path: Path) -> float | None:
         return None
 
 
-def _downmix_to_stereo(src: Path, dest: Path) -> bool:
+def _downmix_to_stereo(src: Path, dest: Path) -> str | None:
     """Write a stereo copy with Canonicalize's own encoders (Grey, 2026-10-24).
+
+    Returns the codec written ("alac"/"aac"), or None when the song is kept as it is.
 
     Cover art and tags are kept, lossless stays ALAC and lossy is AAC, and the
     copy is verified (length; mono or stereo) before it replaces anything. The
@@ -107,6 +109,11 @@ def _downmix_to_stereo(src: Path, dest: Path) -> bool:
 
     # The file decides, never the row: a stale "aac" row made lossless ALAC lossy
     # (Codex review of #237). Unreadable or unknown: kept as it is.
+    # In place only for .m4a: the encoders write MP4, and a .flac under its old
+    # name would be MP4 its row calls FLAC (Codex review of #237, round 2).
+    if src.suffix.lower() != ".m4a":
+        print(f"    downmix refused: {src.suffix} is not .m4a -- left for a person")
+        return None
     codec = canon.CanonicalizeStage._resolve_codec({}, src)
     if codec in LOSSLESS_CODECS:
         encode = canon._convert_to_alac
@@ -114,7 +121,7 @@ def _downmix_to_stereo(src: Path, dest: Path) -> bool:
         encode = canon._transcode_to_aac
     else:
         print(f"    downmix refused: codec {codec or '(unreadable)'!r}")
-        return False
+        return None
     try:
         encode(src, dest)  # writes mp4 whatever the name ("-f mp4")
         canon._verify_conversion(src, dest)
@@ -124,8 +131,8 @@ def _downmix_to_stereo(src: Path, dest: Path) -> bool:
     except Exception as exc:  # noqa: BLE001 -- any failure: the song is kept as it is
         print(f"    downmix failed: {str(exc)[:90]}")
         dest.unlink(missing_ok=True)
-        return False
-    return True
+        return None
+    return "alac" if encode is canon._convert_to_alac else "aac"
 
 
 def _purge_row(
@@ -246,7 +253,8 @@ def main() -> int:
 
         if args.downmix:
             tmp = path.with_name(path.name + ".stereo.tmp")
-            if not _downmix_to_stereo(path, tmp):
+            written = _downmix_to_stereo(path, tmp)
+            if written is None:
                 print(f"  downmix failed, song kept as it is: {path.name}")
                 continue
             tmp.replace(path)
@@ -258,9 +266,9 @@ def main() -> int:
             # is new, its bit-rot baseline goes (a verify reports it as new,
             # not corrupt), and Forge re-measures the loudness.
             conn.execute(
-                "UPDATE archive SET channels = 2, full_hash = ?, size_bytes = ?, "
+                "UPDATE archive SET channels = 2, codec = ?, full_hash = ?, size_bytes = ?, "
                 "rg_tagged_at = NULL WHERE rowid = ?",
-                (file_hash(path), path.stat().st_size, row["rid"]),
+                (written, file_hash(path), path.stat().st_size, row["rid"]),
             )
             conn.execute("DELETE FROM archive_tier_hashes WHERE path = ?", (str(path),))
             conn.execute(
