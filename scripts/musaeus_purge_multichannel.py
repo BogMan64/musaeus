@@ -164,7 +164,14 @@ def _remake_lossless_copy(cfg: MusicConfig, audio_hash: str) -> None:
         conn.execute("DELETE FROM measurements WHERE master_hash = ?", (audio_hash,))
         conn.commit()
         if copy is not None:
-            Path(copy.output_path).unlink(missing_ok=True)
+            from musaeus.edition_bake import read_marker
+            from musaeus.edition_build import marker_for
+
+            # Only a copy marked as this master's: a stale record's path may
+            # hold another song now (Codex review of #237, round 12).
+            out = Path(copy.output_path)
+            if out.exists() and read_marker(out) == marker_for(audio_hash):
+                out.unlink()
             el.forget(conn, "lossless", audio_hash)
     finally:
         conn.close()

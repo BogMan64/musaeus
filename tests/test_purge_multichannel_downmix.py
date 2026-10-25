@@ -339,9 +339,12 @@ def test_the_lossless_edition_copy_is_made_again_from_the_stereo_master(vault):
     from musaeus import edition_ledger as el
 
     mod, cfg, song = vault
+    from musaeus import edition_bake, edition_build
+
     lossless = cfg.vault_root / "ALAC_Library" / "song.m4a"
     lossless.parent.mkdir(parents=True, exist_ok=True)
-    lossless.write_bytes(b"6-channel copy")
+    _gen(lossless, 6, "alac", 2)
+    edition_bake.copy_tags(lossless, lossless, edition_build.marker_for("as-it-arrived"))
     conn = el.open_ledger(el.ledger_path(cfg))
     for edition, out in (("lossless", lossless), ("car", cfg.vault_root / "CAR" / "song.m4a")):
         conn.execute(
@@ -360,3 +363,26 @@ def test_the_lossless_edition_copy_is_made_again_from_the_stereo_master(vault):
     measured = conn.execute("SELECT COUNT(*) FROM measurements").fetchone()[0]
     conn.close()
     assert not lossless.exists() and left == {"car"} and measured == 0
+
+
+def test_a_stale_lossless_record_never_deletes_another_song(vault):
+    """Codex review of #237, round 12 (reproduced): the recorded Lossless path held a
+    different song now, and it was deleted."""
+    from musaeus import edition_bake, edition_build
+    from musaeus import edition_ledger as el
+
+    mod, cfg, song = vault
+    other = cfg.vault_root / "ALAC_Library" / "other.m4a"
+    other.parent.mkdir(parents=True, exist_ok=True)
+    _gen(other, 2, "alac", 1)
+    edition_bake.copy_tags(other, other, edition_build.marker_for("someone-else"))
+    conn = el.open_ledger(el.ledger_path(cfg))
+    conn.execute(
+        "INSERT INTO edition_copies (edition, master_hash, master_path, output_path, built_at) "
+        "VALUES ('lossless', 'as-it-arrived', ?, ?, '2026-10-01')",
+        (str(song), str(other)),
+    )
+    conn.commit()
+    conn.close()
+    mod.main()
+    assert other.exists()
