@@ -314,3 +314,19 @@ def test_the_checks_run_on_the_final_file_after_its_tags(vault, monkeypatch):
     monkeypatch.setattr(eb, "copy_tags", _damage)
     mod.main()
     assert _probe(song, "stream=channels").split()[0].strip(",") == "6"
+
+
+def test_the_old_loudness_and_bitrate_do_not_describe_the_new_audio(vault):
+    """Codex review of #237, round 10 (reproduced): lufs, lufs_tp, rg_gain, rg_peak and
+    the bitrate still described the 6-channel audio after the downmix."""
+    mod, cfg, song = vault
+    conn = open_db(cfg.db_path)
+    conn.execute(
+        "UPDATE archive SET lufs = -9.0, lufs_tp = -0.1, rg_gain = -5.0, rg_peak = 0.99, bitrate = 9999999"
+    )
+    conn.commit()
+    conn.close()
+    mod.main()
+    row = _row(cfg)
+    assert (row["lufs"], row["lufs_tp"], row["rg_gain"], row["rg_peak"]) == (None, None, None, None)
+    assert row["bitrate"] and row["bitrate"] != 9999999

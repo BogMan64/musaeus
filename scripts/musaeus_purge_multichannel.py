@@ -290,6 +290,14 @@ def main() -> int:
             # aside, and put back if the catalogue update does not commit.
             try:
                 new_hash, new_size = file_hash(tmp), tmp.stat().st_size
+                from musaeus.stages.canonicalize import _probe_streams
+
+                audio = [
+                    s
+                    for s in _probe_streams(tmp).get("streams", [])
+                    if s.get("codec_type") == "audio"
+                ]
+                new_bitrate = int(audio[0].get("bit_rate") or 0) or None if audio else None
             except Exception:
                 tmp.unlink(missing_ok=True)
                 raise
@@ -316,9 +324,13 @@ def main() -> int:
                 # is new, its bit-rot baseline goes (a verify reports it as new,
                 # not corrupt), and Forge re-measures the loudness.
                 conn.execute(
+                    # The old loudness described the 6-channel audio: the resolver
+                    # reads lufs, and Forge could embed the old gain (Codex review of
+                    # #237, round 10). Cleared, so Forge measures again.
                     "UPDATE archive SET channels = 2, codec = ?, full_hash = ?, size_bytes = ?, "
-                    "rg_tagged_at = NULL WHERE rowid = ?",
-                    (written, new_hash, new_size, row["rid"]),
+                    "bitrate = COALESCE(?, bitrate), lufs = NULL, lufs_tp = NULL, rg_gain = NULL, "
+                    "rg_peak = NULL, rg_tagged_at = NULL WHERE rowid = ?",
+                    (written, new_hash, new_size, new_bitrate, row["rid"]),
                 )
                 conn.execute("DELETE FROM archive_tier_hashes WHERE path = ?", (str(path),))
                 conn.execute(
