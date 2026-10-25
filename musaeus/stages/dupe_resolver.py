@@ -777,6 +777,8 @@ class DupeResolverStage(BaseStage):
                 continue
             if not members:
                 continue
+            if sum(not _is_there(m) for m in members) and sum(_is_there(m) for m in members) >= 2:
+                members = [m for m in members if _is_there(m)]  # as the resolver does
             _share_loudness(members)
             _rank(members)
             keeper, losers = _pick_keeper_and_losers(members)
@@ -1373,6 +1375,20 @@ class DupeResolverStage(BaseStage):
             # its groups can no longer be moved as another's loser.
             # Ranked again without the copies set aside: the keep rule's length
             # step otherwise measured against a set-aside copy (review of #149).
+            # With two or more copies that are there, only those are ranked; the
+            # missing ones' PENDING records close (Codex review of #236, round 2).
+            # Decisions stay: an 'archive' at a rejected copy's old path is what
+            # the twin rule reads.
+            gone = [m for m in members if not _is_there(m)]
+            if gone and len(members) - len(gone) >= 2:
+                members = [m for m in members if _is_there(m)]
+                if not dry_run:
+                    qs = ",".join("?" * len(component))
+                    ctx.conn.executemany(
+                        "UPDATE duplicates SET status = 'stale' "
+                        f"WHERE file_path = ? AND group_id IN ({qs}) AND {ACTED_ON_SQL}",
+                        [(m["file_path"], *component) for m in gone],
+                    )
             _share_loudness(members)
             _rank(members)
             keeper, losers = _pick_keeper_and_losers(members)
@@ -1428,7 +1444,9 @@ class DupeResolverStage(BaseStage):
                 already_moved=already_moved,
                 group_ids=component,
             )
-            if keeper and not dry_run:
+            # Never a missing copy: its keep made the twin rule step aside on a
+            # later run (batch 2 reruns #2 and #3).
+            if keeper and not dry_run and _is_there(keeper):
                 _mark(ctx, component, keeper["file_path"], "keep")
 
         # ── Source 2: live EXACT-hash clusters, derived directly from

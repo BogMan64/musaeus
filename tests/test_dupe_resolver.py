@@ -1612,3 +1612,47 @@ class TestArrivalTwinOfARejectedCopy:
             for r in ctx.conn.execute("SELECT status FROM duplicates WHERE file_path = ?", (gone,))
         ]
         assert "keep" not in marks and here.exists()
+
+    def test_a_missing_copy_is_not_ranked_beside_copies_that_are_there(self, ctx):
+        """Codex review of #236, round 2 (reproduced): with two real copies present, a
+        catalogued row whose file is gone outranked them and was marked keep."""
+        from musaeus.db import upsert_archive
+
+        a = _make_archive_row(ctx, "a/song.m4a", "A", "B", "Song", 256_000, 200, "ha")
+        b = _make_archive_row(ctx, "b/song.m4a", "A", "B", "Song", 128_000, 100, "hb")
+        gone = str(ctx.inbox / "gone" / "song.flac")
+        upsert_archive(ctx.conn, {"file_path": gone, "status": "CATALOGUED", "artist": "A", "album": "B",
+                                  "title": "Song", "codec": "flac", "bitrate": 900_000,
+                                  "size_bytes": 900, "audio_hash": "hx"})  # fmt: skip
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('g', ?, 'NEAR', 1.0, 'r', 'pending', ?)",
+            [(str(a), "ha"), (str(b), "hb"), (gone, "hx")],
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        marks = [
+            r[0]
+            for r in ctx.conn.execute("SELECT status FROM duplicates WHERE file_path = ?", (gone,))
+        ]
+        assert "keep" not in marks and (a.exists() or b.exists())
+
+    def test_closing_missing_copies_keeps_their_decisions(self, ctx):
+        """A missing copy's 'archive' decision (a rejected copy's old path) is what the
+        twin rule reads; only PENDING records of missing copies close."""
+        a = _make_archive_row(ctx, "a/song.m4a", "A", "B", "Song", 256_000, 200, "ha")
+        b = _make_archive_row(ctx, "b/song.m4a", "A", "B", "Song", 128_000, 100, "hb")
+        old = str(ctx.inbox / "was" / "song.m4a")
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('g', ?, 'NEAR', 1.0, 'r', ?, ?)",
+            [(str(a), "pending", "ha"), (str(b), "pending", "hb"), (old, "archive", "hx")],
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert (
+            ctx.conn.execute(
+                "SELECT status FROM duplicates WHERE file_path = ?", (old,)
+            ).fetchone()[0]
+            == "archive"
+        )
