@@ -125,6 +125,14 @@ def _downmix_to_stereo(src: Path, dest: Path) -> str | None:
 
         copy_tags(src, dest, None)
         os.chmod(dest, stat.S_IMODE(os.stat(src).st_mode))
+        # Its extended attributes too; one that cannot be set stops the swap
+        # (Codex review of #237, round 14).
+        try:
+            names = os.listxattr(src)
+        except OSError:  # a filesystem without them: nothing to carry
+            names = []
+        for name in names:
+            os.setxattr(dest, name, os.getxattr(src, name))
         canon._verify_conversion(src, dest)
         from musaeus.duration import container_seconds, decodes_cleanly, stream_seconds
 

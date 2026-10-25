@@ -93,13 +93,14 @@ def _row(cfg):
 
 def test_downmix_keeps_the_song_its_art_tags_and_identity(vault):
     mod, cfg, song = vault
+    before = _arrived(cfg)  # captured first: the row after the run proves nothing (Codex, r14)
     assert mod.main() == 0
     assert song.exists()
     assert _probe(song, "stream=channels").split()[0].strip(",") == "2"
     assert "mjpeg" in _probe(song, "stream=codec_name"), "the cover art is kept"
     assert "The Paisley Experience" in _probe(song, "format_tags=title")
     row = _row(cfg)
-    assert row["channels"] == 2 and row["audio_hash"] == _arrived(cfg) and row["full_hash"]
+    assert row["channels"] == 2 and row["audio_hash"] == before and row["full_hash"]
     conn = open_db(cfg.db_path)
     assert conn.execute("SELECT COUNT(*) FROM archive_tier_hashes").fetchone()[0] == 0
     conn.close()
@@ -428,3 +429,16 @@ def test_a_failed_lossless_cleanup_rolls_the_swap_back_for_a_retry(vault, monkey
     assert (
         _probe(song, "stream=channels").split()[0].strip(",") == "6" and _row(cfg)["channels"] == 6
     )
+
+
+def test_extended_attributes_survive_the_downmix(vault):
+    """Codex review of #237, round 14 (reproduced): a user.* attribute on the master
+    was lost when the stereo copy replaced it."""
+    mod, cfg, song = vault
+    try:
+        os.setxattr(song, "user.musaeus_note", b"kept")
+    except OSError:
+        pytest.skip("this filesystem has no user extended attributes")
+    mod.main()
+    assert os.getxattr(song, "user.musaeus_note") == b"kept"
+    assert _probe(song, "stream=channels").split()[0].strip(",") == "2"
