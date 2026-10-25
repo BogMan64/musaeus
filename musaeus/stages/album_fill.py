@@ -302,9 +302,9 @@ def mb_confirm(artist: str, album: str, title: str, live_ok: bool = False) -> tu
     # Official albums only, in the search itself: unfiltered, the first ten
     # answers for "Brilliant Disguise" on "Tunnel Of Love" were all bootlegs
     # ("Tunnel of Love Express Tour"), and the studio album was never seen.
-    def search(credit: str) -> list[dict]:
+    def search(credit: str, form=q) -> list[dict]:
         query = (
-            f'recording:"{q(title)}" AND artist:"{q(credit)}" AND release:"{q(album)}"'
+            f'recording:"{form(title)}" AND artist:"{q(credit)}" AND release:"{form(album)}"'
             " AND status:official AND primarytype:album"
         )
         time.sleep(_MB_RATE_S)
@@ -314,6 +314,12 @@ def mb_confirm(artist: str, album: str, title: str, live_ok: bool = False) -> tu
         return list(data.get("recordings", []))
 
     found = choose_mb_confirmation(search(artist), artist, title, album, live_ok=live_ok)
+    # Asked again with bracketed words kept as plain words: without "(We Salute
+    # You)" MusicBrainz gave AC/DC's song only on compilations, and the studio
+    # album was cleared (batch 3 rerun #3, 2026-10-25).
+    plain = lambda x: q(re.sub(r"\s+", " ", re.sub(r"[()\[\]{}]", " ", x)))  # noqa: E731
+    if not found[0] and (plain(title) != q(title) or plain(album) != q(album)):
+        found = choose_mb_confirmation(search(artist, plain), artist, title, album, live_ok=live_ok)
     from ..art_sources import _key, _parts
 
     # A joint credit names a person in full ("Paul McCartney, Wings"); a band
