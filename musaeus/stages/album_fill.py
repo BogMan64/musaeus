@@ -204,6 +204,17 @@ def norm(s: str | None) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+def same_name(a: str | None, b: str | None) -> bool:
+    """One name, with words in brackets dropped -- or kept as plain words.
+
+    Kept as words too: MusicBrainz writes AC/DC's album "For Those About to Rock
+    We Salute You", with no brackets, and the arriving "(We Salute You)" lost its
+    words on one side only (batch 3, 2026-10-25).
+    """
+    flat = lambda s: norm(re.sub(r"[()\[\]{}]", " ", s or ""))  # noqa: E731
+    return norm(a) == norm(b) or flat(a) == flat(b)
+
+
 def _get_json(url: str, headers: dict[str, str] | None = None) -> dict:
     _network_check(url)
     try:
@@ -498,16 +509,20 @@ def choose_mb_confirmation(
     recordings: list[dict], artist: str, title: str, album: str, live_ok: bool = False
 ) -> tuple[bool, str]:
     """Pure: does any recording carry *title* by *artist* on an official studio album *album*?"""
-    want_a, want_t, want_alb = norm(artist), norm(title), norm(album)
+    want_a = norm(artist)
     first = want_a.split(" ")[0] if want_a else ""
     for rec in recordings:
         credit = norm(" ".join(c.get("name", "") for c in rec.get("artist-credit") or []))
-        if rec.get("score", 0) < 90 or norm(rec.get("title")) != want_t or first not in credit:
+        if (
+            rec.get("score", 0) < 90
+            or not same_name(rec.get("title"), title)
+            or first not in credit
+        ):
             continue
         for rel in rec.get("releases") or []:
             rg = rel.get("release-group") or {}
             if (
-                norm(rel.get("title")) == want_alb
+                same_name(rel.get("title"), album)
                 and rel.get("status") == "Official"
                 and rg.get("primary-type") == "Album"
                 and set(rg.get("secondary-types") or []) <= ({"Live"} if live_ok else set())

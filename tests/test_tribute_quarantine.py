@@ -350,6 +350,15 @@ class TestTributeInTheTitle:
         assert is_junk("Piano Covers", "Nirvana - Heart Shaped Box - Piano Cover", "")[0]
         assert is_junk("Piano Covers", "Queen - I Want To Break Free", "")[0]
 
+    def test_a_piano_music_product_credited_beside_the_real_artists_is_junk(self):
+        """Batch 3 (2026-10-25): "Uptown Funk (Piano Version)" by "Mark Ronson,
+        Bruno Mars, Jeff Bhasker, Piano Music Masters" was catalogued."""
+        artist = "Mark Ronson, Bruno Mars, Jeff Bhasker, Piano Music Masters"
+        assert is_junk(artist, "Uptown Funk (Piano Version)", "Uptown Funk (Piano Version)")[0]
+
+    def test_a_piano_song_by_a_real_artist_is_not(self):
+        assert not is_junk("Billy Joel", "Piano Man", "Piano Man")[0]
+
     def test_a_real_artist_performing_at_a_tribute_is_protected(self):
         """The cost of the rule above, and the reason PROTECTED_ARTISTS
         exists. Springsteen's recording is a genuine performance by six

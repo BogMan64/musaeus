@@ -66,6 +66,10 @@ JUNK_ARTIST_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\basmr\b", re.IGNORECASE),
     re.compile(r"\bre-?record", re.IGNORECASE),
     re.compile(r"\bpiano covers?\b", re.IGNORECASE),
+    # A piano-cover product credited beside the real artists: "Uptown Funk
+    # (Piano Version)" by "Mark Ronson, Bruno Mars, Jeff Bhasker, Piano Music
+    # Masters" was catalogued (batch 3, 2026-10-25).
+    re.compile(r"\bpiano (music )?masters\b", re.IGNORECASE),
 ]
 
 JUNK_TITLE_PATTERNS: list[re.Pattern[str]] = [
