@@ -516,7 +516,8 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
     that set it aside, the arrival may be the keeper, waiting in INBOX for Act 3.
     """
     h = arrival.get("current_hash")
-    if not h or arrival.get("finalized_at"):
+    # A copy the person kept in `musaeus dedupe` is theirs (Codex review of #234, round 14).
+    if not h or arrival.get("finalized_at") or arrival.get("kept_by_person_at"):
         return None
     twins = [
         m["file_path"]
@@ -543,7 +544,7 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
     # #234, round 2). Its keeper by recording, not by recorded path: Finalize
     # files it after the decision, and a reused path holds another song (round 1).
     qs = ",".join("?" * len(twins))
-    row = conn.execute(
+    rows = conn.execute(
         "SELECT a.* FROM duplicates d "
         "JOIN duplicates k ON k.group_id = d.group_id AND k.status = 'keep' "
         "JOIN archive a ON a.audio_hash = k.audio_hash AND a.status = 'CATALOGUED' "
@@ -553,10 +554,11 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
         # A keeper of the same audio makes the arrival a plain exact copy of a
         # live one: the keep rule ranks those, and this rule must not pick the
         # keeper itself out (Codex review of #234, round 7).
-        "AND k.audio_hash <> '' AND k.audio_hash <> ? AND a.file_path <> ? LIMIT 1",
+        "AND k.audio_hash <> '' AND k.audio_hash <> ? AND a.file_path <> ?",
         (h, *twins, *twins, h, arrival["file_path"]),
-    ).fetchone()
-    return dict(row) if row else None
+    ).fetchall()
+    # A keeper whose file is on disk, past any row whose file is gone (round 14).
+    return next((dict(r) for r in rows if Path(r["file_path"]).is_file()), None)
 
 
 def _pick_keeper_and_losers(members: list[dict]) -> tuple[dict | None, list[dict]]:

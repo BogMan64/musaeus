@@ -1459,3 +1459,27 @@ class TestArrivalTwinOfARejectedCopy:
         (ctx.config.dupes_review_dir / "2026-10-21" / "lucy.m4a").unlink()
         DupeResolverStage().execute(ctx)
         assert arrival.exists() and self._status(ctx, arrival)[0] == "CATALOGUED"
+
+    def test_an_arrival_the_person_kept_is_not_moved(self, ctx):
+        """Codex review of #234, round 14 (reproduced): an arrival Grey kept in
+        `musaeus dedupe` was moved to review."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=False)
+        ctx.conn.execute(
+            "UPDATE archive SET kept_by_person_at = '2026-10-24' WHERE file_path = ?",
+            (str(arrival),),
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists() and self._status(ctx, arrival)[0] == "CATALOGUED"
+
+    def test_the_keeper_is_found_on_disk_past_a_missing_row(self, ctx):
+        """Codex review of #234, round 14 (reproduced): LIMIT 1 picked a keeper row
+        whose file is gone, and the arrival stayed."""
+        from musaeus.db import upsert_archive
+
+        upsert_archive(ctx.conn, {"file_path": str(ctx.inbox / "aaa" / "gone.m4a"), "status": "CATALOGUED",
+                                  "artist": "Beatles", "title": "Lucy", "audio_hash": "h2"})  # fmt: skip
+        ctx.conn.commit()
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        DupeResolverStage().execute(ctx)
+        assert not arrival.exists() and keeper.exists()
