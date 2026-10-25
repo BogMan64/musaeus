@@ -993,6 +993,19 @@ def test_the_studio_recording_ranked_below_a_compilation_still_confirms():
     ]
 
 
+@pytest.mark.parametrize(
+    ("arriving", "credited", "ok"),
+    [("The Smiths", "The Beatles", False), ("Smiths, The", "The Smiths", True),
+     ("AC/DC", "AC/DC", True), ("Mark Ronson", "Mark Ronson feat. Bruno Mars", True)],
+)  # fmt: skip
+def test_every_name_of_the_arriving_credit_must_be_credited(arriving, credited, ok):
+    """Codex review of #246 (reproduced): only the first WORD of the artist was
+    looked for in the credit, so "The Smiths" matched "The Beatles"; the 90 score
+    had hidden it. Every name of the arriving credit must be one of the credited."""
+    recs = [_rec(title="Song", artist=credited, score=76, releases=[_rel_on("Album")])]
+    assert af.choose_mb_confirmation(recs, arriving, "Song", "Album")[0] is ok
+
+
 def test_a_name_without_brackets_is_asked_once(monkeypatch):
     asked = []
 

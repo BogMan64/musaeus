@@ -522,14 +522,20 @@ def choose_mb_confirmation(
     recordings: list[dict], artist: str, title: str, album: str, live_ok: bool = False
 ) -> tuple[bool, str]:
     """Pure: does any recording carry *title* by *artist* on an official studio album *album*?"""
-    want_a = norm(artist)
-    first = want_a.split(" ")[0] if want_a else ""
+    from ..art_sources import _key, _parts
+
+    # Every name of the arriving credit must be credited: the first WORD alone
+    # let "The Smiths" match "The Beatles" (Codex review of #246).
+    # Articles aside: the catalogue stores "Smiths, The".
+    want = {_key(p) for p in _parts(artist)} - {"the", "a", "an"}
     for rec in recordings:
-        credit = norm(" ".join(c.get("name", "") for c in rec.get("artist-credit") or []))
+        credit = "".join(
+            c.get("name", "") + (c.get("joinphrase") or "") for c in rec.get("artist-credit") or []
+        )
         if (
             rec.get("score", 0) < _MB_MIN_SCORE
             or not same_name(rec.get("title"), title)
-            or first not in credit
+            or not want <= {_key(p) for p in _parts(credit)}
         ):
             continue
         for rel in rec.get("releases") or []:
