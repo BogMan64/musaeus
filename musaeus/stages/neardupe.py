@@ -507,7 +507,8 @@ class NearDupeStage(BaseStage):
             gid = _group_id(a["file_path"], b["file_path"])
             confidence = round(score / 100.0, 4)
 
-            if gid in stale_near:
+            reopened = gid in stale_near
+            if reopened:
                 stale_near.discard(gid)
                 new_groups += 1
                 result.files_changed += 1
@@ -528,7 +529,9 @@ class NearDupeStage(BaseStage):
                         stage=self.NAME,
                         note=f"group={gid} score={score} judged again (was stale)",
                     )
-                continue
+            # A member whose row has gone is added back below: reopened alone, the
+            # lone copy was moved with no keeper (2026-10-25, Prince "Sign O' The
+            # Times").
 
             is_new_group = False
             for fp in (a["file_path"], b["file_path"]):
@@ -559,7 +562,7 @@ class NearDupeStage(BaseStage):
                                 f"title_b={b['title']!r}"
                             ),
                         )
-            if is_new_group:
+            if is_new_group and not reopened:
                 new_groups += 1
                 result.files_changed += 1
                 logger.info(

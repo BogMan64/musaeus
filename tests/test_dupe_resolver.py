@@ -396,6 +396,37 @@ class TestDupeResolverArchiveRowFollowsFile:
         assert stale is None  # no row at the old path anymore
 
 
+class TestALoneCopyOfAnotherGroup:
+    """2026-10-25 (Prince "Sign O' The Times"): a NEAR group had lost its
+    partner's row; the lone library copy was taken for an incoming CROSS_BATCH
+    duplicate and moved to review with no keeper -- the song's last copy."""
+
+    def _lone(self, ctx):
+        lib = _make_archive_row(ctx, "lib/sign.m4a", "Prince", "Sign O' The Times",
+                                "Sign O' The Times (Edit)", 900_000, 900)  # fmt: skip
+        ctx.conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, audio_hash) "
+            "VALUES ('near_x', ?, 'NEAR', 0.93, 'r', (SELECT audio_hash FROM archive WHERE file_path = ?))",
+            (str(lib), str(lib)),
+        )
+        ctx.conn.commit()
+        return lib
+
+    def test_it_is_never_moved(self, ctx):
+        lib = self._lone(ctx)
+        DupeResolverStage().execute(ctx)
+        assert lib.exists()
+        status = ctx.conn.execute(
+            "SELECT status FROM duplicates WHERE group_id = 'near_x'"
+        ).fetchone()[0]
+        assert status == "stale", "closed, so the pair is judged again when found"
+
+    def test_the_preview_agrees(self, ctx):
+        self._lone(ctx)
+        actions, _ = DupeResolverStage.plan_actions(ctx.conn, ctx.config)
+        assert actions == []
+
+
 class TestDupeResolverCrossBatchGroup:
     def test_lone_cross_batch_member_moves_no_keeper_needed(self, ctx):
         """A CROSS_BATCH group has exactly one member in THIS batch's
