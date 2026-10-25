@@ -521,7 +521,9 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
     twins = [
         m["file_path"]
         for m in aside
-        if m.get("current_status") == "DUPE_REVIEW" and m.get("current_hash") == h
+        if m.get("current_status") == "DUPE_REVIEW"
+        and m.get("current_hash") == h
+        and Path(m["file_path"]).is_file()  # on disk (Codex review of #234, round 13)
     ]
     if not twins:
         return None

@@ -1451,3 +1451,11 @@ class TestArrivalTwinOfARejectedCopy:
         ctx.conn.commit()
         DupeResolverStage().execute(ctx)
         assert not arrival.exists() and keeper.exists()
+
+    def test_a_review_twin_missing_from_disk_does_not_count(self, ctx):
+        """Codex review of #234, round 13 (reproduced): a review row whose file is gone
+        still sent the arrival to review."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=False)
+        (ctx.config.dupes_review_dir / "2026-10-21" / "lucy.m4a").unlink()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists() and self._status(ctx, arrival)[0] == "CATALOGUED"
