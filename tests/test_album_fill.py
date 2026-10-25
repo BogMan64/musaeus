@@ -958,7 +958,8 @@ def test_words_in_brackets_are_asked_again_as_plain_words(monkeypatch):
     stripped = [
         {"score": 100, "title": "For Those About to Rock", "artist-credit": [{"name": "AC/DC"}],
          "releases": [_rel_on("For Those About to Rock", ["Compilation"])]},
-        {"score": 76, "title": "For Those About to Rock (We Salute You)", "artist-credit": [{"name": "AC/DC"}],
+        # Really 76; below the cut-off here, so that the retry is what confirms.
+        {"score": 60, "title": "For Those About to Rock (We Salute You)", "artist-credit": [{"name": "AC/DC"}],
          "releases": [_rel_on("For Those About To Rock", date="2009")]},
     ]  # fmt: skip
     whole = [dict(stripped[1], score=100)]
@@ -973,6 +974,23 @@ def test_words_in_brackets_are_asked_again_as_plain_words(monkeypatch):
     monkeypatch.setattr(af, "_get_json", _mb)
     ok, why = af.mb_confirm("AC/DC", name, name)
     assert ok and len(asked) == 2, why
+
+
+def test_the_studio_recording_ranked_below_a_compilation_still_confirms():
+    """Batch 5 (2026-10-25, MusicBrainz's real answer): Stevie Wonder's "Living For
+    The City" on "Innervisions" was cleared. The recording on the studio album
+    scored 76, behind one only on a compilation (100), and 90 was required --
+    though title, artist and album must all match exactly anyway. AC/DC's scored
+    76 too."""
+    recs = [
+        _rec(title="Living for the City", artist="Stevie Wonder",
+             releases=[_rel_on("Talking Book + Innervisions", ["Compilation"])]),
+        _rec(title="Living for the City", artist="Stevie Wonder", score=76,
+             releases=[_rel_on("The Definitive Collection", ["Compilation"]), _rel_on("Innervisions", date="1973")]),
+    ]  # fmt: skip
+    assert af.choose_mb_confirmation(recs, "Stevie Wonder", "Living For The City", "Innervisions")[
+        0
+    ]
 
 
 def test_a_name_without_brackets_is_asked_once(monkeypatch):

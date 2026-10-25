@@ -511,6 +511,13 @@ def choose_discogs_confirmation(results: list[dict], artist: str, album: str) ->
     return False, "Discogs could not confirm an album of that name by this artist"
 
 
+#: A recording's search score that may confirm: title, artist and album must also
+#: match exactly. Was 90: the recording on the studio album scored 76 behind one
+#: only on a compilation -- Stevie Wonder's "Innervisions", AC/DC's "For Those
+#: About To Rock" (batch 5, 2026-10-25). Below 70 the search is guessing.
+_MB_MIN_SCORE = 70
+
+
 def choose_mb_confirmation(
     recordings: list[dict], artist: str, title: str, album: str, live_ok: bool = False
 ) -> tuple[bool, str]:
@@ -520,7 +527,7 @@ def choose_mb_confirmation(
     for rec in recordings:
         credit = norm(" ".join(c.get("name", "") for c in rec.get("artist-credit") or []))
         if (
-            rec.get("score", 0) < 90
+            rec.get("score", 0) < _MB_MIN_SCORE
             or not same_name(rec.get("title"), title)
             or first not in credit
         ):
