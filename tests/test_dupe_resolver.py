@@ -1803,3 +1803,23 @@ class TestThePersonsChoiceStands:
         ctx.conn.commit()
         DupeResolverStage().execute(ctx)
         assert kept.exists() and not arrival.exists()
+
+    def test_an_unrelated_review_row_cannot_change_a_same_title_choice(self, ctx):
+        """Codex review of #239, round 3 (reproduced): another review row with the
+        rejected audio but titled "Edit" turned a choice between two "Remastered
+        2001" copies into a choice against the Edit."""
+        from musaeus.db import upsert_archive
+
+        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        ctx.conn.execute("UPDATE archive SET title = 'The Tide Is High (Remastered 2001)' "
+                         "WHERE status = 'DUPE_REVIEW' AND audio_hash = 'hr'")  # fmt: skip
+        other = ctx.config.dupes_review_dir / "2026-10-01" / "other-edit.m4a"
+        other.parent.mkdir(parents=True, exist_ok=True)
+        other.write_bytes(b"X" * 300)
+        upsert_archive(ctx.conn, {"file_path": str(other), "status": "DUPE_REVIEW", "artist": "Blondie",
+                                  "title": "The Tide Is High (Edit)", "audio_hash": "hr"})  # fmt: skip
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists() and not kept.exists(), (
+            "the keep rule ranks them (a choice between copies)"
+        )

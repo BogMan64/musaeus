@@ -602,7 +602,12 @@ def _held_by_person(conn, members: list[dict], keeper: dict | None) -> dict | No
         return None
     want = " ".join((keeper.get("title") or "").casefold().split())
     for m in members:
-        if m is keeper or not m.get("kept_by_person_at") or not _is_there(m):
+        if (
+            m is keeper
+            or not m.get("kept_by_person_at")
+            or not m.get("current_hash")
+            or not _is_there(m)
+        ):
             continue
         # The titles of the copies rejected in the PERSON's decisions (the sheet's
         # PERSON groups) where m was kept -- found by m's recording, not its path,
@@ -610,12 +615,14 @@ def _held_by_person(conn, members: list[dict], keeper: dict | None) -> dict | No
         rejected = conn.execute(
             "SELECT a.title FROM duplicates k "
             "JOIN duplicates d ON d.group_id = k.group_id AND d.status = 'archive' "
-            # The rejected copy itself, waiting in review -- not an arrival that
-            # shares its audio under another title (Codex review of #239, round 2).
-            "JOIN archive a ON a.audio_hash = d.audio_hash AND a.status = 'DUPE_REVIEW' "
-            "WHERE k.duplicate_type = 'PERSON' AND k.status = 'keep' AND k.audio_hash = ? "
-            "AND d.audio_hash <> ''",
-            (m.get("current_hash") or "",),
+            # The rejected copy itself, waiting in review: the row at the decision's
+            # path, or where that path was moved to review -- never another row that
+            # only shares its audio (Codex review of #239, rounds 2-3).
+            "JOIN archive a ON a.status = 'DUPE_REVIEW' AND (a.file_path = d.file_path "
+            "OR a.file_path IN (SELECT new_value FROM events WHERE "
+            "event_type = 'DUPE_MOVED_FOR_REVIEW' AND old_value = d.file_path)) "
+            "WHERE k.duplicate_type = 'PERSON' AND k.status = 'keep' AND k.audio_hash = ?",
+            (m["current_hash"],),
         ).fetchall()
         # A choice between VERSIONS: the rejected title differs from the kept one
         # ("Edit" vs "Remastered 2001"). Same titles were a choice between copies,
