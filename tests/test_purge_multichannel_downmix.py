@@ -492,3 +492,34 @@ def test_a_stale_lossless_record_never_deletes_outside_the_lossless_edition(vaul
     conn.close()
     mod.main()
     assert target.exists() and song.exists()
+
+
+def test_a_downmix_runs_beside_todays_wanted_list(vault):
+    """First real run, 2026-10-25: TuneMyMusic.csv is now Title,Artist,Album, and the
+    script read a "path" column from it even in --downmix mode, which never writes
+    it -- KeyError before any song was touched."""
+    mod, cfg, song = vault
+    cfg.tunemymusic_csv_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.tunemymusic_csv_path.write_text(
+        "Title,Artist,Album\nShotgun,Jr. Walker,Shotgun\n", encoding="utf-8"
+    )
+    assert mod.main() == 0
+    assert _probe(song, "stream=channels").split()[0].strip(",") == "2"
+    assert cfg.tunemymusic_csv_path.read_text(encoding="utf-8").startswith("Title,Artist,Album")
+
+
+def test_the_delete_mode_refuses_todays_wanted_list(vault, monkeypatch):
+    """Codex review of #238 (reproduced): with a Title,Artist,Album list the delete
+    mode wrote an incompatible row and deleted the surround song."""
+    mod, cfg, song = vault
+    cfg.tunemymusic_csv_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.tunemymusic_csv_path.write_text(
+        "Title,Artist,Album\nShotgun,Jr. Walker,Shotgun\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(sys, "argv", ["prog", "--apply"])
+    assert mod.main() != 0
+    assert song.exists() and _row(cfg) is not None
+    assert (
+        cfg.tunemymusic_csv_path.read_text(encoding="utf-8")
+        == "Title,Artist,Album\nShotgun,Jr. Walker,Shotgun\n"
+    )
