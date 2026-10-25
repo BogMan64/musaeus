@@ -115,11 +115,14 @@ def composer_for(artist: str, title: str, canon: dict[str, str]) -> tuple[str | 
     # "Mozart: Piano Sonata No. 11" went to Bach (Codex review of #244, round 2).
     m = _TITLE_PREFIX.match((title or "").strip())
     if m:
-        hit = canon.get(m.group(1).strip().lower())
-        # The prefix must name the composer, not a performer the canon maps:
-        # "András Schiff: Mozart Piano Sonata" went to Bach (round 1).
-        if hit and _fold(hit).split()[-1] in _fold(m.group(1)).split():
-            return hit, "title prefix"
+        # Whole, then each name of a list: "Albinoni, Giazotto - Adagio" is the
+        # composer and an arranger (batch 5, 2026-10-25).
+        for name in [m.group(1), *m.group(1).split(",")]:
+            hit = canon.get(name.strip().lower())
+            # The prefix must name the composer, not a performer the canon maps:
+            # "András Schiff: Mozart Piano Sonata" went to Bach (round 1).
+            if hit and _fold(hit).split()[-1] in _fold(name).split():
+                return hit, "title prefix"
     for part in (artist or "").split(","):
         hit = canon.get(part.strip().lower())
         if hit:

@@ -131,6 +131,23 @@ class TestCanonMatching:
         got = composer_for("András Schiff", f"Mozart{sep} Piano Sonata No. 11", canon)
         assert got == ("Wolfgang Amadeus Mozart", "title prefix")
 
+    def test_a_composer_with_an_arranger_in_the_title_prefix_resolves_it(self):
+        """Batch 5 (2026-10-25): "Albinoni, Giazotto - Adagio For Strings" by
+        Stuttgarter Kammerorchester stayed under the orchestra -- "albinoni,
+        giazotto" was looked up whole -- beside the same performance already
+        filed under Tomaso Albinoni (Grey: one copy of each piece per composer)."""
+        canon = dict(CANON, **{"albinoni": "Tomaso Albinoni"})
+        title = "Albinoni, Giazotto - Adagio For Strings And Organ In G Minor"
+        assert composer_for("Stuttgarter Kammerorchester", title, canon) == (
+            "Tomaso Albinoni",
+            "title prefix",
+        )
+
+    def test_a_performer_in_a_listed_prefix_is_still_no_composer(self):
+        canon = dict(CANON, **{"academy of st martin in the fields": "Henry Purcell"})
+        title = "Academy of St Martin in the Fields, Marriner - Hornpipe"
+        assert composer_for("Ensemble", title, canon) == (None, "")
+
     def test_a_composer_alias_is_still_a_title_prefix(self):
         canon = dict(CANON, **{"georg friedrich händel": "George Frideric Handel"})
         got = composer_for("Ensemble", "Georg Friedrich Händel: Water Music", canon)[0]
