@@ -110,18 +110,20 @@ def composer_for(artist: str, title: str, canon: dict[str, str]) -> tuple[str | 
     for pattern, composer in _CATALOGUE:
         if pattern.search(title or ""):
             return composer, "catalogue number"
+    # A composer named at the head of the title before the credit: the canon
+    # also maps performers to a composer ("András Schiff" -> Bach), and Schiff's
+    # "Mozart: Piano Sonata No. 11" went to Bach (Codex review of #244, round 2).
+    m = _TITLE_PREFIX.match((title or "").strip())
+    if m:
+        hit = canon.get(m.group(1).strip().lower())
+        # The prefix must name the composer, not a performer the canon maps:
+        # "András Schiff: Mozart Piano Sonata" went to Bach (round 1).
+        if hit and _fold(hit).split()[-1] in _fold(m.group(1)).split():
+            return hit, "title prefix"
     for part in (artist or "").split(","):
         hit = canon.get(part.strip().lower())
         if hit:
             return hit, "artist credit"
-    m = _TITLE_PREFIX.match((title or "").strip())
-    if m:
-        hit = canon.get(m.group(1).strip().lower())
-        # The prefix must name the composer: the canon also maps performers
-        # to a composer for their credits ("András Schiff" -> Bach), and
-        # "András Schiff: Mozart Piano Sonata" went to Bach (Codex review of #244).
-        if hit and _fold(hit).split()[-1] in _fold(m.group(1)).split():
-            return hit, "title prefix"
     return None, ""
 
 

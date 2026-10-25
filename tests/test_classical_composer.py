@@ -120,6 +120,17 @@ class TestCanonMatching:
         title = f"András Schiff{sep} Mozart Piano Sonata No. 11"
         assert composer_for("Chamber Orchestra", title, canon) == (None, "")
 
+    @pytest.mark.parametrize("sep", [":", " -"])
+    def test_a_composer_named_in_the_title_wins_over_a_performer_credit(self, sep):
+        """Codex review of #244, round 2 (reproduced): credited to András Schiff
+        (mapped to Bach for his credits) and titled "Mozart: Piano Sonata No. 11",
+        the song went to Bach -- the credit was asked before the title."""
+        canon = dict(
+            CANON, **{"andrás schiff": "Johann Sebastian Bach", "mozart": "Wolfgang Amadeus Mozart"}
+        )
+        got = composer_for("András Schiff", f"Mozart{sep} Piano Sonata No. 11", canon)
+        assert got == ("Wolfgang Amadeus Mozart", "title prefix")
+
     def test_a_composer_alias_is_still_a_title_prefix(self):
         canon = dict(CANON, **{"georg friedrich händel": "George Frideric Handel"})
         got = composer_for("Ensemble", "Georg Friedrich Händel: Water Music", canon)[0]
