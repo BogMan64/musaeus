@@ -179,6 +179,13 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # follows the file; the resolver never moves a copy so marked (Grey,
     # 2026-10-09: choices are carried out at once, not saved by path).
     ("archive", "kept_by_person_at", "TEXT"),
+    # Each copy's title in a person's decision, as it was then (Grey, 2026-10-25),
+    # written only by a person's decision (a sheet or the console): the resolver
+    # reads from it which VERSION the person rejected, and the rejected copy's own
+    # row goes when review is cleared (Codex review of #239, round 5). Older sheet
+    # decisions are filled once, from that copy: at the decision's path or where
+    # it was moved for review, and with its audio.
+    ("duplicates", "title", "TEXT"),
     # An album a song ARRIVED with, checked with MusicBrainz by album-fill
     # (Grey, 2026-10-23). Added here, when the catalogue is opened and before
     # any intake, so the albums already there can be told from arrivals: they
@@ -465,6 +472,15 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
                         "UPDATE archive SET album_verified_at=? "
                         "WHERE album IS NOT NULL AND TRIM(album)<>''",
                         (ALBUM_BEFORE_THE_CHECK,),
+                    )
+                if (table, col) == ("duplicates", "title"):
+                    conn.execute(
+                        "UPDATE duplicates SET title = (SELECT a.title FROM archive a "
+                        "WHERE a.audio_hash = duplicates.audio_hash AND (a.file_path = "
+                        "duplicates.file_path OR a.file_path IN (SELECT new_value FROM events "
+                        "WHERE event_type = 'DUPE_MOVED_FOR_REVIEW' "
+                        "AND old_value = duplicates.file_path)) LIMIT 1) "
+                        "WHERE duplicate_type = 'PERSON' AND audio_hash <> ''"
                     )
 
         # A constraint change, not a column addition -- the loop above cannot

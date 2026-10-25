@@ -102,6 +102,20 @@ def test_execute_moves_the_removed_copy_and_marks_the_kept_one(cfg, tmp_path):
     assert _row(cfg, r)[0][0] == "DUPE_REVIEW"
 
 
+def test_the_decision_keeps_each_copys_title(cfg, tmp_path):
+    """The resolver reads the rejected version from the decision; review may be
+    cleared later (Codex review of #239, round 5)."""
+    k, kp = _copy(cfg, "studio.m4a")
+    r, rp = _copy(cfg, "live.m4a")
+    _run(cfg, _sheet(tmp_path, [("1", "KEEP", k, kp), ("1", "REMOVE?", r, rp)]), True)
+    conn = open_db(cfg.db_path)
+    got = conn.execute(
+        "SELECT status, title FROM duplicates WHERE duplicate_type = 'PERSON'"
+    ).fetchall()
+    conn.close()
+    assert sorted(map(tuple, got)) == [("archive", "Song"), ("keep", "Song")]
+
+
 def test_the_resolver_leaves_a_carried_out_sheet_alone(cfg, tmp_path):
     k, kp = _copy(cfg, "studio.m4a")
     r, rp = _copy(cfg, "live.m4a")
