@@ -589,35 +589,34 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
     return won
 
 
-def _held_by_person(conn, members: list[dict], keeper: dict | None) -> dict | None:
-    """The copy a person kept by hand that this keeper must not replace, if any.
+def _held_by_person(
+    conn, members: list[dict], keeper: dict | None, pool: list[dict]
+) -> dict | None:
+    """The keeper instead of *keeper* when it is a copy of a version a person rejected.
 
     Grey, 2026-10-25 (Blondie "The Tide Is High"): on the Oct 21 sheet Grey kept
     the "Remastered 2001" and sent the "Edit" to review. Another file of the Edit
     arrived, the keep rule ranks original before remaster, and it replaced the
     copy Grey kept. A later copy of the version the person REJECTED never wins
-    over their choice; a better copy of another version still may (2026-10-10).
+    over their choice; a better copy of another version still may (2026-10-10):
+    copies of rejected versions are set aside and the next of *pool* (ranked,
+    the copies that may be kept) is the keeper (Codex review of #239, round 9).
     """
-    if keeper is None or keeper.get("kept_by_person_at"):
+    norm = lambda s: " ".join((s or "").casefold().split())  # noqa: E731
+    if keeper is None or keeper.get("kept_by_person_at") or not norm(keeper.get("title")):
         return None
-    want = " ".join((keeper.get("title") or "").casefold().split())
+    rejected: dict[str, dict] = {}  # rejected version -> the copy kept over it
     for m in members:
-        if (
-            m is keeper
-            or not m.get("kept_by_person_at")
-            or not m.get("current_hash")
-            or not _is_there(m)
-        ):
+        if not m.get("kept_by_person_at") or not m.get("current_hash") or not _is_there(m):
             continue
-        # The titles of the copies rejected in the person's decisions where m was
-        # kept -- found by m's recording, not its path, which filing changes (Codex
-        # review of #239). Only a person's decision (a sheet's or the console's)
-        # stores titles, as they were then: never read from a review row that may
-        # be gone or another copy's (rounds 1-5).
-        rejected = conn.execute(
+        # The person's decisions where m was kept -- found by m's recording, not
+        # its path, which filing changes (Codex review of #239). Only a person's
+        # decision (a sheet's or the console's) stores titles, as they were then:
+        # never read from a review row that may be gone or another copy's
+        # (rounds 1-5). Not kept is rejected: moved ('archive'), or a move that
+        # failed (left 'pending' by the console, 'stale' by a sheet; round 7).
+        rows = conn.execute(
             "SELECT k.title, d.title FROM duplicates k "
-            # Not kept is rejected: moved ('archive'), or a move that failed (left
-            # 'pending' by the console, 'stale' by a sheet; Codex review of #239, r7).
             "JOIN duplicates d ON d.group_id = k.group_id AND d.status <> 'keep' "
             "WHERE k.status = 'keep' AND k.title IS NOT NULL AND d.title IS NOT NULL "
             "AND k.audio_hash = ?",
@@ -625,13 +624,19 @@ def _held_by_person(conn, members: list[dict], keeper: dict | None) -> dict | No
         ).fetchall()
         # A choice between VERSIONS: the rejected title differed from the kept one
         # when chosen ("Edit" vs "Remastered 2001"), both as stored with the
-        # decision -- a title tidied since changes neither (Codex review of #239,
-        # round 6). Same titles were a choice between copies, and a better copy
-        # may still replace the kept one (2026-10-10).
-        norm = lambda s: " ".join((s or "").casefold().split())  # noqa: E731
-        if want and any(norm(d) == want != norm(k) for k, d in rejected):
-            return m
-    return None
+        # decision -- a title tidied since changes neither (round 6). Same titles
+        # were a choice between copies, and a better copy may still replace the
+        # kept one (2026-10-10).
+        for k, d in rows:
+            if norm(d) != norm(k):
+                rejected.setdefault(norm(d), m)
+
+    def of_rejected(c: dict) -> bool:
+        return not c.get("kept_by_person_at") and norm(c.get("title")) in rejected
+
+    if not of_rejected(keeper):
+        return None
+    return next((c for c in pool if not of_rejected(c)), rejected[norm(keeper.get("title"))])
 
 
 def _pick_keeper_and_losers(members: list[dict]) -> tuple[dict | None, list[dict]]:
@@ -841,12 +846,14 @@ class DupeResolverStage(BaseStage):
                     list(component),
                 )
             }
+            pool = members
             if cross and len(members) > 1:
                 rest = [m for m in members if m["file_path"] not in cross]
                 if rest:
                     keeper = rest[0]
                     losers = [m for m in members if m is not keeper]
-            held = _held_by_person(conn, members, keeper)  # last, as the resolver does
+                    pool = rest
+            held = _held_by_person(conn, members, keeper, pool)  # last, as the resolver does
             if held is not None:
                 keeper, losers = held, [m for m in members if m is not held]
             live = [m for m in members if m.get("current_row") is not None]
@@ -1467,6 +1474,7 @@ class DupeResolverStage(BaseStage):
                     list(component),
                 )
             }
+            pool = members
             if cross and len(members) > 1:
                 rest = [m for m in members if m["file_path"] not in cross]
                 # Every member flagged: keep the ranked keeper. Choosing none
@@ -1475,10 +1483,11 @@ class DupeResolverStage(BaseStage):
                 if rest:
                     keeper = rest[0]
                     losers = [m for m in members if m is not keeper]
+                    pool = rest
             # A copy the person kept by hand stays against a later arrival of the
             # version they rejected (Grey, 2026-10-25) -- decided last, so no other
             # rule picks the arrival after it (Codex review of #239, round 2).
-            held = _held_by_person(ctx.conn, members, keeper)
+            held = _held_by_person(ctx.conn, members, keeper, pool)
             if held is not None:
                 keeper, losers = held, [m for m in members if m is not held]
             # A keep in `musaeus dedupe` settles the copies the person saw; a

@@ -1961,6 +1961,28 @@ class TestThePersonsChoiceStands:
         DupeResolverStage().execute(ctx)
         assert kept.exists() and not e2.exists(), "the retry carries out the person's choice"
 
+    def test_a_better_copy_of_another_version_still_wins_past_the_rejected_one(self, ctx):
+        """Codex review of #239, round 9 (reproduced): the rejected Edit ranked
+        first, a new Album Version second, the hand-kept Remaster third. The guard
+        jumped to the kept copy; the rejected version is set aside and the rest
+        ranked as ever, so the Album Version wins (Grey, 2026-10-10)."""
+        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        album = _make_archive_row(ctx, "new/tide-album.flac", "Blondie", "Autoamerican",
+                                  "The Tide Is High (Album Version)", 900_000, 900, "hv")  # fmt: skip
+        ctx.conn.execute(
+            "UPDATE archive SET codec = 'flac', duration = 230.0 WHERE file_path = ?", (str(album),)
+        )
+        ctx.conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('g', ?, 'NEAR', 1.0, 'r', 'pending', 'hv')",
+            (str(album),),
+        )
+        ctx.conn.commit()
+        actions, _ = DupeResolverStage.plan_actions(ctx.conn, ctx.config)
+        assert sorted(a["source"] for a in actions) == sorted([str(kept), str(arrival)])
+        DupeResolverStage().execute(ctx)
+        assert album.exists() and not arrival.exists() and not kept.exists()
+
 
 def test_older_person_decisions_get_the_title_of_their_own_copy(tmp_path):
     """open_db fills the new title column once, for decisions made before it:
