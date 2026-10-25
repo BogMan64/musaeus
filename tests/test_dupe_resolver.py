@@ -1506,3 +1506,22 @@ class TestArrivalTwinOfARejectedCopy:
             p for p in (kept, arrival) if p.exists() and self._status(ctx, p)[0] == "CATALOGUED"
         ]
         assert len(live) == 1
+
+    def test_a_kept_copy_whose_path_changed_stays(self, ctx):
+        """Codex review of #234, round 16 (reproduced): the keep decision was recorded
+        at the INBOX path; Canonicalize staged the file, and the twin rule moved it."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=False)
+        staged = _make_archive_row(
+            ctx, "STAGED/lucy.m4a", "Beatles", "Sgt", "Lucy", 768_000, 300, "h51"
+        )
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES (?, ?, 'EXACT', 1.0, 'r', ?, 'h51')",
+            [
+                ("batch", str(ctx.inbox / "was-here" / "lucy.flac"), "keep"),
+                ("dup_h51", str(staged), "pending"),
+            ],
+        )
+        ctx.conn.commit()
+        result = DupeResolverStage().execute(ctx)
+        assert not any("moved to review too" in n for n in result.notes)
