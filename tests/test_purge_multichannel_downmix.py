@@ -60,9 +60,11 @@ def vault(tmp_path, monkeypatch):
         capture_output=True, check=True,
     )  # fmt: skip
     conn = open_db(cfg.db_path)
+    from musaeus.hasher import audio_hash
+
     upsert_archive(conn, {"file_path": str(song), "status": "CATALOGUED", "artist": "Beck",
                           "title": "The Paisley Experience", "codec": "alac", "channels": 6,
-                          "duration": 2.0, "audio_hash": "as-it-arrived"})  # fmt: skip
+                          "duration": 2.0, "audio_hash": audio_hash(song)})  # fmt: skip
     conn.execute("INSERT INTO archive_tier_hashes (path, sha256) VALUES (?, 'old')", (str(song),))
     conn.commit()
     conn.close()
@@ -70,6 +72,15 @@ def vault(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "get_config", lambda: cfg)
     monkeypatch.setattr(sys, "argv", ["prog", "--apply", "--downmix"])
     return mod, cfg, song
+
+
+def _arrived(cfg):
+    """The song's audio hash as it arrived (set from the real audio in the fixture)."""
+    conn = open_db(cfg.db_path)
+    try:
+        return conn.execute("SELECT audio_hash FROM archive ORDER BY id LIMIT 1").fetchone()[0]
+    finally:
+        conn.close()
 
 
 def _row(cfg):
@@ -88,7 +99,7 @@ def test_downmix_keeps_the_song_its_art_tags_and_identity(vault):
     assert "mjpeg" in _probe(song, "stream=codec_name"), "the cover art is kept"
     assert "The Paisley Experience" in _probe(song, "format_tags=title")
     row = _row(cfg)
-    assert row["channels"] == 2 and row["audio_hash"] == "as-it-arrived" and row["full_hash"]
+    assert row["channels"] == 2 and row["audio_hash"] == _arrived(cfg) and row["full_hash"]
     conn = open_db(cfg.db_path)
     assert conn.execute("SELECT COUNT(*) FROM archive_tier_hashes").fetchone()[0] == 0
     conn.close()
@@ -197,13 +208,16 @@ def test_downmix_never_overwrites_a_file_at_its_temporary_name(vault):
 def test_the_preview_only_promises_what_apply_does(vault, monkeypatch, capsys):
     """Codex review of #237, rounds 3-4 (reproduced): a surround .flac was previewed as
     "would downmix", and apply leaves it for a person."""
+    from musaeus.hasher import audio_hash
+
     mod, cfg, song = vault
     flac = song.with_suffix(".flac")
     subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-ac", "6",
                     "-c:a", "flac", str(flac)], capture_output=True, check=True)  # fmt: skip
     conn = open_db(cfg.db_path)
     upsert_archive(conn, {"file_path": str(flac), "status": "CATALOGUED", "artist": "Beck",
-                          "title": "Other", "codec": "flac", "channels": 6, "audio_hash": "f"})  # fmt: skip
+                          "title": "Other", "codec": "flac", "channels": 6,
+                          "audio_hash": audio_hash(flac)})  # fmt: skip
     conn.commit()
     conn.close()
     monkeypatch.setattr(sys, "argv", ["prog", "--check", "--downmix"])
@@ -344,16 +358,16 @@ def test_the_lossless_edition_copy_is_made_again_from_the_stereo_master(vault):
     lossless = cfg.vault_root / "ALAC_Library" / "song.m4a"
     lossless.parent.mkdir(parents=True, exist_ok=True)
     _gen(lossless, 6, "alac", 2)
-    edition_bake.copy_tags(lossless, lossless, edition_build.marker_for("as-it-arrived"))
+    edition_bake.copy_tags(lossless, lossless, edition_build.marker_for(_arrived(cfg)))
     conn = el.open_ledger(el.ledger_path(cfg))
     for edition, out in (("lossless", lossless), ("car", cfg.vault_root / "CAR" / "song.m4a")):
         conn.execute(
             "INSERT INTO edition_copies (edition, master_hash, master_path, output_path, built_at) "
-            "VALUES (?, 'as-it-arrived', ?, ?, '2026-10-01')",
-            (edition, str(song), str(out)),
+            "VALUES (?, ?, ?, ?, '2026-10-01')",
+            (edition, _arrived(cfg), str(song), str(out)),
         )
     conn.execute(
-        "INSERT INTO measurements VALUES ('as-it-arrived', 'lossless/x', '{}', '2026-10-01')"
+        "INSERT INTO measurements VALUES (?, 'lossless/x', '{}', '2026-10-01')", (_arrived(cfg),)
     )
     conn.commit()
     conn.close()
@@ -379,10 +393,38 @@ def test_a_stale_lossless_record_never_deletes_another_song(vault):
     conn = el.open_ledger(el.ledger_path(cfg))
     conn.execute(
         "INSERT INTO edition_copies (edition, master_hash, master_path, output_path, built_at) "
-        "VALUES ('lossless', 'as-it-arrived', ?, ?, '2026-10-01')",
-        (str(song), str(other)),
+        "VALUES ('lossless', ?, ?, ?, '2026-10-01')",
+        (_arrived(cfg), str(song), str(other)),
     )
     conn.commit()
     conn.close()
     mod.main()
     assert other.exists()
+
+
+def test_another_surround_song_in_its_place_is_never_changed(vault):
+    """Codex review of #237, round 13 (reproduced): a different 6-channel song now at
+    the catalogued path was downmixed under the old song's identity."""
+    mod, cfg, song = vault
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=880:duration=2", "-ac", "6",
+                    "-c:a", "alac", "-f", "mp4", str(song)], capture_output=True, check=True)  # fmt: skip
+    mod.main()
+    assert (
+        _probe(song, "stream=channels").split()[0].strip(",") == "6" and _row(cfg)["channels"] == 6
+    )
+
+
+def test_a_failed_lossless_cleanup_rolls_the_swap_back_for_a_retry(vault, monkeypatch):
+    """Codex review of #237, round 13 (reproduced): the stereo row committed before the
+    old Lossless copy was removed; when that failed, a rerun found no surround row."""
+    mod, cfg, song = vault
+
+    def _fail(cfg_, h):
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(mod, "_remake_lossless_copy", _fail)
+    with pytest.raises(OSError):
+        mod.main()
+    assert (
+        _probe(song, "stream=channels").split()[0].strip(",") == "6" and _row(cfg)["channels"] == 6
+    )

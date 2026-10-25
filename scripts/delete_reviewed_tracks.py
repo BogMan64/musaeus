@@ -57,6 +57,7 @@ Rerunning is safe -- the done ids read as already gone.
     python3 scripts/delete_reviewed_tracks.py ids.txt --reason "..."
     python3 scripts/delete_reviewed_tracks.py ids.txt --reason "..." --execute
 """
+
 from __future__ import annotations
 
 import argparse
@@ -72,6 +73,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from musaeus.config import MusicConfig  # noqa: E402
 from musaeus.db import deny_hash  # noqa: E402
 from musaeus.editions import master_path_for  # noqa: E402
+from musaeus.recording_identity import not_this_recording  # noqa: E402
 
 TIERS = ("ALAC-Archival", "ALAC_Library", "CAR_Library")
 
@@ -106,35 +108,6 @@ def copies(row: sqlite3.Row, libs: Path) -> list[Path]:
     return out
 
 
-def _not_this_recording(p: Path, row: sqlite3.Row, h0: str | None) -> str:
-    """Why the file at *p* cannot be confirmed as the recording *row* names,
-    or "" when it is. Anything that cannot be read counts as not confirmed:
-    a deletion that cannot confirm its target does not happen (--force-id)."""
-    from musaeus.hasher import audio_hash
-
-    if not h0:
-        return "the row has no audio hash to confirm it by"
-    cols = set(row.keys())
-    try:
-        if audio_hash(p, strict=True) == h0:
-            return ""
-    except Exception as exc:  # noqa: BLE001 - unreadable is "not confirmed"
-        return f"its audio could not be read ({type(exc).__name__}: {exc})"
-    if (row["canon_action"] if "canon_action" in cols else None) != "TRANSCODED":
-        return "its audio is not this track's (audio hash differs)"
-    stored = row["chromaprint"] if "chromaprint" in cols else None
-    if not stored:
-        return "a re-encoded master, and no stored fingerprint to confirm it by"
-    try:
-        from musaeus.stages.acousticid import _fpcalc
-
-        if _fpcalc(str(p))[1] == stored:
-            return ""
-    except Exception as exc:  # noqa: BLE001
-        return f"a re-encoded master whose fingerprint could not be taken ({type(exc).__name__}: {exc})"
-    return "a re-encoded master whose fingerprint is not this track's"
-
-
 def _what_is_there(p: Path) -> str:
     """What the file's own tags say it is, for a person deciding --force-id."""
     try:
@@ -151,9 +124,7 @@ def _what_is_there(p: Path) -> str:
     return "  [its tags could not be read]"
 
 
-def remove_emptied_folders(
-    folders: set[Path], libs: Path, editions: tuple[Path, ...] = ()
-) -> int:
+def remove_emptied_folders(folders: set[Path], libs: Path, editions: tuple[Path, ...] = ()) -> int:
     """rmdir each folder a deletion emptied, and its parents while they are
     empty, stopping at the tier roots and every edition's own folder. Never
     rmtree: art, a .part or a stray the catalogue does not know keeps its
@@ -174,13 +145,15 @@ def remove_emptied_folders(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("ids", type=Path, help="file of archive ids, one per line")
     ap.add_argument("--reason", required=True, help="recorded on every event and deny entry")
     ap.add_argument("--execute", action="store_true", help="actually delete (default: dry run)")
     ap.add_argument(
-        "--no-deny", action="store_true",
+        "--no-deny",
+        action="store_true",
         help="do not deny the audio: the same file may be ingested again (test batch reset)",
     )
     ap.add_argument(
@@ -214,8 +187,10 @@ def main() -> int:
     conn.execute("PRAGMA busy_timeout = 60000")
     led = sqlite3.connect(ledger) if ledger.exists() else None
     if led is None:
-        print(f"WARNING: no ledger at {ledger} -- nothing will be denied, so a "
-              f"re-ingest of this audio would be accepted again.")
+        print(
+            f"WARNING: no ledger at {ledger} -- nothing will be denied, so a "
+            f"re-ingest of this audio would be accepted again."
+        )
 
     # Which paths do SURVIVING rows still point at?
     #
@@ -234,7 +209,9 @@ def main() -> int:
     keep_paths: set[str] = set()
     for col in ("file_path", "car_export_path"):
         try:
-            for rid, val in conn.execute(f"SELECT id, {col} FROM archive WHERE COALESCE({col},'') <> ''"):
+            for rid, val in conn.execute(
+                f"SELECT id, {col} FROM archive WHERE COALESCE({col},'') <> ''"
+            ):
                 if rid not in doomed and val:
                     keep_paths.add(str(Path(val)))
         except sqlite3.Error:
@@ -245,7 +222,9 @@ def main() -> int:
     # not deleting.
     keep_hashes: set[str] = set()
     try:
-        for rid, h in conn.execute("SELECT id, audio_hash FROM archive WHERE COALESCE(audio_hash,'') <> ''"):
+        for rid, h in conn.execute(
+            "SELECT id, audio_hash FROM archive WHERE COALESCE(audio_hash,'') <> ''"
+        ):
             if rid not in doomed:
                 keep_hashes.add(h)
     except sqlite3.Error:
@@ -323,7 +302,7 @@ def main() -> int:
                     continue
                 checked.append(p)
                 continue
-            why = _not_this_recording(p, row, h0)
+            why = not_this_recording(p, row, h0)
             if why and i in forced:
                 said[i].append(f"     FORCED -- {why}: {p}{_what_is_there(p)}")
             elif why:
@@ -362,9 +341,16 @@ def main() -> int:
                 conn.execute(
                     "INSERT INTO events (run_id, ts, event_type, file_path, old_value, "
                     "new_value, note) VALUES (?,?,?,?,?,?,?)",
-                    (run_id, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-                     "DELETE_REFUSED", row["file_path"], "", "",
-                     f"{args.reason} [refused: {refused[i]}]"))
+                    (
+                        run_id,
+                        datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                        "DELETE_REFUSED",
+                        row["file_path"],
+                        "",
+                        "",
+                        f"{args.reason} [refused: {refused[i]}]",
+                    ),
+                )
             continue
         files_for_row = 0
         paths = confirmed[i]
@@ -406,8 +392,16 @@ def main() -> int:
                 conn.execute(
                     "INSERT INTO events (run_id, ts, event_type, file_path, old_value, "
                     "new_value, note) VALUES (?,?,?,?,?,?,?)",
-                    (run_id, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-                     "DELETED_BY_REVIEW", str(p), str(p), "", args.reason))
+                    (
+                        run_id,
+                        datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                        "DELETED_BY_REVIEW",
+                        str(p),
+                        str(p),
+                        "",
+                        args.reason,
+                    ),
+                )
             n_files += 1
             files_for_row += 1
         # The copy's record goes AFTER its file, like the row: files first,
@@ -431,8 +425,16 @@ def main() -> int:
                 conn.execute(
                     "INSERT INTO events (run_id, ts, event_type, file_path, old_value, "
                     "new_value, note) VALUES (?,?,?,?,?,?,?)",
-                    (run_id, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-                     "DELETED_BY_REVIEW", row["file_path"], row["file_path"], "", note))
+                    (
+                        run_id,
+                        datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                        "DELETED_BY_REVIEW",
+                        row["file_path"],
+                        row["file_path"],
+                        "",
+                        note,
+                    ),
+                )
             # The master's bit-rot baseline goes with it, or the monthly check
             # lists every deleted song as "missing from disk" (2026-10-07). By
             # path, or by its audio when it moved since the baseline -- never by
@@ -444,7 +446,9 @@ def main() -> int:
                         (row["file_path"], h),
                     )
                 else:
-                    conn.execute("DELETE FROM archive_tier_hashes WHERE path = ?", (row["file_path"],))
+                    conn.execute(
+                        "DELETE FROM archive_tier_hashes WHERE path = ?", (row["file_path"],)
+                    )
             except sqlite3.OperationalError:
                 pass  # a vault with no bit-rot baseline yet
             if args.no_deny:
@@ -463,13 +467,17 @@ def main() -> int:
                     " AND COUNT(DISTINCT audio_hash) = 2))"
                 )
                 with contextlib.suppress(sqlite3.OperationalError):  # no duplicates table yet
-                    if str(Path(row["file_path"])) not in keep_paths:  # a survivor's path: its records
+                    if (
+                        str(Path(row["file_path"])) not in keep_paths
+                    ):  # a survivor's path: its records
                         conn.execute(
                             "DELETE FROM duplicates WHERE file_path = ?" + not_decided,
                             (row["file_path"],),
                         )
                     if h and not audio_kept:
-                        conn.execute("DELETE FROM duplicates WHERE audio_hash = ?" + not_decided, (h,))
+                        conn.execute(
+                            "DELETE FROM duplicates WHERE audio_hash = ?" + not_decided, (h,)
+                        )
             conn.execute("DELETE FROM archive WHERE id=?", (i,))
         n_rows += 1
 
@@ -489,14 +497,19 @@ def main() -> int:
     if edition is not None:
         edition.close()
 
-    print(f"\n{'DELETED' if args.execute else 'DRY RUN'}: {n_files} file(s), "
-          f"{n_rows} row(s), {n_denied} hash(es) denied"
-          + (f", {n_dirs} emptied folder(s) removed" if n_dirs else "")
-          + (f", {n_absent} id(s) already gone" if n_absent else "")
-          + (f", {n_shared} file(s) kept because a surviving row needs them" if n_shared else "")
-          + (f", {n_kept_audio} hash(es) NOT denied because a surviving row carries the same audio"
-             if n_kept_audio else "")
-          + (f", {n_refused} row(s) REFUSED (see above)" if n_refused else ""))
+    print(
+        f"\n{'DELETED' if args.execute else 'DRY RUN'}: {n_files} file(s), "
+        f"{n_rows} row(s), {n_denied} hash(es) denied"
+        + (f", {n_dirs} emptied folder(s) removed" if n_dirs else "")
+        + (f", {n_absent} id(s) already gone" if n_absent else "")
+        + (f", {n_shared} file(s) kept because a surviving row needs them" if n_shared else "")
+        + (
+            f", {n_kept_audio} hash(es) NOT denied because a surviving row carries the same audio"
+            if n_kept_audio
+            else ""
+        )
+        + (f", {n_refused} row(s) REFUSED (see above)" if n_refused else "")
+    )
     return 1 if n_refused else 0
 
 

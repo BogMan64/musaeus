@@ -248,7 +248,7 @@ def main() -> int:
     rows = conn.execute(
         f"""
         SELECT rowid AS rid, file_path, artist, title, album, codec, bitrate,
-               sample_rate, channels, duration, audio_hash, status
+               sample_rate, channels, duration, audio_hash, status, canon_action, chromaprint
           FROM archive
          WHERE status IN ({placeholders}) AND channels > 2
          ORDER BY artist, title
@@ -291,6 +291,17 @@ def main() -> int:
             mismatch += 1
             print(f"  REFUSED (db says {row['channels']}ch, file says {live}): {path.name}")
             continue
+
+        # The file must be this row's recording: another song in its place would
+        # be changed under the old identity (Codex review of #237, round 13).
+        if args.downmix:
+            from musaeus.recording_identity import not_this_recording
+
+            why = not_this_recording(path, row, row["audio_hash"])
+            if why:
+                mismatch += 1
+                print(f"  REFUSED ({why}): {path.name}")
+                continue
 
         if args.check:
             what = (
@@ -376,14 +387,17 @@ def main() -> int:
                         f"{live}ch downmixed to stereo in place",
                     ),
                 )
+                # The Lossless copy goes BEFORE the stereo row commits: a failed
+                # cleanup rolls the swap back, and a rerun still finds the song
+                # (Codex review of #237, round 13).
+                if row["audio_hash"]:
+                    _remake_lossless_copy(cfg, row["audio_hash"])
                 conn.commit()
             except Exception:
                 conn.rollback()
                 os.replace(aside, path)  # the original back where it was
                 raise
             os.unlink(aside)
-            if row["audio_hash"]:
-                _remake_lossless_copy(cfg, row["audio_hash"])
             downmixed += 1
             print(f"  downmixed {live}ch -> 2ch: {row['artist']} - {row['title']}")
             continue
