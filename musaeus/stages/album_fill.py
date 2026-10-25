@@ -302,15 +302,18 @@ def mb_confirm(artist: str, album: str, title: str, live_ok: bool = False) -> tu
         return list(data.get("recordings", []))
 
     found = choose_mb_confirmation(search(artist), artist, title, album, live_ok=live_ok)
-    if found[0] or "," not in artist:
+    from ..art_sources import _key, _parts
+
+    # A joint credit names a person in full ("Paul McCartney, Wings"); a band
+    # named with commas is single words ("Earth, Wind & Fire", "Crosby, Stills
+    # & Nash") and is never split into acts (Codex review of #235, round 3).
+    if found[0] or "," not in artist or not any(" " in p.strip() for p in _parts(artist)):
         return found
     # A joint credit ("Paul McCartney, Wings") found nothing that confirms, and
     # that "nothing" cleared a right album (batch 2 rerun, 2026-10-24). Asked
     # again by its first name; an answer counts only if its credit names the
     # same acts -- "Paul McCartney and Wings" does, a band "Earth" or a solo
     # "John Paul" does not (Codex review of #235, rounds 1-2).
-    from ..art_sources import _key, _parts
-
     want = {_key(p) for p in _parts(artist)}
     retry = [
         r

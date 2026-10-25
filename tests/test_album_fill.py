@@ -937,18 +937,21 @@ def _credit_rec(credit, title="Song", album="Album"):
 
 
 @pytest.mark.parametrize(
-    ("full", "retry", "confirmed"),
+    ("credit", "full", "retry", "confirmed"),
     [
-        ([], [_credit_rec("John Paul")], False),  # a solo "John Paul" is not "John, Paul"
+        # a solo "John Lennon Paul McCartney" is not the joint "John Lennon, Paul McCartney"
+        ("John Lennon, Paul McCartney", [], [_credit_rec("John Lennon Paul McCartney")], False),
+        # a stray first hit does not skip the retry
         (
-            [_credit_rec("John & Paul", title="Other Song")],
-            [_credit_rec("John & Paul")],
+            "Paul McCartney, Wings",
+            [_credit_rec("Paul McCartney & Wings", title="Other Song")],
+            [_credit_rec("Paul McCartney & Wings")],
             True,
-        ),  # a stray first hit
+        ),
     ],
 )
 def test_a_retry_names_the_same_acts_and_is_not_skipped_by_a_stray_hit(
-    monkeypatch, full, retry, confirmed
+    monkeypatch, credit, full, retry, confirmed
 ):
     """Codex review of #235, round 2 (both reproduced)."""
     monkeypatch.setattr(af.time, "sleep", lambda *_: None)
@@ -957,8 +960,23 @@ def test_a_retry_names_the_same_acts_and_is_not_skipped_by_a_stray_hit(
         "_get_json",
         lambda url, headers=None: {
             "recordings": full
-            if 'artist:"John, Paul"' in parse_qs(urlparse(url).query)["query"][0]
+            if f'artist:"{credit}"' in parse_qs(urlparse(url).query)["query"][0]
             else retry
         },
     )
-    assert af.mb_confirm("John, Paul", "Album", "Song")[0] is confirmed
+    assert af.mb_confirm(credit, "Album", "Song")[0] is confirmed
+
+
+def test_a_band_named_with_commas_is_never_split_into_acts(monkeypatch):
+    """Codex review of #235, round 3 (reproduced): "Earth, Wind & Fire" was confirmed
+    by a recording credited to three acts named Earth, Wind and Fire."""
+    asked = []
+    three = _credit_rec("Earth & Wind & Fire")
+
+    def _mb(url, headers=None):
+        asked.append(url)
+        return {"recordings": [] if len(asked) == 1 else [three]}
+
+    monkeypatch.setattr(af.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(af, "_get_json", _mb)
+    assert af.mb_confirm("Earth, Wind & Fire", "Album", "Song")[0] is False and len(asked) == 1
