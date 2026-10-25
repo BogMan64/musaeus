@@ -57,6 +57,7 @@ import contextlib
 import logging
 import re
 import shutil
+import unicodedata
 from pathlib import Path
 
 from ..context import RunContext, StageResult
@@ -116,9 +117,18 @@ def composer_for(artist: str, title: str, canon: dict[str, str]) -> tuple[str | 
     m = _TITLE_PREFIX.match((title or "").strip())
     if m:
         hit = canon.get(m.group(1).strip().lower())
-        if hit:
+        # The prefix must name the composer: the canon also maps performers
+        # to a composer for their credits ("András Schiff" -> Bach), and
+        # "András Schiff: Mozart Piano Sonata" went to Bach (Codex review of #244).
+        if hit and _fold(hit).split()[-1] in _fold(m.group(1)).split():
             return hit, "title prefix"
     return None, ""
+
+
+def _fold(name: str) -> str:
+    """Lower case, accents and punctuation gone: "J.S.Bach" -> "j s bach"."""
+    plain = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", " ", plain.lower()).strip()
 
 
 def _is_within(path: Path, root: Path) -> bool:

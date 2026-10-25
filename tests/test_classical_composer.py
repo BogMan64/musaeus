@@ -110,6 +110,22 @@ class TestCanonMatching:
         assert composer_for("The London Philharmonic Orchestra", "The Valkyrie: Ride Of The Valkyries",
                             CANON)[0] is None  # fmt: skip
 
+    @pytest.mark.parametrize("sep", [":", " -"])
+    def test_a_performer_named_in_the_canon_is_no_title_prefix(self, sep):
+        """Codex review of #244 (reproduced): the canon also maps performers to a
+        composer ("András Schiff" -> Bach, for his credits); "András Schiff: Mozart
+        Piano Sonata No. 11" was filed under Bach. A title prefix must name the
+        composer."""
+        canon = dict(CANON, **{"andrás schiff": "Johann Sebastian Bach"})
+        title = f"András Schiff{sep} Mozart Piano Sonata No. 11"
+        assert composer_for("Chamber Orchestra", title, canon) == (None, "")
+
+    def test_a_composer_alias_is_still_a_title_prefix(self):
+        canon = dict(CANON, **{"georg friedrich händel": "George Frideric Handel"})
+        got = composer_for("Ensemble", "Georg Friedrich Händel: Water Music", canon)[0]
+        assert got == "George Frideric Handel"
+        assert composer_for("Ensemble", "J.S. Bach - Air", CANON)[0] == "Johann Sebastian Bach"
+
     def test_a_missing_canon_file_yields_an_empty_map(self, tmp_path):
         assert load_composer_canon(tmp_path / "nope.tsv") == {}
 
