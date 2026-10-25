@@ -36,9 +36,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import errno
+import os
+import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -76,44 +81,121 @@ def _probe_channels(path: Path) -> int | None:
     return int(first) if first.isdigit() else None
 
 
-def _downmix_to_stereo(src: Path, dest: Path) -> bool:
-    """Write a stereo ALAC copy of a multichannel file.
+#: An in-place swap must be the whole song: Canonicalize's 2-second tolerance let a
+#: 1-second copy replace a 2-second song (Codex review of #237). AAC priming is ~0.05 s.
+_SWAP_TOLERANCE_S = 0.25
 
-    -map 0:a:0 is load-bearing, not tidiness: these releases carry embedded
-    cover art as a second stream (h264 or mjpeg), and without the explicit
-    audio-only map ffmpeg tries to copy that stream into an .m4a container
-    that will not hold it, failing with "Could not find tag for codec h264".
 
-    ffmpeg's default downmix matrix is the ITU/ATSC one, which is what a
-    consumer AVR would apply anyway -- so this produces the stereo fold-down
-    the playback chain was going to make regardless, just once and stored,
-    rather than on every play.
+def _downmix_to_stereo(src: Path, dest: Path) -> str | None:
+    """Write a stereo copy with Canonicalize's own encoders (Grey, 2026-10-24).
+
+    Returns the codec written ("alac"/"aac"), or None when the song is kept as it is.
+
+    Cover art and tags are kept, lossless stays ALAC and lossy is AAC, and the
+    copy is verified (length; mono or stereo) before it replaces anything. The
+    hand-rolled command it replaces dropped the art, turned AAC into ALAC, and
+    wrote to a ".tmp" name ffmpeg could not choose a format for -- every
+    downmix failed, and the fallback deleted the song.
     """
-    r = subprocess.run(
-        [
-            "ffmpeg",
-            "-v",
-            "error",
-            "-y",
-            "-i",
-            str(src),
-            "-map",
-            "0:a:0",
-            "-c:a",
-            "alac",
-            "-ac",
-            "2",
-            str(dest),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if r.returncode != 0 or not dest.exists() or dest.stat().st_size == 0:
-        if r.stderr.strip():
-            print(f"    downmix failed: {r.stderr.strip().splitlines()[-1][:90]}")
+    from musaeus.config import LOSSLESS_CODECS
+    from musaeus.stages import canonicalize as canon
+
+    # The file decides, never the row: a stale "aac" row made lossless ALAC lossy
+    # (Codex review of #237). Unreadable or unknown: kept as it is.
+    # In place only for .m4a: the encoders write MP4, and a .flac under its old
+    # name would be MP4 its row calls FLAC (Codex review of #237, round 2).
+    if src.suffix.lower() != ".m4a":
+        print(f"    downmix refused: {src.suffix} is not .m4a -- left for a person")
+        return None
+    codec = canon.CanonicalizeStage._resolve_codec({}, src)
+    if codec in LOSSLESS_CODECS:
+        encode = canon._convert_to_alac
+    elif codec in canon._TRANSCODABLE_CODECS:
+        encode = canon._transcode_to_aac
+    else:
+        print(f"    downmix refused: codec {codec or '(unreadable)'!r}")
+        return None
+    try:
+        encode(src, dest)  # writes mp4 whatever the name ("-f mp4")
+        # ffmpeg keeps the plain atoms but drops every freeform tag -- the
+        # MusicBrainz ids, BPM, key. The master's own tags go across, minus
+        # loudness, which Forge measures again; and the song keeps its file
+        # permissions (Codex review of #237, round 8). BEFORE the checks, so they
+        # read the final file (round 9).
+        from musaeus.edition_bake import copy_tags
+
+        copy_tags(src, dest, None)
+        os.chmod(dest, stat.S_IMODE(os.stat(src).st_mode))
+        # Its extended attributes too; one that cannot be set stops the swap
+        # (Codex review of #237, round 14).
+        try:
+            names = os.listxattr(src)
+        except OSError as exc:
+            # Only "this filesystem has none" is nothing to carry; any other
+            # error stops the swap (Codex review of #237, round 15).
+            if exc.errno not in (errno.ENOTSUP, errno.EOPNOTSUPP):
+                raise
+            names = []
+        for name in names:
+            os.setxattr(dest, name, os.getxattr(src, name))
+        canon._verify_conversion(src, dest)
+        from musaeus.duration import container_seconds, decodes_cleanly, stream_seconds
+
+        # The audio stream too: a container can claim a length its audio does
+        # not have (Codex review of #237, round 5).
+        for seconds in (container_seconds, stream_seconds):
+            a, b = seconds(src), seconds(dest)
+            if a is None or b is None or abs(a - b) > _SWAP_TOLERANCE_S:
+                raise RuntimeError(f"length changed ({a} s -> {b} s)")
+        ok, err = decodes_cleanly(dest)  # the header can lie; the decode cannot
+        if not ok:
+            raise RuntimeError(f"the new copy does not decode cleanly: {err}")
+    except Exception as exc:  # noqa: BLE001 -- any failure: the song is kept as it is
+        print(f"    downmix failed: {str(exc)[:90]}")
         dest.unlink(missing_ok=True)
-        return False
-    return _probe_channels(dest) == 2
+        return None
+    return "alac" if encode is canon._convert_to_alac else "aac"
+
+
+def _remake_lossless_copy(cfg: MusicConfig, audio_hash: str, master: Path) -> None:
+    """The Lossless edition copy of a downmixed master goes, to be made again.
+
+    The planner trusts the kept audio_hash and would only retag that copy, so it
+    stayed surround (Codex review of #237, round 11). It is removed with its
+    record and the measurements cached for the old audio; the next edition build
+    makes it from the stereo master. The AAC editions fold surround to stereo
+    already (edition_bake.aac_before_loudnorm) and are left alone.
+    """
+    from musaeus import edition_ledger as el
+
+    path = el.ledger_path(cfg)
+    if not path.exists():
+        return
+    conn = el.open_ledger(path)
+    try:
+        copy = el.copies(conn, "lossless").get(audio_hash)
+        conn.execute("DELETE FROM measurements WHERE master_hash = ?", (audio_hash,))
+        conn.commit()
+        if copy is not None:
+            from musaeus.edition_bake import read_marker
+            from musaeus.edition_build import LOSSLESS_KIND, marker_for
+
+            # Only a copy marked as this master's: a stale record's path may
+            # hold another song now (Codex review of #237, round 12) -- and only
+            # inside the Lossless edition, never the master: a stale record
+            # naming the master or a Car copy carries the same marker (round 16).
+            out = Path(copy.output_path)
+            inside = out.resolve().is_relative_to(LOSSLESS_KIND.root(cfg).resolve())
+            if (
+                inside
+                and out.resolve() != Path(master).resolve()
+                and out.exists()
+                and read_marker(out) == marker_for(audio_hash)
+            ):
+                out.unlink()
+            el.forget(conn, "lossless", audio_hash)
+    finally:
+        conn.close()
 
 
 def _purge_row(
@@ -163,8 +245,8 @@ def main() -> int:
     ap.add_argument(
         "--downmix",
         action="store_true",
-        help="Downmix >2ch to stereo IN PLACE instead of deleting. Keeps the "
-        "song. Only falls back to delete-and-log if the downmix fails.",
+        help="Downmix >2ch to stereo IN PLACE instead of deleting (Grey, 2026-10-24). "
+        "Keeps the song; a failed downmix leaves it as it is, never deletes it.",
     )
     ap.add_argument(
         "--include-quarantine",
@@ -174,6 +256,11 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = get_config()
+    if args.apply:  # rewrites or deletes masters
+        from musaeus.masters_lock import hold_for_process
+
+        hold_for_process(exclusive=True, what="scripts/musaeus_purge_multichannel.py",
+                         runs_root=cfg.runs_root)  # fmt: skip
     conn = sqlite3.connect(cfg.db_path)
     conn.row_factory = sqlite3.Row
 
@@ -182,7 +269,7 @@ def main() -> int:
     rows = conn.execute(
         f"""
         SELECT rowid AS rid, file_path, artist, title, album, codec, bitrate,
-               sample_rate, channels, duration, audio_hash, status
+               sample_rate, channels, duration, audio_hash, status, canon_action, chromaprint
           FROM archive
          WHERE status IN ({placeholders}) AND channels > 2
          ORDER BY artist, title
@@ -211,7 +298,11 @@ def main() -> int:
         # with nothing behind them.
         if not path.exists():
             missing += 1
-            if not args.check:
+            # --downmix never deletes: a song missing for now keeps its row and
+            # ledger entry (Codex review of #237, round 4).
+            if args.downmix:
+                print(f"  missing on disk, left as it is: {path.name}")
+            elif not args.check:
                 _purge_row(conn, cfg, row, channels=row["channels"], note="file already gone")
             continue
 
@@ -222,24 +313,91 @@ def main() -> int:
             print(f"  REFUSED (db says {row['channels']}ch, file says {live}): {path.name}")
             continue
 
+        # The file must be this row's recording: another song in its place would
+        # be changed under the old identity (Codex review of #237, round 13).
+        if args.downmix:
+            from musaeus.recording_identity import not_this_recording
+
+            why = not_this_recording(path, row, row["audio_hash"])
+            if why:
+                mismatch += 1
+                print(f"  REFUSED ({why}): {path.name}")
+                continue
+
         if args.check:
-            print(f"  would remove: {live}ch  {row['artist']} - {row['title']}")
+            what = (
+                (
+                    "would downmix to stereo"
+                    if path.suffix.lower() == ".m4a"
+                    else "left for a person (not .m4a)"
+                )
+                if args.downmix
+                else "would remove"
+            )
+            print(f"  {what}: {live}ch  {row['artist']} - {row['title']}")
             continue
 
         if args.downmix:
-            tmp = path.with_suffix(path.suffix + ".stereo.tmp")
-            if _downmix_to_stereo(path, tmp):
-                tmp.replace(path)
+            # A name of its own, made here: a fixed ".stereo.tmp" overwrote a file
+            # already there (Codex review of #237, round 4).
+            fd, name = tempfile.mkstemp(prefix=".stereo-", suffix=".tmp", dir=path.parent)
+            os.close(fd)
+            tmp = Path(name)
+            written = _downmix_to_stereo(path, tmp)
+            if written is None:
+                tmp.unlink(missing_ok=True)  # only the file made here
+                print(f"  downmix failed, song kept as it is: {path.name}")
+                continue
+            from musaeus.hasher import file_hash
+
+            # The swap cannot be left half done (Codex review of #237, round 5):
+            # the new copy is hashed BEFORE anything moves, the original is set
+            # aside, and put back if the catalogue update does not commit.
+            try:
+                new_hash, new_size = file_hash(tmp), tmp.stat().st_size
+                from musaeus.stages.canonicalize import _probe_streams
+
+                audio = [
+                    s
+                    for s in _probe_streams(tmp).get("streams", [])
+                    if s.get("codec_type") == "audio"
+                ]
+                new_bitrate = int(audio[0].get("bit_rate") or 0) or None if audio else None
+            except Exception:
+                tmp.unlink(missing_ok=True)
+                raise
+            # The original never leaves its path: the backup is a hard link (a
+            # copy where links cannot be made), and the new copy replaces it in
+            # one atomic step (Codex review of #237, round 6).
+            fd, aside = tempfile.mkstemp(prefix=".orig-", suffix=".tmp", dir=path.parent)
+            os.close(fd)
+            os.unlink(aside)
+            try:
+                os.link(path, aside)
+            except OSError:
+                shutil.copy2(path, aside)
+            try:
+                os.replace(tmp, path)
+            except Exception:
+                tmp.unlink(missing_ok=True)
+                os.unlink(aside)
+                raise
+            try:
+                # audio_hash stays: it names the recording as it arrived, as
+                # Canonicalize keeps it for a downmixed arrival, so the same
+                # 5.1 file arriving again is still known. The file's own hash
+                # is new, its bit-rot baseline goes (a verify reports it as new,
+                # not corrupt), and Forge re-measures the loudness.
                 conn.execute(
-                    "UPDATE archive SET channels = 2, audio_hash = NULL, full_hash = NULL, "
-                    "rg_tagged_at = NULL WHERE rowid = ?",
-                    (row["rid"],),
+                    # The old loudness described the 6-channel audio: the resolver
+                    # reads lufs, and Forge could embed the old gain (Codex review of
+                    # #237, round 10). Cleared, so Forge measures again.
+                    "UPDATE archive SET channels = 2, codec = ?, full_hash = ?, size_bytes = ?, "
+                    "bitrate = COALESCE(?, bitrate), lufs = NULL, lufs_tp = NULL, rg_gain = NULL, "
+                    "rg_peak = NULL, rg_tagged_at = NULL WHERE rowid = ?",
+                    (written, new_hash, new_size, new_bitrate, row["rid"]),
                 )
-                # Hashes and the loudness stamp are cleared, not recomputed
-                # here: the audio genuinely changed, so the stored PCM hash
-                # is now wrong and Forge's "already tagged" shortcut would
-                # skip a file that needs re-measuring. Re-run sentinel and
-                # forge to refill them.
+                conn.execute("DELETE FROM archive_tier_hashes WHERE path = ?", (str(path),))
                 conn.execute(
                     "INSERT INTO events (run_id, ts, event_type, file_path, stage, note) "
                     "VALUES (?, ?, 'MULTICHANNEL_DOWNMIXED', ?, 'purge-multichannel', ?)",
@@ -250,11 +408,20 @@ def main() -> int:
                         f"{live}ch downmixed to stereo in place",
                     ),
                 )
+                # The Lossless copy goes BEFORE the stereo row commits: a failed
+                # cleanup rolls the swap back, and a rerun still finds the song
+                # (Codex review of #237, round 13).
+                if row["audio_hash"]:
+                    _remake_lossless_copy(cfg, row["audio_hash"], path)
                 conn.commit()
-                downmixed += 1
-                print(f"  downmixed {live}ch -> 2ch: {row['artist']} - {row['title']}")
-                continue
-            print(f"  downmix failed, falling back to delete: {path.name}")
+            except Exception:
+                conn.rollback()
+                os.replace(aside, path)  # the original back where it was
+                raise
+            os.unlink(aside)
+            downmixed += 1
+            print(f"  downmixed {live}ch -> 2ch: {row['artist']} - {row['title']}")
+            continue
 
         entry = {
             "reason": (
