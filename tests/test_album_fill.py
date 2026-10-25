@@ -944,6 +944,49 @@ def test_a_joint_credit_that_finds_nothing_is_asked_by_its_first_name(
     assert ok and len(asked) == searches
 
 
+def _rel_on(title, secondary=None, status="Official", date="1981"):
+    return {"title": title, "status": status, "date": date,
+            "release-group": {"primary-type": "Album", "secondary-types": secondary or []}}  # fmt: skip
+
+
+def test_words_in_brackets_are_asked_again_as_plain_words(monkeypatch):
+    """Batch 3 rerun #3 (2026-10-25, MusicBrainz's real answers): asked with
+    "(We Salute You)" dropped, MusicBrainz gave AC/DC's song only on
+    compilations, or with a score of 76; asked with the words kept, it gave the
+    recording at 100 on the official album, and the album was not cleared."""
+    name = "For Those About To Rock (We Salute You)"
+    stripped = [
+        {"score": 100, "title": "For Those About to Rock", "artist-credit": [{"name": "AC/DC"}],
+         "releases": [_rel_on("For Those About to Rock", ["Compilation"])]},
+        {"score": 76, "title": "For Those About to Rock (We Salute You)", "artist-credit": [{"name": "AC/DC"}],
+         "releases": [_rel_on("For Those About To Rock", date="2009")]},
+    ]  # fmt: skip
+    whole = [dict(stripped[1], score=100)]
+    asked = []
+
+    def _mb(url, headers=None):
+        query = parse_qs(urlparse(url).query)["query"][0]
+        asked.append(query)
+        return {"recordings": whole if "We Salute You" in query else stripped}
+
+    monkeypatch.setattr(af.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(af, "_get_json", _mb)
+    ok, why = af.mb_confirm("AC/DC", name, name)
+    assert ok and len(asked) == 2, why
+
+
+def test_a_name_without_brackets_is_asked_once(monkeypatch):
+    asked = []
+
+    def _mb(url, headers=None):
+        asked.append(url)
+        return {"recordings": []}
+
+    monkeypatch.setattr(af.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(af, "_get_json", _mb)
+    assert af.mb_confirm("Toto", "Toto IV", "Rosanna")[0] is False and len(asked) == 1
+
+
 def test_a_retry_by_first_name_needs_every_name_of_the_credit(monkeypatch):
     """Codex review of #235 (reproduced): "Earth, Wind & Fire" found nothing, the
     retry asked "Earth", and a recording by the band Earth confirmed the album."""
