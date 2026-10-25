@@ -282,3 +282,21 @@ def test_a_failed_install_leaves_the_song_at_its_path(vault, monkeypatch):
         _probe(song, "stream=channels").split()[0].strip(",") == "6" and _row(cfg)["channels"] == 6
     )
     assert not list(song.parent.glob(".stereo-*")) and not list(song.parent.glob(".orig-*"))
+
+
+def test_identity_tags_and_permissions_survive_the_downmix(vault):
+    """Codex review of #237, round 8 (both reproduced): the MusicBrainz recording ID
+    (a freeform MP4 tag) was dropped by the encode, and the song became 0600."""
+    from mutagen.mp4 import MP4, MP4FreeForm
+
+    mod, cfg, song = vault
+    m = MP4(song)
+    m.tags["----:com.apple.iTunes:MusicBrainz Track Id"] = [MP4FreeForm(b"rec-123")]
+    m.tags["----:com.apple.iTunes:replaygain_track_gain"] = [MP4FreeForm(b"-3.00 dB")]
+    m.save()
+    os.chmod(song, 0o644)
+    mod.main()
+    tags = MP4(song).tags
+    assert bytes(tags["----:com.apple.iTunes:MusicBrainz Track Id"][0]) == b"rec-123"
+    assert "----:com.apple.iTunes:replaygain_track_gain" not in tags, "loudness is measured again"
+    assert oct(os.stat(song).st_mode & 0o777) == "0o644"

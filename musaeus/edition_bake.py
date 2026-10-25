@@ -475,8 +475,11 @@ _GAIN_TAG_RE = re.compile(
 MARKER_KEY = "----:com.apple.iTunes:MUSAEUS_EDITION"
 
 
-def copy_tags(master: Path, copy: Path, marker: str) -> None:
+def copy_tags(master: Path, copy: Path, marker: str | None) -> None:
     """Give *copy* the master's tags, minus any loudness gain, plus *marker*.
+
+    marker=None: no edition marker -- a master rewritten in place (the stereo
+    downmix of scripts/musaeus_purge_multichannel.py) is not an edition.
 
     Measured 2026-09-27 on a real master: ffmpeg's -map_metadata 0 keeps
     the plain iTunes atoms but drops every freeform one -- the gain tags,
@@ -501,7 +504,8 @@ def copy_tags(master: Path, copy: Path, marker: str) -> None:
         # The master's measurements describe the master, not this copy.
         if not _GAIN_TAG_RE.match(key) and key != MEASURED_KEY:
             dst.tags[key] = value
-    dst.tags[MARKER_KEY] = [MP4FreeForm(marker.encode("utf-8"))]
+    if marker is not None:
+        dst.tags[MARKER_KEY] = [MP4FreeForm(marker.encode("utf-8"))]
     dst.save()
 
 

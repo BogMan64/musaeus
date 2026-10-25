@@ -39,6 +39,7 @@ import csv
 import os
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -127,6 +128,14 @@ def _downmix_to_stereo(src: Path, dest: Path) -> str | None:
         ok, err = decodes_cleanly(dest)  # the header can lie; the decode cannot
         if not ok:
             raise RuntimeError(f"the new copy does not decode cleanly: {err}")
+        # ffmpeg keeps the plain atoms but drops every freeform tag -- the
+        # MusicBrainz ids, BPM, key. The master's own tags go across, minus
+        # loudness, which Forge measures again; and the song keeps its file
+        # permissions (Codex review of #237, round 8).
+        from musaeus.edition_bake import copy_tags
+
+        copy_tags(src, dest, None)
+        os.chmod(dest, stat.S_IMODE(os.stat(src).st_mode))
     except Exception as exc:  # noqa: BLE001 -- any failure: the song is kept as it is
         print(f"    downmix failed: {str(exc)[:90]}")
         dest.unlink(missing_ok=True)
