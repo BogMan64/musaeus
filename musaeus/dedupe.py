@@ -355,8 +355,9 @@ def apply_sheet(
                     gid = f"sheet_{ctx.run_id}_{name}"
                     conn.executemany(
                         "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, "
-                        "run_id, audio_hash) VALUES (?, ?, 'PERSON', 1.0, ?, ?)",
-                        [(gid, p, ctx.run_id, h) for p, h in members],
+                        "run_id, audio_hash, title) VALUES (?, ?, 'PERSON', 1.0, ?, ?, "
+                        "(SELECT title FROM archive WHERE file_path = ?))",
+                        [(gid, p, ctx.run_id, h, p) for p, h in members],
                     )
                     conn.commit()
                     result = stage.carry_out(ctx, [gid], kept, removed)

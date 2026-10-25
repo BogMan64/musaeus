@@ -1685,6 +1685,12 @@ class TestArrivalTwinOfARejectedCopy:
         assert not arrival.exists() and keeper.exists()
 
 
+_SAME_TITLE_DECISION = (
+    "UPDATE duplicates SET title = 'The Tide Is High (Remastered 2001)' "
+    "WHERE group_id = 'sheet' AND status = 'archive'"
+)
+
+
 class TestThePersonsChoiceStands:
     """Grey, 2026-10-25 (Blondie "The Tide Is High"): on Oct 21 Grey kept the
     "Remastered 2001" and sent the "Edit" to review. Another file of the Edit
@@ -1715,11 +1721,12 @@ class TestThePersonsChoiceStands:
         )
         ctx.conn.executemany(
             "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
-            "audio_hash) VALUES (?, ?, ?, 1.0, 'r', ?, ?)",
-            [("sheet", str(kept), "PERSON", "keep", "hk"),
-             ("sheet", str(ctx.inbox / "was" / "tide-edit.m4a"), "PERSON", "archive", "hr"),
-             ("g", str(kept), "NEAR", "pending", "hk"),
-             ("g", str(arrival), "NEAR", "pending", "ha")],
+            "audio_hash, title) VALUES (?, ?, ?, 1.0, 'r', ?, ?, ?)",
+            [("sheet", str(kept), "PERSON", "keep", "hk", "The Tide Is High (Remastered 2001)"),
+             ("sheet", str(ctx.inbox / "was" / "tide-edit.m4a"), "PERSON", "archive", "hr",
+              "The Tide Is High (Edit)"),
+             ("g", str(kept), "NEAR", "pending", "hk", None),
+             ("g", str(arrival), "NEAR", "pending", "ha", None)],
         )  # fmt: skip
         ctx.conn.execute(
             "INSERT INTO events (run_id, ts, event_type, file_path, old_value, new_value) VALUES "
@@ -1777,6 +1784,7 @@ class TestThePersonsChoiceStands:
         kept, arrival = self._scene(ctx, "The Tide Is High (Remastered 2001)")
         # The person chose between two copies of one title; the arrival is an Edit
         # with the rejected copy's audio.
+        ctx.conn.execute(_SAME_TITLE_DECISION)  # the person chose between two "Remastered 2001"
         ctx.conn.execute(
             "UPDATE archive SET title = 'The Tide Is High (Remastered 2001)' WHERE audio_hash = 'hr'"
         )
@@ -1811,6 +1819,7 @@ class TestThePersonsChoiceStands:
         from musaeus.db import upsert_archive
 
         kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        ctx.conn.execute(_SAME_TITLE_DECISION)  # the person chose between two "Remastered 2001"
         ctx.conn.execute("UPDATE archive SET title = 'The Tide Is High (Remastered 2001)' "
                          "WHERE status = 'DUPE_REVIEW' AND audio_hash = 'hr'")  # fmt: skip
         other = ctx.config.dupes_review_dir / "2026-10-01" / "other-edit.m4a"
@@ -1829,6 +1838,7 @@ class TestThePersonsChoiceStands:
         rejected "Remastered 2001" copy later held a different recording titled
         "Edit"; its title turned a same-title choice into a choice against the Edit."""
         kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        ctx.conn.execute(_SAME_TITLE_DECISION)  # the person chose between two "Remastered 2001"
         ctx.conn.execute("UPDATE archive SET audio_hash = 'hz' "
                          "WHERE status = 'DUPE_REVIEW' AND audio_hash = 'hr'")  # fmt: skip
         ctx.conn.commit()
@@ -1836,3 +1846,55 @@ class TestThePersonsChoiceStands:
         assert arrival.exists() and not kept.exists(), (
             "the keep rule ranks them (a choice between copies)"
         )
+
+    def test_the_choice_stands_after_the_rejected_review_copy_is_cleared(self, ctx):
+        """Codex review of #239, round 5 (reproduced): the rejected title was read
+        from the rejected copy's review row; once review was cleared (file and row
+        gone) a later Edit replaced the person's choice. The title is stored with
+        the person's decision."""
+        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        for (p,) in ctx.conn.execute(
+            "SELECT file_path FROM archive WHERE status = 'DUPE_REVIEW'"
+        ).fetchall():
+            Path(p).unlink()
+        ctx.conn.execute("DELETE FROM archive WHERE status = 'DUPE_REVIEW'")
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert kept.exists() and not arrival.exists()
+
+
+def test_older_person_decisions_get_the_title_of_their_own_copy(tmp_path):
+    """open_db fills the new title column once, for decisions made before it:
+    from the copy at the decision's path or where it was moved for review, and
+    only with its audio (Codex review of #239, round 5)."""
+    from musaeus.db import open_db, upsert_archive
+
+    db = tmp_path / "old.db"
+    conn = open_db(db)
+    conn.execute("ALTER TABLE duplicates DROP COLUMN title")  # a catalogue from before
+    for path, h, title in [
+        ("/lib/tide.m4a", "hk", "The Tide Is High (Remastered 2001)"),
+        ("/rev/tide-edit.m4a", "hr", "The Tide Is High (Edit)"),
+        ("/was/tide-edit.m4a", "hz", "Another Song"),
+    ]:  # its old path, reused
+        upsert_archive(
+            conn, {"file_path": path, "status": "CATALOGUED", "title": title, "audio_hash": h}
+        )
+    conn.executemany(
+        "INSERT INTO duplicates (group_id, file_path, duplicate_type, status, audio_hash) "
+        "VALUES ('sheet', ?, 'PERSON', ?, ?)",
+        [("/lib/tide.m4a", "keep", "hk"), ("/was/tide-edit.m4a", "archive", "hr")],
+    )
+    conn.execute(
+        "INSERT INTO events (run_id, ts, event_type, file_path, old_value, new_value) VALUES "
+        "('sheet', '2026-10-21', 'DUPE_MOVED_FOR_REVIEW', '/rev/tide-edit.m4a', "
+        "'/was/tide-edit.m4a', '/rev/tide-edit.m4a')"
+    )
+    conn.commit()
+    conn.close()
+    conn = open_db(db)
+    got = dict(conn.execute("SELECT status, title FROM duplicates").fetchall())
+    assert got == {
+        "keep": "The Tide Is High (Remastered 2001)",
+        "archive": "The Tide Is High (Edit)",
+    }
