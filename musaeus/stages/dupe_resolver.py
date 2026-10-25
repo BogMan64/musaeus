@@ -507,6 +507,67 @@ def _component_members(conn, groups: Sequence[str]) -> list[dict]:
     return members
 
 
+def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
+    """The copy a set-aside twin of this arrival lost to, when it is still catalogued.
+
+    Grey, 2026-10-24: an arrival with the same audio as a copy waiting in review
+    goes to review too -- the decision that put it there stands. Only an arrival
+    (not finalized), and only when that copy lost to ANOTHER copy: in the batch
+    that set it aside, the arrival may be the keeper, waiting in INBOX for Act 3.
+    """
+    h = arrival.get("current_hash")
+    # A copy the person kept in `musaeus dedupe` is theirs (Codex review of #234, round 14).
+    if not h or arrival.get("finalized_at") or arrival.get("kept_by_person_at"):
+        return None
+    # A copy of this audio kept by any decision -- this one, or another whose path
+    # has changed since -- is the keep rule's to rank, not this rule's to move
+    # (Codex review of #234, rounds 7, 15, 16). By audio: a path changes.
+    if conn.execute(
+        "SELECT 1 FROM duplicates WHERE audio_hash = ? AND status = 'keep'", (h,)
+    ).fetchone():
+        return None
+    twins = [
+        m["file_path"]
+        for m in aside
+        if m.get("current_status") == "DUPE_REVIEW"
+        and m.get("current_hash") == h
+        and Path(m["file_path"]).is_file()  # on disk (Codex review of #234, round 13)
+    ]
+    if not twins:
+        return None
+    # An exact copy already filed in the library: those copies are ranked by the
+    # keep rule, which may keep this arrival (Codex review of #234, round 10).
+    # Another plain ARRIVAL does not count: both go (round 6).
+    # On disk: a filed row whose file is gone holds no copy (round 12, reproduced).
+    filed = conn.execute(
+        "SELECT file_path FROM archive WHERE audio_hash = ? AND status = 'CATALOGUED' "
+        "AND COALESCE(finalized_at, '') <> '' AND file_path <> ?",
+        (h, arrival["file_path"]),
+    ).fetchall()
+    if any(Path(r[0]).exists() for r in filed):
+        return None
+    # The decision about THAT copy -- recorded at its path, or at the path it was
+    # moved to review from -- not any decision about this audio (Codex review of
+    # #234, round 2). Its keeper by recording, not by recorded path: Finalize
+    # files it after the decision, and a reused path holds another song (round 1).
+    qs = ",".join("?" * len(twins))
+    rows = conn.execute(
+        "SELECT a.* FROM duplicates d "
+        "JOIN duplicates k ON k.group_id = d.group_id AND k.status = 'keep' "
+        "JOIN archive a ON a.audio_hash = k.audio_hash AND a.status = 'CATALOGUED' "
+        f"WHERE d.status = 'archive' AND d.audio_hash = ? AND (d.file_path IN ({qs}) OR d.file_path IN ("
+        "SELECT old_value FROM events WHERE event_type = 'DUPE_MOVED_FOR_REVIEW' "
+        f"AND new_value IN ({qs}))) "
+        # A keeper of the same audio makes the arrival a plain exact copy of a
+        # live one: the keep rule ranks those, and this rule must not pick the
+        # keeper itself out (Codex review of #234, round 7).
+        "AND k.audio_hash <> '' AND k.audio_hash <> ? AND a.file_path <> ?",
+        (h, *twins, *twins, h, arrival["file_path"]),
+    ).fetchall()
+    # A keeper whose file is on disk, past any row whose file is gone (round 14).
+    return next((dict(r) for r in rows if Path(r["file_path"]).is_file()), None)
+
+
 def _pick_keeper_and_losers(members: list[dict]) -> tuple[dict | None, list[dict]]:
     """
     Members are already ranked by Grey's keep rule (_rank, keep_rule.py),
@@ -686,9 +747,17 @@ class DupeResolverStage(BaseStage):
             if not any(_mismatch(m) for m in _get_group_members(conn, gid))
         ]
         for component in _connected_groups(conn, sound):
-            members = _component_members(conn, component)
-            members = [m for m in members if m.get("current_status") not in SET_ASIDE_STATUSES]
-            if len(members) < 2 and len(_component_members(conn, component)) > 1:
+            everyone = _component_members(conn, component)
+            members = [m for m in everyone if m.get("current_status") not in SET_ASIDE_STATUSES]
+            # The resolver's own exception: an arrival whose twin in review lost
+            # to another copy goes too (Codex review of #234, rounds 5-6).
+            aside = [m for m in everyone if m not in members]
+            for m in list(members) if aside else []:
+                won = _lost_to_another(conn, m, aside)
+                if won is not None and Path(won["file_path"]).exists():
+                    add(m, won, component[0])
+                    members.remove(m)
+            if len(members) < 2 and len(everyone) > 1:
                 continue
             if not members:
                 continue
@@ -1246,6 +1315,26 @@ class DupeResolverStage(BaseStage):
                 if not dry_run:
                     for m in aside:
                         _mark(ctx, component, m["file_path"], "archive")
+                # An arrival whose twin in review lost to another copy goes too,
+                # each by that decision -- one or several (Grey, 2026-10-24;
+                # Codex review of #234, round 6).
+                arrived = len(members)
+                for m in list(members):
+                    won = _lost_to_another(ctx.conn, m, aside)
+                    if won is None:
+                        continue
+                    result.notes.append(
+                        f"group {group_id}: same audio as a copy in review that lost to "
+                        f"{won['file_path']}: moved to review too"
+                    )
+                    self._move_losers(
+                        ctx, result, batch_date, moved, group_id, won, [m],
+                        dry_run=dry_run, update_duplicates_table=True,
+                        already_moved=already_moved, group_ids=component,
+                    )  # fmt: skip
+                    members.remove(m)
+                if arrived and not members:
+                    continue
                 if len(members) < 2:
                     result.files_skipped += len(members) + len(aside)
                     if not dry_run:

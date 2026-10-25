@@ -572,7 +572,8 @@ class TestDryRunAgreesWithRun:
         # PASSTHROUGH with the path and TRANSCODE without it. A dts row would
         # be UNKNOWN either way and would not discriminate.
         f = cfg.inbox / "already fine.m4a"
-        f.write_bytes(b"not really audio")
+        # Real audio: an unreadable .m4a is refused, not passed through (#234).
+        _gen_audio(f, "aac")
         upsert_archive(
             conn,
             {
@@ -771,3 +772,138 @@ class TestVerifyEffectFailsClosed:
         )
         problems = CanonicalizeStage().verify_effect(ctx, _StageResultStub())
         assert problems, "the row claimed CONVERTED; aac does not honour that"
+
+
+# ── Surround is downmixed to stereo (Grey, 2026-10-24) ────────────────────────
+
+
+def _gen_channels(path: Path, codec: str, channels: int) -> None:
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+         "-ac", str(channels), "-c:a", codec, str(path)],
+        capture_output=True, check=True,
+    )  # fmt: skip
+
+
+def _probe_channels(path: Path) -> int:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+         "stream=channels", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, check=True,
+    )  # fmt: skip
+    return int(out.stdout.strip())
+
+
+class TestSurroundIsDownmixed:
+    """Grey, 2026-10-24: a 5.1 Beatles "Lucy In The Sky With Diamonds (2017 Mix)"
+    became 6-channel AAC in the master library. Surround is downmixed to
+    stereo on the way in; the song is kept. Mono stays mono (2026-09-02)."""
+
+    @pytest.mark.parametrize(
+        ("name", "codec", "ext", "canon_codec"),
+        [("s.flac", "flac", ".flac", "alac"), ("s.m4a", "alac", ".m4a", "alac"),
+         ("s.m4a", "aac", ".m4a", "aac")],
+    )  # fmt: skip
+    def test_six_channels_become_two(self, ctx, name, codec, ext, canon_codec):
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        path = ctx.inbox / name
+        _gen_channels(path, codec, 6)
+        _register_catalogued(ctx, path, codec, ext)
+        ctx.conn.execute("UPDATE archive SET channels = 6")
+        ctx.conn.commit()
+
+        result = CanonicalizeStage().execute(ctx)
+
+        assert result.success is True
+        row = ctx.conn.execute("SELECT file_path, channels FROM archive").fetchone()
+        out = Path(row["file_path"])
+        assert _probe_channels(out) == 2 and _probe_codec(out) == canon_codec
+        assert row["channels"] == 2, "the row says what the file now is"
+
+    def test_mono_stays_mono(self, ctx):
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        path = ctx.inbox / "m.flac"
+        _gen_channels(path, "flac", 1)
+        _register_catalogued(ctx, path, "flac", ".flac")
+
+        CanonicalizeStage().execute(ctx)
+
+        row = ctx.conn.execute("SELECT file_path FROM archive").fetchone()
+        assert _probe_channels(Path(row["file_path"])) == 1
+
+    def test_the_file_decides_not_a_stale_row(self, ctx):
+        """Codex review of #234: a row saying 2 channels let 6-channel AAC pass through."""
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        path = ctx.inbox / "s.m4a"
+        _gen_channels(path, "aac", 6)
+        _register_catalogued(ctx, path, "aac", ".m4a")
+        ctx.conn.execute("UPDATE archive SET channels = 2")
+        ctx.conn.commit()
+
+        CanonicalizeStage().execute(ctx)
+
+        row = ctx.conn.execute("SELECT file_path FROM archive").fetchone()
+        assert _probe_channels(Path(row["file_path"])) == 2
+
+    def test_an_unreadable_channel_count_is_not_passed_through(self, ctx, monkeypatch):
+        """Codex review of #234, round 2: a failed probe fell back to a stale row
+        saying 2, and 6-channel AAC passed through unchecked."""
+        import musaeus.stages.canonicalize as canon
+
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        path = ctx.inbox / "s.m4a"
+        _gen_channels(path, "aac", 6)
+        _register_catalogued(ctx, path, "aac", ".m4a")
+        ctx.conn.execute("UPDATE archive SET channels = 2")
+        ctx.conn.commit()
+
+        def _fail(_p):
+            raise canon.CanonicalizeError("probe failed")
+
+        monkeypatch.setattr(canon, "_probe_streams", _fail)
+        CanonicalizeStage().execute(ctx)
+
+        row = ctx.conn.execute("SELECT canon_action, canonicalized_at FROM archive").fetchone()
+        assert row["canon_action"] != "PASSTHROUGH" and not row["canonicalized_at"]
+
+    def test_a_stereo_file_with_a_stale_surround_row_is_kept_and_its_row_fixed(self, ctx):
+        """Codex review of #234, round 4: passed through as stereo, the row still said
+        6, and BPM skipped the song for good as multichannel."""
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        path = ctx.inbox / "s.m4a"
+        _gen_channels(path, "alac", 2)
+        _register_catalogued(ctx, path, "alac", ".m4a")
+        ctx.conn.execute("UPDATE archive SET channels = 6")
+        ctx.conn.commit()
+
+        CanonicalizeStage().execute(ctx)
+
+        row = ctx.conn.execute("SELECT canon_action, channels FROM archive").fetchone()
+        assert row["canon_action"] == "PASSTHROUGH" and row["channels"] == 2
+
+    def test_a_stale_codec_row_never_sends_lossless_to_aac(self, ctx):
+        """Codex review of #234, round 8: a row saying "aac" for a 6-channel ALAC
+        file sent lossless audio to a lossy re-encode."""
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        path = ctx.inbox / "s.m4a"
+        _gen_channels(path, "alac", 6)
+        _register_catalogued(ctx, path, "aac", ".m4a")
+
+        CanonicalizeStage().execute(ctx)
+
+        row = ctx.conn.execute("SELECT file_path FROM archive").fetchone()
+        out = Path(row["file_path"])
+        assert _probe_codec(out) == "alac" and _probe_channels(out) == 2
+
+    @pytest.mark.parametrize("channels", [6, 2])
+    def test_the_row_takes_the_codec_the_file_has(self, ctx, channels):
+        """Codex review of #234, round 11 (reproduced): a row saying "aac" kept saying
+        it for the ALAC file, and the keep rule ranked the lossless copy as lossy."""
+        ctx.inbox.mkdir(parents=True, exist_ok=True)
+        path = ctx.inbox / "s.m4a"
+        _gen_channels(path, "alac", channels)
+        _register_catalogued(ctx, path, "aac", ".m4a")
+
+        CanonicalizeStage().execute(ctx)
+
+        assert ctx.conn.execute("SELECT codec FROM archive").fetchone()["codec"] == "alac"

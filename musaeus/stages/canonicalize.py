@@ -175,7 +175,23 @@ def _has_attached_picture(probe: dict) -> bool:
     return False
 
 
-def _verify_conversion(source: Path, output: Path) -> None:
+def _channels(probe: dict) -> int:
+    """The most channels of any audio stream; 0 when unknown.
+
+    Every stream: a stereo first stream hid a 5.1 second one (Codex review of
+    #234, round 6). Such a file is converted, and the conversion -- which maps
+    the first stream only -- fails its stream-count check and is refused.
+    """
+    audio = [s for s in probe.get("streams", []) if s.get("codec_type") == "audio"]
+    return max((int(s.get("channels") or 0) for s in audio), default=0)
+
+
+#: Surround is downmixed to stereo and the song kept (Grey, 2026-10-24). Mono
+#: stays mono (2026-09-02): only MORE than two channels are downmixed.
+_DOWNMIX = ["-ac", "2"]
+
+
+def _verify_conversion(source: Path, output: Path) -> int:
     """
     Post-conversion check: the output must carry the same number of audio
     streams as the source, and its duration must match within tolerance.
@@ -227,6 +243,19 @@ def _verify_conversion(source: Path, output: Path) -> None:
                 continue
         return None
 
+    # A canonical file is never surround (Grey, 2026-10-24), and an unreadable
+    # count cannot show that it is not (Codex review of #234, round 3).
+    out_channels = _channels(out_probe)
+    if not 0 < out_channels <= 2:
+        raise CanonicalizeError(
+            f"verification failed: output has {out_channels or 'an unreadable number of'} "
+            f"channels, not mono or stereo"
+        )
+    if _channels(src_probe) > 2 and out_channels != 2:  # downmixed to stereo, not mono (round 7)
+        raise CanonicalizeError(
+            f"verification failed: surround came out with {out_channels} channel(s), not stereo"
+        )
+
     src_dur = _duration(src_probe)
     out_dur = _duration(out_probe)
 
@@ -251,6 +280,7 @@ def _verify_conversion(source: Path, output: Path) -> None:
         raise CanonicalizeError(
             f"verification failed: duration mismatch (source={src_dur:.2f}s, output={out_dur:.2f}s)"
         )
+    return out_channels
 
 
 # ── ffmpeg conversion commands ────────────────────────────────────────────────
@@ -264,6 +294,7 @@ def _convert_to_alac(source: Path, output: Path) -> None:
     """
     probe = _probe_streams(source)
     has_art = _has_attached_picture(probe)
+    downmix = _DOWNMIX if _channels(probe) > 2 else []
 
     cmd = ["ffmpeg", "-y" if output.exists() else "-n", "-i", str(source), "-threads", "2"]
     if has_art:
@@ -274,6 +305,7 @@ def _convert_to_alac(source: Path, output: Path) -> None:
             "0:v:0",
             "-c:a",
             "alac",
+            *downmix,
             "-c:v",
             "copy",
             "-disposition:v:0",
@@ -290,6 +322,7 @@ def _convert_to_alac(source: Path, output: Path) -> None:
             "0:a:0",
             "-c:a",
             "alac",
+            *downmix,
             "-map_metadata",
             "0",
             "-f",
@@ -321,8 +354,12 @@ def _transcode_to_aac(source: Path, output: Path) -> None:
     # over. A stream copy is bit-exact.
     _src_audio = [st for st in probe.get("streams", []) if st.get("codec_type") == "audio"]
     _already_aac = bool(_src_audio) and str(_src_audio[0].get("codec_name", "")).lower() == "aac"
+    # A stream copy cannot downmix: surround AAC is re-encoded (Grey, 2026-10-24).
+    surround = _channels(probe) > 2
     audio_args = (
-        ["-c:a", "copy"] if _already_aac else ["-c:a", "aac", "-b:a", AAC_TRANSCODE_BITRATE]
+        ["-c:a", "copy"]
+        if _already_aac and not surround
+        else ["-c:a", "aac", "-b:a", AAC_TRANSCODE_BITRATE, *(_DOWNMIX if surround else [])]
     )
 
     cmd = ["ffmpeg", "-y" if output.exists() else "-n", "-i", str(source), "-threads", "2"]
@@ -660,15 +697,16 @@ class CanonicalizeStage(BaseStage):
 
     @staticmethod
     def _resolve_codec(row: dict, source: Path | None) -> str:
-        """The codec of this file: the row's if it has one, else ffprobe's.
+        """The codec of this file: ffprobe's when the file is there, else the row's.
 
         Shared by the decision and by the refusal message, so the operator is
         told the codec that was actually determined rather than an empty DB
-        column.
+        column. The file decides: a row saying "aac" for an ALAC file sent
+        lossless audio to a lossy re-encode (Codex review of #234, round 8).
+        An unreadable file gives "" -- refused, never re-encoded.
         """
-        codec = (row.get("codec") or "").lower()
-        if codec or source is None or not source.exists():
-            return codec
+        if source is None or not source.exists():
+            return (row.get("codec") or "").lower()
         try:
             probe = _probe_streams(source)
             audio = [st for st in probe.get("streams", []) if st.get("codec_type") == "audio"]
@@ -677,6 +715,22 @@ class CanonicalizeStage(BaseStage):
         except Exception as exc:  # a probe failure is not a licence to re-encode
             logger.warning("[canonicalize] codec probe failed for %s: %s", source, exc)
         return ""
+
+    @staticmethod
+    def _resolve_channels(row: dict, source: Path | None) -> int | None:
+        """The file's channel count; None when the file is there but unreadable.
+
+        The file decides: a stale row saying 2 let 6-channel AAC pass through,
+        also when the probe failed (Codex review of #234, rounds 1-2). With no
+        file to read (a preview of a row), the row's count.
+        """
+        if source is not None and source.exists():
+            try:
+                return _channels(_probe_streams(source)) or None
+            except Exception as exc:
+                logger.warning("[canonicalize] channel probe failed for %s: %s", source, exc)
+                return None
+        return int(row.get("channels") or 0)
 
     def _decide_action(self, row: dict, source: Path | None = None) -> str:
         """Return 'PASSTHROUGH' | 'CONVERT' | 'TRANSCODE' | 'UNKNOWN'.
@@ -708,10 +762,14 @@ class CanonicalizeStage(BaseStage):
         if source is not None:
             ext = source.suffix.lower()
 
-        if codec in _ALAC_CODECS and ext == ".m4a":
-            return "PASSTHROUGH"
-        if codec in _AAC_CODECS and ext == ".m4a":
-            return "PASSTHROUGH"
+        # Surround is never kept as it is: it is downmixed (Grey, 2026-10-24).
+        # Kept as it is only when the file shows it is not surround.
+        if ext == ".m4a" and codec in _ALAC_CODECS | _AAC_CODECS:
+            channels = self._resolve_channels(row, source)
+            if channels is None:
+                return "UNKNOWN"
+            if channels <= 2:
+                return "PASSTHROUGH"
         if codec in _LOSSLESS_CODECS:
             return "CONVERT"
         if codec in _TRANSCODABLE_CODECS:
@@ -764,6 +822,10 @@ class CanonicalizeStage(BaseStage):
         action = self._decide_action(row, source)
 
         if action == "PASSTHROUGH":
+            # The row says what the file is: a stale "6" made BPM skip a stereo
+            # song for good (Codex review of #234, round 4).
+            row["_final_channels"] = self._resolve_channels(row, source)
+            row["_final_codec"] = self._resolve_codec(row, source)
             # Kept as it is, but a lossy file is still one to find in
             # lossless (Grey, 2026-09-27): 48 of 51 lossy masters were on no
             # list because only CONVERTED files were ever added.
@@ -779,6 +841,11 @@ class CanonicalizeStage(BaseStage):
             # the column says "(none recorded)" and hides the one fact needed
             # to act: which codec to add to a set.
             probed = self._resolve_codec(row, source)
+            if probed in _ALAC_CODECS | _AAC_CODECS:
+                return "ERROR", (
+                    f"channel count of {source.name} could not be read -- refusing to "
+                    f"keep it as it is unchecked (surround is downmixed)"
+                )
             return "ERROR", (
                 f"unrecognised codec {probed or '(none recorded)'!r} "
                 f"for {source.name} -- refusing to re-encode blindly"
@@ -798,16 +865,24 @@ class CanonicalizeStage(BaseStage):
             else:
                 _transcode_to_aac(source, tmp_output)
 
-            _verify_conversion(source, tmp_output)
+            row["_final_channels"] = _verify_conversion(source, tmp_output)
+            # What the encoder wrote; verify_effect re-probes it (Codex review of
+            # #234, round 11: a stale "aac" made the keep rule rank ALAC as lossy).
+            row["_final_codec"] = "alac" if action == "CONVERT" else "aac"
 
             tmp_output.rename(staged_output)
             row["_final_path"] = str(staged_output)
 
+            mixed = (
+                "; surround downmixed to stereo"
+                if (self._resolve_channels(row, source) or 0) > 2
+                else ""
+            )
             if action == "TRANSCODE":
                 _want_lossless(ctx, row, "sub-lossless source, transcoded to AAC")
-                return "TRANSCODED", "sub-lossless -> 256k AAC-in-.m4a (staged)"
+                return "TRANSCODED", f"sub-lossless -> 256k AAC-in-.m4a (staged){mixed}"
 
-            return "CONVERTED", "lossless -> ALAC-in-.m4a (staged)"
+            return "CONVERTED", f"lossless -> ALAC-in-.m4a (staged){mixed}"
 
         except CanonicalizeError as exc:
             self._quarantine_failed_staging(ctx, tmp_output, staging_name, source, exc)
@@ -961,10 +1036,18 @@ class CanonicalizeStage(BaseStage):
                     UPDATE archive
                        SET file_path = ?, ext = '.m4a',
                            canonicalized_at = datetime('now'),
-                           canon_action = ?
+                           canon_action = ?,
+                           channels = COALESCE(NULLIF(?, 0), channels),
+                           codec = COALESCE(NULLIF(?, ''), codec)
                      WHERE id = ?
                     """,
-                    (new_path, outcome, row["id"]),
+                    (
+                        new_path,
+                        outcome,
+                        row.get("_final_channels") or 0,
+                        row.get("_final_codec") or "",
+                        row["id"],
+                    ),
                 )
             except sqlite3.IntegrityError as exc:
                 logger.error(

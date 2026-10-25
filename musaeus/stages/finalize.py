@@ -81,6 +81,14 @@ the same source produces different PCM regardless — but using the
 ORIGINAL source's hash is actually the semantically useful choice for
 cross-batch dedup here: it identifies "the same underlying song",
 independent of which lossy container it happened to arrive in.
+
+A file Canonicalize DOWNMIXED to stereo (Grey, 2026-10-24) keeps its
+arriving hash for the same reason: the same 5.1 file arriving again is an
+exact duplicate of it, and that is the case the downmix rule was made for.
+The cost is shared with TRANSCODED: an interrupted move of such a file is
+not adopted by audio (its audio is not the arriving audio) and stays
+"missing on disk" for a human -- safe, nothing is lost (Codex review of
+#234, rounds 5 and 9).
 """
 
 from __future__ import annotations

@@ -1259,3 +1259,269 @@ def test_every_place_that_records_a_duplicate_stores_its_identity():
             if "audio_hash" not in m.group(1):
                 offenders.append(f"{f.relative_to(root.parent)}: {m.group(0)[:60]}")
     assert not offenders, offenders
+
+
+class TestArrivalTwinOfARejectedCopy:
+    """Grey, 2026-10-24: the 5.1 Beatles "Lucy In The Sky With Diamonds (2017 Mix)"
+    was sent to review on 10-21 (the stereo copy kept). The same audio arrived
+    again and was ADDED: its twin was in review, not denied, so the resolver saw
+    one live copy. An arrival whose twin LOST to another copy goes to review too."""
+
+    def _scene(self, ctx, keeper_is_arrival: bool):
+        arrival = _make_archive_row(
+            ctx, "new/lucy.m4a", "Beatles", "Sgt", "Lucy", 768_000, 300, "h51"
+        )
+        if keeper_is_arrival:
+            keeper = arrival
+        else:
+            keeper = _make_archive_row(
+                ctx, "lib/lucy.m4a", "Beatles", "Sgt", "Lucy", 900_000, 900, "h2"
+            )
+            ctx.conn.execute(
+                "UPDATE archive SET finalized_at = '2026-10-01' WHERE file_path = ?", (str(keeper),)
+            )
+        rejected = ctx.config.dupes_review_dir / "2026-10-21" / "lucy.m4a"
+        rejected.parent.mkdir(parents=True, exist_ok=True)
+        rejected.write_bytes(b"X" * 300)
+        from musaeus.db import upsert_archive
+
+        upsert_archive(ctx.conn, {"file_path": str(rejected), "status": "DUPE_REVIEW", "artist": "Beatles",
+                                  "album": "Sgt", "title": "Lucy", "audio_hash": "h51"})  # fmt: skip
+        rows = [("decided", str(keeper), "keep", "h2" if not keeper_is_arrival else "h51"),
+                ("decided", str(rejected), "archive", "h51"),
+                ("dup_h51", str(rejected), "archive", "h51"),
+                ("dup_h51", str(arrival), "pending", "h51")]  # fmt: skip
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES (?, ?, 'EXACT', 1.0, 'r', ?, ?)",
+            [(g, fp, st, h) for g, fp, st, h in rows],
+        )
+        ctx.conn.commit()
+        return arrival, keeper
+
+    def test_an_arrival_whose_twin_lost_to_a_library_copy_goes_to_review(self, ctx):
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        DupeResolverStage().execute(ctx)
+        status = ctx.conn.execute("SELECT status FROM archive WHERE audio_hash = 'h51' AND file_path NOT LIKE "
+                                  "'%2026-10-21%'").fetchone()[0]  # fmt: skip
+        assert status == "DUPE_REVIEW" and not arrival.exists() and keeper.exists()
+
+    def test_the_keeper_of_that_decision_is_never_moved(self, ctx):
+        """Same batch: Act 2 set the loser aside; the keeper waits in INBOX for Act 3."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=True)
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists()
+        assert (
+            ctx.conn.execute(
+                "SELECT status FROM archive WHERE file_path = ?", (str(arrival),)
+            ).fetchone()[0]
+            == "CATALOGUED"
+        )
+
+    def _status(self, ctx, path):
+        return ctx.conn.execute(
+            "SELECT status FROM archive WHERE file_path = ?", (str(path),)
+        ).fetchone()
+
+    def test_a_keeper_filed_since_the_decision_still_counts(self, ctx):
+        """Codex review of #234: the decision recorded the keeper's INBOX path;
+        Finalize filed it since, so a path join no longer found it."""
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        ctx.conn.execute(
+            "UPDATE duplicates SET file_path = ? WHERE group_id = 'decided' AND status = 'keep'",
+            (str(ctx.inbox / "old" / "lucy.m4a"),),
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert not arrival.exists() and keeper.exists()
+
+    def test_a_different_song_now_at_the_keepers_path_is_not_the_keeper(self, ctx):
+        """Codex review of #234: the arrival is the only live copy of its audio
+        when the recorded keeper is gone, whatever now sits at its old path."""
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        ctx.conn.execute(
+            "UPDATE archive SET audio_hash = 'other' WHERE file_path = ?", (str(keeper),)
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists() and self._status(ctx, arrival)[0] == "CATALOGUED"
+
+    def test_only_the_decision_about_the_copy_in_review_counts(self, ctx):
+        """Codex review of #234, round 2: another decision about the same audio, whose
+        keeper is still catalogued, moved the arrival although its own twin's keeper
+        is gone."""
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        ctx.conn.execute(
+            "UPDATE archive SET audio_hash = 'gone' WHERE file_path = ?", (str(keeper),)
+        )
+        other = _make_archive_row(
+            ctx, "lib/other.m4a", "Beatles", "Sgt", "Lucy", 900_000, 900, "h3"
+        )
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('older', ?, 'EXACT', 1.0, 'r', ?, ?)",
+            [(str(other), "keep", "h3"), (str(ctx.inbox / "long-gone.m4a"), "archive", "h51")],
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists() and self._status(ctx, arrival)[0] == "CATALOGUED"
+
+    def test_a_review_path_reused_by_another_recording_does_not_count(self, ctx):
+        """Codex review of #234, round 3: the decision matched by path must be about
+        the same audio as the copy in review now."""
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        ctx.conn.execute("UPDATE duplicates SET audio_hash = 'older' WHERE group_id = 'decided' "
+                         "AND status = 'archive'")  # fmt: skip
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists() and self._status(ctx, arrival)[0] == "CATALOGUED"
+
+    def test_the_preview_shows_that_move(self, ctx):
+        """Codex review of #234, round 5: `musaeus plan` showed nothing, then the
+        resolver moved the arrival."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=False)
+        actions, _ = DupeResolverStage.plan_actions(ctx.conn, ctx.config)
+        assert [a["source"] for a in actions] == [str(arrival)]
+
+    def test_two_arrivals_of_that_audio_both_go_to_review(self, ctx):
+        """Codex review of #234, round 6: with two live arrivals the rule was skipped
+        and one of them was kept."""
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        second = _make_archive_row(
+            ctx, "new2/lucy.m4a", "Beatles", "Sgt", "Lucy", 768_000, 300, "h51"
+        )
+        ctx.conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('dup_h51', ?, 'EXACT', 1.0, 'r', 'pending', 'h51')",
+            (str(second),),
+        )
+        ctx.conn.commit()
+        assert len(DupeResolverStage.plan_actions(ctx.conn, ctx.config)[0]) == 2
+        DupeResolverStage().execute(ctx)
+        assert not arrival.exists() and not second.exists() and keeper.exists()
+
+    def test_the_keeper_stays_when_every_copy_is_the_same_audio(self, ctx):
+        """Codex review of #234, round 7: rejected copy, keeper and a new arrival all
+        the same audio -- the keeper was moved and the arrival kept."""
+        keeper, _ = self._scene(ctx, keeper_is_arrival=True)
+        second = _make_archive_row(
+            ctx, "new2/lucy.m4a", "Beatles", "Sgt", "Lucy", 768_000, 300, "h51"
+        )
+        ctx.conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('dup_h51', ?, 'EXACT', 1.0, 'r', 'pending', 'h51')",
+            (str(second),),
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert keeper.exists() and self._status(ctx, keeper)[0] == "CATALOGUED"
+
+    def test_a_live_exact_copy_is_ranked_by_the_keep_rule_first(self, ctx):
+        """Codex review of #234, round 10 (reproduced): with another catalogued exact
+        copy, the twin rule moved the studio-tagged arrival before the keep rule
+        could keep it over the live-tagged copy."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=False)
+        live = _make_archive_row(
+            ctx, "lib2/lucy.m4a", "Beatles", "Sgt", "Lucy (Live)", 768_000, 300, "h51"
+        )
+        ctx.conn.execute(
+            "UPDATE archive SET finalized_at = '2026-10-01' WHERE file_path = ?", (str(live),)
+        )
+        ctx.conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('dup_h51', ?, 'EXACT', 1.0, 'r', 'pending', 'h51')",
+            (str(live),),
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists() and self._status(ctx, arrival)[0] == "CATALOGUED"
+
+    def test_a_filed_copy_missing_from_disk_does_not_count(self, ctx):
+        """Codex review of #234, round 12 (reproduced): a filed row whose file is gone
+        blocked the rule and the arrival stayed."""
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        from musaeus.db import upsert_archive
+
+        upsert_archive(ctx.conn, {"file_path": str(ctx.inbox / "gone" / "lucy.m4a"), "status": "CATALOGUED",
+                                  "artist": "Beatles", "title": "Lucy", "audio_hash": "h51",
+                                  "finalized_at": "2026-10-01"})  # fmt: skip
+        ctx.conn.execute(
+            "UPDATE archive SET finalized_at = '2026-10-01' WHERE file_path LIKE '%/gone/lucy.m4a'"
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert not arrival.exists() and keeper.exists()
+
+    def test_a_review_twin_missing_from_disk_does_not_count(self, ctx):
+        """Codex review of #234, round 13 (reproduced): a review row whose file is gone
+        still sent the arrival to review."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=False)
+        (ctx.config.dupes_review_dir / "2026-10-21" / "lucy.m4a").unlink()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists() and self._status(ctx, arrival)[0] == "CATALOGUED"
+
+    def test_an_arrival_the_person_kept_is_not_moved(self, ctx):
+        """Codex review of #234, round 14 (reproduced): an arrival Grey kept in
+        `musaeus dedupe` was moved to review."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=False)
+        ctx.conn.execute(
+            "UPDATE archive SET kept_by_person_at = '2026-10-24' WHERE file_path = ?",
+            (str(arrival),),
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists() and self._status(ctx, arrival)[0] == "CATALOGUED"
+
+    def test_the_keeper_is_found_on_disk_past_a_missing_row(self, ctx):
+        """Codex review of #234, round 14 (reproduced): LIMIT 1 picked a keeper row
+        whose file is gone, and the arrival stayed."""
+        from musaeus.db import upsert_archive
+
+        upsert_archive(ctx.conn, {"file_path": str(ctx.inbox / "aaa" / "gone.m4a"), "status": "CATALOGUED",
+                                  "artist": "Beatles", "title": "Lucy", "audio_hash": "h2"})  # fmt: skip
+        ctx.conn.commit()
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        DupeResolverStage().execute(ctx)
+        assert not arrival.exists() and keeper.exists()
+
+    def test_a_copy_kept_earlier_in_the_batch_stays(self, ctx):
+        """Codex review of #234, round 15 (reproduced): a copy already marked keep,
+        still in INBOX before Finalize, was moved BY THE TWIN RULE when another exact
+        copy arrived. Those live copies are the keep rule's to rank."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=False)
+        kept = _make_archive_row(
+            ctx, "earlier/lucy.m4a", "Beatles", "Sgt", "Lucy", 768_000, 300, "h51"
+        )
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES (?, ?, 'EXACT', 1.0, 'r', ?, 'h51')",
+            [("batch", str(kept), "keep"), ("dup_h51", str(kept), "pending")],
+        )
+        ctx.conn.commit()
+        result = DupeResolverStage().execute(ctx)
+        # The keep rule ranks the two live copies (Grey, 2026-10-10: it may move an
+        # earlier keeper); the twin rule does not decide. One copy stays.
+        assert not any("moved to review too" in n for n in result.notes)
+        live = [
+            p for p in (kept, arrival) if p.exists() and self._status(ctx, p)[0] == "CATALOGUED"
+        ]
+        assert len(live) == 1
+
+    def test_a_kept_copy_whose_path_changed_stays(self, ctx):
+        """Codex review of #234, round 16 (reproduced): the keep decision was recorded
+        at the INBOX path; Canonicalize staged the file, and the twin rule moved it."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=False)
+        staged = _make_archive_row(
+            ctx, "STAGED/lucy.m4a", "Beatles", "Sgt", "Lucy", 768_000, 300, "h51"
+        )
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES (?, ?, 'EXACT', 1.0, 'r', ?, 'h51')",
+            [
+                ("batch", str(ctx.inbox / "was-here" / "lucy.flac"), "keep"),
+                ("dup_h51", str(staged), "pending"),
+            ],
+        )
+        ctx.conn.commit()
+        result = DupeResolverStage().execute(ctx)
+        assert not any("moved to review too" in n for n in result.notes)
