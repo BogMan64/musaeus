@@ -161,6 +161,16 @@ class TestCanonMatching:
         )
         assert got == ("Wolfgang Amadeus Mozart", "title prefix")
 
+    def test_an_ensemble_named_after_a_composer_is_no_composer_in_a_title(self):
+        """Codex review of #245, round 2 (reproduced with a test canon): with
+        "Bach Choir" mapped to Bach, "Bach Choir, Soloists - Requiem" credited to
+        Mozart went to Bach -- the surname alone cannot tell an ensemble."""
+        canon = dict(
+            CANON, **{"bach choir": "Johann Sebastian Bach", "mozart": "Wolfgang Amadeus Mozart"}
+        )
+        got = composer_for("Mozart", "Bach Choir, Soloists - Requiem", canon)
+        assert got == ("Wolfgang Amadeus Mozart", "artist credit")
+
     def test_a_performer_in_a_listed_prefix_is_still_no_composer(self):
         canon = dict(CANON, **{"academy of st martin in the fields": "Henry Purcell"})
         title = "Academy of St Martin in the Fields, Marriner - Hornpipe"

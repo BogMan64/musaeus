@@ -60,6 +60,7 @@ import shutil
 import unicodedata
 from pathlib import Path
 
+from ..art_sources import _ENSEMBLE_WORDS
 from ..context import RunContext, StageResult
 from ..filing import load as filing_load
 from .base import BaseStage
@@ -117,9 +118,14 @@ def composer_for(artist: str, title: str, canon: dict[str, str]) -> tuple[str | 
     if m:
         # The prefix must name the composer, not a performer the canon maps:
         # "András Schiff: Mozart Piano Sonata" went to Bach (#244, round 1).
+        # Nor an ensemble named after one ("Bach Choir"): the surname alone cannot
+        # tell (Codex review of #245, round 2).
         def named(name: str) -> str | None:
             hit = canon.get(name.strip().lower())
-            return hit if hit and _fold(hit).split()[-1] in _fold(name).split() else None
+            words = _fold(name).split()
+            if not hit or _ENSEMBLE_WORDS & set(words):
+                return None
+            return hit if _fold(hit).split()[-1] in words else None
 
         # Whole, then each name of a list: "Albinoni, Giazotto - Adagio" is the
         # composer and an arranger (batch 5, 2026-10-25). Two composers in the
