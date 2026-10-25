@@ -1525,3 +1525,161 @@ class TestArrivalTwinOfARejectedCopy:
         ctx.conn.commit()
         result = DupeResolverStage().execute(ctx)
         assert not any("moved to review too" in n for n in result.notes)
+
+    def test_a_keep_overridden_by_the_later_rejection_does_not_count(self, ctx):
+        """Batch 2 rerun #3, 2026-10-25: an Oct 2 decision had kept this audio; Grey's
+        Oct 21 sheet then sent that very copy to review. The old keep made the twin
+        rule step aside, and 7 rejected songs were kept again."""
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        twin = ctx.config.dupes_review_dir / "2026-10-21" / "lucy.m4a"
+        ctx.conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash, staged_at) VALUES ('oct2', ?, 'EXACT', 1.0, 'r', 'keep', 'h51', '2026-10-02 14:30:57')",
+            (str(ctx.inbox / "Unsorted" / "lucy.m4a"),),
+        )
+        ctx.conn.execute(
+            "INSERT INTO events (run_id, ts, event_type, file_path, old_value, new_value) VALUES "
+            "('sheet', '2026-10-21 22:35:31', 'DUPE_MOVED_FOR_REVIEW', ?, ?, ?)",
+            (str(twin), str(ctx.inbox / "old" / "lucy.m4a"), str(twin)),
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert not arrival.exists() and keeper.exists()
+
+    def test_a_record_of_a_missing_file_is_never_marked_keep(self, ctx):
+        """Batch 2 rerun #2, 2026-10-24: after the arrival went to review, the records of
+        files long gone were ranked and one of them was marked keep."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=False)
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('dup_h51', ?, 'EXACT', 1.0, 'r', 'archive', 'h51')",
+            [(str(ctx.inbox / "gone1" / "lucy.m4a"),), (str(ctx.inbox / "gone2" / "lucy.m4a"),)],
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        kept_gone = ctx.conn.execute(
+            "SELECT COUNT(*) FROM duplicates d WHERE d.status = 'keep' AND NOT EXISTS "
+            "(SELECT 1 FROM archive a WHERE a.file_path = d.file_path)"
+        ).fetchone()[0]
+        assert not arrival.exists() and kept_gone == 0
+
+    def test_a_reused_review_path_does_not_date_the_rejection(self, ctx):
+        """Codex review of #236 (reproduced): a later move of ANOTHER recording into the
+        twin's review path made a newer keep look older than the rejection."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=False)
+        twin = ctx.config.dupes_review_dir / "2026-10-21" / "lucy.m4a"
+        ctx.conn.execute(
+            "UPDATE duplicates SET staged_at = '2026-10-21 22:35:31' WHERE group_id = 'decided'"
+        )
+        ctx.conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash, staged_at) VALUES ('batch', ?, 'EXACT', 1.0, 'r', 'keep', 'h51', '2026-10-24 10:00:00')",
+            (str(ctx.inbox / "staged" / "lucy.m4a"),),
+        )
+        ctx.conn.execute(
+            "INSERT INTO events (run_id, ts, event_type, file_path, old_value, new_value) VALUES "
+            "('later', '2026-10-25 01:00:00', 'DUPE_MOVED_FOR_REVIEW', ?, ?, ?)",
+            (str(twin), str(ctx.inbox / "other" / "song.m4a"), str(twin)),
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists(), "the newer keep (2026-10-24) still makes the rule step aside"
+
+    def test_a_catalogued_row_whose_file_is_gone_is_not_ranked(self, ctx):
+        """Codex review of #236 (reproduced): a row still CATALOGUED but missing on disk
+        outranked the copy that is there and was marked keep."""
+        from musaeus.db import upsert_archive
+
+        here = _make_archive_row(ctx, "here/song.m4a", "A", "B", "Song", 128_000, 100, "hy")
+        gone = str(ctx.inbox / "gone" / "song.flac")
+        upsert_archive(ctx.conn, {"file_path": gone, "status": "CATALOGUED", "artist": "A", "album": "B",
+                                  "title": "Song", "codec": "flac", "bitrate": 900_000,
+                                  "size_bytes": 900, "audio_hash": "hx"})  # fmt: skip
+        aside = ctx.config.dupes_review_dir / "2026-10-21" / "song.m4a"
+        aside.parent.mkdir(parents=True, exist_ok=True)
+        aside.write_bytes(b"X" * 100)
+        upsert_archive(ctx.conn, {"file_path": str(aside), "status": "DUPE_REVIEW", "artist": "A",
+                                  "title": "Song", "audio_hash": "hz"})  # fmt: skip
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('g', ?, 'NEAR', 1.0, 'r', ?, ?)",
+            [(str(here), "pending", "hy"), (gone, "pending", "hx"), (str(aside), "archive", "hz")],
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        marks = [
+            r[0]
+            for r in ctx.conn.execute("SELECT status FROM duplicates WHERE file_path = ?", (gone,))
+        ]
+        assert "keep" not in marks and here.exists()
+
+    def test_a_missing_copy_is_not_ranked_beside_copies_that_are_there(self, ctx):
+        """Codex review of #236, round 2 (reproduced): with two real copies present, a
+        catalogued row whose file is gone outranked them and was marked keep."""
+        from musaeus.db import upsert_archive
+
+        a = _make_archive_row(ctx, "a/song.m4a", "A", "B", "Song", 256_000, 200, "ha")
+        b = _make_archive_row(ctx, "b/song.m4a", "A", "B", "Song", 128_000, 100, "hb")
+        gone = str(ctx.inbox / "gone" / "song.flac")
+        upsert_archive(ctx.conn, {"file_path": gone, "status": "CATALOGUED", "artist": "A", "album": "B",
+                                  "title": "Song", "codec": "flac", "bitrate": 900_000,
+                                  "size_bytes": 900, "audio_hash": "hx"})  # fmt: skip
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('g', ?, 'NEAR', 1.0, 'r', 'pending', ?)",
+            [(str(a), "ha"), (str(b), "hb"), (gone, "hx")],
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        marks = [
+            r[0]
+            for r in ctx.conn.execute("SELECT status FROM duplicates WHERE file_path = ?", (gone,))
+        ]
+        assert "keep" not in marks and (a.exists() or b.exists())
+
+    def test_closing_missing_copies_keeps_their_decisions(self, ctx):
+        """A missing copy's 'archive' decision (a rejected copy's old path) is what the
+        twin rule reads; only PENDING records of missing copies close."""
+        a = _make_archive_row(ctx, "a/song.m4a", "A", "B", "Song", 256_000, 200, "ha")
+        b = _make_archive_row(ctx, "b/song.m4a", "A", "B", "Song", 128_000, 100, "hb")
+        old = str(ctx.inbox / "was" / "song.m4a")
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('g', ?, 'NEAR', 1.0, 'r', ?, ?)",
+            [(str(a), "pending", "ha"), (str(b), "pending", "hb"), (old, "archive", "hx")],
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert (
+            ctx.conn.execute(
+                "SELECT status FROM duplicates WHERE file_path = ?", (old,)
+            ).fetchone()[0]
+            == "archive"
+        )
+
+    def test_the_rejection_is_dated_by_its_own_move(self, ctx):
+        """Codex review of #236, round 3 (reproduced): a decision grouped on Oct 2 moved
+        the copy on Oct 21; a keep from Oct 10 looked newer than the "rejection"."""
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        twin = ctx.config.dupes_review_dir / "2026-10-21" / "lucy.m4a"
+        was = str(ctx.inbox / "was" / "lucy.m4a")
+        ctx.conn.execute(
+            "UPDATE duplicates SET staged_at = '2026-10-02 10:00:00' WHERE group_id = 'decided'"
+        )
+        ctx.conn.execute(
+            "UPDATE duplicates SET file_path = ? WHERE group_id = 'decided' AND status = 'archive'",
+            (was,),
+        )
+        ctx.conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash, staged_at) VALUES ('oct10', ?, 'EXACT', 1.0, 'r', 'keep', 'h51', '2026-10-10 10:00:00')",
+            (str(ctx.inbox / "oct10" / "lucy.m4a"),),
+        )
+        ctx.conn.execute(
+            "INSERT INTO events (run_id, ts, event_type, file_path, old_value, new_value) VALUES "
+            "('sheet', '2026-10-21 22:35:31', 'DUPE_MOVED_FOR_REVIEW', ?, ?, ?)",
+            (str(twin), was, str(twin)),
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert not arrival.exists() and keeper.exists()
