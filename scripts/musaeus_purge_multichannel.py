@@ -76,7 +76,24 @@ def _probe_channels(path: Path) -> int | None:
     return int(first) if first.isdigit() else None
 
 
-def _downmix_to_stereo(src: Path, dest: Path, codec: str) -> bool:
+#: An in-place swap must be the whole song: Canonicalize's 2-second tolerance let a
+#: 1-second copy replace a 2-second song (Codex review of #237). AAC priming is ~0.05 s.
+_SWAP_TOLERANCE_S = 0.25
+
+
+def _duration(path: Path) -> float | None:
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        return float(r.stdout.strip())
+    except ValueError:
+        return None
+
+
+def _downmix_to_stereo(src: Path, dest: Path) -> bool:
     """Write a stereo copy with Canonicalize's own encoders (Grey, 2026-10-24).
 
     Cover art and tags are kept, lossless stays ALAC and lossy is AAC, and the
@@ -88,10 +105,22 @@ def _downmix_to_stereo(src: Path, dest: Path, codec: str) -> bool:
     from musaeus.config import LOSSLESS_CODECS
     from musaeus.stages import canonicalize as canon
 
-    encode = canon._convert_to_alac if codec in LOSSLESS_CODECS else canon._transcode_to_aac
+    # The file decides, never the row: a stale "aac" row made lossless ALAC lossy
+    # (Codex review of #237). Unreadable or unknown: kept as it is.
+    codec = canon.CanonicalizeStage._resolve_codec({}, src)
+    if codec in LOSSLESS_CODECS:
+        encode = canon._convert_to_alac
+    elif codec in canon._TRANSCODABLE_CODECS:
+        encode = canon._transcode_to_aac
+    else:
+        print(f"    downmix refused: codec {codec or '(unreadable)'!r}")
+        return False
     try:
         encode(src, dest)  # writes mp4 whatever the name ("-f mp4")
         canon._verify_conversion(src, dest)
+        a, b = _duration(src), _duration(dest)
+        if a is None or b is None or abs(a - b) > _SWAP_TOLERANCE_S:
+            raise RuntimeError(f"length changed ({a} s -> {b} s)")
     except Exception as exc:  # noqa: BLE001 -- any failure: the song is kept as it is
         print(f"    downmix failed: {str(exc)[:90]}")
         dest.unlink(missing_ok=True)
@@ -211,12 +240,13 @@ def main() -> int:
             continue
 
         if args.check:
-            print(f"  would remove: {live}ch  {row['artist']} - {row['title']}")
+            what = "would downmix to stereo" if args.downmix else "would remove"
+            print(f"  {what}: {live}ch  {row['artist']} - {row['title']}")
             continue
 
         if args.downmix:
             tmp = path.with_name(path.name + ".stereo.tmp")
-            if not _downmix_to_stereo(path, tmp, (row["codec"] or "").lower()):
+            if not _downmix_to_stereo(path, tmp):
                 print(f"  downmix failed, song kept as it is: {path.name}")
                 continue
             tmp.replace(path)

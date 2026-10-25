@@ -104,3 +104,43 @@ def test_a_failed_downmix_keeps_the_song_as_it_is(vault, monkeypatch):
     monkeypatch.setattr(canon, "_convert_to_alac", _fail)
     mod.main()
     assert song.exists() and _row(cfg) is not None and _row(cfg)["channels"] == 6
+
+
+def _gen(path: Path, channels: int, codec: str, seconds: int) -> None:
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}", "-ac", str(channels),
+         "-c:a", codec, "-f", "mp4", str(path)],
+        capture_output=True, check=True,
+    )  # fmt: skip
+
+
+def test_the_file_decides_the_codec_so_lossless_stays_lossless(vault):
+    """Codex review of #237 (reproduced): a row saying "aac" for 6-channel ALAC made
+    the song lossy AAC."""
+    mod, cfg, song = vault
+    conn = open_db(cfg.db_path)
+    conn.execute("UPDATE archive SET codec = 'aac'")
+    conn.commit()
+    conn.close()
+    mod.main()
+    assert "alac" in _probe(song, "stream=codec_name") and _row(cfg)["channels"] == 2
+
+
+def test_a_shorter_copy_never_replaces_the_song(vault, monkeypatch):
+    """Codex review of #237 (reproduced): Canonicalize's 2-second tolerance let a
+    1-second copy replace a 2-second song in place."""
+    mod, cfg, song = vault
+    from musaeus.stages import canonicalize as canon
+
+    monkeypatch.setattr(canon, "_convert_to_alac", lambda src, dest: _gen(dest, 2, "alac", 1))
+    mod.main()
+    assert _probe(song, "stream=channels").split()[0].strip(",") == "6", "the song is kept as it is"
+
+
+def test_the_preview_of_a_downmix_says_downmix(vault, monkeypatch, capsys):
+    """Codex review of #237 (reproduced): `--check --downmix` printed "would remove"."""
+    mod, cfg, song = vault
+    monkeypatch.setattr(sys, "argv", ["prog", "--check", "--downmix"])
+    mod.main()
+    out = capsys.readouterr().out
+    assert "would downmix" in out and "would remove" not in out
