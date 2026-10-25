@@ -300,3 +300,17 @@ def test_identity_tags_and_permissions_survive_the_downmix(vault):
     assert bytes(tags["----:com.apple.iTunes:MusicBrainz Track Id"][0]) == b"rec-123"
     assert "----:com.apple.iTunes:replaygain_track_gain" not in tags, "loudness is measured again"
     assert oct(os.stat(song).st_mode & 0o777) == "0o644"
+
+
+def test_the_checks_run_on_the_final_file_after_its_tags(vault, monkeypatch):
+    """Codex review of #237, round 9 (reproduced): a tag rewrite that damaged the
+    copy ran after the checks, and an unreadable file replaced the song."""
+    mod, cfg, song = vault
+    import musaeus.edition_bake as eb
+
+    def _damage(src, dest, marker):
+        dest.write_bytes(dest.read_bytes()[:200])
+
+    monkeypatch.setattr(eb, "copy_tags", _damage)
+    mod.main()
+    assert _probe(song, "stream=channels").split()[0].strip(",") == "6"
