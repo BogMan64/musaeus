@@ -1525,3 +1525,40 @@ class TestArrivalTwinOfARejectedCopy:
         ctx.conn.commit()
         result = DupeResolverStage().execute(ctx)
         assert not any("moved to review too" in n for n in result.notes)
+
+    def test_a_keep_overridden_by_the_later_rejection_does_not_count(self, ctx):
+        """Batch 2 rerun #3, 2026-10-25: an Oct 2 decision had kept this audio; Grey's
+        Oct 21 sheet then sent that very copy to review. The old keep made the twin
+        rule step aside, and 7 rejected songs were kept again."""
+        arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
+        twin = ctx.config.dupes_review_dir / "2026-10-21" / "lucy.m4a"
+        ctx.conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash, staged_at) VALUES ('oct2', ?, 'EXACT', 1.0, 'r', 'keep', 'h51', '2026-10-02 14:30:57')",
+            (str(ctx.inbox / "Unsorted" / "lucy.m4a"),),
+        )
+        ctx.conn.execute(
+            "INSERT INTO events (run_id, ts, event_type, file_path, old_value, new_value) VALUES "
+            "('sheet', '2026-10-21 22:35:31', 'DUPE_MOVED_FOR_REVIEW', ?, ?, ?)",
+            (str(twin), str(ctx.inbox / "old" / "lucy.m4a"), str(twin)),
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert not arrival.exists() and keeper.exists()
+
+    def test_a_record_of_a_missing_file_is_never_marked_keep(self, ctx):
+        """Batch 2 rerun #2, 2026-10-24: after the arrival went to review, the records of
+        files long gone were ranked and one of them was marked keep."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=False)
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('dup_h51', ?, 'EXACT', 1.0, 'r', 'archive', 'h51')",
+            [(str(ctx.inbox / "gone1" / "lucy.m4a"),), (str(ctx.inbox / "gone2" / "lucy.m4a"),)],
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        kept_gone = ctx.conn.execute(
+            "SELECT COUNT(*) FROM duplicates d WHERE d.status = 'keep' AND NOT EXISTS "
+            "(SELECT 1 FROM archive a WHERE a.file_path = d.file_path)"
+        ).fetchone()[0]
+        assert not arrival.exists() and kept_gone == 0

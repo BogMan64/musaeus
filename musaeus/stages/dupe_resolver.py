@@ -519,13 +519,6 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
     # A copy the person kept in `musaeus dedupe` is theirs (Codex review of #234, round 14).
     if not h or arrival.get("finalized_at") or arrival.get("kept_by_person_at"):
         return None
-    # A copy of this audio kept by any decision -- this one, or another whose path
-    # has changed since -- is the keep rule's to rank, not this rule's to move
-    # (Codex review of #234, rounds 7, 15, 16). By audio: a path changes.
-    if conn.execute(
-        "SELECT 1 FROM duplicates WHERE audio_hash = ? AND status = 'keep'", (h,)
-    ).fetchone():
-        return None
     twins = [
         m["file_path"]
         for m in aside
@@ -534,6 +527,24 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
         and Path(m["file_path"]).is_file()  # on disk (Codex review of #234, round 13)
     ]
     if not twins:
+        return None
+    qs = ",".join("?" * len(twins))
+    # A copy of this audio kept by a decision -- this one, or another whose path
+    # has changed since -- is the keep rule's to rank, not this rule's to move
+    # (Codex review of #234, rounds 7, 15, 16). By audio: a path changes. Only a
+    # keep NEWER than the decision that sent the twin to review: an Oct 2 keep
+    # of this very copy, rejected by Grey's Oct 21 sheet, kept 7 rejected songs
+    # in the library again (batch 2 rerun #3, 2026-10-25).
+    (rejected,) = conn.execute(
+        "SELECT MAX(ts) FROM events WHERE event_type = 'DUPE_MOVED_FOR_REVIEW' "
+        f"AND new_value IN ({qs})",
+        twins,
+    ).fetchone()
+    if conn.execute(
+        "SELECT 1 FROM duplicates WHERE audio_hash = ? AND status = 'keep' "
+        "AND (? IS NULL OR COALESCE(staged_at, '') > ?)",
+        (h, rejected, rejected),
+    ).fetchone():
         return None
     # An exact copy already filed in the library: those copies are ranked by the
     # keep rule, which may keep this arrival (Codex review of #234, round 10).
@@ -550,7 +561,6 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
     # moved to review from -- not any decision about this audio (Codex review of
     # #234, round 2). Its keeper by recording, not by recorded path: Finalize
     # files it after the decision, and a reused path holds another song (round 1).
-    qs = ",".join("?" * len(twins))
     rows = conn.execute(
         "SELECT a.* FROM duplicates d "
         "JOIN duplicates k ON k.group_id = d.group_id AND k.status = 'keep' "
@@ -757,7 +767,7 @@ class DupeResolverStage(BaseStage):
                 if won is not None and Path(won["file_path"]).exists():
                     add(m, won, component[0])
                     members.remove(m)
-            if len(members) < 2 and len(everyone) > 1:
+            if sum(m.get("current_row") is not None for m in members) < 2 and len(everyone) > 1:
                 continue
             if not members:
                 continue
@@ -1335,7 +1345,9 @@ class DupeResolverStage(BaseStage):
                     members.remove(m)
                 if arrived and not members:
                     continue
-                if len(members) < 2:
+                # Only copies that are there are ranked: a record of a file long
+                # gone, ranked first, was marked keep (batch 2 rerun #2).
+                if sum(m.get("current_row") is not None for m in members) < 2:
                     result.files_skipped += len(members) + len(aside)
                     if not dry_run:
                         # Closed as 'stale', not 'archive': 'archive' says
