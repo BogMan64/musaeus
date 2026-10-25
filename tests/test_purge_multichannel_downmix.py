@@ -356,7 +356,7 @@ def test_the_lossless_edition_copy_is_made_again_from_the_stereo_master(vault):
     mod, cfg, song = vault
     from musaeus import edition_bake, edition_build
 
-    lossless = cfg.vault_root / "ALAC_Library" / "song.m4a"
+    lossless = Path(cfg.alac_library) / "song.m4a"
     lossless.parent.mkdir(parents=True, exist_ok=True)
     _gen(lossless, 6, "alac", 2)
     edition_bake.copy_tags(lossless, lossless, edition_build.marker_for(_arrived(cfg)))
@@ -387,7 +387,7 @@ def test_a_stale_lossless_record_never_deletes_another_song(vault):
     from musaeus import edition_ledger as el
 
     mod, cfg, song = vault
-    other = cfg.vault_root / "ALAC_Library" / "other.m4a"
+    other = Path(cfg.alac_library) / "other.m4a"
     other.parent.mkdir(parents=True, exist_ok=True)
     _gen(other, 2, "alac", 1)
     edition_bake.copy_tags(other, other, edition_build.marker_for("someone-else"))
@@ -420,7 +420,7 @@ def test_a_failed_lossless_cleanup_rolls_the_swap_back_for_a_retry(vault, monkey
     old Lossless copy was removed; when that failed, a rerun found no surround row."""
     mod, cfg, song = vault
 
-    def _fail(cfg_, h):
+    def _fail(cfg_, h, master):
         raise OSError("cleanup failed")
 
     monkeypatch.setattr(mod, "_remake_lossless_copy", _fail)
@@ -457,3 +457,30 @@ def test_an_unreadable_attribute_list_stops_the_swap(vault, monkeypatch):
     monkeypatch.setattr(mod.os, "listxattr", _io)
     mod.main()
     assert _probe(song, "stream=channels").split()[0].strip(",") == "6"
+
+
+@pytest.mark.parametrize("where", ["the master", "a car copy"])
+def test_a_stale_lossless_record_never_deletes_outside_the_lossless_edition(vault, where):
+    """Codex review of #237, round 16 (reproduced): a stale record naming the master,
+    or the song's Car copy, carried this song's marker -- and was deleted."""
+    from musaeus import edition_bake, edition_build
+    from musaeus import edition_ledger as el
+
+    mod, cfg, song = vault
+    if where == "the master":
+        target = song
+    else:
+        target = cfg.vault_root / "CAR_Library" / "song.m4a"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _gen(target, 2, "aac", 2)
+    edition_bake.copy_tags(target, target, edition_build.marker_for(_arrived(cfg)))
+    conn = el.open_ledger(el.ledger_path(cfg))
+    conn.execute(
+        "INSERT INTO edition_copies (edition, master_hash, master_path, output_path, built_at) "
+        "VALUES ('lossless', ?, ?, ?, '2026-10-01')",
+        (_arrived(cfg), str(song), str(target)),
+    )
+    conn.commit()
+    conn.close()
+    mod.main()
+    assert target.exists() and song.exists()

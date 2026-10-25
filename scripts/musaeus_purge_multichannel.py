@@ -157,7 +157,7 @@ def _downmix_to_stereo(src: Path, dest: Path) -> str | None:
     return "alac" if encode is canon._convert_to_alac else "aac"
 
 
-def _remake_lossless_copy(cfg: MusicConfig, audio_hash: str) -> None:
+def _remake_lossless_copy(cfg: MusicConfig, audio_hash: str, master: Path) -> None:
     """The Lossless edition copy of a downmixed master goes, to be made again.
 
     The planner trusts the kept audio_hash and would only retag that copy, so it
@@ -178,12 +178,20 @@ def _remake_lossless_copy(cfg: MusicConfig, audio_hash: str) -> None:
         conn.commit()
         if copy is not None:
             from musaeus.edition_bake import read_marker
-            from musaeus.edition_build import marker_for
+            from musaeus.edition_build import LOSSLESS_KIND, marker_for
 
             # Only a copy marked as this master's: a stale record's path may
-            # hold another song now (Codex review of #237, round 12).
+            # hold another song now (Codex review of #237, round 12) -- and only
+            # inside the Lossless edition, never the master: a stale record
+            # naming the master or a Car copy carries the same marker (round 16).
             out = Path(copy.output_path)
-            if out.exists() and read_marker(out) == marker_for(audio_hash):
+            inside = out.resolve().is_relative_to(LOSSLESS_KIND.root(cfg).resolve())
+            if (
+                inside
+                and out.resolve() != Path(master).resolve()
+                and out.exists()
+                and read_marker(out) == marker_for(audio_hash)
+            ):
                 out.unlink()
             el.forget(conn, "lossless", audio_hash)
     finally:
@@ -404,7 +412,7 @@ def main() -> int:
                 # cleanup rolls the swap back, and a rerun still finds the song
                 # (Codex review of #237, round 13).
                 if row["audio_hash"]:
-                    _remake_lossless_copy(cfg, row["audio_hash"])
+                    _remake_lossless_copy(cfg, row["audio_hash"], path)
                 conn.commit()
             except Exception:
                 conn.rollback()
