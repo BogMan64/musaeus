@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -282,10 +283,22 @@ def main() -> int:
             except Exception:
                 tmp.unlink(missing_ok=True)
                 raise
+            # The original never leaves its path: the backup is a hard link (a
+            # copy where links cannot be made), and the new copy replaces it in
+            # one atomic step (Codex review of #237, round 6).
             fd, aside = tempfile.mkstemp(prefix=".orig-", suffix=".tmp", dir=path.parent)
             os.close(fd)
-            os.replace(path, aside)
-            os.replace(tmp, path)
+            os.unlink(aside)
+            try:
+                os.link(path, aside)
+            except OSError:
+                shutil.copy2(path, aside)
+            try:
+                os.replace(tmp, path)
+            except Exception:
+                tmp.unlink(missing_ok=True)
+                os.unlink(aside)
+                raise
             try:
                 # audio_hash stays: it names the recording as it arrived, as
                 # Canonicalize keeps it for a downmixed arrival, so the same

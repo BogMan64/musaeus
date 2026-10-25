@@ -8,6 +8,7 @@ AAC into ALAC, and DELETED the song when a downmix failed.
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -255,6 +256,26 @@ def test_a_failure_after_the_encode_leaves_the_song_and_its_row_as_they_were(vau
         raise OSError("disk hiccup")
 
     monkeypatch.setattr(hasher, "file_hash", _boom)
+    with pytest.raises(OSError):
+        mod.main()
+    assert (
+        _probe(song, "stream=channels").split()[0].strip(",") == "6" and _row(cfg)["channels"] == 6
+    )
+    assert not list(song.parent.glob(".stereo-*")) and not list(song.parent.glob(".orig-*"))
+
+
+def test_a_failed_install_leaves_the_song_at_its_path(vault, monkeypatch):
+    """Codex review of #237, round 6 (reproduced): the original was moved aside, the
+    install failed, and the song was left under a temporary name."""
+    mod, cfg, song = vault
+    real = os.replace
+
+    def _fail_install(src, dst):
+        if str(dst) == str(song) and ".stereo-" in str(src):
+            raise OSError("install failed")
+        return real(src, dst)
+
+    monkeypatch.setattr(mod.os, "replace", _fail_install)
     with pytest.raises(OSError):
         mod.main()
     assert (
