@@ -519,6 +519,12 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
     # A copy the person kept in `musaeus dedupe` is theirs (Codex review of #234, round 14).
     if not h or arrival.get("finalized_at") or arrival.get("kept_by_person_at"):
         return None
+    # A copy that is the keeper of any decision is ranked by the keep rule, not
+    # moved by this one (round 15: kept earlier in the batch, still in INBOX).
+    if conn.execute(
+        "SELECT 1 FROM duplicates WHERE file_path = ? AND status = 'keep'", (arrival["file_path"],)
+    ).fetchone():
+        return None
     twins = [
         m["file_path"]
         for m in aside
@@ -528,13 +534,14 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
     ]
     if not twins:
         return None
-    # An exact copy already filed in the library: those copies are ranked by the
-    # keep rule, which may keep this arrival (Codex review of #234, round 10,
-    # reproduced). Another ARRIVAL of it does not count: both go (round 6).
+    # An exact copy already filed in the library, or kept by a decision: those
+    # copies are ranked by the keep rule, which may keep this arrival (Codex review
+    # of #234, rounds 10 and 15). Another plain ARRIVAL does not count: both go (round 6).
     # On disk: a filed row whose file is gone holds no copy (round 12, reproduced).
     filed = conn.execute(
         "SELECT file_path FROM archive WHERE audio_hash = ? AND status = 'CATALOGUED' "
-        "AND COALESCE(finalized_at, '') <> '' AND file_path <> ?",
+        "AND (COALESCE(finalized_at, '') <> '' OR file_path IN "
+        "(SELECT file_path FROM duplicates WHERE status = 'keep')) AND file_path <> ?",
         (h, arrival["file_path"]),
     ).fetchall()
     if any(Path(r[0]).exists() for r in filed):

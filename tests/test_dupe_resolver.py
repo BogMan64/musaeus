@@ -1483,3 +1483,26 @@ class TestArrivalTwinOfARejectedCopy:
         arrival, keeper = self._scene(ctx, keeper_is_arrival=False)
         DupeResolverStage().execute(ctx)
         assert not arrival.exists() and keeper.exists()
+
+    def test_a_copy_kept_earlier_in_the_batch_stays(self, ctx):
+        """Codex review of #234, round 15 (reproduced): a copy already marked keep,
+        still in INBOX before Finalize, was moved BY THE TWIN RULE when another exact
+        copy arrived. Those live copies are the keep rule's to rank."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=False)
+        kept = _make_archive_row(
+            ctx, "earlier/lucy.m4a", "Beatles", "Sgt", "Lucy", 768_000, 300, "h51"
+        )
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES (?, ?, 'EXACT', 1.0, 'r', ?, 'h51')",
+            [("batch", str(kept), "keep"), ("dup_h51", str(kept), "pending")],
+        )
+        ctx.conn.commit()
+        result = DupeResolverStage().execute(ctx)
+        # The keep rule ranks the two live copies (Grey, 2026-10-10: it may move an
+        # earlier keeper); the twin rule does not decide. One copy stays.
+        assert not any("moved to review too" in n for n in result.notes)
+        live = [
+            p for p in (kept, arrival) if p.exists() and self._status(ctx, p)[0] == "CATALOGUED"
+        ]
+        assert len(live) == 1
