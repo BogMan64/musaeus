@@ -1562,3 +1562,53 @@ class TestArrivalTwinOfARejectedCopy:
             "(SELECT 1 FROM archive a WHERE a.file_path = d.file_path)"
         ).fetchone()[0]
         assert not arrival.exists() and kept_gone == 0
+
+    def test_a_reused_review_path_does_not_date_the_rejection(self, ctx):
+        """Codex review of #236 (reproduced): a later move of ANOTHER recording into the
+        twin's review path made a newer keep look older than the rejection."""
+        arrival, _ = self._scene(ctx, keeper_is_arrival=False)
+        twin = ctx.config.dupes_review_dir / "2026-10-21" / "lucy.m4a"
+        ctx.conn.execute(
+            "UPDATE duplicates SET staged_at = '2026-10-21 22:35:31' WHERE group_id = 'decided'"
+        )
+        ctx.conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash, staged_at) VALUES ('batch', ?, 'EXACT', 1.0, 'r', 'keep', 'h51', '2026-10-24 10:00:00')",
+            (str(ctx.inbox / "staged" / "lucy.m4a"),),
+        )
+        ctx.conn.execute(
+            "INSERT INTO events (run_id, ts, event_type, file_path, old_value, new_value) VALUES "
+            "('later', '2026-10-25 01:00:00', 'DUPE_MOVED_FOR_REVIEW', ?, ?, ?)",
+            (str(twin), str(ctx.inbox / "other" / "song.m4a"), str(twin)),
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists(), "the newer keep (2026-10-24) still makes the rule step aside"
+
+    def test_a_catalogued_row_whose_file_is_gone_is_not_ranked(self, ctx):
+        """Codex review of #236 (reproduced): a row still CATALOGUED but missing on disk
+        outranked the copy that is there and was marked keep."""
+        from musaeus.db import upsert_archive
+
+        here = _make_archive_row(ctx, "here/song.m4a", "A", "B", "Song", 128_000, 100, "hy")
+        gone = str(ctx.inbox / "gone" / "song.flac")
+        upsert_archive(ctx.conn, {"file_path": gone, "status": "CATALOGUED", "artist": "A", "album": "B",
+                                  "title": "Song", "codec": "flac", "bitrate": 900_000,
+                                  "size_bytes": 900, "audio_hash": "hx"})  # fmt: skip
+        aside = ctx.config.dupes_review_dir / "2026-10-21" / "song.m4a"
+        aside.parent.mkdir(parents=True, exist_ok=True)
+        aside.write_bytes(b"X" * 100)
+        upsert_archive(ctx.conn, {"file_path": str(aside), "status": "DUPE_REVIEW", "artist": "A",
+                                  "title": "Song", "audio_hash": "hz"})  # fmt: skip
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('g', ?, 'NEAR', 1.0, 'r', ?, ?)",
+            [(str(here), "pending", "hy"), (gone, "pending", "hx"), (str(aside), "archive", "hz")],
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        marks = [
+            r[0]
+            for r in ctx.conn.execute("SELECT status FROM duplicates WHERE file_path = ?", (gone,))
+        ]
+        assert "keep" not in marks and here.exists()
