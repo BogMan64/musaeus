@@ -1823,3 +1823,16 @@ class TestThePersonsChoiceStands:
         assert arrival.exists() and not kept.exists(), (
             "the keep rule ranks them (a choice between copies)"
         )
+
+    def test_a_reused_review_path_cannot_change_a_same_title_choice(self, ctx):
+        """Codex review of #239, round 4 (reproduced): the review path of the
+        rejected "Remastered 2001" copy later held a different recording titled
+        "Edit"; its title turned a same-title choice into a choice against the Edit."""
+        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        ctx.conn.execute("UPDATE archive SET audio_hash = 'hz' "
+                         "WHERE status = 'DUPE_REVIEW' AND audio_hash = 'hr'")  # fmt: skip
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists() and not kept.exists(), (
+            "the keep rule ranks them (a choice between copies)"
+        )

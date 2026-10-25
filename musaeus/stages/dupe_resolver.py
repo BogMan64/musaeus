@@ -616,9 +616,11 @@ def _held_by_person(conn, members: list[dict], keeper: dict | None) -> dict | No
             "SELECT a.title FROM duplicates k "
             "JOIN duplicates d ON d.group_id = k.group_id AND d.status = 'archive' "
             # The rejected copy itself, waiting in review: the row at the decision's
-            # path, or where that path was moved to review -- never another row that
-            # only shares its audio (Codex review of #239, rounds 2-3).
-            "JOIN archive a ON a.status = 'DUPE_REVIEW' AND (a.file_path = d.file_path "
+            # path, or where that path was moved to review, AND with its audio --
+            # never another row that shares only one of the two (Codex review of
+            # #239, rounds 2-4).
+            "JOIN archive a ON a.status = 'DUPE_REVIEW' AND d.audio_hash <> '' "
+            "AND a.audio_hash = d.audio_hash AND (a.file_path = d.file_path "
             "OR a.file_path IN (SELECT new_value FROM events WHERE "
             "event_type = 'DUPE_MOVED_FOR_REVIEW' AND old_value = d.file_path)) "
             "WHERE k.duplicate_type = 'PERSON' AND k.status = 'keep' AND k.audio_hash = ?",
