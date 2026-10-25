@@ -223,3 +223,41 @@ def test_a_refused_downmix_leaves_no_temporary_file(vault):
     conn.close()
     mod.main()
     assert not list(song.parent.glob(".stereo-*"))
+
+
+def test_a_short_audio_stream_hidden_by_a_long_container_never_replaces_the_song(
+    vault, monkeypatch
+):
+    """Codex review of #237, round 5 (reproduced): a copy whose container said 2 s but
+    whose audio stream was 1 s replaced the 2-second song."""
+    mod, cfg, song = vault
+    from musaeus.stages import canonicalize as canon
+
+    def _short(src, dest):
+        subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                        "-f", "lavfi", "-i", "color=c=red:s=32x32:d=2", "-map", "0:a", "-map", "1:v",
+                        "-ac", "2", "-c:a", "alac", "-c:v", "mjpeg", "-f", "mp4", str(dest)],
+                       capture_output=True, check=True)  # fmt: skip
+
+    monkeypatch.setattr(canon, "_convert_to_alac", _short)
+    monkeypatch.setattr(canon, "_verify_conversion", lambda src, dest: 2)
+    mod.main()
+    assert _probe(song, "stream=channels").split()[0].strip(",") == "6"
+
+
+def test_a_failure_after_the_encode_leaves_the_song_and_its_row_as_they_were(vault, monkeypatch):
+    """Codex review of #237, round 5 (reproduced): hashing failed after the swap; the
+    file was stereo and the row still said 6 channels."""
+    mod, cfg, song = vault
+    import musaeus.hasher as hasher
+
+    def _boom(path):
+        raise OSError("disk hiccup")
+
+    monkeypatch.setattr(hasher, "file_hash", _boom)
+    with pytest.raises(OSError):
+        mod.main()
+    assert (
+        _probe(song, "stream=channels").split()[0].strip(",") == "6" and _row(cfg)["channels"] == 6
+    )
+    assert not list(song.parent.glob(".stereo-*")) and not list(song.parent.glob(".orig-*"))

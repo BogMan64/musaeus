@@ -115,11 +115,14 @@ def _downmix_to_stereo(src: Path, dest: Path) -> str | None:
     try:
         encode(src, dest)  # writes mp4 whatever the name ("-f mp4")
         canon._verify_conversion(src, dest)
-        from musaeus.duration import container_seconds, decodes_cleanly
+        from musaeus.duration import container_seconds, decodes_cleanly, stream_seconds
 
-        a, b = container_seconds(src), container_seconds(dest)
-        if a is None or b is None or abs(a - b) > _SWAP_TOLERANCE_S:
-            raise RuntimeError(f"length changed ({a} s -> {b} s)")
+        # The audio stream too: a container can claim a length its audio does
+        # not have (Codex review of #237, round 5).
+        for seconds in (container_seconds, stream_seconds):
+            a, b = seconds(src), seconds(dest)
+            if a is None or b is None or abs(a - b) > _SWAP_TOLERANCE_S:
+                raise RuntimeError(f"length changed ({a} s -> {b} s)")
         ok, err = decodes_cleanly(dest)  # the header can lie; the decode cannot
         if not ok:
             raise RuntimeError(f"the new copy does not decode cleanly: {err}")
@@ -269,31 +272,48 @@ def main() -> int:
                 tmp.unlink(missing_ok=True)  # only the file made here
                 print(f"  downmix failed, song kept as it is: {path.name}")
                 continue
-            tmp.replace(path)
             from musaeus.hasher import file_hash
 
-            # audio_hash stays: it names the recording as it arrived, as
-            # Canonicalize keeps it for a downmixed arrival, so the same
-            # 5.1 file arriving again is still known. The file's own hash
-            # is new, its bit-rot baseline goes (a verify reports it as new,
-            # not corrupt), and Forge re-measures the loudness.
-            conn.execute(
-                "UPDATE archive SET channels = 2, codec = ?, full_hash = ?, size_bytes = ?, "
-                "rg_tagged_at = NULL WHERE rowid = ?",
-                (written, file_hash(path), path.stat().st_size, row["rid"]),
-            )
-            conn.execute("DELETE FROM archive_tier_hashes WHERE path = ?", (str(path),))
-            conn.execute(
-                "INSERT INTO events (run_id, ts, event_type, file_path, stage, note) "
-                "VALUES (?, ?, 'MULTICHANNEL_DOWNMIXED', ?, 'purge-multichannel', ?)",
-                (
-                    "manual",
-                    datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-                    str(path),
-                    f"{live}ch downmixed to stereo in place",
-                ),
-            )
-            conn.commit()
+            # The swap cannot be left half done (Codex review of #237, round 5):
+            # the new copy is hashed BEFORE anything moves, the original is set
+            # aside, and put back if the catalogue update does not commit.
+            try:
+                new_hash, new_size = file_hash(tmp), tmp.stat().st_size
+            except Exception:
+                tmp.unlink(missing_ok=True)
+                raise
+            fd, aside = tempfile.mkstemp(prefix=".orig-", suffix=".tmp", dir=path.parent)
+            os.close(fd)
+            os.replace(path, aside)
+            os.replace(tmp, path)
+            try:
+                # audio_hash stays: it names the recording as it arrived, as
+                # Canonicalize keeps it for a downmixed arrival, so the same
+                # 5.1 file arriving again is still known. The file's own hash
+                # is new, its bit-rot baseline goes (a verify reports it as new,
+                # not corrupt), and Forge re-measures the loudness.
+                conn.execute(
+                    "UPDATE archive SET channels = 2, codec = ?, full_hash = ?, size_bytes = ?, "
+                    "rg_tagged_at = NULL WHERE rowid = ?",
+                    (written, new_hash, new_size, row["rid"]),
+                )
+                conn.execute("DELETE FROM archive_tier_hashes WHERE path = ?", (str(path),))
+                conn.execute(
+                    "INSERT INTO events (run_id, ts, event_type, file_path, stage, note) "
+                    "VALUES (?, ?, 'MULTICHANNEL_DOWNMIXED', ?, 'purge-multichannel', ?)",
+                    (
+                        "manual",
+                        datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                        str(path),
+                        f"{live}ch downmixed to stereo in place",
+                    ),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                os.replace(aside, path)  # the original back where it was
+                raise
+            os.unlink(aside)
             downmixed += 1
             print(f"  downmixed {live}ch -> 2ch: {row['artist']} - {row['title']}")
             continue
