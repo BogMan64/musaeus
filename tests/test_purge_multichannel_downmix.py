@@ -330,3 +330,33 @@ def test_the_old_loudness_and_bitrate_do_not_describe_the_new_audio(vault):
     row = _row(cfg)
     assert (row["lufs"], row["lufs_tp"], row["rg_gain"], row["rg_peak"]) == (None, None, None, None)
     assert row["bitrate"] and row["bitrate"] != 9999999
+
+
+def test_the_lossless_edition_copy_is_made_again_from_the_stereo_master(vault):
+    """Codex review of #237, round 11 (reproduced): the edition planner trusts the
+    kept audio_hash and only retags, so the Lossless copy stayed 6-channel. The AAC
+    editions fold surround to stereo already and are left alone."""
+    from musaeus import edition_ledger as el
+
+    mod, cfg, song = vault
+    lossless = cfg.vault_root / "ALAC_Library" / "song.m4a"
+    lossless.parent.mkdir(parents=True, exist_ok=True)
+    lossless.write_bytes(b"6-channel copy")
+    conn = el.open_ledger(el.ledger_path(cfg))
+    for edition, out in (("lossless", lossless), ("car", cfg.vault_root / "CAR" / "song.m4a")):
+        conn.execute(
+            "INSERT INTO edition_copies (edition, master_hash, master_path, output_path, built_at) "
+            "VALUES (?, 'as-it-arrived', ?, ?, '2026-10-01')",
+            (edition, str(song), str(out)),
+        )
+    conn.execute(
+        "INSERT INTO measurements VALUES ('as-it-arrived', 'lossless/x', '{}', '2026-10-01')"
+    )
+    conn.commit()
+    conn.close()
+    mod.main()
+    conn = el.open_ledger(el.ledger_path(cfg))
+    left = {r[0] for r in conn.execute("SELECT edition FROM edition_copies")}
+    measured = conn.execute("SELECT COUNT(*) FROM measurements").fetchone()[0]
+    conn.close()
+    assert not lossless.exists() and left == {"car"} and measured == 0

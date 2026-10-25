@@ -144,6 +144,32 @@ def _downmix_to_stereo(src: Path, dest: Path) -> str | None:
     return "alac" if encode is canon._convert_to_alac else "aac"
 
 
+def _remake_lossless_copy(cfg: MusicConfig, audio_hash: str) -> None:
+    """The Lossless edition copy of a downmixed master goes, to be made again.
+
+    The planner trusts the kept audio_hash and would only retag that copy, so it
+    stayed surround (Codex review of #237, round 11). It is removed with its
+    record and the measurements cached for the old audio; the next edition build
+    makes it from the stereo master. The AAC editions fold surround to stereo
+    already (edition_bake.aac_before_loudnorm) and are left alone.
+    """
+    from musaeus import edition_ledger as el
+
+    path = el.ledger_path(cfg)
+    if not path.exists():
+        return
+    conn = el.open_ledger(path)
+    try:
+        copy = el.copies(conn, "lossless").get(audio_hash)
+        conn.execute("DELETE FROM measurements WHERE master_hash = ?", (audio_hash,))
+        conn.commit()
+        if copy is not None:
+            Path(copy.output_path).unlink(missing_ok=True)
+            el.forget(conn, "lossless", audio_hash)
+    finally:
+        conn.close()
+
+
 def _purge_row(
     conn: sqlite3.Connection,
     cfg: MusicConfig,
@@ -349,6 +375,8 @@ def main() -> int:
                 os.replace(aside, path)  # the original back where it was
                 raise
             os.unlink(aside)
+            if row["audio_hash"]:
+                _remake_lossless_copy(cfg, row["audio_hash"])
             downmixed += 1
             print(f"  downmixed {live}ch -> 2ch: {row['artist']} - {row['title']}")
             continue
