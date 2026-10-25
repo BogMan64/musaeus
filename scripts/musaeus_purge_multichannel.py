@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import errno
 import os
 import shutil
 import sqlite3
@@ -129,7 +130,11 @@ def _downmix_to_stereo(src: Path, dest: Path) -> str | None:
         # (Codex review of #237, round 14).
         try:
             names = os.listxattr(src)
-        except OSError:  # a filesystem without them: nothing to carry
+        except OSError as exc:
+            # Only "this filesystem has none" is nothing to carry; any other
+            # error stops the swap (Codex review of #237, round 15).
+            if exc.errno not in (errno.ENOTSUP, errno.EOPNOTSUPP):
+                raise
             names = []
         for name in names:
             os.setxattr(dest, name, os.getxattr(src, name))

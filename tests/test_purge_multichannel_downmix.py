@@ -442,3 +442,18 @@ def test_extended_attributes_survive_the_downmix(vault):
     mod.main()
     assert os.getxattr(song, "user.musaeus_note") == b"kept"
     assert _probe(song, "stream=channels").split()[0].strip(",") == "2"
+
+
+def test_an_unreadable_attribute_list_stops_the_swap(vault, monkeypatch):
+    """Codex review of #237, round 15 (reproduced): any error listing the attributes
+    was read as "none", and the master was replaced without them."""
+    import errno
+
+    mod, cfg, song = vault
+
+    def _io(path):
+        raise OSError(errno.EIO, "I/O error")
+
+    monkeypatch.setattr(mod.os, "listxattr", _io)
+    mod.main()
+    assert _probe(song, "stream=channels").split()[0].strip(",") == "6"
