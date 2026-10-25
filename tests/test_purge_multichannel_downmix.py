@@ -170,3 +170,56 @@ def test_only_an_m4a_is_swapped_in_place_and_its_row_takes_the_new_codec(vault, 
     ]
     conn.close()
     assert codec == "alac", "the swapped .m4a's row says what was written"
+
+
+def test_downmix_never_removes_the_row_of_a_missing_file(vault):
+    """Codex review of #237, round 4 (reproduced): a song temporarily missing on
+    disk lost its row and ledger entry under --downmix."""
+    mod, cfg, song = vault
+    moved = song.with_name("elsewhere.m4a")
+    song.rename(moved)
+    mod.main()
+    assert _row(cfg) is not None
+
+
+def test_downmix_never_overwrites_a_file_at_its_temporary_name(vault):
+    """Codex review of #237, round 4 (reproduced): the fixed ".stereo.tmp" name was
+    overwritten and then moved away."""
+    mod, cfg, song = vault
+    other = song.with_name(song.name + ".stereo.tmp")
+    other.write_bytes(b"someone else's file")
+    mod.main()
+    assert other.read_bytes() == b"someone else's file"
+    assert _probe(song, "stream=channels").split()[0].strip(",") == "2"
+
+
+def test_the_preview_only_promises_what_apply_does(vault, monkeypatch, capsys):
+    """Codex review of #237, rounds 3-4 (reproduced): a surround .flac was previewed as
+    "would downmix", and apply leaves it for a person."""
+    mod, cfg, song = vault
+    flac = song.with_suffix(".flac")
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-ac", "6",
+                    "-c:a", "flac", str(flac)], capture_output=True, check=True)  # fmt: skip
+    conn = open_db(cfg.db_path)
+    upsert_archive(conn, {"file_path": str(flac), "status": "CATALOGUED", "artist": "Beck",
+                          "title": "Other", "codec": "flac", "channels": 6, "audio_hash": "f"})  # fmt: skip
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(sys, "argv", ["prog", "--check", "--downmix"])
+    mod.main()
+    out = capsys.readouterr().out
+    assert "would downmix to stereo: 6ch  Beck - Other" not in out and "Beck - Other" in out
+
+
+def test_a_refused_downmix_leaves_no_temporary_file(vault):
+    mod, cfg, song = vault
+    flac = song.with_suffix(".flac")
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-ac", "6",
+                    "-c:a", "flac", str(flac)], capture_output=True, check=True)  # fmt: skip
+    conn = open_db(cfg.db_path)
+    upsert_archive(conn, {"file_path": str(flac), "status": "CATALOGUED", "artist": "Beck",
+                          "title": "Other", "codec": "flac", "channels": 6, "audio_hash": "f"})  # fmt: skip
+    conn.commit()
+    conn.close()
+    mod.main()
+    assert not list(song.parent.glob(".stereo-*"))

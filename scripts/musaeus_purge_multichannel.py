@@ -36,9 +36,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -228,7 +230,11 @@ def main() -> int:
         # with nothing behind them.
         if not path.exists():
             missing += 1
-            if not args.check:
+            # --downmix never deletes: a song missing for now keeps its row and
+            # ledger entry (Codex review of #237, round 4).
+            if args.downmix:
+                print(f"  missing on disk, left as it is: {path.name}")
+            elif not args.check:
                 _purge_row(conn, cfg, row, channels=row["channels"], note="file already gone")
             continue
 
@@ -240,14 +246,27 @@ def main() -> int:
             continue
 
         if args.check:
-            what = "would downmix to stereo" if args.downmix else "would remove"
+            what = (
+                (
+                    "would downmix to stereo"
+                    if path.suffix.lower() == ".m4a"
+                    else "left for a person (not .m4a)"
+                )
+                if args.downmix
+                else "would remove"
+            )
             print(f"  {what}: {live}ch  {row['artist']} - {row['title']}")
             continue
 
         if args.downmix:
-            tmp = path.with_name(path.name + ".stereo.tmp")
+            # A name of its own, made here: a fixed ".stereo.tmp" overwrote a file
+            # already there (Codex review of #237, round 4).
+            fd, name = tempfile.mkstemp(prefix=".stereo-", suffix=".tmp", dir=path.parent)
+            os.close(fd)
+            tmp = Path(name)
             written = _downmix_to_stereo(path, tmp)
             if written is None:
+                tmp.unlink(missing_ok=True)  # only the file made here
                 print(f"  downmix failed, song kept as it is: {path.name}")
                 continue
             tmp.replace(path)
