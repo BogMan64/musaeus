@@ -143,6 +143,24 @@ class TestCanonMatching:
             "title prefix",
         )
 
+    def test_two_composers_in_a_listed_prefix_leave_it_to_the_credit(self):
+        """Codex review of #245 (reproduced): "Bach, Handel - Water Music" credited
+        to Handel went to Bach -- the first name of the list won."""
+        got = composer_for(
+            "Handel", "Bach, Handel - Water Music", dict(CANON, bach="Johann Sebastian Bach")
+        )
+        assert got == ("George Frideric Handel", "artist credit")
+
+    def test_a_long_listed_prefix_is_still_read(self):
+        """Codex review of #245 (Medium, reproduced): the 30-character cap applied
+        to the whole list, so "Wolfgang Amadeus Mozart, Süssmayr - Requiem" was
+        never read."""
+        canon = dict(CANON, **{"wolfgang amadeus mozart": "Wolfgang Amadeus Mozart"})
+        got = composer_for(
+            "Wiener Philharmoniker", "Wolfgang Amadeus Mozart, Süssmayr - Requiem", canon
+        )
+        assert got == ("Wolfgang Amadeus Mozart", "title prefix")
+
     def test_a_performer_in_a_listed_prefix_is_still_no_composer(self):
         canon = dict(CANON, **{"academy of st martin in the fields": "Henry Purcell"})
         title = "Academy of St Martin in the Fields, Marriner - Hornpipe"
