@@ -1683,3 +1683,65 @@ class TestArrivalTwinOfARejectedCopy:
         ctx.conn.commit()
         DupeResolverStage().execute(ctx)
         assert not arrival.exists() and keeper.exists()
+
+
+class TestThePersonsChoiceStands:
+    """Grey, 2026-10-25 (Blondie "The Tide Is High"): on Oct 21 Grey kept the
+    "Remastered 2001" and sent the "Edit" to review. Another file of the Edit
+    arrived; the keep rule ranks original before remaster, and it replaced the
+    copy Grey kept. A later arrival never replaces a hand-kept copy when it is the
+    same version the person rejected."""
+
+    def _scene(self, ctx, arrival_title: str):
+        kept = _make_archive_row(ctx, "lib/tide.m4a", "Blondie", "Autoamerican",
+                                 "The Tide Is High (Remastered 2001)", 900_000, 900, "hk")  # fmt: skip
+        ctx.conn.execute(
+            "UPDATE archive SET finalized_at = '2026-10-01', kept_by_person_at = '2026-10-21T22:35:28', "
+            "codec = 'alac', duration = 280.3 WHERE file_path = ?",
+            (str(kept),),
+        )
+        rejected = ctx.config.dupes_review_dir / "2026-10-21" / "tide-edit.m4a"
+        rejected.parent.mkdir(parents=True, exist_ok=True)
+        rejected.write_bytes(b"X" * 300)
+        from musaeus.db import upsert_archive
+
+        upsert_archive(ctx.conn, {"file_path": str(rejected), "status": "DUPE_REVIEW", "artist": "Blondie",
+                                  "title": "The Tide Is High (Edit)", "audio_hash": "hr"})  # fmt: skip
+        arrival = _make_archive_row(ctx, "new/tide.flac", "Blondie", "Autoamerican", arrival_title,
+                                    900_000, 900, "ha")  # fmt: skip
+        ctx.conn.execute(
+            "UPDATE archive SET codec = 'flac', duration = 233.9 WHERE file_path = ?",
+            (str(arrival),),
+        )
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES (?, ?, ?, 1.0, 'r', ?, ?)",
+            [("sheet", str(kept), "PERSON", "keep", "hk"),
+             ("sheet", str(ctx.inbox / "was" / "tide-edit.m4a"), "PERSON", "archive", "hr"),
+             ("g", str(kept), "NEAR", "pending", "hk"),
+             ("g", str(arrival), "NEAR", "pending", "ha")],
+        )  # fmt: skip
+        ctx.conn.execute(
+            "INSERT INTO events (run_id, ts, event_type, file_path, old_value, new_value) VALUES "
+            "('sheet', '2026-10-21 22:35:31', 'DUPE_MOVED_FOR_REVIEW', ?, ?, ?)",
+            (str(rejected), str(ctx.inbox / "was" / "tide-edit.m4a"), str(rejected)),
+        )
+        ctx.conn.commit()
+        return kept, arrival
+
+    def test_the_version_the_person_rejected_never_replaces_their_choice(self, ctx):
+        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        DupeResolverStage().execute(ctx)
+        assert kept.exists() and not arrival.exists()
+
+    def test_the_preview_agrees(self, ctx):
+        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        actions, _ = DupeResolverStage.plan_actions(ctx.conn, ctx.config)
+        assert [a["source"] for a in actions] == [str(arrival)]
+
+    def test_a_better_copy_of_the_same_title_still_ranks_with_the_kept_one(self, ctx):
+        """Grey 2026-10-10 still holds when the person chose between copies of one
+        title: only a choice between versions (different titles) is held."""
+        kept, arrival = self._scene(ctx, "The Tide Is High (Remastered 2001)")
+        DupeResolverStage().execute(ctx)
+        assert sum(p.exists() for p in (kept, arrival)) == 1  # the keep rule ranked them

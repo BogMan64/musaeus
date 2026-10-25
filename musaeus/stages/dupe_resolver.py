@@ -589,6 +589,39 @@ def _lost_to_another(conn, arrival: dict, aside: list[dict]) -> dict | None:
     return won
 
 
+def _held_by_person(conn, members: list[dict], keeper: dict | None) -> dict | None:
+    """The copy a person kept by hand that this keeper must not replace, if any.
+
+    Grey, 2026-10-25 (Blondie "The Tide Is High"): on the Oct 21 sheet Grey kept
+    the "Remastered 2001" and sent the "Edit" to review. Another file of the Edit
+    arrived, the keep rule ranks original before remaster, and it replaced the
+    copy Grey kept. A later copy of the version the person REJECTED never wins
+    over their choice; a better copy of another version still may (2026-10-10).
+    """
+    if keeper is None or keeper.get("kept_by_person_at"):
+        return None
+    want = " ".join((keeper.get("title") or "").casefold().split())
+    for m in members:
+        if m is keeper or not m.get("kept_by_person_at") or not _is_there(m):
+            continue
+        # The titles of the copies rejected in the decisions where m was kept.
+        rejected = conn.execute(
+            "SELECT a.title FROM duplicates k "
+            "JOIN duplicates d ON d.group_id = k.group_id AND d.status = 'archive' "
+            "JOIN archive a ON a.audio_hash = d.audio_hash "
+            "WHERE k.file_path = ? AND k.status = 'keep' AND d.audio_hash <> ''",
+            (m["file_path"],),
+        ).fetchall()
+        # A choice between VERSIONS: the rejected title differs from the kept one
+        # ("Edit" vs "Remastered 2001"). Same titles were a choice between copies,
+        # and a better copy may still replace the kept one (2026-10-10).
+        own = " ".join((m.get("title") or "").casefold().split())
+        titles = {" ".join((r[0] or "").casefold().split()) for r in rejected} - {own}
+        if want and want in titles:
+            return m
+    return None
+
+
 def _pick_keeper_and_losers(members: list[dict]) -> tuple[dict | None, list[dict]]:
     """
     Members are already ranked by Grey's keep rule (_rank, keep_rule.py),
@@ -787,6 +820,9 @@ class DupeResolverStage(BaseStage):
             _share_loudness(members)
             _rank(members)
             keeper, losers = _pick_keeper_and_losers(members)
+            held = _held_by_person(conn, members, keeper)  # as the resolver does
+            if held is not None:
+                keeper, losers = held, [m for m in members if m is not held]
             qs = ",".join("?" * len(component))
             cross = {
                 r[0]
@@ -1397,6 +1433,11 @@ class DupeResolverStage(BaseStage):
             _share_loudness(members)
             _rank(members)
             keeper, losers = _pick_keeper_and_losers(members)
+            # A copy the person kept by hand stays against a later arrival of the
+            # version they rejected (Grey, 2026-10-25).
+            held = _held_by_person(ctx.conn, members, keeper)
+            if held is not None:
+                keeper, losers = held, [m for m in members if m is not held]
             # An incoming CROSS_BATCH duplicate always moves, also when its
             # group was merged with a NEAR group: the library already holds
             # it. Ranked with the rest it could be kept and an unrelated song
