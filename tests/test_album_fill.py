@@ -884,3 +884,31 @@ def test_a_form_word_alone_is_not_classical(env):
     env.answers["confirm"] = set()
     env.run()
     assert env.calls["confirm"] == ["Greatest Hits"]
+
+
+@pytest.mark.parametrize(
+    ("artist", "searches"), [("Paul McCartney, Wings", 2), ("Earth, Wind & Fire", 1)]
+)
+def test_a_joint_credit_that_finds_nothing_is_asked_by_its_first_name(
+    monkeypatch, artist, searches
+):
+    """Batch 2 rerun, 2026-10-24: "Paul McCartney, Wings" found no recording at all,
+    and "My Love" lost its album "Red Rose Speedway". A credit that finds nothing
+    is asked again by its first name; a band name with a comma is found as it is."""
+    rec = {"score": 100, "title": "My Love", "artist-credit": [{"name": "Paul McCartney & Wings"}],
+           "releases": [{"title": "Red Rose Speedway", "status": "Official", "date": "1973",
+                         "release-group": {"primary-type": "Album", "secondary-types": []}}]}  # fmt: skip
+    asked = []
+
+    def _mb(url, headers=None):
+        query = parse_qs(urlparse(url).query)["query"][0]
+        asked.append(query)
+        whole = 'artist:"Earth, Wind & Fire"' in query or 'artist:"Paul McCartney"' in query
+        return {"recordings": [rec] if whole else []}
+
+    monkeypatch.setattr(af.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(af, "_get_json", _mb)
+    if artist.startswith("Earth"):
+        rec["artist-credit"] = [{"name": "Earth, Wind & Fire"}]
+    ok, _ = af.mb_confirm(artist, "Red Rose Speedway", "My Love")
+    assert ok and len(asked) == searches
