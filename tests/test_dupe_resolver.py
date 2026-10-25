@@ -1743,8 +1743,12 @@ class TestThePersonsChoiceStands:
         """Grey 2026-10-10 still holds when the person chose between copies of one
         title: only a choice between versions (different titles) is held."""
         kept, arrival = self._scene(ctx, "The Tide Is High (Remastered 2001)")
+        ctx.conn.execute("UPDATE archive SET duration = 320.0 WHERE file_path = ?", (str(arrival),))
+        ctx.conn.commit()
         DupeResolverStage().execute(ctx)
-        assert sum(p.exists() for p in (kept, arrival)) == 1  # the keep rule ranked them
+        assert arrival.exists() and not kept.exists(), (
+            "the better, longer copy of the same title wins"
+        )
 
     def test_the_choice_holds_after_the_kept_copy_is_refiled(self, ctx):
         """Codex review of #239 (reproduced): the decision was looked up by the kept
@@ -1766,3 +1770,36 @@ class TestThePersonsChoiceStands:
         ctx.conn.commit()
         DupeResolverStage().execute(ctx)
         assert sum(p.exists() for p in (kept, arrival)) == 1 and arrival.exists()
+
+    def test_the_rejected_title_is_the_rejected_copys_not_the_arrivals(self, ctx):
+        """Codex review of #239, round 2 (reproduced): an arrival sharing the rejected
+        copy's audio lent its own title as the "rejected" one."""
+        kept, arrival = self._scene(ctx, "The Tide Is High (Remastered 2001)")
+        # The person chose between two copies of one title; the arrival is an Edit
+        # with the rejected copy's audio.
+        ctx.conn.execute(
+            "UPDATE archive SET title = 'The Tide Is High (Remastered 2001)' WHERE audio_hash = 'hr'"
+        )
+        ctx.conn.execute("UPDATE archive SET title = 'The Tide Is High (Edit)', audio_hash = 'hr', duration = 320.0 "
+                         "WHERE file_path = ?", (str(arrival),))  # fmt: skip
+        ctx.conn.execute(
+            "UPDATE duplicates SET audio_hash = 'hr' WHERE file_path = ?", (str(arrival),)
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert not (kept.exists() and not arrival.exists()), (
+            "the arrival was not rejected by its own title"
+        )
+
+    def test_the_choice_survives_a_merged_cross_batch_group(self, ctx):
+        """Codex review of #239, round 2 (reproduced): a CROSS_BATCH group merged in,
+        and its rule picked the arriving Edit after the person's choice."""
+        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        ctx.conn.execute(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+            "audio_hash) VALUES ('crossdupe_x', ?, 'CROSS_BATCH', 1.0, 'r', 'pending', 'hk')",
+            (str(kept),),
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert kept.exists() and not arrival.exists()

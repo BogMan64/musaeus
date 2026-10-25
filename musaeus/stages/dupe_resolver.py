@@ -610,7 +610,9 @@ def _held_by_person(conn, members: list[dict], keeper: dict | None) -> dict | No
         rejected = conn.execute(
             "SELECT a.title FROM duplicates k "
             "JOIN duplicates d ON d.group_id = k.group_id AND d.status = 'archive' "
-            "JOIN archive a ON a.audio_hash = d.audio_hash "
+            # The rejected copy itself, waiting in review -- not an arrival that
+            # shares its audio under another title (Codex review of #239, round 2).
+            "JOIN archive a ON a.audio_hash = d.audio_hash AND a.status = 'DUPE_REVIEW' "
             "WHERE k.duplicate_type = 'PERSON' AND k.status = 'keep' AND k.audio_hash = ? "
             "AND d.audio_hash <> ''",
             (m.get("current_hash") or "",),
@@ -823,9 +825,6 @@ class DupeResolverStage(BaseStage):
             _share_loudness(members)
             _rank(members)
             keeper, losers = _pick_keeper_and_losers(members)
-            held = _held_by_person(conn, members, keeper)  # as the resolver does
-            if held is not None:
-                keeper, losers = held, [m for m in members if m is not held]
             qs = ",".join("?" * len(component))
             cross = {
                 r[0]
@@ -840,6 +839,9 @@ class DupeResolverStage(BaseStage):
                 if rest:
                     keeper = rest[0]
                     losers = [m for m in members if m is not keeper]
+            held = _held_by_person(conn, members, keeper)  # last, as the resolver does
+            if held is not None:
+                keeper, losers = held, [m for m in members if m is not held]
             live = [m for m in members if m.get("current_row") is not None]
             if live and all(m.get("kept_by_person_at") for m in live):
                 continue
@@ -1436,11 +1438,6 @@ class DupeResolverStage(BaseStage):
             _share_loudness(members)
             _rank(members)
             keeper, losers = _pick_keeper_and_losers(members)
-            # A copy the person kept by hand stays against a later arrival of the
-            # version they rejected (Grey, 2026-10-25).
-            held = _held_by_person(ctx.conn, members, keeper)
-            if held is not None:
-                keeper, losers = held, [m for m in members if m is not held]
             # An incoming CROSS_BATCH duplicate always moves, also when its
             # group was merged with a NEAR group: the library already holds
             # it. Ranked with the rest it could be kept and an unrelated song
@@ -1462,6 +1459,12 @@ class DupeResolverStage(BaseStage):
                 if rest:
                     keeper = rest[0]
                     losers = [m for m in members if m is not keeper]
+            # A copy the person kept by hand stays against a later arrival of the
+            # version they rejected (Grey, 2026-10-25) -- decided last, so no other
+            # rule picks the arrival after it (Codex review of #239, round 2).
+            held = _held_by_person(ctx.conn, members, keeper)
+            if held is not None:
+                keeper, losers = held, [m for m in members if m is not held]
             # A keep in `musaeus dedupe` settles the copies the person saw; a
             # copy that arrives later is ranked with it by the keep rule, which
             # may move the kept one (Grey, 2026-10-10). Copies all kept by a
