@@ -1745,3 +1745,24 @@ class TestThePersonsChoiceStands:
         kept, arrival = self._scene(ctx, "The Tide Is High (Remastered 2001)")
         DupeResolverStage().execute(ctx)
         assert sum(p.exists() for p in (kept, arrival)) == 1  # the keep rule ranked them
+
+    def test_the_choice_holds_after_the_kept_copy_is_refiled(self, ctx):
+        """Codex review of #239 (reproduced): the decision was looked up by the kept
+        copy's current path; filing it since lost the decision."""
+        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        ctx.conn.execute(
+            "UPDATE duplicates SET file_path = ? WHERE group_id = 'sheet' AND status = 'keep'",
+            (str(ctx.inbox / "old-place" / "tide.m4a"),),
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert kept.exists() and not arrival.exists()
+
+    def test_an_automatic_keep_is_not_the_persons_choice(self, ctx):
+        """Codex review of #239 (reproduced): any old keep counted, not only the
+        person's own decision."""
+        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        ctx.conn.execute("UPDATE duplicates SET duplicate_type = 'NEAR' WHERE group_id = 'sheet'")
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert sum(p.exists() for p in (kept, arrival)) == 1 and arrival.exists()

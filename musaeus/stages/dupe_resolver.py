@@ -604,13 +604,16 @@ def _held_by_person(conn, members: list[dict], keeper: dict | None) -> dict | No
     for m in members:
         if m is keeper or not m.get("kept_by_person_at") or not _is_there(m):
             continue
-        # The titles of the copies rejected in the decisions where m was kept.
+        # The titles of the copies rejected in the PERSON's decisions (the sheet's
+        # PERSON groups) where m was kept -- found by m's recording, not its path,
+        # which filing changes (Codex review of #239).
         rejected = conn.execute(
             "SELECT a.title FROM duplicates k "
             "JOIN duplicates d ON d.group_id = k.group_id AND d.status = 'archive' "
             "JOIN archive a ON a.audio_hash = d.audio_hash "
-            "WHERE k.file_path = ? AND k.status = 'keep' AND d.audio_hash <> ''",
-            (m["file_path"],),
+            "WHERE k.duplicate_type = 'PERSON' AND k.status = 'keep' AND k.audio_hash = ? "
+            "AND d.audio_hash <> ''",
+            (m.get("current_hash") or "",),
         ).fetchall()
         # A choice between VERSIONS: the rejected title differs from the kept one
         # ("Edit" vs "Remastered 2001"). Same titles were a choice between copies,
