@@ -69,7 +69,10 @@ logger = logging.getLogger(__name__)
 
 CANON_FILENAME = "Composer_Canon.tsv"
 
-_TITLE_PREFIX = re.compile(r"^([^-–]{2,30}?)\s+[-–]\s+\S")
+# "Handel - Water Music" or "Wolfgang Amadeus Mozart: Symphony No. 41" -- the
+# colon form was missed and the symphony filed under its orchestra (batch 4,
+# 2026-10-25). Safe: the prefix must still be a Composer_Canon name exactly.
+_TITLE_PREFIX = re.compile(r"^([^-–:]{2,30}?)(?:\s+[-–]|\s*:)\s+\S")
 
 #: K. is deliberately absent. Köchel numbers Mozart, but Kirkpatrick numbers
 #: Scarlatti, and "Keyboard Sonata in D Minor, K. 1, L. 366" is Scarlatti --

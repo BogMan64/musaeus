@@ -94,6 +94,22 @@ class TestCanonMatching:
         assert got == "George Frideric Handel"
         assert how == "title prefix"
 
+    def test_a_title_prefix_before_a_colon_resolves_it(self):
+        """Batch 4 (2026-10-25): "Wolfgang Amadeus Mozart: Symphony No. 41" by
+        "Orchestra Di Padova E Del Veneto & Peter Maag" was filed under the
+        orchestra; only " - " was read as the end of a composer prefix."""
+        canon = dict(CANON, **{"wolfgang amadeus mozart": "Wolfgang Amadeus Mozart"})
+        title = 'Wolfgang Amadeus Mozart: Symphony No. 41 In C Major K.551 "Jupiter", I - Allegro Vivace'
+        got, how = composer_for("Orchestra Di Padova E Del Veneto & Peter Maag", title, canon)
+        assert (got, how) == ("Wolfgang Amadeus Mozart", "title prefix")
+        assert composer_for("Margaret Marshall", "Handel: Messiah / Part 3", CANON)[0] == (
+            "George Frideric Handel"
+        )
+
+    def test_a_colon_prefix_that_is_no_composer_resolves_nothing(self):
+        assert composer_for("The London Philharmonic Orchestra", "The Valkyrie: Ride Of The Valkyries",
+                            CANON)[0] is None  # fmt: skip
+
     def test_a_missing_canon_file_yields_an_empty_map(self, tmp_path):
         assert load_composer_canon(tmp_path / "nope.tsv") == {}
 
