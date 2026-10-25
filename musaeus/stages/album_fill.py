@@ -306,7 +306,17 @@ def mb_confirm(artist: str, album: str, title: str, live_ok: bool = False) -> tu
     # "nothing" cleared a right album (batch 2 rerun, 2026-10-24). Asked again by
     # its first name; a band with a comma ("Earth, Wind & Fire") is found as it is.
     if not recordings and "," in artist:
-        recordings = search(artist.split(",")[0])
+        # ...and an answer counts only if its credit holds EVERY name: a band
+        # called "Earth" is not "Earth, Wind & Fire" (Codex review of #235).
+        names = [norm(p) for p in artist.split(",") if norm(p)]
+        recordings = [
+            r
+            for r in search(artist.split(",")[0])
+            if all(
+                n in norm(" ".join(c.get("name", "") for c in r.get("artist-credit") or []))
+                for n in names
+            )
+        ]
     return choose_mb_confirmation(recordings, artist, title, album, live_ok=live_ok)
 
 

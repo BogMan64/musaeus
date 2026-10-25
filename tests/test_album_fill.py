@@ -912,3 +912,19 @@ def test_a_joint_credit_that_finds_nothing_is_asked_by_its_first_name(
         rec["artist-credit"] = [{"name": "Earth, Wind & Fire"}]
     ok, _ = af.mb_confirm(artist, "Red Rose Speedway", "My Love")
     assert ok and len(asked) == searches
+
+
+def test_a_retry_by_first_name_needs_every_name_of_the_credit(monkeypatch):
+    """Codex review of #235 (reproduced): "Earth, Wind & Fire" found nothing, the
+    retry asked "Earth", and a recording by the band Earth confirmed the album."""
+    earth = {"score": 100, "title": "Fantasy", "artist-credit": [{"name": "Earth"}],
+             "releases": [{"title": "All 'N All", "status": "Official", "date": "1977",
+                           "release-group": {"primary-type": "Album", "secondary-types": []}}]}  # fmt: skip
+
+    def _mb(url, headers=None):
+        query = parse_qs(urlparse(url).query)["query"][0]
+        return {"recordings": [earth] if 'artist:"Earth"' in query else []}
+
+    monkeypatch.setattr(af.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(af, "_get_json", _mb)
+    assert af.mb_confirm("Earth, Wind & Fire", "All 'N All", "Fantasy")[0] is False
