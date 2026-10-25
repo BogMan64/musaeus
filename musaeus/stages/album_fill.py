@@ -286,18 +286,50 @@ def mb_confirm(artist: str, album: str, title: str, live_ok: bool = False) -> tu
     Album? Raises Unavailable when it cannot answer (a 503 is not "no").
     """
     q = lambda x: strip_bracketed(x).replace("\\", " ").replace('"', " ").strip()  # noqa: E731
+
     # Official albums only, in the search itself: unfiltered, the first ten
     # answers for "Brilliant Disguise" on "Tunnel Of Love" were all bootlegs
     # ("Tunnel of Love Express Tour"), and the studio album was never seen.
-    query = (
-        f'recording:"{q(title)}" AND artist:"{q(artist)}" AND release:"{q(album)}"'
-        " AND status:official AND primarytype:album"
-    )
-    time.sleep(_MB_RATE_S)
-    data = _get_json(
-        f"{_MB_RECORDING_URL}?{urlencode({'query': query, 'fmt': 'json', 'limit': 25})}"
-    )
-    return choose_mb_confirmation(data.get("recordings", []), artist, title, album, live_ok=live_ok)
+    def search(credit: str) -> list[dict]:
+        query = (
+            f'recording:"{q(title)}" AND artist:"{q(credit)}" AND release:"{q(album)}"'
+            " AND status:official AND primarytype:album"
+        )
+        time.sleep(_MB_RATE_S)
+        data = _get_json(
+            f"{_MB_RECORDING_URL}?{urlencode({'query': query, 'fmt': 'json', 'limit': 25})}"
+        )
+        return list(data.get("recordings", []))
+
+    found = choose_mb_confirmation(search(artist), artist, title, album, live_ok=live_ok)
+    from ..art_sources import _key, _parts
+
+    # A joint credit names a person in full ("Paul McCartney, Wings"); a band
+    # named with commas is single words ("Earth, Wind & Fire", "Crosby, Stills
+    # & Nash") and is never split into acts (Codex review of #235, round 3).
+    if found[0] or "," not in artist or not any(" " in p.strip() for p in _parts(artist)):
+        return found
+    # A joint credit ("Paul McCartney, Wings") found nothing that confirms, and
+    # that "nothing" cleared a right album (batch 2 rerun, 2026-10-24). Asked
+    # again by its first name; an answer counts only if its credit names the
+    # same acts -- "Paul McCartney and Wings" does, a band "Earth" or a solo
+    # "John Paul" does not (Codex review of #235, rounds 1-2).
+    want = {_key(p) for p in _parts(artist)}
+    retry = [
+        r
+        for r in search(artist.split(",")[0])
+        if {
+            _key(p)
+            for p in _parts(
+                "".join(
+                    c.get("name", "") + (c.get("joinphrase") or "")
+                    for c in r.get("artist-credit") or []
+                )
+            )
+        }
+        == want
+    ]
+    return choose_mb_confirmation(retry, artist, title, album, live_ok=live_ok) if retry else found
 
 
 def itunes_search(artist: str, title: str) -> list[dict]:

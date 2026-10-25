@@ -884,3 +884,99 @@ def test_a_form_word_alone_is_not_classical(env):
     env.answers["confirm"] = set()
     env.run()
     assert env.calls["confirm"] == ["Greatest Hits"]
+
+
+@pytest.mark.parametrize(
+    ("artist", "searches"), [("Paul McCartney, Wings", 2), ("Earth, Wind & Fire", 1)]
+)
+def test_a_joint_credit_that_finds_nothing_is_asked_by_its_first_name(
+    monkeypatch, artist, searches
+):
+    """Batch 2 rerun, 2026-10-24: "Paul McCartney, Wings" found no recording at all,
+    and "My Love" lost its album "Red Rose Speedway". A credit that finds nothing
+    is asked again by its first name; a band name with a comma is found as it is."""
+    rec = {"score": 100, "title": "My Love", "artist-credit": [{"name": "Paul McCartney & Wings"}],
+           "releases": [{"title": "Red Rose Speedway", "status": "Official", "date": "1973",
+                         "release-group": {"primary-type": "Album", "secondary-types": []}}]}  # fmt: skip
+    asked = []
+
+    def _mb(url, headers=None):
+        query = parse_qs(urlparse(url).query)["query"][0]
+        asked.append(query)
+        whole = 'artist:"Earth, Wind & Fire"' in query or 'artist:"Paul McCartney"' in query
+        return {"recordings": [rec] if whole else []}
+
+    monkeypatch.setattr(af.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(af, "_get_json", _mb)
+    if artist.startswith("Earth"):
+        rec["artist-credit"] = [{"name": "Earth, Wind & Fire"}]
+    ok, _ = af.mb_confirm(artist, "Red Rose Speedway", "My Love")
+    assert ok and len(asked) == searches
+
+
+def test_a_retry_by_first_name_needs_every_name_of_the_credit(monkeypatch):
+    """Codex review of #235 (reproduced): "Earth, Wind & Fire" found nothing, the
+    retry asked "Earth", and a recording by the band Earth confirmed the album."""
+    earth = {"score": 100, "title": "Fantasy", "artist-credit": [{"name": "Earth"}],
+             "releases": [{"title": "All 'N All", "status": "Official", "date": "1977",
+                           "release-group": {"primary-type": "Album", "secondary-types": []}}]}  # fmt: skip
+
+    def _mb(url, headers=None):
+        query = parse_qs(urlparse(url).query)["query"][0]
+        return {"recordings": [earth] if 'artist:"Earth"' in query else []}
+
+    monkeypatch.setattr(af.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(af, "_get_json", _mb)
+    assert af.mb_confirm("Earth, Wind & Fire", "All 'N All", "Fantasy")[0] is False
+
+
+def _credit_rec(credit, title="Song", album="Album"):
+    return {"score": 100, "title": title, "artist-credit": [{"name": credit}],
+            "releases": [{"title": album, "status": "Official", "date": "2000",
+                          "release-group": {"primary-type": "Album", "secondary-types": []}}]}  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("credit", "full", "retry", "confirmed"),
+    [
+        # a solo "John Lennon Paul McCartney" is not the joint "John Lennon, Paul McCartney"
+        ("John Lennon, Paul McCartney", [], [_credit_rec("John Lennon Paul McCartney")], False),
+        # a stray first hit does not skip the retry
+        (
+            "Paul McCartney, Wings",
+            [_credit_rec("Paul McCartney & Wings", title="Other Song")],
+            [_credit_rec("Paul McCartney & Wings")],
+            True,
+        ),
+    ],
+)
+def test_a_retry_names_the_same_acts_and_is_not_skipped_by_a_stray_hit(
+    monkeypatch, credit, full, retry, confirmed
+):
+    """Codex review of #235, round 2 (both reproduced)."""
+    monkeypatch.setattr(af.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        af,
+        "_get_json",
+        lambda url, headers=None: {
+            "recordings": full
+            if f'artist:"{credit}"' in parse_qs(urlparse(url).query)["query"][0]
+            else retry
+        },
+    )
+    assert af.mb_confirm(credit, "Album", "Song")[0] is confirmed
+
+
+def test_a_band_named_with_commas_is_never_split_into_acts(monkeypatch):
+    """Codex review of #235, round 3 (reproduced): "Earth, Wind & Fire" was confirmed
+    by a recording credited to three acts named Earth, Wind and Fire."""
+    asked = []
+    three = _credit_rec("Earth & Wind & Fire")
+
+    def _mb(url, headers=None):
+        asked.append(url)
+        return {"recordings": [] if len(asked) == 1 else [three]}
+
+    monkeypatch.setattr(af.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(af, "_get_json", _mb)
+    assert af.mb_confirm("Earth, Wind & Fire", "Album", "Song")[0] is False and len(asked) == 1
