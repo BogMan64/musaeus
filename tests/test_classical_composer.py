@@ -94,6 +94,49 @@ class TestCanonMatching:
         assert got == "George Frideric Handel"
         assert how == "title prefix"
 
+    def test_a_title_prefix_before_a_colon_resolves_it(self):
+        """Batch 4 (2026-10-25): "Wolfgang Amadeus Mozart: Symphony No. 41" by
+        "Orchestra Di Padova E Del Veneto & Peter Maag" was filed under the
+        orchestra; only " - " was read as the end of a composer prefix."""
+        canon = dict(CANON, **{"wolfgang amadeus mozart": "Wolfgang Amadeus Mozart"})
+        title = 'Wolfgang Amadeus Mozart: Symphony No. 41 In C Major K.551 "Jupiter", I - Allegro Vivace'
+        got, how = composer_for("Orchestra Di Padova E Del Veneto & Peter Maag", title, canon)
+        assert (got, how) == ("Wolfgang Amadeus Mozart", "title prefix")
+        assert composer_for("Margaret Marshall", "Handel: Messiah / Part 3", CANON)[0] == (
+            "George Frideric Handel"
+        )
+
+    def test_a_colon_prefix_that_is_no_composer_resolves_nothing(self):
+        assert composer_for("The London Philharmonic Orchestra", "The Valkyrie: Ride Of The Valkyries",
+                            CANON)[0] is None  # fmt: skip
+
+    @pytest.mark.parametrize("sep", [":", " -"])
+    def test_a_performer_named_in_the_canon_is_no_title_prefix(self, sep):
+        """Codex review of #244 (reproduced): the canon also maps performers to a
+        composer ("András Schiff" -> Bach, for his credits); "András Schiff: Mozart
+        Piano Sonata No. 11" was filed under Bach. A title prefix must name the
+        composer."""
+        canon = dict(CANON, **{"andrás schiff": "Johann Sebastian Bach"})
+        title = f"András Schiff{sep} Mozart Piano Sonata No. 11"
+        assert composer_for("Chamber Orchestra", title, canon) == (None, "")
+
+    @pytest.mark.parametrize("sep", [":", " -"])
+    def test_a_composer_named_in_the_title_wins_over_a_performer_credit(self, sep):
+        """Codex review of #244, round 2 (reproduced): credited to András Schiff
+        (mapped to Bach for his credits) and titled "Mozart: Piano Sonata No. 11",
+        the song went to Bach -- the credit was asked before the title."""
+        canon = dict(
+            CANON, **{"andrás schiff": "Johann Sebastian Bach", "mozart": "Wolfgang Amadeus Mozart"}
+        )
+        got = composer_for("András Schiff", f"Mozart{sep} Piano Sonata No. 11", canon)
+        assert got == ("Wolfgang Amadeus Mozart", "title prefix")
+
+    def test_a_composer_alias_is_still_a_title_prefix(self):
+        canon = dict(CANON, **{"georg friedrich händel": "George Frideric Handel"})
+        got = composer_for("Ensemble", "Georg Friedrich Händel: Water Music", canon)[0]
+        assert got == "George Frideric Handel"
+        assert composer_for("Ensemble", "J.S. Bach - Air", CANON)[0] == "Johann Sebastian Bach"
+
     def test_a_missing_canon_file_yields_an_empty_map(self, tmp_path):
         assert load_composer_canon(tmp_path / "nope.tsv") == {}
 

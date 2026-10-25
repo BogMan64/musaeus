@@ -57,6 +57,7 @@ import contextlib
 import logging
 import re
 import shutil
+import unicodedata
 from pathlib import Path
 
 from ..context import RunContext, StageResult
@@ -69,7 +70,10 @@ logger = logging.getLogger(__name__)
 
 CANON_FILENAME = "Composer_Canon.tsv"
 
-_TITLE_PREFIX = re.compile(r"^([^-–]{2,30}?)\s+[-–]\s+\S")
+# "Handel - Water Music" or "Wolfgang Amadeus Mozart: Symphony No. 41" -- the
+# colon form was missed and the symphony filed under its orchestra (batch 4,
+# 2026-10-25). Safe: the prefix must still be a Composer_Canon name exactly.
+_TITLE_PREFIX = re.compile(r"^([^-–:]{2,30}?)(?:\s+[-–]|\s*:)\s+\S")
 
 #: K. is deliberately absent. Köchel numbers Mozart, but Kirkpatrick numbers
 #: Scarlatti, and "Keyboard Sonata in D Minor, K. 1, L. 366" is Scarlatti --
@@ -106,16 +110,27 @@ def composer_for(artist: str, title: str, canon: dict[str, str]) -> tuple[str | 
     for pattern, composer in _CATALOGUE:
         if pattern.search(title or ""):
             return composer, "catalogue number"
+    # A composer named at the head of the title before the credit: the canon
+    # also maps performers to a composer ("András Schiff" -> Bach), and Schiff's
+    # "Mozart: Piano Sonata No. 11" went to Bach (Codex review of #244, round 2).
+    m = _TITLE_PREFIX.match((title or "").strip())
+    if m:
+        hit = canon.get(m.group(1).strip().lower())
+        # The prefix must name the composer, not a performer the canon maps:
+        # "András Schiff: Mozart Piano Sonata" went to Bach (round 1).
+        if hit and _fold(hit).split()[-1] in _fold(m.group(1)).split():
+            return hit, "title prefix"
     for part in (artist or "").split(","):
         hit = canon.get(part.strip().lower())
         if hit:
             return hit, "artist credit"
-    m = _TITLE_PREFIX.match((title or "").strip())
-    if m:
-        hit = canon.get(m.group(1).strip().lower())
-        if hit:
-            return hit, "title prefix"
     return None, ""
+
+
+def _fold(name: str) -> str:
+    """Lower case, accents and punctuation gone: "J.S.Bach" -> "j s bach"."""
+    plain = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", " ", plain.lower()).strip()
 
 
 def _is_within(path: Path, root: Path) -> bool:
