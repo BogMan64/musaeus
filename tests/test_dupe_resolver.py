@@ -1983,6 +1983,28 @@ class TestThePersonsChoiceStands:
         DupeResolverStage().execute(ctx)
         assert album.exists() and not arrival.exists() and not kept.exists()
 
+    def test_the_copies_left_are_ranked_again_after_the_rejected_one(self, ctx):
+        """Codex review of #239, round 10 (reproduced): with the rejected Edit set
+        aside, the next copy was taken from the old order, made without the length
+        step among the rest; the shorter Album Version was kept."""
+        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        ctx.conn.execute("UPDATE archive SET duration = 240.0 WHERE file_path = ?", (str(arrival),))
+        albums = {}
+        for name, secs, h in [("a-short", 230.0, "hv1"), ("b-long", 235.0, "hv2")]:
+            albums[name] = _make_archive_row(ctx, f"new/{name}.flac", "Blondie", "Autoamerican",
+                                             "The Tide Is High (Album Version)", 900_000, 900, h)  # fmt: skip
+            ctx.conn.execute("UPDATE archive SET codec = 'flac', duration = ? WHERE file_path = ?",
+                             (secs, str(albums[name])))  # fmt: skip
+            ctx.conn.execute(
+                "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
+                "audio_hash) VALUES ('g', ?, 'NEAR', 1.0, 'r', 'pending', ?)",
+                (str(albums[name]), h),
+            )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        got = {n: p.exists() for n, p in [("edit", arrival), ("kept", kept), *albums.items()]}
+        assert got == {"edit": False, "kept": False, "a-short": False, "b-long": True}
+
 
 def test_older_person_decisions_get_the_title_of_their_own_copy(tmp_path):
     """open_db fills the new title column once, for decisions made before it:

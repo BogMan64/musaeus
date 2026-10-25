@@ -636,7 +636,11 @@ def _held_by_person(
 
     if not of_rejected(keeper):
         return None
-    return next((c for c in pool if not of_rejected(c)), rejected[norm(keeper.get("title"))])
+    # Ranked again: the length step compares the copies in the running, so the
+    # old order without the rejected copy is not the keep rule's (round 10).
+    eligible = [c for c in pool if not of_rejected(c)]
+    _rank(eligible)
+    return eligible[0] if eligible else rejected[norm(keeper.get("title"))]
 
 
 def _pick_keeper_and_losers(members: list[dict]) -> tuple[dict | None, list[dict]]:
