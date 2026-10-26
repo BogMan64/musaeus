@@ -222,6 +222,12 @@ def norm(s: str | None) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+def _spelled_out(title: str) -> str:
+    """A dropped g put back: "Puttin'" is "Putting" (Grey, 2026-10-26: our titles
+    stay as released; MusicBrainz writes "(Putting Up With) The Joneses")."""
+    return re.sub(r"\b(\w+in)'(?!\w)", r"\1g", title or "")
+
+
 def same_name(a: str | None, b: str | None) -> bool:
     """One name, with words in brackets dropped -- or kept as plain words.
 
@@ -230,6 +236,7 @@ def same_name(a: str | None, b: str | None) -> bool:
     words on one side only (batch 3, 2026-10-25).
     """
     flat = lambda s: norm(re.sub(r"[()\[\]{}]", " ", s or ""))  # noqa: E731
+    a, b = _spelled_out(a or ""), _spelled_out(b or "")
     return norm(a) == norm(b) or flat(a) == flat(b)
 
 
@@ -250,7 +257,12 @@ def _get_json(url: str, headers: dict[str, str] | None = None) -> dict:
 
 
 def acoustid_release_groups(
-    fingerprint: str, duration: float, api_key: str, artist: str, title: str
+    fingerprint: str,
+    duration: float,
+    api_key: str,
+    artist: str,
+    title: str,
+    acts: dict[str, int] | None = None,
 ) -> list[dict]:
     """The albums of the one recording that is this song (artist and title agree).
 
@@ -279,12 +291,53 @@ def acoustid_release_groups(
         recordings = [
             r for r in result.get("recordings") or [] if r.get("artists") and r.get("releasegroups")
         ]
-        rid = _pick_matching_recording(recordings, artist, title, duration)
+        rid = _pick_matching_recording(recordings, artist, title, duration) or _pick_again(
+            recordings, artist, title, duration, acts
+        )
         if rid:
             # An album with no credit of its own stays uncredited: it may be a
             # various-artists album, and choose_from_release_groups refuses it.
             return next(r["releasegroups"] for r in recordings if r.get("id") == rid)
     return []
+
+
+def _is_joint(artist: str) -> bool:
+    """A joint credit names a person in full ("Paul McCartney, Wings"); a band
+    named with commas is single words ("Earth, Wind & Fire", "Crosby, Stills
+    & Nash") and is never split into acts (Codex review of #235, round 3)."""
+    from ..art_sources import _parts
+
+    return "," in artist and any(" " in p.strip() for p in _parts(artist))
+
+
+def _pick_again(
+    recordings: list[dict],
+    artist: str,
+    title: str,
+    duration: float,
+    acts: dict[str, int] | None = None,
+) -> str | None:
+    """The recording, asked again in MusicBrainz's form of our song.
+
+    Grey, 2026-10-26 (option A): our titles and credits stay as released. A
+    dropped g is spelled out ("Puttin' Up With The Joneses" is "(Putting Up With)
+    The Joneses"), and a joint credit is asked by its first act when every act
+    the recording credits is one of ours: "The Chieftains, Brendan Begley" is The
+    Chieftains' "Medley: ...: The Arrival of the Wren Boys" (batch 11).
+    """
+    spelled = _spelled_out(title)
+    if spelled != title:
+        rid = _pick_matching_recording(recordings, artist, spelled, duration)
+        if rid:
+            return rid
+    if not _is_joint(artist):
+        return None
+    ours = [r for r in recordings if _credits(_group_credit(r), artist, True, acts)]
+    for form in dict.fromkeys((title, spelled)):
+        rid = _pick_matching_recording(ours, _joint_acts(artist, acts)[0], form, duration)
+        if rid:
+            return rid
+    return None
 
 
 def mb_first_release(release_group_id: str) -> str | None:
@@ -304,7 +357,13 @@ def deezer_search(artist: str, title: str) -> list[dict]:
     return items
 
 
-def mb_confirm(artist: str, album: str, title: str, live_ok: bool = False) -> tuple[bool, str]:
+def mb_confirm(
+    artist: str,
+    album: str,
+    title: str,
+    live_ok: bool = False,
+    acts: dict[str, int] | None = None,
+) -> tuple[bool, str]:
     """Ask MusicBrainz whether this song is on an official studio album of this name.
 
     live_ok: a live album of that name counts too -- for an arriving album the
@@ -340,12 +399,14 @@ def mb_confirm(artist: str, album: str, title: str, live_ok: bool = False) -> tu
     plain = lambda x: q(re.sub(r"\s+", " ", re.sub(r"[()\[\]{}]", " ", x)))  # noqa: E731
     if not found[0] and (plain(title) != q(title) or plain(album) != q(album)):
         found = choose_mb_confirmation(search(artist, plain), artist, title, album, live_ok=live_ok)
-    from ..art_sources import _parts
-
-    # A joint credit names a person in full ("Paul McCartney, Wings"); a band
-    # named with commas is single words ("Earth, Wind & Fire", "Crosby, Stills
-    # & Nash") and is never split into acts (Codex review of #235, round 3).
-    if found[0] or "," not in artist or not any(" " in p.strip() for p in _parts(artist)):
+    # And with a dropped g spelled out: MusicBrainz writes "(Putting Up With) The
+    # Joneses", and "Puttin'" found nothing (batch 8, Grey 2026-10-26).
+    spelled = lambda x: plain(_spelled_out(x))  # noqa: E731
+    if not found[0] and (spelled(title) != plain(title) or spelled(album) != plain(album)):
+        found = choose_mb_confirmation(
+            search(artist, spelled), artist, title, album, live_ok=live_ok
+        )
+    if found[0] or not _is_joint(artist):
         return found
     # A joint credit ("Paul McCartney, Wings") found nothing that confirms, and
     # that "nothing" cleared a right album (batch 2 rerun, 2026-10-24). Asked
@@ -355,7 +416,13 @@ def mb_confirm(artist: str, album: str, title: str, live_ok: bool = False) -> tu
     # Company, Janis Joplin", batch 7, 2026-10-25); a band "Earth" or a solo
     # "John Paul" is not (Codex review of #235, rounds 1-2).
     retry = choose_mb_confirmation(
-        search(_joint_acts(artist)[0]), artist, title, album, live_ok=live_ok, only_ours=True
+        search(_joint_acts(artist, acts)[0]),
+        artist,
+        title,
+        album,
+        live_ok=live_ok,
+        only_ours=True,
+        acts=acts,
     )
     return retry if retry[0] else found
 
@@ -556,18 +623,40 @@ def _acts(credit: str | None) -> set[str]:
 
 #: A band named as a list of words: "Earth, Wind & Fire", "Crosby, Stills &
 #: Nash", "Peter, Paul and Mary". One act, never split at its commas.
-_LISTED_BAND = re.compile(r"\s*\w+(?:\s*,\s*\w+)+\s*(?:&|\band\b)\s*\w+\b", re.I)
+_LISTED_BAND = re.compile(r"\w+(?:\s*,\s*\w+)+\s*(?:&|\band\b)\s*\w+", re.I)
 
 
-def _joint_acts(artist: str) -> list[str]:
-    """The acts of a comma-joined credit, a band named as a list kept whole:
-    "Earth, Wind & Fire, Maurice White" is two acts (Codex review of #249, round 2)."""
-    band = _LISTED_BAND.match(artist)
-    head, rest = (band.group(0), artist[band.end() :]) if band else ("", artist)
-    return [a.strip() for a in [head, *rest.split(",")] if a.strip()]
+def _joint_acts(artist: str, acts: dict[str, int] | None = None) -> list[str]:
+    """The acts of a comma-joined credit, a band named as a list kept whole.
+
+    First in the credit it is the band: "Earth, Wind & Fire, Maurice White" is
+    two acts (Codex review of #249, round 2). Later in it, the library decides
+    (Grey, 2026-10-26): *acts* counts the library's songs per act, and the list
+    is one act when more songs are by it than by any of its pieces -- 9 by
+    "Earth, Wind & Fire", none by "Earth" (Codex review of #249, round 4).
+    """
+    pieces = [p.strip() for p in artist.split(",")]
+    count = lambda name: (acts or {}).get(_act(name), 0)  # noqa: E731
+    out: list[str] = []
+    i = 0
+    while i < len(pieces):
+        for j in range(len(pieces), i + 1, -1):  # the longest list first
+            run = ", ".join(pieces[i:j])
+            if _LISTED_BAND.fullmatch(run) and (
+                i == 0 or count(run) > max(count(p) for p in pieces[i:j])
+            ):
+                out.append(run)
+                i = j
+                break
+        else:
+            out.append(pieces[i])
+            i += 1
+    return [a for a in out if a]
 
 
-def _credits(credit: list[dict], artist: str, only_ours: bool) -> bool:
+def _credits(
+    credit: list[dict], artist: str, only_ours: bool, acts: dict[str, int] | None = None
+) -> bool:
     """Does a MusicBrainz artist credit credit our acts (see choose_mb_confirmation)?"""
     from ..art_sources import _parts
 
@@ -575,7 +664,7 @@ def _credits(credit: list[dict], artist: str, only_ours: bool) -> bool:
     if only_ours:
         # Whole acts of ours, never a piece of one: a band "Big Brother" is not
         # "Big Brother & The Holding Company" (Codex review of #249).
-        ours = {_act(a) for a in _joint_acts(artist)}
+        ours = {_act(a) for a in _joint_acts(artist, acts)}
         whole = lambda n: _act(n) in ours or all(_act(p) in ours for p in _parts(n))  # noqa: E731
         return bool(names) and all(any(n.strip() and whole(n) for n in pair) for pair in names)
     # Every name of the arriving credit must be credited: the first WORD alone
@@ -594,6 +683,7 @@ def choose_mb_confirmation(
     album: str,
     live_ok: bool = False,
     only_ours: bool = False,
+    acts: dict[str, int] | None = None,
 ) -> tuple[bool, str]:
     """Pure: does any recording carry *title* by *artist* on an official studio album *album*?
 
@@ -608,7 +698,7 @@ def choose_mb_confirmation(
         if (
             rec.get("score", 0) < _MB_MIN_SCORE
             or not same_name(rec.get("title"), title)
-            or not _credits(rec.get("artist-credit") or [], artist, only_ours)
+            or not _credits(rec.get("artist-credit") or [], artist, only_ours, acts)
         ):
             continue
         for rel in rec.get("releases") or []:
@@ -629,7 +719,19 @@ def choose_mb_confirmation(
     )
 
 
-def _confirmed(claim: tuple[str | None, str], artist: str, title: str) -> tuple[str | None, str]:
+def _library_acts(conn) -> dict[str, int]:  # type: ignore[no-untyped-def]
+    """The library's songs per act, for _joint_acts (Grey, 2026-10-26)."""
+    counts: dict[str, int] = {}
+    for (artist,) in conn.execute(
+        "SELECT artist FROM archive WHERE status='CATALOGUED' AND artist IS NOT NULL"
+    ):
+        counts[_act(artist)] = counts.get(_act(artist), 0) + 1
+    return counts
+
+
+def _confirmed(
+    claim: tuple[str | None, str], artist: str, title: str, acts: dict[str, int] | None = None
+) -> tuple[str | None, str]:
     """A text search's album, only if MusicBrainz agrees; otherwise none.
 
     iTunes' catalogue is full of compilations and placeholder dates, and
@@ -639,7 +741,7 @@ def _confirmed(claim: tuple[str | None, str], artist: str, title: str) -> tuple[
     album, reason = claim
     if album is None:
         return claim
-    ok, evidence = mb_confirm(artist, album, title)
+    ok, evidence = mb_confirm(artist, album, title, acts=acts)
     return (album if ok else None), f"{reason}; {evidence}"
 
 
@@ -740,7 +842,8 @@ class AlbumFillStage(BaseStage):
         dg_key, dg_secret = cfg.discogs_consumer_key, cfg.discogs_consumer_secret
         tally: dict[str, int] = {}
         recordings: dict[int, list[dict]] = {}  # the fingerprint's albums, once per row
-        result.files_changed += self._check_arrived_albums(ctx, tally, recordings)
+        acts = _library_acts(ctx.conn)
+        result.files_changed += self._check_arrived_albums(ctx, tally, recordings, acts)
         rows = ctx.conn.execute(
             f"SELECT id, file_path, artist, title, chromaprint, chromaprint_duration {_CANDIDATES} "
             "ORDER BY artist, title"
@@ -768,7 +871,12 @@ class AlbumFillStage(BaseStage):
                     else:
                         time.sleep(_AID_RATE_S)
                         groups = acoustid_release_groups(
-                            row["chromaprint"], row["chromaprint_duration"], aid_key, artist, title
+                            row["chromaprint"],
+                            row["chromaprint_duration"],
+                            aid_key,
+                            artist,
+                            title,
+                            acts,
                         )
                     album, reason = (
                         choose_from_release_groups(groups, artist, first_release)
@@ -791,6 +899,7 @@ class AlbumFillStage(BaseStage):
                         ),
                         artist,
                         title,
+                        acts,
                     )
                     source, answered = "discogs", True
                 if album is None and text_ok:
@@ -799,6 +908,7 @@ class AlbumFillStage(BaseStage):
                         choose_from_deezer(deezer_search(artist, title), artist, title),
                         artist,
                         title,
+                        acts,
                     )
                     source, answered = "deezer", True
                 if album is None and text_ok:
@@ -807,6 +917,7 @@ class AlbumFillStage(BaseStage):
                         choose_from_itunes(itunes_search(artist, title), artist, title),
                         artist,
                         title,
+                        acts,
                     )
                     source, answered = "itunes", True
             except Unavailable as exc:
@@ -857,7 +968,11 @@ class AlbumFillStage(BaseStage):
         return result
 
     def _check_arrived_albums(
-        self, ctx: RunContext, tally: dict[str, int], recordings: dict[int, list[dict]]
+        self,
+        ctx: RunContext,
+        tally: dict[str, int],
+        recordings: dict[int, list[dict]],
+        acts: dict[str, int],
     ) -> int:
         """Keep an album a song arrived with only if MusicBrainz confirms it.
 
@@ -903,7 +1018,12 @@ class AlbumFillStage(BaseStage):
                     # No fingerprint answer: MusicBrainz still can (Codex review of #233).
                     try:
                         recordings[row["id"]] = acoustid_release_groups(
-                            row["chromaprint"], row["chromaprint_duration"], aid_key, artist, title
+                            row["chromaprint"],
+                            row["chromaprint_duration"],
+                            aid_key,
+                            artist,
+                            title,
+                            acts,
                         )
                     except Unavailable:
                         fingerprint_failed = True
@@ -916,7 +1036,9 @@ class AlbumFillStage(BaseStage):
                     ok, evidence = False, "fingerprint: a live recording, not on this album"
                 else:
                     # No fingerprint answer: a live album of that name counts too.
-                    ok, evidence = mb_confirm(artist, row["album"], title, live_ok=not groups)
+                    ok, evidence = mb_confirm(
+                        artist, row["album"], title, live_ok=not groups, acts=acts
+                    )
                     if not ok and fingerprint_failed:
                         # The studio-only search's "no" is not a no for a live album
                         # (Codex review of #233, round 3): ask again next run.
