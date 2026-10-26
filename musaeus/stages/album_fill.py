@@ -261,7 +261,7 @@ def acoustid_release_groups(
         recordings = [
             r for r in result.get("recordings") or [] if r.get("artists") and r.get("releasegroups")
         ]
-        rid = _pick_matching_recording(recordings, artist, title)
+        rid = _pick_matching_recording(recordings, artist, title, duration)
         if rid:
             # An album with no credit of its own stays uncredited: it may be a
             # various-artists album, and choose_from_release_groups refuses it.
