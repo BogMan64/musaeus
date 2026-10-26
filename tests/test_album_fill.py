@@ -242,10 +242,16 @@ def test_of_several_recordings_of_the_song_the_one_its_length_is_gives_the_album
     # Batch 6 (2026-10-25): Boston's studio "Feelin' Satisfied" (251.8 s) is linked
     # to six recordings of the song. A bootleg with no length was listed first, and
     # the arriving "Don't Look Back" was cleared as "a live recording".
-    boot = _aid_rec("boot", "Feelin' Satisfied", "Boston",
-                    _rg("gw", "Live at Great Woods", "Boston", secondary=["Live"]))
-    studio = {**_aid_rec("dlb", "Feelin' Satisfied", "Boston",
-                         _rg("d", "Don't Look Back", "Boston")), "duration": 252.026}
+    boot = _aid_rec(
+        "boot",
+        "Feelin' Satisfied",
+        "Boston",
+        _rg("gw", "Live at Great Woods", "Boston", secondary=["Live"]),
+    )
+    studio = {
+        **_aid_rec("dlb", "Feelin' Satisfied", "Boston", _rg("d", "Don't Look Back", "Boston")),
+        "duration": 252.026,
+    }
     monkeypatch.setattr(af, "_get_json", lambda url: {"status": "ok", "results": [
         {"score": 0.98, "recordings": [boot, studio]},
     ]})  # fmt: skip
