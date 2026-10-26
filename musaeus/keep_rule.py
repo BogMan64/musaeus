@@ -92,10 +92,11 @@ def decide(review: Mapping[str, Any], library: Mapping[str, Any]) -> tuple[str, 
     that baked copy, not an original. Without it the swap tool judged an
     identical copy "original" (review of #86, finding 7; the 2026-09-26 shape).
     """
-    from .stages.dupe_resolver import _share_loudness
+    from .stages.dupe_resolver import _share_live_take, _share_loudness
 
     review, library = dict(review), dict(library)
     _share_loudness([review, library])
+    _share_live_take([review, library])
     for step, r, lib in zip(STEPS, keep_key(review), keep_key(library), strict=False):
         if r != lib:
             return ("review" if r < lib else "library"), step

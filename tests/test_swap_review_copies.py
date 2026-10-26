@@ -117,9 +117,19 @@ def test_a_better_review_copy_is_found_with_its_master(vault):
 
 
 def test_a_worse_review_copy_is_not_promoted(vault):
-    _lib_and_better_review(vault, sample_rate=44100, title="Rosanna (Live)")
+    _lib_and_better_review(vault, sample_rate=44100, title="Rosanna (Live)", duration=345.0)
     wins, tally = vault.mod.review_wins(vault.conn)
     assert wins == [] and tally["library (studio/live)"] == 1
+
+
+def test_a_live_original_in_review_beats_its_same_length_remaster(vault):
+    # Batch 7 (2026-10-25), Codex review of #248: one live take, only the original
+    # labelled "Live"; the remaster read as studio kept the master's place.
+    lib, rev, _, _ = _lib_and_better_review(vault, title="Rosanna (Live)", sample_rate=192000)
+    vault.conn.execute("UPDATE archive SET title='Rosanna (Remastered 2003)' WHERE id=?", (lib,))
+    vault.conn.commit()
+    wins, _ = vault.mod.review_wins(vault.conn)
+    assert [p.review["id"] for p in wins] == [rev]
 
 
 def test_promote_dry_run_changes_nothing(vault):
@@ -210,7 +220,7 @@ def test_one_rule_decides_both_lists(vault):
     the rule bucketed lengths and over-counted swaps by 72, 2026-10-03)."""
     _, better, _, _ = _lib_and_better_review(vault)
     worse_path = vault.review_dir / "Toto/Live/Toto - Rosanna (Live).m4a"
-    worse = vault.row(worse_path, "DUPE_REVIEW", "W", title="Rosanna (Live)")
+    worse = vault.row(worse_path, "DUPE_REVIEW", "W", title="Rosanna (Live)", duration=345.0)
     vault.set_aside(worse_path, vault.masters / "Rock/Toto/Toto IV/Toto - Rosanna.m4a")
     tie_path = vault.review_dir / "Toto/x/Toto - Rosanna.m4a"
     tie = vault.row(tie_path, "DUPE_REVIEW", "T", duration=332.5)
