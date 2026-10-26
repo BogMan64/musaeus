@@ -60,7 +60,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from musaeus.config import MusicConfig  # noqa: E402
 from musaeus.hasher import audio_hash_safe  # noqa: E402
 from musaeus.keep_rule import decide, keep_key  # noqa: E402
-from musaeus.stages.dupe_resolver import _share_loudness  # noqa: E402
+from musaeus.stages.dupe_resolver import _share_live_take, _share_loudness  # noqa: E402
 
 EVENT = "SWAP_PROMOTED"
 #: The library row's facts the promoted copy takes, so it files where L is.
@@ -157,6 +157,11 @@ def review_wins(
         if library is None:
             tally["no library copy"] += 1
             continue
+        # A person kept this master over the copies in review (Grey's Oct 21 sheet):
+        # never swapped, never deleted here -- 143 of 144 swaps listed 2026-10-25.
+        if library["kept_by_person_at"]:
+            tally["kept by a person"] += 1
+            continue
         by_song.setdefault(library["id"], (library, []))[1].append(review)
 
     def better_first(a: dict, b: dict) -> int:
@@ -171,6 +176,7 @@ def review_wins(
         lib = dict(library)
         copies = [dict(r) for r in reviews]
         _share_loudness([lib, *copies])
+        _share_live_take([lib, *copies])
         ranked = sorted(
             copies, key=functools.cmp_to_key(better_first)
         )  # stable: ties keep id order

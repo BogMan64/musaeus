@@ -9,6 +9,8 @@ copy, studio over live, original over remaster, sample rate, the longer copy whe
 
 from __future__ import annotations
 
+import pytest
+
 from musaeus.stages.dupe_resolver import _rank
 
 
@@ -69,7 +71,37 @@ def test_studio_then_remaster_then_live():
     # Grey, 2026-10-05: "Studio is above remaster. Live would be the third option."
     studio = _m("studio", title="Song")
     remaster = _m("remaster", title="Song (Remastered)")
-    live = _m("live", title="Song (Live)")
+    # A take of its own length: one length with a "Live" copy is that live take (batch 7).
+    live = _m("live", title="Song (Live)", duration=260.0)
     members = [live, remaster, studio]
     _rank(members)
     assert [m["file_path"] for m in members] == ["studio", "remaster", "live"]
+
+
+def test_a_live_label_on_one_copy_counts_for_every_copy_of_its_length():
+    # Batch 7 (2026-10-25): Bruce Hornsby's "The End Of The Innocence (Live)", 192 kHz,
+    # lost to its own 2003 remaster -- no "Live" in that title, 438.7 s both -- as "studio".
+    live = _m("live_original", title="The End Of The Innocence (Live)", sample_rate=192000,
+              duration=438.7)  # fmt: skip
+    remaster = _m("remaster", title="The End Of The Innocence (Remastered 2003)", duration=438.7)
+    assert _keeper(remaster, live) == "live_original"
+
+
+@pytest.mark.parametrize("studio_length", [316.0, 439.5])
+def test_a_studio_copy_of_another_length_still_beats_the_live_one(studio_length):
+    live = _m("live", title="Song (Live)", sample_rate=192000, duration=438.7)
+    studio = _m("studio", title="Song (Remastered 2003)", duration=studio_length)
+    assert _keeper(live, studio) == "studio"
+
+
+def test_a_live_mark_comes_from_the_copies_ranked_now():
+    # Codex review of #248, round 3: a live copy dropped as missing left its
+    # length-read mark on the original, and the remaster was kept.
+    live = _m("live", title="Song (Live)", duration=200.4)
+    original = _m("original", duration=200.0)
+    remaster = _m("remaster", title="Song (Remastered)", duration=201.0)
+    members = [live, original, remaster]
+    _rank(members)
+    members.remove(live)
+    _rank(members)
+    assert members[0]["file_path"] == "original"

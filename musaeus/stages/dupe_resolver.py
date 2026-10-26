@@ -246,8 +246,14 @@ def _is_live(m: dict) -> bool:
     """True if this copy advertises itself as a live recording.
 
     Read from title AND album: sources put it in either -- "Stormy Monday
-    (live at Fillmore East)" as a title, "Unplugged" as an album.
+    (live at Fillmore East)" as a title, "Unplugged" as an album -- or it is
+    the length of a copy that does (_share_live_take).
     """
+    return bool(m.get("live_take")) or _labelled_live(m)
+
+
+def _labelled_live(m: dict) -> bool:
+    """The copy's own title or album says live -- never a length read from another copy."""
     haystack = f"{m.get('title') or ''} {m.get('album') or ''}"
     return bool(_LIVE_RE.search(haystack))
 
@@ -304,6 +310,27 @@ def _share_loudness(members: list[dict]) -> None:
             m["lufs"] = measured[h]
 
 
+#: Tighter than NearDupe's 2 s same take: a studio copy wrongly read as live
+#: would lose Grey's first rule.
+_LIVE_TAKE_SECONDS = 0.5
+
+
+def _share_live_take(members: list[dict]) -> None:
+    """Mark every member within 0.5 s of a live-labelled one as that live take.
+
+    One take labelled live on one copy only: Bruce Hornsby's "The End Of The
+    Innocence (Live)" lost to its own 2003 remaster as "studio" (batch 7,
+    2026-10-25). Shared by the resolver and the swap tool, as loudness is.
+    """
+    # Seeded by labels only: a copy read as live by length must not pass it on,
+    # 100.0 -> 100.4 -> 100.8 s (Codex review of #248, round 2).
+    live = [float(m["duration"]) for m in members if m.get("duration") and _labelled_live(m)]
+    for m in members:
+        d = float(m.get("duration") or 0)
+        if d and any(abs(d - x) <= _LIVE_TAKE_SECONDS for x in live):
+            m["live_take"] = True
+
+
 def _keeper_sort_key(m: dict) -> tuple[int, ...]:
     """Best keeper first: Grey's keep rule (musaeus/keep_rule.py), one rule for
     the resolver and the swap tool.
@@ -356,6 +383,11 @@ def _rank(members: list[dict]) -> None:
     otherwise first: "Higher Love" 5:48.7 and 5:51.5, both 192 kHz, kept the
     shorter by bitrate (2026-10-05).
     """
+    # Live marks come from the members ranked now: one dropped as missing must
+    # not leave its mark behind (Codex review of #248, round 3).
+    for m in members:
+        m.pop("live_take", None)
+    _share_live_take(members)
     members.sort(key=_keeper_sort_key)
     if len(members) < 2:
         return
