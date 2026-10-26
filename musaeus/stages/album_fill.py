@@ -304,8 +304,10 @@ def mb_confirm(artist: str, album: str, title: str, live_ok: bool = False) -> tu
     # ("Tunnel of Love Express Tour"), and the studio album was never seen.
     def search(credit: str, form=q) -> list[dict]:
         query = (
-            f'recording:"{form(title)}" AND artist:"{q(credit)}" AND release:"{form(album)}"'
-            " AND status:official AND primarytype:album"
+            # artistname: the act's own MusicBrainz name -- "Harry Nilsson" is
+            # credited "Nilsson", and artist: alone found nothing (batch 7, 2026-10-25).
+            f'recording:"{form(title)}" AND (artist:"{q(credit)}" OR artistname:"{q(credit)}")'
+            f' AND release:"{form(album)}" AND status:official AND primarytype:album'
         )
         time.sleep(_MB_RATE_S)
         data = _get_json(
@@ -320,7 +322,7 @@ def mb_confirm(artist: str, album: str, title: str, live_ok: bool = False) -> tu
     plain = lambda x: q(re.sub(r"\s+", " ", re.sub(r"[()\[\]{}]", " ", x)))  # noqa: E731
     if not found[0] and (plain(title) != q(title) or plain(album) != q(album)):
         found = choose_mb_confirmation(search(artist, plain), artist, title, album, live_ok=live_ok)
-    from ..art_sources import _key, _parts
+    from ..art_sources import _parts
 
     # A joint credit names a person in full ("Paul McCartney, Wings"); a band
     # named with commas is single words ("Earth, Wind & Fire", "Crosby, Stills
@@ -329,25 +331,15 @@ def mb_confirm(artist: str, album: str, title: str, live_ok: bool = False) -> tu
         return found
     # A joint credit ("Paul McCartney, Wings") found nothing that confirms, and
     # that "nothing" cleared a right album (batch 2 rerun, 2026-10-24). Asked
-    # again by its first name; an answer counts only if its credit names the
-    # same acts -- "Paul McCartney and Wings" does, a band "Earth" or a solo
-    # "John Paul" does not (Codex review of #235, rounds 1-2).
-    want = {_key(p) for p in _parts(artist)}
-    retry = [
-        r
-        for r in search(artist.split(",")[0])
-        if {
-            _key(p)
-            for p in _parts(
-                "".join(
-                    c.get("name", "") + (c.get("joinphrase") or "")
-                    for c in r.get("artist-credit") or []
-                )
-            )
-        }
-        == want
-    ]
-    return choose_mb_confirmation(retry, artist, title, album, live_ok=live_ok) if retry else found
+    # again by its first name; an answer counts only if every act it credits is
+    # one of ours -- "Paul McCartney and Wings" is, and so is the band alone that
+    # MusicBrainz credits with "Cheap Thrills" ("Big Brother & The Holding
+    # Company, Janis Joplin", batch 7, 2026-10-25); a band "Earth" or a solo
+    # "John Paul" is not (Codex review of #235, rounds 1-2).
+    retry = choose_mb_confirmation(
+        search(artist.split(",")[0]), artist, title, album, live_ok=live_ok, only_ours=True
+    )
+    return retry if retry[0] else found
 
 
 def itunes_search(artist: str, title: str) -> list[dict]:
@@ -518,24 +510,56 @@ def choose_discogs_confirmation(results: list[dict], artist: str, album: str) ->
 _MB_MIN_SCORE = 70
 
 
-def choose_mb_confirmation(
-    recordings: list[dict], artist: str, title: str, album: str, live_ok: bool = False
-) -> tuple[bool, str]:
-    """Pure: does any recording carry *title* by *artist* on an official studio album *album*?"""
+_ARTICLES = frozenset({"the", "a", "an"})
+
+
+def _acts(credit: str | None) -> set[str]:
+    """The act keys of a credit. Articles aside -- the catalogue stores "Smiths,
+    The" -- unless they are all of it: "The The" is a band, not no name at all."""
     from ..art_sources import _key, _parts
 
+    keys = {_key(p) for p in _parts(credit or "")}
+    return keys - _ARTICLES or keys
+
+
+def _credits(credit: list[dict], want: set[str], only_ours: bool) -> bool:
+    """Does a MusicBrainz artist credit credit our acts (see choose_mb_confirmation)?"""
+    names = [(c.get("name") or "", (c.get("artist") or {}).get("name") or "") for c in credit]
+    if only_ours:
+        return bool(names) and all(
+            any(_acts(n) and _acts(n) <= want for n in pair) for pair in names
+        )
+    joins = [c.get("joinphrase") or "" for c in credit]
+    as_credited = "".join(n + j for (n, _), j in zip(names, joins, strict=True))
+    by_name = "".join((r or n) + j for (n, r), j in zip(names, joins, strict=True))
+    return want <= _acts(as_credited) | _acts(by_name)
+
+
+def choose_mb_confirmation(
+    recordings: list[dict],
+    artist: str,
+    title: str,
+    album: str,
+    live_ok: bool = False,
+    only_ours: bool = False,
+) -> tuple[bool, str]:
+    """Pure: does any recording carry *title* by *artist* on an official studio album *album*?
+
+    A credited act counts by its credited name or its MusicBrainz name: "Nilsson"
+    is Harry Nilsson, "Paul & Linda McCartney" is Paul McCartney and Linda
+    McCartney (batches 7 and 11, 2026-10-25).
+
+    only_ours: every act the recording credits is one of ours, and not every one
+    of ours need be credited -- for a joint credit's retry only (mb_confirm).
+    """
     # Every name of the arriving credit must be credited: the first WORD alone
     # let "The Smiths" match "The Beatles" (Codex review of #246).
-    # Articles aside: the catalogue stores "Smiths, The".
-    want = {_key(p) for p in _parts(artist)} - {"the", "a", "an"}
+    want = _acts(artist)
     for rec in recordings:
-        credit = "".join(
-            c.get("name", "") + (c.get("joinphrase") or "") for c in rec.get("artist-credit") or []
-        )
         if (
             rec.get("score", 0) < _MB_MIN_SCORE
             or not same_name(rec.get("title"), title)
-            or not want <= {_key(p) for p in _parts(credit)}
+            or not _credits(rec.get("artist-credit") or [], want, only_ours)
         ):
             continue
         for rel in rec.get("releases") or []:
