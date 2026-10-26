@@ -1154,17 +1154,19 @@ def test_an_act_is_also_asked_by_its_musicbrainz_name(monkeypatch):
         ("Wings, Paul McCartney", _named(("Wings", "Wings", " & "), ("Elvis Costello", "Elvis Costello", "")), False),
         # Codex review of #249 (reproduced): a band "Big Brother" is not part of ours
         ("Big Brother & The Holding Company, Janis Joplin", _named(("Big Brother", "Big Brother", "")), False),
+        # Codex review of #249, round 2 (reproduced): a band named as a list stays one act
+        ("Earth, Wind & Fire, Maurice White", _named(("Earth", "Earth", "")), False),
+        ("Earth, Wind & Fire, Maurice White", _named(("Earth, Wind & Fire", "Earth, Wind & Fire", "")), True),
     ],
 )  # fmt: skip
 def test_a_joint_credit_is_confirmed_by_a_credit_naming_only_its_acts(
     monkeypatch, arriving, credit, ok
 ):
     rec = {"score": 100, "title": "Song", "artist-credit": credit, "releases": [_rel_on("Album")]}
-    first = arriving.split(",")[0]
 
     def _mb(url, headers=None):
         query = parse_qs(urlparse(url).query)["query"][0]
-        return {"recordings": [rec] if f'artist:"{first}"' in query else []}
+        return {"recordings": [] if f'artist:"{arriving}"' in query else [rec]}
 
     monkeypatch.setattr(af.time, "sleep", lambda *_: None)
     monkeypatch.setattr(af, "_get_json", _mb)
@@ -1181,7 +1183,9 @@ def test_a_single_act_is_not_confirmed_by_part_of_its_name():
     )[0]
 
 
-@pytest.mark.parametrize(("credited", "ok"), [("The Beatles", False), ("The The", True)])
+@pytest.mark.parametrize(
+    ("credited", "ok"), [("The Beatles", False), ("The", False), ("The The", True)]
+)
 def test_the_band_the_the_is_not_any_band(credited, ok):
     """With articles set aside, "The The" named no act at all, and every credit matched it."""
     recs = [_rec(title="Song", artist=credited, releases=[_rel_on("Album")])]

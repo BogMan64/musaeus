@@ -337,7 +337,7 @@ def mb_confirm(artist: str, album: str, title: str, live_ok: bool = False) -> tu
     # Company, Janis Joplin", batch 7, 2026-10-25); a band "Earth" or a solo
     # "John Paul" is not (Codex review of #235, rounds 1-2).
     retry = choose_mb_confirmation(
-        search(artist.split(",")[0]), artist, title, album, live_ok=live_ok, only_ours=True
+        search(_joint_acts(artist)[0]), artist, title, album, live_ok=live_ok, only_ours=True
     )
     return retry if retry[0] else found
 
@@ -515,11 +515,25 @@ _ARTICLES = frozenset({"the", "a", "an"})
 
 def _acts(credit: str | None) -> set[str]:
     """The act keys of a credit. Articles aside -- the catalogue stores "Smiths,
-    The" -- unless they are all of it: "The The" is a band, not no name at all."""
+    The" -- unless they are all of it: "The The" is a band, not no name at all,
+    and not an act named "The" either (Codex review of #249, round 2)."""
     from ..art_sources import _key, _parts
 
     keys = {_key(p) for p in _parts(credit or "")}
-    return keys - _ARTICLES or keys
+    return keys - _ARTICLES or {re.sub(r"[^0-9a-z]", "", (credit or "").casefold())}
+
+
+#: A band named as a list of words: "Earth, Wind & Fire", "Crosby, Stills &
+#: Nash", "Peter, Paul and Mary". One act, never split at its commas.
+_LISTED_BAND = re.compile(r"\s*\w+(?:\s*,\s*\w+)+\s*(?:&|\band\b)\s*\w+\b", re.I)
+
+
+def _joint_acts(artist: str) -> list[str]:
+    """The acts of a comma-joined credit, a band named as a list kept whole:
+    "Earth, Wind & Fire, Maurice White" is two acts (Codex review of #249, round 2)."""
+    band = _LISTED_BAND.match(artist)
+    head, rest = (band.group(0), artist[band.end() :]) if band else ("", artist)
+    return [a.strip() for a in [head, *rest.split(",")] if a.strip()]
 
 
 def _credits(credit: list[dict], artist: str, only_ours: bool) -> bool:
@@ -530,7 +544,7 @@ def _credits(credit: list[dict], artist: str, only_ours: bool) -> bool:
     if only_ours:
         # Whole acts of ours, never a piece of one: a band "Big Brother" is not
         # "Big Brother & The Holding Company" (Codex review of #249).
-        ours = {_key(a) for a in artist.split(",") if a.strip()}
+        ours = {_key(a) for a in _joint_acts(artist)}
         whole = lambda n: _key(n) in ours or all(_key(p) in ours for p in _parts(n))  # noqa: E731
         return bool(names) and all(any(n.strip() and whole(n) for n in pair) for pair in names)
     # Every name of the arriving credit must be credited: the first WORD alone
