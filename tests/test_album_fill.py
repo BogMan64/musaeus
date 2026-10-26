@@ -1105,3 +1105,91 @@ def test_a_band_named_with_commas_is_never_split_into_acts(monkeypatch):
     monkeypatch.setattr(af.time, "sleep", lambda *_: None)
     monkeypatch.setattr(af, "_get_json", _mb)
     assert af.mb_confirm("Earth, Wind & Fire", "Album", "Song")[0] is False and len(asked) == 1
+
+
+def _named(*acts):
+    """An artist credit as MusicBrainz gives it: (credited name, real name, joinphrase)."""
+    return [{"name": n, "artist": {"name": real}, "joinphrase": j} for n, real, j in acts]
+
+
+@pytest.mark.parametrize(
+    ("arriving", "credit"),
+    [
+        # Batch 7 (2026-10-25, MusicBrainz's real answer): credited "Nilsson"
+        ("Harry Nilsson", _named(("Nilsson", "Harry Nilsson", ""))),
+        # Batch 11: "RAM" is credited "Paul & Linda McCartney"
+        ("Paul McCartney, Linda McCartney",
+         _named(("Paul", "Paul McCartney", " & "), ("Linda McCartney", "Linda McCartney", ""))),
+    ],
+)  # fmt: skip
+def test_an_act_credited_by_another_name_is_still_credited(arriving, credit):
+    rec = {"score": 100, "title": "Song", "artist-credit": credit, "releases": [_rel_on("Album")]}
+    assert af.choose_mb_confirmation([rec], arriving, "Song", "Album")[0]
+
+
+def test_an_act_is_also_asked_by_its_musicbrainz_name(monkeypatch):
+    """Batch 7: artist:"Harry Nilsson" found nothing (the credit says "Nilsson");
+    artistname:"Harry Nilsson" found "Without You" on "Nilsson Schmilsson"."""
+    rec = {"score": 100, "title": "Without You", "artist-credit": _named(("Nilsson", "Harry Nilsson", "")),
+           "releases": [_rel_on("Nilsson Schmilsson", date="1971")]}  # fmt: skip
+
+    def _mb(url, headers=None):
+        query = parse_qs(urlparse(url).query)["query"][0]
+        return {"recordings": [rec] if 'artistname:"Harry Nilsson"' in query else []}
+
+    monkeypatch.setattr(af.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(af, "_get_json", _mb)
+    assert af.mb_confirm("Harry Nilsson", "Nilsson Schmilsson", "Without You")[0]
+
+
+@pytest.mark.parametrize(
+    ("arriving", "credit", "ok"),
+    [
+        # Batch 7: MusicBrainz credits "Cheap Thrills" to the band alone
+        ("Big Brother & The Holding Company, Janis Joplin",
+         _named(("Big Brother & the Holding Company", "Big Brother & the Holding Company", "")), True),
+        # Batch 11: "Back To The Egg" is credited to Wings alone
+        ("Wings, Paul McCartney", _named(("Wings", "Wings", "")), True),
+        # an act the arriving credit does not name is not ours
+        ("Wings, Paul McCartney", _named(("Wings", "Wings", " & "), ("Elvis Costello", "Elvis Costello", "")), False),
+        # Codex review of #249 (reproduced): a band "Big Brother" is not part of ours
+        ("Big Brother & The Holding Company, Janis Joplin", _named(("Big Brother", "Big Brother", "")), False),
+        # Codex review of #249, round 2 (reproduced): a band named as a list stays one act
+        ("Earth, Wind & Fire, Maurice White", _named(("Earth", "Earth", "")), False),
+        ("Earth, Wind & Fire, Maurice White", _named(("Earth, Wind & Fire", "Earth, Wind & Fire", "")), True),
+        # Codex review of #249, round 3 (reproduced): "The" is not "The The" in a retry either
+        ("The The, Matt Johnson", _named(("The", "The", "")), False),
+    ],
+)  # fmt: skip
+def test_a_joint_credit_is_confirmed_by_a_credit_naming_only_its_acts(
+    monkeypatch, arriving, credit, ok
+):
+    rec = {"score": 100, "title": "Song", "artist-credit": credit, "releases": [_rel_on("Album")]}
+
+    def _mb(url, headers=None):
+        query = parse_qs(urlparse(url).query)["query"][0]
+        return {"recordings": [] if f'artist:"{arriving}"' in query else [rec]}
+
+    monkeypatch.setattr(af.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(af, "_get_json", _mb)
+    assert af.mb_confirm(arriving, "Album", "Song")[0] is ok
+
+
+def test_a_single_act_is_not_confirmed_by_part_of_its_name():
+    """Only a joint credit's retry may accept fewer acts: "Big Brother & The Holding
+    Company" alone is not confirmed by a band "Big Brother"."""
+    rec = {"score": 100, "title": "Song", "artist-credit": _named(("Big Brother", "Big Brother", "")),
+           "releases": [_rel_on("Album")]}  # fmt: skip
+    assert not af.choose_mb_confirmation(
+        [rec], "Big Brother & The Holding Company", "Song", "Album"
+    )[0]
+
+
+@pytest.mark.parametrize(
+    ("credited", "ok"), [("The Beatles", False), ("The", False), ("The The", True)]
+)
+@pytest.mark.parametrize("arriving", ["The The", "The, The"])
+def test_the_band_the_the_is_not_any_band(credited, ok, arriving):
+    """With articles set aside, "The The" named no act at all, and every credit matched it."""
+    recs = [_rec(title="Song", artist=credited, releases=[_rel_on("Album")])]
+    assert af.choose_mb_confirmation(recs, arriving, "Song", "Album")[0] is ok
