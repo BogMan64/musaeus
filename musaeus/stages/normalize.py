@@ -320,8 +320,9 @@ _SPECIAL_PATTERNS = [
     (re.compile(r"\b([Rr])ock\s*[''`]?\s*[Nn]\s*[''`]?\s*[Rr]oll\b"), r"\1ock 'n' Roll"),
     (re.compile(r"\bR\s*[''`&]\s*B\b", re.IGNORECASE), "R&B"),
     # Common abbreviations
-    (re.compile(r"\bFt\.?\b", re.IGNORECASE), "feat."),
-    (re.compile(r"\bFeat\.?\b", re.IGNORECASE), "feat."),
+    # A bare "feat" is Little Feat: only "feat." is the credit word.
+    (re.compile(r"\bFt\b\.?", re.IGNORECASE), "feat."),
+    (re.compile(r"\bFeat\.", re.IGNORECASE), "feat."),
 ]
 
 
@@ -513,8 +514,9 @@ def _smart_title_case(s: str) -> str:
             processed.append(word.capitalize())
             continue
 
-        # Check if it's a lowercase word
-        if clean.lower() in _LOWERCASE_WORDS:
+        # Check if it's a lowercase word; a bare "Feat" is Little Feat, only
+        # "feat." is the credit word.
+        if clean.lower() in _LOWERCASE_WORDS and not (clean.lower() == "feat" and "." not in word):
             processed.append(word.lower())
             continue
 

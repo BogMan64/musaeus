@@ -146,8 +146,9 @@ class Asked:
 _FOLD = str.maketrans({"ø": "o", "Ø": "O", "æ": "ae", "Æ": "AE", "ß": "ss", "ł": "l",
                        "Ł": "L", "đ": "d", "Đ": "D", "œ": "oe", "Œ": "OE"})  # fmt: skip
 #: Separators between the names in one credit. Never inside a name: a
-#: composer-named ensemble ("Franz Liszt Chamber Orchestra") stays whole.
-_SPLIT = re.compile(r"\s*(?:,|;|/|\+|&|\band\b|\bfeat\.?|\bfeaturing\b|\bwith\b)\s*", re.I)
+#: composer-named ensemble ("Franz Liszt Chamber Orchestra") stays whole, and
+#: "feat." needs its dot (a bare "feat" is Little Feat; artist_form._COLLAB).
+_SPLIT = re.compile(r"\s*(?:,|;|/|\+|&|\band\b|\bfeat\.|\bfeaturing\b|\bwith\b)\s*", re.I)
 #: A backing band or ensemble after the lead act: "X & The Y", "X and Her
 #: Orchestra", "X, The Y", "X Quintet". Never applied to a composer.
 _BACKING = re.compile(r"(?:\s+(?:&|and|\+)\s+|,\s+)(?:the|his|her)\s+.+$", re.I)
@@ -587,9 +588,7 @@ _WIKI_SUFFIXES = ("", " (band)", " (musician)", " (singer)")
 
 def _lead_artist(artist: str) -> str:
     """The first artist of a credit: "Linda Ronstadt, James Ingram" -> "Linda Ronstadt"."""
-    return re.split(r"\s*(?:,|&|\bfeat\.?|\bfeaturing\b|\bwith\b)\s*", artist, flags=re.I)[
-        0
-    ].strip()
+    return re.split(r"\s*(?:,|&|\bfeat\.|\bfeaturing\b|\bwith\b)\s*", artist, flags=re.I)[0].strip()
 
 
 def fetch_wikipedia_artist(artist: str) -> bytes | None:

@@ -86,9 +86,10 @@ _WS = re.compile(r"\s+")
 
 # Splitting a credit on "," is how "10,000 Maniacs" became artist "10" and how
 # "Ray, Goodman & Brown" became "Ray" -- both are in the library today. A comma
-# followed by digits is inside one name, not between two.
+# followed by digits is inside one name, not between two. "feat." needs its
+# dot: a bare "feat" is Little Feat (artist_form._COLLAB).
 _CREDIT_SPLIT = re.compile(
-    r"\s*(?:,(?!\s*\d)|&|/|;|\bfeat\.?\b|\bfeaturing\b|\bwith\b|\bvs\.?\b|\band\b)\s*",
+    r"\s*(?:,(?!\s*\d)|&|/|;|\bfeat\.|\bfeaturing\b|\bwith\b|\bvs\.?\b|\band\b)\s*",
     re.I,
 )
 
