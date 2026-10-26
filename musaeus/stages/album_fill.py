@@ -522,13 +522,20 @@ def _acts(credit: str | None) -> set[str]:
     return keys - _ARTICLES or keys
 
 
-def _credits(credit: list[dict], want: set[str], only_ours: bool) -> bool:
+def _credits(credit: list[dict], artist: str, only_ours: bool) -> bool:
     """Does a MusicBrainz artist credit credit our acts (see choose_mb_confirmation)?"""
+    from ..art_sources import _key, _parts
+
     names = [(c.get("name") or "", (c.get("artist") or {}).get("name") or "") for c in credit]
     if only_ours:
-        return bool(names) and all(
-            any(_acts(n) and _acts(n) <= want for n in pair) for pair in names
-        )
+        # Whole acts of ours, never a piece of one: a band "Big Brother" is not
+        # "Big Brother & The Holding Company" (Codex review of #249).
+        ours = {_key(a) for a in artist.split(",") if a.strip()}
+        whole = lambda n: _key(n) in ours or all(_key(p) in ours for p in _parts(n))  # noqa: E731
+        return bool(names) and all(any(n.strip() and whole(n) for n in pair) for pair in names)
+    # Every name of the arriving credit must be credited: the first WORD alone
+    # let "The Smiths" match "The Beatles" (Codex review of #246).
+    want = _acts(artist)
     joins = [c.get("joinphrase") or "" for c in credit]
     as_credited = "".join(n + j for (n, _), j in zip(names, joins, strict=True))
     by_name = "".join((r or n) + j for (n, r), j in zip(names, joins, strict=True))
@@ -552,14 +559,11 @@ def choose_mb_confirmation(
     only_ours: every act the recording credits is one of ours, and not every one
     of ours need be credited -- for a joint credit's retry only (mb_confirm).
     """
-    # Every name of the arriving credit must be credited: the first WORD alone
-    # let "The Smiths" match "The Beatles" (Codex review of #246).
-    want = _acts(artist)
     for rec in recordings:
         if (
             rec.get("score", 0) < _MB_MIN_SCORE
             or not same_name(rec.get("title"), title)
-            or not _credits(rec.get("artist-credit") or [], want, only_ours)
+            or not _credits(rec.get("artist-credit") or [], artist, only_ours)
         ):
             continue
         for rel in rec.get("releases") or []:

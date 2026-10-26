@@ -1152,6 +1152,8 @@ def test_an_act_is_also_asked_by_its_musicbrainz_name(monkeypatch):
         ("Wings, Paul McCartney", _named(("Wings", "Wings", "")), True),
         # an act the arriving credit does not name is not ours
         ("Wings, Paul McCartney", _named(("Wings", "Wings", " & "), ("Elvis Costello", "Elvis Costello", "")), False),
+        # Codex review of #249 (reproduced): a band "Big Brother" is not part of ours
+        ("Big Brother & The Holding Company, Janis Joplin", _named(("Big Brother", "Big Brother", "")), False),
     ],
 )  # fmt: skip
 def test_a_joint_credit_is_confirmed_by_a_credit_naming_only_its_acts(
