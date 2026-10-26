@@ -60,6 +60,7 @@ import shutil
 import unicodedata
 from pathlib import Path
 
+from ..art_sources import _ENSEMBLE_WORDS
 from ..context import RunContext, StageResult
 from ..filing import load as filing_load
 from .base import BaseStage
@@ -73,7 +74,7 @@ CANON_FILENAME = "Composer_Canon.tsv"
 # "Handel - Water Music" or "Wolfgang Amadeus Mozart: Symphony No. 41" -- the
 # colon form was missed and the symphony filed under its orchestra (batch 4,
 # 2026-10-25). Safe: the prefix must still be a Composer_Canon name exactly.
-_TITLE_PREFIX = re.compile(r"^([^-–:]{2,30}?)(?:\s+[-–]|\s*:)\s+\S")
+_TITLE_PREFIX = re.compile(r"^([^-–:]{2,60}?)(?:\s+[-–]|\s*:)\s+\S")
 
 #: K. is deliberately absent. Köchel numbers Mozart, but Kirkpatrick numbers
 #: Scarlatti, and "Keyboard Sonata in D Minor, K. 1, L. 366" is Scarlatti --
@@ -115,11 +116,24 @@ def composer_for(artist: str, title: str, canon: dict[str, str]) -> tuple[str | 
     # "Mozart: Piano Sonata No. 11" went to Bach (Codex review of #244, round 2).
     m = _TITLE_PREFIX.match((title or "").strip())
     if m:
-        hit = canon.get(m.group(1).strip().lower())
         # The prefix must name the composer, not a performer the canon maps:
-        # "András Schiff: Mozart Piano Sonata" went to Bach (round 1).
-        if hit and _fold(hit).split()[-1] in _fold(m.group(1)).split():
-            return hit, "title prefix"
+        # "András Schiff: Mozart Piano Sonata" went to Bach (#244, round 1).
+        # Nor an ensemble named after one ("Bach Choir"): the surname alone cannot
+        # tell (Codex review of #245, round 2).
+        def named(name: str) -> str | None:
+            hit = canon.get(name.strip().lower())
+            words = _fold(name).split()
+            if not hit or _ENSEMBLE_WORDS & set(words):
+                return None
+            return hit if _fold(hit).split()[-1] in words else None
+
+        # Whole, then each name of a list: "Albinoni, Giazotto - Adagio" is the
+        # composer and an arranger (batch 5, 2026-10-25). Two composers in the
+        # list ("Bach, Handel - ...") leave it to the credit (Codex review of #245).
+        whole = named(m.group(1))
+        listed = {c for c in map(named, m.group(1).split(",")) if c}
+        if whole or len(listed) == 1:
+            return whole or listed.pop(), "title prefix"
     for part in (artist or "").split(","):
         hit = canon.get(part.strip().lower())
         if hit:
