@@ -1229,8 +1229,11 @@ def test_an_arriving_own_soundtrack_is_kept_by_the_fingerprint(env):
     assert env.album(p)[0] == "Purple Rain"
 
 
+_PURPLE_RAIN_CREDIT = ("Prince", "The Revolution")
+
+
 @pytest.mark.parametrize(
-    ("release_credit", "ok"), [(["Prince", "The Revolution"], True), (["Various Artists"], False)]
+    ("release_credit", "ok"), [(_PURPLE_RAIN_CREDIT, True), (("Various Artists",), False)]
 )
 def test_musicbrainz_confirms_an_artists_own_soundtrack(release_credit, ok):
     joins = [" & "] * (len(release_credit) - 1) + [""]
@@ -1241,3 +1244,15 @@ def test_musicbrainz_confirms_an_artists_own_soundtrack(release_credit, ok):
     rec = {"score": 100, "title": "When Doves Cry", "releases": [rel],
            "artist-credit": [{"name": "Prince", "joinphrase": " & "}, {"name": "The Revolution"}]}  # fmt: skip
     assert af.choose_mb_confirmation([rec], "Prince", "When Doves Cry", "Purple Rain")[0] is ok
+
+
+def test_the_artists_own_live_soundtrack_counts_where_a_live_album_may(env):
+    """Both rulings at once: a live recording keeps its live album (2026-10-23), and
+    the artist's own soundtrack is a real album (2026-10-26) -- "The Last Waltz"."""
+    p = env.add("The Weight", artist="The Band", album="The Last Waltz")
+    env.answers["confirm"] = set()
+    env.answers["acoustid"] = [
+        _rg("lw", "The Last Waltz", "The Band", secondary=["Live", "Soundtrack"])
+    ]
+    env.run()
+    assert env.calls["confirm"] == [] and env.album(p)[0] == "The Last Waltz"
