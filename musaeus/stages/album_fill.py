@@ -11,7 +11,8 @@ their rules unchanged:
   1. AcoustID   the recording's release groups, looked up with the
                 fingerprint the AcoustID stage already stored (no fpcalc),
                 from the one linked recording whose artist and title agree.
-                Only a plain "Album" with no secondary type, crediting our
+                Only a plain "Album" with no secondary type -- or the
+                artist's own soundtrack (Grey, 2026-10-26) -- crediting our
                 artist; more than one -> MusicBrainz first-release date,
                 earliest wins (one lookup per release group, cached).
   2. Discogs    artist + title text, only where AcoustID left it empty and
@@ -161,20 +162,37 @@ def _live_only(groups: list[dict]) -> bool:
     return bool(albums) and all("Live" in (g.get("secondarytypes") or []) for g in albums)
 
 
-def _on_its_album(groups: list[dict], album: str) -> bool:
+def _on_its_album(groups: list[dict], album: str, artist: str) -> bool:
     """The recording is on this album, a studio or a live one -- not a compilation.
 
     Grey, 2026-10-23: a live recording keeps its live album -- Jimi Hendrix's
     "Tax Free" from "Miami Pop Festival" was given the studio "War Heroes".
+    The artist's own soundtrack counts too (_own_soundtrack).
     """
     want = norm(album)
     return any(
         g.get("type") == "Album"
         # Plain or Live only: not a compilation, remix or DJ-mix (Codex review of #233).
-        and set(g.get("secondarytypes") or []) <= {"Live"}
+        and set(g.get("secondarytypes") or [])
+        <= {"Live"} | _own_soundtrack(_group_credit(g), artist)
         and norm(g.get("title")) == want
         for g in groups
     )
+
+
+def _group_credit(group: dict) -> list[dict]:
+    """An AcoustID release group's artists as a MusicBrainz artist credit."""
+    return [{"name": a.get("name") or "", "joinphrase": " & "} for a in group.get("artists") or []]
+
+
+def _own_soundtrack(credit: list[dict], artist: str) -> set[str]:
+    """{"Soundtrack"}, the secondary type allowed, when the album credits our artist.
+
+    Grey, 2026-10-26: an artist's own soundtrack album is a real album ("Purple
+    Rain", "A Hard Day's Night", "Help!"); a film's various-artists soundtrack
+    is not (the Odds & Sods songs, 2026-10-22).
+    """
+    return {"Soundtrack"} if credit and _credits(credit, artist, only_ours=False) else set()
 
 
 _DEEZER_BAD_ALBUM = re.compile(
@@ -354,7 +372,12 @@ def itunes_search(artist: str, title: str) -> list[dict]:
 def choose_from_release_groups(
     groups: list[dict], artist: str, first_release=mb_first_release
 ) -> tuple[str | None, str]:
-    clean = [g for g in groups if g.get("type") == "Album" and not g.get("secondarytypes")]
+    clean = [
+        g
+        for g in groups
+        if g.get("type") == "Album"
+        and set(g.get("secondarytypes") or []) <= _own_soundtrack(_group_credit(g), artist)
+    ]
     if not clean:
         return None, "no plain Album among candidates"
     want = norm(artist).split(" ")[0] if artist else ""
@@ -594,7 +617,9 @@ def choose_mb_confirmation(
                 same_name(rel.get("title"), album)
                 and rel.get("status") == "Official"
                 and rg.get("primary-type") == "Album"
-                and set(rg.get("secondary-types") or []) <= ({"Live"} if live_ok else set())
+                and set(rg.get("secondary-types") or [])
+                <= ({"Live"} if live_ok else set())
+                | _own_soundtrack(rel.get("artist-credit") or [], artist)
             ):
                 year = (rel.get("date") or "?")[:4]
                 return True, f"MusicBrainz: on the official album '{rel['title']}' ({year})"
@@ -883,7 +908,7 @@ class AlbumFillStage(BaseStage):
                     except Unavailable:
                         fingerprint_failed = True
                 groups = recordings.get(row["id"], [])
-                if _on_its_album(groups, row["album"]):
+                if _on_its_album(groups, row["album"], artist):
                     ok, evidence = True, "fingerprint: the recording is on this album"
                 elif _live_only(groups):
                     # A live recording keeps its live albums only: a title search
