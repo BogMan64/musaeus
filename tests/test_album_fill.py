@@ -238,6 +238,21 @@ def test_a_matching_recording_with_no_albums_does_not_hide_one_with_albums(monke
     assert [g["title"] for g in groups] == ["River of Dreams"]
 
 
+def test_of_several_recordings_of_the_song_the_one_its_length_is_gives_the_albums(monkeypatch):
+    # Batch 6 (2026-10-25): Boston's studio "Feelin' Satisfied" (251.8 s) is linked
+    # to six recordings of the song. A bootleg with no length was listed first, and
+    # the arriving "Don't Look Back" was cleared as "a live recording".
+    boot = _aid_rec("boot", "Feelin' Satisfied", "Boston",
+                    _rg("gw", "Live at Great Woods", "Boston", secondary=["Live"]))
+    studio = {**_aid_rec("dlb", "Feelin' Satisfied", "Boston",
+                         _rg("d", "Don't Look Back", "Boston")), "duration": 252.026}
+    monkeypatch.setattr(af, "_get_json", lambda url: {"status": "ok", "results": [
+        {"score": 0.98, "recordings": [boot, studio]},
+    ]})  # fmt: skip
+    groups = af.acoustid_release_groups("FP", 251.8, "k", "Boston", "Feelin' Satisfied")
+    assert [g["title"] for g in groups] == ["Don't Look Back"]
+
+
 def test_a_song_with_no_title_is_not_asked_and_not_stamped(env):
     # Codex review of #223, round 3: no title, no recording can agree.
     p = env.add("", artist="Billy Joel")

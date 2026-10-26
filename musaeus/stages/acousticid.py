@@ -298,7 +298,7 @@ def _artist_agrees(want: str, names: list[str]) -> bool:
 
 
 def _pick_matching_recording(
-    recordings: list[dict], want_artist: str, want_title: str
+    recordings: list[dict], want_artist: str, want_title: str, want_duration: float | None = None
 ) -> str | None:
     """The recording that actually agrees with this file, or None.
 
@@ -317,7 +317,7 @@ def _pick_matching_recording(
     # containing the file's won although cluster order means nothing -- "Born
     # to Run (live at Hammersmith Odeon)" listed first became the studio
     # master's recording, and TitleComplete then retitled the master.
-    agreeing: list[tuple[str, str, bool]] = []  # (id, title, artist checked)
+    agreeing: list[tuple[str, str, bool, float]] = []  # (id, title, artist checked, length)
     for rec in recordings:
         rid = rec.get("id")
         if not rid:
@@ -328,7 +328,7 @@ def _pick_matching_recording(
         names = [str(x.get("name", "")) for x in rec.get("artists", []) if x.get("name")]
         if wa and names and not _artist_agrees(want_artist, names):
             continue  # title agrees, artist does not -- a cover
-        agreeing.append((str(rid), rt, bool(wa and names)))
+        agreeing.append((str(rid), rt, bool(wa and names), float(rec.get("duration") or 0)))
     if not agreeing:
         return None
     # The file's own title exactly, when a recording has it; otherwise the
@@ -336,8 +336,12 @@ def _pick_matching_recording(
     pool = [x for x in agreeing if x[1] == wt] or agreeing
     if len({x[1] for x in pool}) > 1:
         return None
-    checked = [x for x in pool if x[2]]
-    return (checked or pool)[0][0]
+    checked = [x for x in pool if x[2]] or pool
+    if want_duration:
+        # Several recordings of one song: the take this file's length is. Boston's
+        # studio "Feelin' Satisfied" took a live bootleg with no length (batch 6, 2026-10-25).
+        checked = sorted(checked, key=lambda x: abs(x[3] - want_duration) if x[3] else float("inf"))
+    return checked[0][0]
 
 
 def _acousticid_query(fingerprint: str, duration: float, api_key: str) -> list[dict]:
@@ -493,7 +497,7 @@ def _acousticid_lookup(
         #
         # So the caller supplies what it already knows about the file, and
         # the recording has to agree with it.
-        chosen = _pick_matching_recording(recordings, want_artist, want_title)
+        chosen = _pick_matching_recording(recordings, want_artist, want_title, duration)
         if chosen:
             return chosen, score
         logger.debug(
