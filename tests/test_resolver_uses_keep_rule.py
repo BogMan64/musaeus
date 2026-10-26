@@ -92,3 +92,16 @@ def test_a_studio_copy_of_another_length_still_beats_the_live_one(studio_length)
     live = _m("live", title="Song (Live)", sample_rate=192000, duration=438.7)
     studio = _m("studio", title="Song (Remastered 2003)", duration=studio_length)
     assert _keeper(live, studio) == "studio"
+
+
+def test_a_live_mark_comes_from_the_copies_ranked_now():
+    # Codex review of #248, round 3: a live copy dropped as missing left its
+    # length-read mark on the original, and the remaster was kept.
+    live = _m("live", title="Song (Live)", duration=200.4)
+    original = _m("original", duration=200.0)
+    remaster = _m("remaster", title="Song (Remastered)", duration=201.0)
+    members = [live, original, remaster]
+    _rank(members)
+    members.remove(live)
+    _rank(members)
+    assert members[0]["file_path"] == "original"

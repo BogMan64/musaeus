@@ -383,6 +383,10 @@ def _rank(members: list[dict]) -> None:
     otherwise first: "Higher Love" 5:48.7 and 5:51.5, both 192 kHz, kept the
     shorter by bitrate (2026-10-05).
     """
+    # Live marks come from the members ranked now: one dropped as missing must
+    # not leave its mark behind (Codex review of #248, round 3).
+    for m in members:
+        m.pop("live_take", None)
     _share_live_take(members)
     members.sort(key=_keeper_sort_key)
     if len(members) < 2:
