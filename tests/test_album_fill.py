@@ -1337,3 +1337,27 @@ def test_a_band_earth_does_not_confirm_maurice_white_with_earth_wind_and_fire():
     assert not af.choose_mb_confirmation(
         [rec], "Maurice White, Earth, Wind & Fire", "Song", "Album", only_ours=True, acts=_EWF_SONGS
     )[0]
+
+
+def test_a_dropped_g_with_a_curly_apostrophe_is_the_same_title():
+    """Codex review of #251 (reproduced): streaming tags write "Puttin’"."""
+    assert af.same_name("Puttin’ Up With The Joneses", "(Putting Up With) The Joneses")
+
+
+def test_a_joint_credit_is_asked_again_with_its_title_spelled_out(monkeypatch):
+    """Codex review of #251 (reproduced): the first act and the spelled-out title
+    were never asked together."""
+    rec = {"score": 100, "title": "(Putting Up With) The Joneses",
+           "artist-credit": [{"name": "Spirit of the West"}], "releases": [_rel_on("Save This House")]}  # fmt: skip
+
+    def _mb(url, headers=None):
+        query = parse_qs(urlparse(url).query)["query"][0]
+        both = 'artist:"Spirit Of The West"' in query and "Putting Up With The Joneses" in query
+        return {"recordings": [rec] if both else []}
+
+    monkeypatch.setattr(af.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(af, "_get_json", _mb)
+    ok, _ = af.mb_confirm(
+        "Spirit Of The West, Guest Fiddler", "Save This House", "Puttin' Up With The Joneses"
+    )
+    assert ok
