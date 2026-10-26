@@ -1193,3 +1193,51 @@ def test_the_band_the_the_is_not_any_band(credited, ok, arriving):
     """With articles set aside, "The The" named no act at all, and every credit matched it."""
     recs = [_rec(title="Song", artist=credited, releases=[_rel_on("Album")])]
     assert af.choose_mb_confirmation(recs, arriving, "Song", "Album")[0] is ok
+
+
+# Grey, 2026-10-26: an artist's own soundtrack album is a real album ("Purple
+# Rain", "A Hard Day's Night", "Help!"); a film's various-artists soundtrack is not.
+
+
+def test_an_artists_own_soundtrack_is_their_album(env):
+    """MusicBrainz types Prince's "Purple Rain" Album + Soundtrack; it was never filled."""
+    p = env.add("When Doves Cry", artist="Prince")
+    env.answers["acoustid"] = [
+        _rg("pr", "Purple Rain", "Prince", secondary=["Soundtrack"]),
+        _rg("h", "The Hits 1", "Prince", secondary=["Compilation"]),
+    ]
+    env.run()
+    assert env.album(p)[0] == "Purple Rain"
+
+
+def test_a_various_artists_soundtrack_is_not_the_artists_album(env):
+    p = env.add("It Will Rain", artist="Bruno Mars")
+    env.answers["acoustid"] = [
+        _rg("tw", "The Twilight Saga: Breaking Dawn", "Various Artists", secondary=["Soundtrack"])
+    ]
+    env.run()
+    assert env.album(p)[0] is None
+
+
+def test_an_arriving_own_soundtrack_is_kept_by_the_fingerprint(env):
+    """Batch 10 (2026-10-25): Prince's "When Doves Cry" arrived on "Purple Rain" and lost it."""
+    p = env.add("When Doves Cry", artist="Prince", album="Purple Rain")
+    env.answers["confirm"] = set()
+    env.answers["acoustid"] = [_rg("pr", "Purple Rain", "Prince", secondary=["Soundtrack"])]
+    env.run()
+    assert env.calls["confirm"] == [], "the fingerprint settled it"
+    assert env.album(p)[0] == "Purple Rain"
+
+
+@pytest.mark.parametrize(
+    ("release_credit", "ok"), [(["Prince", "The Revolution"], True), (["Various Artists"], False)]
+)
+def test_musicbrainz_confirms_an_artists_own_soundtrack(release_credit, ok):
+    joins = [" & "] * (len(release_credit) - 1) + [""]
+    rel = dict(_rel_on("Purple Rain", ["Soundtrack"], date="1984"))
+    rel["artist-credit"] = [
+        {"name": n, "joinphrase": j} for n, j in zip(release_credit, joins, strict=True)
+    ]
+    rec = {"score": 100, "title": "When Doves Cry", "releases": [rel],
+           "artist-credit": [{"name": "Prince", "joinphrase": " & "}, {"name": "The Revolution"}]}  # fmt: skip
+    assert af.choose_mb_confirmation([rec], "Prince", "When Doves Cry", "Purple Rain")[0] is ok
