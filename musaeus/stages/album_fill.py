@@ -513,14 +513,22 @@ _MB_MIN_SCORE = 70
 _ARTICLES = frozenset({"the", "a", "an"})
 
 
-def _acts(credit: str | None) -> set[str]:
-    """The act keys of a credit. Articles aside -- the catalogue stores "Smiths,
-    The" -- unless they are all of it: "The The" is a band, not no name at all,
-    and not an act named "The" either (Codex review of #249, round 2)."""
-    from ..art_sources import _key, _parts
+def _act(name: str) -> str:
+    """One act's key. A name of articles only is keyed in full: "The The" is a
+    band, not an act named "The" (Codex review of #249, rounds 2-3)."""
+    from ..art_sources import _key
 
-    keys = {_key(p) for p in _parts(credit or "")}
-    return keys - _ARTICLES or {re.sub(r"[^0-9a-z]", "", (credit or "").casefold())}
+    key = _key(name)
+    return key if key not in _ARTICLES else re.sub(r"[^0-9a-z]", "", name.casefold())
+
+
+def _acts(credit: str | None) -> set[str]:
+    """The act keys of a credit, articles aside -- the catalogue stores "Smiths, The",
+    and "The, The" is The The."""
+    from ..art_sources import _parts
+
+    keys = {_act(p) for p in _parts(credit or "")}
+    return keys - _ARTICLES or {_act(credit or "")}
 
 
 #: A band named as a list of words: "Earth, Wind & Fire", "Crosby, Stills &
@@ -538,14 +546,14 @@ def _joint_acts(artist: str) -> list[str]:
 
 def _credits(credit: list[dict], artist: str, only_ours: bool) -> bool:
     """Does a MusicBrainz artist credit credit our acts (see choose_mb_confirmation)?"""
-    from ..art_sources import _key, _parts
+    from ..art_sources import _parts
 
     names = [(c.get("name") or "", (c.get("artist") or {}).get("name") or "") for c in credit]
     if only_ours:
         # Whole acts of ours, never a piece of one: a band "Big Brother" is not
         # "Big Brother & The Holding Company" (Codex review of #249).
-        ours = {_key(a) for a in _joint_acts(artist)}
-        whole = lambda n: _key(n) in ours or all(_key(p) in ours for p in _parts(n))  # noqa: E731
+        ours = {_act(a) for a in _joint_acts(artist)}
+        whole = lambda n: _act(n) in ours or all(_act(p) in ours for p in _parts(n))  # noqa: E731
         return bool(names) and all(any(n.strip() and whole(n) for n in pair) for pair in names)
     # Every name of the arriving credit must be credited: the first WORD alone
     # let "The Smiths" match "The Beatles" (Codex review of #246).

@@ -1157,6 +1157,8 @@ def test_an_act_is_also_asked_by_its_musicbrainz_name(monkeypatch):
         # Codex review of #249, round 2 (reproduced): a band named as a list stays one act
         ("Earth, Wind & Fire, Maurice White", _named(("Earth", "Earth", "")), False),
         ("Earth, Wind & Fire, Maurice White", _named(("Earth, Wind & Fire", "Earth, Wind & Fire", "")), True),
+        # Codex review of #249, round 3 (reproduced): "The" is not "The The" in a retry either
+        ("The The, Matt Johnson", _named(("The", "The", "")), False),
     ],
 )  # fmt: skip
 def test_a_joint_credit_is_confirmed_by_a_credit_naming_only_its_acts(
@@ -1186,7 +1188,8 @@ def test_a_single_act_is_not_confirmed_by_part_of_its_name():
 @pytest.mark.parametrize(
     ("credited", "ok"), [("The Beatles", False), ("The", False), ("The The", True)]
 )
-def test_the_band_the_the_is_not_any_band(credited, ok):
+@pytest.mark.parametrize("arriving", ["The The", "The, The"])
+def test_the_band_the_the_is_not_any_band(credited, ok, arriving):
     """With articles set aside, "The The" named no act at all, and every credit matched it."""
     recs = [_rec(title="Song", artist=credited, releases=[_rel_on("Album")])]
-    assert af.choose_mb_confirmation(recs, "The The", "Song", "Album")[0] is ok
+    assert af.choose_mb_confirmation(recs, arriving, "Song", "Album")[0] is ok
