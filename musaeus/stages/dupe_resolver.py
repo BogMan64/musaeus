@@ -249,7 +249,7 @@ def _is_live(m: dict) -> bool:
     (live at Fillmore East)" as a title, "Unplugged" as an album.
     """
     haystack = f"{m.get('title') or ''} {m.get('album') or ''}"
-    return bool(_LIVE_RE.search(haystack))
+    return bool(m.get("live_take")) or bool(_LIVE_RE.search(haystack))
 
 
 def _is_reissue(m: dict) -> bool:
@@ -348,6 +348,9 @@ def _keeper_sort_key(m: dict) -> tuple[int, ...]:
     )
 
 
+_LIVE_TAKE_SECONDS = 0.5
+
+
 def _rank(members: list[dict]) -> None:
     """Sort best keeper first, then Grey's length step (keep_rule step 5).
 
@@ -356,6 +359,15 @@ def _rank(members: list[dict]) -> None:
     otherwise first: "Higher Love" 5:48.7 and 5:51.5, both 192 kHz, kept the
     shorter by bitrate (2026-10-05).
     """
+    # One take labelled live on one copy only is live on every copy of its length:
+    # Bruce Hornsby's "The End Of The Innocence (Live)" lost to its own 2003 remaster
+    # as "studio" (batch 7, 2026-10-25). Tighter than NearDupe's 2 s same take:
+    # a studio copy wrongly read as live would lose Grey's first rule.
+    live = [float(m["duration"]) for m in members if m.get("duration") and _is_live(m)]
+    for m in members:
+        d = float(m.get("duration") or 0)
+        if d and any(abs(d - x) <= _LIVE_TAKE_SECONDS for x in live):
+            m["live_take"] = True
     members.sort(key=_keeper_sort_key)
     if len(members) < 2:
         return
