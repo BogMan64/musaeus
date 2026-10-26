@@ -246,10 +246,16 @@ def _is_live(m: dict) -> bool:
     """True if this copy advertises itself as a live recording.
 
     Read from title AND album: sources put it in either -- "Stormy Monday
-    (live at Fillmore East)" as a title, "Unplugged" as an album.
+    (live at Fillmore East)" as a title, "Unplugged" as an album -- or it is
+    the length of a copy that does (_share_live_take).
     """
+    return bool(m.get("live_take")) or _labelled_live(m)
+
+
+def _labelled_live(m: dict) -> bool:
+    """The copy's own title or album says live -- never a length read from another copy."""
     haystack = f"{m.get('title') or ''} {m.get('album') or ''}"
-    return bool(m.get("live_take")) or bool(_LIVE_RE.search(haystack))
+    return bool(_LIVE_RE.search(haystack))
 
 
 def _is_reissue(m: dict) -> bool:
@@ -316,7 +322,9 @@ def _share_live_take(members: list[dict]) -> None:
     Innocence (Live)" lost to its own 2003 remaster as "studio" (batch 7,
     2026-10-25). Shared by the resolver and the swap tool, as loudness is.
     """
-    live = [float(m["duration"]) for m in members if m.get("duration") and _is_live(m)]
+    # Seeded by labels only: a copy read as live by length must not pass it on,
+    # 100.0 -> 100.4 -> 100.8 s (Codex review of #248, round 2).
+    live = [float(m["duration"]) for m in members if m.get("duration") and _labelled_live(m)]
     for m in members:
         d = float(m.get("duration") or 0)
         if d and any(abs(d - x) <= _LIVE_TAKE_SECONDS for x in live):

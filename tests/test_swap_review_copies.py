@@ -133,6 +133,18 @@ def test_a_live_original_in_review_beats_its_same_length_remaster(vault):
     assert [p.review["id"] for p in wins] == [rev]
 
 
+def test_a_live_take_does_not_spread_past_its_labelled_copy(vault):
+    # Codex review of #248, round 2: a copy read as live by length seeded the
+    # next, 100.0 -> 100.4 -> 100.8 s, until the studio master read as live.
+    lib, _, lib_path, _ = _lib_and_better_review(vault, title="Rosanna (Live)", duration=100.0)
+    vault.conn.execute("UPDATE archive SET duration=100.8 WHERE id=?", (lib,))
+    mid_path = vault.review_dir / "Toto/x/Toto - Rosanna.m4a"
+    vault.row(mid_path, "DUPE_REVIEW", "M", sample_rate=96000, duration=100.4)
+    vault.set_aside(mid_path, lib_path)
+    wins, _ = vault.mod.review_wins(vault.conn)
+    assert wins == []
+
+
 def test_a_master_a_person_kept_is_never_offered_for_a_swap(vault):
     # Grey's Oct 21 sheet kept these masters over the copies now in review; 143 of
     # the 144 swaps listed on 2026-10-25 would have undone those choices.
