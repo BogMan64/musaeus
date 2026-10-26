@@ -224,8 +224,9 @@ def norm(s: str | None) -> str:
 
 def _spelled_out(title: str) -> str:
     """A dropped g put back: "Puttin'" is "Putting" (Grey, 2026-10-26: our titles
-    stay as released; MusicBrainz writes "(Putting Up With) The Joneses")."""
-    return re.sub(r"\b(\w+in)'(?!\w)", r"\1g", title or "")
+    stay as released; MusicBrainz writes "(Putting Up With) The Joneses"). Any
+    apostrophe: streaming tags write "Puttin’" (Codex review of #251)."""
+    return re.sub(r"\b(\w+in)['’‘ʼ](?!\w)", r"\1g", title or "")
 
 
 def same_name(a: str | None, b: str | None) -> bool:
@@ -402,7 +403,8 @@ def mb_confirm(
     # And with a dropped g spelled out: MusicBrainz writes "(Putting Up With) The
     # Joneses", and "Puttin'" found nothing (batch 8, Grey 2026-10-26).
     spelled = lambda x: plain(_spelled_out(x))  # noqa: E731
-    if not found[0] and (spelled(title) != plain(title) or spelled(album) != plain(album)):
+    has_g = spelled(title) != plain(title) or spelled(album) != plain(album)
+    if not found[0] and has_g:
         found = choose_mb_confirmation(
             search(artist, spelled), artist, title, album, live_ok=live_ok
         )
@@ -415,16 +417,16 @@ def mb_confirm(
     # MusicBrainz credits with "Cheap Thrills" ("Big Brother & The Holding
     # Company, Janis Joplin", batch 7, 2026-10-25); a band "Earth" or a solo
     # "John Paul" is not (Codex review of #235, rounds 1-2).
-    retry = choose_mb_confirmation(
-        search(_joint_acts(artist, acts)[0]),
-        artist,
-        title,
-        album,
-        live_ok=live_ok,
-        only_ours=True,
-        acts=acts,
-    )
-    return retry if retry[0] else found
+    # The first act with each title form: a joint credit and a dropped g together
+    # were never asked (Codex review of #251).
+    first = _joint_acts(artist, acts)[0]
+    for form in (q, spelled) if has_g else (q,):
+        retry = choose_mb_confirmation(
+            search(first, form), artist, title, album, live_ok=live_ok, only_ours=True, acts=acts
+        )
+        if retry[0]:
+            return retry
+    return found
 
 
 def itunes_search(artist: str, title: str) -> list[dict]:
