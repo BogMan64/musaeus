@@ -51,7 +51,7 @@ def env(tmp_path, monkeypatch):
         "confirm_live": set(),
     }
 
-    def _aid(fp, dur, key, artist, title):
+    def _aid(fp, dur, key, artist, title, acts=None):
         calls["acoustid"].append(fp)
         a = answers["acoustid"]
         if isinstance(a, Exception):
@@ -77,7 +77,7 @@ def env(tmp_path, monkeypatch):
         ),
     )
 
-    def _confirm(artist, album, title, live_ok=False):
+    def _confirm(artist, album, title, live_ok=False, acts=None):
         calls["confirm"].append(album)
         yes = answers["confirm"]
         live = answers["confirm_live"]
@@ -473,7 +473,7 @@ def test_itunes_another_artist_never_matches():
 
 
 def test_the_stage_asks_itunes_last_and_only_for_what_is_left(env, monkeypatch):
-    monkeypatch.setattr(af, "mb_confirm", lambda a, al, t: (True, "mb ok"))
+    monkeypatch.setattr(af, "mb_confirm", lambda a, al, t, acts=None: (True, "mb ok"))
     p = env.add("Africa")
     env.answers["acoustid"] = []
     env.answers["discogs"] = []
@@ -587,7 +587,7 @@ def test_the_stage_takes_an_itunes_album_only_if_musicbrainz_confirms(env, monke
     env.answers["itunes"] = lambda t: [_it(t, "Toto IV" if t == "Africa" else "Toto", "1982-03-01")]
     asked = []
     monkeypatch.setattr(
-        af, "mb_confirm", lambda a, al, t: asked.append(al) or (t == "Africa", f"mb:{t}")
+        af, "mb_confirm", lambda a, al, t, acts=None: asked.append(al) or (t == "Africa", f"mb:{t}")
     )
     env.run()
     assert env.album(p_yes)[0] == "Toto IV"
@@ -1256,3 +1256,84 @@ def test_the_artists_own_live_soundtrack_counts_where_a_live_album_may(env):
     ]
     env.run()
     assert env.calls["confirm"] == [] and env.album(p)[0] == "The Last Waltz"
+
+
+# Grey, 2026-10-26 (option A): titles and credits stay as released; the album
+# check sees MusicBrainz's form of them as the same song.
+
+
+def _aid_answer(title, artists, groups):
+    rec = {"id": "r1", "title": title, "artists": [{"name": a} for a in artists],
+           "duration": 200, "releasegroups": groups}  # fmt: skip
+    return {"status": "ok", "results": [{"score": 0.99, "recordings": [rec]}]}
+
+
+@pytest.mark.parametrize(
+    ("artist", "title", "mb_title", "mb_artists", "found"),
+    [
+        # Batch 8: MusicBrainz writes "(Putting Up With) The Joneses"
+        ("Spirit Of The West", "Puttin' Up With The Joneses", "(Putting Up With) The Joneses",
+         ["Spirit of the West"], True),
+        # Batch 11: a guest MusicBrainz does not credit
+        ("The Chieftains, Brendan Begley", "The Arrival Of The Wren Boys",
+         "Medley: “The Wren! The Wren!”: The Arrival of the Wren Boys", ["The Chieftains"], True),
+        ("The Chieftains, Kevin Conneff, The Voice Squad", "The Dingle Set - Dance",
+         "Medley: “The Wren! The Wren!”: The Dingle Set—Dance", ["The Chieftains"], True),
+        # an act we do not name is not our recording
+        ("The Chieftains, Brendan Begley", "The Arrival Of The Wren Boys",
+         "The Arrival of the Wren Boys", ["The Chieftains", "Sting"], False),
+    ],
+)  # fmt: skip
+def test_the_fingerprint_finds_our_song_in_musicbrainz_s_form(
+    monkeypatch, artist, title, mb_title, mb_artists, found
+):
+    groups = [{"id": "g", "title": "Album", "type": "Album", "secondarytypes": [],
+               "artists": [{"name": mb_artists[0]}]}]  # fmt: skip
+    monkeypatch.setattr(af, "_get_json", lambda url: _aid_answer(mb_title, mb_artists, groups))
+    assert bool(af.acoustid_release_groups("FP", 200, "k", artist, title)) is found
+
+
+def test_a_dropped_g_is_the_same_title():
+    assert af.same_name("Puttin' Up With The Joneses", "(Putting Up With) The Joneses")
+    assert not af.same_name("Puttin' On The Ritz", "Putting It Off")
+
+
+def test_a_title_with_a_dropped_g_is_asked_again_spelled_out(monkeypatch):
+    """Batch 8: recording:"Puttin' Up With The Joneses" finds nothing; MusicBrainz spells it out."""
+    rec = {"score": 100, "title": "(Putting Up With) The Joneses",
+           "artist-credit": [{"name": "Spirit of the West"}], "releases": [_rel_on("Save This House")]}  # fmt: skip
+
+    def _mb(url, headers=None):
+        query = parse_qs(urlparse(url).query)["query"][0]
+        return {"recordings": [rec] if "Putting Up With The Joneses" in query else []}
+
+    monkeypatch.setattr(af.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(af, "_get_json", _mb)
+    ok, _ = af.mb_confirm("Spirit Of The West", "Save This House", "Puttin' Up With The Joneses")
+    assert ok
+
+
+_EWF_SONGS = {"earthwindandfire": 9}
+
+
+@pytest.mark.parametrize(
+    ("artist", "acts", "split"),
+    [
+        # Grey, 2026-10-26: the library has 9 songs by "Earth, Wind & Fire", none by "Earth"
+        ("Maurice White, Earth, Wind & Fire", _EWF_SONGS, ["Maurice White", "Earth, Wind & Fire"]),
+        ("Maurice White, Earth, Wind & Fire", None, ["Maurice White", "Earth", "Wind & Fire"]),
+        ("Earth, Wind & Fire, Maurice White", None, ["Earth, Wind & Fire", "Maurice White"]),
+        ("Wings, Paul McCartney", {"wingspaulmccartney": 3, "paulmccartney": 40}, ["Wings", "Paul McCartney"]),
+    ],
+)  # fmt: skip
+def test_a_band_named_as_a_list_is_one_act_where_the_library_says_so(artist, acts, split):
+    assert af._joint_acts(artist, acts) == split
+
+
+def test_a_band_earth_does_not_confirm_maurice_white_with_earth_wind_and_fire():
+    """Codex review of #249, round 4: the listed band second in the credit was split."""
+    rec = {"score": 100, "title": "Song", "artist-credit": [{"name": "Earth"}],
+           "releases": [_rel_on("Album")]}  # fmt: skip
+    assert not af.choose_mb_confirmation(
+        [rec], "Maurice White, Earth, Wind & Fire", "Song", "Album", only_ours=True, acts=_EWF_SONGS
+    )[0]
