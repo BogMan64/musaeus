@@ -19,7 +19,8 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "swap_review_copies.p
 COLS = (
     "id INTEGER PRIMARY KEY, file_path TEXT, audio_hash TEXT, artist TEXT, album TEXT, "
     "title TEXT, genre TEXT, codec TEXT, sample_rate INTEGER, duration REAL, lufs REAL, status TEXT, "
-    "mb_artist_name TEXT, mb_artist_id TEXT, canonicalized_at TEXT, finalized_at TEXT"
+    "mb_artist_name TEXT, mb_artist_id TEXT, canonicalized_at TEXT, finalized_at TEXT, "
+    "kept_by_person_at TEXT"
 )
 
 
@@ -130,6 +131,17 @@ def test_a_live_original_in_review_beats_its_same_length_remaster(vault):
     vault.conn.commit()
     wins, _ = vault.mod.review_wins(vault.conn)
     assert [p.review["id"] for p in wins] == [rev]
+
+
+def test_a_master_a_person_kept_is_never_offered_for_a_swap(vault):
+    # Grey's Oct 21 sheet kept these masters over the copies now in review; 143 of
+    # the 144 swaps listed on 2026-10-25 would have undone those choices.
+    lib, _, _, _ = _lib_and_better_review(vault)
+    vault.conn.execute("UPDATE archive SET kept_by_person_at='2026-10-21' WHERE id=?", (lib,))
+    vault.conn.commit()
+    losers: list[int] = []
+    wins, tally = vault.mod.review_wins(vault.conn, losers)
+    assert wins == [] and losers == [] and tally["kept by a person"] == 1
 
 
 def test_promote_dry_run_changes_nothing(vault):

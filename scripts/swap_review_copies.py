@@ -157,6 +157,11 @@ def review_wins(
         if library is None:
             tally["no library copy"] += 1
             continue
+        # A person kept this master over the copies in review (Grey's Oct 21 sheet):
+        # never swapped, never deleted here -- 143 of 144 swaps listed 2026-10-25.
+        if library["kept_by_person_at"]:
+            tally["kept by a person"] += 1
+            continue
         by_song.setdefault(library["id"], (library, []))[1].append(review)
 
     def better_first(a: dict, b: dict) -> int:
