@@ -616,6 +616,19 @@ class TestOneCopyPerPiece:
         # Codex review of #255, round 16: "berlin" was the only shared name.
         assert not self._found(ctx_dry, tmp_path, "Johann Sebastian Bach", title_a, title_b)
 
+    @pytest.mark.parametrize(
+        ("title_a", "title_b"),
+        [
+            ("BWV 846 - I. Prelude In C Major", "BWV 846 - I. Fugue In C Major"),
+            ("BWV 847 - I. Prelude In C Sharp Minor", "BWV 847 - I. Fugue In C Sharp Minor"),
+            ("BWV 846 - I. Präludium C-Dur", "BWV 846 - I. Fuge C-Dur"),
+            ("BWV 846 - I. Prélude En Ut Majeur", "BWV 846 - I. Fugue En Ut Majeur"),
+        ],
+    )
+    def test_a_shared_key_names_no_movement(self, ctx_dry, tmp_path, title_a, title_b):
+        # CodeRabbit review of #255: "major" was the only shared name.
+        assert not self._found(ctx_dry, tmp_path, "Johann Sebastian Bach", title_a, title_b)
+
     @pytest.mark.parametrize("label", ["(Radio Edit)", "(Edit)", "(Abridged)", "(Short Version)"])
     def test_a_labelled_cut_takes_no_shortcut_at_any_length(self, ctx_dry, tmp_path, label):
         # Codex review of #255, round 24: a 220 s "Radio Edit" is over half the Air.

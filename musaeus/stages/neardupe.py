@@ -221,6 +221,9 @@ _NAME_STOP = frozenset(
     | {"transcribed", "adaptation", "bearbeitung", "reduction", "orchestration", "solo"}
     | {"piano", "violin", "cello", "guitar", "flute", "organ", "harpsichord", "orchestra"}
     | {"ensemble", "recorder", "hands", "four", "two", "voices", "voice", "strings"}
+    # A key names no movement: "Prelude In C Major", "Fugue In C Major" (CodeRabbit, #255).
+    | {"major", "minor", "dur", "moll", "sharp", "flat", "majeur", "mineur"}
+    | {"maggiore", "minore", "mayor", "menor"}
 )
 
 
