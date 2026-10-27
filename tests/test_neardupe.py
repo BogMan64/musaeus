@@ -521,7 +521,8 @@ class TestOneCopyPerPiece:
         )
 
     @pytest.mark.parametrize(
-        "label", ["(Trans. For Solo Piano)", "(Bearbeitung Für Klavier)", "(Medley)"]
+        "label",
+        ["(Trans. For Solo Piano)", "(Bearbeitung Für Klavier)", "(Medley)", "(Piano Reduction)"],
     )
     def test_a_labelled_transcription_or_medley_waits_for_grey(self, ctx_dry, tmp_path, label):
         assert not self._found(
@@ -530,6 +531,27 @@ class TestOneCopyPerPiece:
             "Johann Sebastian Bach",
             "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
             f"Orchestral Suite No. 3, BWV 1068 - II. Air {label}",
+        )
+
+    def test_two_live_performances_of_one_movement_are_one_piece(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 5: the live-vs-live guard ran first.
+        assert self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air (Live In Berlin)",
+            "J.S. Bach - BWV 1068 - II. Air On The G String (Live At The Musikverein)",
+            durations=(300.0, 320.0),
+        )
+
+    def test_a_kochel_alias_by_dash_or_slash_is_one_work(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 5: "K.280-189e" read as 280 only.
+        assert self._found(
+            ctx_dry,
+            tmp_path,
+            "Wolfgang Amadeus Mozart",
+            "Piano Sonata No. 2 In F Major, K.280-189e - II. Adagio",
+            "Mozart: Sonata In F, K. 280/189e: II. Adagio",
         )
 
     def test_an_improvisation_on_a_piece_is_not_the_piece(self, ctx_dry, tmp_path):

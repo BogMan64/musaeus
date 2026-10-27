@@ -182,7 +182,7 @@ def _classical_id(raw_title: str) -> tuple[str | None, str | None]:
 #: "K. 550" and "KV 550" alike. "No." and "Op." do not -- every composer has a
 #: "Symphony No. 5".
 _CATALOGUE_RE = re.compile(
-    r"\b(BWV|HWV|RV|KV|K\.|D\.|Hob\.)\s*(\d+[a-z]?(?:\s*/\s*\d+[a-z]?)*)", re.IGNORECASE
+    r"\b(BWV|HWV|RV|KV|K\.|D\.|Hob\.)\s*(\d+[a-z]?(?:(?:\s*/\s*|-)\d+[a-z]?)*)", re.IGNORECASE
 )
 #: An arrangement ("Arr. For Piano") may be no performance of the piece as
 #: written, and a jazz improvisation on it is not (Bobby McFerrin's "Song For
@@ -190,7 +190,7 @@ _CATALOGUE_RE = re.compile(
 #: only: an unlabelled arrangement reads like any performance.
 _ARRANGED_RE = re.compile(
     r"\barr(?:\b|ang)|\badapt|\btrans(?:\b|cri|kr)|\bbearb|\bimprovis|\borchestrat|\bparaphras"
-    r"|\bversion for\b|\bmedley",
+    r"|\bversion for\b|\bmedley|\breduc",
     re.IGNORECASE,
 )
 
@@ -200,7 +200,10 @@ def _catalogues(title: str) -> list[tuple[str, str]]:
     two works ("BWV 1068 - Air / BWV 1067 - Badinerie"; Codex review of #255),
     and a title written out twice names its work twice."""
     found = (
-        (m.group(1).lower().rstrip(".").replace("kv", "k"), re.sub(r"\s", "", m.group(2).lower()))
+        (
+            m.group(1).lower().rstrip(".").replace("kv", "k"),
+            re.sub(r"\s", "", m.group(2).lower()).replace("-", "/"),
+        )
         for m in _CATALOGUE_RE.finditer(title or "")
     )
     return list(dict.fromkeys(found))
@@ -504,7 +507,14 @@ class NearDupeStage(BaseStage):
             # The resolver's own rule, title AND album: read from the title
             # alone, "Unplugged" and "24 Nights (Live)" were one song, and one
             # live recording moved to review (review of #86, finding 5).
-            if _is_live(dict(a)) and _is_live(dict(b)) and not _same_take(a, b):
+            # One movement of one work, filed under its composer: one copy per
+            # piece, live or not (Grey, 2026-10-24).
+            piece = (
+                a["artist"].strip() in composers
+                and b["artist"].strip() in composers
+                and _same_piece(a["title"], b["title"])
+            )
+            if not piece and _is_live(dict(a)) and _is_live(dict(b)) and not _same_take(a, b):
                 continue
 
             if frozenset((a["audio_hash"], b["audio_hash"])) in keep_both:
@@ -528,11 +538,6 @@ class NearDupeStage(BaseStage):
                 fuzz.ratio(bare_a, title_b),
                 fuzz.ratio(title_a, bare_b),
                 fuzz.ratio(bare_a, bare_b),
-            )
-            piece = (
-                a["artist"].strip() in composers
-                and b["artist"].strip() in composers
-                and _same_piece(a["title"], b["title"])
             )
             if score < TITLE_THRESHOLD and not piece:
                 # The same song with and without its guest named: "Smooth (feat.
