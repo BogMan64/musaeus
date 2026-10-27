@@ -185,7 +185,7 @@ _CATALOGUE_RE = re.compile(r"\b(BWV|HWV|RV|KV|K\.|D\.|Hob\.)\s*(\d+[a-z]?)", re.
 #: An arrangement ("Arr. For Piano") may be no performance of the piece as
 #: written, and a jazz improvisation on it is not (Bobby McFerrin's "Song For
 #: Amadeus"); until Grey rules, only the title score pairs one.
-_ARRANGED_RE = re.compile(r"\barr(?:\.|anged\b)|\btranscri|\bimprovis", re.IGNORECASE)
+_ARRANGED_RE = re.compile(r"\barr(?:\b|ang)|\btranscri|\bimprovis", re.IGNORECASE)
 
 
 def _catalogue(title: str) -> tuple[str, str] | None:
@@ -216,16 +216,21 @@ def _is_different_piece(title_a: str, title_b: str) -> bool:
     return bool(ma and mb and ma != mb)
 
 
+def _movements(title: str) -> list[str]:
+    """Every movement marker in a title, in order: "Part 1 ... - II." is
+    ["1", "ii"], never just its first (Codex review of #255)."""
+    return [next(g for g in m.groups() if g).lower() for m in _MOVEMENT_RE.finditer(title or "")]
+
+
 def _same_piece(title_a: str, title_b: str) -> bool:
     """One movement of one work in two wordings: the same catalogue number and
-    the same movement marker, both written on both sides (Grey, 2026-10-24:
+    the same movement markers, all written on both sides (Grey, 2026-10-24:
     one copy per classical piece)."""
     if _ARRANGED_RE.search(title_a or "") or _ARRANGED_RE.search(title_b or ""):
         return False
     ca = _catalogue(title_a)
-    _, ma = _classical_id(title_a)
-    _, mb = _classical_id(title_b)
-    return bool(ca and ca == _catalogue(title_b) and ma and ma == mb)
+    ma = _movements(title_a)
+    return bool(ca and ca == _catalogue(title_b) and ma and ma == _movements(title_b))
 
 
 def _strip_title_qualifiers(s: str) -> str:

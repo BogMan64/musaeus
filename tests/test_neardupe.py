@@ -411,6 +411,26 @@ class TestOneCopyPerPiece:
             "Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On A G String (Arr. For Piano)",
         )
 
+    def test_a_shared_part_label_does_not_hide_another_movement(self, ctx_dry, tmp_path):
+        # Codex review of #255: only the first marker ("Part 1") was compared.
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Antonio Vivaldi",
+            "Part 1, RV 269 - I. Allegro",
+            "The Four Seasons, Part 1, RV 269 - II. Largo",
+        )
+
+    def test_an_arrangement_spelled_out_waits_for_grey(self, ctx_dry, tmp_path):
+        # Codex review of #255: "Arr." and "arranged" were caught, "Arrangement" not.
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
+            "Orchestral Suite No. 3, BWV 1068 - II. Air (Piano Arrangement)",
+        )
+
     def test_an_improvisation_on_a_piece_is_not_the_piece(self, ctx_dry, tmp_path):
         assert not self._found(
             ctx_dry,
