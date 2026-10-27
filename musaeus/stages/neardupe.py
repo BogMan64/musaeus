@@ -180,9 +180,11 @@ def _classical_id(raw_title: str) -> tuple[str | None, str | None]:
 
 #: A catalogue number names one work of one composer: "BWV 1068", "RV 293",
 #: "K. 550" and "KV 550" alike. "No." and "Op." do not -- every composer has a
-#: "Symphony No. 5".
+#: "Symphony No. 5". Haydn's carries its series: "Hob. XVI:52" (Codex review of #255).
 _CATALOGUE_RE = re.compile(
-    r"\b(BWV|HWV|RV|KV|K\.|D\.|Hob\.)\.?\s*(\d+[a-z]?(?:(?:\s*/\s*|-)\d+[a-z]?)*)", re.IGNORECASE
+    r"\b(BWV|HWV|RV|KV|K\.|D\.|Hob\.?)\.?\s*"
+    r"(\d+[a-z]?(?:(?:\s*/\s*|-)\d+[a-z]?)*|[IVXL]+[a-z]?\s*:\s*\d+[a-z]?)",
+    re.IGNORECASE,
 )
 #: An arrangement is the same piece (Grey, 2026-10-26: "does an arrangement
 #: count as the same piece? = yes"). A medley, or a jazz improvisation on the

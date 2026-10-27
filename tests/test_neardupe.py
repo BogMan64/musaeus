@@ -354,6 +354,7 @@ class TestOneCopyPerPiece:
         "Antonio Vivaldi",
         "Wolfgang Amadeus Mozart",
         "George Frideric Handel",
+        "Joseph Haydn",
     )
 
     @classmethod
@@ -670,6 +671,25 @@ class TestOneCopyPerPiece:
             "Antonio Vivaldi",
             "Concerto, RV 297 - II. Largo",
             "RV 297: Movement 2 - Largo E Pianissimo Sempre",
+        )
+
+    def test_a_hoboken_number_with_its_series_names_the_work(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 30: "Hob. XVI:50" was no catalogue number.
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Joseph Haydn",
+            "Piano Sonata In C Major, Hob. XVI:50 - II. Adagio",
+            "Piano Sonata In E-Flat Major, Hob. XVI:52 - II. Adagio",
+        )
+
+    def test_one_hoboken_work_in_two_wordings(self, ctx_dry, tmp_path):
+        assert self._found(
+            ctx_dry,
+            tmp_path,
+            "Joseph Haydn",
+            "Piano Sonata No. 62 In E-Flat Major, Hob. XVI:52 - II. Adagio",
+            "Haydn: Sonata, Hob.XVI:52 - II. Adagio",
         )
 
     @pytest.mark.parametrize("durations", [(None, None), (None, 320.0)])
