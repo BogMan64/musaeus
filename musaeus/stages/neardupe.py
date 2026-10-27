@@ -517,6 +517,10 @@ class NearDupeStage(BaseStage):
             and all(r["status"] == "keep" and r["audio_hash"] for r in rs)
             and len({r["audio_hash"] for r in rs}) == 2
         }
+        # A recording a person kept beside another never takes the catalogue
+        # shortcut: a third copy paired with each of the two let the resolver
+        # move one of them (Codex review of #255).
+        kept_by_person: set[str] = set().union(*keep_both)
 
         # Bucket tracks by canonical artist
         artist_buckets: dict[str, list[dict]] = {}
@@ -568,7 +572,9 @@ class NearDupeStage(BaseStage):
             # One movement of one work, filed under its composer: one copy per
             # piece, live or not (Grey, 2026-10-24).
             piece = (
-                a["artist"].strip() in composers
+                a["audio_hash"] not in kept_by_person
+                and b["audio_hash"] not in kept_by_person
+                and a["artist"].strip() in composers
                 and b["artist"].strip() in composers
                 and _same_piece(a["title"], b["title"])
             )

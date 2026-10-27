@@ -633,6 +633,31 @@ class TestOneCopyPerPiece:
             "Bach: Mass In B Minor, BWV 232: I. Glory Be To God On High - Live",
         )
 
+    def test_a_recording_kept_by_a_person_never_takes_the_shortcut(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 11: a third copy paired with each of two
+        # recordings a person kept both of, and the resolver moved one of them.
+        canon = "".join(f"{c.lower()}\t{c}\n" for c in self.COMPOSERS)
+        (ctx_dry.config.meta_dir / "Composer_Canon.tsv").write_text(canon, encoding="utf-8")
+        titles = {
+            "a": "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
+            "b": "Suite For Orchestra, BWV 1068 - Movement 2: Air",
+            "c": "Bach: Ouvertüre Nr. 3, BWV 1068: II. Air (Arr. For Piano)",
+        }
+        for name, title in titles.items():
+            path = str(tmp_path / f"{name}.flac")
+            _insert_catalogued(ctx_dry, path, "Johann Sebastian Bach", title)
+            ctx_dry.conn.execute(
+                "UPDATE archive SET audio_hash = ? WHERE file_path = ?", (f"hash-{name}", path)
+            )
+        for name in ("a", "b"):
+            ctx_dry.conn.execute(
+                "INSERT INTO duplicates (group_id, file_path, duplicate_type, status, audio_hash) "
+                "VALUES ('near_kept', ?, 'NEAR', 'keep', ?)",
+                (str(tmp_path / f"{name}.flac"), f"hash-{name}"),
+            )
+        ctx_dry.conn.commit()
+        assert NearDupeStage().execute(ctx_dry).files_changed == 0
+
     def test_an_improvisation_on_a_piece_is_not_the_piece(self, ctx_dry, tmp_path):
         assert not self._found(
             ctx_dry,
