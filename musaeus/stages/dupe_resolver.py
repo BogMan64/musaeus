@@ -270,16 +270,22 @@ def _labelled_live(m: dict) -> bool:
 
 
 def _is_reissue(m: dict) -> bool:
-    """True if this copy advertises itself as a remaster/reissue or an arrangement.
+    """True if this copy advertises itself as a remaster/reissue.
 
     Read from title AND album, because the marker lands in either
     depending on the source -- "A Monday Date (Remastered)" as a title,
     "Chicago High Life (2013 Remaster)" as an album.
     """
     haystack = f"{m.get('title') or ''} {m.get('album') or ''}"
-    # Title and album apart: "Song (Original Mix" must not run on into its album.
-    arranged = any(_ARRANGED_RE.search(m.get(k) or "") for k in ("title", "album"))
-    return bool(_REISSUE_RE.search(haystack)) or arranged
+    return bool(_REISSUE_RE.search(haystack))
+
+
+def _is_arranged(m: dict) -> bool:
+    """True if this copy's title or album says it is an arrangement.
+
+    Title and album apart: "Song (Original Mix" must not run on into its album.
+    """
+    return any(_ARRANGED_RE.search(m.get(k) or "") for k in ("title", "album"))
 
 
 #: duplicates.status values meaning "this row has already been dealt with".

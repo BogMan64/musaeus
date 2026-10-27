@@ -44,25 +44,36 @@ def c(**kw):
         (
             c(title="BWV 1068 - II. Air On A G String (Arr. For Piano)", duration=330.8),
             c(title="BWV 1068 - II. Air", duration=292.4),
-            ("library", "original/remaster"),
+            ("library", "original/arrangement"),
         ),
-        (c(title="Largo (Transcribed For Guitar)"), c(), ("library", "original/remaster")),
+        (c(title="Largo (Transcribed For Guitar)"), c(), ("library", "original/arrangement")),
         # Codex review of #256: a song NAMED "The Arrangement" is not an arrangement
         (
             c(title="The Arrangement (Arr. For Piano)", duration=330.0),
             c(title="The Arrangement"),
-            ("library", "original/remaster"),
+            ("library", "original/arrangement"),
         ),
         (
             c(title="The Arrangement (Remastered)", sample_rate=96000),
             c(title="The Arrangement"),
             ("library", "original/remaster"),
         ),
+        # Round 3: an arrangement and a remaster are two steps, not one flag
+        (
+            c(title="Air (Arr. For Piano) (Remastered)", sample_rate=96000),
+            c(title="Air (Arr. For Piano)"),
+            ("library", "original/remaster"),
+        ),
+        (
+            c(title="Air (Arr. For Piano)", sample_rate=96000),
+            c(title="Air (Remastered)"),
+            ("library", "original/arrangement"),
+        ),
         # Round 2: an unclosed title bracket ran on into the album's name
         (
             c(title="Song (Arr. For Piano)", duration=330.0),
             c(title="Song (Original Mix", album="The Arrangement"),
-            ("library", "original/remaster"),
+            ("library", "original/arrangement"),
         ),
         (c(sample_rate=192000), c(), ("review", "quality")),
         (c(duration=202.0), c(), ("review", "length")),
