@@ -297,23 +297,29 @@ def _is_remix(m: dict) -> bool:
     """
     for text in (m.get("title") or "", m.get("album") or ""):
         for hit in _REMIX_RE.finditer(text):
-            if not _ORIGINAL_RE.search(_label_before(text, hit.start())):
+            if not _ORIGINAL_RE.search(_label_of(text, hit.start())):
                 return True
     return False
 
 
-def _label_before(text: str, end: int) -> str:
-    """The label a marker at *end* sits in, up to the marker: from the outermost
-    bracket still open there, else from the last " - "."""
+def _label_of(text: str, at: int) -> str:
+    """The whole label a marker at *at* sits in: the outermost bracket open there,
+    to its close; else the " - " part around it (Codex review of #258, round 3)."""
     depth, start = 0, 0
-    for i, ch in enumerate(text[:end]):
+    for i, ch in enumerate(text):
         if re.fullmatch(rf"[{OPEN}]", ch):
-            if not depth:
+            if not depth and i < at:
                 start = i
             depth += 1
         elif re.fullmatch(rf"[{CLOSE}]", ch):
             depth = max(depth - 1, 0)
-    return text[start:end] if depth else text[:end].rsplit(" - ", 1)[-1]
+            if not depth and start < at <= i:
+                return text[start : i + 1]
+        if i == at - 1 and not depth:
+            break
+    if depth and start < at:
+        return text[start:]
+    return text[:at].rsplit(" - ", 1)[-1] + text[at:].split(" - ", 1)[0]
 
 
 def _is_arranged(m: dict) -> bool:

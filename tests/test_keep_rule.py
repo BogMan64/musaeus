@@ -57,6 +57,9 @@ def c(**kw):
         (c(title="Song - Original Re-Mix (Stereo)"), c(), ("tie", "")),
         # "Original" in the same label, however nested (Codex review of #258, round 2) ...
         (c(title="Song (Original (Re-Mix))"), c(), ("tie", "")),
+        # the whole label, after the marker too (round 3); "remix" is still a reissue word
+        (c(title="Song (2019 Remix Original)"), c(title="Song (Remastered)"), ("tie", "")),
+        (c(title="Song - 2019 Remix, Original"), c(title="Song (Remastered)"), ("tie", "")),
         # ... and only there: a song NAMED "Original Sin" can be remixed
         (
             c(title="Original Sin (2019 Remix)"),
