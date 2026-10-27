@@ -673,6 +673,23 @@ class TestOneCopyPerPiece:
             "RV 297: Movement 2 - Largo E Pianissimo Sempre",
         )
 
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "BWV 1068 - II. Air / Gavotte Live In Berlin",
+            "BWV 1068 - II. Air; Gavotte Recorded Live",
+        ],
+    )
+    def test_a_second_section_with_a_recording_note_still_counts(self, ctx_dry, tmp_path, title):
+        # Codex review of #255, round 31: "Live" hid the whole "Gavotte" section.
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            title,
+            "Orchestral Suite No. 3, BWV 1068 - II. Air",
+        )
+
     def test_a_hoboken_number_with_its_series_names_the_work(self, ctx_dry, tmp_path):
         # Codex review of #255, round 30: "Hob. XVI:50" was no catalogue number.
         assert not self._found(

@@ -291,19 +291,23 @@ def _movement_name(title: str) -> set[str]:
     # A second name across "/" or ";", "II. Air / Gavotte", is a second movement,
     # so the track counts as unnamed; " - " and ":" join one movement's tempos,
     # "Allegro Non Molto - Allegro" (Codex review of #255).
-    # A key still counts here: "Andantino / Minore" is two sections (CodeRabbit, #255).
-    if sum(bool(_first_name(p, _NAME_STOP)) for p in re.split(r"[/;]", plain)) > 1:
+    # A key still counts here: "Andantino / Minore" is two sections (CodeRabbit,
+    # #255), and so does a recording note: "Air / Gavotte Live" (Codex, #255).
+    if sum(bool(_name_words(p, _NAME_STOP)) for p in re.split(r"[/;]", plain)) > 1:
         return set()
     return _first_name(plain, _NAME_STOP | _KEY_WORDS)
+
+
+def _name_words(text: str, stop: frozenset[str]) -> set[str]:
+    return {w for w in re.findall(r"[^\W\d_]+", text) if len(w) > 2 and w not in stop}
 
 
 def _first_name(text: str, stop: frozenset[str]) -> set[str]:
     """The first part that is not a note on the recording: "prelude - live in
     berlin" is only {"prelude"} (Codex review of #255)."""
     for part in _NAME_PART_RE.split(text):
-        words = re.findall(r"[^\W\d_]+", part)
-        name = {w for w in words if len(w) > 2 and w not in stop}
-        if name and _RECORDING_NOTE.isdisjoint(words):
+        name = _name_words(part, stop)
+        if name and _RECORDING_NOTE.isdisjoint(re.findall(r"[^\W\d_]+", part)):
             return name
     return set()
 
