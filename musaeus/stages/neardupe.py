@@ -162,7 +162,8 @@ def _same_take(a: dict, b: dict) -> bool:
 # grouped. Exactly the case the guard existed for.
 _WORK_RE = re.compile(r"\b(?:No\.|Op\.|BWV|HWV|RV|K\.|D\.|Hob\.)\s*(\d+[a-z]?)", re.IGNORECASE)
 _MOVEMENT_RE = re.compile(
-    r"(?:^|[\s\-–—:,(\[])(?:([IVXLC]{1,5})\.(?=\s)|"
+    # "II.Allegro" too, but not "I.G.Y" or "Fake I.D." (Codex review of #255).
+    r"(?:^|[\s\-–—:,(\[])(?:([IVXLC]{1,5})\.(?=\s|[^\W\d_]{2})|"
     r"(?:Movement|Mvt\.?|Part|Act|Scene)\s*(\d+|[IVXLC]{1,5})\b)",
     re.IGNORECASE,
 )

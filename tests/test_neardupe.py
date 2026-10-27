@@ -690,6 +690,12 @@ class TestOneCopyPerPiece:
             "Orchestral Suite No. 3, BWV 1068 - II. Air",
         )
 
+    def test_a_numeral_written_against_its_name_is_still_a_movement(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 33: "I.Allegro" had no movement marker.
+        assert not self._found(
+            ctx_dry, tmp_path, "Antonio Vivaldi", "RV 293: I.Allegro", "RV 293: II.Allegro"
+        )
+
     def test_a_hoboken_number_with_its_series_names_the_work(self, ctx_dry, tmp_path):
         # Codex review of #255, round 30: "Hob. XVI:50" was no catalogue number.
         assert not self._found(
