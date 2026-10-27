@@ -227,6 +227,13 @@ _KEY_WORDS = frozenset(
     {"major", "minor", "dur", "moll", "sharp", "flat", "majeur", "mineur"}
     | {"maggiore", "minore", "mayor", "menor"}
 )
+#: Tempo and its qualifiers: a shared "Allegro" alone joins no two names.
+_TEMPO_WORDS = frozenset(
+    {"grave", "largo", "larghetto", "lento", "adagio", "adagietto", "andante", "andantino"}
+    | {"moderato", "allegretto", "allegro", "vivace", "vivo", "presto", "prestissimo"}
+    | {"maestoso", "sostenuto", "cantabile", "molto", "assai", "poco", "meno", "piu", "non"}
+    | {"troppo", "con", "brio", "moto", "tempo"}
+)
 
 
 def _catalogues(title: str) -> list[tuple[str, str]]:
@@ -386,6 +393,10 @@ def _same_piece(title_a: str, title_b: str) -> bool:
     # unnamed one ("I. [Without Indication]") would pair with every name and
     # join two different pieces through itself (Codex review of #255).
     na, nb = _movement_name(title_a), _movement_name(title_b)
+    # Both named beyond a tempo: share that name, "Prelude Allegro" is not
+    # "Fugue Allegro"; "Largo" alone still meets "Largo E Pianissimo" (CodeRabbit, #255).
+    if na - _TEMPO_WORDS and nb - _TEMPO_WORDS:
+        na, nb = na - _TEMPO_WORDS, nb - _TEMPO_WORDS
     return bool(na & nb)
 
 

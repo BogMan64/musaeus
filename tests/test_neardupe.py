@@ -649,6 +649,29 @@ class TestOneCopyPerPiece:
         # counting as the track's second section.
         assert not self._found(ctx_dry, tmp_path, "Johann Sebastian Bach", title_a, title_b)
 
+    @pytest.mark.parametrize(
+        ("title_a", "title_b"),
+        [
+            ("BWV 846 - I. Prelude Allegro", "BWV 846 - I. Fugue Allegro"),
+            (
+                "Partita No. 2, BWV 826 - I. Sinfonia Grave Adagio",
+                "BWV 826: Movement 1 - Rondeaux Grave Adagio",
+            ),
+        ],
+    )
+    def test_a_shared_tempo_alone_names_no_movement(self, ctx_dry, tmp_path, title_a, title_b):
+        # CodeRabbit review of #255: "allegro" was the only shared name.
+        assert not self._found(ctx_dry, tmp_path, "Johann Sebastian Bach", title_a, title_b)
+
+    def test_a_tempo_only_name_still_pairs_on_its_tempo(self, ctx_dry, tmp_path):
+        assert self._found(
+            ctx_dry,
+            tmp_path,
+            "Antonio Vivaldi",
+            "Concerto, RV 297 - II. Largo",
+            "RV 297: Movement 2 - Largo E Pianissimo Sempre",
+        )
+
     @pytest.mark.parametrize("label", ["(Radio Edit)", "(Edit)", "(Abridged)", "(Short Version)"])
     def test_a_labelled_cut_takes_no_shortcut_at_any_length(self, ctx_dry, tmp_path, label):
         # Codex review of #255, round 24: a 220 s "Radio Edit" is over half the Air.
