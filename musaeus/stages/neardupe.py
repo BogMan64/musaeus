@@ -671,7 +671,9 @@ class NearDupeStage(BaseStage):
                         yield key, a_, b_, True
 
         for artist_key, a, b, cross in _candidate_pairs():
-            if cross and abs((a["duration"] or 0) - (b["duration"] or 0)) > _COLLAB_SECONDS:
+            da, db = a["duration"] or 0, b["duration"] or 0
+            # No length is not one length (CodeRabbit review of #257).
+            if cross and (min(da, db) <= 0 or abs(da - db) > _COLLAB_SECONDS):
                 continue
 
             # Skip if the two are already an exact pair
@@ -688,7 +690,6 @@ class NearDupeStage(BaseStage):
             # live recording moved to review (review of #86, finding 5).
             # One movement of one work, filed under its composer: one copy per
             # piece, live or not (Grey, 2026-10-24).
-            da, db = a["duration"] or 0, b["duration"] or 0
             piece = (
                 a["audio_hash"] not in kept_by_person
                 and b["audio_hash"] not in kept_by_person

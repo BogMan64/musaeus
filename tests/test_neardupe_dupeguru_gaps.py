@@ -97,6 +97,15 @@ def test_one_credit_spelled_two_ways_must_also_be_the_same_length(ctx, tmp_path)
     assert NearDupeStage().execute(ctx).files_changed == 0
 
 
+def test_two_credits_with_unknown_lengths_are_not_paired(ctx, tmp_path):
+    """No length is not one length (CodeRabbit review of #257)."""
+    _add(ctx, str(tmp_path / "a.m4a"), "Pat Travers & Carmine Appice",
+         "Boom Boom (Out Go The Lights)", None)  # fmt: skip
+    _add(ctx, str(tmp_path / "b.m4a"), "Pat Travers, Carmine Appice",
+         "Boom Boom (Out Go The Lights)", None)  # fmt: skip
+    assert NearDupeStage().execute(ctx).files_changed == 0
+
+
 def test_a_credit_naming_one_more_act_is_another_credit(ctx, tmp_path):
     _add(ctx, str(tmp_path / "a.m4a"), "Crosby, Stills & Nash", "Helplessly Hoping", 161.0)
     _add(ctx, str(tmp_path / "b.m4a"), "Crosby, Stills, Nash & Young", "Helplessly Hoping", 161.0)
