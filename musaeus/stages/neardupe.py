@@ -209,8 +209,9 @@ _AMPERSAND = re.compile(r"\s*&\s*")
 
 #: A bracket that only names who played with whom: "(feat. Rob Thomas)",
 #: "(With Paul McCartney)". The same recording is filed with and without it.
+#: "feat." needs its dot: "(Feat Of Strength)" is a subtitle, not a guest.
 _CREDIT_BRACKET = re.compile(
-    rf"[{OPEN}]\s*(?:with|feat\.?|featuring|ft\.?)\s[^{CLOSE}]*[{CLOSE}]", re.I
+    rf"[{OPEN}]\s*(?:with|feat\.|featuring|ft\.?)\s[^{CLOSE}]*[{CLOSE}]", re.I
 )
 
 
