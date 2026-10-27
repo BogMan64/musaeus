@@ -427,15 +427,6 @@ class TestOneCopyPerPiece:
             "Cantata BWV 208 - 9. Schafe Können Sicher Weiden",
         )
 
-    def test_an_arrangement_waits_for_grey(self, ctx_dry, tmp_path):
-        assert not self._found(
-            ctx_dry,
-            tmp_path,
-            "Johann Sebastian Bach",
-            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
-            "Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On A G String (Arr. For Piano)",
-        )
-
     def test_a_shared_part_label_does_not_hide_another_movement(self, ctx_dry, tmp_path):
         # Codex review of #255: only the first marker ("Part 1") was compared.
         assert not self._found(
@@ -444,16 +435,6 @@ class TestOneCopyPerPiece:
             "Antonio Vivaldi",
             "Part 1, RV 269 - I. Allegro",
             "The Four Seasons, Part 1, RV 269 - II. Largo",
-        )
-
-    def test_an_arrangement_spelled_out_waits_for_grey(self, ctx_dry, tmp_path):
-        # Codex review of #255: "Arr." and "arranged" were caught, "Arrangement" not.
-        assert not self._found(
-            ctx_dry,
-            tmp_path,
-            "Johann Sebastian Bach",
-            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
-            "Orchestral Suite No. 3, BWV 1068 - II. Air (Piano Arrangement)",
         )
 
     def test_a_shared_part_label_does_not_merge_movements_at_a_high_score(self, ctx_dry, tmp_path):
@@ -465,15 +446,6 @@ class TestOneCopyPerPiece:
             "Antonio Vivaldi",
             "Part 1, RV 269 - I. Allegro",
             "Part 1, RV 269 - II. Allegro",
-        )
-
-    def test_an_adaptation_waits_for_grey(self, ctx_dry, tmp_path):
-        assert not self._found(
-            ctx_dry,
-            tmp_path,
-            "Johann Sebastian Bach",
-            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
-            "Orchestral Suite No. 3, BWV 1068 - II. Air (Adaptation For Solo Piano)",
         )
 
     def test_a_performer_row_never_takes_the_shortcut(self, ctx_dry, tmp_path):
@@ -520,19 +492,6 @@ class TestOneCopyPerPiece:
             "BWV 1068 - II. Air / BWV 1067 - Badinerie",
         )
 
-    @pytest.mark.parametrize(
-        "label",
-        ["(Trans. For Solo Piano)", "(Bearbeitung Für Klavier)", "(Medley)", "(Piano Reduction)"],
-    )
-    def test_a_labelled_transcription_or_medley_waits_for_grey(self, ctx_dry, tmp_path, label):
-        assert not self._found(
-            ctx_dry,
-            tmp_path,
-            "Johann Sebastian Bach",
-            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
-            f"Orchestral Suite No. 3, BWV 1068 - II. Air {label}",
-        )
-
     def test_two_live_performances_of_one_movement_are_one_piece(self, ctx_dry, tmp_path):
         # Codex review of #255, round 5: the live-vs-live guard ran first.
         assert self._found(
@@ -572,6 +531,57 @@ class TestOneCopyPerPiece:
             "Johann Sebastian Bach",
             "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
             "Suite For Orchestra, BWV 1068 - Movement 2: Air",
+        )
+
+    def test_mass_sections_restarting_at_one_are_two_pieces(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 7: each section restarts at "I.".
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "Mass In B Minor, BWV 232 - Kyrie: I. Kyrie eleison",
+            "Bach: Mass In B Minor, BWV 232, Gloria: I. Gloria in excelsis Deo",
+        )
+
+    def test_numbered_items_of_one_work_are_two_pieces(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 7: matching catalogue numbers had stopped
+        # the "No." comparison; the title score is 97.6.
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "Mass In B Minor, BWV 232 - No. 1 Kyrie eleison",
+            "Mass In B Minor, BWV 232 - No. 3 Kyrie eleison",
+        )
+
+    @pytest.mark.parametrize(
+        "label",
+        [
+            "(Arr. For Piano)",
+            "(Piano Arrangement)",
+            "(Adaptation For Solo Piano)",
+            "(Trans. For Solo Piano)",
+            "(Bearbeitung Für Klavier)",
+            "(Piano Reduction)",
+        ],
+    )
+    def test_an_arrangement_is_the_same_piece(self, ctx_dry, tmp_path, label):
+        # Grey, 2026-10-26: "does an arrangement count as the same piece? = yes".
+        assert self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
+            f"Orchestral Suite No. 3, BWV 1068 - II. Air {label}",
+        )
+
+    def test_a_medley_is_not_the_piece(self, ctx_dry, tmp_path):
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
+            "Orchestral Suite No. 3, BWV 1068 - II. Air (Medley)",
         )
 
     def test_an_improvisation_on_a_piece_is_not_the_piece(self, ctx_dry, tmp_path):

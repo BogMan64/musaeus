@@ -51,7 +51,7 @@ try:
 except ImportError:
     _HAVE_RAPIDFUZZ = False
 
-from ..brackets import CLOSE, OPEN
+from ..brackets import CLOSE, OPEN, strip_bracketed
 from ..canon import ArtistCanon
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
@@ -184,14 +184,14 @@ def _classical_id(raw_title: str) -> tuple[str | None, str | None]:
 _CATALOGUE_RE = re.compile(
     r"\b(BWV|HWV|RV|KV|K\.|D\.|Hob\.)\s*(\d+[a-z]?(?:(?:\s*/\s*|-)\d+[a-z]?)*)", re.IGNORECASE
 )
-#: An arrangement ("Arr. For Piano") may be no performance of the piece as
-#: written, and a jazz improvisation on it is not (Bobby McFerrin's "Song For
-#: Amadeus"); until Grey rules, only the title score pairs one. Labelled ones
-#: only: an unlabelled arrangement reads like any performance.
-_ARRANGED_RE = re.compile(
-    r"\barr(?:\b|ang)|\badapt|\btrans(?:\b|cri|kr)|\bbearb|\bimprovis|\borchestrat|\bparaphras"
-    r"|\bversion for\b|\bmedley|\breduc",
-    re.IGNORECASE,
+#: An arrangement is the same piece (Grey, 2026-10-26: "does an arrangement
+#: count as the same piece? = yes"). A medley, or a jazz improvisation on the
+#: piece (Bobby McFerrin's "Song For Amadeus"), is not.
+_NOT_THE_PIECE_RE = re.compile(r"\bimprovis|\bmedley", re.IGNORECASE)
+#: "No. 1" and "No. 3" of one catalogue number are two items of one work.
+_ITEM_RE = re.compile(r"\bNo\.\s*(\d+)", re.IGNORECASE)
+_NAME_STOP = frozenset(
+    {"the", "and", "for", "von", "der", "die", "das", "und", "del", "les", "des"}
 )
 
 
@@ -209,6 +209,23 @@ def _catalogues(title: str) -> list[tuple[str, str]]:
     return list(dict.fromkeys(found))
 
 
+def _items(title: str) -> list[str]:
+    return list(dict.fromkeys(m.group(1).lstrip("0") for m in _ITEM_RE.finditer(title or "")))
+
+
+def _movement_name(title: str) -> set[str]:
+    """The words of a movement's own name, after its last marker, brackets
+    dropped: "II. Air On The G String (Arr.)" -> {"air", "string"}."""
+    marks = list(_MOVEMENT_RE.finditer(title or ""))
+    if not marks:
+        return set()
+    tail = strip_bracketed(title[marks[-1].end() :]).casefold()
+    plain = "".join(
+        ch for ch in unicodedata.normalize("NFD", tail) if not unicodedata.combining(ch)
+    )
+    return {w for w in re.findall(r"[^\W\d_]+", plain) if len(w) > 2 and w not in _NAME_STOP}
+
+
 def _is_different_piece(title_a: str, title_b: str) -> bool:
     """True when two titles name different works, or different movements.
 
@@ -223,7 +240,9 @@ def _is_different_piece(title_a: str, title_b: str) -> bool:
     wb, _ = _classical_id(title_b)
     ca, cb = _catalogues(title_a), _catalogues(title_b)
     if ca and cb:
-        if ca != cb:
+        # "No. 1" and "No. 3" of BWV 232 are two items (Codex review of #255).
+        na, nb = _items(title_a), _items(title_b)
+        if ca != cb or (na and nb and na != nb):
             return True
     elif wa and wb and wa != wb:
         return True
@@ -264,14 +283,20 @@ def _same_piece(title_a: str, title_b: str) -> bool:
     """One movement of one work in two wordings: the same catalogue number and
     the same movement markers, all written on both sides (Grey, 2026-10-24:
     one copy per classical piece)."""
-    if _ARRANGED_RE.search(title_a or "") or _ARRANGED_RE.search(title_b or ""):
+    if _NOT_THE_PIECE_RE.search(title_a or "") or _NOT_THE_PIECE_RE.search(title_b or ""):
         return False
     ca = _catalogues(title_a)
     ma = _movements(title_a)
     # A movement itself, not only an act, scene or part: two arias of "Act 1"
     # are two pieces (Codex review of #255).
     movement = any(kind == "movement" for kind, _ in ma)
-    return bool(ca and ca == _catalogues(title_b) and movement and ma == _movements(title_b))
+    if not (ca and ca == _catalogues(title_b) and movement and ma == _movements(title_b)):
+        return False
+    # Two named movements share a word of the name: a Mass restarts at "I." in
+    # every section, and "Kyrie eleison" is not "Gloria in excelsis" (Codex
+    # review of #255). An unnamed one ("I. [Without Indication]") asserts nothing.
+    na, nb = _movement_name(title_a), _movement_name(title_b)
+    return not (na and nb) or bool(na & nb)
 
 
 def _strip_title_qualifiers(s: str) -> str:
