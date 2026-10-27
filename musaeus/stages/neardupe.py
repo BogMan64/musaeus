@@ -221,8 +221,10 @@ _NAME_STOP = frozenset(
     | {"transcribed", "adaptation", "bearbeitung", "reduction", "orchestration", "solo"}
     | {"piano", "violin", "cello", "guitar", "flute", "organ", "harpsichord", "orchestra"}
     | {"ensemble", "recorder", "hands", "four", "two", "voices", "voice", "strings"}
-    # A key names no movement: "Prelude In C Major", "Fugue In C Major" (CodeRabbit, #255).
-    | {"major", "minor", "dur", "moll", "sharp", "flat", "majeur", "mineur"}
+)
+#: A key names no movement: "Prelude In C Major", "Fugue In C Major" (CodeRabbit, #255).
+_KEY_WORDS = frozenset(
+    {"major", "minor", "dur", "moll", "sharp", "flat", "majeur", "mineur"}
     | {"maggiore", "minore", "mayor", "menor"}
 )
 
@@ -279,17 +281,18 @@ def _movement_name(title: str) -> set[str]:
     # A second name across "/" or ";", "II. Air / Gavotte", is a second movement,
     # so the track counts as unnamed; " - " and ":" join one movement's tempos,
     # "Allegro Non Molto - Allegro" (Codex review of #255).
-    if sum(bool(_first_name(p)) for p in re.split(r"[/;]", plain)) > 1:
+    # A key still counts here: "Andantino / Minore" is two sections (CodeRabbit, #255).
+    if sum(bool(_first_name(p, _NAME_STOP)) for p in re.split(r"[/;]", plain)) > 1:
         return set()
-    return _first_name(plain)
+    return _first_name(plain, _NAME_STOP | _KEY_WORDS)
 
 
-def _first_name(text: str) -> set[str]:
+def _first_name(text: str, stop: frozenset[str]) -> set[str]:
     """The first part that is not a note on the recording: "prelude - live in
     berlin" is only {"prelude"} (Codex review of #255)."""
     for part in _NAME_PART_RE.split(text):
         words = re.findall(r"[^\W\d_]+", part)
-        name = {w for w in words if len(w) > 2 and w not in _NAME_STOP}
+        name = {w for w in words if len(w) > 2 and w not in stop}
         if name and _RECORDING_NOTE.isdisjoint(words):
             return name
     return set()

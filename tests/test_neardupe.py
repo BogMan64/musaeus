@@ -629,6 +629,26 @@ class TestOneCopyPerPiece:
         # CodeRabbit review of #255: "major" was the only shared name.
         assert not self._found(ctx_dry, tmp_path, "Johann Sebastian Bach", title_a, title_b)
 
+    @pytest.mark.parametrize(
+        ("title_a", "title_b"),
+        [
+            (
+                "Partita No. 2, BWV 826 - II. Andantino / Minore",
+                "BWV 826: Movement 2 - Andantino / Maggiore",
+            ),
+            (
+                "Partita No. 2, BWV 826 - III. Menuet / Minore",
+                "BWV 826: Movement 3 - Menuet / Major",
+            ),
+        ],
+    )
+    def test_a_key_named_section_is_still_a_second_section(
+        self, ctx_dry, tmp_path, title_a, title_b
+    ):
+        # CodeRabbit review of #255: once keys named nothing, "Minore" stopped
+        # counting as the track's second section.
+        assert not self._found(ctx_dry, tmp_path, "Johann Sebastian Bach", title_a, title_b)
+
     @pytest.mark.parametrize("label", ["(Radio Edit)", "(Edit)", "(Abridged)", "(Short Version)"])
     def test_a_labelled_cut_takes_no_shortcut_at_any_length(self, ctx_dry, tmp_path, label):
         # Codex review of #255, round 24: a 220 s "Radio Edit" is over half the Air.
