@@ -649,6 +649,18 @@ class NearDupeStage(BaseStage):
             if primary and primary != key and primary in artist_buckets:
                 collab_of.setdefault(primary, []).extend(tracks)
 
+        # One credit spelled two ways: "Pat Travers & Carmine Appice" and "Pat
+        # Travers, Carmine Appice" were two buckets never compared, and one song
+        # sat twice in one folder (2026-10-27). Compared like a collaborator's
+        # credit, at one length only.
+        same_credit: dict[str, list[str]] = {}
+        for key in artist_buckets:
+            same_credit.setdefault(" ".join(w for w in key.split() if w != "and"), []).append(key)
+        for keys in same_credit.values():
+            for i, key in enumerate(keys):
+                for other in keys[i + 1 :]:
+                    collab_of.setdefault(key, []).extend(artist_buckets[other])
+
         def _candidate_pairs():
             for key, tracks in artist_buckets.items():
                 for i in range(len(tracks)):

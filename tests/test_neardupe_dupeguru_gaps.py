@@ -79,6 +79,30 @@ def test_a_credit_with_no_plain_bucket_is_left_alone(ctx, tmp_path):
     assert NearDupeStage().execute(ctx).files_changed == 0
 
 
+def test_one_credit_spelled_two_ways_is_compared(ctx, tmp_path):
+    """Pat Travers "Boom Boom" sat twice in one folder: "&" in one credit, "," in the
+    other, so the two credit buckets were never compared (follow-up, 2026-10-27)."""
+    _add(ctx, str(tmp_path / "a.m4a"), "Pat Travers & Carmine Appice",
+         "Boom Boom (Out Go The Lights)", 192.9)  # fmt: skip
+    _add(ctx, str(tmp_path / "b.m4a"), "Pat Travers, Carmine Appice",
+         "Boom Boom (Out Go The Lights)", 194.2)  # fmt: skip
+    assert NearDupeStage().execute(ctx).files_changed == 1
+
+
+def test_one_credit_spelled_two_ways_must_also_be_the_same_length(ctx, tmp_path):
+    _add(ctx, str(tmp_path / "a.m4a"), "Pat Travers & Carmine Appice",
+         "Boom Boom (Out Go The Lights)", 192.9)  # fmt: skip
+    _add(ctx, str(tmp_path / "b.m4a"), "Pat Travers, Carmine Appice",
+         "Boom Boom (Out Go The Lights)", 230.0)  # fmt: skip
+    assert NearDupeStage().execute(ctx).files_changed == 0
+
+
+def test_a_credit_naming_one_more_act_is_another_credit(ctx, tmp_path):
+    _add(ctx, str(tmp_path / "a.m4a"), "Crosby, Stills & Nash", "Helplessly Hoping", 161.0)
+    _add(ctx, str(tmp_path / "b.m4a"), "Crosby, Stills, Nash & Young", "Helplessly Hoping", 161.0)
+    assert NearDupeStage().execute(ctx).files_changed == 0
+
+
 def test_live_copies_titled_alike_but_for_punctuation_are_one_performance():
     a = {
         "title": "Parisienne Walkways (Live At Royal Albert Hall, London - 1993)",
