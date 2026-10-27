@@ -677,6 +677,28 @@ class TestOneCopyPerPiece:
         artist = "Wolfgang Amadeus Mozart" if "K. 626" in title_a else "Johann Sebastian Bach"
         assert not self._found(ctx_dry, tmp_path, artist, title_a, title_b)
 
+    def test_a_bracketed_movement_name_still_names_it(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 13: bracketed names were dropped, so two
+        # differently named movements had no name to compare.
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "Orchestral Suite No. 3, BWV 1068 - II. (Air)",
+            "J.S. Bach: Suite In D, BWV 1068 - II. (Bourrée)",
+        )
+
+    def test_a_bracketed_version_or_placeholder_is_no_name(self, ctx_dry, tmp_path):
+        # Live: "I. [Without Indication]" and "I. (Allegro Moderato)" are one
+        # movement; "(2015 Remastered Version)" names nothing either.
+        assert self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "Violin Concerto No. 1 In A Minor, BWV 1041: I. [Without Indication]",
+            "J.S. Bach: Violin Concerto No. 1 In A Minor, BWV 1041: I. (Allegro Moderato)",
+        )
+
     def test_an_improvisation_on_a_piece_is_not_the_piece(self, ctx_dry, tmp_path):
         assert not self._found(
             ctx_dry,

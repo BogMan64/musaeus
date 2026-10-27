@@ -51,7 +51,7 @@ try:
 except ImportError:
     _HAVE_RAPIDFUZZ = False
 
-from ..brackets import CLOSE, OPEN, strip_bracketed
+from ..brackets import CLOSE, OPEN
 from ..canon import ArtistCanon
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
@@ -210,6 +210,12 @@ _NAME_STOP = frozenset(
     {"the", "and", "for", "von", "der", "die", "das", "und", "del", "les", "des"}
     | {"live", "remaster", "remastered", "version", "edit", "mono", "stereo", "mix", "remix"}
     | {"bonus", "demo", "take", "recording", "recorded", "concert", "session", "excerpt"}
+    # Placeholders and arrangement labels name no movement: "[Without
+    # Indication]", "(Arr. For Piano)".
+    | {"without", "indication", "arr", "arranged", "arrangement", "trans", "transcription"}
+    | {"transcribed", "adaptation", "bearbeitung", "reduction", "orchestration", "solo"}
+    | {"piano", "violin", "cello", "guitar", "flute", "organ", "harpsichord", "orchestra"}
+    | {"ensemble", "recorder", "hands", "four", "two", "voices", "voice", "strings"}
 )
 
 
@@ -232,12 +238,13 @@ def _items(title: str) -> list[str]:
 
 
 def _movement_name(title: str) -> set[str]:
-    """The words of a movement's own name, after its last marker, brackets
-    dropped: "II. Air On The G String (Arr.)" -> {"air", "string"}."""
+    """The words of a movement's own name, after its last marker: "II. Air On
+    The G String (Arr. For Piano)" -> {"air", "string"}."""
     marks = list(_MOVEMENT_RE.finditer(title or ""))
     if not marks:
         return set()
-    tail = strip_bracketed(title[marks[-1].end() :]).casefold()
+    # Brackets kept: "II. (Air)" and "II. (Bourrée)" are named (Codex review of #255).
+    tail = re.sub(rf"[{OPEN}{CLOSE}]", " ", title[marks[-1].end() :]).casefold()
     plain = "".join(
         ch for ch in unicodedata.normalize("NFD", tail) if not unicodedata.combining(ch)
     )
