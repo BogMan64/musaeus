@@ -642,11 +642,15 @@ class NearDupeStage(BaseStage):
             # live recording moved to review (review of #86, finding 5).
             # One movement of one work, filed under its composer: one copy per
             # piece, live or not (Grey, 2026-10-24).
+            da, db = a["duration"] or 0, b["duration"] or 0
             piece = (
                 a["audio_hash"] not in kept_by_person
                 and b["audio_hash"] not in kept_by_person
                 and a["artist"].strip() in composers
                 and b["artist"].strip() in composers
+                # A copy under half the other's length is a cut, not the piece: a
+                # 75 s "Air (Radio Edit)" beside the 320 s Air (Codex review of #255).
+                and 2 * min(da, db) >= max(da, db)
                 and _same_piece(a["title"], b["title"])
             )
             if not piece and _is_live(dict(a)) and _is_live(dict(b)) and not _same_take(a, b):

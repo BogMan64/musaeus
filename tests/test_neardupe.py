@@ -616,9 +616,10 @@ class TestOneCopyPerPiece:
         # Codex review of #255, round 16: "berlin" was the only shared name.
         assert not self._found(ctx_dry, tmp_path, "Johann Sebastian Bach", title_a, title_b)
 
-    @pytest.mark.parametrize("label", ["(Excerpt)", "(Fragment)"])
+    @pytest.mark.parametrize("label", ["(Excerpt)", "(Fragment)", "(Radio Edit)", ""])
     def test_a_part_of_a_movement_is_not_the_movement(self, ctx_dry, tmp_path, label):
-        # Codex review of #255, round 18: a 75 s excerpt could replace the full Air.
+        # Codex review of #255, round 18: a 75 s excerpt could replace the full Air;
+        # round 23: so could a 75 s "Radio Edit", or a cut with no label at all.
         assert not self._found(
             ctx_dry,
             tmp_path,
