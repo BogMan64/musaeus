@@ -672,7 +672,11 @@ class TestOneCopyPerPiece:
             "RV 297: Movement 2 - Largo E Pianissimo Sempre",
         )
 
-    @pytest.mark.parametrize("label", ["(Radio Edit)", "(Edit)", "(Abridged)", "(Short Version)"])
+    @pytest.mark.parametrize(
+        "label",
+        ["(Radio Edit)", "(Edit)", "(Abridged)", "(Short Version)", "(Edited Version)", "(Edited)"]
+        + ["(Radio Version)", "(Single Version)"],
+    )
     def test_a_labelled_cut_takes_no_shortcut_at_any_length(self, ctx_dry, tmp_path, label):
         # Codex review of #255, round 24: a 220 s "Radio Edit" is over half the Air.
         assert not self._found(
