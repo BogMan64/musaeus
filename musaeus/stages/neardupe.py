@@ -379,6 +379,12 @@ class NearDupeStage(BaseStage):
 
         cfg = ctx.config
         artist_canon = ArtistCanon(cfg.meta_dir / "artist_canon.tsv")
+        # The catalogue shortcut is for rows filed under their composer, the
+        # way albumart recognises one: a performer's bucket can hold Mozart's
+        # K. 545 and Scarlatti's K. 545 (Codex review of #255).
+        from .classical_composer import CANON_FILENAME, load_composer_canon
+
+        composers = set(load_composer_canon(cfg.meta_dir / CANON_FILENAME).values())
 
         # Load all catalogued rows
         rows = ctx.conn.execute(
@@ -515,7 +521,12 @@ class NearDupeStage(BaseStage):
                 fuzz.ratio(title_a, bare_b),
                 fuzz.ratio(bare_a, bare_b),
             )
-            if score < TITLE_THRESHOLD and not _same_piece(a["title"], b["title"]):
+            piece = (
+                a["artist"].strip() in composers
+                and b["artist"].strip() in composers
+                and _same_piece(a["title"], b["title"])
+            )
+            if score < TITLE_THRESHOLD and not piece:
                 # The same song with and without its guest named: "Smooth (feat.
                 # Rob Thomas)" and "Smooth" (Grey, 2026-10-12: the same song).
                 # Only at one length -- "Stay With Me (With The Royal
@@ -535,13 +546,17 @@ class NearDupeStage(BaseStage):
                 if bare < TITLE_THRESHOLD:
                     continue
                 score = bare
-            elif _is_live(dict(a)) != _is_live(dict(b)) and (
-                abs((a["duration"] or 0) - (b["duration"] or 0)) > _SAME_TAKE_SECONDS
-                and fuzz.ratio(
-                    _normalise(a["title"], strip_qualifiers=True, fold_and=False),
-                    _normalise(b["title"], strip_qualifiers=True, fold_and=False),
+            elif (
+                not piece
+                and _is_live(dict(a)) != _is_live(dict(b))
+                and (
+                    abs((a["duration"] or 0) - (b["duration"] or 0)) > _SAME_TAKE_SECONDS
+                    and fuzz.ratio(
+                        _normalise(a["title"], strip_qualifiers=True, fold_and=False),
+                        _normalise(b["title"], strip_qualifiers=True, fold_and=False),
+                    )
+                    < TITLE_THRESHOLD
                 )
-                < TITLE_THRESHOLD
             ):
                 # Matched only because "&" is "and" now, one side live, at
                 # another length: a live take and a studio one (Stray Cats

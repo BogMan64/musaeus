@@ -348,10 +348,26 @@ class TestOneCopyPerPiece:
     library two to five times (2026-10-26). The catalogue number and the
     movement marker say which piece."""
 
-    @staticmethod
-    def _found(ctx_dry, tmp_path, artist, title_a, title_b) -> bool:
-        _insert_catalogued(ctx_dry, str(tmp_path / "a.flac"), artist, title_a)
-        _insert_catalogued(ctx_dry, str(tmp_path / "b.flac"), artist, title_b)
+    #: Rows filed under their composer, as ClassicalComposer files them.
+    COMPOSERS = (
+        "Johann Sebastian Bach",
+        "Antonio Vivaldi",
+        "Wolfgang Amadeus Mozart",
+        "George Frideric Handel",
+    )
+
+    @classmethod
+    def _found(cls, ctx_dry, tmp_path, artist, title_a, title_b, durations=(None, None)) -> bool:
+        canon = "".join(f"{c.lower()}\t{c}\n" for c in cls.COMPOSERS)
+        (ctx_dry.config.meta_dir / "Composer_Canon.tsv").write_text(canon, encoding="utf-8")
+        for name, title, seconds in zip(("a", "b"), (title_a, title_b), durations, strict=True):
+            path = str(tmp_path / f"{name}.flac")
+            _insert_catalogued(ctx_dry, path, artist, title)
+            if seconds is not None:
+                ctx_dry.conn.execute(
+                    "UPDATE archive SET duration = ? WHERE file_path = ?", (seconds, path)
+                )
+        ctx_dry.conn.commit()
         return NearDupeStage().execute(ctx_dry).files_changed > 0
 
     def test_same_catalogue_number_and_movement_in_two_wordings(self, ctx_dry, tmp_path):
@@ -458,6 +474,29 @@ class TestOneCopyPerPiece:
             "Johann Sebastian Bach",
             "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
             "Orchestral Suite No. 3, BWV 1068 - II. Air (Adaptation For Solo Piano)",
+        )
+
+    def test_a_performer_row_never_takes_the_shortcut(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 3: K. is Mozart's catalogue and
+        # Scarlatti's (Kirkpatrick). Only a composer's own rows are one work.
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Christian Zacharias",
+            "Mozart: Piano Sonata, K. 545 - I. Allegro",
+            "Scarlatti: Sonata In G Major, K. 545 - I. Allegro",
+        )
+
+    def test_studio_and_live_of_one_movement_are_one_piece(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 3: the live-vs-studio length check, made
+        # for title-score pairs, dropped this one.
+        assert self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
+            "Orchestral Suite No. 3, BWV 1068 - II. Air (Live)",
+            durations=(220.0, 240.0),
         )
 
     def test_an_improvisation_on_a_piece_is_not_the_piece(self, ctx_dry, tmp_path):
