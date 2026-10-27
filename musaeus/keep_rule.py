@@ -18,7 +18,10 @@ answered yes to each reading:
                      joined to this rule 2026-10-05 so there is ONE rule)
   3. original        the original beats a remaster, remix or re-recording --
                      Grey's standing ruling ("the original trumps the
-                     remaster"), placed after studio/live: "keep this"
+                     remaster"), placed after studio/live: "keep this".
+                     First the original scoring beats an arrangement ("Arr.
+                     For Piano"; Grey, 2026-10-26), then the original beats
+                     a remaster: two steps, so one never cancels the other
   4. quality         SAMPLE RATE only. Bitrate between two ALAC copies of one
                      recording is noise; counting it would swap masters for
                      no audible gain (AC/DC "Big Gun", 2026-10-03)
@@ -48,7 +51,15 @@ LOSSY = frozenset({"aac", "mp3", "vorbis", "opus", "wma", "wmav2", "mp2"})
 #: unknown codec is never taken for lossless, as the rule already said.
 LOSSLESS = frozenset({"alac", "flac", "wavpack", "ape", "tta", "mlp", "truehd", "shorten",
                       "mp4als", "als", "wmalossless", "tak", "ralf"})  # fmt: skip
-STEPS = ("studio/live", "format", "original/baked", "original/remaster", "quality", "length")
+STEPS = (
+    "studio/live",
+    "format",
+    "original/baked",
+    "original/arrangement",
+    "original/remaster",
+    "quality",
+    "length",
+)
 #: Lengths closer than this are the same length (a fade, a gap of silence).
 LENGTH_SLACK_S = 2.0
 
@@ -62,7 +73,7 @@ def _format_rank(codec: str | None) -> int:
     return 1 if c in LOSSLESS or c.startswith("pcm_") else 3
 
 
-def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int]:
+def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int, int]:
     """Steps 1-4; smaller is better. *m* needs codec, title, album, sample_rate, lufs.
 
     Length (step 5) is not in the key: "at least 2 s longer" is a tolerance,
@@ -70,12 +81,13 @@ def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int]:
     """
     # Imported here: the resolver imports this module, and these read titles
     # and albums exactly the way it does.
-    from .stages.dupe_resolver import _is_live, _is_reissue, _looks_baked
+    from .stages.dupe_resolver import _is_arranged, _is_live, _is_reissue, _looks_baked
 
     return (
         1 if _is_live(dict(m)) else 0,
         _format_rank(m.get("codec")),
         1 if _looks_baked(dict(m)) else 0,
+        1 if _is_arranged(dict(m)) else 0,
         1 if _is_reissue(dict(m)) else 0,
         -int(m.get("sample_rate") or 0),
     )

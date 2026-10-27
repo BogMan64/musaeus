@@ -39,6 +39,60 @@ def c(**kw):
         (c(), c(album="Unplugged", duration=230.0), ("review", "studio/live")),
         (c(title="Song (Remastered)", sample_rate=96000), c(), ("library", "original/remaster")),
         (c(), c(title="Song (2016 Remix)"), ("review", "original/remaster")),
+        # Bach "Air", 192 kHz both: the piano arrangement is 39 s longer, and Grey
+        # keeps the original scoring (2026-10-26: "A. Original")
+        (
+            c(title="BWV 1068 - II. Air On A G String (Arr. For Piano)", duration=330.8),
+            c(title="BWV 1068 - II. Air", duration=292.4),
+            ("library", "original/arrangement"),
+        ),
+        (c(title="Largo (Transcribed For Guitar)"), c(), ("library", "original/arrangement")),
+        # Codex review of #256: a song NAMED "The Arrangement" is not an arrangement
+        (
+            c(title="The Arrangement (Arr. For Piano)", duration=330.0),
+            c(title="The Arrangement"),
+            ("library", "original/arrangement"),
+        ),
+        (
+            c(title="The Arrangement (Remastered)", sample_rate=96000),
+            c(title="The Arrangement"),
+            ("library", "original/remaster"),
+        ),
+        # Round 3: an arrangement and a remaster are two steps, not one flag
+        (
+            c(title="Air (Arr. For Piano) (Remastered)", sample_rate=96000),
+            c(title="Air (Arr. For Piano)"),
+            ("library", "original/remaster"),
+        ),
+        (
+            c(title="Air (Arr. For Piano)", sample_rate=96000),
+            c(title="Air (Remastered)"),
+            ("library", "original/arrangement"),
+        ),
+        # Round 4: a bracket inside the label hid it
+        (
+            c(title="Air (Arr. For Piano [2024])", duration=330.0),
+            c(title="Air"),
+            ("library", "original/arrangement"),
+        ),
+        # Round 5: the label's word came after the inner bracket
+        (
+            c(title="Air (For Piano [2024] Arr.)", duration=330.0),
+            c(title="Air"),
+            ("library", "original/arrangement"),
+        ),
+        # ... and a word after a CLOSED bracket is outside it
+        (
+            c(title="Air (2024) The Arrangement", sample_rate=96000),
+            c(title="The Arrangement"),
+            ("review", "quality"),
+        ),
+        # Round 2: an unclosed title bracket ran on into the album's name
+        (
+            c(title="Song (Arr. For Piano)", duration=330.0),
+            c(title="Song (Original Mix", album="The Arrangement"),
+            ("library", "original/arrangement"),
+        ),
         (c(sample_rate=192000), c(), ("review", "quality")),
         (c(duration=202.0), c(), ("review", "length")),
         (c(duration=201.9), c(), ("tie", "")),
