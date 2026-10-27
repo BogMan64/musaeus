@@ -612,6 +612,17 @@ class TestOneCopyPerPiece:
         # section, and the title cannot always say which section it is.
         assert not self._found(ctx_dry, tmp_path, "Johann Sebastian Bach", title_a, title_b)
 
+    def test_an_improvisation_with_a_close_title_is_not_the_piece(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 9: the title score paired these (on main too).
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
+            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String "
+            "(Improvisation)",
+        )
+
     def test_an_improvisation_on_a_piece_is_not_the_piece(self, ctx_dry, tmp_path):
         assert not self._found(
             ctx_dry,

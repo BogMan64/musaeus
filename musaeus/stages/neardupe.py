@@ -188,8 +188,6 @@ _CATALOGUE_RE = re.compile(
 #: count as the same piece? = yes"). A medley, or a jazz improvisation on the
 #: piece (Bobby McFerrin's "Song For Amadeus"), is not.
 _NOT_THE_PIECE_RE = re.compile(r"\bimprovis|\bmedley", re.IGNORECASE)
-#: A medley is never one of the songs it holds (Codex review of #255).
-_MEDLEY_RE = re.compile(r"\bmedley\b", re.IGNORECASE)
 #: The sections of a Mass, each restarting its numbering at "I.": "Kyrie: I."
 #: and "Gloria: I." are two pieces (Codex review of #255).
 _MASS_SECTION_RE = re.compile(r"\b(kyrie|christe|gloria|credo|sanctus|benedictus|agnus)\b", re.I)
@@ -573,7 +571,11 @@ class NearDupeStage(BaseStage):
             if not piece and _is_live(dict(a)) and _is_live(dict(b)) and not _same_take(a, b):
                 continue
 
-            if bool(_MEDLEY_RE.search(a["title"])) != bool(_MEDLEY_RE.search(b["title"])):
+            # A medley is never one of the songs it holds, nor an improvisation
+            # the piece it is played on (Codex review of #255).
+            if bool(_NOT_THE_PIECE_RE.search(a["title"])) != bool(
+                _NOT_THE_PIECE_RE.search(b["title"])
+            ):
                 continue
 
             if frozenset((a["audio_hash"], b["audio_hash"])) in keep_both:
