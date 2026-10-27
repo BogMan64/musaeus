@@ -575,6 +575,17 @@ class TestOneCopyPerPiece:
             f"Orchestral Suite No. 3, BWV 1068 - II. Air {label}",
         )
 
+    @pytest.mark.parametrize("label", ["(Bearbeitung Für Klavier)", "(Arr. Myra Hess For Piano)"])
+    def test_a_shared_arrangement_label_names_no_movement(self, ctx_dry, tmp_path, label):
+        # Codex review of #255, round 15: the label's words were the only shared name.
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            f"BWV 1068 - II. Air {label}",
+            f"BWV 1068 - Movement 2: Gavotte {label}",
+        )
+
     def test_a_medley_is_not_the_piece(self, ctx_dry, tmp_path):
         assert not self._found(
             ctx_dry,

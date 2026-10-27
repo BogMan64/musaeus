@@ -237,14 +237,24 @@ def _items(title: str) -> list[str]:
     return list(dict.fromkeys(m.group(1).lstrip("0") for m in _ITEM_RE.finditer(title or "")))
 
 
+#: An arrangement label, to its closing bracket or the title's end: "(Arr. Myra
+#: Hess For Piano)" names the arranger, not the movement (Codex review of #255).
+_ARRANGEMENT_LABEL_RE = re.compile(
+    r"\b(?:arr|arranged|arrangement|trans|transcription|transcribed|adaptation|bearbeitung"
+    rf"|reduction|orchestration)\b[^{CLOSE}]*",
+    re.IGNORECASE,
+)
+
+
 def _movement_name(title: str) -> set[str]:
     """The words of a movement's own name, after its last marker: "II. Air On
     The G String (Arr. For Piano)" -> {"air", "string"}."""
     marks = list(_MOVEMENT_RE.finditer(title or ""))
     if not marks:
         return set()
+    tail = _ARRANGEMENT_LABEL_RE.sub(" ", title[marks[-1].end() :])
     # Brackets kept: "II. (Air)" and "II. (Bourrée)" are named (Codex review of #255).
-    tail = re.sub(rf"[{OPEN}{CLOSE}]", " ", title[marks[-1].end() :]).casefold()
+    tail = re.sub(rf"[{OPEN}{CLOSE}]", " ", tail).casefold()
     plain = "".join(
         ch for ch in unicodedata.normalize("NFD", tail) if not unicodedata.combining(ch)
     )
