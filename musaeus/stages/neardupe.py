@@ -51,7 +51,7 @@ try:
 except ImportError:
     _HAVE_RAPIDFUZZ = False
 
-from ..brackets import CLOSE, OPEN
+from ..brackets import BRACKETED, CLOSE, OPEN
 from ..canon import ArtistCanon
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
@@ -253,10 +253,16 @@ def _movement_name(title: str) -> set[str]:
     if not marks:
         return set()
     tail = _ARRANGEMENT_LABEL_RE.sub(" ", title[marks[-1].end() :])
-    # Brackets kept: "II. (Air)" and "II. (Bourrée)" are named (Codex review of #255).
-    tail = re.sub(rf"[{OPEN}{CLOSE}]", " ", tail).casefold()
+    # A bracket names the movement only when nothing outside one does: "II. (Air)"
+    # and "II. (Bourrée)" are named, "I. Prelude (Live In Berlin)" is only
+    # "Prelude" (Codex review of #255).
+    inside = re.findall(rf"[{OPEN}]([^{OPEN}{CLOSE}]*)", tail)
+    return _name_words(BRACKETED.sub(" ", tail)) or _name_words(inside[0] if inside else "")
+
+
+def _name_words(text: str) -> set[str]:
     plain = "".join(
-        ch for ch in unicodedata.normalize("NFD", tail) if not unicodedata.combining(ch)
+        ch for ch in unicodedata.normalize("NFD", text.casefold()) if not unicodedata.combining(ch)
     )
     return {w for w in re.findall(r"[^\W\d_]+", plain) if len(w) > 2 and w not in _NAME_STOP}
 

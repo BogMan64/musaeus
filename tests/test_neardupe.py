@@ -586,6 +586,21 @@ class TestOneCopyPerPiece:
             f"BWV 1068 - Movement 2: Gavotte {label}",
         )
 
+    @pytest.mark.parametrize(
+        ("title_a", "title_b"),
+        [
+            ("BWV 846 - I. Prelude (Live In Berlin)", "BWV 846 - I. Fugue (Live In Berlin)"),
+            (
+                "BWV 846 - I. Prelude In C Major (Recorded At Carnegie Hall)",
+                "BWV 846 - I. Fugue (Recorded At Carnegie Hall)",
+            ),
+            ("BWV 846 - I. (Prelude) (Live In Berlin)", "BWV 846 - I. (Fugue) (Live In Berlin)"),
+        ],
+    )
+    def test_a_shared_concert_label_names_no_movement(self, ctx_dry, tmp_path, title_a, title_b):
+        # Codex review of #255, round 16: "berlin" was the only shared name.
+        assert not self._found(ctx_dry, tmp_path, "Johann Sebastian Bach", title_a, title_b)
+
     def test_a_medley_is_not_the_piece(self, ctx_dry, tmp_path):
         assert not self._found(
             ctx_dry,
