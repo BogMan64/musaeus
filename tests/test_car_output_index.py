@@ -116,7 +116,7 @@ def test_first_occurrence_wins_matching_the_original_linear_scan(tmp_path: Path)
     the same deterministic way the old per-query scan did: first seen in
     rglob() enumeration order, not last."""
     out = tmp_path / "out"
-    first = _tagged(out / "A" / "first.m4a", "Same Artist", "Same Title")
+    _tagged(out / "A" / "first.m4a", "Same Artist", "Same Title")
     _tagged(out / "B" / "second.m4a", "Same Artist", "Same Title")
 
     def linear_scan(output_dir: Path, artist: str, title: str) -> Path | None:
@@ -130,7 +130,9 @@ def test_first_occurrence_wins_matching_the_original_linear_scan(tmp_path: Path)
 
     expected = linear_scan(out, "same artist", "same title")
     idx = bcl._index_output_by_tags(out)
-    assert idx[("same artist", "same title")] == expected == first
+    # rglob() order is the filesystem's, not A before B: CI listed B first.
+    assert expected is not None
+    assert idx[("same artist", "same title")] == expected
 
 
 def test_indexing_is_one_pass_not_a_scan_per_source(tmp_path: Path, monkeypatch) -> None:
