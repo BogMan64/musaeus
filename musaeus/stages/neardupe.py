@@ -249,6 +249,15 @@ _ARRANGEMENT_LABEL_RE = re.compile(
 )
 
 
+#: The parts of a title after its movement marker: "Prelude - Live In Berlin".
+_NAME_PART_RE = re.compile(r"\s[-\u2013\u2014]\s|[:;/]")
+#: A part holding one of these is a note on the recording, not a name.
+_RECORDING_NOTE = frozenset(
+    {"live", "concert", "recorded", "recording", "session", "remaster", "remastered"}
+    | {"version", "edit", "mix", "remix", "mono", "stereo", "bonus", "demo", "take"}
+)
+
+
 def _movement_name(title: str) -> set[str]:
     """The words of a movement's own name, after its last marker: "II. Air On
     The G String (Arr. For Piano)" -> {"air", "string"}."""
@@ -261,7 +270,14 @@ def _movement_name(title: str) -> set[str]:
     plain = "".join(
         ch for ch in unicodedata.normalize("NFD", tail.casefold()) if not unicodedata.combining(ch)
     )
-    return {w for w in re.findall(r"[^\W\d_]+", plain) if len(w) > 2 and w not in _NAME_STOP}
+    # The first part that is not a note on the recording names it: "Prelude -
+    # Live In Berlin" is only "Prelude" (Codex review of #255).
+    for part in _NAME_PART_RE.split(plain):
+        words = re.findall(r"[^\W\d_]+", part)
+        name = {w for w in words if len(w) > 2 and w not in _NAME_STOP}
+        if name and _RECORDING_NOTE.isdisjoint(words):
+            return name
+    return set()
 
 
 def _is_different_piece(title_a: str, title_b: str) -> bool:

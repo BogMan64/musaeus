@@ -601,6 +601,15 @@ class TestOneCopyPerPiece:
                 "BWV 846 - Movement 1 (Live In Berlin) (Fugue)",
             ),
             ("BWV 1068 - II. (Live In Berlin)", "BWV 1068 - Movement 2 (Live In Berlin) (Air)"),
+            # Round 19: the same note without brackets
+            (
+                "BWV 846 - I. Prelude In C Major - Live In Berlin",
+                "BWV 846 - I. Fugue - Live In Berlin",
+            ),
+            (
+                "BWV 846 - I. Prelude: Recorded At Carnegie Hall",
+                "BWV 846 - Movement 1: Fugue: Recorded At Carnegie Hall",
+            ),
         ],
     )
     def test_a_shared_concert_label_names_no_movement(self, ctx_dry, tmp_path, title_a, title_b):
