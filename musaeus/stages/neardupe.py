@@ -188,9 +188,11 @@ _CATALOGUE_RE = re.compile(
 #: count as the same piece? = yes"). A medley, or a jazz improvisation on the
 #: piece (Bobby McFerrin's "Song For Amadeus"), is not.
 _NOT_THE_PIECE_RE = re.compile(r"\bimprovis|\bmedley", re.IGNORECASE)
-#: A part of a movement is not the movement: a 75 s "Air (Excerpt)" never takes
-#: the shortcut to the full Air (Codex review of #255).
-_PART_OF_RE = re.compile(r"\bexcerpt|\bfragment", re.IGNORECASE)
+#: A part of a movement is not the movement: an "Air (Excerpt)" or "(Radio Edit)"
+#: never takes the shortcut to the full Air, at any length (Codex review of #255).
+_PART_OF_RE = re.compile(
+    r"\bexcerpt|\bfragment|\bedit\b|\babridged|\bshortened|\bshort version", re.IGNORECASE
+)
 #: The sections of a Mass, each restarting its numbering at "I.": "Kyrie: I."
 #: and "Gloria: I." are two pieces (Codex review of #255).
 _MASS_SECTION_RE = re.compile(r"\b(kyrie|christe|gloria|credo|sanctus|benedictus|agnus)\b", re.I)
