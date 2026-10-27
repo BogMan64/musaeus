@@ -200,7 +200,9 @@ def _get_pending_groups(conn) -> list[str]:
 # Markers of a reissued/reprocessed version rather than the original
 # release. Grey's rule (2026-08-21): a remaster and its original are the
 # SAME song for grouping purposes, but when one must be kept, "the
-# original trumps the remaster".
+# original trumps the remaster". An arrangement is not the original either:
+# Bach's "Air" for orchestra over its longer piano arrangement (Grey,
+# 2026-10-26: "A. Original"). "Arr" not "Trans": "Trans-Europe Express".
 _REISSUE_MARKERS: tuple[str, ...] = (
     "remaster",
     "remastered",
@@ -211,6 +213,12 @@ _REISSUE_MARKERS: tuple[str, ...] = (
     "deluxe edition",
     "expanded edition",
     "digital remaster",
+    "arr",
+    "arranged",
+    "arrangement",
+    "transcribed",
+    "transcription",
+    "bearbeitung",
 )
 _REISSUE_RE = re.compile(
     r"\b(?:"
@@ -259,7 +267,7 @@ def _labelled_live(m: dict) -> bool:
 
 
 def _is_reissue(m: dict) -> bool:
-    """True if this copy advertises itself as a remaster/reissue.
+    """True if this copy advertises itself as a remaster/reissue or an arrangement.
 
     Read from title AND album, because the marker lands in either
     depending on the source -- "A Monday Date (Remastered)" as a title,

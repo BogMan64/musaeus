@@ -39,6 +39,14 @@ def c(**kw):
         (c(), c(album="Unplugged", duration=230.0), ("review", "studio/live")),
         (c(title="Song (Remastered)", sample_rate=96000), c(), ("library", "original/remaster")),
         (c(), c(title="Song (2016 Remix)"), ("review", "original/remaster")),
+        # Bach "Air", 192 kHz both: the piano arrangement is 39 s longer, and Grey
+        # keeps the original scoring (2026-10-26: "A. Original")
+        (
+            c(title="BWV 1068 - II. Air On A G String (Arr. For Piano)", duration=330.8),
+            c(title="BWV 1068 - II. Air", duration=292.4),
+            ("library", "original/remaster"),
+        ),
+        (c(title="Largo (Transcribed For Guitar)"), c(), ("library", "original/remaster")),
         (c(sample_rate=192000), c(), ("review", "quality")),
         (c(duration=202.0), c(), ("review", "length")),
         (c(duration=201.9), c(), ("tie", "")),

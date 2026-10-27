@@ -18,7 +18,8 @@ answered yes to each reading:
                      joined to this rule 2026-10-05 so there is ONE rule)
   3. original        the original beats a remaster, remix or re-recording --
                      Grey's standing ruling ("the original trumps the
-                     remaster"), placed after studio/live: "keep this"
+                     remaster"), placed after studio/live: "keep this" --
+                     and an arrangement ("Arr. For Piano"; Grey, 2026-10-26)
   4. quality         SAMPLE RATE only. Bitrate between two ALAC copies of one
                      recording is noise; counting it would swap masters for
                      no audible gain (AC/DC "Big Gun", 2026-10-03)
