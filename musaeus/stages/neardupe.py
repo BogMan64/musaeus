@@ -234,10 +234,29 @@ def _is_different_piece(title_a: str, title_b: str) -> bool:
     return bool(ma and mb and ma != mb)
 
 
-def _movements(title: str) -> list[str]:
-    """Every movement marker in a title, in order, once: "Part 1 ... - II." is
-    ["1", "ii"], never just its first (Codex review of #255)."""
-    found = (next(g for g in m.groups() if g).lower() for m in _MOVEMENT_RE.finditer(title or ""))
+_MARKER_KIND = re.compile(r"movement|mvt|part|act|scene", re.IGNORECASE)
+_ROMAN_VALUE = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100}
+
+
+def _marker_number(marker: str) -> int:
+    """ "II", "ii" and "2" are one number (Codex review of #255)."""
+    if marker.isdigit():
+        return int(marker)
+    values = [_ROMAN_VALUE[ch] for ch in marker.lower()]
+    return sum(-v if v < nxt else v for v, nxt in zip(values, [*values[1:], 0], strict=True))
+
+
+def _movements(title: str) -> list[tuple[str, int]]:
+    """Every movement marker in a title as (kind, number), in order, once:
+    "Part 1 ... - II." is [("part", 1), ("movement", 2)], never just its first
+    (Codex review of #255). "II." and "Movement 2" are one movement; "Act 2"
+    is not, an act holding many pieces."""
+    found = []
+    for m in _MOVEMENT_RE.finditer(title or ""):
+        roman, number = m.groups()
+        word = None if roman else _MARKER_KIND.search(m.group(0))
+        kind = word.group(0).lower() if word else "movement"
+        found.append(("movement" if kind == "mvt" else kind, _marker_number(roman or number)))
     return list(dict.fromkeys(found))
 
 
@@ -249,7 +268,10 @@ def _same_piece(title_a: str, title_b: str) -> bool:
         return False
     ca = _catalogues(title_a)
     ma = _movements(title_a)
-    return bool(ca and ca == _catalogues(title_b) and ma and ma == _movements(title_b))
+    # A movement itself, not only an act, scene or part: two arias of "Act 1"
+    # are two pieces (Codex review of #255).
+    movement = any(kind == "movement" for kind, _ in ma)
+    return bool(ca and ca == _catalogues(title_b) and movement and ma == _movements(title_b))
 
 
 def _strip_title_qualifiers(s: str) -> str:

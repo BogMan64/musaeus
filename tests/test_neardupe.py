@@ -554,6 +554,26 @@ class TestOneCopyPerPiece:
             "Mozart: Sonata In F, K. 280/189e: II. Adagio",
         )
 
+    def test_two_arias_of_one_act_are_two_pieces(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 6: an act holds many pieces.
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "George Frideric Handel",
+            "Serse, HWV 40 - Act 1: Ombra mai fu",
+            "Handel: Serse, HWV 40, Act 1: Crude furie degl'orridi abissi",
+        )
+
+    def test_roman_and_arabic_movement_numbers_are_one_movement(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 6.
+        assert self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
+            "Suite For Orchestra, BWV 1068 - Movement 2: Air",
+        )
+
     def test_an_improvisation_on_a_piece_is_not_the_piece(self, ctx_dry, tmp_path):
         assert not self._found(
             ctx_dry,
