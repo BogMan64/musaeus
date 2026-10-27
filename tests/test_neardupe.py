@@ -628,6 +628,37 @@ class TestOneCopyPerPiece:
             durations=(75.0, 320.0),
         )
 
+    def test_a_catalogue_number_is_no_name(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 22: "BWV" was the only shared name word.
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "II. Air on the G String, BWV 1068",
+            "II. Gavotte for orchestra, BWV 1068",
+        )
+
+    def test_a_second_name_without_a_marker_is_a_second_movement(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 22: one marker, two movements named.
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "BWV 1068 - II. Air on the G String / Gavotte for orchestra",
+            "BWV 1068 - II. Air on the G String",
+        )
+
+    def test_a_tempo_change_is_one_movement(self, ctx_dry, tmp_path):
+        # The live Vivaldi "Summer": " - " joins one movement's tempos.
+        assert self._found(
+            ctx_dry,
+            tmp_path,
+            "Antonio Vivaldi",
+            "Vivaldi: The Four Seasons: Summer, Violin Concerto In G Minor, RV 315, Op. 8 No. 2: "
+            "I. Allegro Non Molto - Allegro",
+            "Concerto In Sol Minore Op.8 No.2 Rv315, F.I/23, L'Estate - Summer: I. Allegro Non Molto",
+        )
+
     def test_a_track_of_two_movements_takes_no_shortcut(self, ctx_dry, tmp_path):
         # Codex review of #255, round 20: the name was read after the last marker
         # only, so two tracks ending in "II. Fugue" paired.

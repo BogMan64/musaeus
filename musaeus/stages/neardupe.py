@@ -267,12 +267,22 @@ def _movement_name(title: str) -> set[str]:
     # A bracket never names it: "(Live In Berlin)" is no movement, and "II. (Air)"
     # counts as unnamed, so it takes no shortcut (Codex review of #255).
     tail = BRACKETED.sub(" ", _ARRANGEMENT_LABEL_RE.sub(" ", title[marks[-1].end() :]))
+    tail = _CATALOGUE_RE.sub(" ", tail)  # "Air, BWV 1068": "BWV" is no name
     plain = "".join(
         ch for ch in unicodedata.normalize("NFD", tail.casefold()) if not unicodedata.combining(ch)
     )
-    # The first part that is not a note on the recording names it: "Prelude -
-    # Live In Berlin" is only "Prelude" (Codex review of #255).
-    for part in _NAME_PART_RE.split(plain):
+    # A second name across "/" or ";", "II. Air / Gavotte", is a second movement,
+    # so the track counts as unnamed; " - " and ":" join one movement's tempos,
+    # "Allegro Non Molto - Allegro" (Codex review of #255).
+    if sum(bool(_first_name(p)) for p in re.split(r"[/;]", plain)) > 1:
+        return set()
+    return _first_name(plain)
+
+
+def _first_name(text: str) -> set[str]:
+    """The first part that is not a note on the recording: "prelude - live in
+    berlin" is only {"prelude"} (Codex review of #255)."""
+    for part in _NAME_PART_RE.split(text):
         words = re.findall(r"[^\W\d_]+", part)
         name = {w for w in words if len(w) > 2 and w not in _NAME_STOP}
         if name and _RECORDING_NOTE.isdisjoint(words):
