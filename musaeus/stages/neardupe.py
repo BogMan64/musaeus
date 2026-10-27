@@ -51,7 +51,7 @@ try:
 except ImportError:
     _HAVE_RAPIDFUZZ = False
 
-from ..brackets import CLOSE, OPEN
+from ..brackets import BRACKETED, CLOSE, OPEN
 from ..canon import ArtistCanon
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
@@ -162,8 +162,9 @@ def _same_take(a: dict, b: dict) -> bool:
 # grouped. Exactly the case the guard existed for.
 _WORK_RE = re.compile(r"\b(?:No\.|Op\.|BWV|HWV|RV|K\.|D\.|Hob\.)\s*(\d+[a-z]?)", re.IGNORECASE)
 _MOVEMENT_RE = re.compile(
-    r"(?:^|[\s\-–—:,(\[])(?:([IVXLC]{1,5})\.(?=\s)|"
-    r"(?:Movement|Mvt\.?|Part|Act|Scene)\s*(\d+|[IVXLC]{1,5})\b)",
+    # "II.Allegro" too, but not "I.G.Y" or "Fake I.D." (Codex review of #255).
+    r"(?:^|[\s\-–—:,(\[])(?:([IVXLC]{1,5})\.(?=\s|[^\W\d_]{2})|"
+    r"(?:Movement|Mvt\.?|Part|Act|Scene|Variation|Var\.)\s*(\d+|[IVXLC]{1,5})\b)",
     re.IGNORECASE,
 )
 
@@ -178,19 +179,239 @@ def _classical_id(raw_title: str) -> tuple[str | None, str | None]:
     return work, (mov.lower() if mov else None)
 
 
+#: A catalogue number names one work of one composer: "BWV 1068", "RV 293",
+#: "K. 550" and "KV 550" alike. "No." and "Op." do not -- every composer has a
+#: "Symphony No. 5". Haydn's carries its series: "Hob. XVI:52" (Codex review of #255).
+_CATALOGUE_RE = re.compile(
+    r"\b(BWV|HWV|RV|KV|K\.|D\.|Hob\.?)\.?\s*"
+    r"(\d+[a-z]?(?:(?:\s*/\s*|-)\d+[a-z]?)*|[IVXL]+[a-z]?\s*:\s*\d+[a-z]?)",
+    re.IGNORECASE,
+)
+#: An arrangement is the same piece (Grey, 2026-10-26: "does an arrangement
+#: count as the same piece? = yes"). A medley, or a jazz improvisation on the
+#: piece (Bobby McFerrin's "Song For Amadeus"), is not.
+_NOT_THE_PIECE_RE = re.compile(r"\bimprovis|\bmedley", re.IGNORECASE)
+#: A part of a movement is not the movement: an "Air (Excerpt)" or "(Radio Edit)"
+#: never takes the shortcut to the full Air, at any length (Codex review of #255).
+_PART_OF_RE = re.compile(
+    r"\bexcerpt|\bfragment|\bedit(?:ed)?\b|\babridged|\bshortened|\b(?:short|radio|single) version"
+    r"|\bextract|\bhighlight|\bpartial|\babbreviat|\btruncat|\bselection|\bsnippet|\bpreview"
+    r"|\bcut\b",
+    re.IGNORECASE,
+)
+#: The sections of a Mass, each restarting its numbering at "I.": "Kyrie: I."
+#: and "Gloria: I." are two pieces (Codex review of #255).
+_MASS_SECTION_RE = re.compile(r"\b(kyrie|christe|gloria|credo|sanctus|benedictus|agnus)\b", re.I)
+#: A vocal work or one of its sections. Masses, Requiems, cantatas and the like
+#: restart their numbering in every section, and a title cannot always say
+#: which ("Offertorium: I." and "Sequentia: I."; Codex review of #255): the
+#: shortcut is for instrumental works, numbered once per work.
+_VOCAL_WORK_RE = re.compile(
+    r"\b(?:mass|messe|missa|requiem|cantata|kantate|oratorio|oratorium|passion|vespers?"
+    r"|magnificat|opera|motet|motette|anthem|te deum|stabat|psalm|introitus|kyrie|christe"
+    r"|gloria|credo|sanctus|benedictus|agnus|sequentia|offertorium|communio|lacrimosa"
+    r"|chorus|choral|aria|recitative|recitativo)\b",
+    re.IGNORECASE,
+)
+#: "No. 1" and "No. 3" of one catalogue number are two items of one work.
+#: "No. 3", "No. III" and "Nr. 3" are one item (Codex review of #255).
+_ITEM_RE = re.compile(r"\bN[or]\.\s*(\d+|[IVXLC]{1,5}\b)", re.IGNORECASE)
+#: Words no movement is named by: articles, and how a copy was made ("- Live",
+#: "Remastered") -- a shared "Live" paired two Mass sections (Codex review of #255).
+_NAME_STOP = frozenset(
+    {"the", "and", "for", "von", "der", "die", "das", "und", "del", "les", "des"}
+    | {"live", "remaster", "remastered", "version", "edit", "mono", "stereo", "mix", "remix"}
+    | {"bonus", "demo", "take", "recording", "recorded", "concert", "session", "excerpt"}
+    # Placeholders and arrangement labels name no movement: "[Without
+    # Indication]", "(Arr. For Piano)".
+    | {"without", "indication", "arr", "arranged", "arrangement", "trans", "transcription"}
+    | {"transcribed", "adaptation", "bearbeitung", "reduction", "orchestration", "solo"}
+    | {"piano", "violin", "cello", "guitar", "flute", "organ", "harpsichord", "orchestra"}
+    | {"ensemble", "recorder", "hands", "four", "two", "voices", "voice", "strings"}
+)
+#: A key names no movement: "Prelude In C Major", "Fugue In C Major" (CodeRabbit, #255).
+_KEY_WORDS = frozenset(
+    {"major", "minor", "dur", "moll", "sharp", "flat", "majeur", "mineur"}
+    | {"maggiore", "minore", "mayor", "menor"}
+)
+#: Tempo and its qualifiers: a shared "Allegro" alone joins no two names.
+_TEMPO_WORDS = frozenset(
+    {"grave", "largo", "larghetto", "lento", "adagio", "adagietto", "andante", "andantino"}
+    | {"moderato", "allegretto", "allegro", "vivace", "vivo", "presto", "prestissimo"}
+    | {"maestoso", "sostenuto", "cantabile", "molto", "assai", "poco", "meno", "piu", "non"}
+    | {"troppo", "con", "brio", "moto", "tempo"}
+)
+
+
+def _catalogues(title: str) -> list[tuple[str, str]]:
+    """Every catalogue number in a title, in order, once: one track can hold
+    two works ("BWV 1068 - Air / BWV 1067 - Badinerie"; Codex review of #255),
+    and a title written out twice names its work twice."""
+    found = (
+        (
+            m.group(1).lower().rstrip(".").replace("kv", "k"),
+            re.sub(r"\s", "", m.group(2).lower()).replace("-", "/"),
+        )
+        for m in _CATALOGUE_RE.finditer(title or "")
+    )
+    return list(dict.fromkeys(found))
+
+
+def _items(title: str) -> list[int]:
+    return list(dict.fromkeys(_marker_number(m.group(1)) for m in _ITEM_RE.finditer(title or "")))
+
+
+#: An arrangement label, to its closing bracket or the title's end: "(Arr. Myra
+#: Hess For Piano)" names the arranger, not the movement (Codex review of #255).
+_ARRANGEMENT_LABEL_RE = re.compile(
+    r"\b(?:arr|arranged|arrangement|trans|transcription|transcribed|adaptation|bearbeitung"
+    rf"|reduction|orchestration)\b[^{CLOSE}]*",
+    re.IGNORECASE,
+)
+
+
+#: The parts of a title after its movement marker: "Prelude - Live In Berlin".
+_NAME_PART_RE = re.compile(r"\s[-\u2013\u2014]\s|[:;/]")
+#: A part holding one of these is a note on the recording, not a name.
+_RECORDING_NOTE = frozenset(
+    {"live", "concert", "recorded", "recording", "session", "remaster", "remastered"}
+    | {"version", "edit", "mix", "remix", "mono", "stereo", "bonus", "demo", "take"}
+)
+
+
+def _movement_name(title: str) -> set[str]:
+    """The words of a movement's own name, after its last marker: "II. Air On
+    The G String (Arr. For Piano)" -> {"air", "string"}."""
+    marks = list(_MOVEMENT_RE.finditer(title or ""))
+    if not marks:
+        return set()
+    # A bracket never names it: "(Live In Berlin)" is no movement, and "II. (Air)"
+    # counts as unnamed, so it takes no shortcut (Codex review of #255).
+    tail = BRACKETED.sub(" ", _ARRANGEMENT_LABEL_RE.sub(" ", title[marks[-1].end() :]))
+    tail = _CATALOGUE_RE.sub(" ", tail)  # "Air, BWV 1068": "BWV" is no name
+    plain = "".join(
+        ch for ch in unicodedata.normalize("NFD", tail.casefold()) if not unicodedata.combining(ch)
+    )
+    # A second name across "/" or ";", "II. Air / Gavotte", is a second movement,
+    # so the track counts as unnamed; " - " and ":" join one movement's tempos,
+    # "Allegro Non Molto - Allegro" (Codex review of #255).
+    # A key still counts here: "Andantino / Minore" is two sections (CodeRabbit,
+    # #255), and so does a recording note: "Air / Gavotte Live" (Codex, #255).
+    if sum(bool(_name_words(p, _NAME_STOP)) for p in re.split(r"[/;]", plain)) > 1:
+        return set()
+    return _first_name(plain, _NAME_STOP | _KEY_WORDS)
+
+
+def _name_words(text: str, stop: frozenset[str]) -> set[str]:
+    return {w for w in re.findall(r"[^\W\d_]+", text) if len(w) > 2 and w not in stop}
+
+
+def _first_name(text: str, stop: frozenset[str]) -> set[str]:
+    """The first part that is not a note on the recording: "prelude - live in
+    berlin" is only {"prelude"} (Codex review of #255)."""
+    for part in _NAME_PART_RE.split(text):
+        name = _name_words(part, stop)
+        if name and _RECORDING_NOTE.isdisjoint(re.findall(r"[^\W\d_]+", part)):
+            return name
+    return set()
+
+
 def _is_different_piece(title_a: str, title_b: str) -> bool:
     """True when two titles name different works, or different movements.
 
     Conservative on purpose: a difference is only asserted when BOTH sides
     carry the identifier being compared. One side having a movement marker
     and the other not is the ordinary "Yesterday" vs "Yesterday (Live)"
-    case, which the existing stripping already handles.
+    case, which the existing stripping already handles. A catalogue number on
+    both sides outranks the first identifier: "Concerto No. 3, RV 293" and
+    "RV 293, Op. 8 No. 3" are one work.
     """
-    wa, ma = _classical_id(title_a)
-    wb, mb = _classical_id(title_b)
-    if wa and wb and wa != wb:
+    wa, _ = _classical_id(title_a)
+    wb, _ = _classical_id(title_b)
+    ca, cb = _catalogues(title_a), _catalogues(title_b)
+    if ca and cb:
+        # "No. 1" and "No. 3" of BWV 232 are two items (Codex review of #255).
+        na, nb = _items(title_a), _items(title_b)
+        if ca != cb or (na and nb and na != nb):
+            return True
+    elif wa and wb and wa != wb:
         return True
+    sa = {m.lower() for m in _MASS_SECTION_RE.findall(title_a or "")}
+    sb = {m.lower() for m in _MASS_SECTION_RE.findall(title_b or "")}
+    if sa and sb and sa != sb:
+        return True
+    # Every marker, not only the first: "Part 1 - I." and "Part 1 - II." differ
+    # (Codex review of #255), and so does "VIII. Hornpipe" from "VII. Bourrée -
+    # VIII. Hornpipe", one track holding two movements.
+    ma, mb = _movements(title_a), _movements(title_b)
     return bool(ma and mb and ma != mb)
+
+
+#: A variation is its own piece, never a movement: "Variation 1" is not
+#: "Variation 2" (Codex review of #255).
+_MARKER_KIND = re.compile(r"movement|mvt|part|act|scene|variation|var", re.IGNORECASE)
+_ROMAN_VALUE = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100}
+
+
+def _marker_number(marker: str) -> int:
+    """ "II", "ii" and "2" are one number (Codex review of #255)."""
+    if marker.isdigit():
+        return int(marker)
+    values = [_ROMAN_VALUE[ch] for ch in marker.lower()]
+    return sum(-v if v < nxt else v for v, nxt in zip(values, [*values[1:], 0], strict=True))
+
+
+def _movement_markers(title: str) -> list[tuple[str, int]]:
+    """Every movement marker in a title as (kind, number), in order: "Part 1 ...
+    - II." is [("part", 1), ("movement", 2)], never just its first (Codex review
+    of #255). "II." and "Movement 2" are one movement; "Act 2" is not, an act
+    holding many pieces."""
+    found = []
+    for m in _MOVEMENT_RE.finditer(title or ""):
+        roman, number = m.groups()
+        word = None if roman else _MARKER_KIND.search(m.group(0))
+        kind = word.group(0).lower() if word else "movement"
+        kind = {"mvt": "movement", "var": "variation"}.get(kind, kind)
+        found.append((kind, _marker_number(roman or number)))
+    return found
+
+
+def _movements(title: str) -> list[tuple[str, int]]:
+    """The movement markers of a title, each once."""
+    return list(dict.fromkeys(_movement_markers(title)))
+
+
+def _same_piece(title_a: str, title_b: str) -> bool:
+    """One movement of one work in two wordings: the same catalogue number and
+    the same movement markers, all written on both sides (Grey, 2026-10-24:
+    one copy per classical piece)."""
+    if any(
+        rx.search(title or "")
+        for rx in (_NOT_THE_PIECE_RE, _VOCAL_WORK_RE, _PART_OF_RE)
+        for title in (title_a, title_b)
+    ):
+        return False
+    ca = _catalogues(title_a)
+    ma = _movements(title_a)
+    # One movement itself, not only an act, scene or part: two arias of "Act 1"
+    # are two pieces. A track of two movements is named after its last one
+    # only, so "I. Prelude / II. Fugue" -- or "/ I. Fugue" -- never takes the
+    # shortcut (Codex review of #255).
+    movement = all(
+        sum(kind == "movement" for kind, _ in _movement_markers(t)) == 1 for t in (title_a, title_b)
+    )
+    if not (ca and ca == _catalogues(title_b) and movement and ma == _movements(title_b)):
+        return False
+    # Both movements named, sharing a word of the name: a Mass restarts at "I."
+    # in every section, and "Kyrie eleison" is not "Gloria in excelsis". An
+    # unnamed one ("I. [Without Indication]") would pair with every name and
+    # join two different pieces through itself (Codex review of #255).
+    na, nb = _movement_name(title_a), _movement_name(title_b)
+    # Both named beyond a tempo: share that name, "Prelude Allegro" is not
+    # "Fugue Allegro"; "Largo" alone still meets "Largo E Pianissimo" (CodeRabbit, #255).
+    if na - _TEMPO_WORDS and nb - _TEMPO_WORDS:
+        na, nb = na - _TEMPO_WORDS, nb - _TEMPO_WORDS
+    return bool(na & nb)
 
 
 def _strip_title_qualifiers(s: str) -> str:
@@ -332,6 +553,12 @@ class NearDupeStage(BaseStage):
 
         cfg = ctx.config
         artist_canon = ArtistCanon(cfg.meta_dir / "artist_canon.tsv")
+        # The catalogue shortcut is for rows filed under their composer, the
+        # way albumart recognises one: a performer's bucket can hold Mozart's
+        # K. 545 and Scarlatti's K. 545 (Codex review of #255).
+        from .classical_composer import CANON_FILENAME, load_composer_canon
+
+        composers = set(load_composer_canon(cfg.meta_dir / CANON_FILENAME).values())
 
         # Load all catalogued rows
         rows = ctx.conn.execute(
@@ -395,6 +622,10 @@ class NearDupeStage(BaseStage):
             and all(r["status"] == "keep" and r["audio_hash"] for r in rs)
             and len({r["audio_hash"] for r in rs}) == 2
         }
+        # A recording a person kept beside another never takes the catalogue
+        # shortcut: a third copy paired with each of the two let the resolver
+        # move one of them (Codex review of #255).
+        kept_by_person: set[str] = set().union(*keep_both)
 
         # Bucket tracks by canonical artist
         artist_buckets: dict[str, list[dict]] = {}
@@ -443,7 +674,29 @@ class NearDupeStage(BaseStage):
             # The resolver's own rule, title AND album: read from the title
             # alone, "Unplugged" and "24 Nights (Live)" were one song, and one
             # live recording moved to review (review of #86, finding 5).
-            if _is_live(dict(a)) and _is_live(dict(b)) and not _same_take(a, b):
+            # One movement of one work, filed under its composer: one copy per
+            # piece, live or not (Grey, 2026-10-24).
+            da, db = a["duration"] or 0, b["duration"] or 0
+            piece = (
+                a["audio_hash"] not in kept_by_person
+                and b["audio_hash"] not in kept_by_person
+                and a["artist"].strip() in composers
+                and b["artist"].strip() in composers
+                # A copy under half the other's length is a cut, not the piece: a
+                # 75 s "Air (Radio Edit)" beside the 320 s Air. An unknown length
+                # could be either, so it takes no shortcut (Codex review of #255).
+                and min(da, db) > 0
+                and 2 * min(da, db) >= max(da, db)
+                and _same_piece(a["title"], b["title"])
+            )
+            if not piece and _is_live(dict(a)) and _is_live(dict(b)) and not _same_take(a, b):
+                continue
+
+            # A medley is never one of the songs it holds, nor an improvisation
+            # the piece it is played on (Codex review of #255).
+            if bool(_NOT_THE_PIECE_RE.search(a["title"])) != bool(
+                _NOT_THE_PIECE_RE.search(b["title"])
+            ):
                 continue
 
             if frozenset((a["audio_hash"], b["audio_hash"])) in keep_both:
@@ -468,7 +721,7 @@ class NearDupeStage(BaseStage):
                 fuzz.ratio(title_a, bare_b),
                 fuzz.ratio(bare_a, bare_b),
             )
-            if score < TITLE_THRESHOLD:
+            if score < TITLE_THRESHOLD and not piece:
                 # The same song with and without its guest named: "Smooth (feat.
                 # Rob Thomas)" and "Smooth" (Grey, 2026-10-12: the same song).
                 # Only at one length -- "Stay With Me (With The Royal
@@ -488,13 +741,17 @@ class NearDupeStage(BaseStage):
                 if bare < TITLE_THRESHOLD:
                     continue
                 score = bare
-            elif _is_live(dict(a)) != _is_live(dict(b)) and (
-                abs((a["duration"] or 0) - (b["duration"] or 0)) > _SAME_TAKE_SECONDS
-                and fuzz.ratio(
-                    _normalise(a["title"], strip_qualifiers=True, fold_and=False),
-                    _normalise(b["title"], strip_qualifiers=True, fold_and=False),
+            elif (
+                not piece
+                and _is_live(dict(a)) != _is_live(dict(b))
+                and (
+                    abs((a["duration"] or 0) - (b["duration"] or 0)) > _SAME_TAKE_SECONDS
+                    and fuzz.ratio(
+                        _normalise(a["title"], strip_qualifiers=True, fold_and=False),
+                        _normalise(b["title"], strip_qualifiers=True, fold_and=False),
+                    )
+                    < TITLE_THRESHOLD
                 )
-                < TITLE_THRESHOLD
             ):
                 # Matched only because "&" is "and" now, one side live, at
                 # another length: a live take and a studio one (Stray Cats
