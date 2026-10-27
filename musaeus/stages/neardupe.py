@@ -191,6 +191,17 @@ _NOT_THE_PIECE_RE = re.compile(r"\bimprovis|\bmedley", re.IGNORECASE)
 #: The sections of a Mass, each restarting its numbering at "I.": "Kyrie: I."
 #: and "Gloria: I." are two pieces (Codex review of #255).
 _MASS_SECTION_RE = re.compile(r"\b(kyrie|christe|gloria|credo|sanctus|benedictus|agnus)\b", re.I)
+#: A vocal work or one of its sections. Masses, Requiems, cantatas and the like
+#: restart their numbering in every section, and a title cannot always say
+#: which ("Offertorium: I." and "Sequentia: I."; Codex review of #255): the
+#: shortcut is for instrumental works, numbered once per work.
+_VOCAL_WORK_RE = re.compile(
+    r"\b(?:mass|messe|missa|requiem|cantata|kantate|oratorio|oratorium|passion|vespers?"
+    r"|magnificat|opera|motet|motette|anthem|te deum|stabat|psalm|introitus|kyrie|christe"
+    r"|gloria|credo|sanctus|benedictus|agnus|sequentia|offertorium|communio|lacrimosa"
+    r"|chorus|choral|aria|recitative|recitativo)\b",
+    re.IGNORECASE,
+)
 #: "No. 1" and "No. 3" of one catalogue number are two items of one work.
 _ITEM_RE = re.compile(r"\bNo\.\s*(\d+)", re.IGNORECASE)
 #: Words no movement is named by: articles, and how a copy was made ("- Live",
@@ -294,7 +305,11 @@ def _same_piece(title_a: str, title_b: str) -> bool:
     """One movement of one work in two wordings: the same catalogue number and
     the same movement markers, all written on both sides (Grey, 2026-10-24:
     one copy per classical piece)."""
-    if _NOT_THE_PIECE_RE.search(title_a or "") or _NOT_THE_PIECE_RE.search(title_b or ""):
+    if any(
+        rx.search(title or "")
+        for rx in (_NOT_THE_PIECE_RE, _VOCAL_WORK_RE)
+        for title in (title_a, title_b)
+    ):
         return False
     ca = _catalogues(title_a)
     ma = _movements(title_a)

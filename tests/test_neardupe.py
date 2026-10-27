@@ -658,6 +658,25 @@ class TestOneCopyPerPiece:
         ctx_dry.conn.commit()
         assert NearDupeStage().execute(ctx_dry).files_changed == 0
 
+    @pytest.mark.parametrize(
+        ("title_a", "title_b"),
+        [
+            (  # Codex review of #255, round 12: sections restart at "I.".
+                "Requiem In D Minor, K. 626 - Offertorium: I. (Domine Jesu Christe)",
+                "Requiem In D Minor, K. 626 - Sequentia: I. (Dies Irae)",
+            ),
+            (
+                "Cantata BWV 147 - I. Herz und Mund und Tat und Leben",
+                "Herz Und Mund, BWV 147: I. Chorus",
+            ),
+        ],
+    )
+    def test_a_vocal_work_never_takes_the_shortcut(self, ctx_dry, tmp_path, title_a, title_b):
+        # Masses, Requiems, cantatas and the like restart their numbering in
+        # each section; their titles cannot always say which section it is.
+        artist = "Wolfgang Amadeus Mozart" if "K. 626" in title_a else "Johann Sebastian Bach"
+        assert not self._found(ctx_dry, tmp_path, artist, title_a, title_b)
+
     def test_an_improvisation_on_a_piece_is_not_the_piece(self, ctx_dry, tmp_path):
         assert not self._found(
             ctx_dry,
