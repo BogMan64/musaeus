@@ -69,6 +69,12 @@ def c(**kw):
             c(title="Air (Remastered)"),
             ("library", "original/arrangement"),
         ),
+        # Round 4: a bracket inside the label hid it
+        (
+            c(title="Air (Arr. For Piano [2024])", duration=330.0),
+            c(title="Air"),
+            ("library", "original/arrangement"),
+        ),
         # Round 2: an unclosed title bracket ran on into the album's name
         (
             c(title="Song (Arr. For Piano)", duration=330.0),

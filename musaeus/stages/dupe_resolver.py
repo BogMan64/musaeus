@@ -221,12 +221,11 @@ _REISSUE_RE = re.compile(
 )
 # An arrangement is not the original either: Bach's "Air" for orchestra over
 # its longer piano arrangement (Grey, 2026-10-26: "A. Original"). Read inside
-# a closed bracket only, "(Arr. For Piano)": a song may be NAMED "The
+# a bracket only, "(Arr. For Piano [2024])": a song may be NAMED "The
 # Arrangement" (Codex review of #256). "Arr" not "Trans": "Trans-Europe Express".
 _ARRANGED_RE = re.compile(
-    rf"[{OPEN}][^{OPEN}{CLOSE}]*"
-    r"\b(?:arr|arranged|arrangement|transcribed|transcription|bearbeitung)\b"
-    rf"[^{OPEN}{CLOSE}]*[{CLOSE}]",
+    rf"[{OPEN}][^{CLOSE}]*"
+    r"\b(?:arr|arranged|arrangement|transcribed|transcription|bearbeitung)\b",
     re.IGNORECASE,
 )
 
