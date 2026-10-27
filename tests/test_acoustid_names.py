@@ -433,7 +433,8 @@ def test_an_answer_from_the_ledger_is_still_paired(tmp_path, monkeypatch):
     _answered_in_library(ctx, "Roberta Flack - Where Is The Love.m4a", "rec-1", **kw)
     _untagged(ctx, "Roberta Flack - Where Is The Love (2).m4a", **kw)
     _in_ledger(ctx, "Roberta Flack - Where Is The Love (2).m4a", "rec-1")
-    AcousticIDStage().run(ctx)
+    result = AcousticIDStage().run(ctx)
+    assert any("1 answer(s) from the fingerprint ledger" in n for n in result.notes), result.notes
     pending = ctx.conn.execute(
         "SELECT COUNT(DISTINCT group_id) FROM duplicates "
         "WHERE duplicate_type = 'ACOUSTIC' AND status = 'pending'"

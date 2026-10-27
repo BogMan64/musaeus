@@ -1002,6 +1002,11 @@ class AcousticIDStage(BaseStage):
         )
         if reused:
             result.notes.append(f"  {reused} fingerprint(s) reused from a previous run.")
+        if answered_before:
+            result.notes.append(
+                f"  {len(answered_before)} answer(s) from the fingerprint ledger compared "
+                "for pairs, not asked again."
+            )
         if no_match:
             result.notes.append(f"  {no_match} file(s) answered with no confident match.")
         if unavailable:
