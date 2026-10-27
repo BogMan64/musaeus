@@ -641,6 +641,12 @@ class TestOneCopyPerPiece:
             durations=(75.0, 320.0),
         )
 
+    def test_a_dotted_catalogue_number_is_read(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 25: "BWV. 1068" was no catalogue number.
+        assert not self._found(
+            ctx_dry, tmp_path, "Johann Sebastian Bach", "BWV. 1068 - II. Air", "BWV 1067 - II. Air"
+        )
+
     def test_a_catalogue_number_is_no_name(self, ctx_dry, tmp_path):
         # Codex review of #255, round 22: "BWV" was the only shared name word.
         assert not self._found(
