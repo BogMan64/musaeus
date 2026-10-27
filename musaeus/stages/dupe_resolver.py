@@ -225,9 +225,9 @@ _REISSUE_RE = re.compile(
 # shortcut: a mix year before 1990 is read as the original mix ("1965 Stereo
 # Mix"); upgrade if an older new mix turns up.
 _REMIX_RE = re.compile(
-    r"(?<!original\s)\b(?:re-?mix(?:ed)?|(?:new|199\d|20\d\d)\s+(?:stereo\s+|mono\s+)?mix)\b",
-    re.IGNORECASE,
+    r"\b(?:re-?mix(?:ed)?|(?:new|199\d|20\d\d)\s+(?:stereo\s+|mono\s+)?mix)\b", re.IGNORECASE
 )
+_ORIGINAL_RE = re.compile(r"\boriginal\b", re.IGNORECASE)
 # An arrangement is not the original either: Bach's "Air" for orchestra over
 # its longer piano arrangement (Grey, 2026-10-26: "A. Original"). Read inside
 # a bracket only, "(Arr. For Piano)": a song may be NAMED "The Arrangement"
@@ -291,9 +291,29 @@ def _is_remix(m: dict) -> bool:
     """True if this copy's title or album says it is a new mix.
 
     Title and album apart: a title "Original" must not hide an album "Remixed"
-    (Codex review of #258).
+    (Codex review of #258). "Original" in the marker's own label says it is the
+    original mix, "(Original (Re-Mix))"; a song NAMED "Original Sin" can still
+    be remixed.
     """
-    return any(_REMIX_RE.search(m.get(k) or "") for k in ("title", "album"))
+    for text in (m.get("title") or "", m.get("album") or ""):
+        for hit in _REMIX_RE.finditer(text):
+            if not _ORIGINAL_RE.search(_label_before(text, hit.start())):
+                return True
+    return False
+
+
+def _label_before(text: str, end: int) -> str:
+    """The label a marker at *end* sits in, up to the marker: from the outermost
+    bracket still open there, else from the last " - "."""
+    depth, start = 0, 0
+    for i, ch in enumerate(text[:end]):
+        if re.fullmatch(rf"[{OPEN}]", ch):
+            if not depth:
+                start = i
+            depth += 1
+        elif re.fullmatch(rf"[{CLOSE}]", ch):
+            depth = max(depth - 1, 0)
+    return text[start:end] if depth else text[:end].rsplit(" - ", 1)[-1]
 
 
 def _is_arranged(m: dict) -> bool:

@@ -55,6 +55,14 @@ def c(**kw):
         (c(title="Song (1965 Stereo Mix)"), c(), ("tie", "")),
         (c(title="Song (Original 1973 Stereo Mix)"), c(), ("tie", "")),
         (c(title="Song - Original Re-Mix (Stereo)"), c(), ("tie", "")),
+        # "Original" in the same label, however nested (Codex review of #258, round 2) ...
+        (c(title="Song (Original (Re-Mix))"), c(), ("tie", "")),
+        # ... and only there: a song NAMED "Original Sin" can be remixed
+        (
+            c(title="Original Sin (2019 Remix)"),
+            c(title="Original Sin"),
+            ("library", "original/remaster"),
+        ),
         # "Original" in the title never hides "Remixed" in the album (Codex review of #258)
         (
             c(title="Original (Remastered)"),
