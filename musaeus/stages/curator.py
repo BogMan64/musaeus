@@ -26,7 +26,6 @@ Rules:
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 from pathlib import Path
 
@@ -59,11 +58,6 @@ _COMMIT_EVERY = 100
 # diverged by 2026-09-05 -- organize.py, which names folders, held
 # only 6 of the 13 -- so it lives in one place now.
 _PROTECTED_ARTIST_NAMES: frozenset[str] = PROTECTED_ARTIST_NAMES
-
-_FEAT_RE = re.compile(
-    r"\s+(?:feat\.?|featuring|ft\.?|with|duet with|vs\.?|versus)\s+",
-    re.IGNORECASE,
-)
 
 
 def _primary_artist(
