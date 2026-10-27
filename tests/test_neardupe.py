@@ -623,6 +623,16 @@ class TestOneCopyPerPiece:
             "(Improvisation)",
         )
 
+    def test_a_shared_live_suffix_is_no_shared_movement_name(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 10: "Live" was the only word in common.
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "Mass In B Minor, BWV 232: I. Lord Have Mercy Upon Us - Live",
+            "Bach: Mass In B Minor, BWV 232: I. Glory Be To God On High - Live",
+        )
+
     def test_an_improvisation_on_a_piece_is_not_the_piece(self, ctx_dry, tmp_path):
         assert not self._found(
             ctx_dry,

@@ -193,8 +193,12 @@ _NOT_THE_PIECE_RE = re.compile(r"\bimprovis|\bmedley", re.IGNORECASE)
 _MASS_SECTION_RE = re.compile(r"\b(kyrie|christe|gloria|credo|sanctus|benedictus|agnus)\b", re.I)
 #: "No. 1" and "No. 3" of one catalogue number are two items of one work.
 _ITEM_RE = re.compile(r"\bNo\.\s*(\d+)", re.IGNORECASE)
+#: Words no movement is named by: articles, and how a copy was made ("- Live",
+#: "Remastered") -- a shared "Live" paired two Mass sections (Codex review of #255).
 _NAME_STOP = frozenset(
     {"the", "and", "for", "von", "der", "die", "das", "und", "del", "les", "des"}
+    | {"live", "remaster", "remastered", "version", "edit", "mono", "stereo", "mix", "remix"}
+    | {"bonus", "demo", "take", "recording", "recorded", "concert", "session", "excerpt"}
 )
 
 
