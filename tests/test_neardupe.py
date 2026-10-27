@@ -357,7 +357,7 @@ class TestOneCopyPerPiece:
     )
 
     @classmethod
-    def _found(cls, ctx_dry, tmp_path, artist, title_a, title_b, durations=(None, None)) -> bool:
+    def _found(cls, ctx_dry, tmp_path, artist, title_a, title_b, durations=(300.0, 300.0)) -> bool:
         canon = "".join(f"{c.lower()}\t{c}\n" for c in cls.COMPOSERS)
         (ctx_dry.config.meta_dir / "Composer_Canon.tsv").write_text(canon, encoding="utf-8")
         for name, title, seconds in zip(("a", "b"), (title_a, title_b), durations, strict=True):
@@ -670,6 +670,19 @@ class TestOneCopyPerPiece:
             "Antonio Vivaldi",
             "Concerto, RV 297 - II. Largo",
             "RV 297: Movement 2 - Largo E Pianissimo Sempre",
+        )
+
+    @pytest.mark.parametrize("durations", [(None, None), (None, 320.0)])
+    def test_an_unknown_length_takes_no_shortcut(self, ctx_dry, tmp_path, durations):
+        # Codex review of #255, round 29: an unknown length counted as 0, and
+        # 0 >= 0 passed the cut check.
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
+            "Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air",
+            durations=durations,
         )
 
     @pytest.mark.parametrize(

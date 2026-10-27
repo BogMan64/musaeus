@@ -670,7 +670,9 @@ class NearDupeStage(BaseStage):
                 and a["artist"].strip() in composers
                 and b["artist"].strip() in composers
                 # A copy under half the other's length is a cut, not the piece: a
-                # 75 s "Air (Radio Edit)" beside the 320 s Air (Codex review of #255).
+                # 75 s "Air (Radio Edit)" beside the 320 s Air. An unknown length
+                # could be either, so it takes no shortcut (Codex review of #255).
+                and min(da, db) > 0
                 and 2 * min(da, db) >= max(da, db)
                 and _same_piece(a["title"], b["title"])
             )
