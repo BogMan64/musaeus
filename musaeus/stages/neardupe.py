@@ -323,18 +323,23 @@ def _marker_number(marker: str) -> int:
     return sum(-v if v < nxt else v for v, nxt in zip(values, [*values[1:], 0], strict=True))
 
 
-def _movements(title: str) -> list[tuple[str, int]]:
-    """Every movement marker in a title as (kind, number), in order, once:
-    "Part 1 ... - II." is [("part", 1), ("movement", 2)], never just its first
-    (Codex review of #255). "II." and "Movement 2" are one movement; "Act 2"
-    is not, an act holding many pieces."""
+def _movement_markers(title: str) -> list[tuple[str, int]]:
+    """Every movement marker in a title as (kind, number), in order: "Part 1 ...
+    - II." is [("part", 1), ("movement", 2)], never just its first (Codex review
+    of #255). "II." and "Movement 2" are one movement; "Act 2" is not, an act
+    holding many pieces."""
     found = []
     for m in _MOVEMENT_RE.finditer(title or ""):
         roman, number = m.groups()
         word = None if roman else _MARKER_KIND.search(m.group(0))
         kind = word.group(0).lower() if word else "movement"
         found.append(("movement" if kind == "mvt" else kind, _marker_number(roman or number)))
-    return list(dict.fromkeys(found))
+    return found
+
+
+def _movements(title: str) -> list[tuple[str, int]]:
+    """The movement markers of a title, each once."""
+    return list(dict.fromkeys(_movement_markers(title)))
 
 
 def _same_piece(title_a: str, title_b: str) -> bool:
@@ -351,9 +356,11 @@ def _same_piece(title_a: str, title_b: str) -> bool:
     ma = _movements(title_a)
     # One movement itself, not only an act, scene or part: two arias of "Act 1"
     # are two pieces. A track of two movements is named after its last one
-    # only, so "I. Prelude / II. Fugue" never takes the shortcut (Codex review
-    # of #255).
-    movement = sum(kind == "movement" for kind, _ in ma) == 1
+    # only, so "I. Prelude / II. Fugue" -- or "/ I. Fugue" -- never takes the
+    # shortcut (Codex review of #255).
+    movement = all(
+        sum(kind == "movement" for kind, _ in _movement_markers(t)) == 1 for t in (title_a, title_b)
+    )
     if not (ca and ca == _catalogues(title_b) and movement and ma == _movements(title_b)):
         return False
     # Both movements named, sharing a word of the name: a Mass restarts at "I."

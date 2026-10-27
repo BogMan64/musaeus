@@ -638,6 +638,14 @@ class TestOneCopyPerPiece:
             "BWV 846 - I. Prelude In C Major / II. Fugue",
             "BWV 846 - I. Fantasia For Organ / II. Fugue",
         )
+        # Round 21: the same marker twice is still two movements
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "BWV 846 - I. Prelude In C Major / I. Fugue",
+            "BWV 846 - I. Fantasia For Organ / I. Fugue",
+        )
 
     def test_a_medley_is_not_the_piece(self, ctx_dry, tmp_path):
         assert not self._found(
