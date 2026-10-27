@@ -688,10 +688,10 @@ class TestOneCopyPerPiece:
             "J.S. Bach: Suite In D, BWV 1068 - II. (Bourrée)",
         )
 
-    def test_a_bracketed_version_or_placeholder_is_no_name(self, ctx_dry, tmp_path):
-        # Live: "I. [Without Indication]" and "I. (Allegro Moderato)" are one
-        # movement; "(2015 Remastered Version)" names nothing either.
-        assert self._found(
+    def test_an_unnamed_movement_never_takes_the_shortcut(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 14: "II. [Without Indication]" paired with
+        # both "II. Air" and "II. Bourrée" and joined them in one group.
+        assert not self._found(
             ctx_dry,
             tmp_path,
             "Johann Sebastian Bach",

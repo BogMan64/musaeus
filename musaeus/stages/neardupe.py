@@ -325,11 +325,12 @@ def _same_piece(title_a: str, title_b: str) -> bool:
     movement = any(kind == "movement" for kind, _ in ma)
     if not (ca and ca == _catalogues(title_b) and movement and ma == _movements(title_b)):
         return False
-    # Two named movements share a word of the name: a Mass restarts at "I." in
-    # every section, and "Kyrie eleison" is not "Gloria in excelsis" (Codex
-    # review of #255). An unnamed one ("I. [Without Indication]") asserts nothing.
+    # Both movements named, sharing a word of the name: a Mass restarts at "I."
+    # in every section, and "Kyrie eleison" is not "Gloria in excelsis". An
+    # unnamed one ("I. [Without Indication]") would pair with every name and
+    # join two different pieces through itself (Codex review of #255).
     na, nb = _movement_name(title_a), _movement_name(title_b)
-    return not (na and nb) or bool(na & nb)
+    return bool(na & nb)
 
 
 def _strip_title_qualifiers(s: str) -> str:
