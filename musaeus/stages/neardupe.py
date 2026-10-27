@@ -249,7 +249,7 @@ def _normalise(s: str, strip_qualifiers: bool = False, fold_and: bool = True) ->
 # name and under the credit with a collaborator, which the artist buckets
 # never compared (Grey, 2026-10-05).
 _COLLAB_SPLIT_RE = re.compile(
-    r"\s*(?:,|&|/|\band\b|\bwith\b|\bfeat\.?|\bfeaturing\b)\s*", re.IGNORECASE
+    r"\s*(?:,|&|/|\band\b|\bwith\b|\bfeat\.|\bfeaturing\b)\s*", re.IGNORECASE
 )
 
 # A credit with a collaborator is only paired with the plain name when the two
