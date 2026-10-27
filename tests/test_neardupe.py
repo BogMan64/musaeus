@@ -355,6 +355,7 @@ class TestOneCopyPerPiece:
         "Wolfgang Amadeus Mozart",
         "George Frideric Handel",
         "Joseph Haydn",
+        "Franz Schubert",
     )
 
     @classmethod
@@ -709,6 +710,32 @@ class TestOneCopyPerPiece:
     def test_two_numbered_variations_are_two_pieces(self, ctx_dry, tmp_path, title_a, title_b):
         # Codex review of #255, round 34: titles scoring 97.9 paired two variations.
         assert not self._found(ctx_dry, tmp_path, "Johann Sebastian Bach", title_a, title_b)
+
+    @pytest.mark.parametrize(
+        "title_b",
+        [
+            "Drei Klavierstücke D. 946 No. III: I. Allegro Assai",
+            "Drei Klavierstücke D. 946 Nr. 3: I. Allegro Assai",
+        ],
+    )
+    def test_two_numbered_items_of_one_catalogue_are_two_pieces(self, ctx_dry, tmp_path, title_b):
+        # Codex review of #255, round 35: "No. I" and "Nr. 3" were no item numbers.
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Franz Schubert",
+            "Schubert: 3 Klavierstücke, D. 946 - No. I - I. Allegro Assai",
+            title_b,
+        )
+
+    def test_one_item_written_two_ways_is_one_piece(self, ctx_dry, tmp_path):
+        assert self._found(
+            ctx_dry,
+            tmp_path,
+            "Franz Schubert",
+            "Schubert: 3 Klavierstücke, D. 946 - No. I - I. Allegro Assai",
+            "Drei Klavierstücke D. 946 Nr. 1: I. Allegro Assai",
+        )
 
     def test_a_hoboken_number_with_its_series_names_the_work(self, ctx_dry, tmp_path):
         # Codex review of #255, round 30: "Hob. XVI:50" was no catalogue number.

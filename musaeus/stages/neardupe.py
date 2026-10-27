@@ -214,7 +214,8 @@ _VOCAL_WORK_RE = re.compile(
     re.IGNORECASE,
 )
 #: "No. 1" and "No. 3" of one catalogue number are two items of one work.
-_ITEM_RE = re.compile(r"\bNo\.\s*(\d+)", re.IGNORECASE)
+#: "No. 3", "No. III" and "Nr. 3" are one item (Codex review of #255).
+_ITEM_RE = re.compile(r"\bN[or]\.\s*(\d+|[IVXLC]{1,5}\b)", re.IGNORECASE)
 #: Words no movement is named by: articles, and how a copy was made ("- Live",
 #: "Remastered") -- a shared "Live" paired two Mass sections (Codex review of #255).
 _NAME_STOP = frozenset(
@@ -256,8 +257,8 @@ def _catalogues(title: str) -> list[tuple[str, str]]:
     return list(dict.fromkeys(found))
 
 
-def _items(title: str) -> list[str]:
-    return list(dict.fromkeys(m.group(1).lstrip("0") for m in _ITEM_RE.finditer(title or "")))
+def _items(title: str) -> list[int]:
+    return list(dict.fromkeys(_marker_number(m.group(1)) for m in _ITEM_RE.finditer(title or "")))
 
 
 #: An arrangement label, to its closing bracket or the title's end: "(Arr. Myra
