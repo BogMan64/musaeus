@@ -58,6 +58,12 @@ def c(**kw):
             c(title="The Arrangement"),
             ("library", "original/remaster"),
         ),
+        # Round 2: an unclosed title bracket ran on into the album's name
+        (
+            c(title="Song (Arr. For Piano)", duration=330.0),
+            c(title="Song (Original Mix", album="The Arrangement"),
+            ("library", "original/remaster"),
+        ),
         (c(sample_rate=192000), c(), ("review", "quality")),
         (c(duration=202.0), c(), ("review", "length")),
         (c(duration=201.9), c(), ("tie", "")),

@@ -221,10 +221,12 @@ _REISSUE_RE = re.compile(
 )
 # An arrangement is not the original either: Bach's "Air" for orchestra over
 # its longer piano arrangement (Grey, 2026-10-26: "A. Original"). Read inside
-# a bracket only, "(Arr. For Piano)": a song may be NAMED "The Arrangement"
-# (Codex review of #256). "Arr" not "Trans": "Trans-Europe Express".
+# a closed bracket only, "(Arr. For Piano)": a song may be NAMED "The
+# Arrangement" (Codex review of #256). "Arr" not "Trans": "Trans-Europe Express".
 _ARRANGED_RE = re.compile(
-    rf"[{OPEN}][^{CLOSE}]*\b(?:arr|arranged|arrangement|transcribed|transcription|bearbeitung)\b",
+    rf"[{OPEN}][^{OPEN}{CLOSE}]*"
+    r"\b(?:arr|arranged|arrangement|transcribed|transcription|bearbeitung)\b"
+    rf"[^{OPEN}{CLOSE}]*[{CLOSE}]",
     re.IGNORECASE,
 )
 
@@ -275,7 +277,9 @@ def _is_reissue(m: dict) -> bool:
     "Chicago High Life (2013 Remaster)" as an album.
     """
     haystack = f"{m.get('title') or ''} {m.get('album') or ''}"
-    return bool(_REISSUE_RE.search(haystack) or _ARRANGED_RE.search(haystack))
+    # Title and album apart: "Song (Original Mix" must not run on into its album.
+    arranged = any(_ARRANGED_RE.search(m.get(k) or "") for k in ("title", "album"))
+    return bool(_REISSUE_RE.search(haystack)) or arranged
 
 
 #: duplicates.status values meaning "this row has already been dealt with".
