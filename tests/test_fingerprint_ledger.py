@@ -107,7 +107,7 @@ class TestRestoringARebuiltCatalogue:
         lc.close()
 
         ctx = type("Ctx", (), {"conn": c, "config": type("C", (), {"vault_root": tmp_path})()})()
-        assert A._restore_from_ledger(ctx) == 1
+        assert A._restore_from_ledger(ctx) == ["/a.m4a"]
         row = c.execute(
             "SELECT chromaprint, acousticid_recording, acousticid_checked_at FROM archive"
         ).fetchone()
@@ -126,7 +126,7 @@ class TestRestoringARebuiltCatalogue:
         )
         c.commit()
         ctx = type("Ctx", (), {"conn": c, "config": type("C", (), {"vault_root": tmp_path})()})()
-        assert A._restore_from_ledger(ctx) == 0
+        assert A._restore_from_ledger(ctx) == []
 
     def test_a_catalogue_without_audio_hash_is_skipped_quietly(self, tmp_path):
         import musaeus.stages.acousticid as A
@@ -141,7 +141,7 @@ class TestRestoringARebuiltCatalogue:
         c.execute("CREATE TABLE archive (file_path TEXT, status TEXT)")
         c.commit()
         ctx = type("Ctx", (), {"conn": c, "config": type("C", (), {"vault_root": tmp_path})()})()
-        assert A._restore_from_ledger(ctx) == 0
+        assert A._restore_from_ledger(ctx) == []
 
 
 class TestTheStageActuallyUsesIt:

@@ -518,8 +518,8 @@ def _ledger_path(ctx) -> Path:
     return Path(ctx.config.vault_root) / "_db_backups" / "hash_index.db"
 
 
-def _restore_from_ledger(ctx) -> int:
-    """Copy known fingerprints back into `archive`, and report how many.
+def _restore_from_ledger(ctx) -> list[str]:
+    """Copy known fingerprints back into `archive`, and return the rows filled.
 
     This is what makes a rebuilt catalogue cheap instead of another 21
     hours. Matching is on audio_hash, so it survives every rename and
@@ -533,7 +533,7 @@ def _restore_from_ledger(ctx) -> int:
 
     led_path = _ledger_path(ctx)
     if not led_path.is_file():
-        return 0
+        return []
     try:
         led = sqlite3.connect(led_path)
         ensure_fingerprints(led)
@@ -546,9 +546,9 @@ def _restore_from_ledger(ctx) -> int:
         }
         led.close()
     except sqlite3.Error:
-        return 0
+        return []
     if not known:
-        return 0
+        return []
 
     try:
         rows = ctx.conn.execute(
@@ -556,9 +556,9 @@ def _restore_from_ledger(ctx) -> int:
             "AND acousticid_checked_at IS NULL AND COALESCE(audio_hash,'') <> ''"
         ).fetchall()
     except sqlite3.Error:
-        return 0
+        return []
 
-    n = 0
+    filled = []
     for fp, h in rows:
         hit = known.get(h)
         if hit is None:
@@ -575,9 +575,9 @@ def _restore_from_ledger(ctx) -> int:
                 "acousticid_checked_at=? WHERE file_path=?",
                 (rec, score, checked, fp),
             )
-        n += 1
+        filled.append(fp)
     ctx.conn.commit()
-    return n
+    return filled
 
 
 def _remember_in_ledger(
@@ -638,6 +638,7 @@ class AcousticIDStage(BaseStage):
     def _run(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
 
+        restored: list[str] = []
         if not dry_run:
             _ensure_columns(ctx.conn)
             restored = _restore_from_ledger(ctx)
@@ -645,7 +646,7 @@ class AcousticIDStage(BaseStage):
                 logger.info(
                     "[acousticid] %d row(s) restored from the fingerprint ledger "
                     "-- not re-fingerprinted",
-                    restored,
+                    len(restored),
                 )
 
         api_key = ctx.config.acousticid_api_key
@@ -699,6 +700,26 @@ class AcousticIDStage(BaseStage):
         # sqlite3.Row needs .keys(); `in row` would test values.
         _cols = set(rows[0].keys()) if rows else set()
 
+        # An answer the ledger gave back is not asked again, but it is still
+        # compared: a rerun batch left Roberta Flack "Where Is The Love" twice
+        # in the library, one recording (2026-10-27).
+        answered_before = [
+            r
+            for r in (
+                ctx.conn.execute(
+                    "SELECT file_path, duration, chromaprint, chromaprint_duration, artist, "
+                    "title, acousticid_recording, acousticid_score FROM archive "
+                    "WHERE file_path=? AND acousticid_checked_at IS NOT NULL "
+                    "AND acousticid_recording IS NOT NULL",
+                    (fp,),
+                ).fetchone()
+                for fp in restored
+            )
+            if r
+        ]
+        from_ledger = {r["file_path"] for r in answered_before}
+        compared: set[frozenset[str]] = set()
+
         # recording_id → [file_path] for dupe detection this run
         recording_map: dict[str, list[str]] = {}
         matched = 0
@@ -713,7 +734,7 @@ class AcousticIDStage(BaseStage):
 
         now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
 
-        for row in rows:
+        for row in [*rows, *answered_before]:
             result.files_processed += 1
             fp = row["file_path"]
             dur_db = row["duration"] or 0
@@ -728,7 +749,9 @@ class AcousticIDStage(BaseStage):
             # fpcalc again over the whole library on every run.
             stored = row["chromaprint"] if "chromaprint" in _cols else None
             stored_dur = row["chromaprint_duration"] if "chromaprint_duration" in _cols else None
-            if stored and stored_dur:
+            if fp in from_ledger:
+                fingerprint, duration = "", float(row["chromaprint_duration"] or dur_db)
+            elif stored and stored_dur:
                 fingerprint, duration = stored, float(stored_dur)
                 reused += 1
             else:
@@ -748,7 +771,9 @@ class AcousticIDStage(BaseStage):
             recording_id: str | None = None
             score: float = 0.0
             answered = False
-            if api_key:
+            if fp in from_ledger:
+                recording_id, score = row["acousticid_recording"], row["acousticid_score"] or 0.0
+            elif api_key:
                 time.sleep(_RATE_LIMIT_S)
                 try:
                     match = _acousticid_lookup(
@@ -787,7 +812,7 @@ class AcousticIDStage(BaseStage):
             # different truth conditions: the fingerprint was computed
             # locally and is true regardless of what the network did, while
             # the marker asserts that AcousticID answered.
-            if not dry_run:
+            if not dry_run and fp not in from_ledger:
                 ctx.conn.execute(
                     """
                     UPDATE archive
@@ -853,6 +878,11 @@ class AcousticIDStage(BaseStage):
 
                 if recording_map[recording_id]:
                     for other_fp in recording_map[recording_id]:
+                        # A row the ledger answered is in the catalogue before
+                        # its turn: never paired with itself, each pair once.
+                        if other_fp == fp or frozenset((fp, other_fp)) in compared:
+                            continue
+                        compared.add(frozenset((fp, other_fp)))
                         # Two recordings of different LENGTH are not the same
                         # recording, whatever the fingerprint service says.
                         # A cheap second opinion: the 217 files wrongly moved

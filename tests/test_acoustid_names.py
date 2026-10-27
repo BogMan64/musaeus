@@ -394,3 +394,65 @@ def test_a_band_named_after_its_leader_agrees_with_the_leader(want, credit, agre
     """Codex review of #233: Hendrix's live "Tax Free" credited to The Experience
     was refused, and the studio-only check could then clear its live album."""
     assert acoustid_mod._artist_agrees(want, [credit]) is agrees
+
+
+def _answered_in_library(ctx: RunContext, name: str, recording: str, **fields) -> Path:
+    p = _untagged(ctx, name, **fields)
+    # upsert_archive does not write the AcoustID columns.
+    ctx.conn.execute(
+        "UPDATE archive SET acousticid_recording = ?, acousticid_checked_at = '2026-10-01' "
+        "WHERE file_path = ?",
+        (recording, str(p)),
+    )
+    ctx.conn.commit()
+    return p
+
+
+def _in_ledger(ctx: RunContext, audio_hash: str, recording: str) -> None:
+    from musaeus.db import ensure_fingerprints, remember_fingerprint
+
+    led = acoustid_mod.sqlite3.connect(acoustid_mod._ledger_path(ctx))
+    ensure_fingerprints(led)
+    remember_fingerprint(led, audio_hash, "FP", 200.0, recording, 0.97, "2026-10-21")
+    led.commit()
+    led.close()
+
+
+def _no_lookup(*a, **k):
+    raise AssertionError("an answer the ledger holds was asked for again")
+
+
+def test_an_answer_from_the_ledger_is_still_paired(tmp_path, monkeypatch):
+    """A rerun batch: the arrival's answer comes back from the ledger, so it is
+    not asked again -- but it was not compared with the library either, and
+    Roberta Flack "Where Is The Love" sat twice in the library (75410 and
+    12149, one recording; found 2026-10-27)."""
+    monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", _no_lookup)
+    ctx = _ctx(tmp_path)
+    kw = {"artist": "Roberta Flack", "title": "Where Is The Love", "duration": 200.0}
+    _answered_in_library(ctx, "Roberta Flack - Where Is The Love.m4a", "rec-1", **kw)
+    _untagged(ctx, "Roberta Flack - Where Is The Love (2).m4a", **kw)
+    _in_ledger(ctx, "Roberta Flack - Where Is The Love (2).m4a", "rec-1")
+    AcousticIDStage().run(ctx)
+    pending = ctx.conn.execute(
+        "SELECT COUNT(DISTINCT group_id) FROM duplicates "
+        "WHERE duplicate_type = 'ACOUSTIC' AND status = 'pending'"
+    ).fetchone()[0]
+    assert pending == 1
+
+
+def test_two_answers_from_the_ledger_pair_each_copy_once(tmp_path, monkeypatch):
+    """Both are in the catalogue before their turn: never a copy with itself,
+    never one pair twice."""
+    monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", _no_lookup)
+    ctx = _ctx(tmp_path)
+    kw = {"artist": "Toto", "title": "Africa", "duration": 200.0}
+    _answered_in_library(ctx, "Toto - Africa.m4a", "rec-1", **kw)
+    for name in ("Toto - Africa (2).m4a", "Toto - Africa (3).m4a"):
+        _untagged(ctx, name, **kw)
+        _in_ledger(ctx, name, "rec-1")
+    AcousticIDStage().run(ctx)
+    groups = ctx.conn.execute(
+        "SELECT group_id, COUNT(DISTINCT file_path) FROM duplicates GROUP BY group_id"
+    ).fetchall()
+    assert sorted(n for _, n in groups) == [2, 2, 2]
