@@ -252,17 +252,11 @@ def _movement_name(title: str) -> set[str]:
     marks = list(_MOVEMENT_RE.finditer(title or ""))
     if not marks:
         return set()
-    tail = _ARRANGEMENT_LABEL_RE.sub(" ", title[marks[-1].end() :])
-    # A bracket names the movement only when nothing outside one does: "II. (Air)"
-    # and "II. (Bourrée)" are named, "I. Prelude (Live In Berlin)" is only
-    # "Prelude" (Codex review of #255).
-    inside = re.findall(rf"[{OPEN}]([^{OPEN}{CLOSE}]*)", tail)
-    return _name_words(BRACKETED.sub(" ", tail)) or _name_words(inside[0] if inside else "")
-
-
-def _name_words(text: str) -> set[str]:
+    # A bracket never names it: "(Live In Berlin)" is no movement, and "II. (Air)"
+    # counts as unnamed, so it takes no shortcut (Codex review of #255).
+    tail = BRACKETED.sub(" ", _ARRANGEMENT_LABEL_RE.sub(" ", title[marks[-1].end() :]))
     plain = "".join(
-        ch for ch in unicodedata.normalize("NFD", text.casefold()) if not unicodedata.combining(ch)
+        ch for ch in unicodedata.normalize("NFD", tail.casefold()) if not unicodedata.combining(ch)
     )
     return {w for w in re.findall(r"[^\W\d_]+", plain) if len(w) > 2 and w not in _NAME_STOP}
 
