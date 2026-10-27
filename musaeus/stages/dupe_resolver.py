@@ -288,8 +288,12 @@ def _is_reissue(m: dict) -> bool:
 
 
 def _is_remix(m: dict) -> bool:
-    """True if this copy's title or album says it is a new mix (read as _is_reissue)."""
-    return bool(_REMIX_RE.search(f"{m.get('title') or ''} {m.get('album') or ''}"))
+    """True if this copy's title or album says it is a new mix.
+
+    Title and album apart: a title "Original" must not hide an album "Remixed"
+    (Codex review of #258).
+    """
+    return any(_REMIX_RE.search(m.get(k) or "") for k in ("title", "album"))
 
 
 def _is_arranged(m: dict) -> bool:

@@ -55,6 +55,12 @@ def c(**kw):
         (c(title="Song (1965 Stereo Mix)"), c(), ("tie", "")),
         (c(title="Song (Original 1973 Stereo Mix)"), c(), ("tie", "")),
         (c(title="Song - Original Re-Mix (Stereo)"), c(), ("tie", "")),
+        # "Original" in the title never hides "Remixed" in the album (Codex review of #258)
+        (
+            c(title="Original (Remastered)"),
+            c(title="Original", album="Remixed"),
+            ("review", "original/remaster"),
+        ),
         # Bach "Air", 192 kHz both: the piano arrangement is 39 s longer, and Grey
         # keeps the original scoring (2026-10-26: "A. Original")
         (
