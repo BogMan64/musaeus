@@ -349,9 +349,11 @@ def _same_piece(title_a: str, title_b: str) -> bool:
         return False
     ca = _catalogues(title_a)
     ma = _movements(title_a)
-    # A movement itself, not only an act, scene or part: two arias of "Act 1"
-    # are two pieces (Codex review of #255).
-    movement = any(kind == "movement" for kind, _ in ma)
+    # One movement itself, not only an act, scene or part: two arias of "Act 1"
+    # are two pieces. A track of two movements is named after its last one
+    # only, so "I. Prelude / II. Fugue" never takes the shortcut (Codex review
+    # of #255).
+    movement = sum(kind == "movement" for kind, _ in ma) == 1
     if not (ca and ca == _catalogues(title_b) and movement and ma == _movements(title_b)):
         return False
     # Both movements named, sharing a word of the name: a Mass restarts at "I."

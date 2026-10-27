@@ -628,6 +628,17 @@ class TestOneCopyPerPiece:
             durations=(75.0, 320.0),
         )
 
+    def test_a_track_of_two_movements_takes_no_shortcut(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 20: the name was read after the last marker
+        # only, so two tracks ending in "II. Fugue" paired.
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "BWV 846 - I. Prelude In C Major / II. Fugue",
+            "BWV 846 - I. Fantasia For Organ / II. Fugue",
+        )
+
     def test_a_medley_is_not_the_piece(self, ctx_dry, tmp_path):
         assert not self._found(
             ctx_dry,
