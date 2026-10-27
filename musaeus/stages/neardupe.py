@@ -193,7 +193,9 @@ _NOT_THE_PIECE_RE = re.compile(r"\bimprovis|\bmedley", re.IGNORECASE)
 #: A part of a movement is not the movement: an "Air (Excerpt)" or "(Radio Edit)"
 #: never takes the shortcut to the full Air, at any length (Codex review of #255).
 _PART_OF_RE = re.compile(
-    r"\bexcerpt|\bfragment|\bedit(?:ed)?\b|\babridged|\bshortened|\b(?:short|radio|single) version",
+    r"\bexcerpt|\bfragment|\bedit(?:ed)?\b|\babridged|\bshortened|\b(?:short|radio|single) version"
+    r"|\bextract|\bhighlight|\bpartial|\babbreviat|\btruncat|\bselection|\bsnippet|\bpreview"
+    r"|\bcut\b",
     re.IGNORECASE,
 )
 #: The sections of a Mass, each restarting its numbering at "I.": "Kyrie: I."

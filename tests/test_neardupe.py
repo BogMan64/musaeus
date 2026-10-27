@@ -725,7 +725,8 @@ class TestOneCopyPerPiece:
     @pytest.mark.parametrize(
         "label",
         ["(Radio Edit)", "(Edit)", "(Abridged)", "(Short Version)", "(Edited Version)", "(Edited)"]
-        + ["(Radio Version)", "(Single Version)"],
+        + ["(Radio Version)", "(Single Version)", "(Extract)", "(Highlights)", "(Partial)"]
+        + ["(Abbreviated)", "(Truncated)", "(Selection)", "(Snippet)", "(Preview)", "(Cut)"],
     )
     def test_a_labelled_cut_takes_no_shortcut_at_any_length(self, ctx_dry, tmp_path, label):
         # Codex review of #255, round 24: a 220 s "Radio Edit" is over half the Air.
