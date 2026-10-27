@@ -607,6 +607,18 @@ class TestOneCopyPerPiece:
         # Codex review of #255, round 16: "berlin" was the only shared name.
         assert not self._found(ctx_dry, tmp_path, "Johann Sebastian Bach", title_a, title_b)
 
+    @pytest.mark.parametrize("label", ["(Excerpt)", "(Fragment)"])
+    def test_a_part_of_a_movement_is_not_the_movement(self, ctx_dry, tmp_path, label):
+        # Codex review of #255, round 18: a 75 s excerpt could replace the full Air.
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            f"Orchestral Suite No. 3, BWV 1068 - II. Air {label}",
+            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
+            durations=(75.0, 320.0),
+        )
+
     def test_a_medley_is_not_the_piece(self, ctx_dry, tmp_path):
         assert not self._found(
             ctx_dry,
