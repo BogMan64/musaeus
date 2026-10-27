@@ -184,8 +184,12 @@ def _classical_id(raw_title: str) -> tuple[str | None, str | None]:
 _CATALOGUE_RE = re.compile(r"\b(BWV|HWV|RV|KV|K\.|D\.|Hob\.)\s*(\d+[a-z]?)", re.IGNORECASE)
 #: An arrangement ("Arr. For Piano") may be no performance of the piece as
 #: written, and a jazz improvisation on it is not (Bobby McFerrin's "Song For
-#: Amadeus"); until Grey rules, only the title score pairs one.
-_ARRANGED_RE = re.compile(r"\barr(?:\b|ang)|\btranscri|\bimprovis", re.IGNORECASE)
+#: Amadeus"); until Grey rules, only the title score pairs one. Labelled ones
+#: only: an unlabelled arrangement reads like any performance.
+_ARRANGED_RE = re.compile(
+    r"\barr(?:\b|ang)|\badapt|\btranscri|\bimprovis|\borchestrat|\bparaphras|\bversion for\b",
+    re.IGNORECASE,
+)
 
 
 def _catalogue(title: str) -> tuple[str, str] | None:
@@ -205,14 +209,18 @@ def _is_different_piece(title_a: str, title_b: str) -> bool:
     both sides outranks the first identifier: "Concerto No. 3, RV 293" and
     "RV 293, Op. 8 No. 3" are one work.
     """
-    wa, ma = _classical_id(title_a)
-    wb, mb = _classical_id(title_b)
+    wa, _ = _classical_id(title_a)
+    wb, _ = _classical_id(title_b)
     ca, cb = _catalogue(title_a), _catalogue(title_b)
     if ca and cb:
         if ca != cb:
             return True
     elif wa and wb and wa != wb:
         return True
+    # Every marker, not only the first: "Part 1 - I." and "Part 1 - II." differ
+    # (Codex review of #255), and so does "VIII. Hornpipe" from "VII. Bourrée -
+    # VIII. Hornpipe", one track holding two movements.
+    ma, mb = _movements(title_a), _movements(title_b)
     return bool(ma and mb and ma != mb)
 
 

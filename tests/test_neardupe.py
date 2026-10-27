@@ -253,6 +253,15 @@ class TestClassicalWorksAreNotDuplicates:
     def test_different_acts_are_different_pieces(self):
         assert _is_different_piece("Serse - Act 1 Ombra mai fu", "Serse - Act 2 Aria")
 
+    def test_every_marker_counts_not_only_the_first(self):
+        assert _is_different_piece("Part 1, RV 269 - I. Allegro", "Part 1, RV 269 - II. Allegro")
+        assert _is_different_piece("Part 1 - I. Allegro", "Part 2 - I. Allegro")
+        # One track holding two movements is not the one movement (live replay).
+        assert _is_different_piece(
+            "Water Music Suite No. 1 In F Major, HWV 348 - VIII. Hornpipe",
+            "Handel: Water Music Suite No. 1 In F Major, HWV 348: VII. Bourrée - VIII. Hornpipe",
+        )
+
     def test_the_same_movement_remastered_is_still_a_duplicate(self):
         """The guard must not block genuine version-variant pairs."""
         assert not _is_different_piece(
@@ -429,6 +438,26 @@ class TestOneCopyPerPiece:
             "Johann Sebastian Bach",
             "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
             "Orchestral Suite No. 3, BWV 1068 - II. Air (Piano Arrangement)",
+        )
+
+    def test_a_shared_part_label_does_not_merge_movements_at_a_high_score(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 2: the title score is 98.6, and the
+        # different-piece guard compared only the first marker ("Part 1").
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Antonio Vivaldi",
+            "Part 1, RV 269 - I. Allegro",
+            "Part 1, RV 269 - II. Allegro",
+        )
+
+    def test_an_adaptation_waits_for_grey(self, ctx_dry, tmp_path):
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
+            "Orchestral Suite No. 3, BWV 1068 - II. Air (Adaptation For Solo Piano)",
         )
 
     def test_an_improvisation_on_a_piece_is_not_the_piece(self, ctx_dry, tmp_path):
