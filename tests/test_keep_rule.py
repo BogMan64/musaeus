@@ -47,6 +47,17 @@ def c(**kw):
             ("library", "original/remaster"),
         ),
         (c(title="Largo (Transcribed For Guitar)"), c(), ("library", "original/remaster")),
+        # Codex review of #256: a song NAMED "The Arrangement" is not an arrangement
+        (
+            c(title="The Arrangement (Arr. For Piano)", duration=330.0),
+            c(title="The Arrangement"),
+            ("library", "original/remaster"),
+        ),
+        (
+            c(title="The Arrangement (Remastered)", sample_rate=96000),
+            c(title="The Arrangement"),
+            ("library", "original/remaster"),
+        ),
         (c(sample_rate=192000), c(), ("review", "quality")),
         (c(duration=202.0), c(), ("review", "length")),
         (c(duration=201.9), c(), ("tie", "")),

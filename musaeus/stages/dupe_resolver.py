@@ -89,6 +89,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..brackets import CLOSE, OPEN
 from ..context import RunContext, StageResult
 from ..db import SET_ASIDE_STATUSES
 from ..dedupe import ACTED_ON_SQL
@@ -200,9 +201,7 @@ def _get_pending_groups(conn) -> list[str]:
 # Markers of a reissued/reprocessed version rather than the original
 # release. Grey's rule (2026-08-21): a remaster and its original are the
 # SAME song for grouping purposes, but when one must be kept, "the
-# original trumps the remaster". An arrangement is not the original either:
-# Bach's "Air" for orchestra over its longer piano arrangement (Grey,
-# 2026-10-26: "A. Original"). "Arr" not "Trans": "Trans-Europe Express".
+# original trumps the remaster".
 _REISSUE_MARKERS: tuple[str, ...] = (
     "remaster",
     "remastered",
@@ -213,17 +212,19 @@ _REISSUE_MARKERS: tuple[str, ...] = (
     "deluxe edition",
     "expanded edition",
     "digital remaster",
-    "arr",
-    "arranged",
-    "arrangement",
-    "transcribed",
-    "transcription",
-    "bearbeitung",
 )
 _REISSUE_RE = re.compile(
     r"\b(?:"
     + "|".join(re.escape(w) for w in sorted(_REISSUE_MARKERS, key=len, reverse=True))
     + r")\b",
+    re.IGNORECASE,
+)
+# An arrangement is not the original either: Bach's "Air" for orchestra over
+# its longer piano arrangement (Grey, 2026-10-26: "A. Original"). Read inside
+# a bracket only, "(Arr. For Piano)": a song may be NAMED "The Arrangement"
+# (Codex review of #256). "Arr" not "Trans": "Trans-Europe Express".
+_ARRANGED_RE = re.compile(
+    rf"[{OPEN}][^{CLOSE}]*\b(?:arr|arranged|arrangement|transcribed|transcription|bearbeitung)\b",
     re.IGNORECASE,
 )
 
@@ -274,7 +275,7 @@ def _is_reissue(m: dict) -> bool:
     "Chicago High Life (2013 Remaster)" as an album.
     """
     haystack = f"{m.get('title') or ''} {m.get('album') or ''}"
-    return bool(_REISSUE_RE.search(haystack))
+    return bool(_REISSUE_RE.search(haystack) or _ARRANGED_RE.search(haystack))
 
 
 #: duplicates.status values meaning "this row has already been dealt with".
