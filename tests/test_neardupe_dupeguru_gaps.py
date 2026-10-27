@@ -112,6 +112,14 @@ def test_a_credit_naming_one_more_act_is_another_credit(ctx, tmp_path):
     assert NearDupeStage().execute(ctx).files_changed == 0
 
 
+def test_one_name_is_not_two_names_joined_by_and(ctx, tmp_path):
+    """One act, "John Paul", and two, "John & Paul": dropping the "and" made them
+    one credit (CodeRabbit review of #257)."""
+    _add(ctx, str(tmp_path / "a.m4a"), "John Paul", "Song", 200.0)
+    _add(ctx, str(tmp_path / "b.m4a"), "John & Paul", "Song", 200.0)
+    assert NearDupeStage().execute(ctx).files_changed == 0
+
+
 def test_live_copies_titled_alike_but_for_punctuation_are_one_performance():
     a = {
         "title": "Parisienne Walkways (Live At Royal Albert Hall, London - 1993)",

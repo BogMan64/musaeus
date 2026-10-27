@@ -653,9 +653,13 @@ class NearDupeStage(BaseStage):
         # Travers, Carmine Appice" were two buckets never compared, and one song
         # sat twice in one folder (2026-10-27). Compared like a collaborator's
         # credit, at one length only.
-        same_credit: dict[str, list[str]] = {}
+        # Names are split at the credit's own separators, so "John & Paul" (two
+        # names) never meets "John Paul" (one) (CodeRabbit review of #257).
+        same_credit: dict[tuple[str, ...], list[str]] = {}
         for key in artist_buckets:
-            same_credit.setdefault(" ".join(w for w in key.split() if w != "and"), []).append(key)
+            names = re.split(r",|&|\band\b", canonical_of_key[key], flags=re.IGNORECASE)
+            parts = tuple(n for n in (_normalise(x) for x in names) if n)
+            same_credit.setdefault(parts, []).append(key)
         for keys in same_credit.values():
             for i, key in enumerate(keys):
                 for other in keys[i + 1 :]:
