@@ -178,19 +178,54 @@ def _classical_id(raw_title: str) -> tuple[str | None, str | None]:
     return work, (mov.lower() if mov else None)
 
 
+#: A catalogue number names one work of one composer: "BWV 1068", "RV 293",
+#: "K. 550" and "KV 550" alike. "No." and "Op." do not -- every composer has a
+#: "Symphony No. 5".
+_CATALOGUE_RE = re.compile(r"\b(BWV|HWV|RV|KV|K\.|D\.|Hob\.)\s*(\d+[a-z]?)", re.IGNORECASE)
+#: An arrangement ("Arr. For Piano") may be no performance of the piece as
+#: written, and a jazz improvisation on it is not (Bobby McFerrin's "Song For
+#: Amadeus"); until Grey rules, only the title score pairs one.
+_ARRANGED_RE = re.compile(r"\barr(?:\.|anged\b)|\btranscri|\bimprovis", re.IGNORECASE)
+
+
+def _catalogue(title: str) -> tuple[str, str] | None:
+    m = _CATALOGUE_RE.search(title or "")
+    if not m:
+        return None
+    return m.group(1).lower().rstrip(".").replace("kv", "k"), m.group(2).lower()
+
+
 def _is_different_piece(title_a: str, title_b: str) -> bool:
     """True when two titles name different works, or different movements.
 
     Conservative on purpose: a difference is only asserted when BOTH sides
     carry the identifier being compared. One side having a movement marker
     and the other not is the ordinary "Yesterday" vs "Yesterday (Live)"
-    case, which the existing stripping already handles.
+    case, which the existing stripping already handles. A catalogue number on
+    both sides outranks the first identifier: "Concerto No. 3, RV 293" and
+    "RV 293, Op. 8 No. 3" are one work.
     """
     wa, ma = _classical_id(title_a)
     wb, mb = _classical_id(title_b)
-    if wa and wb and wa != wb:
+    ca, cb = _catalogue(title_a), _catalogue(title_b)
+    if ca and cb:
+        if ca != cb:
+            return True
+    elif wa and wb and wa != wb:
         return True
     return bool(ma and mb and ma != mb)
+
+
+def _same_piece(title_a: str, title_b: str) -> bool:
+    """One movement of one work in two wordings: the same catalogue number and
+    the same movement marker, both written on both sides (Grey, 2026-10-24:
+    one copy per classical piece)."""
+    if _ARRANGED_RE.search(title_a or "") or _ARRANGED_RE.search(title_b or ""):
+        return False
+    ca = _catalogue(title_a)
+    _, ma = _classical_id(title_a)
+    _, mb = _classical_id(title_b)
+    return bool(ca and ca == _catalogue(title_b) and ma and ma == mb)
 
 
 def _strip_title_qualifiers(s: str) -> str:
@@ -467,7 +502,7 @@ class NearDupeStage(BaseStage):
                 fuzz.ratio(title_a, bare_b),
                 fuzz.ratio(bare_a, bare_b),
             )
-            if score < TITLE_THRESHOLD:
+            if score < TITLE_THRESHOLD and not _same_piece(a["title"], b["title"]):
                 # The same song with and without its guest named: "Smooth (feat.
                 # Rob Thomas)" and "Smooth" (Grey, 2026-10-12: the same song).
                 # Only at one length -- "Stay With Me (With The Royal

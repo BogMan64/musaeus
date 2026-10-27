@@ -330,3 +330,93 @@ def test_a_band_named_after_its_leader_is_compared_with_the_leader(artist, leade
     from musaeus.stages.neardupe import _primary_artist_key
 
     assert _primary_artist_key(artist) == leader
+
+
+class TestOneCopyPerPiece:
+    """Grey, 2026-10-24: one copy per classical piece; two performances of one
+    movement are duplicates. Their wordings differ ("Air On The G String" and
+    "Air"), so the title score never paired them: 20-odd movements sat in the
+    library two to five times (2026-10-26). The catalogue number and the
+    movement marker say which piece."""
+
+    @staticmethod
+    def _found(ctx_dry, tmp_path, artist, title_a, title_b) -> bool:
+        _insert_catalogued(ctx_dry, str(tmp_path / "a.flac"), artist, title_a)
+        _insert_catalogued(ctx_dry, str(tmp_path / "b.flac"), artist, title_b)
+        return NearDupeStage().execute(ctx_dry).files_changed > 0
+
+    def test_same_catalogue_number_and_movement_in_two_wordings(self, ctx_dry, tmp_path):
+        assert self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
+            "Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air",
+        )
+
+    def test_the_catalogue_number_outranks_a_concerto_number(self, ctx_dry, tmp_path):
+        # The first identifier read "3" on one side and "293" on the other.
+        assert self._found(
+            ctx_dry,
+            tmp_path,
+            "Antonio Vivaldi",
+            "Concerto No. 3 In F Major, RV 293 L'autunno - II. Adagio Molto",
+            "Vivaldi: The Four Seasons: Autumn, Violin Concerto In F Major, RV 293, Op. 8 No. 3: "
+            "II. Adagio Molto",
+        )
+
+    def test_k_and_kv_are_one_catalogue(self, ctx_dry, tmp_path):
+        assert self._found(
+            ctx_dry,
+            tmp_path,
+            "Wolfgang Amadeus Mozart",
+            "Symphony No. 40 In G Minor, K. 550 - I. Molto Allegro",
+            "Sinfonie g-Moll KV 550: I. Allegro molto",
+        )
+
+    def test_another_movement_is_another_piece(self, ctx_dry, tmp_path):
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Antonio Vivaldi",
+            "Concerto No. 3 In F Major, RV 293 L'autunno - II. Adagio Molto",
+            "Vivaldi: The Four Seasons: Autumn, Violin Concerto In F Major, RV 293, Op. 8 No. 3: "
+            "I. Allegro",
+        )
+
+    def test_another_catalogue_number_is_another_piece(self, ctx_dry, tmp_path):
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air",
+            "Orchestral Suite No. 2 In B Minor, BWV 1067 - II. Rondeau",
+        )
+
+    def test_without_a_movement_on_both_sides_nothing_is_asserted(self, ctx_dry, tmp_path):
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "J.S. Bach - Cantata BWV 208 - Sheep May Safely Graze",
+            "Cantata BWV 208 - 9. Schafe Können Sicher Weiden",
+        )
+
+    def test_an_arrangement_waits_for_grey(self, ctx_dry, tmp_path):
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
+            "Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On A G String (Arr. For Piano)",
+        )
+
+    def test_an_improvisation_on_a_piece_is_not_the_piece(self, ctx_dry, tmp_path):
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Bobby McFerrin",
+            "Song For Amadeus (Improvisation Of Sonata No. 2 In F Major, K.280-189e - II. Adagio)",
+            "Song For Amadeus (Improvisation On Mozart's Piano Sonata No. 2 In F Major, "
+            "K. 280/189e: II. Adagio) (Vocal)",
+        )
