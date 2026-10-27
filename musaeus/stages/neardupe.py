@@ -181,22 +181,29 @@ def _classical_id(raw_title: str) -> tuple[str | None, str | None]:
 #: A catalogue number names one work of one composer: "BWV 1068", "RV 293",
 #: "K. 550" and "KV 550" alike. "No." and "Op." do not -- every composer has a
 #: "Symphony No. 5".
-_CATALOGUE_RE = re.compile(r"\b(BWV|HWV|RV|KV|K\.|D\.|Hob\.)\s*(\d+[a-z]?)", re.IGNORECASE)
+_CATALOGUE_RE = re.compile(
+    r"\b(BWV|HWV|RV|KV|K\.|D\.|Hob\.)\s*(\d+[a-z]?(?:\s*/\s*\d+[a-z]?)*)", re.IGNORECASE
+)
 #: An arrangement ("Arr. For Piano") may be no performance of the piece as
 #: written, and a jazz improvisation on it is not (Bobby McFerrin's "Song For
 #: Amadeus"); until Grey rules, only the title score pairs one. Labelled ones
 #: only: an unlabelled arrangement reads like any performance.
 _ARRANGED_RE = re.compile(
-    r"\barr(?:\b|ang)|\badapt|\btranscri|\bimprovis|\borchestrat|\bparaphras|\bversion for\b",
+    r"\barr(?:\b|ang)|\badapt|\btrans(?:\b|cri|kr)|\bbearb|\bimprovis|\borchestrat|\bparaphras"
+    r"|\bversion for\b|\bmedley",
     re.IGNORECASE,
 )
 
 
-def _catalogue(title: str) -> tuple[str, str] | None:
-    m = _CATALOGUE_RE.search(title or "")
-    if not m:
-        return None
-    return m.group(1).lower().rstrip(".").replace("kv", "k"), m.group(2).lower()
+def _catalogues(title: str) -> list[tuple[str, str]]:
+    """Every catalogue number in a title, in order, once: one track can hold
+    two works ("BWV 1068 - Air / BWV 1067 - Badinerie"; Codex review of #255),
+    and a title written out twice names its work twice."""
+    found = (
+        (m.group(1).lower().rstrip(".").replace("kv", "k"), re.sub(r"\s", "", m.group(2).lower()))
+        for m in _CATALOGUE_RE.finditer(title or "")
+    )
+    return list(dict.fromkeys(found))
 
 
 def _is_different_piece(title_a: str, title_b: str) -> bool:
@@ -211,7 +218,7 @@ def _is_different_piece(title_a: str, title_b: str) -> bool:
     """
     wa, _ = _classical_id(title_a)
     wb, _ = _classical_id(title_b)
-    ca, cb = _catalogue(title_a), _catalogue(title_b)
+    ca, cb = _catalogues(title_a), _catalogues(title_b)
     if ca and cb:
         if ca != cb:
             return True
@@ -225,9 +232,10 @@ def _is_different_piece(title_a: str, title_b: str) -> bool:
 
 
 def _movements(title: str) -> list[str]:
-    """Every movement marker in a title, in order: "Part 1 ... - II." is
+    """Every movement marker in a title, in order, once: "Part 1 ... - II." is
     ["1", "ii"], never just its first (Codex review of #255)."""
-    return [next(g for g in m.groups() if g).lower() for m in _MOVEMENT_RE.finditer(title or "")]
+    found = (next(g for g in m.groups() if g).lower() for m in _MOVEMENT_RE.finditer(title or ""))
+    return list(dict.fromkeys(found))
 
 
 def _same_piece(title_a: str, title_b: str) -> bool:
@@ -236,9 +244,9 @@ def _same_piece(title_a: str, title_b: str) -> bool:
     one copy per classical piece)."""
     if _ARRANGED_RE.search(title_a or "") or _ARRANGED_RE.search(title_b or ""):
         return False
-    ca = _catalogue(title_a)
+    ca = _catalogues(title_a)
     ma = _movements(title_a)
-    return bool(ca and ca == _catalogue(title_b) and ma and ma == _movements(title_b))
+    return bool(ca and ca == _catalogues(title_b) and ma and ma == _movements(title_b))
 
 
 def _strip_title_qualifiers(s: str) -> str:

@@ -499,6 +499,39 @@ class TestOneCopyPerPiece:
             durations=(220.0, 240.0),
         )
 
+    def test_a_title_written_out_twice_names_one_work(self, ctx_dry, tmp_path):
+        # Live replay: the library has titles that repeat themselves.
+        assert self._found(
+            ctx_dry,
+            tmp_path,
+            "Antonio Vivaldi",
+            "The Four Seasons - Autumn, Violin Concerto In F Major, RV 293, Op. 8 No. 3 - Vivaldi"
+            " - The Four Seasons - Autumn, Violin Concerto In F Major, RV 293, Op. 8 No. 3 - I. Allegro",
+            'The Four Seasons - Violin Concerto No. 3 In F Major, Op. 8, RV 293 "Autumn": I. Allegro',
+        )
+
+    def test_one_track_holding_two_works_is_not_one_work(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 4: only the first catalogue number was read.
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "Orchestral Suite No. 3, BWV 1068 - II. Air",
+            "BWV 1068 - II. Air / BWV 1067 - Badinerie",
+        )
+
+    @pytest.mark.parametrize(
+        "label", ["(Trans. For Solo Piano)", "(Bearbeitung Für Klavier)", "(Medley)"]
+    )
+    def test_a_labelled_transcription_or_medley_waits_for_grey(self, ctx_dry, tmp_path, label):
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
+            f"Orchestral Suite No. 3, BWV 1068 - II. Air {label}",
+        )
+
     def test_an_improvisation_on_a_piece_is_not_the_piece(self, ctx_dry, tmp_path):
         assert not self._found(
             ctx_dry,
