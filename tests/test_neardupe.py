@@ -696,6 +696,20 @@ class TestOneCopyPerPiece:
             ctx_dry, tmp_path, "Antonio Vivaldi", "RV 293: I.Allegro", "RV 293: II.Allegro"
         )
 
+    @pytest.mark.parametrize(
+        ("title_a", "title_b"),
+        [
+            (
+                "Goldberg Variations, BWV 988: Variation 1",
+                "Goldberg Variations, BWV 988: Variation 2",
+            ),
+            ("Goldberg Variations, BWV 988: Var. 13", "Goldberg Variations, BWV 988: Var. 14"),
+        ],
+    )
+    def test_two_numbered_variations_are_two_pieces(self, ctx_dry, tmp_path, title_a, title_b):
+        # Codex review of #255, round 34: titles scoring 97.9 paired two variations.
+        assert not self._found(ctx_dry, tmp_path, "Johann Sebastian Bach", title_a, title_b)
+
     def test_a_hoboken_number_with_its_series_names_the_work(self, ctx_dry, tmp_path):
         # Codex review of #255, round 30: "Hob. XVI:50" was no catalogue number.
         assert not self._found(
@@ -885,8 +899,10 @@ class TestOneCopyPerPiece:
         for name, title in titles.items():
             path = str(tmp_path / f"{name}.flac")
             _insert_catalogued(ctx_dry, path, "Johann Sebastian Bach", title)
+            # Known lengths, so only the keep-both guard can stop the shortcut.
             ctx_dry.conn.execute(
-                "UPDATE archive SET audio_hash = ? WHERE file_path = ?", (f"hash-{name}", path)
+                "UPDATE archive SET audio_hash = ?, duration = 300.0 WHERE file_path = ?",
+                (f"hash-{name}", path),
             )
         for name in ("a", "b"):
             ctx_dry.conn.execute(

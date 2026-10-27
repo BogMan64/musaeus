@@ -164,7 +164,7 @@ _WORK_RE = re.compile(r"\b(?:No\.|Op\.|BWV|HWV|RV|K\.|D\.|Hob\.)\s*(\d+[a-z]?)",
 _MOVEMENT_RE = re.compile(
     # "II.Allegro" too, but not "I.G.Y" or "Fake I.D." (Codex review of #255).
     r"(?:^|[\s\-–—:,(\[])(?:([IVXLC]{1,5})\.(?=\s|[^\W\d_]{2})|"
-    r"(?:Movement|Mvt\.?|Part|Act|Scene)\s*(\d+|[IVXLC]{1,5})\b)",
+    r"(?:Movement|Mvt\.?|Part|Act|Scene|Variation|Var\.)\s*(\d+|[IVXLC]{1,5})\b)",
     re.IGNORECASE,
 )
 
@@ -346,7 +346,9 @@ def _is_different_piece(title_a: str, title_b: str) -> bool:
     return bool(ma and mb and ma != mb)
 
 
-_MARKER_KIND = re.compile(r"movement|mvt|part|act|scene", re.IGNORECASE)
+#: A variation is its own piece, never a movement: "Variation 1" is not
+#: "Variation 2" (Codex review of #255).
+_MARKER_KIND = re.compile(r"movement|mvt|part|act|scene|variation|var", re.IGNORECASE)
 _ROMAN_VALUE = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100}
 
 
@@ -368,7 +370,8 @@ def _movement_markers(title: str) -> list[tuple[str, int]]:
         roman, number = m.groups()
         word = None if roman else _MARKER_KIND.search(m.group(0))
         kind = word.group(0).lower() if word else "movement"
-        found.append(("movement" if kind == "mvt" else kind, _marker_number(roman or number)))
+        kind = {"mvt": "movement", "var": "variation"}.get(kind, kind)
+        found.append((kind, _marker_number(roman or number)))
     return found
 
 
