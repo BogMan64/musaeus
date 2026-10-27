@@ -188,6 +188,11 @@ _CATALOGUE_RE = re.compile(
 #: count as the same piece? = yes"). A medley, or a jazz improvisation on the
 #: piece (Bobby McFerrin's "Song For Amadeus"), is not.
 _NOT_THE_PIECE_RE = re.compile(r"\bimprovis|\bmedley", re.IGNORECASE)
+#: A medley is never one of the songs it holds (Codex review of #255).
+_MEDLEY_RE = re.compile(r"\bmedley\b", re.IGNORECASE)
+#: The sections of a Mass, each restarting its numbering at "I.": "Kyrie: I."
+#: and "Gloria: I." are two pieces (Codex review of #255).
+_MASS_SECTION_RE = re.compile(r"\b(kyrie|christe|gloria|credo|sanctus|benedictus|agnus)\b", re.I)
 #: "No. 1" and "No. 3" of one catalogue number are two items of one work.
 _ITEM_RE = re.compile(r"\bNo\.\s*(\d+)", re.IGNORECASE)
 _NAME_STOP = frozenset(
@@ -245,6 +250,10 @@ def _is_different_piece(title_a: str, title_b: str) -> bool:
         if ca != cb or (na and nb and na != nb):
             return True
     elif wa and wb and wa != wb:
+        return True
+    sa = {m.lower() for m in _MASS_SECTION_RE.findall(title_a or "")}
+    sb = {m.lower() for m in _MASS_SECTION_RE.findall(title_b or "")}
+    if sa and sb and sa != sb:
         return True
     # Every marker, not only the first: "Part 1 - I." and "Part 1 - II." differ
     # (Codex review of #255), and so does "VIII. Hornpipe" from "VII. Bourrée -
@@ -562,6 +571,9 @@ class NearDupeStage(BaseStage):
                 and _same_piece(a["title"], b["title"])
             )
             if not piece and _is_live(dict(a)) and _is_live(dict(b)) and not _same_take(a, b):
+                continue
+
+            if bool(_MEDLEY_RE.search(a["title"])) != bool(_MEDLEY_RE.search(b["title"])):
                 continue
 
             if frozenset((a["audio_hash"], b["audio_hash"])) in keep_both:

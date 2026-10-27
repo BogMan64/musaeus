@@ -584,6 +584,34 @@ class TestOneCopyPerPiece:
             "Orchestral Suite No. 3, BWV 1068 - II. Air (Medley)",
         )
 
+    def test_a_medley_never_pairs_with_one_of_its_songs(self, ctx_dry, tmp_path):
+        # Codex review of #255, round 8: the title score paired these (on main too).
+        assert not self._found(
+            ctx_dry,
+            tmp_path,
+            "Johann Sebastian Bach",
+            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String",
+            "J.S. Bach - Orchestral Suite No. 3 In D Major, BWV 1068 - II. Air On The G String (Medley)",
+        )
+
+    @pytest.mark.parametrize(
+        ("title_a", "title_b"),
+        [
+            (
+                "Mass In B Minor, BWV 232 - Kyrie: I. Chorus",
+                "Mass In B Minor, BWV 232 - Gloria: I. Chorus",
+            ),
+            (
+                "Mass In B Minor, BWV 232 - I. (Kyrie Eleison)",
+                "Mass In B Minor, BWV 232 - I. (Gloria In Excelsis)",
+            ),
+        ],
+    )
+    def test_sections_of_a_mass_are_never_one_movement(self, ctx_dry, tmp_path, title_a, title_b):
+        # Codex review of #255, round 8: a Mass restarts its numbering in every
+        # section, and the title cannot always say which section it is.
+        assert not self._found(ctx_dry, tmp_path, "Johann Sebastian Bach", title_a, title_b)
+
     def test_an_improvisation_on_a_piece_is_not_the_piece(self, ctx_dry, tmp_path):
         assert not self._found(
             ctx_dry,
