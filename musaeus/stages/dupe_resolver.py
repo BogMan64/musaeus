@@ -219,6 +219,15 @@ _REISSUE_RE = re.compile(
     + r")\b",
     re.IGNORECASE,
 )
+# A new mix is further from the original than a remaster of it: "Tumbling Dice
+# (2009 Mix)" lost to "(2005 Digital Remaster)" (Grey, 2026-10-27). A year or
+# "New" names a new mix; "Single Mix" or "Original 1973 Stereo Mix" does not.
+# shortcut: a mix year before 1990 is read as the original mix ("1965 Stereo
+# Mix"); upgrade if an older new mix turns up.
+_REMIX_RE = re.compile(
+    r"(?<!original\s)\b(?:re-?mix(?:ed)?|(?:new|199\d|20\d\d)\s+(?:stereo\s+|mono\s+)?mix)\b",
+    re.IGNORECASE,
+)
 # An arrangement is not the original either: Bach's "Air" for orchestra over
 # its longer piano arrangement (Grey, 2026-10-26: "A. Original"). Read inside
 # a bracket only, "(Arr. For Piano)": a song may be NAMED "The Arrangement"
@@ -276,6 +285,11 @@ def _is_reissue(m: dict) -> bool:
     """
     haystack = f"{m.get('title') or ''} {m.get('album') or ''}"
     return bool(_REISSUE_RE.search(haystack))
+
+
+def _is_remix(m: dict) -> bool:
+    """True if this copy's title or album says it is a new mix (read as _is_reissue)."""
+    return bool(_REMIX_RE.search(f"{m.get('title') or ''} {m.get('album') or ''}"))
 
 
 def _is_arranged(m: dict) -> bool:

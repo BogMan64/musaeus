@@ -1,5 +1,5 @@
 """Grey's keep rule, 2026-10-03, reordered 2026-10-22: studio over live above
-all, then lossless (ALAC and FLAC equal) over lossy, original over remaster,
+all, then lossless (ALAC and FLAC equal) over lossy, original over remaster over a new mix,
 then sample rate, then length (2 s or more); a tie keeps the library copy."""
 
 from __future__ import annotations
@@ -39,6 +39,22 @@ def c(**kw):
         (c(), c(album="Unplugged", duration=230.0), ("review", "studio/live")),
         (c(title="Song (Remastered)", sample_rate=96000), c(), ("library", "original/remaster")),
         (c(), c(title="Song (2016 Remix)"), ("review", "original/remaster")),
+        # Rolling Stones "Tumbling Dice": a new mix is further from the original
+        # than a remaster of it (Grey, 2026-10-27: a remaster beats a new mix)
+        (
+            c(title="Tumbling Dice (2009 Mix)", duration=226.2),
+            c(title="Tumbling Dice (2005 Digital Remaster)", duration=223.7),
+            ("library", "original/remaster"),
+        ),
+        (
+            c(title="Song (Remastered)"),
+            c(title="Song (2016 Remix)"),
+            ("review", "original/remaster"),
+        ),
+        (c(title="Song (Single Mix)"), c(), ("tie", "")),
+        (c(title="Song (1965 Stereo Mix)"), c(), ("tie", "")),
+        (c(title="Song (Original 1973 Stereo Mix)"), c(), ("tie", "")),
+        (c(title="Song - Original Re-Mix (Stereo)"), c(), ("tie", "")),
         # Bach "Air", 192 kHz both: the piano arrangement is 39 s longer, and Grey
         # keeps the original scoring (2026-10-26: "A. Original")
         (
