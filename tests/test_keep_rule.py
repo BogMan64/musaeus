@@ -75,6 +75,18 @@ def c(**kw):
             c(title="Air"),
             ("library", "original/arrangement"),
         ),
+        # Round 5: the label's word came after the inner bracket
+        (
+            c(title="Air (For Piano [2024] Arr.)", duration=330.0),
+            c(title="Air"),
+            ("library", "original/arrangement"),
+        ),
+        # ... and a word after a CLOSED bracket is outside it
+        (
+            c(title="Air (2024) The Arrangement", sample_rate=96000),
+            c(title="The Arrangement"),
+            ("review", "quality"),
+        ),
         # Round 2: an unclosed title bracket ran on into the album's name
         (
             c(title="Song (Arr. For Piano)", duration=330.0),

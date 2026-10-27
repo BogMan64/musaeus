@@ -221,13 +221,12 @@ _REISSUE_RE = re.compile(
 )
 # An arrangement is not the original either: Bach's "Air" for orchestra over
 # its longer piano arrangement (Grey, 2026-10-26: "A. Original"). Read inside
-# a bracket only, "(Arr. For Piano [2024])": a song may be NAMED "The
-# Arrangement" (Codex review of #256). "Arr" not "Trans": "Trans-Europe Express".
+# a bracket only, "(Arr. For Piano)": a song may be NAMED "The Arrangement"
+# (Codex review of #256). "Arr" not "Trans": "Trans-Europe Express".
 _ARRANGED_RE = re.compile(
-    rf"[{OPEN}][^{CLOSE}]*"
-    r"\b(?:arr|arranged|arrangement|transcribed|transcription|bearbeitung)\b",
-    re.IGNORECASE,
+    r"\b(?:arr|arranged|arrangement|transcribed|transcription|bearbeitung)\b", re.IGNORECASE
 )
+_BRACKET_SPLIT_RE = re.compile(rf"([{OPEN}{CLOSE}])")
 
 
 # A live recording is a different performance, not a worse copy -- but when
@@ -280,11 +279,21 @@ def _is_reissue(m: dict) -> bool:
 
 
 def _is_arranged(m: dict) -> bool:
-    """True if this copy's title or album says it is an arrangement.
+    """True if this copy's title or album says, inside a bracket, it is an arrangement.
 
     Title and album apart: "Song (Original Mix" must not run on into its album.
+    Brackets are counted, so "(For Piano [2024] Arr.)" is still inside one.
     """
-    return any(_ARRANGED_RE.search(m.get(k) or "") for k in ("title", "album"))
+    for text in (m.get("title") or "", m.get("album") or ""):
+        depth = 0
+        for piece in _BRACKET_SPLIT_RE.split(text):
+            if re.fullmatch(rf"[{OPEN}]", piece):
+                depth += 1
+            elif re.fullmatch(rf"[{CLOSE}]", piece):
+                depth = max(depth - 1, 0)
+            elif depth and _ARRANGED_RE.search(piece):
+                return True
+    return False
 
 
 #: duplicates.status values meaning "this row has already been dealt with".
