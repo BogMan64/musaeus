@@ -129,6 +129,17 @@ def test_each_song_is_compared_by_its_own_credit(ctx, tmp_path):
     assert NearDupeStage().execute(ctx).files_changed == 0
 
 
+def test_a_near_spelling_never_splits_a_name(ctx, tmp_path):
+    """The canon knows "John & Paul". "John Paul" is close enough to read as that
+    duo, so the solo act met "The John, Paul" (CodeRabbit review of #257)."""
+    (ctx.config.meta_dir / "artist_canon.tsv").write_text(
+        "john & paul\tJohn & Paul\n", encoding="utf-8"
+    )
+    _add(ctx, str(tmp_path / "a.m4a"), "The John, Paul", "Song", 200.0)
+    _add(ctx, str(tmp_path / "b.m4a"), "John Paul", "Song", 200.0)
+    assert NearDupeStage().execute(ctx).files_changed == 0
+
+
 def test_live_copies_titled_alike_but_for_punctuation_are_one_performance():
     a = {
         "title": "Parisienne Walkways (Live At Royal Albert Hall, London - 1993)",

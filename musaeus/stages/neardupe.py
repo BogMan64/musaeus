@@ -656,10 +656,12 @@ class NearDupeStage(BaseStage):
         # Each song's own credit is split into names at ",", "&" and "and", so
         # "John & Paul" (two names) never meets "John Paul" (one), even in a
         # bucket shared with "John, Paul" (CodeRabbit review of #257).
+        # Only a canon entry someone wrote may change the names: a near spelling
+        # read "John Paul" as "John & Paul" (CodeRabbit review of #257).
         same_credit: dict[tuple[str, ...], list[tuple[str, dict]]] = {}
         for key, tracks in artist_buckets.items():
             for t in tracks:
-                credit = artist_canon.resolve(t["artist"].strip()) or t["artist"].strip()
+                credit = artist_canon.resolve_exact(t["artist"].strip()) or t["artist"].strip()
                 names = re.split(r",|&|\band\b", credit, flags=re.IGNORECASE)
                 parts = tuple(n for n in (_normalise(x) for x in names) if n)
                 same_credit.setdefault(parts, []).append((key, t))
