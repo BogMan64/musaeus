@@ -408,12 +408,12 @@ def _answered_in_library(ctx: RunContext, name: str, recording: str, **fields) -
     return p
 
 
-def _in_ledger(ctx: RunContext, audio_hash: str, recording: str) -> None:
+def _in_ledger(ctx: RunContext, audio_hash: str, recording: str, length: float = 200.0) -> None:
     from musaeus.db import ensure_fingerprints, remember_fingerprint
 
     led = acoustid_mod.sqlite3.connect(acoustid_mod._ledger_path(ctx))
     ensure_fingerprints(led)
-    remember_fingerprint(led, audio_hash, "FP", 200.0, recording, 0.97, "2026-10-21")
+    remember_fingerprint(led, audio_hash, "FP", length, recording, 0.97, "2026-10-21")
     led.commit()
     led.close()
 
@@ -457,3 +457,51 @@ def test_two_answers_from_the_ledger_pair_each_copy_once(tmp_path, monkeypatch):
         "SELECT group_id, COUNT(DISTINCT file_path) FROM duplicates GROUP BY group_id"
     ).fetchall()
     assert sorted(n for _, n in groups) == [2, 2, 2]
+
+
+@pytest.mark.parametrize("lengths", [(200.0, 215.0), (215.0, 200.0)])
+def test_two_answers_from_the_ledger_compare_their_measured_lengths(tmp_path, monkeypatch, lengths):
+    """Both copies read 200 s in the catalogue, but their fingerprints measured
+    200 s and 215 s: not one recording, whichever comes first (CodeRabbit
+    review of #259)."""
+    monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", _no_lookup)
+    ctx = _ctx(tmp_path)
+    kw = {"artist": "Toto", "title": "Africa", "duration": 200.0}
+    for name, length in zip(("Toto - Africa.m4a", "Toto - Africa (2).m4a"), lengths):
+        _untagged(ctx, name, **kw)
+        _in_ledger(ctx, name, "rec-1", length)
+    AcousticIDStage().run(ctx)
+    assert ctx.conn.execute("SELECT COUNT(*) FROM duplicates").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("commit_every", [50, 1])
+def test_a_run_stopped_while_pairing_ledger_answers_pairs_them_next_run(
+    tmp_path, monkeypatch, commit_every
+):
+    """The restore marked the answers as checked before they were paired, so a
+    run that stopped in between left them unpaired for good (CodeRabbit review
+    of #259). With a checkpoint after every row, too."""
+    monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", _no_lookup)
+    monkeypatch.setattr(acoustid_mod, "_COMMIT_EVERY", commit_every)
+    ctx = _ctx(tmp_path)
+    kw = {"artist": "Toto", "title": "Africa", "duration": 200.0}
+    _answered_in_library(ctx, "Toto - Africa.m4a", "rec-1", **kw)
+    for name in ("Toto - Africa (2).m4a", "Toto - Africa (3).m4a"):
+        _untagged(ctx, name, **kw)
+        _in_ledger(ctx, name, "rec-1")
+
+    same_song, calls = acoustid_mod._same_song, []
+
+    def power_cut_at_the_third_pair(*a):
+        calls.append(a)
+        if len(calls) == 3:
+            raise RuntimeError("power cut")
+        return same_song(*a)
+
+    monkeypatch.setattr(acoustid_mod, "_same_song", power_cut_at_the_third_pair)
+    with pytest.raises(RuntimeError, match="power cut"):
+        AcousticIDStage().run(ctx)
+    monkeypatch.setattr(acoustid_mod, "_same_song", same_song)
+    AcousticIDStage().run(ctx)
+    groups = ctx.conn.execute("SELECT COUNT(DISTINCT group_id) FROM duplicates").fetchone()[0]
+    assert groups == 3
