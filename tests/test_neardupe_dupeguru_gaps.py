@@ -43,6 +43,14 @@ def _add(ctx, path, artist, title, duration):
     ctx.conn.commit()
 
 
+def _staged(ctx):
+    """Groups staged. A failed stage also stages none, so a 0 must not hide it
+    (CodeRabbit review of #257)."""
+    result = NearDupeStage().execute(ctx)
+    assert result.success, result.errors
+    return result.files_changed
+
+
 @pytest.mark.parametrize(
     ("credit", "want"),
     [
@@ -62,7 +70,7 @@ def test_the_first_artist_of_a_credit(credit, want):
 def test_a_credit_with_a_collaborator_is_compared_with_the_plain_name(ctx, tmp_path):
     _add(ctx, str(tmp_path / "a.m4a"), "Stevie Ray Vaughan", "Testify", 201.6)
     _add(ctx, str(tmp_path / "b.m4a"), "Stevie Ray Vaughan & Double Trouble", "Testify", 201.6)
-    assert NearDupeStage().execute(ctx).files_changed == 1
+    assert _staged(ctx) == 1
 
 
 def test_the_two_credits_must_also_be_the_same_length(ctx, tmp_path):
@@ -70,13 +78,74 @@ def test_the_two_credits_must_also_be_the_same_length(ctx, tmp_path):
     _add(ctx, str(tmp_path / "a.m4a"), "Kenny Rogers", "Ruby, Don't Take Your Love To Town", 167.4)
     _add(ctx, str(tmp_path / "b.m4a"), "Kenny Rogers, The First Edition",
          "Ruby, Don't Take Your Love To Town", 179.2)  # fmt: skip
-    assert NearDupeStage().execute(ctx).files_changed == 0
+    assert _staged(ctx) == 0
 
 
 def test_a_credit_with_no_plain_bucket_is_left_alone(ctx, tmp_path):
     _add(ctx, str(tmp_path / "a.m4a"), "Simon & Garfunkel", "The Boxer", 308.0)
     _add(ctx, str(tmp_path / "b.m4a"), "Paul Simon", "The Boxer", 308.0)
-    assert NearDupeStage().execute(ctx).files_changed == 0
+    assert _staged(ctx) == 0
+
+
+def test_one_credit_spelled_two_ways_is_compared(ctx, tmp_path):
+    """Pat Travers "Boom Boom" sat twice in one folder: "&" in one credit, "," in the
+    other, so the two credit buckets were never compared (follow-up, 2026-10-27)."""
+    _add(ctx, str(tmp_path / "a.m4a"), "Pat Travers & Carmine Appice",
+         "Boom Boom (Out Go The Lights)", 192.9)  # fmt: skip
+    _add(ctx, str(tmp_path / "b.m4a"), "Pat Travers, Carmine Appice",
+         "Boom Boom (Out Go The Lights)", 194.2)  # fmt: skip
+    assert _staged(ctx) == 1
+
+
+def test_one_credit_spelled_two_ways_must_also_be_the_same_length(ctx, tmp_path):
+    _add(ctx, str(tmp_path / "a.m4a"), "Pat Travers & Carmine Appice",
+         "Boom Boom (Out Go The Lights)", 192.9)  # fmt: skip
+    _add(ctx, str(tmp_path / "b.m4a"), "Pat Travers, Carmine Appice",
+         "Boom Boom (Out Go The Lights)", 230.0)  # fmt: skip
+    assert _staged(ctx) == 0
+
+
+def test_two_credits_with_unknown_lengths_are_not_paired(ctx, tmp_path):
+    """No length is not one length (CodeRabbit review of #257)."""
+    _add(ctx, str(tmp_path / "a.m4a"), "Pat Travers & Carmine Appice",
+         "Boom Boom (Out Go The Lights)", None)  # fmt: skip
+    _add(ctx, str(tmp_path / "b.m4a"), "Pat Travers, Carmine Appice",
+         "Boom Boom (Out Go The Lights)", None)  # fmt: skip
+    assert _staged(ctx) == 0
+
+
+def test_a_credit_naming_one_more_act_is_another_credit(ctx, tmp_path):
+    _add(ctx, str(tmp_path / "a.m4a"), "Crosby, Stills & Nash", "Helplessly Hoping", 161.0)
+    _add(ctx, str(tmp_path / "b.m4a"), "Crosby, Stills, Nash & Young", "Helplessly Hoping", 161.0)
+    assert _staged(ctx) == 0
+
+
+def test_one_name_is_not_two_names_joined_by_and(ctx, tmp_path):
+    """One act, "John Paul", and two, "John & Paul": dropping the "and" made them
+    one credit (CodeRabbit review of #257)."""
+    _add(ctx, str(tmp_path / "a.m4a"), "John Paul", "Song", 200.0)
+    _add(ctx, str(tmp_path / "b.m4a"), "John & Paul", "Song", 200.0)
+    assert _staged(ctx) == 0
+
+
+def test_each_song_is_compared_by_its_own_credit(ctx, tmp_path):
+    """Two credits, "John, Paul" and "The John Paul", share one bucket, read by
+    its first credit: the solo act met "John & Paul" (CodeRabbit review of #257)."""
+    _add(ctx, str(tmp_path / "a.m4a"), "John, Paul", "Other Song", 180.0)
+    _add(ctx, str(tmp_path / "b.m4a"), "The John Paul", "Song", 200.0)
+    _add(ctx, str(tmp_path / "c.m4a"), "John & Paul", "Song", 200.0)
+    assert _staged(ctx) == 0
+
+
+def test_a_near_spelling_never_splits_a_name(ctx, tmp_path):
+    """The canon knows "John & Paul". "John Paul" is close enough to read as that
+    duo, so the solo act met "The John, Paul" (CodeRabbit review of #257)."""
+    (ctx.config.meta_dir / "artist_canon.tsv").write_text(
+        "john & paul\tJohn & Paul\n", encoding="utf-8"
+    )
+    _add(ctx, str(tmp_path / "a.m4a"), "The John, Paul", "Song", 200.0)
+    _add(ctx, str(tmp_path / "b.m4a"), "John Paul", "Song", 200.0)
+    assert _staged(ctx) == 0
 
 
 def test_live_copies_titled_alike_but_for_punctuation_are_one_performance():
@@ -109,4 +178,4 @@ def test_a_band_named_after_its_leader_is_compared_with_the_leader(ctx, tmp_path
     library's "The Jimi Hendrix Experience" -- one act."""
     _add(ctx, str(tmp_path / "a.m4a"), "The Jimi Hendrix Experience", "Up From The Skies", 175.0)
     _add(ctx, str(tmp_path / "b.m4a"), "Jimi Hendrix", "Up From The Skies", 175.4)
-    assert NearDupeStage().execute(ctx).files_changed == 1
+    assert _staged(ctx) == 1
