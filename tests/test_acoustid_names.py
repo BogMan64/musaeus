@@ -474,21 +474,24 @@ def test_two_answers_from_the_ledger_compare_their_measured_lengths(tmp_path, mo
     assert ctx.conn.execute("SELECT COUNT(*) FROM duplicates").fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("commit_every", [50, 1])
+@pytest.mark.parametrize(("commit_every", "new_song"), [(50, False), (1, False), (1, True)])
 def test_a_run_stopped_while_pairing_ledger_answers_pairs_them_next_run(
-    tmp_path, monkeypatch, commit_every
+    tmp_path, monkeypatch, commit_every, new_song
 ):
     """The restore marked the answers as checked before they were paired, so a
     run that stopped in between left them unpaired for good (CodeRabbit review
-    of #259). With a checkpoint after every row, too."""
-    monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", _no_lookup)
+    of #259). Also with a checkpoint after every row, and with a new song whose
+    checkpoint used to come first."""
+    monkeypatch.setattr(acoustid_mod, "_fpcalc", lambda p: (180.0, "FP-new"))
     monkeypatch.setattr(acoustid_mod, "_COMMIT_EVERY", commit_every)
-    ctx = _ctx(tmp_path)
+    ctx = _ctx(tmp_path, key=None)
     kw = {"artist": "Toto", "title": "Africa", "duration": 200.0}
     _answered_in_library(ctx, "Toto - Africa.m4a", "rec-1", **kw)
     for name in ("Toto - Africa (2).m4a", "Toto - Africa (3).m4a"):
         _untagged(ctx, name, **kw)
         _in_ledger(ctx, name, "rec-1")
+    if new_song:
+        _untagged(ctx, "Aaa - New.m4a", artist="Aaa", title="New", duration=180.0)
 
     same_song, calls = acoustid_mod._same_song, []
 
