@@ -1114,8 +1114,9 @@ class AcousticIDStage(BaseStage):
     def run(self, ctx: RunContext) -> StageResult:
         try:
             return self._run(ctx, dry_run=False)
-        except Exception:
+        except BaseException:
             # Keep only what was committed, as if the power went: otherwise the
-            # failure report's commit kept ledger answers marked but unpaired.
+            # failure report's commit, or ctx.finish() after Ctrl-C, kept ledger
+            # answers marked but unpaired.
             ctx.conn.rollback()
             raise
