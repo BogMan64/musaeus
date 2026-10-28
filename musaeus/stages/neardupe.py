@@ -649,6 +649,31 @@ class NearDupeStage(BaseStage):
             if primary and primary != key and primary in artist_buckets:
                 collab_of.setdefault(primary, []).extend(tracks)
 
+        # One credit spelled two ways: "Pat Travers & Carmine Appice" and "Pat
+        # Travers, Carmine Appice" were two buckets never compared, and one song
+        # sat twice in one folder (2026-10-27). Compared like a collaborator's
+        # credit, at one length only.
+        # Each song's own credit is split into names at ",", "&" and "and", so
+        # "John & Paul" (two names) never meets "John Paul" (one), even in a
+        # bucket shared with "John, Paul" (CodeRabbit review of #257).
+        # Only a canon entry someone wrote may change the names: a near spelling
+        # read "John Paul" as "John & Paul" (CodeRabbit review of #257).
+        same_credit: dict[tuple[str, ...], list[tuple[str, dict]]] = {}
+        for key, tracks in artist_buckets.items():
+            for t in tracks:
+                credit = artist_canon.resolve_exact(t["artist"].strip()) or t["artist"].strip()
+                names = re.split(r",|&|\band\b", credit, flags=re.IGNORECASE)
+                parts = tuple(n for n in (_normalise(x) for x in names) if n)
+                same_credit.setdefault(parts, []).append((key, t))
+        credit_pairs = [
+            (key, a_, b_)
+            for members in same_credit.values()
+            if len({k for k, _ in members}) > 1
+            for i, (key, a_) in enumerate(members)
+            for other, b_ in members[i + 1 :]
+            if other != key
+        ]
+
         def _candidate_pairs():
             for key, tracks in artist_buckets.items():
                 for i in range(len(tracks)):
@@ -657,9 +682,13 @@ class NearDupeStage(BaseStage):
                 for a_ in tracks:
                     for b_ in collab_of.get(key, ()):
                         yield key, a_, b_, True
+            for key, a_, b_ in credit_pairs:
+                yield key, a_, b_, True
 
         for artist_key, a, b, cross in _candidate_pairs():
-            if cross and abs((a["duration"] or 0) - (b["duration"] or 0)) > _COLLAB_SECONDS:
+            da, db = a["duration"] or 0, b["duration"] or 0
+            # No length is not one length (CodeRabbit review of #257).
+            if cross and (min(da, db) <= 0 or abs(da - db) > _COLLAB_SECONDS):
                 continue
 
             # Skip if the two are already an exact pair
@@ -676,7 +705,6 @@ class NearDupeStage(BaseStage):
             # live recording moved to review (review of #86, finding 5).
             # One movement of one work, filed under its composer: one copy per
             # piece, live or not (Grey, 2026-10-24).
-            da, db = a["duration"] or 0, b["duration"] or 0
             piece = (
                 a["audio_hash"] not in kept_by_person
                 and b["audio_hash"] not in kept_by_person
