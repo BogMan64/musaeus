@@ -394,3 +394,119 @@ def test_a_band_named_after_its_leader_agrees_with_the_leader(want, credit, agre
     """Codex review of #233: Hendrix's live "Tax Free" credited to The Experience
     was refused, and the studio-only check could then clear its live album."""
     assert acoustid_mod._artist_agrees(want, [credit]) is agrees
+
+
+def _answered_in_library(ctx: RunContext, name: str, recording: str, **fields) -> Path:
+    p = _untagged(ctx, name, **fields)
+    # upsert_archive does not write the AcoustID columns.
+    ctx.conn.execute(
+        "UPDATE archive SET acousticid_recording = ?, acousticid_checked_at = '2026-10-01' "
+        "WHERE file_path = ?",
+        (recording, str(p)),
+    )
+    ctx.conn.commit()
+    return p
+
+
+def _in_ledger(ctx: RunContext, audio_hash: str, recording: str, length: float = 200.0) -> None:
+    from musaeus.db import ensure_fingerprints, remember_fingerprint
+
+    led = acoustid_mod.sqlite3.connect(acoustid_mod._ledger_path(ctx))
+    ensure_fingerprints(led)
+    remember_fingerprint(led, audio_hash, "FP", length, recording, 0.97, "2026-10-21")
+    led.commit()
+    led.close()
+
+
+def _no_lookup(*a, **k):
+    raise AssertionError("an answer the ledger holds was asked for again")
+
+
+def test_an_answer_from_the_ledger_is_still_paired(tmp_path, monkeypatch):
+    """A rerun batch: the arrival's answer comes back from the ledger, so it is
+    not asked again -- but it was not compared with the library either, and
+    Roberta Flack "Where Is The Love" sat twice in the library (75410 and
+    12149, one recording; found 2026-10-27)."""
+    monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", _no_lookup)
+    ctx = _ctx(tmp_path)
+    kw = {"artist": "Roberta Flack", "title": "Where Is The Love", "duration": 200.0}
+    _answered_in_library(ctx, "Roberta Flack - Where Is The Love.m4a", "rec-1", **kw)
+    _untagged(ctx, "Roberta Flack - Where Is The Love (2).m4a", **kw)
+    _in_ledger(ctx, "Roberta Flack - Where Is The Love (2).m4a", "rec-1")
+    result = AcousticIDStage().run(ctx)
+    assert any("1 answer(s) from the fingerprint ledger" in n for n in result.notes), result.notes
+    pending = ctx.conn.execute(
+        "SELECT COUNT(DISTINCT group_id) FROM duplicates "
+        "WHERE duplicate_type = 'ACOUSTIC' AND status = 'pending'"
+    ).fetchone()[0]
+    assert pending == 1
+
+
+def test_two_answers_from_the_ledger_pair_each_copy_once(tmp_path, monkeypatch):
+    """Both are in the catalogue before their turn: never a copy with itself,
+    never one pair twice."""
+    monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", _no_lookup)
+    ctx = _ctx(tmp_path)
+    kw = {"artist": "Toto", "title": "Africa", "duration": 200.0}
+    _answered_in_library(ctx, "Toto - Africa.m4a", "rec-1", **kw)
+    for name in ("Toto - Africa (2).m4a", "Toto - Africa (3).m4a"):
+        _untagged(ctx, name, **kw)
+        _in_ledger(ctx, name, "rec-1")
+    AcousticIDStage().run(ctx)
+    groups = ctx.conn.execute(
+        "SELECT group_id, COUNT(DISTINCT file_path) FROM duplicates GROUP BY group_id"
+    ).fetchall()
+    assert sorted(n for _, n in groups) == [2, 2, 2]
+
+
+@pytest.mark.parametrize("lengths", [(200.0, 215.0), (215.0, 200.0)])
+def test_two_answers_from_the_ledger_compare_their_measured_lengths(tmp_path, monkeypatch, lengths):
+    """Both copies read 200 s in the catalogue, but their fingerprints measured
+    200 s and 215 s: not one recording, whichever comes first (CodeRabbit
+    review of #259)."""
+    monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", _no_lookup)
+    ctx = _ctx(tmp_path)
+    kw = {"artist": "Toto", "title": "Africa", "duration": 200.0}
+    for name, length in zip(("Toto - Africa.m4a", "Toto - Africa (2).m4a"), lengths, strict=True):
+        _untagged(ctx, name, **kw)
+        _in_ledger(ctx, name, "rec-1", length)
+    AcousticIDStage().run(ctx)
+    assert ctx.conn.execute("SELECT COUNT(*) FROM duplicates").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("stop", [RuntimeError, KeyboardInterrupt])
+@pytest.mark.parametrize(("commit_every", "new_song"), [(50, False), (1, False), (1, True)])
+def test_a_run_stopped_while_pairing_ledger_answers_pairs_them_next_run(
+    tmp_path, monkeypatch, commit_every, new_song, stop
+):
+    """The restore marked the answers as checked before they were paired, so a
+    run that stopped in between left them unpaired for good (CodeRabbit review
+    of #259). Also with a checkpoint after every row, with a new song whose
+    checkpoint used to come first, and with Ctrl-C."""
+    monkeypatch.setattr(acoustid_mod, "_fpcalc", lambda p: (180.0, "FP-new"))
+    monkeypatch.setattr(acoustid_mod, "_COMMIT_EVERY", commit_every)
+    ctx = _ctx(tmp_path, key=None)
+    kw = {"artist": "Toto", "title": "Africa", "duration": 200.0}
+    _answered_in_library(ctx, "Toto - Africa.m4a", "rec-1", **kw)
+    for name in ("Toto - Africa (2).m4a", "Toto - Africa (3).m4a"):
+        _untagged(ctx, name, **kw)
+        _in_ledger(ctx, name, "rec-1")
+    if new_song:
+        _untagged(ctx, "Aaa - New.m4a", artist="Aaa", title="New", duration=180.0)
+
+    same_song, calls = acoustid_mod._same_song, []
+
+    def power_cut_at_the_third_pair(*a):
+        calls.append(a)
+        if len(calls) == 3:
+            raise stop("power cut")
+        return same_song(*a)
+
+    monkeypatch.setattr(acoustid_mod, "_same_song", power_cut_at_the_third_pair)
+    with pytest.raises(stop, match="power cut"):
+        AcousticIDStage().run(ctx)
+    ctx.conn.commit()  # the failure report, or ctx.finish() after Ctrl-C
+    monkeypatch.setattr(acoustid_mod, "_same_song", same_song)
+    AcousticIDStage().run(ctx)
+    groups = ctx.conn.execute("SELECT COUNT(DISTINCT group_id) FROM duplicates").fetchone()[0]
+    assert groups == 3
