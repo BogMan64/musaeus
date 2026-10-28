@@ -576,7 +576,8 @@ def _restore_from_ledger(ctx) -> list[str]:
                 (rec, score, checked, fp),
             )
         filled.append(fp)
-    ctx.conn.commit()
+    # Not committed here: the stage commits once these rows are paired, so a
+    # run that stops first restores them again (CodeRabbit review of #259).
     return filled
 
 
@@ -717,7 +718,8 @@ class AcousticIDStage(BaseStage):
             )
             if r
         ]
-        from_ledger = {r["file_path"] for r in answered_before}
+        # file_path -> the length its fingerprint measured
+        from_ledger = {r["file_path"]: r["chromaprint_duration"] for r in answered_before}
         compared: set[frozenset[str]] = set()
 
         # recording_id → [file_path] for dupe detection this run
@@ -734,7 +736,8 @@ class AcousticIDStage(BaseStage):
 
         now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
 
-        for row in [*rows, *answered_before]:
+        # Ledger answers first, before any checkpoint commits their restore.
+        for row in [*answered_before, *rows]:
             result.files_processed += 1
             fp = row["file_path"]
             dur_db = row["duration"] or 0
@@ -893,6 +896,10 @@ class AcousticIDStage(BaseStage):
                             (other_fp,),
                         ).fetchone()
                         other_dur = (other["duration"] if other else None) or 0.0
+                        # Two ledger answers: both lengths as measured, so the
+                        # pair gets one answer in either order (CodeRabbit review
+                        # of #259).
+                        other_dur = from_ledger.get(other_fp) or other_dur
 
                         # ORPHEUS's own net, adopted: classify_acousticid_groups.py
                         # flags a group as CROSS_ARTIST_COVER when its members
@@ -990,7 +997,11 @@ class AcousticIDStage(BaseStage):
 
                 recording_map[recording_id].append(fp)
 
-            if result.files_processed % _COMMIT_EVERY == 0 and not dry_run:
+            if (
+                result.files_processed % _COMMIT_EVERY == 0
+                and not dry_run
+                and fp not in from_ledger
+            ):
                 ctx.conn.commit()
                 logger.info("[acousticid] checkpoint %d", result.files_processed)
 
@@ -1101,4 +1112,10 @@ class AcousticIDStage(BaseStage):
         return self._run(ctx, dry_run=True)
 
     def run(self, ctx: RunContext) -> StageResult:
-        return self._run(ctx, dry_run=False)
+        try:
+            return self._run(ctx, dry_run=False)
+        except Exception:
+            # Keep only what was committed, as if the power went: otherwise the
+            # failure report's commit kept ledger answers marked but unpaired.
+            ctx.conn.rollback()
+            raise

@@ -467,7 +467,7 @@ def test_two_answers_from_the_ledger_compare_their_measured_lengths(tmp_path, mo
     monkeypatch.setattr(acoustid_mod, "_acousticid_lookup", _no_lookup)
     ctx = _ctx(tmp_path)
     kw = {"artist": "Toto", "title": "Africa", "duration": 200.0}
-    for name, length in zip(("Toto - Africa.m4a", "Toto - Africa (2).m4a"), lengths):
+    for name, length in zip(("Toto - Africa.m4a", "Toto - Africa (2).m4a"), lengths, strict=True):
         _untagged(ctx, name, **kw)
         _in_ledger(ctx, name, "rec-1", length)
     AcousticIDStage().run(ctx)
