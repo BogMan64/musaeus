@@ -120,6 +120,15 @@ def test_one_name_is_not_two_names_joined_by_and(ctx, tmp_path):
     assert NearDupeStage().execute(ctx).files_changed == 0
 
 
+def test_each_song_is_compared_by_its_own_credit(ctx, tmp_path):
+    """Two credits, "John, Paul" and "The John Paul", share one bucket, read by
+    its first credit: the solo act met "John & Paul" (CodeRabbit review of #257)."""
+    _add(ctx, str(tmp_path / "a.m4a"), "John, Paul", "Other Song", 180.0)
+    _add(ctx, str(tmp_path / "b.m4a"), "The John Paul", "Song", 200.0)
+    _add(ctx, str(tmp_path / "c.m4a"), "John & Paul", "Song", 200.0)
+    assert NearDupeStage().execute(ctx).files_changed == 0
+
+
 def test_live_copies_titled_alike_but_for_punctuation_are_one_performance():
     a = {
         "title": "Parisienne Walkways (Live At Royal Albert Hall, London - 1993)",

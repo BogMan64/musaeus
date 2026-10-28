@@ -653,17 +653,24 @@ class NearDupeStage(BaseStage):
         # Travers, Carmine Appice" were two buckets never compared, and one song
         # sat twice in one folder (2026-10-27). Compared like a collaborator's
         # credit, at one length only.
-        # Names are split at the credit's own separators, so "John & Paul" (two
-        # names) never meets "John Paul" (one) (CodeRabbit review of #257).
-        same_credit: dict[tuple[str, ...], list[str]] = {}
-        for key in artist_buckets:
-            names = re.split(r",|&|\band\b", canonical_of_key[key], flags=re.IGNORECASE)
-            parts = tuple(n for n in (_normalise(x) for x in names) if n)
-            same_credit.setdefault(parts, []).append(key)
-        for keys in same_credit.values():
-            for i, key in enumerate(keys):
-                for other in keys[i + 1 :]:
-                    collab_of.setdefault(key, []).extend(artist_buckets[other])
+        # Each song's own credit is split into names at ",", "&" and "and", so
+        # "John & Paul" (two names) never meets "John Paul" (one), even in a
+        # bucket shared with "John, Paul" (CodeRabbit review of #257).
+        same_credit: dict[tuple[str, ...], list[tuple[str, dict]]] = {}
+        for key, tracks in artist_buckets.items():
+            for t in tracks:
+                credit = artist_canon.resolve(t["artist"].strip()) or t["artist"].strip()
+                names = re.split(r",|&|\band\b", credit, flags=re.IGNORECASE)
+                parts = tuple(n for n in (_normalise(x) for x in names) if n)
+                same_credit.setdefault(parts, []).append((key, t))
+        credit_pairs = [
+            (key, a_, b_)
+            for members in same_credit.values()
+            if len({k for k, _ in members}) > 1
+            for i, (key, a_) in enumerate(members)
+            for other, b_ in members[i + 1 :]
+            if other != key
+        ]
 
         def _candidate_pairs():
             for key, tracks in artist_buckets.items():
@@ -673,6 +680,8 @@ class NearDupeStage(BaseStage):
                 for a_ in tracks:
                     for b_ in collab_of.get(key, ()):
                         yield key, a_, b_, True
+            for key, a_, b_ in credit_pairs:
+                yield key, a_, b_, True
 
         for artist_key, a, b, cross in _candidate_pairs():
             da, db = a["duration"] or 0, b["duration"] or 0
