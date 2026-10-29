@@ -32,7 +32,9 @@ answered yes to each reading:
                      recording is noise; counting it would swap masters for
                      no audible gain (AC/DC "Big Gun", 2026-10-03)
   5. length          the longer copy, when it is at least 2 s longer
-  6. a full tie      the library copy stays
+  6. a full tie      the library copy stays; the resolver and the swap tool
+                     keep the copy that was in the library first (Grey,
+                     2026-10-29: "Please make it the winner moving forward")
 
 Grey, 2026-10-05: the duplicate resolver ranked by bitrate and size and never
 used this rule, so 32 of its 256 planned moves kept the SHORTER copy ("Sweet

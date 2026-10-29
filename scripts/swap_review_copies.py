@@ -195,6 +195,10 @@ def review_wins(
         ranked.insert(0, longest)
         best, rest = ranked[0], ranked[1:]
         winner, step = decide(best, lib)
+        # A full tie: the copy that was in the library first wins (Grey,
+        # 2026-10-29), as the resolver's _keeper_sort_key ranks it.
+        if winner == "tie" and best["finalized_at"] and best["id"] < lib["id"]:
+            winner, step = "review", "tie: in the library first"
         tally[f"{winner} ({step})" if step else winner] += 1
         if winner == "review":
             wins.append(Pair(rows[best["id"]], library, step))

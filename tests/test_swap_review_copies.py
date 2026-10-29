@@ -370,3 +370,42 @@ def test_retire_execute_really_runs_the_delete_tool(tmp_path, monkeypatch):
 
     assert not master.exists(), "the replaced master was not deleted"
     assert rc == 0
+
+
+def _tie(v, *, review_first: bool, review_filed: bool = True):
+    """A review copy equal to its library copy on every step of the keep rule."""
+    lib_path = v.masters / "Rock/Toto/Toto IV/Toto - Rosanna.m4a"
+    rev_path = v.review_dir / "Toto/Toto IV/Toto - Rosanna.m4a"
+    filed = "2026-10-02 15:00:00" if review_filed else None
+
+    def lib():
+        return v.row(lib_path, "CATALOGUED", "L", finalized_at="2026-10-29 07:00:00")
+
+    def rev():
+        return v.row(rev_path, "DUPE_REVIEW", "R", finalized_at=filed)
+
+    rev_id, lib_id = (rev(), lib()) if review_first else reversed((lib(), rev()))
+    v.set_aside(rev_path, lib_path)
+    return rev_id, lib_id
+
+
+def test_a_tie_puts_back_the_copy_that_was_in_the_library_first(vault):
+    # Grey, 2026-10-29: 9 downloads had replaced equal copies of Grey's (Aretha
+    # "I Say A Little Prayer" among them). "Please make it the winner moving forward".
+    rev, lib = _tie(vault, review_first=True)
+    wins, tally = vault.mod.review_wins(vault.conn)
+    assert [(p.review["id"], p.library["id"], p.step) for p in wins] == [
+        (rev, lib, "tie: in the library first")
+    ]
+
+
+def test_a_tie_with_a_copy_never_filed_keeps_the_library_copy(vault):
+    _tie(vault, review_first=True, review_filed=False)
+    wins, tally = vault.mod.review_wins(vault.conn)
+    assert wins == [] and tally["tie"] == 1
+
+
+def test_a_tie_with_a_newer_copy_keeps_the_library_copy(vault):
+    _tie(vault, review_first=False)
+    wins, tally = vault.mod.review_wins(vault.conn)
+    assert wins == [] and tally["tie"] == 1

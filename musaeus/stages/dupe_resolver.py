@@ -433,7 +433,9 @@ def _keeper_sort_key(m: dict) -> tuple[int, ...]:
 
     Order: already moved away; format; an original over an old baked copy;
     studio over live; original over remaster; sample rate; then the copy
-    already filed stays; bitrate and size only break a tie nothing else can
+    already filed stays, then the one catalogued first (Grey, 2026-10-29: a
+    tie makes the copy in the library first "the winner moving forward");
+    bitrate and size only break a tie nothing else can
     (a fixed order, not a judgement of quality).
     """
     return (
@@ -459,6 +461,7 @@ def _keeper_sort_key(m: dict) -> tuple[int, ...]:
         # before, so a few bytes of tags on a new arrival swapped 79 library
         # copies for identical ones (2026-09-25).
         0 if m.get("finalized_at") else 1,
+        m.get("id") or m.get("current_row") or 0,
         -(m.get("bitrate") or 0),
         -(m.get("size_bytes") or 0),
     )

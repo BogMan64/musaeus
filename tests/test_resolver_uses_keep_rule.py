@@ -105,3 +105,11 @@ def test_a_live_mark_comes_from_the_copies_ranked_now():
     members.remove(live)
     _rank(members)
     assert members[0]["file_path"] == "original"
+
+
+def test_a_full_tie_keeps_the_copy_catalogued_first():
+    # Grey, 2026-10-29, on downloads that had replaced equal copies: "Please
+    # make it the winner moving forward". Bitrate is noise (Grey, 2026-10-03).
+    grey = _m("grey", id=20063, bitrate=900)
+    download = _m("download", id=82234, bitrate=1_100)
+    assert _keeper(download, grey) == "grey"
