@@ -122,7 +122,7 @@ from . import __version__
 from .config import AUDIO_EXTENSIONS, get_config
 from .context import RunContext, elision, head_with_remainder
 from .db import open_db, snapshot_db_before_wipe
-from .handoff import act_of, write_act_handoff, write_handoff_doc
+from .handoff import act_of, problem_summary, write_act_handoff, write_handoff_doc
 from .run_records import RunLog, count_problems, filed_this_run, write_problems_tsv
 from .run_records import prune_all as prune_run_records
 from .run_records import publish as publish_run_records
@@ -757,6 +757,10 @@ def _end_of_run_records(cfg, ctx: RunContext, run_log: RunLog) -> bool:  # type:
                 f"{handoff_path}",
                 file=sys.stderr,
             )
+            # What and why on the screen too, not only "finished with errors"
+            # (Grey, 2026-10-28: "Enough so that a FreeAI can interpret").
+            for line in problem_summary(ctx.stage_results):
+                print(f"  {line}", file=sys.stderr)
         else:
             print(f"  ForClaudeHandoff doc: {handoff_path}")
 
