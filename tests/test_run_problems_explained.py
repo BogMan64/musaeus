@@ -168,40 +168,46 @@ import pytest  # noqa: E402
 
 from musaeus.handoff import PROBLEM_KINDS  # noqa: E402
 
-_MEANING = {words[0]: meaning for words, meaning, _ in PROBLEM_KINDS}
+_MEANING = dict(
+    zip(
+        ("damaged", "decoder", "missing", "collision", "read", "tag", "crash"),
+        (meaning for _, meaning, _ in PROBLEM_KINDS),
+        strict=True,
+    )
+)
 
 
 def test_a_file_name_holding_the_words_does_not_pick_the_kind() -> None:
     [(meaning, _, _)] = explain(["Missing: /INBOX/damaged audio.flac"])
-    assert meaning == _MEANING["file missing on disk"]
+    assert meaning == _MEANING["missing"]
 
 
 @pytest.mark.parametrize(
     ("line", "kind"),
     [
         # The lines the stages write, as they write them.
-        (DAMAGED, "audio does not decode cleanly"),
-        ("a.m4a: damaged audio, not measured", "audio does not decode cleanly"),
+        (DAMAGED, "damaged"),
+        ("a.m4a: damaged audio, not measured", "damaged"),
         (
             "  ⚠ b.m4a: does not decode, moved to /Q/corrupted/b.m4a",
-            "audio does not decode cleanly",
+            "damaged",
         ),
-        ("a.m4a: not decoded: ffmpeg missing", "not decoded:"),
-        ("a.m4a: arrival not decoded: ffmpeg missing", "not decoded:"),
-        ("/x/a.m4a: file missing on disk", "file missing on disk"),
-        ("a.m4a: missing on disk", "file missing on disk"),
-        ("Missing file, marked GHOST: /x/a.m4a", "file missing on disk"),
-        ("Missing: /x/a.m4a", "file missing on disk"),
+        ("a.m4a: not decoded: ffmpeg missing", "decoder"),
+        ("a.m4a: arrival not decoded: ffmpeg missing", "decoder"),
+        ("/x/a.m4a: file missing on disk", "missing"),
+        ("a.m4a: missing on disk", "missing"),
+        ("Missing file, marked GHOST: /x/a.m4a", "missing"),
+        ("Missing: /x/a.m4a", "missing"),
         (
             "MASTERS MISSING: 2 recording(s) the catalogue still holds are not on disk",
-            "file missing on disk",
+            "missing",
         ),
-        ("a.flac: DB collision on /lib/a.m4a: UNIQUE constraint failed", "DB collision"),
-        ("a.m4a: DB collision, move reverted", "DB collision"),
-        ("a.m4a: could not read file: Permission denied", "could not read file"),
-        ("full_hash OS error: a.m4a: [Errno 5]", "could not read file"),
-        ("a.m4a: tag write failed", "tag write failed"),
-        ("Failure report: /RUNS/FAILURES/x.json", "Failure report:"),
+        ("a.flac: DB collision on /lib/a.m4a: UNIQUE constraint failed", "collision"),
+        ("a.m4a: DB collision, move reverted", "collision"),
+        ("a.m4a: could not read file: Permission denied", "read"),
+        ("full_hash OS error: a.m4a: [Errno 5]", "read"),
+        ("a.m4a: tag write failed", "tag"),
+        ("Failure report: /RUNS/FAILURES/x.json", "crash"),
     ],
 )
 def test_each_stage_line_gets_its_kind(line: str, kind: str) -> None:
@@ -225,4 +231,23 @@ def test_damaged_arrivals_noted_without_an_error_line_still_get_the_fix(tmp_path
 
 
 def test_the_damaged_text_does_not_say_a_library_file_stays_put() -> None:
-    assert "stays where it is" not in _MEANING["audio does not decode cleanly"]
+    assert "stays where it is" not in _MEANING["damaged"]
+
+
+# Codex review of #261, round 2.
+
+
+def test_a_file_name_leading_the_line_does_not_pick_the_kind() -> None:
+    assert explain(["damaged audio.m4a: Permission denied"]) == [(*UNKNOWN_KIND, 1)]
+
+
+def test_the_screen_shows_the_damaged_note_not_the_clean_scan_note() -> None:
+    r = StageResult(stage_name="corrupt", success=True, files_errored=1)
+    r.notes += [
+        "✓ No corrupt files detected",
+        "1 new arrival(s) do not decode; not filed:",
+        "  ⚠ b.m4a: does not decode, moved to /Q/b.m4a",
+    ]
+    text = "\n".join(problem_summary([r]))
+    assert "No corrupt files detected" not in text
+    assert "First note: ⚠ b.m4a: does not decode" in text

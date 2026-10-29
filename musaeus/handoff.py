@@ -147,15 +147,20 @@ def _capped(items: list[str], prefix: str = "") -> list[str]:
     return lines
 
 
-#: Each kind of problem a stage reports: words its lines carry, what it means,
-#: how to fix it. Plain words for a person, or an AI that cannot see the code
-#: (Grey, 2026-10-28: "add more detail. Enough so that a FreeAI can interpret
-#: and help with any corrections"). First match wins. A word counts only at the
-#: start of the line or after ": ", so a file NAME holding the words ("Missing:
-#: /INBOX/damaged audio.flac") does not pick the kind (CodeRabbit on #261).
+#: Each kind of problem a stage reports: the forms of its lines (regexes, with
+#: their punctuation), what it means, how to fix it. Plain words for a person,
+#: or an AI that cannot see the code (Grey, 2026-10-28: "add more detail. Enough
+#: so that a FreeAI can interpret and help with any corrections"). First match
+#: wins. A whole emitted form, not a word, so a file NAME holding the words
+#: ("Missing: /INBOX/damaged audio.flac", "damaged audio.m4a: Permission
+#: denied") does not pick the kind (CodeRabbit and Codex on #261).
 PROBLEM_KINDS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (
-        ("audio does not decode cleanly", "damaged audio", "does not decode,"),
+        (
+            r"^audio does not decode cleanly: ",
+            r": damaged audio, not measured$",
+            r": does not decode, moved to ",
+        ),
         "The song file itself is damaged: its audio holds broken data. The fault is in"
         " the file, not in MUSAEUS. Once the corrupt check confirms it, MUSAEUS moves the"
         " file to QUARANTINE/corrupted; a damaged new arrival never reaches the library.",
@@ -163,20 +168,25 @@ PROBLEM_KINDS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         " again. No code change is needed.",
     ),
     (
-        ("not decoded:", "arrival not decoded:"),
+        (r": (?:arrival )?not decoded: ",),
         "MUSAEUS could not run the audio decoder (ffmpeg) on the file, so it could not"
         " check it. Nothing was moved: the file waits for the next run.",
         "Check that ffmpeg works (`ffmpeg -version`) and that the file opens, then run again.",
     ),
     (
-        ("file missing on disk", "missing on disk", "Missing file", "Missing:", "MASTERS MISSING"),
+        (
+            r": (?:file )?missing on disk$",
+            r"^Missing file, marked GHOST: ",
+            r"^Missing: ",
+            r"^MASTERS MISSING: ",
+        ),
         "The database lists a file that is no longer on the disk: it was moved, renamed"
         " or deleted outside MUSAEUS.",
         "Find out where the file went. If it was deleted on purpose, nothing is needed;"
         " if not, put it back and run again.",
     ),
     (
-        ("DB collision",),
+        (r": DB collision(?:,| on )",),
         "Two database rows wanted the same file path, so MUSAEUS skipped the file rather"
         " than overwrite one. A copy may be left at either path.",
         "Needs a person before the next run: look at both paths and their database rows,"
@@ -184,17 +194,17 @@ PROBLEM_KINDS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         " when a copy was left behind.",
     ),
     (
-        ("could not read file", "full_hash OS error"),
+        (r": could not read file: ", r"^full_hash OS error: "),
         "MUSAEUS could not read the file: a disk or permission problem.",
         "Check that the file opens and its permissions (`ls -l`), then run again.",
     ),
     (
-        ("tag write failed",),
+        (r": tag write failed$",),
         "MUSAEUS could not write the tags into the file. The audio did not change.",
         "Check the file is not read-only or open in another program, then run again.",
     ),
     (
-        ("Failure report:",),
+        (r"^Failure report: ",),
         "The stage stopped on an error in the code (a crash). Its traceback is in the"
         " Stage crashes section of the ForClaudeHandoff doc.",
         "Needs a code fix: give an AI the Stage crashes section.",
@@ -212,10 +222,7 @@ _SELF_CHECK = (
 )
 
 
-_KIND_RES = tuple(
-    (re.compile("|".join(rf"(?:^\s*|: ){re.escape(w)}" for w in words)), m, f)
-    for words, m, f in PROBLEM_KINDS
-)
+_KIND_RES = tuple((re.compile("|".join(forms)), m, f) for forms, m, f in PROBLEM_KINDS)
 
 
 def explain(errors: list[str], known_only: bool = False) -> list[tuple[str, str, int]]:
@@ -224,7 +231,7 @@ def explain(errors: list[str], known_only: bool = False) -> list[tuple[str, str,
     not problems: only the kinds they match, or else the unknown kind once."""
     found: dict[tuple[str, str], int] = {}
     for e in errors:
-        kind = next(((m, f) for rx, m, f in _KIND_RES if rx.search(e)), UNKNOWN_KIND)
+        kind = next(((m, f) for rx, m, f in _KIND_RES if rx.search(e.strip())), UNKNOWN_KIND)
         found[kind] = found.get(kind, 0) + 1
     if known_only:
         found = {k: n for k, n in found.items() if k != UNKNOWN_KIND} or {UNKNOWN_KIND: len(errors)}
@@ -255,7 +262,10 @@ def problem_summary(stage_results: list[StageResult]) -> list[str]:
             continue
         errors = i["errors"]
         if not errors:
-            first = f" First note: {i['notes'][0]}" if i["notes"] else ""
+            # The first note of a known kind: a clean scan's "No corrupt files
+            # detected" can come first (Codex on #261).
+            known = [n for n in i["notes"] if explain([n])[0][:2] != UNKNOWN_KIND]
+            first = f" First note: {known[0].strip()}" if known else ""
             lines.append(
                 f"- {i['stage']}: a problem with no error line ({i['files_errored']} file(s));"
                 f" its notes in the ForClaudeHandoff doc say more.{first}"
