@@ -130,3 +130,33 @@ def test_the_end_of_a_real_run_prints_the_summary(tmp_path, monkeypatch, capsys)
     assert "Pipeline finished with errors" in err
     assert "What needs attention" in err
     assert "Get the song again" in err
+
+
+# Codex review of #261 (2026-10-28), three Mediums.
+
+
+def test_a_failed_self_check_is_explained_in_the_report_too(tmp_path: Path) -> None:
+    bad = StageResult(
+        stage_name="organize", success=True, verified=False, verify_notes=["3 files not moved"]
+    )
+    ctx = SimpleNamespace(stage_results=[bad], runs_root=tmp_path, run_id="run_t")
+    section = write_handoff_doc(ctx).read_text().split("## Verification failures", 1)[1]
+    assert "What this means" in section and "How to fix it" in section
+
+
+def test_a_failed_stage_with_only_notes_does_not_call_them_not_errors(tmp_path: Path) -> None:
+    """BitrotStage fails with notes only ("MASTERS MISSING"); they are the failure."""
+    r = StageResult(stage_name="bitrot", success=False)
+    r.notes.append("MASTERS MISSING: 2 recording(s) the catalogue still holds are not on disk")
+    ctx = SimpleNamespace(stage_results=[r], runs_root=tmp_path, run_id="run_t")
+    section = write_handoff_doc(ctx).read_text().split("## Stages that reported failure", 1)[1]
+    assert "not errors" not in section
+    assert "MASTERS MISSING" in section and "no longer on the disk" in section
+    assert "MASTERS MISSING" in "\n".join(problem_summary([r]))
+
+
+def test_a_db_collision_does_not_promise_the_line_says_if_the_file_was_put_back() -> None:
+    """Finalize's line is "x: DB collision on <target>: <exc>"; COULD NOT REVERT is only in the log."""
+    [(meaning, fix, _)] = explain(["a.flac: DB collision on /lib/a.m4a: UNIQUE constraint failed"])
+    assert "says whether" not in meaning
+    assert "both" in fix and "run log" in fix

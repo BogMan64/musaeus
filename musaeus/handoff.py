@@ -166,7 +166,7 @@ PROBLEM_KINDS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "Check that ffmpeg works (`ffmpeg -version`) and that the file opens, then run again.",
     ),
     (
-        ("missing on disk", "Missing file", "Missing: "),
+        ("missing on disk", "Missing file", "Missing: ", "not on disk"),
         "The database lists a file that is no longer on the disk: it was moved, renamed"
         " or deleted outside MUSAEUS.",
         "Find out where the file went. If it was deleted on purpose, nothing is needed;"
@@ -175,9 +175,10 @@ PROBLEM_KINDS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (
         ("DB collision",),
         "Two database rows wanted the same file path, so MUSAEUS skipped the file rather"
-        " than overwrite one. The line says whether the file was put back.",
-        "Needs a person: compare the two rows for that path. If the line says COULD NOT"
-        " REVERT, put the file back in its place by hand before the next run.",
+        " than overwrite one. A copy may be left at either path.",
+        "Needs a person before the next run: look at both paths and their database rows,"
+        " and make sure each file is in one place only. The run log says COULD NOT REVERT"
+        " when a copy was left behind.",
     ),
     (
         ("could not read file", "full_hash OS error"),
@@ -220,9 +221,14 @@ def explain(errors: list[str]) -> list[tuple[str, str, int]]:
     return [(m, f, n) for (m, f), n in found.items()]
 
 
-def _explained(errors: list[str]) -> list[str]:
+def _explained(errors: list[str], known_only: bool = False) -> list[str]:
+    """*known_only*: for a stage's notes, which are mostly not problems -- the
+    kinds they match, or else the unknown kind once."""
+    kinds = explain(errors)
+    if known_only:
+        kinds = [k for k in kinds if k[:2] != UNKNOWN_KIND] or [(*UNKNOWN_KIND, len(errors))]
     lines = [""]
-    for meaning, fix, n in explain(errors):
+    for meaning, fix, n in kinds:
         lines += [
             f"**What this means** ({n} line(s)): {meaning}",
             "",
@@ -244,9 +250,10 @@ def problem_summary(stage_results: list[StageResult]) -> list[str]:
             continue
         errors = i["errors"]
         if not errors:
+            first = f" First note: {i['notes'][0]}" if i.get("notes") else ""
             lines.append(
                 f"- {i['stage']}: a problem with no error line ({i['files_errored']} file(s));"
-                " its notes in the ForClaudeHandoff doc say more."
+                f" its notes in the ForClaudeHandoff doc say more.{first}"
             )
             continue
         lines.append(f"- {i['stage']}: {len(errors)} problem(s). First: {errors[0]}")
@@ -377,6 +384,12 @@ def _render(
             lines.append(f"### {i['stage']}")
             lines.append("")
             lines.extend(_capped(i["verify_notes"]))
+            lines += [
+                "",
+                f"**What this means:** {_SELF_CHECK[0]}",
+                "",
+                f"**How to fix it:** {_SELF_CHECK[1]}",
+            ]
             lines.append("")
 
     stage_failures = [i for i in issues if i["kind"] == "stage_reported_failure"]
@@ -389,9 +402,15 @@ def _render(
             lines.extend(_capped(i["errors"], "ERROR: "))
             if i["errors"]:
                 lines.extend(_explained(i["errors"]))
-            if i["notes"]:
+            if i["notes"] and i["errors"]:
                 lines += ["", "Other notes from this stage (not errors):", ""]
                 lines.extend(_capped(i["notes"]))
+            elif i["notes"]:
+                # No error line: the notes are the failure (bitrot's MASTERS
+                # MISSING; Codex review of #261).
+                lines += ["", "The stage wrote no error line; its notes say what failed:", ""]
+                lines.extend(_capped(i["notes"]))
+                lines.extend(_explained(i["notes"], known_only=True))
             lines.append("")
 
     finished = [i for i in issues if i["kind"] == "finished_with_problems"]
