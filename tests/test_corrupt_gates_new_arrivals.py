@@ -125,6 +125,22 @@ def test_a_truncated_arrival_is_refused_before_it_can_be_catalogued(ctx, cfg) ->
     assert (cfg.quarantine / "corrupted" / "broken.m4a").exists()
 
 
+def test_the_report_says_which_arrival_was_quarantined_and_where(ctx, cfg) -> None:
+    """Streamrip batch 1 (2026-10-28): the gate moved 6 damaged arrivals, and
+    the stage's only note was "No corrupt files detected" (Grey: "add more
+    detail. Enough so that a FreeAI can interpret")."""
+    f = _truncate(_tone(cfg.inbox / "broken.m4a"))
+    _arrival(ctx, f)
+
+    notes = "\n".join(CorruptStage().run(ctx).notes)
+
+    assert "1 new arrival(s) do not decode" in notes
+    assert (
+        f"broken.m4a: does not decode, moved to {cfg.quarantine / 'corrupted' / 'broken.m4a'}"
+        in notes
+    )
+
+
 def test_an_intact_arrival_passes_through_untouched(ctx, cfg) -> None:
     f = _tone(cfg.inbox / "good.m4a")
     _arrival(ctx, f)

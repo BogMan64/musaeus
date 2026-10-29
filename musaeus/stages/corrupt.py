@@ -955,6 +955,7 @@ class CorruptStage(BaseStage):
         # default (Grey's code review, 2026-10-11, finding 9).
         quarantine_dir = ctx.quarantine / "corrupted"
         gated = 0
+        moved: list[str] = []
         lib = ctx.alac_library
         for row in rows:
             file_path = Path(row["file_path"])
@@ -1038,6 +1039,13 @@ class CorruptStage(BaseStage):
             )
             logger.info("[%s] → quarantined arrival: %s", self.NAME, dest.name)
             result.files_changed += 1  # verify_effect checks it
+            moved.append(f"  ⚠ {file_path.name}: does not decode, moved to {dest}")
+        if moved:
+            # Said in the report, not only the log: the stage's other note can
+            # read "No corrupt files detected" beside these (Streamrip batch 1,
+            # 2026-10-28).
+            result.notes.append(f"{len(moved)} new arrival(s) do not decode; not filed:")
+            result.notes.extend(moved)
         if gated:
             logger.warning(
                 "[%s] %d arrival(s) refused: damaged before they reached the library",

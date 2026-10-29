@@ -145,6 +145,121 @@ def _capped(items: list[str], prefix: str = "") -> list[str]:
     return lines
 
 
+#: Each kind of problem a stage reports: words its lines carry, what it means,
+#: how to fix it. Plain words for a person, or an AI that cannot see the code
+#: (Grey, 2026-10-28: "add more detail. Enough so that a FreeAI can interpret
+#: and help with any corrections"). First match wins.
+PROBLEM_KINDS: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    (
+        ("does not decode cleanly", "damaged audio"),
+        "The song file itself is damaged: its audio holds broken data. The fault is in"
+        " the file, not in MUSAEUS. A damaged new arrival is moved to"
+        " QUARANTINE/corrupted and never reaches the library; a damaged library file"
+        " stays where it is.",
+        "Get the song again from where it came from, put the new file in INBOX, and run"
+        " again. No code change is needed.",
+    ),
+    (
+        ("not decoded:",),
+        "MUSAEUS could not run the audio decoder (ffmpeg) on the file, so it could not"
+        " check it. Nothing was moved: the file waits for the next run.",
+        "Check that ffmpeg works (`ffmpeg -version`) and that the file opens, then run again.",
+    ),
+    (
+        ("missing on disk", "Missing file", "Missing: "),
+        "The database lists a file that is no longer on the disk: it was moved, renamed"
+        " or deleted outside MUSAEUS.",
+        "Find out where the file went. If it was deleted on purpose, nothing is needed;"
+        " if not, put it back and run again.",
+    ),
+    (
+        ("DB collision",),
+        "Two database rows wanted the same file path, so MUSAEUS skipped the file rather"
+        " than overwrite one. The line says whether the file was put back.",
+        "Needs a person: compare the two rows for that path. If the line says COULD NOT"
+        " REVERT, put the file back in its place by hand before the next run.",
+    ),
+    (
+        ("could not read file", "full_hash OS error"),
+        "MUSAEUS could not read the file: a disk or permission problem.",
+        "Check that the file opens and its permissions (`ls -l`), then run again.",
+    ),
+    (
+        ("tag write failed",),
+        "MUSAEUS could not write the tags into the file. The audio did not change.",
+        "Check the file is not read-only or open in another program, then run again.",
+    ),
+    (
+        ("Failure report:",),
+        "The stage stopped on an error in the code (a crash). Its traceback is in the"
+        " Stage crashes section of the ForClaudeHandoff doc.",
+        "Needs a code fix: give an AI the Stage crashes section.",
+    ),
+)
+#: (what it means, how to fix it) for a line that matches no kind above.
+UNKNOWN_KIND = (
+    "Not a known kind of problem. It may need a code fix.",
+    "Give an AI the ForClaudeHandoff doc and the run log lines that name the file."
+    " Ask it to say plainly what it cannot check from there.",
+)
+_SELF_CHECK = (
+    "The stage says it did its work, but its own check found the work did not happen.",
+    "Needs a code look before the next run: give an AI the Verification failures section.",
+)
+
+
+def explain(errors: list[str]) -> list[tuple[str, str, int]]:
+    """(what it means, how to fix it, how many lines) per kind in *errors*, in
+    the order first seen."""
+    found: dict[tuple[str, str], int] = {}
+    for e in errors:
+        kind = next(
+            ((m, f) for words, m, f in PROBLEM_KINDS if any(w in e for w in words)), UNKNOWN_KIND
+        )
+        found[kind] = found.get(kind, 0) + 1
+    return [(m, f, n) for (m, f), n in found.items()]
+
+
+def _explained(errors: list[str]) -> list[str]:
+    lines = [""]
+    for meaning, fix, n in explain(errors):
+        lines += [
+            f"**What this means** ({n} line(s)): {meaning}",
+            "",
+            f"**How to fix it:** {fix}",
+            "",
+        ]
+    return lines
+
+
+def problem_summary(stage_results: list[StageResult]) -> list[str]:
+    """What needs attention, for the end of a run's screen: per stage, its first
+    problem line and what each kind means. Empty for a clean run."""
+    lines: list[str] = []
+    for i in _stage_issues(stage_results):
+        if i["kind"] == "verification_failed":
+            first = (i["verify_notes"] or ["(no detail)"])[0]
+            lines += [f"- {i['stage']}: its own check failed. First: {first}"]
+            lines += [f"    Means: {_SELF_CHECK[0]}", f"    Fix: {_SELF_CHECK[1]}"]
+            continue
+        errors = i["errors"]
+        if not errors:
+            lines.append(
+                f"- {i['stage']}: a problem with no error line ({i['files_errored']} file(s));"
+                " its notes in the ForClaudeHandoff doc say more."
+            )
+            continue
+        lines.append(f"- {i['stage']}: {len(errors)} problem(s). First: {errors[0]}")
+        for meaning, fix, n in explain(errors):
+            lines += [f"    Means ({n}): {meaning}", f"    Fix: {fix}"]
+    if lines:
+        lines = ["What needs attention:", *lines]
+        lines.append(
+            "For help, paste the ForClaudeHandoff doc into any AI (Claude, ChatGPT, Gemini)."
+        )
+    return lines
+
+
 def _what_happened(stage_results: list[StageResult]) -> list[str]:
     """What the run DID, stage by stage -- not only what went wrong.
 
@@ -203,10 +318,12 @@ def _render(
         "",
         "**Paste this whole file** into any AI session to ask what happened.",
         "",
-        "**If you are a fresh Claude session with no file or tool access:**",
+        "**If you are an AI session (Claude, ChatGPT, Gemini or another)",
+        "with no file or tool access:**",
         "everything needed to reason about each issue is inlined below --",
-        "the stage name, what it does, the exact error or mismatch, and",
-        "(for a crash) the full traceback. You cannot verify anything",
+        "the stage name, what it does, the exact error or mismatch, what",
+        "each kind of problem means and how to fix it, and (for a crash)",
+        "the full traceback. You cannot verify anything",
         "against the live codebase from here; say so plainly rather than",
         "guessing at a fix with unstated confidence. MUSAEUS is at",
         "github.com/BogMan64/musaeus if the repository itself is reachable.",
@@ -270,7 +387,11 @@ def _render(
             lines.append(f"### {i['stage']}  ({i['files_errored']} file(s) errored)")
             lines.append("")
             lines.extend(_capped(i["errors"], "ERROR: "))
-            lines.extend(_capped(i["notes"]))
+            if i["errors"]:
+                lines.extend(_explained(i["errors"]))
+            if i["notes"]:
+                lines += ["", "Other notes from this stage (not errors):", ""]
+                lines.extend(_capped(i["notes"]))
             lines.append("")
 
     finished = [i for i in issues if i["kind"] == "finished_with_problems"]
@@ -281,9 +402,19 @@ def _render(
         lines.append("uncapped list for the run is RUNS/LOGS/run_<run_id>_problems.tsv.")
         lines.append("")
         for i in finished:
+            if not i["errors"]:
+                # files_errored with no line: "corrupt  (0 problem(s))" read as
+                # nothing wrong (Streamrip batch 1, 2026-10-28).
+                lines.append(f"### {i['stage']}  ({i['files_errored']} file(s) errored)")
+                lines.append("")
+                lines.append("- No error line was written; the stage's notes under")
+                lines.append("  'What each stage reported' above say which files.")
+                lines.append("")
+                continue
             lines.append(f"### {i['stage']}  ({len(i['errors'])} problem(s))")
             lines.append("")
             lines.extend(_capped(i["errors"], "PROBLEM: "))
+            lines.extend(_explained(i["errors"]))
             lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
