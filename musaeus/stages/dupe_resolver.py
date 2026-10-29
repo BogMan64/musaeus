@@ -353,35 +353,33 @@ _ALREADY_RESOLVED: frozenset[str] = frozenset({"archive", "review"})
 #: Never the keeper: moved away already, or archived by a person.
 
 
-#: The retired bake's target. A copy measured here (within the tolerance) was
-#: made by it; an original sits here only by chance, rarely. A copy not yet
-#: measured -- every new arrival at Act 2 -- is never taken for one.
-_BAKED_LUFS = -18.0
-_BAKED_TOLERANCE = 0.3
-
-
 def _looks_baked(m: dict) -> bool:
-    lufs = m.get("lufs")
-    return lufs is not None and abs(float(lufs) - _BAKED_LUFS) <= _BAKED_TOLERANCE
+    """True if the catalogue records this copy as made by the retired -18 LUFS bake.
 
-
-def _share_loudness(members: list[dict]) -> None:
-    """Give an unmeasured member the loudness of a measured one with the same audio.
-
-    Loudness is measured in Act 3, so at Act 2 a new arrival has none. An
-    arrival with the SAME audio as a master measured at -18 LUFS is the same
-    baked copy, but read on its own it never looked baked, and won: 119
-    masters were swapped for identical copies of themselves (2026-09-26).
+    A record, not a measurement (Grey, 2026-10-29: "If it was baked already,
+    there should be a ref in the metadata"). Loudness alone took 21 originals
+    for baked copies, Grey's hand-kept 96 kHz "Suspicious Minds" among them,
+    and swapped them for 44.1 kHz downloads (Streamrip batches 1-6). The old
+    copies are marked by scripts/mark_baked_copies.py.
     """
-    measured: dict[str, float] = {}
+    return bool(m.get("lufs_baked_at"))
+
+
+def _share_baked_mark(members: list[dict]) -> None:
+    """Mark a member baked when another member with the same audio is.
+
+    A new arrival with the SAME audio as a baked master is that baked copy,
+    but read on its own it never looked baked, and won: 119 masters were
+    swapped for identical copies of themselves (2026-09-26).
+    """
+    baked = {_hash_of(m) for m in members if _looks_baked(m)} - {None}
     for m in members:
-        h = m.get("current_hash") or m.get("recorded_hash") or m.get("audio_hash")
-        if h and m.get("lufs") is not None:
-            measured.setdefault(h, m["lufs"])
-    for m in members:
-        h = m.get("current_hash") or m.get("recorded_hash") or m.get("audio_hash")
-        if h and m.get("lufs") is None and h in measured:
-            m["lufs"] = measured[h]
+        if _hash_of(m) in baked:
+            m["lufs_baked_at"] = m.get("lufs_baked_at") or "same audio as a baked copy"
+
+
+def _hash_of(m: dict) -> str | None:
+    return m.get("current_hash") or m.get("recorded_hash") or m.get("audio_hash")
 
 
 #: Tighter than NearDupe's 2 s same take: a studio copy wrongly read as live
@@ -403,6 +401,23 @@ def _share_live_take(members: list[dict]) -> None:
         d = float(m.get("duration") or 0)
         if d and any(abs(d - x) <= _LIVE_TAKE_SECONDS for x in live):
             m["live_take"] = True
+
+
+def _share_unknown_album(members: list[dict]) -> None:
+    """Mark every member when one has no album yet and no label in its title.
+
+    Such a copy may be the original or a remaster: nothing says. Read as the
+    original, a download with no album at Act 2 beat Grey's 192 kHz copies on
+    "Slugcology 101(remaster)" and "Rock Of The Westies (Remastered)" -- the
+    same remasters (2026-10-29). Marked, the original/remaster step does not
+    judge the group; sample rate and length do.
+    """
+    if any(
+        not (m.get("album") or "").strip() and not _is_reissue(m) and not _is_remix(m)
+        for m in members
+    ):
+        for m in members:
+            m["album_unknown"] = True
 
 
 def _keeper_sort_key(m: dict) -> tuple[int, ...]:
@@ -461,7 +476,9 @@ def _rank(members: list[dict]) -> None:
     # not leave its mark behind (Codex review of #248, round 3).
     for m in members:
         m.pop("live_take", None)
+        m.pop("album_unknown", None)
     _share_live_take(members)
+    _share_unknown_album(members)
     members.sort(key=_keeper_sort_key)
     if len(members) < 2:
         return
@@ -484,7 +501,7 @@ def _get_group_members(conn, group_id: str) -> list[dict]:
                d.audio_hash AS recorded_hash, a.audio_hash AS current_hash, a.id AS current_row,
                a.status AS current_status, a.finalized_at, a.lufs,
                a.artist, a.album, a.title, a.ext, a.codec, a.bitrate, a.size_bytes,
-               a.sample_rate, a.duration, a.kept_by_person_at
+               a.sample_rate, a.duration, a.kept_by_person_at, a.lufs_baked_at
           FROM duplicates d
           LEFT JOIN archive a USING (file_path)
          WHERE d.group_id = ?
@@ -545,14 +562,15 @@ def _get_live_exact_clusters(conn) -> list[list[dict]]:
         members = conn.execute(
             """
             SELECT id, file_path, artist, album, title, ext, codec, bitrate, size_bytes,
-                   finalized_at, lufs, audio_hash, sample_rate, duration, kept_by_person_at
+                   finalized_at, lufs, audio_hash, sample_rate, duration, kept_by_person_at,
+                   lufs_baked_at
               FROM archive
              WHERE audio_hash = ? AND status = 'CATALOGUED'
             """,
             (row["audio_hash"],),
         ).fetchall()
         member_dicts = [dict(m) for m in members]
-        _share_loudness(member_dicts)
+        _share_baked_mark(member_dicts)
         _rank(member_dicts)
         clusters.append(member_dicts)
     return clusters
@@ -608,7 +626,7 @@ def _component_members(conn, groups: Sequence[str]) -> list[dict]:
             if m["file_path"] not in seen:
                 seen.add(m["file_path"])
                 members.append(m)
-    _share_loudness(members)
+    _share_baked_mark(members)
     _rank(members)
     return members
 
@@ -944,7 +962,7 @@ class DupeResolverStage(BaseStage):
                 continue
             if sum(not _is_there(m) for m in members) and sum(_is_there(m) for m in members) >= 2:
                 members = [m for m in members if _is_there(m)]  # as the resolver does
-            _share_loudness(members)
+            _share_baked_mark(members)
             _rank(members)
             keeper, losers = _pick_keeper_and_losers(members)
             qs = ",".join("?" * len(component))
@@ -1575,7 +1593,7 @@ class DupeResolverStage(BaseStage):
                         f"WHERE file_path = ? AND group_id IN ({qs}) AND {ACTED_ON_SQL}",
                         [(m["file_path"], *component) for m in gone],
                     )
-            _share_loudness(members)
+            _share_baked_mark(members)
             _rank(members)
             keeper, losers = _pick_keeper_and_losers(members)
             # An incoming CROSS_BATCH duplicate always moves, also when its

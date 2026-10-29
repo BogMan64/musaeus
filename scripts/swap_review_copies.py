@@ -60,7 +60,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from musaeus.config import MusicConfig  # noqa: E402
 from musaeus.hasher import audio_hash_safe  # noqa: E402
 from musaeus.keep_rule import decide, keep_key  # noqa: E402
-from musaeus.stages.dupe_resolver import _share_live_take, _share_loudness  # noqa: E402
+from musaeus.stages.dupe_resolver import (  # noqa: E402
+    _share_baked_mark,
+    _share_live_take,
+    _share_unknown_album,
+)
 
 EVENT = "SWAP_PROMOTED"
 #: The library row's facts the promoted copy takes, so it files where L is.
@@ -175,8 +179,9 @@ def review_wins(
         rows = {r["id"]: r for r in reviews}
         lib = dict(library)
         copies = [dict(r) for r in reviews]
-        _share_loudness([lib, *copies])
+        _share_baked_mark([lib, *copies])
         _share_live_take([lib, *copies])
+        _share_unknown_album([lib, *copies])
         ranked = sorted(
             copies, key=functools.cmp_to_key(better_first)
         )  # stable: ties keep id order

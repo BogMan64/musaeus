@@ -15,7 +15,9 @@ answered yes to each reading:
                      Linda Ronstadt's "Somewhere Out There" at 3:07 over 3:58
   2b. baked          an original beats a copy the retired bake made at
                      -18 LUFS (Grey, 2026-09-26; the resolver's own step,
-                     joined to this rule 2026-10-05 so there is ONE rule)
+                     joined to this rule 2026-10-05 so there is ONE rule).
+                     Only a master catalogued before the originals came in
+                     can be one (Grey, 2026-10-29: "fix both rules")
   3. original        the original beats a remaster, remix or re-recording --
                      Grey's standing ruling ("the original trumps the
                      remaster"), placed after studio/live: "keep this".
@@ -23,7 +25,9 @@ answered yes to each reading:
                      For Piano"; Grey, 2026-10-26), then the original beats
                      a remaster: two steps, so one never cancels the other.
                      A remaster beats a new mix ("2009 Mix", "Remix"; Grey,
-                     2026-10-27): closer to the original
+                     2026-10-27): closer to the original. A copy with no
+                     album yet is not known to be the original, so this step
+                     does not judge it (Grey, 2026-10-29)
   4. quality         SAMPLE RATE only. Bitrate between two ALAC copies of one
                      recording is noise; counting it would swap masters for
                      no audible gain (AC/DC "Big Gun", 2026-10-03)
@@ -76,7 +80,7 @@ def _format_rank(codec: str | None) -> int:
 
 
 def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int, int]:
-    """Steps 1-4; smaller is better. *m* needs codec, title, album, sample_rate, lufs.
+    """Steps 1-4; smaller is better. *m* needs codec, title, album, sample_rate, lufs_baked_at.
 
     Length (step 5) is not in the key: "at least 2 s longer" is a tolerance,
     and a sort key cannot hold one without bucketing 201.9 s and 202.1 s apart.
@@ -85,12 +89,13 @@ def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int, int]:
     # and albums exactly the way it does.
     from .stages.dupe_resolver import _is_arranged, _is_live, _is_reissue, _is_remix, _looks_baked
 
+    era = 2 if _is_remix(dict(m)) else 1 if _is_reissue(dict(m)) else 0
     return (
         1 if _is_live(dict(m)) else 0,
         _format_rank(m.get("codec")),
         1 if _looks_baked(dict(m)) else 0,
         1 if _is_arranged(dict(m)) else 0,
-        2 if _is_remix(dict(m)) else 1 if _is_reissue(dict(m)) else 0,
+        0 if m.get("album_unknown") else era,
         -int(m.get("sample_rate") or 0),
     )
 
@@ -101,16 +106,17 @@ def decide(review: Mapping[str, Any], library: Mapping[str, Any]) -> tuple[str, 
     "tie" means keep the library copy: a swap moves a master and remakes
     every edition copy of it, which is not worth doing for nothing.
 
-    The two first share their loudness the way the resolver's members do: an
-    unmeasured copy with the same audio as a master measured at -18 LUFS is
-    that baked copy, not an original. Without it the swap tool judged an
-    identical copy "original" (review of #86, finding 7; the 2026-09-26 shape).
+    The two first share their baked mark the way the resolver's members do: a
+    copy with the same audio as a master recorded as baked is that baked copy,
+    not an original. Without it the swap tool judged an identical copy
+    "original" (review of #86, finding 7; the 2026-09-26 shape).
     """
-    from .stages.dupe_resolver import _share_live_take, _share_loudness
+    from .stages.dupe_resolver import _share_baked_mark, _share_live_take, _share_unknown_album
 
     review, library = dict(review), dict(library)
-    _share_loudness([review, library])
+    _share_baked_mark([review, library])
     _share_live_take([review, library])
+    _share_unknown_album([review, library])
     for step, r, lib in zip(STEPS, keep_key(review), keep_key(library), strict=False):
         if r != lib:
             return ("review" if r < lib else "library"), step
