@@ -223,9 +223,12 @@ _REISSUE_RE = re.compile(
 # (2009 Mix)" lost to "(2005 Digital Remaster)" (Grey, 2026-10-27). A year or
 # "New" names a new mix; "Single Mix" or "Original 1973 Stereo Mix" does not.
 # shortcut: a mix year before 1990 is read as the original mix ("1965 Stereo
-# Mix"); upgrade if an older new mix turns up.
+# Mix"); upgrade if an older new mix turns up. A surround mix sent to stereo is
+# a new mix too: "(5.1 Mix)" loses to the original stereo (Grey, 2026-10-28).
 _REMIX_RE = re.compile(
-    r"\b(?:re-?mix(?:ed)?|(?:new|199\d|20\d\d)\s+(?:stereo\s+|mono\s+)?mix)\b", re.IGNORECASE
+    r"\b(?:re-?mix(?:ed)?|(?:new|199\d|20\d\d|5\.1)\s+(?:stereo\s+|mono\s+|surround\s+)?mix"
+    r"|surround\s+mix)\b",
+    re.IGNORECASE,
 )
 _ORIGINAL_RE = re.compile(r"\boriginal\b", re.IGNORECASE)
 # An arrangement is not the original either: Bach's "Air" for orchestra over
