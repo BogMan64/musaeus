@@ -179,6 +179,17 @@ def review_wins(
         rows = {r["id"]: r for r in reviews}
         lib = dict(library)
         copies = [dict(r) for r in reviews]
+        # A baked record on any row with the same audio counts, not only on the
+        # library copy (CodeRabbit, review of #262).
+        for c in (lib, *copies):
+            if not c.get("lufs_baked_at") and c.get("audio_hash"):
+                rec = conn.execute(
+                    "SELECT lufs_baked_at FROM archive WHERE audio_hash=? AND lufs_baked_at != '' "
+                    "LIMIT 1",
+                    (c["audio_hash"],),
+                ).fetchone()
+                if rec:
+                    c["lufs_baked_at"] = rec[0]
         _share_baked_mark([lib, *copies])
         _share_live_take([lib, *copies])
         _share_unknown_album([lib, *copies])

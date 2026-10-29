@@ -446,3 +446,15 @@ def test_of_tied_review_copies_the_one_filed_first_is_judged(vault):
     wins, _ = vault.mod.review_wins(vault.conn)
 
     assert [(p.review["id"], p.step) for p in wins] == [(first, "tie: in the library first")]
+
+
+def test_a_review_copy_whose_audio_is_recorded_baked_elsewhere_is_baked(vault):
+    # CodeRabbit, review of #262: the record sits on a third catalogued row, not on
+    # the library copy; the review copy was ranked as an original and won on quality.
+    lib, rev, _, _ = _lib_and_better_review(vault)
+    vault.row(vault.masters / "Rock/Toto/Other/Toto - Rosanna.m4a", "CATALOGUED", "R",
+              lufs_baked_at="2026-09-24 19:06:34")  # fmt: skip
+
+    wins, tally = vault.mod.review_wins(vault.conn)
+
+    assert wins == [] and tally["library (original/baked)"] == 1
