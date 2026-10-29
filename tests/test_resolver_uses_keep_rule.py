@@ -50,7 +50,7 @@ def test_sample_rate_decides_not_bitrate():
 
 def test_an_original_beats_an_old_baked_copy_even_at_a_higher_sample_rate():
     # Handel "Lascia Ch'io Pianga": 192 kHz at -18.01 LUFS (baked) against the 44.1 kHz original
-    baked = _m("baked", sample_rate=192000, lufs=-18.01)
+    baked = _m("baked", sample_rate=192000, lufs=-18.01, lufs_baked_at="2026-09-24 19:06:34")
     original = _m("original", sample_rate=44100, lufs=-25.35)
     assert _keeper(baked, original) == "original"
 

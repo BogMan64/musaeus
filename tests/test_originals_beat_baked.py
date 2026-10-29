@@ -7,9 +7,9 @@ and DupeResolver must keep the original whatever its bitrate: a baked copy
 has been loudness-processed (sometimes compressed), and a master is the
 untouched recording.
 
-A baked copy is recognised by its measured loudness: Forge's LUFS sits at
--18.0 (within 0.3). A newly arrived original has not been measured yet at
-Act 2, so it is never mistaken for one.
+A baked copy is recognised by the catalogue's record of the bake
+(lufs_baked_at), since 2026-10-29: loudness alone took originals for baked
+copies (tests/test_baked_needs_a_record.py).
 """
 
 from __future__ import annotations
@@ -62,7 +62,11 @@ def _near_pair(ctx: RunContext, library_lufs: float | None) -> tuple[Path, Path]
                 "size_bytes": 1,
             },
         )
-        ctx.conn.execute("UPDATE archive SET lufs = ? WHERE file_path = ?", (lufs, str(path)))
+        # An old -18 LUFS copy carries the bake's record (scripts/mark_baked_copies.py).
+        ctx.conn.execute(
+            "UPDATE archive SET lufs = ?, lufs_baked_at = ? WHERE file_path = ?",
+            (lufs, "2026-09-24 19:06:34" if lufs == -18.0 else None, str(path)),
+        )
         if filed:
             ctx.conn.execute(
                 "UPDATE archive SET finalized_at = datetime('now') WHERE file_path = ?",
@@ -94,7 +98,12 @@ def test_a_master_at_its_own_loudness_still_wins_on_quality(tmp_path):
 
 def test_the_rule_sits_below_lossless_and_above_the_rest():
     lossy_original = {"codec": "aac", "bitrate": 256_000, "lufs": None}
-    lossless_baked = {"codec": "alac", "bitrate": 900_000, "lufs": -18.0}
+    lossless_baked = {
+        "codec": "alac",
+        "bitrate": 900_000,
+        "lufs": -18.0,
+        "lufs_baked_at": "2026-09-24 19:06:34",
+    }
     assert _keeper_sort_key(lossless_baked) < _keeper_sort_key(lossy_original), (
         "a lossless baked copy still beats a lossy original: what encoding threw away "
         "matters more than a loudness pass"
