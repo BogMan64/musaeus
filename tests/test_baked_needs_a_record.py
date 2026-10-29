@@ -76,6 +76,14 @@ def test_the_resolver_ranks_the_same_way():
     assert members[0] is grey
 
 
+def test_a_song_named_original_is_not_an_original_label():
+    # CodeRabbit, review of #262: "Original Sin" is the song's name.
+    download = _copy(title="Original Sin - Single Version", album=None)
+    grey = _copy(title="Original Sin", album="The Swing (Remastered)", sample_rate=96000)
+
+    assert decide(download, grey) == ("library", "quality")
+
+
 def test_a_remaster_label_in_the_title_still_counts_without_an_album():
     original = _copy(album="From Elvis In Memphis")
     remaster = _copy(title="Suspicious Minds (2011 Remaster)", album=None, sample_rate=96000)
@@ -160,19 +168,34 @@ def test_execute_needs_the_reviewed_ids(tmp_path, monkeypatch):
     assert _marked(conn) == []
 
 
+def _first(conn) -> int:
+    return conn.execute("SELECT id FROM archive WHERE file_path LIKE '%old_baked.m4a'").fetchone()[
+        0
+    ]
+
+
 def test_execute_marks_only_the_reviewed_rows(tmp_path, monkeypatch):
     mod, conn = _script(), _db(tmp_path)
     upsert_archive(conn, {"file_path": str(tmp_path / "old_baked_2.m4a"), "status": "CATALOGUED"})
     conn.execute("UPDATE archive SET lufs = -18.0, date_added = '2026-09-25 12:00:00' "
                  "WHERE file_path = ?", (str(tmp_path / "old_baked_2.m4a"),))  # fmt: skip
     conn.commit()
-    first = conn.execute("SELECT id FROM archive WHERE file_path LIKE '%old_baked.m4a'").fetchone()[
-        0
-    ]
-    (tmp_path / "reviewed.txt").write_text(f"{first}\n")
+    _main(mod, monkeypatch, tmp_path, "--write-ids", str(tmp_path / "all.tsv"))
+    listed = (tmp_path / "all.tsv").read_text().splitlines()
+    assert len(listed) == 2, "the dry run lists every candidate"
+    keep = next(x for x in listed if x.startswith(f"{_first(conn)}\t"))
+    (tmp_path / "reviewed.tsv").write_text(keep + "\n")
 
-    assert (
-        _main(mod, monkeypatch, tmp_path, "--execute", "--ids", str(tmp_path / "reviewed.txt")) == 0
-    )
+    _main(mod, monkeypatch, tmp_path, "--execute", "--ids", str(tmp_path / "reviewed.tsv"))
 
     assert _marked(conn) == ["old_baked.m4a"]
+
+
+def test_an_id_whose_row_now_has_another_path_is_not_marked(tmp_path, monkeypatch):
+    # CodeRabbit, review of #262: an id from another or rebuilt catalogue.
+    mod, conn = _script(), _db(tmp_path)
+    (tmp_path / "reviewed.tsv").write_text(f"{_first(conn)}\t/elsewhere/old_baked.m4a\n")
+
+    _main(mod, monkeypatch, tmp_path, "--execute", "--ids", str(tmp_path / "reviewed.tsv"))
+
+    assert _marked(conn) == []

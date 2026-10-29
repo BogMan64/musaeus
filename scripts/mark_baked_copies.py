@@ -12,12 +12,14 @@ puts it back on the copies Grey's 2026-09-26 finding named: catalogued
 before the originals came in (run bf9647) and measured at -18 LUFS (within
 0.3). Nothing catalogued since came from the bake.
 
-    python3 scripts/mark_baked_copies.py            # dry run: lists them
-    python3 scripts/mark_baked_copies.py --execute --ids reviewed.txt
+    python3 scripts/mark_baked_copies.py --write-ids reviewed.tsv   # dry run
+    python3 scripts/mark_baked_copies.py --execute --ids reviewed.tsv
 
 Loudness and date are the 2026-09-26 finding, not proof for each file, so
---execute marks only the rows a person reviewed from the dry run (CodeRabbit,
-review of #262).
+--execute marks only the rows a person reviewed from the dry run: one
+"id<TAB>file_path" line each, and only while the row still has that path
+(an id from another or rebuilt catalogue must not mark an unrelated row;
+CodeRabbit, review of #262).
 """
 
 from __future__ import annotations
@@ -46,6 +48,16 @@ def candidates(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         "AND abs(lufs - ?) <= ? AND date_added < ? ORDER BY id",
         (BAKED_LUFS, TOLERANCE, ORIGINALS_CAME_IN),
     ).fetchall()
+
+
+def reviewed(rows: list[sqlite3.Row], text: str) -> list[sqlite3.Row]:
+    """The rows listed as "id<TAB>file_path" whose path is still that path."""
+    listed = {}
+    for line in text.splitlines():
+        if line.strip():
+            i, _, path = line.partition("\t")
+            listed[int(i)] = path
+    return [r for r in rows if listed.get(r["id"]) == r["file_path"]]
 
 
 def mark(conn: sqlite3.Connection, rows: list[sqlite3.Row], execute: bool) -> None:
@@ -78,8 +90,9 @@ def main() -> int:
     ap.add_argument(
         "--ids",
         metavar="FILE",
-        help="mark only these rows, one id per line (needed with --execute)",
+        help='mark only these rows, "id<TAB>file_path" per line (needed with --execute)',
     )
+    ap.add_argument("--write-ids", metavar="FILE", help="write the candidates in that form")
     args = ap.parse_args()
     if args.execute and not args.ids:
         ap.error("--execute needs --ids FILE: the rows reviewed from a dry run")
@@ -87,9 +100,10 @@ def main() -> int:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 60000")
     rows = candidates(conn)
+    if args.write_ids:
+        Path(args.write_ids).write_text("".join(f"{r['id']}\t{r['file_path']}\n" for r in rows))
     if args.ids:
-        reviewed = {int(x) for x in Path(args.ids).read_text().split()}
-        rows = [r for r in rows if r["id"] in reviewed]
+        rows = reviewed(rows, Path(args.ids).read_text())
     mark(conn, rows, args.execute)
     print(f"\n{'MARKED' if args.execute else 'DRY RUN: would mark'} {len(rows):,}")
     return 0

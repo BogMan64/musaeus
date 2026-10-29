@@ -424,10 +424,12 @@ def _share_unknown_album(members: list[dict]) -> None:
 
 
 def _title_says_original(m: dict) -> bool:
-    """True for "Song (Original Mix)" or "Song - Original": a label, not a song
-    NAMED "Original Sin" (CodeRabbit, review of #262)."""
+    """True for "Song (Original Mix)" or "Song - Original": a label after the
+    song's name, not a song NAMED "Original Sin" (- Single Version) (CodeRabbit,
+    review of #262)."""
     t = m.get("title") or ""
-    return any(_label_of(t, hit.start()) != t for hit in _ORIGINAL_RE.finditer(t))
+    name = re.split(rf" - |[{OPEN}]", t, maxsplit=1)[0]
+    return any(hit.start() >= len(name) for hit in _ORIGINAL_RE.finditer(t))
 
 
 def _keeper_sort_key(m: dict) -> tuple[int, ...]:
