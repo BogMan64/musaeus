@@ -51,6 +51,14 @@ def c(**kw):
             c(title="Song (2016 Remix)"),
             ("review", "original/remaster"),
         ),
+        # Diana Krall "The Best Thing For You": a 5.1 mix sent to stereo is a new
+        # mix, so the original stereo copy wins over its 192 kHz (Grey, 2026-10-28)
+        (
+            c(title="The Best Thing For You (5.1 Mix)", sample_rate=192000),
+            c(title="The Best Thing For You"),
+            ("library", "original/remaster"),
+        ),
+        (c(title="Song (Surround Mix)", sample_rate=96000), c(), ("library", "original/remaster")),
         (c(title="Song (Single Mix)"), c(), ("tie", "")),
         (c(title="Song (1965 Stereo Mix)"), c(), ("tie", "")),
         (c(title="Song (Original 1973 Stereo Mix)"), c(), ("tie", "")),
