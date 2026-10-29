@@ -223,11 +223,16 @@ def test_only_library_and_review_copies_are_candidates(tmp_path):
 
 def test_the_dry_run_works_on_a_catalogue_without_the_bake_columns(tmp_path, monkeypatch):
     # CodeRabbit, review of #262: open_db adds the columns before they are read.
+    # Rebuilt without the two columns: DROP COLUMN needs SQLite 3.35 (CodeRabbit).
     _db(tmp_path).close()
     db = sqlite3.connect(tmp_path / "musaeus.db")
-    db.execute("ALTER TABLE archive DROP COLUMN lufs_baked_at")
-    db.execute("ALTER TABLE archive DROP COLUMN lufs_baked_target")
+    cols = [r[1] for r in db.execute("PRAGMA table_info(archive)")
+            if r[1] not in ("lufs_baked_at", "lufs_baked_target")]  # fmt: skip
+    db.execute(f"CREATE TABLE old_archive AS SELECT {', '.join(cols)} FROM archive")
+    db.execute("DROP TABLE archive")
+    db.execute("ALTER TABLE old_archive RENAME TO archive")
     db.commit()
+    assert "lufs_baked_at" not in {r[1] for r in db.execute("PRAGMA table_info(archive)")}
     db.close()
 
     assert _main(_script(), monkeypatch, tmp_path) == 0
