@@ -160,3 +160,69 @@ def test_a_db_collision_does_not_promise_the_line_says_if_the_file_was_put_back(
     [(meaning, fix, _)] = explain(["a.flac: DB collision on /lib/a.m4a: UNIQUE constraint failed"])
     assert "says whether" not in meaning
     assert "both" in fix and "run log" in fix
+
+
+# CodeRabbit on #261 (2026-10-28).
+
+import pytest  # noqa: E402
+
+from musaeus.handoff import PROBLEM_KINDS  # noqa: E402
+
+_MEANING = {words[0]: meaning for words, meaning, _ in PROBLEM_KINDS}
+
+
+def test_a_file_name_holding_the_words_does_not_pick_the_kind() -> None:
+    [(meaning, _, _)] = explain(["Missing: /INBOX/damaged audio.flac"])
+    assert meaning == _MEANING["file missing on disk"]
+
+
+@pytest.mark.parametrize(
+    ("line", "kind"),
+    [
+        # The lines the stages write, as they write them.
+        (DAMAGED, "audio does not decode cleanly"),
+        ("a.m4a: damaged audio, not measured", "audio does not decode cleanly"),
+        (
+            "  ⚠ b.m4a: does not decode, moved to /Q/corrupted/b.m4a",
+            "audio does not decode cleanly",
+        ),
+        ("a.m4a: not decoded: ffmpeg missing", "not decoded:"),
+        ("a.m4a: arrival not decoded: ffmpeg missing", "not decoded:"),
+        ("/x/a.m4a: file missing on disk", "file missing on disk"),
+        ("a.m4a: missing on disk", "file missing on disk"),
+        ("Missing file, marked GHOST: /x/a.m4a", "file missing on disk"),
+        ("Missing: /x/a.m4a", "file missing on disk"),
+        (
+            "MASTERS MISSING: 2 recording(s) the catalogue still holds are not on disk",
+            "file missing on disk",
+        ),
+        ("a.flac: DB collision on /lib/a.m4a: UNIQUE constraint failed", "DB collision"),
+        ("a.m4a: DB collision, move reverted", "DB collision"),
+        ("a.m4a: could not read file: Permission denied", "could not read file"),
+        ("full_hash OS error: a.m4a: [Errno 5]", "could not read file"),
+        ("a.m4a: tag write failed", "tag write failed"),
+        ("Failure report: /RUNS/FAILURES/x.json", "Failure report:"),
+    ],
+)
+def test_each_stage_line_gets_its_kind(line: str, kind: str) -> None:
+    [(meaning, _, _)] = explain([line])
+    assert meaning == _MEANING[kind]
+
+
+def test_damaged_arrivals_noted_without_an_error_line_still_get_the_fix(tmp_path: Path) -> None:
+    """CorruptStage notes its quarantined arrivals and writes no error line."""
+    r = StageResult(stage_name="corrupt", success=True, files_errored=1)
+    r.notes += [
+        "1 new arrival(s) do not decode; not filed:",
+        "  ⚠ b.m4a: does not decode, moved to /Q/b.m4a",
+    ]
+    ctx = SimpleNamespace(stage_results=[r], runs_root=tmp_path, run_id="run_t")
+    section = (
+        write_handoff_doc(ctx).read_text().split("## Problems in stages that still finished", 1)[1]
+    )
+    assert "Get the song again" in section
+    assert "Get the song again" in "\n".join(problem_summary([r]))
+
+
+def test_the_damaged_text_does_not_say_a_library_file_stays_put() -> None:
+    assert "stays where it is" not in _MEANING["audio does not decode cleanly"]

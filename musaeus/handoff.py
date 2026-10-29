@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -91,6 +92,7 @@ def _stage_issues(stage_results: list[StageResult]) -> list[dict[str, Any]]:
                     "stage": r.stage_name,
                     "files_errored": r.files_errored,
                     "errors": list(r.errors),
+                    "notes": list(r.notes),
                 }
             )
         if r.verified is False:
@@ -148,25 +150,26 @@ def _capped(items: list[str], prefix: str = "") -> list[str]:
 #: Each kind of problem a stage reports: words its lines carry, what it means,
 #: how to fix it. Plain words for a person, or an AI that cannot see the code
 #: (Grey, 2026-10-28: "add more detail. Enough so that a FreeAI can interpret
-#: and help with any corrections"). First match wins.
+#: and help with any corrections"). First match wins. A word counts only at the
+#: start of the line or after ": ", so a file NAME holding the words ("Missing:
+#: /INBOX/damaged audio.flac") does not pick the kind (CodeRabbit on #261).
 PROBLEM_KINDS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (
-        ("does not decode cleanly", "damaged audio"),
+        ("audio does not decode cleanly", "damaged audio", "does not decode,"),
         "The song file itself is damaged: its audio holds broken data. The fault is in"
-        " the file, not in MUSAEUS. A damaged new arrival is moved to"
-        " QUARANTINE/corrupted and never reaches the library; a damaged library file"
-        " stays where it is.",
+        " the file, not in MUSAEUS. Once the corrupt check confirms it, MUSAEUS moves the"
+        " file to QUARANTINE/corrupted; a damaged new arrival never reaches the library.",
         "Get the song again from where it came from, put the new file in INBOX, and run"
         " again. No code change is needed.",
     ),
     (
-        ("not decoded:",),
+        ("not decoded:", "arrival not decoded:"),
         "MUSAEUS could not run the audio decoder (ffmpeg) on the file, so it could not"
         " check it. Nothing was moved: the file waits for the next run.",
         "Check that ffmpeg works (`ffmpeg -version`) and that the file opens, then run again.",
     ),
     (
-        ("missing on disk", "Missing file", "Missing: ", "not on disk"),
+        ("file missing on disk", "missing on disk", "Missing file", "Missing:", "MASTERS MISSING"),
         "The database lists a file that is no longer on the disk: it was moved, renamed"
         " or deleted outside MUSAEUS.",
         "Find out where the file went. If it was deleted on purpose, nothing is needed;"
@@ -209,26 +212,28 @@ _SELF_CHECK = (
 )
 
 
-def explain(errors: list[str]) -> list[tuple[str, str, int]]:
+_KIND_RES = tuple(
+    (re.compile("|".join(rf"(?:^\s*|: ){re.escape(w)}" for w in words)), m, f)
+    for words, m, f in PROBLEM_KINDS
+)
+
+
+def explain(errors: list[str], known_only: bool = False) -> list[tuple[str, str, int]]:
     """(what it means, how to fix it, how many lines) per kind in *errors*, in
-    the order first seen."""
+    the order first seen. *known_only* is for a stage's notes, most of which are
+    not problems: only the kinds they match, or else the unknown kind once."""
     found: dict[tuple[str, str], int] = {}
     for e in errors:
-        kind = next(
-            ((m, f) for words, m, f in PROBLEM_KINDS if any(w in e for w in words)), UNKNOWN_KIND
-        )
+        kind = next(((m, f) for rx, m, f in _KIND_RES if rx.search(e)), UNKNOWN_KIND)
         found[kind] = found.get(kind, 0) + 1
+    if known_only:
+        found = {k: n for k, n in found.items() if k != UNKNOWN_KIND} or {UNKNOWN_KIND: len(errors)}
     return [(m, f, n) for (m, f), n in found.items()]
 
 
 def _explained(errors: list[str], known_only: bool = False) -> list[str]:
-    """*known_only*: for a stage's notes, which are mostly not problems -- the
-    kinds they match, or else the unknown kind once."""
-    kinds = explain(errors)
-    if known_only:
-        kinds = [k for k in kinds if k[:2] != UNKNOWN_KIND] or [(*UNKNOWN_KIND, len(errors))]
     lines = [""]
-    for meaning, fix, n in kinds:
+    for meaning, fix, n in explain(errors, known_only):
         lines += [
             f"**What this means** ({n} line(s)): {meaning}",
             "",
@@ -250,11 +255,13 @@ def problem_summary(stage_results: list[StageResult]) -> list[str]:
             continue
         errors = i["errors"]
         if not errors:
-            first = f" First note: {i['notes'][0]}" if i.get("notes") else ""
+            first = f" First note: {i['notes'][0]}" if i["notes"] else ""
             lines.append(
                 f"- {i['stage']}: a problem with no error line ({i['files_errored']} file(s));"
                 f" its notes in the ForClaudeHandoff doc say more.{first}"
             )
+            for meaning, fix, _n in explain(i["notes"], known_only=True) if i["notes"] else []:
+                lines += [f"    Means: {meaning}", f"    Fix: {fix}"]
             continue
         lines.append(f"- {i['stage']}: {len(errors)} problem(s). First: {errors[0]}")
         for meaning, fix, n in explain(errors):
@@ -428,6 +435,8 @@ def _render(
                 lines.append("")
                 lines.append("- No error line was written; the stage's notes under")
                 lines.append("  'What each stage reported' above say which files.")
+                if i["notes"]:
+                    lines.extend(_explained(i["notes"], known_only=True))
                 lines.append("")
                 continue
             lines.append(f"### {i['stage']}  ({len(i['errors'])} problem(s))")
