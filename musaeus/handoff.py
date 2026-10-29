@@ -162,10 +162,18 @@ PROBLEM_KINDS: tuple[tuple[tuple[str, ...], str, str], ...] = (
             r": does not decode, moved to ",
         ),
         "The song file itself is damaged: its audio holds broken data. The fault is in"
-        " the file, not in MUSAEUS. Once the corrupt check confirms it, MUSAEUS moves the"
-        " file to QUARANTINE/corrupted; a damaged new arrival never reaches the library.",
+        " the file, not in MUSAEUS. A damaged file is not filed. The corrupt check moves"
+        " it to QUARANTINE/corrupted when it confirms the damage (a new arrival: later in"
+        " the same full run).",
         "Get the song again from where it came from, put the new file in INBOX, and run"
         " again. No code change is needed.",
+    ),
+    (
+        (r"^\d+ arrival\(s\) held back: not decoded clean ",),
+        "These new songs were not filed yet: no clean decode is recorded for them. This"
+        " is a safety hold, not a fault; they wait in STAGING.",
+        "Run the whole pipeline again (`musaeus run`): Act 1's corrupt check decodes them,"
+        " then Act 3 files them. One that fails the decode is a damaged file.",
     ),
     (
         (r": (?:arrival )?not decoded: ",),

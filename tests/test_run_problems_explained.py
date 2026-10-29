@@ -170,7 +170,7 @@ from musaeus.handoff import PROBLEM_KINDS  # noqa: E402
 
 _MEANING = dict(
     zip(
-        ("damaged", "decoder", "missing", "collision", "read", "tag", "crash"),
+        ("damaged", "held", "decoder", "missing", "collision", "read", "tag", "crash"),
         (meaning for _, meaning, _ in PROBLEM_KINDS),
         strict=True,
     )
@@ -191,6 +191,10 @@ def test_a_file_name_holding_the_words_does_not_pick_the_kind() -> None:
         (
             "  ⚠ b.m4a: does not decode, moved to /Q/corrupted/b.m4a",
             "damaged",
+        ),
+        (
+            "3 arrival(s) held back: not decoded clean (Act 1's Corrupt decodes them; then Act 3 files them)",
+            "held",
         ),
         ("a.m4a: not decoded: ffmpeg missing", "decoder"),
         ("a.m4a: arrival not decoded: ffmpeg missing", "decoder"),
@@ -251,3 +255,12 @@ def test_the_screen_shows_the_damaged_note_not_the_clean_scan_note() -> None:
     text = "\n".join(problem_summary([r]))
     assert "No corrupt files detected" not in text
     assert "First note: ⚠ b.m4a: does not decode" in text
+
+
+# Codex review of #261, round 3.
+
+
+def test_the_damaged_text_does_not_say_the_file_was_always_moved() -> None:
+    """Sentinel alone records a failed decode and moves nothing."""
+    assert "MUSAEUS moves the file" not in _MEANING["damaged"]
+    assert "when it confirms the damage" in _MEANING["damaged"]
