@@ -171,7 +171,7 @@ PROBLEM_KINDS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (
         (r"^\d+ arrival\(s\) held back: not decoded clean ",),
         "These new songs were not filed yet: no clean decode is recorded for them. This"
-        " is a safety hold, not a fault; they wait in STAGING.",
+        " is a safety hold, not a fault; they stay where they are, in INBOX or STAGING.",
         "Run the whole pipeline again (`musaeus run`): Act 1's corrupt check decodes them,"
         " then Act 3 files them. One that fails the decode is a damaged file.",
     ),
