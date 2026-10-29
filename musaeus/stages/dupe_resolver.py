@@ -413,11 +413,21 @@ def _share_unknown_album(members: list[dict]) -> None:
     judge the group; sample rate and length do.
     """
     if any(
-        not (m.get("album") or "").strip() and not _is_reissue(m) and not _is_remix(m)
+        not (m.get("album") or "").strip()
+        and not _is_reissue(m)
+        and not _is_remix(m)
+        and not _title_says_original(m)
         for m in members
     ):
         for m in members:
             m["album_unknown"] = True
+
+
+def _title_says_original(m: dict) -> bool:
+    """True for "Song (Original Mix)" or "Song - Original": a label, not a song
+    NAMED "Original Sin" (CodeRabbit, review of #262)."""
+    t = m.get("title") or ""
+    return any(_label_of(t, hit.start()) != t for hit in _ORIGINAL_RE.finditer(t))
 
 
 def _keeper_sort_key(m: dict) -> tuple[int, ...]:

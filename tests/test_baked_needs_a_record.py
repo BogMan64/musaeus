@@ -16,6 +16,8 @@ import importlib.util
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from musaeus.db import open_db, upsert_archive
 from musaeus.keep_rule import decide
 from musaeus.stages.dupe_resolver import _rank, _share_baked_mark
@@ -129,3 +131,48 @@ def test_a_dry_run_marks_nothing(tmp_path):
     mod.mark(conn, mod.candidates(conn), execute=False)
 
     assert _marked(conn) == []
+
+
+def test_an_original_mix_label_is_judged_without_an_album():
+    # CodeRabbit, review of #262: "(Original Mix)" is a label, not an unknown.
+    original = _copy(title="Suspicious Minds (Original Mix)", album=None)
+    remaster = _copy(album="From Elvis In Memphis (Remastered)", sample_rate=96000)
+
+    assert decide(original, remaster) == ("review", "original/remaster")
+
+
+def _main(mod, monkeypatch, tmp_path, *argv):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        mod.MusicConfig, "from_env", lambda: SimpleNamespace(db_path=tmp_path / "musaeus.db")
+    )
+    monkeypatch.setattr("sys.argv", ["mark_baked_copies.py", *argv])
+    return mod.main()
+
+
+def test_execute_needs_the_reviewed_ids(tmp_path, monkeypatch):
+    mod, conn = _script(), _db(tmp_path)
+
+    with pytest.raises(SystemExit):
+        _main(mod, monkeypatch, tmp_path, "--execute")
+
+    assert _marked(conn) == []
+
+
+def test_execute_marks_only_the_reviewed_rows(tmp_path, monkeypatch):
+    mod, conn = _script(), _db(tmp_path)
+    upsert_archive(conn, {"file_path": str(tmp_path / "old_baked_2.m4a"), "status": "CATALOGUED"})
+    conn.execute("UPDATE archive SET lufs = -18.0, date_added = '2026-09-25 12:00:00' "
+                 "WHERE file_path = ?", (str(tmp_path / "old_baked_2.m4a"),))  # fmt: skip
+    conn.commit()
+    first = conn.execute("SELECT id FROM archive WHERE file_path LIKE '%old_baked.m4a'").fetchone()[
+        0
+    ]
+    (tmp_path / "reviewed.txt").write_text(f"{first}\n")
+
+    assert (
+        _main(mod, monkeypatch, tmp_path, "--execute", "--ids", str(tmp_path / "reviewed.txt")) == 0
+    )
+
+    assert _marked(conn) == ["old_baked.m4a"]

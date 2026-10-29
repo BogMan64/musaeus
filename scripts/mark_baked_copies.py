@@ -13,7 +13,11 @@ before the originals came in (run bf9647) and measured at -18 LUFS (within
 0.3). Nothing catalogued since came from the bake.
 
     python3 scripts/mark_baked_copies.py            # dry run: lists them
-    python3 scripts/mark_baked_copies.py --execute
+    python3 scripts/mark_baked_copies.py --execute --ids reviewed.txt
+
+Loudness and date are the 2026-09-26 finding, not proof for each file, so
+--execute marks only the rows a person reviewed from the dry run (CodeRabbit,
+review of #262).
 """
 
 from __future__ import annotations
@@ -71,11 +75,21 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--execute", action="store_true", help="write the marks (default: dry run)")
+    ap.add_argument(
+        "--ids",
+        metavar="FILE",
+        help="mark only these rows, one id per line (needed with --execute)",
+    )
     args = ap.parse_args()
+    if args.execute and not args.ids:
+        ap.error("--execute needs --ids FILE: the rows reviewed from a dry run")
     conn = sqlite3.connect(MusicConfig.from_env().db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 60000")
     rows = candidates(conn)
+    if args.ids:
+        reviewed = {int(x) for x in Path(args.ids).read_text().split()}
+        rows = [r for r in rows if r["id"] in reviewed]
     mark(conn, rows, args.execute)
     print(f"\n{'MARKED' if args.execute else 'DRY RUN: would mark'} {len(rows):,}")
     return 0
