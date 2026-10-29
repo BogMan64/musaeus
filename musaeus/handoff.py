@@ -182,16 +182,19 @@ PROBLEM_KINDS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "Check that ffmpeg works (`ffmpeg -version`) and that the file opens, then run again.",
     ),
     (
-        (
-            r": (?:file )?missing on disk$",
-            r"^Missing file, marked GHOST: ",
-            r"^Missing: ",
-            r"^MASTERS MISSING: ",
-        ),
+        (r": (?:file )?missing on disk$", r"^Missing file, marked GHOST: ", r"^Missing: "),
         "The database lists a file that is no longer on the disk: it was moved, renamed"
         " or deleted outside MUSAEUS.",
         "Find out where the file went. If it was deleted on purpose, nothing is needed;"
         " if not, put it back and run again.",
+    ),
+    (
+        (r"^MASTERS MISSING: ",),
+        "The catalogue lists masters that are no longer on the disk. The library check"
+        " fails every run until the catalogue and the disk agree again.",
+        "Needs a person: find each file listed under this line. Put back any that were"
+        " moved by mistake. For one removed on purpose, the catalogue must record the"
+        " removal (ask Claude to apply it); do not edit the database by hand.",
     ),
     (
         (r": DB collision(?:,| on )",),
@@ -224,6 +227,15 @@ UNKNOWN_KIND = (
     "Give an AI the ForClaudeHandoff doc and the run log lines that name the file."
     " Ask it to say plainly what it cannot check from there.",
 )
+#: A decode that failed because of the machine (Sentinel's own list), read as
+#: damaged audio it would send Grey to buy a good file again (CodeRabbit on #261).
+_MACHINE = (
+    "The decoder failed because of the machine, not the file: for example ffmpeg"
+    " missing, a disk read error, or no memory. The file may be fine. It was not"
+    " moved, and the next run tries it again.",
+    "Fix the machine problem the line names (install ffmpeg, check the disk is"
+    " mounted and readable), then run again. Do not get the song again.",
+)
 _SELF_CHECK = (
     "The stage says it did its work, but its own check found the work did not happen.",
     "Needs a code look before the next run: give an AI the Verification failures section.",
@@ -237,13 +249,23 @@ def explain(errors: list[str], known_only: bool = False) -> list[tuple[str, str,
     """(what it means, how to fix it, how many lines) per kind in *errors*, in
     the order first seen. *known_only* is for a stage's notes, most of which are
     not problems: only the kinds they match, or else the unknown kind once."""
+    from .stages.sentinel import _is_environmental
+
     found: dict[tuple[str, str], int] = {}
     for e in errors:
         kind = next(((m, f) for rx, m, f in _KIND_RES if rx.search(e.strip())), UNKNOWN_KIND)
+        if kind == _KIND_RES[0][1:] and _is_environmental(e):
+            kind = _MACHINE
         found[kind] = found.get(kind, 0) + 1
     if known_only:
         found = {k: n for k, n in found.items() if k != UNKNOWN_KIND} or {UNKNOWN_KIND: len(errors)}
     return [(m, f, n) for (m, f), n in found.items()]
+
+
+def _known(notes: list[str]) -> list[str]:
+    """The notes that are a known kind of problem (corrupt's quarantined arrivals);
+    a stage's other notes are not problems."""
+    return [n for n in notes if explain([n])[0][:2] != UNKNOWN_KIND]
 
 
 def _explained(errors: list[str], known_only: bool = False) -> list[str]:
@@ -272,7 +294,7 @@ def problem_summary(stage_results: list[StageResult]) -> list[str]:
         if not errors:
             # The first note of a known kind: a clean scan's "No corrupt files
             # detected" can come first (Codex on #261).
-            known = [n for n in i["notes"] if explain([n])[0][:2] != UNKNOWN_KIND]
+            known = _known(i["notes"])
             first = f" First note: {known[0].strip()}" if known else ""
             lines.append(
                 f"- {i['stage']}: a problem with no error line ({i['files_errored']} file(s));"
@@ -282,7 +304,8 @@ def problem_summary(stage_results: list[StageResult]) -> list[str]:
                 lines += [f"    Means: {meaning}", f"    Fix: {fix}"]
             continue
         lines.append(f"- {i['stage']}: {len(errors)} problem(s). First: {errors[0]}")
-        for meaning, fix, n in explain(errors):
+        # Known notes too: corrupt can error on one arrival and quarantine another.
+        for meaning, fix, n in explain(errors + _known(i.get("notes", []))):
             lines += [f"    Means ({n}): {meaning}", f"    Fix: {fix}"]
     if lines:
         lines = ["What needs attention:", *lines]
@@ -426,7 +449,7 @@ def _render(
             lines.append("")
             lines.extend(_capped(i["errors"], "ERROR: "))
             if i["errors"]:
-                lines.extend(_explained(i["errors"]))
+                lines.extend(_explained(i["errors"] + _known(i["notes"])))
             if i["notes"] and i["errors"]:
                 lines += ["", "Other notes from this stage (not errors):", ""]
                 lines.extend(_capped(i["notes"]))
@@ -460,7 +483,7 @@ def _render(
             lines.append(f"### {i['stage']}  ({len(i['errors'])} problem(s))")
             lines.append("")
             lines.extend(_capped(i["errors"], "PROBLEM: "))
-            lines.extend(_explained(i["errors"]))
+            lines.extend(_explained(i["errors"] + _known(i["notes"])))
             lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"

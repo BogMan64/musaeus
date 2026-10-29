@@ -170,7 +170,7 @@ from musaeus.handoff import PROBLEM_KINDS  # noqa: E402
 
 _MEANING = dict(
     zip(
-        ("damaged", "held", "decoder", "missing", "collision", "read", "tag", "crash"),
+        ("damaged", "held", "decoder", "missing", "masters", "collision", "read", "tag", "crash"),
         (meaning for _, meaning, _ in PROBLEM_KINDS),
         strict=True,
     )
@@ -204,7 +204,7 @@ def test_a_file_name_holding_the_words_does_not_pick_the_kind() -> None:
         ("Missing: /x/a.m4a", "missing"),
         (
             "MASTERS MISSING: 2 recording(s) the catalogue still holds are not on disk",
-            "missing",
+            "masters",
         ),
         ("a.flac: DB collision on /lib/a.m4a: UNIQUE constraint failed", "collision"),
         ("a.m4a: DB collision, move reverted", "collision"),
@@ -264,3 +264,35 @@ def test_the_damaged_text_does_not_say_the_file_was_always_moved() -> None:
     """Sentinel alone records a failed decode and moves nothing."""
     assert "MUSAEUS moves the file" not in _MEANING["damaged"]
     assert "when it confirms the damage" in _MEANING["damaged"]
+
+
+# CodeRabbit on #261, round 2.
+
+
+def test_a_decode_failed_by_the_machine_is_not_called_a_damaged_file() -> None:
+    from musaeus.handoff import _MACHINE
+
+    line = "audio does not decode cleanly: a.flac: ffmpeg not found on PATH"
+    assert explain([line]) == [(*_MACHINE, 1)]
+    assert "Do not get the song again" in _MACHINE[1]
+
+
+def test_missing_masters_get_their_own_fix() -> None:
+    [(meaning, fix, _)] = explain(
+        ["MASTERS MISSING: 2 recording(s) the catalogue still holds are not on disk"]
+    )
+    assert meaning == _MEANING["masters"] and "catalogue must record the removal" in fix
+
+
+def test_a_stage_with_errors_and_damaged_notes_explains_both(tmp_path: Path) -> None:
+    r = StageResult(stage_name="corrupt", success=False, files_errored=2)
+    r.errors.append("a.m4a: arrival not decoded: ffmpeg gone")
+    r.notes += [
+        "1 new arrival(s) do not decode; not filed:",
+        "  ⚠ b.m4a: does not decode, moved to /Q/b.m4a",
+    ]
+    ctx = SimpleNamespace(stage_results=[r], runs_root=tmp_path, run_id="run_t")
+    section = write_handoff_doc(ctx).read_text().split("## Stages that reported failure", 1)[1]
+    screen = "\n".join(problem_summary([r]))
+    for text in (section, screen):
+        assert _MEANING["decoder"] in text and _MEANING["damaged"] in text
