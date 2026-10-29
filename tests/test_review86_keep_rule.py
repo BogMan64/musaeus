@@ -21,7 +21,7 @@ def _copy(**kw):
 
 
 def test_an_unmeasured_copy_of_a_baked_master_does_not_win():
-    master = _copy(lufs=-18.0)  # the master, measured: a baked copy
+    master = _copy(lufs=-18.0, lufs_baked_at="2026-09-24 19:06:34")  # the master: a baked copy
     review = _copy(lufs=None)  # the same audio, not measured yet
 
     verdict, step = decide(review, master)
@@ -30,7 +30,7 @@ def test_an_unmeasured_copy_of_a_baked_master_does_not_win():
 
 
 def test_an_unmeasured_original_still_beats_a_baked_master():
-    master = _copy(lufs=-18.0)
+    master = _copy(lufs=-18.0, lufs_baked_at="2026-09-24 19:06:34")
     review = _copy(lufs=None, audio_hash="OTHER")  # different audio: a real original
 
     assert decide(review, master)[0] == "review"

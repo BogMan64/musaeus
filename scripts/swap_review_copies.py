@@ -60,7 +60,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from musaeus.config import MusicConfig  # noqa: E402
 from musaeus.hasher import audio_hash_safe  # noqa: E402
 from musaeus.keep_rule import decide, keep_key  # noqa: E402
-from musaeus.stages.dupe_resolver import _share_live_take, _share_loudness  # noqa: E402
+from musaeus.stages.dupe_resolver import (  # noqa: E402
+    _share_baked_mark,
+    _share_live_take,
+    _share_unknown_album,
+)
 
 EVENT = "SWAP_PROMOTED"
 #: The library row's facts the promoted copy takes, so it files where L is.
@@ -175,21 +179,40 @@ def review_wins(
         rows = {r["id"]: r for r in reviews}
         lib = dict(library)
         copies = [dict(r) for r in reviews]
-        _share_loudness([lib, *copies])
+        # A baked record on any row with the same audio counts, not only on the
+        # library copy (CodeRabbit, review of #262).
+        for c in (lib, *copies):
+            if not c.get("lufs_baked_at") and c.get("audio_hash"):
+                rec = conn.execute(
+                    "SELECT lufs_baked_at FROM archive WHERE audio_hash=? AND lufs_baked_at != '' "
+                    "LIMIT 1",
+                    (c["audio_hash"],),
+                ).fetchone()
+                if rec:
+                    c["lufs_baked_at"] = rec[0]
+        _share_baked_mark([lib, *copies])
         _share_live_take([lib, *copies])
-        ranked = sorted(
-            copies, key=functools.cmp_to_key(better_first)
-        )  # stable: ties keep id order
+        _share_unknown_album([lib, *copies])
+        # Ties keep catalogue order -- filed first, then the older row -- as the
+        # resolver's _keeper_sort_key does (CodeRabbit, review of #262).
+        copies.sort(key=lambda r: (0 if r["finalized_at"] else 1, r["id"]))
+        ranked = sorted(copies, key=functools.cmp_to_key(better_first))  # stable
         # A 2 s tie is not transitive: 201.9 s ties 202.1 s, but only 202.1 s
         # beats a 200.0 s master. Among copies tied on every step before
         # length, the longest goes first, as the resolver's _rank does (Codex
         # review of #226: FLAC copies now reach the length step).
         tied = [r for r in ranked if keep_key(r) == keep_key(ranked[0])]
         longest = max(tied, key=lambda r: float(r["duration"] or 0))
+        if decide(longest, lib)[0] != "review":
+            longest = tied[0]  # length wins nothing: the copy first in catalogue order
         ranked.remove(longest)
         ranked.insert(0, longest)
         best, rest = ranked[0], ranked[1:]
         winner, step = decide(best, lib)
+        # A full tie: the copy that was in the library first wins (Grey,
+        # 2026-10-29), as the resolver's _keeper_sort_key ranks it.
+        if winner == "tie" and best["finalized_at"] and best["id"] < lib["id"]:
+            winner, step = "review", "tie: in the library first"
         tally[f"{winner} ({step})" if step else winner] += 1
         if winner == "review":
             wins.append(Pair(rows[best["id"]], library, step))
@@ -239,7 +262,15 @@ def promote(conn: sqlite3.Connection, pairs: list[Pair], execute: bool) -> colle
         sets = ", ".join(f"{f} = ?" for f in FACTS)
         conn.execute(
             f"UPDATE archive SET status='CATALOGUED', {sets}, canonicalized_at=NULL, "
-            "finalized_at=NULL WHERE id=? AND status='DUPE_REVIEW'",
+            "finalized_at=NULL, "
+            # The audio of a recorded baked copy is baked: the record must not be
+            # lost when the master that held it is retired (CodeRabbit, #262).
+            "lufs_baked_at=COALESCE(NULLIF(lufs_baked_at, ''), (SELECT b.lufs_baked_at "
+            "FROM archive b WHERE b.audio_hash=archive.audio_hash AND b.lufs_baked_at != '' "
+            "LIMIT 1)), lufs_baked_target=COALESCE(lufs_baked_target, (SELECT "
+            "b.lufs_baked_target FROM archive b WHERE b.audio_hash=archive.audio_hash "
+            "AND b.lufs_baked_at != '' LIMIT 1)) "
+            "WHERE id=? AND status='DUPE_REVIEW'",
             (*(lib[f] for f in FACTS), r["id"]),
         )
         conn.execute(

@@ -50,7 +50,7 @@ def test_sample_rate_decides_not_bitrate():
 
 def test_an_original_beats_an_old_baked_copy_even_at_a_higher_sample_rate():
     # Handel "Lascia Ch'io Pianga": 192 kHz at -18.01 LUFS (baked) against the 44.1 kHz original
-    baked = _m("baked", sample_rate=192000, lufs=-18.01)
+    baked = _m("baked", sample_rate=192000, lufs=-18.01, lufs_baked_at="2026-09-24 19:06:34")
     original = _m("original", sample_rate=44100, lufs=-25.35)
     assert _keeper(baked, original) == "original"
 
@@ -105,3 +105,11 @@ def test_a_live_mark_comes_from_the_copies_ranked_now():
     members.remove(live)
     _rank(members)
     assert members[0]["file_path"] == "original"
+
+
+def test_a_full_tie_keeps_the_copy_catalogued_first():
+    # Grey, 2026-10-29, on downloads that had replaced equal copies: "Please
+    # make it the winner moving forward". Bitrate is noise (Grey, 2026-10-03).
+    grey = _m("grey", id=20063, bitrate=900)
+    download = _m("download", id=82234, bitrate=1_100)
+    assert _keeper(download, grey) == "grey"

@@ -71,7 +71,12 @@ def _row(
             "size_bytes": 1,
         },
     )
-    ctx.conn.execute("UPDATE archive SET lufs = ? WHERE file_path = ?", (lufs, str(path)))
+    # An old -18 LUFS copy carries the bake's record (scripts/mark_baked_copies.py).
+    baked_at = "2026-09-24 19:06:34" if lufs == -18.0 else None
+    ctx.conn.execute(
+        "UPDATE archive SET lufs = ?, lufs_baked_at = ? WHERE file_path = ?",
+        (lufs, baked_at, str(path)),
+    )
     if filed:
         ctx.conn.execute(
             "UPDATE archive SET finalized_at = datetime('now') WHERE file_path = ?", (str(path),)
