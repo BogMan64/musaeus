@@ -33,6 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from musaeus.config import MusicConfig  # noqa: E402
+from musaeus.db import open_db  # noqa: E402
 
 EVENT = "BAKED_COPY_MARKED"
 #: When the originals of the baked masters were catalogued (run bf9647).
@@ -44,7 +45,8 @@ TOLERANCE = 0.3
 def candidates(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT id, file_path, artist, title, status, lufs, date_added FROM archive "
-        "WHERE (lufs_baked_at IS NULL OR lufs_baked_at = '') AND lufs IS NOT NULL "
+        "WHERE status IN ('CATALOGUED', 'DUPE_REVIEW') "
+        "AND (lufs_baked_at IS NULL OR lufs_baked_at = '') AND lufs IS NOT NULL "
         "AND abs(lufs - ?) <= ? AND date_added < ? ORDER BY id",
         (BAKED_LUFS, TOLERANCE, ORIGINALS_CAME_IN),
     ).fetchall()
@@ -98,7 +100,9 @@ def main() -> int:
         ap.error("--execute needs --ids FILE: the rows reviewed from a dry run")
     if args.write_ids and (args.ids or args.execute):
         ap.error("--write-ids is for the dry run alone: review the file, then --execute --ids")
-    conn = sqlite3.connect(MusicConfig.from_env().db_path)
+    # open_db, not sqlite3.connect: an older catalogue gets the bake columns
+    # before candidates() reads them (CodeRabbit, review of #262).
+    conn = open_db(Path(MusicConfig.from_env().db_path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 60000")
     rows = candidates(conn)

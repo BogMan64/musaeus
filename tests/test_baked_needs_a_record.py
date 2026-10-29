@@ -210,3 +210,24 @@ def test_the_candidate_list_cannot_be_written_and_used_in_one_run(tmp_path, monk
         _main(mod, monkeypatch, tmp_path, "--execute", "--write-ids", ids, "--ids", ids)
 
     assert _marked(conn) == []
+
+
+def test_only_library_and_review_copies_are_candidates(tmp_path):
+    # CodeRabbit, review of #262: a GHOST row has no file to be a copy of anything.
+    mod, conn = _script(), _db(tmp_path)
+    conn.execute("UPDATE archive SET status = 'GHOST' WHERE file_path LIKE '%old_baked.m4a'")
+    conn.commit()
+
+    assert mod.candidates(conn) == []
+
+
+def test_the_dry_run_works_on_a_catalogue_without_the_bake_columns(tmp_path, monkeypatch):
+    # CodeRabbit, review of #262: open_db adds the columns before they are read.
+    _db(tmp_path).close()
+    db = sqlite3.connect(tmp_path / "musaeus.db")
+    db.execute("ALTER TABLE archive DROP COLUMN lufs_baked_at")
+    db.execute("ALTER TABLE archive DROP COLUMN lufs_baked_target")
+    db.commit()
+    db.close()
+
+    assert _main(_script(), monkeypatch, tmp_path) == 0

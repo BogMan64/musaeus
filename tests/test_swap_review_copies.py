@@ -20,7 +20,7 @@ COLS = (
     "id INTEGER PRIMARY KEY, file_path TEXT, audio_hash TEXT, artist TEXT, album TEXT, "
     "title TEXT, genre TEXT, codec TEXT, sample_rate INTEGER, duration REAL, lufs REAL, status TEXT, "
     "mb_artist_name TEXT, mb_artist_id TEXT, canonicalized_at TEXT, finalized_at TEXT, "
-    "kept_by_person_at TEXT"
+    "kept_by_person_at TEXT, lufs_baked_at TEXT, lufs_baked_target REAL"
 )
 
 
@@ -409,3 +409,40 @@ def test_a_tie_with_a_newer_copy_keeps_the_library_copy(vault):
     _tie(vault, review_first=False)
     wins, tally = vault.mod.review_wins(vault.conn)
     assert wins == [] and tally["tie"] == 1
+
+
+def test_a_promoted_copy_keeps_the_bake_record_of_its_audio(vault):
+    # CodeRabbit, review of #262: the copy is baked by its audio; the master that
+    # held the record is retired after the promotion.
+    lib_path = vault.masters / "Rock/Toto/Toto IV/Toto - Rosanna.m4a"
+    rev_path = vault.review_dir / "Toto/Toto IV/Toto - Rosanna.m4a"
+    rev = vault.row(rev_path, "DUPE_REVIEW", "X", finalized_at="2026-09-24 15:00:00")
+    vault.row(lib_path, "CATALOGUED", "X", finalized_at="2026-10-29 07:00:00",
+              lufs_baked_at="2026-09-24 19:06:34", lufs_baked_target=-18.0)  # fmt: skip
+    vault.set_aside(rev_path, lib_path)
+    wins, _ = vault.mod.review_wins(vault.conn)
+    assert [p.review["id"] for p in wins] == [rev]
+
+    vault.mod.promote(vault.conn, wins, execute=True)
+
+    row = vault.conn.execute(
+        "SELECT lufs_baked_at, lufs_baked_target FROM archive WHERE id=?", (rev,)
+    ).fetchone()
+    assert (row["lufs_baked_at"], row["lufs_baked_target"]) == ("2026-09-24 19:06:34", -18.0)
+
+
+def test_of_tied_review_copies_the_one_filed_first_is_judged(vault):
+    # CodeRabbit, review of #262: a later, unfiled copy 1 s longer was judged
+    # instead, tied, and nothing was put back.
+    lib_path = vault.masters / "Rock/Toto/Toto IV/Toto - Rosanna.m4a"
+    first_path = vault.review_dir / "a/Toto - Rosanna.m4a"
+    later_path = vault.review_dir / "b/Toto - Rosanna.m4a"
+    first = vault.row(first_path, "DUPE_REVIEW", "R1", finalized_at="2026-10-02 15:00:00")
+    vault.row(later_path, "DUPE_REVIEW", "R2", finalized_at=None, duration=332.0)
+    vault.row(lib_path, "CATALOGUED", "L", finalized_at="2026-10-29 07:00:00")
+    vault.set_aside(first_path, lib_path)
+    vault.set_aside(later_path, lib_path)
+
+    wins, _ = vault.mod.review_wins(vault.conn)
+
+    assert [(p.review["id"], p.step) for p in wins] == [(first, "tie: in the library first")]
