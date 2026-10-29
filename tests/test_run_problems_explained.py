@@ -296,3 +296,24 @@ def test_a_stage_with_errors_and_damaged_notes_explains_both(tmp_path: Path) -> 
     screen = "\n".join(problem_summary([r]))
     for text in (section, screen):
         assert _MEANING["decoder"] in text and _MEANING["damaged"] in text
+
+
+# Codex review of #261, round 4.
+
+
+def test_a_file_named_like_a_machine_error_is_still_damaged() -> None:
+    [(meaning, _, _)] = explain(
+        ["audio does not decode cleanly: Permission Denied.flac: invalid residual"]
+    )
+    assert meaning == _MEANING["damaged"]
+
+
+def test_a_damaged_arrival_beside_an_error_is_not_listed_as_not_an_error(tmp_path: Path) -> None:
+    r = StageResult(stage_name="corrupt", success=False, files_errored=2)
+    r.errors.append("a.m4a: arrival not decoded: ffmpeg gone")
+    r.notes += ["✓ No corrupt files detected", "  ⚠ b.m4a: does not decode, moved to /Q/b.m4a"]
+    ctx = SimpleNamespace(stage_results=[r], runs_root=tmp_path, run_id="run_t")
+    section = write_handoff_doc(ctx).read_text().split("## Stages that reported failure", 1)[1]
+    assert "PROBLEM: ⚠ b.m4a" in section
+    assert section.index("not errors") > section.index("b.m4a")
+    assert "No corrupt files detected" in section.split("not errors", 1)[1]
