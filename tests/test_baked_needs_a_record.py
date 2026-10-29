@@ -199,3 +199,14 @@ def test_an_id_whose_row_now_has_another_path_is_not_marked(tmp_path, monkeypatc
     _main(mod, monkeypatch, tmp_path, "--execute", "--ids", str(tmp_path / "reviewed.tsv"))
 
     assert _marked(conn) == []
+
+
+def test_the_candidate_list_cannot_be_written_and_used_in_one_run(tmp_path, monkeypatch):
+    # CodeRabbit, review of #262: --write-ids X --ids X would mark every candidate.
+    mod, conn = _script(), _db(tmp_path)
+    ids = str(tmp_path / "x.tsv")
+
+    with pytest.raises(SystemExit):
+        _main(mod, monkeypatch, tmp_path, "--execute", "--write-ids", ids, "--ids", ids)
+
+    assert _marked(conn) == []

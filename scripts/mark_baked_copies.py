@@ -96,14 +96,18 @@ def main() -> int:
     args = ap.parse_args()
     if args.execute and not args.ids:
         ap.error("--execute needs --ids FILE: the rows reviewed from a dry run")
+    if args.write_ids and (args.ids or args.execute):
+        ap.error("--write-ids is for the dry run alone: review the file, then --execute --ids")
     conn = sqlite3.connect(MusicConfig.from_env().db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 60000")
     rows = candidates(conn)
     if args.write_ids:
-        Path(args.write_ids).write_text("".join(f"{r['id']}\t{r['file_path']}\n" for r in rows))
+        Path(args.write_ids).write_text(
+            "".join(f"{r['id']}\t{r['file_path']}\n" for r in rows), encoding="utf-8"
+        )
     if args.ids:
-        rows = reviewed(rows, Path(args.ids).read_text())
+        rows = reviewed(rows, Path(args.ids).read_text(encoding="utf-8"))
     mark(conn, rows, args.execute)
     print(f"\n{'MARKED' if args.execute else 'DRY RUN: would mark'} {len(rows):,}")
     return 0
