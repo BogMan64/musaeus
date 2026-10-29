@@ -104,7 +104,9 @@ def test_folders_a_master_moved_to_review_leaves_no_empty_folder(tmp_path):
     ctx = _ctx(tmp_path)
     old = ctx.config.alac_archive / "Rock" / "Dion" / "Old" / "Dion - Song.m4a"
     new = ctx.inbox / "Dion - Song.m4a"
-    for path, bitrate in ((old, 900_000), (new, 1_600_000)):
+    # The arrival is better by the keep rule (sample rate): a full tie keeps
+    # the copy catalogued first (Grey, 2026-10-29).
+    for path, bitrate, rate in ((old, 900_000, 44100), (new, 1_600_000, 96000)):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"x" * (bitrate // 1000))
         upsert_archive(
@@ -119,11 +121,12 @@ def test_folders_a_master_moved_to_review_leaves_no_empty_folder(tmp_path):
                 "codec": "alac",
                 "bitrate": bitrate,
                 "size_bytes": bitrate // 1000,
+                "sample_rate": rate,
             },
         )
     ctx.conn.commit()
     DupeResolverStage().run(ctx)
-    assert not old.exists(), "the lower-bitrate master was expected to go to review"
+    assert not old.exists(), "the lower-sample-rate master was expected to go to review"
     empty = [p for p in ctx.config.alac_archive.rglob("*") if p.is_dir() and not any(p.iterdir())]
     assert empty == [], f"left behind: {empty}"
     assert ctx.config.alac_archive.is_dir(), "the tier itself must never be removed"

@@ -103,7 +103,9 @@ def test_7_a_tier_nested_inside_another_is_never_removed(tmp_path):
     ctx = _ctx(tmp_path, archive=lib / "Archival")
     old = ctx.config.alac_archive / "Rock" / "Dion" / "Old" / "Dion - Song.m4a"
     new = ctx.inbox / "Dion - Song.m4a"
-    for path, bitrate in ((old, 900_000), (new, 1_600_000)):
+    # The arrival is better by the keep rule (sample rate): a full tie keeps
+    # the copy catalogued first (Grey, 2026-10-29).
+    for path, bitrate, rate in ((old, 900_000, 44100), (new, 1_600_000, 96000)):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"x" * (bitrate // 1000))
         upsert_archive(
@@ -118,6 +120,7 @@ def test_7_a_tier_nested_inside_another_is_never_removed(tmp_path):
                 "codec": "alac",
                 "bitrate": bitrate,
                 "size_bytes": bitrate // 1000,
+                "sample_rate": rate,
             },
         )
     ctx.conn.commit()
