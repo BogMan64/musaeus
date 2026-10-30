@@ -231,6 +231,18 @@ _REMIX_RE = re.compile(
     re.IGNORECASE,
 )
 _ORIGINAL_RE = re.compile(r"\boriginal\b", re.IGNORECASE)
+# Grey, 2026-10-30: a named mix ("Art Mix", "Steve Angello & Sebastian Ingrosso
+# Mix"), an edit, and an extended, club, dub, single, radio, 7''/12'', film or
+# movie version rank as a new mix ("yes"; "album wins"). Read only in a label,
+# a bracket or a " - " part: a song may be named "Club Tropicana".
+_LOWER_MIX_RE = re.compile(
+    r"\bmix\b|\bedit\b|\bextended\b"
+    r"|(?:\b(?:single|radio|film|movie|club|dub|pop|dance)|\b(?:7|12)(?:''|\"|-inch))"
+    r"\s+(?:version|edit|mix)\b",
+    re.IGNORECASE,
+)
+#: Mixes that are not new ones: the album's own, its stereo or mono form.
+_NEUTRAL_MIX_RE = re.compile(r"\b(?:original|album|lp|stereo|mono)\s+(?:mix|version)\b", re.I)
 # An arrangement is not the original either: Bach's "Air" for orchestra over
 # its longer piano arrangement (Grey, 2026-10-26: "A. Original"). Read inside
 # a bracket only, "(Arr. For Piano)": a song may be NAMED "The Arrangement"
@@ -310,6 +322,12 @@ def _is_remix(m: dict) -> bool:
     for text in (m.get("title") or "", m.get("album") or ""):
         for hit in _REMIX_RE.finditer(text):
             if not _ORIGINAL_RE.search(_label_of(text, hit.start())):
+                return True
+        for hit in _LOWER_MIX_RE.finditer(text):
+            label = _label_of(text, hit.start())
+            if label == text or _ORIGINAL_RE.search(label):
+                continue
+            if _LOWER_MIX_RE.search(_NEUTRAL_MIX_RE.sub(" ", label)):
                 return True
     return False
 

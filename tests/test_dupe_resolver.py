@@ -1729,6 +1729,9 @@ class TestThePersonsChoiceStands:
     copy Grey kept. A later arrival never replaces a hand-kept copy when it is the
     same version the person rejected."""
 
+    # "(Mono)" stands in for the Edit Grey rejected: since 2026-10-30 an Edit
+    # ranks lower by the keep rule itself, and these tests need a version the
+    # rule alone would keep over "Remastered 2001".
     def _scene(self, ctx, arrival_title: str):
         kept = _make_archive_row(ctx, "lib/tide.m4a", "Blondie", "Autoamerican",
                                  "The Tide Is High (Remastered 2001)", 900_000, 900, "hk")  # fmt: skip
@@ -1743,7 +1746,7 @@ class TestThePersonsChoiceStands:
         from musaeus.db import upsert_archive
 
         upsert_archive(ctx.conn, {"file_path": str(rejected), "status": "DUPE_REVIEW", "artist": "Blondie",
-                                  "title": "The Tide Is High (Edit)", "audio_hash": "hr"})  # fmt: skip
+                                  "title": "The Tide Is High (Mono)", "audio_hash": "hr"})  # fmt: skip
         arrival = _make_archive_row(ctx, "new/tide.flac", "Blondie", "Autoamerican", arrival_title,
                                     900_000, 900, "ha")  # fmt: skip
         ctx.conn.execute(
@@ -1755,7 +1758,7 @@ class TestThePersonsChoiceStands:
             "audio_hash, title) VALUES (?, ?, ?, 1.0, 'r', ?, ?, ?)",
             [("sheet", str(kept), "PERSON", "keep", "hk", "The Tide Is High (Remastered 2001)"),
              ("sheet", str(ctx.inbox / "was" / "tide-edit.m4a"), "PERSON", "archive", "hr",
-              "The Tide Is High (Edit)"),
+              "The Tide Is High (Mono)"),
              ("g", str(kept), "NEAR", "pending", "hk", None),
              ("g", str(arrival), "NEAR", "pending", "ha", None)],
         )  # fmt: skip
@@ -1768,7 +1771,7 @@ class TestThePersonsChoiceStands:
         return kept, arrival
 
     def test_the_version_the_person_rejected_never_replaces_their_choice(self, ctx):
-        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        kept, arrival = self._scene(ctx, "The Tide Is High (Mono)")
         DupeResolverStage().execute(ctx)
         assert kept.exists() and not arrival.exists()
 
@@ -1801,7 +1804,7 @@ class TestThePersonsChoiceStands:
         assert arrival.exists() and not kept.exists(), "the original still beats the remaster"
 
     def test_the_preview_agrees(self, ctx):
-        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        kept, arrival = self._scene(ctx, "The Tide Is High (Mono)")
         actions, _ = DupeResolverStage.plan_actions(ctx.conn, ctx.config)
         assert [a["source"] for a in actions] == [str(arrival)]
 
@@ -1819,7 +1822,7 @@ class TestThePersonsChoiceStands:
     def test_the_choice_holds_after_the_kept_copy_is_refiled(self, ctx):
         """Codex review of #239 (reproduced): the decision was looked up by the kept
         copy's current path; filing it since lost the decision."""
-        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        kept, arrival = self._scene(ctx, "The Tide Is High (Mono)")
         ctx.conn.execute(
             "UPDATE duplicates SET file_path = ? WHERE group_id = 'sheet' AND status = 'keep'",
             (str(ctx.inbox / "old-place" / "tide.m4a"),),
@@ -1831,7 +1834,7 @@ class TestThePersonsChoiceStands:
     def test_an_automatic_keep_is_not_the_persons_choice(self, ctx):
         """Codex review of #239 (reproduced): any old keep counted, not only the
         person's own decision."""
-        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        kept, arrival = self._scene(ctx, "The Tide Is High (Mono)")
         # An automatic decision: no PERSON group, and no titles stored with it.
         ctx.conn.execute(
             "UPDATE duplicates SET duplicate_type = 'NEAR', title = NULL WHERE group_id = 'sheet'"
@@ -1850,7 +1853,7 @@ class TestThePersonsChoiceStands:
         ctx.conn.execute(
             "UPDATE archive SET title = 'The Tide Is High (Remastered 2001)' WHERE audio_hash = 'hr'"
         )
-        ctx.conn.execute("UPDATE archive SET title = 'The Tide Is High (Edit)', audio_hash = 'hr', duration = 320.0 "
+        ctx.conn.execute("UPDATE archive SET title = 'The Tide Is High (Mono)', audio_hash = 'hr', duration = 320.0 "
                          "WHERE file_path = ?", (str(arrival),))  # fmt: skip
         ctx.conn.execute(
             "UPDATE duplicates SET audio_hash = 'hr' WHERE file_path = ?", (str(arrival),)
@@ -1864,7 +1867,7 @@ class TestThePersonsChoiceStands:
     def test_the_choice_survives_a_merged_cross_batch_group(self, ctx):
         """Codex review of #239, round 2 (reproduced): a CROSS_BATCH group merged in,
         and its rule picked the arriving Edit after the person's choice."""
-        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        kept, arrival = self._scene(ctx, "The Tide Is High (Mono)")
         ctx.conn.execute(
             "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, status, "
             "audio_hash) VALUES ('crossdupe_x', ?, 'CROSS_BATCH', 1.0, 'r', 'pending', 'hk')",
@@ -1880,7 +1883,7 @@ class TestThePersonsChoiceStands:
         2001" copies into a choice against the Edit."""
         from musaeus.db import upsert_archive
 
-        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        kept, arrival = self._scene(ctx, "The Tide Is High (Mono)")
         ctx.conn.execute(_SAME_TITLE_DECISION)  # the person chose between two "Remastered 2001"
         ctx.conn.execute("UPDATE archive SET title = 'The Tide Is High (Remastered 2001)' "
                          "WHERE status = 'DUPE_REVIEW' AND audio_hash = 'hr'")  # fmt: skip
@@ -1888,7 +1891,7 @@ class TestThePersonsChoiceStands:
         other.parent.mkdir(parents=True, exist_ok=True)
         other.write_bytes(b"X" * 300)
         upsert_archive(ctx.conn, {"file_path": str(other), "status": "DUPE_REVIEW", "artist": "Blondie",
-                                  "title": "The Tide Is High (Edit)", "audio_hash": "hr"})  # fmt: skip
+                                  "title": "The Tide Is High (Mono)", "audio_hash": "hr"})  # fmt: skip
         ctx.conn.commit()
         DupeResolverStage().execute(ctx)
         assert arrival.exists() and not kept.exists(), (
@@ -1899,7 +1902,7 @@ class TestThePersonsChoiceStands:
         """Codex review of #239, round 4 (reproduced): the review path of the
         rejected "Remastered 2001" copy later held a different recording titled
         "Edit"; its title turned a same-title choice into a choice against the Edit."""
-        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        kept, arrival = self._scene(ctx, "The Tide Is High (Mono)")
         ctx.conn.execute(_SAME_TITLE_DECISION)  # the person chose between two "Remastered 2001"
         ctx.conn.execute("UPDATE archive SET audio_hash = 'hz' "
                          "WHERE status = 'DUPE_REVIEW' AND audio_hash = 'hr'")  # fmt: skip
@@ -1914,7 +1917,7 @@ class TestThePersonsChoiceStands:
         from the rejected copy's review row; once review was cleared (file and row
         gone) a later Edit replaced the person's choice. The title is stored with
         the person's decision."""
-        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        kept, arrival = self._scene(ctx, "The Tide Is High (Mono)")
         for (p,) in ctx.conn.execute(
             "SELECT file_path FROM archive WHERE status = 'DUPE_REVIEW'"
         ).fetchall():
@@ -1930,7 +1933,7 @@ class TestThePersonsChoiceStands:
         kept = _make_archive_row(ctx, "lib/tide.m4a", "Blondie", "Autoamerican",
                                  "The Tide Is High (Remastered 2001)", 900_000, 900, "hk")  # fmt: skip
         edit = _make_archive_row(ctx, "lib/tide-edit.m4a", "Blondie", "Autoamerican",
-                                 "The Tide Is High (Edit)", 900_000, 900, "hr")  # fmt: skip
+                                 "The Tide Is High (Mono)", 900_000, 900, "hr")  # fmt: skip
         ctx.conn.execute("UPDATE archive SET codec = 'alac', duration = 280.3, finalized_at = '2026-10-01' "
                          "WHERE file_path = ?", (str(kept),))  # fmt: skip
         ctx.conn.executemany(
@@ -1941,7 +1944,7 @@ class TestThePersonsChoiceStands:
         ctx.conn.commit()
         assert DupeResolverStage().carry_out(ctx, ["c"], [str(kept)], [str(edit)]).success
         arrival = _make_archive_row(ctx, "new/tide.flac", "Blondie", "Autoamerican",
-                                    "The Tide Is High (Edit)", 900_000, 900, "ha")  # fmt: skip
+                                    "The Tide Is High (Mono)", 900_000, 900, "ha")  # fmt: skip
         ctx.conn.execute("UPDATE archive SET codec = 'flac', duration = 233.9 WHERE file_path = ?",
                          (str(arrival),))  # fmt: skip
         ctx.conn.executemany(
@@ -1957,8 +1960,8 @@ class TestThePersonsChoiceStands:
         """Codex review of #239, round 6 (reproduced): the rejected title was
         compared with the kept copy's CURRENT title, not the one stored with the
         decision."""
-        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
-        ctx.conn.execute("UPDATE archive SET title = 'The Tide Is High (Edit)' WHERE file_path = ?",
+        kept, arrival = self._scene(ctx, "The Tide Is High (Mono)")
+        ctx.conn.execute("UPDATE archive SET title = 'The Tide Is High (Mono)' WHERE file_path = ?",
                          (str(kept),))  # fmt: skip
         # Longer, so the keep rule picks the arrival over the renamed kept copy.
         ctx.conn.execute("UPDATE archive SET duration = 320.0 WHERE file_path = ?", (str(arrival),))
@@ -1994,7 +1997,7 @@ class TestThePersonsChoiceStands:
         e1 = _make_archive_row(ctx, "lib/tide-single.m4a", "Blondie", "Autoamerican",
                                "The Tide Is High (Single Version)", 900_000, 900, "hr")  # fmt: skip
         e2 = _make_archive_row(ctx, "lib/tide-edit2.flac", "Blondie", "Autoamerican",
-                               "The Tide Is High (Edit)", 900_000, 900, "hs")  # fmt: skip
+                               "The Tide Is High (Mono)", 900_000, 900, "hs")  # fmt: skip
         ctx.conn.execute("UPDATE archive SET codec = 'alac', duration = 280.3, finalized_at = '2026-10-01' "
                          "WHERE file_path = ?", (str(kept),))  # fmt: skip
         ctx.conn.execute(
@@ -2025,7 +2028,7 @@ class TestThePersonsChoiceStands:
         first, a new Album Version second, the hand-kept Remaster third. The guard
         jumped to the kept copy; the rejected version is set aside and the rest
         ranked as ever, so the Album Version wins (Grey, 2026-10-10)."""
-        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        kept, arrival = self._scene(ctx, "The Tide Is High (Mono)")
         album = _make_archive_row(ctx, "new/tide-album.flac", "Blondie", "Autoamerican",
                                   "The Tide Is High (Album Version)", 900_000, 900, "hv")  # fmt: skip
         ctx.conn.execute(
@@ -2046,7 +2049,7 @@ class TestThePersonsChoiceStands:
         """Codex review of #239, round 10 (reproduced): with the rejected Edit set
         aside, the next copy was taken from the old order, made without the length
         step among the rest; the shorter Album Version was kept."""
-        kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
+        kept, arrival = self._scene(ctx, "The Tide Is High (Mono)")
         ctx.conn.execute("UPDATE archive SET duration = 240.0 WHERE file_path = ?", (str(arrival),))
         albums = {}
         for name, secs, h in [("a-short", 230.0, "hv1"), ("b-long", 235.0, "hv2")]:
@@ -2076,7 +2079,7 @@ def test_older_person_decisions_get_the_title_of_their_own_copy(tmp_path):
     conn.execute("ALTER TABLE duplicates DROP COLUMN title")  # a catalogue from before
     for path, h, title in [
         ("/lib/tide.m4a", "hk", "The Tide Is High (Remastered 2001)"),
-        ("/rev/tide-edit.m4a", "hr", "The Tide Is High (Edit)"),
+        ("/rev/tide-edit.m4a", "hr", "The Tide Is High (Mono)"),
         ("/was/tide-edit.m4a", "hz", "Another Song"),
     ]:  # its old path, reused
         upsert_archive(
@@ -2098,5 +2101,5 @@ def test_older_person_decisions_get_the_title_of_their_own_copy(tmp_path):
     got = dict(conn.execute("SELECT status, title FROM duplicates").fetchall())
     assert got == {
         "keep": "The Tide Is High (Remastered 2001)",
-        "archive": "The Tide Is High (Edit)",
+        "archive": "The Tide Is High (Mono)",
     }

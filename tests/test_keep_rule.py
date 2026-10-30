@@ -59,7 +59,8 @@ def c(**kw):
             ("library", "original/remaster"),
         ),
         (c(title="Song (Surround Mix)", sample_rate=96000), c(), ("library", "original/remaster")),
-        (c(title="Song (Single Mix)"), c(), ("tie", "")),
+        # Grey, 2026-10-30: single, radio, 7'' and film versions -- "album wins"
+        (c(title="Song (Single Mix)"), c(), ("library", "original/remaster")),
         (c(title="Song (1965 Stereo Mix)"), c(), ("tie", "")),
         (c(title="Song (Original 1973 Stereo Mix)"), c(), ("tie", "")),
         (c(title="Song - Original Re-Mix (Stereo)"), c(), ("tie", "")),
@@ -237,3 +238,33 @@ def test_an_empty_audio_hash_shares_no_label():
     _share_version_label([demo, other])
 
     assert not other.get("lower_version")
+
+
+_ALBUM = {"codec": "alac", "title": "My Love", "album": "FutureSex/LoveSounds",
+          "sample_rate": 44100, "duration": 276.0}  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["Art Mix", "Steve Angello & Sebastian Ingrosso Mix", "Radio Edit", "Edit",
+     "Single Version", "7'' Version", "Film Version", "Extended Version", "Club Mix",
+     "Single Version - Mono Version"],
+)  # fmt: skip
+def test_an_edit_or_named_mix_ranks_below_the_album_version(label):
+    """Grey, 2026-10-30: named mixes rank lower, like a remix; single, radio, 7''
+    and film versions: "album wins"."""
+    edit = {**_ALBUM, "title": f"My Love ({label})", "sample_rate": 96000, "duration": 613.0}
+
+    assert decide(edit, _ALBUM) == ("library", "original/remaster")
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["My Love (Original Mix)", "My Love (Album Version)", "My Love (Stereo Mix)",
+     "My Love (Mono)", 'My Love (From The Film "Pitch Perfect")', "Club Tropicana"],
+)  # fmt: skip
+def test_a_neutral_label_is_not_a_new_mix(title):
+    other = {**_ALBUM, "title": title, "sample_rate": 96000}
+    base = {**_ALBUM, "title": title.split(" (")[0]}
+
+    assert decide(other, base)[1] == "quality"

@@ -27,7 +27,10 @@ answered yes to each reading:
                      (Grey, 2026-10-30: "lower"), then the original beats
                      a remaster: two steps, so one never cancels the other.
                      A remaster beats a new mix ("2009 Mix", "Remix"; Grey,
-                     2026-10-27): closer to the original. A copy with no
+                     2026-10-27): closer to the original. A named mix, an
+                     edit, an extended, club, dub, single, radio, 7''/12'',
+                     film or movie version is a new mix too (Grey,
+                     2026-10-30: "album wins"). A copy with no
                      album yet is not known to be the original: on this step it
                      counts as the best known copy of its group (Grey,
                      2026-10-29), and the known copies keep their order
