@@ -1772,6 +1772,34 @@ class TestThePersonsChoiceStands:
         DupeResolverStage().execute(ctx)
         assert kept.exists() and not arrival.exists()
 
+    def test_the_rejected_version_without_its_label_is_still_rejected(self, ctx):
+        """Batch 10, 2026-10-30: "Nowhere To Run" with no label, at the length of
+        the "(Original Mix)" Grey rejected, replaced the kept single (mono)."""
+        kept, arrival = self._scene(ctx, "The Tide Is High")
+        ctx.conn.execute("UPDATE archive SET duration = 233.9 WHERE audio_hash = 'hr'")
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert kept.exists() and not arrival.exists()
+
+    def test_a_rejected_version_named_after_a_dash_is_still_rejected(self, ctx):
+        """CodeRabbit, review of #265: "Song - Edit" kept its label in the base title."""
+        kept, arrival = self._scene(ctx, "The Tide Is High")
+        ctx.conn.execute("UPDATE archive SET duration = 233.9 WHERE audio_hash = 'hr'")
+        ctx.conn.execute(
+            "UPDATE duplicates SET title = 'The Tide Is High - Edit' "
+            "WHERE group_id = 'sheet' AND status = 'archive'"
+        )
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert kept.exists() and not arrival.exists()
+
+    def test_another_take_of_the_same_title_is_not_the_rejected_one(self, ctx):
+        kept, arrival = self._scene(ctx, "The Tide Is High")
+        ctx.conn.execute("UPDATE archive SET duration = 250.0 WHERE audio_hash = 'hr'")
+        ctx.conn.commit()
+        DupeResolverStage().execute(ctx)
+        assert arrival.exists() and not kept.exists(), "the original still beats the remaster"
+
     def test_the_preview_agrees(self, ctx):
         kept, arrival = self._scene(ctx, "The Tide Is High (Edit)")
         actions, _ = DupeResolverStage.plan_actions(ctx.conn, ctx.config)
