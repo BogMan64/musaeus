@@ -99,7 +99,7 @@ def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int, int]:
         1 if _is_live(dict(m)) else 0,
         _format_rank(m.get("codec")),
         1 if _looks_baked(dict(m)) else 0,
-        1 if _is_arranged(dict(m)) else 0,
+        1 if m.get("lower_version") or _is_arranged(dict(m)) else 0,
         era,
         -int(m.get("sample_rate") or 0),
     )
@@ -116,11 +116,17 @@ def decide(review: Mapping[str, Any], library: Mapping[str, Any]) -> tuple[str, 
     not an original. Without it the swap tool judged an identical copy
     "original" (review of #86, finding 7; the 2026-09-26 shape).
     """
-    from .stages.dupe_resolver import _share_baked_mark, _share_live_take, _share_unknown_album
+    from .stages.dupe_resolver import (
+        _share_baked_mark,
+        _share_live_take,
+        _share_unknown_album,
+        _share_version_label,
+    )
 
     review, library = dict(review), dict(library)
     _share_baked_mark([review, library])
     _share_live_take([review, library])
+    _share_version_label([review, library])
     _share_unknown_album([review, library])
     for step, r, lib in zip(STEPS, keep_key(review), keep_key(library), strict=False):
         if r != lib:

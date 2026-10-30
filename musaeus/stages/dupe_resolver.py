@@ -399,6 +399,19 @@ def _hash_of(m: dict) -> str | None:
 _LIVE_TAKE_SECONDS = 0.5
 
 
+def _share_version_label(members: list[dict]) -> None:
+    """Mark every copy with the same audio as one labelled a lower version.
+
+    A filed "Song (Demo)" and an unlabelled copy of the same audio are the same
+    demo: read alone, the unlabelled one could beat the original on quality
+    (CodeRabbit, review of #266). Shared by audio identity, as the baked record is.
+    """
+    lower = {_hash_of(m) for m in members if _is_arranged(m)} - {None}
+    for m in members:
+        if _hash_of(m) in lower:
+            m["lower_version"] = True
+
+
 def _share_live_take(members: list[dict]) -> None:
     """Mark every member within 0.5 s of a live-labelled one as that live take.
 
@@ -514,8 +527,10 @@ def _rank(members: list[dict]) -> None:
     # not leave its mark behind (Codex review of #248, round 3).
     for m in members:
         m.pop("live_take", None)
+        m.pop("lower_version", None)
         m.pop("era_as", None)
     _share_live_take(members)
+    _share_version_label(members)
     _share_unknown_album(members)
     members.sort(key=_keeper_sort_key)
     if len(members) < 2:

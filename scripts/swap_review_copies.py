@@ -64,6 +64,7 @@ from musaeus.stages.dupe_resolver import (  # noqa: E402
     _share_baked_mark,
     _share_live_take,
     _share_unknown_album,
+    _share_version_label,
 )
 
 EVENT = "SWAP_PROMOTED"
@@ -192,6 +193,7 @@ def review_wins(
                     c["lufs_baked_at"] = rec[0]
         _share_baked_mark([lib, *copies])
         _share_live_take([lib, *copies])
+        _share_version_label([lib, *copies])
         _share_unknown_album([lib, *copies])
         # Ties keep catalogue order -- filed first, then the older row -- as the
         # resolver's _keeper_sort_key does (CodeRabbit, review of #262).

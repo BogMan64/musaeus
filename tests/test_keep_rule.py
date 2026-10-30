@@ -195,3 +195,19 @@ def test_an_artist_credit_is_not_a_lower_version(credit):
     credited = {**plain, "title": f"Song ({credit})", "sample_rate": 96000}
 
     assert decide(credited, plain)[1] == "quality"
+
+
+def test_a_copy_with_the_audio_of_a_labelled_demo_is_the_demo_too():
+    """CodeRabbit, review of #266: an unlabelled copy of a demo's audio beat the
+    original on quality; identical audio shares the version label."""
+    from musaeus.stages.dupe_resolver import _rank
+
+    original = {"codec": "alac", "title": "Song", "album": "A", "sample_rate": 44100,
+                "duration": 200.0, "audio_hash": "orig", "finalized_at": "x", "id": 1}  # fmt: skip
+    demo = {**original, "title": "Song (Demo)", "audio_hash": "demo", "id": 2}
+    bare = {**original, "audio_hash": "demo", "sample_rate": 96000, "finalized_at": None, "id": 3}
+    members = [bare, demo, original]
+
+    _rank(members)
+
+    assert members[0] is original
