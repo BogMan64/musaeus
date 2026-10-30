@@ -157,3 +157,26 @@ def test_bitrate_is_not_quality():
     """Two ALAC copies of one recording differ in bitrate by noise; a swap on
     that remakes every edition copy for nothing (AC/DC "Big Gun", 2026-10-03)."""
     assert decide(c(bitrate=1_100_000), c(bitrate=900_000)) == ("tie", "")
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["Jam", "Instrumental Version", "Acoustic", "Demo", "Alternate Take", "Outtake", "Rehearsal"],
+)
+def test_a_version_label_ranks_below_the_plain_original(label):
+    """Grey, 2026-10-30: "Oh! Darling (Jam)" and "Hoogie Boogie (Instrumental
+    Version)" were picked over the album and vocal versions; they rank lower."""
+    plain = {"codec": "alac", "title": "Oh! Darling", "album": "Abbey Road",
+             "sample_rate": 44100, "duration": 207.0}  # fmt: skip
+    version = {**plain, "title": f"Oh! Darling ({label})", "duration": 319.0, "sample_rate": 96000}
+
+    assert decide(version, plain) == ("library", "original/arrangement")
+
+
+@pytest.mark.parametrize("title", ["Mystery Train (Master Take)", "Blue Moon (The Sun Sessions)"])
+def test_a_master_take_or_the_sun_sessions_is_not_a_lower_version(title):
+    plain = {"codec": "alac", "title": title.split(" (")[0], "album": "A",
+             "sample_rate": 44100, "duration": 150.0}  # fmt: skip
+    labelled = {**plain, "title": title, "sample_rate": 96000}
+
+    assert decide(labelled, plain)[1] == "quality"

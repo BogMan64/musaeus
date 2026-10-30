@@ -235,8 +235,14 @@ _ORIGINAL_RE = re.compile(r"\boriginal\b", re.IGNORECASE)
 # its longer piano arrangement (Grey, 2026-10-26: "A. Original"). Read inside
 # a bracket only, "(Arr. For Piano)": a song may be NAMED "The Arrangement"
 # (Codex review of #256). "Arr" not "Trans": "Trans-Europe Express".
+# Grey, 2026-10-30, on "Oh! Darling (Jam)" and "Hoogie Boogie (Instrumental
+# Version)" kept over the album and vocal versions: a jam, instrumental, acoustic,
+# demo, alternate, outtake or rehearsal version ranks lower, like an arrangement.
+# Not "session" ("The Sun Sessions" are the originals) nor "take" ("Master Take").
 _ARRANGED_RE = re.compile(
-    r"\b(?:arr|arranged|arrangement|transcribed|transcription|bearbeitung)\b", re.IGNORECASE
+    r"\b(?:arr|arranged|arrangement|transcribed|transcription|bearbeitung"
+    r"|jam|instrumental|acoustic|demo|alternate|outtake|rehearsal)\b",
+    re.IGNORECASE,
 )
 _BRACKET_SPLIT_RE = re.compile(rf"([{OPEN}{CLOSE}])")
 

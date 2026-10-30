@@ -22,7 +22,9 @@ answered yes to each reading:
                      Grey's standing ruling ("the original trumps the
                      remaster"), placed after studio/live: "keep this".
                      First the original scoring beats an arrangement ("Arr.
-                     For Piano"; Grey, 2026-10-26), then the original beats
+                     For Piano"; Grey, 2026-10-26) or a jam, instrumental,
+                     acoustic, demo, alternate, outtake or rehearsal version
+                     (Grey, 2026-10-30: "lower"), then the original beats
                      a remaster: two steps, so one never cancels the other.
                      A remaster beats a new mix ("2009 Mix", "Remix"; Grey,
                      2026-10-27): closer to the original. A copy with no
