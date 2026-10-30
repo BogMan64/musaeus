@@ -522,3 +522,19 @@ def test_an_empty_fact_on_the_library_copy_does_not_blank_the_copy(vault):
         "SELECT album, artist, mb_artist_id FROM archive WHERE id=?", (rev,)
     ).fetchone()
     assert (row["album"], row["artist"], row["mb_artist_id"]) == ("My playlist", "Toto", "own")
+
+
+def test_a_copy_with_the_audio_of_a_labelled_library_demo_is_not_promoted(vault):
+    # CodeRabbit, review of #266: promoting it would drop the "(Demo)" label, and
+    # the demo could later beat a real original.
+    lib_path = vault.masters / "Rock/Toto/Demos/Toto - Rosanna (Demo).m4a"
+    rev_path = vault.review_dir / "Toto/Toto - Rosanna.m4a"
+    vault.row(rev_path, "DUPE_REVIEW", "D", title="Rosanna", finalized_at="2026-10-02 15:00:00")
+    vault.row(
+        lib_path, "CATALOGUED", "D", title="Rosanna (Demo)", finalized_at="2026-10-29 07:00:00"
+    )
+    vault.set_aside(rev_path, lib_path)
+
+    wins, tally = vault.mod.review_wins(vault.conn)
+
+    assert wins == [] and tally["tie"] == 1

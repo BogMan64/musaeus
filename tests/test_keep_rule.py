@@ -157,3 +157,83 @@ def test_bitrate_is_not_quality():
     """Two ALAC copies of one recording differ in bitrate by noise; a swap on
     that remakes every edition copy for nothing (AC/DC "Big Gun", 2026-10-03)."""
     assert decide(c(bitrate=1_100_000), c(bitrate=900_000)) == ("tie", "")
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["Jam", "Instrumental Version", "Acoustic", "Demo", "Alternate Take", "Outtake", "Rehearsal"],
+)
+def test_a_version_label_ranks_below_the_plain_original(label):
+    """Grey, 2026-10-30: "Oh! Darling (Jam)" and "Hoogie Boogie (Instrumental
+    Version)" were picked over the album and vocal versions; they rank lower."""
+    plain = {"codec": "alac", "title": "Oh! Darling", "album": "Abbey Road",
+             "sample_rate": 44100, "duration": 207.0}  # fmt: skip
+    version = {**plain, "title": f"Oh! Darling ({label})", "duration": 319.0, "sample_rate": 96000}
+
+    assert decide(version, plain) == ("library", "original/arrangement")
+
+
+@pytest.mark.parametrize("title", ["Mystery Train (Master Take)", "Blue Moon (The Sun Sessions)"])
+def test_a_master_take_or_the_sun_sessions_is_not_a_lower_version(title):
+    plain = {"codec": "alac", "title": title.split(" (")[0], "album": "A",
+             "sample_rate": 44100, "duration": 150.0}  # fmt: skip
+    labelled = {**plain, "title": title, "sample_rate": 96000}
+
+    assert decide(labelled, plain)[1] == "quality"
+
+
+@pytest.mark.parametrize("credit", ["feat. Pearl Jam", "with The Jam", "ft. Acoustic Alchemy"])
+def test_an_artist_credit_is_not_a_lower_version(credit):
+    """CodeRabbit, review of #266: "(feat. Pearl Jam)" matched "jam"."""
+    plain = {
+        "codec": "alac",
+        "title": "Song",
+        "album": "A",
+        "sample_rate": 44100,
+        "duration": 200.0,
+    }
+    credited = {**plain, "title": f"Song ({credit})", "sample_rate": 96000}
+
+    assert decide(credited, plain)[1] == "quality"
+
+
+def test_a_copy_with_the_audio_of_a_labelled_demo_is_the_demo_too():
+    """CodeRabbit, review of #266: an unlabelled copy of a demo's audio beat the
+    original on quality; identical audio shares the version label."""
+    from musaeus.stages.dupe_resolver import _rank
+
+    original = {"codec": "alac", "title": "Song", "album": "A", "sample_rate": 44100,
+                "duration": 200.0, "audio_hash": "orig", "finalized_at": "x", "id": 1}  # fmt: skip
+    demo = {**original, "title": "Song (Demo)", "audio_hash": "demo", "id": 2}
+    bare = {**original, "audio_hash": "demo", "sample_rate": 96000, "finalized_at": None, "id": 3}
+    members = [bare, demo, original]
+
+    _rank(members)
+
+    assert members[0] is original
+
+
+def test_a_label_after_a_credit_still_counts():
+    """CodeRabbit, review of #266: "(feat. Jane - Acoustic Version)"."""
+    plain = {
+        "codec": "alac",
+        "title": "Song",
+        "album": "A",
+        "sample_rate": 44100,
+        "duration": 200.0,
+    }
+    labelled = {**plain, "title": "Song (feat. Jane - Acoustic Version)", "sample_rate": 96000}
+
+    assert decide(labelled, plain) == ("library", "original/arrangement")
+
+
+def test_an_empty_audio_hash_shares_no_label():
+    """CodeRabbit, review of #266: two rows with an empty hash are not one recording."""
+    from musaeus.stages.dupe_resolver import _share_version_label
+
+    demo = {"title": "Song (Demo)", "audio_hash": ""}
+    other = {"title": "Song", "audio_hash": ""}
+
+    _share_version_label([demo, other])
+
+    assert not other.get("lower_version")

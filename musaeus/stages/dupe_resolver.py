@@ -235,9 +235,18 @@ _ORIGINAL_RE = re.compile(r"\boriginal\b", re.IGNORECASE)
 # its longer piano arrangement (Grey, 2026-10-26: "A. Original"). Read inside
 # a bracket only, "(Arr. For Piano)": a song may be NAMED "The Arrangement"
 # (Codex review of #256). "Arr" not "Trans": "Trans-Europe Express".
+# Grey, 2026-10-30, on "Oh! Darling (Jam)" and "Hoogie Boogie (Instrumental
+# Version)" kept over the album and vocal versions: a jam, instrumental, acoustic,
+# demo, alternate, outtake or rehearsal version ranks lower, like an arrangement.
+# Not "session" ("The Sun Sessions" are the originals) nor "take" ("Master Take").
 _ARRANGED_RE = re.compile(
     r"\b(?:arr|arranged|arrangement|transcribed|transcription|bearbeitung)\b", re.IGNORECASE
 )
+_LOWER_VERSION_RE = re.compile(
+    r"\b(?:jam|instrumental|acoustic|demo|alternate|outtake|rehearsal)\b", re.IGNORECASE
+)
+#: An artist credit in a bracket: "(feat. Pearl Jam)" is not a jam (CodeRabbit, #266).
+_CREDIT_RE = re.compile(r"^\s*(?:feat\.?|featuring|ft\.?|with)\s", re.IGNORECASE)
 _BRACKET_SPLIT_RE = re.compile(rf"([{OPEN}{CLOSE}])")
 
 
@@ -338,7 +347,18 @@ def _is_arranged(m: dict) -> bool:
                 depth += 1
             elif re.fullmatch(rf"[{CLOSE}]", piece):
                 depth = max(depth - 1, 0)
-            elif depth and _ARRANGED_RE.search(piece):
+            elif depth and (
+                _ARRANGED_RE.search(piece)
+                or _LOWER_VERSION_RE.search(
+                    # A credit's own words never count; a label after it does:
+                    # "(feat. Jane - Acoustic Version)" (CodeRabbit, #266).
+                    piece.split(" - ", 1)[1]
+                    if _CREDIT_RE.match(piece) and " - " in piece
+                    else ""
+                    if _CREDIT_RE.match(piece)
+                    else piece
+                )
+            ):
                 return True
     return False
 
@@ -372,7 +392,7 @@ def _share_baked_mark(members: list[dict]) -> None:
     but read on its own it never looked baked, and won: 119 masters were
     swapped for identical copies of themselves (2026-09-26).
     """
-    baked = {_hash_of(m) for m in members if _looks_baked(m)} - {None}
+    baked = {_hash_of(m) for m in members if _looks_baked(m)} - {None, ""}
     for m in members:
         if _hash_of(m) in baked:
             m["lufs_baked_at"] = m.get("lufs_baked_at") or "same audio as a baked copy"
@@ -385,6 +405,19 @@ def _hash_of(m: dict) -> str | None:
 #: Tighter than NearDupe's 2 s same take: a studio copy wrongly read as live
 #: would lose Grey's first rule.
 _LIVE_TAKE_SECONDS = 0.5
+
+
+def _share_version_label(members: list[dict]) -> None:
+    """Mark every copy with the same audio as one labelled a lower version.
+
+    A filed "Song (Demo)" and an unlabelled copy of the same audio are the same
+    demo: read alone, the unlabelled one could beat the original on quality
+    (CodeRabbit, review of #266). Shared by audio identity, as the baked record is.
+    """
+    lower = {_hash_of(m) for m in members if _is_arranged(m)} - {None, ""}
+    for m in members:
+        if _hash_of(m) in lower:
+            m["lower_version"] = True
 
 
 def _share_live_take(members: list[dict]) -> None:
@@ -502,8 +535,10 @@ def _rank(members: list[dict]) -> None:
     # not leave its mark behind (Codex review of #248, round 3).
     for m in members:
         m.pop("live_take", None)
+        m.pop("lower_version", None)
         m.pop("era_as", None)
     _share_live_take(members)
+    _share_version_label(members)
     _share_unknown_album(members)
     members.sort(key=_keeper_sort_key)
     if len(members) < 2:
