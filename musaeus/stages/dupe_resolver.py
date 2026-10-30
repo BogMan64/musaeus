@@ -325,10 +325,19 @@ def _is_remix(m: dict) -> bool:
                 return True
         for hit in _LOWER_MIX_RE.finditer(text):
             label = _label_of(text, hit.start())
-            if label == text or _ORIGINAL_RE.search(label):
+            if label == text:
                 continue
-            if _LOWER_MIX_RE.search(_NEUTRAL_MIX_RE.sub(" ", label)):
-                return True
+            # Each part on its own: "(Original Mix - Radio Edit)" is an edit; a
+            # credit or a film's title is no mix: "(feat. Little Mix)", "(From
+            # The Film "The Mix")" (CodeRabbit, review of #267).
+            inner = re.sub(rf"^\s*[{OPEN}]|[{CLOSE}]\s*$", "", label)
+            for part in re.split(r"\s+-\s+|\s*/\s*", inner):
+                if _ORIGINAL_RE.search(part) or _CREDIT_RE.match(part):
+                    continue
+                if re.match(r"\s*from\b", part, re.IGNORECASE):
+                    continue
+                if _LOWER_MIX_RE.search(_NEUTRAL_MIX_RE.sub(" ", part)):
+                    return True
     return False
 
 
@@ -433,9 +442,13 @@ def _share_version_label(members: list[dict]) -> None:
     (CodeRabbit, review of #266). Shared by audio identity, as the baked record is.
     """
     lower = {_hash_of(m) for m in members if _is_arranged(m)} - {None, ""}
+    # A new mix too: an unlabelled copy of a "(Radio Edit)" is that edit (#267).
+    mixed = {_hash_of(m) for m in members if _is_remix(m)} - {None, ""}
     for m in members:
         if _hash_of(m) in lower:
             m["lower_version"] = True
+        if _hash_of(m) in mixed:
+            m["new_mix"] = True
 
 
 def _share_live_take(members: list[dict]) -> None:
@@ -554,6 +567,7 @@ def _rank(members: list[dict]) -> None:
     for m in members:
         m.pop("live_take", None)
         m.pop("lower_version", None)
+        m.pop("new_mix", None)
         m.pop("era_as", None)
     _share_live_take(members)
     _share_version_label(members)

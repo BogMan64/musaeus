@@ -97,7 +97,7 @@ def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int, int]:
     # and albums exactly the way it does.
     from .stages.dupe_resolver import _era, _is_arranged, _is_live, _looks_baked
 
-    era = m["era_as"] if "era_as" in m else _era(dict(m))
+    era = 2 if m.get("new_mix") else m["era_as"] if "era_as" in m else _era(dict(m))
     return (
         1 if _is_live(dict(m)) else 0,
         _format_rank(m.get("codec")),

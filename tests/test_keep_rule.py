@@ -268,3 +268,39 @@ def test_a_neutral_label_is_not_a_new_mix(title):
     base = {**_ALBUM, "title": title.split(" (")[0]}
 
     assert decide(other, base)[1] == "quality"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "My Love (feat. Little Mix)",
+        'My Love (From The Film "The Mix")',
+        "My Love (with The Edit Crew)",
+    ],
+)
+def test_a_credit_or_film_title_is_not_a_new_mix(title):
+    """CodeRabbit, review of #267: words in a credit or a film's title."""
+    other = {**_ALBUM, "title": title, "sample_rate": 96000}
+
+    assert decide(other, _ALBUM)[1] == "quality"
+
+
+def test_an_original_label_does_not_hide_an_edit_beside_it():
+    """CodeRabbit, review of #267: "(Original Mix - Radio Edit)"."""
+    edit = {**_ALBUM, "title": "My Love (Original Mix - Radio Edit)", "sample_rate": 96000}
+
+    assert decide(edit, _ALBUM) == ("library", "original/remaster")
+
+
+def test_a_copy_with_the_audio_of_a_radio_edit_is_the_edit_too():
+    """CodeRabbit, review of #267: identical audio shares the new-mix label."""
+    from musaeus.stages.dupe_resolver import _rank
+
+    album = {**_ALBUM, "audio_hash": "album", "finalized_at": "x", "id": 1}
+    edit = {**_ALBUM, "title": "My Love (Radio Edit)", "audio_hash": "edit", "id": 2}
+    bare = {**_ALBUM, "audio_hash": "edit", "sample_rate": 96000, "id": 3}
+    members = [bare, edit, album]
+
+    _rank(members)
+
+    assert members[0] is album
