@@ -308,18 +308,20 @@ def test_a_copy_with_the_audio_of_a_radio_edit_is_the_edit_too():
 
 def test_a_copy_with_no_album_does_not_inherit_original_from_a_shared_edit():
     """CodeRabbit, review of #267: the unlabelled copy of a radio edit read as era
-    0 in the best-known grade, so an album-less copy beat both edits."""
+    0 in the best-known grade, so an album-less copy took "original" and beat a
+    known remaster. Counted as the edit it is, the best known is the remaster."""
     from musaeus.stages.dupe_resolver import _rank
 
     edit = {**_ALBUM, "title": "My Love (Radio Edit)", "audio_hash": "e", "sample_rate": 96000,
             "id": 1, "finalized_at": "x"}  # fmt: skip
     bare_edit = {**edit, "title": "My Love", "id": 2}
+    remaster = {**edit, "title": "My Love (Remastered)", "audio_hash": "r", "id": 4}
     unknown = {**_ALBUM, "album": None, "audio_hash": "u", "id": 3}
-    members = [unknown, bare_edit, edit]
+    members = [unknown, bare_edit, edit, remaster]
 
     _rank(members)
 
-    assert members[0] is not unknown, "the 44.1 kHz copy beat both 96 kHz edits on the era step"
+    assert members[0] is remaster, "the 44.1 kHz copy took 'original' from a shared edit"
 
 
 def test_a_copy_with_no_album_is_never_ranked_as_a_new_mix():
