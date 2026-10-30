@@ -259,7 +259,10 @@ def promote(conn: sqlite3.Connection, pairs: list[Pair], execute: bool) -> colle
         out["promoted"] += 1
         if not execute:
             continue
-        sets = ", ".join(f"{f} = ?" for f in FACTS)
+        # An empty fact on the library copy keeps the copy's own: a download with no
+        # album blanked the album of 16 put-back copies, which then read as "album
+        # unknown" and lost to the same download again (2026-10-30).
+        sets = ", ".join(f"{f} = COALESCE(NULLIF(?, ''), {f})" for f in FACTS)
         conn.execute(
             f"UPDATE archive SET status='CATALOGUED', {sets}, canonicalized_at=NULL, "
             "finalized_at=NULL, "

@@ -505,3 +505,19 @@ def test_a_copy_with_no_album_keeps_its_group_grade_against_a_remix(vault):
     wins, _ = vault.mod.review_wins(vault.conn)
 
     assert [(p.review["id"], p.step) for p in wins] == [(bare, "quality")]
+
+
+def test_an_empty_fact_on_the_library_copy_does_not_blank_the_copy(vault):
+    # 2026-10-30: the download had no album, so Frankie Valli's original lost its
+    # album on promotion, read as "album unknown" and lost to the download again.
+    lib, rev, _, _ = _lib_and_better_review(vault)
+    vault.conn.execute("UPDATE archive SET album=NULL, mb_artist_id='' WHERE id=?", (lib,))
+    vault.conn.execute("UPDATE archive SET mb_artist_id='own' WHERE id=?", (rev,))
+    vault.conn.commit()
+
+    vault.mod.promote(vault.conn, vault.mod.review_wins(vault.conn)[0], execute=True)
+
+    row = vault.conn.execute(
+        "SELECT album, artist, mb_artist_id FROM archive WHERE id=?", (rev,)
+    ).fetchone()
+    assert (row["album"], row["artist"], row["mb_artist_id"]) == ("My playlist", "Toto", "own")
