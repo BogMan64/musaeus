@@ -89,7 +89,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..brackets import CLOSE, OPEN
+from ..brackets import CLOSE, OPEN, base_title
 from ..context import RunContext, StageResult
 from ..db import SET_ASIDE_STATUSES
 from ..dedupe import ACTED_ON_SQL
@@ -759,7 +759,7 @@ def _held_by_person(
     # The same take with its label gone: "Nowhere To Run" at the length of the
     # "(Original Mix)" Grey rejected replaced the kept single (batch 10, 2026-10-30).
     takes: list[tuple[str, float, float, dict]] = []  # base title, rejected s, kept s
-    base = lambda s: norm(re.sub(rf"[{OPEN}][^{OPEN}{CLOSE}]*[{CLOSE}]", " ", s or ""))  # noqa: E731
+    base = lambda s: norm(base_title(s or ""))  # noqa: E731
     for m in members:
         if not m.get("kept_by_person_at") or not m.get("current_hash") or not _is_there(m):
             continue
