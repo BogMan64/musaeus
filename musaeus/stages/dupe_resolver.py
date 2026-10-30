@@ -403,24 +403,35 @@ def _share_live_take(members: list[dict]) -> None:
             m["live_take"] = True
 
 
+def _era(m: dict) -> int:
+    """Keep rule step 3: 0 the original, 1 a remaster, 2 a new mix."""
+    return 2 if _is_remix(m) else 1 if _is_reissue(m) else 0
+
+
 def _share_unknown_album(members: list[dict]) -> None:
-    """Mark every member when one has no album yet and no label in its title.
+    """Rank a copy with no album yet, and no label in its title, as equal to the
+    best known copy of its group on the original/remaster step.
 
     Such a copy may be the original or a remaster: nothing says. Read as the
     original, a download with no album at Act 2 beat Grey's 192 kHz copies on
     "Slugcology 101(remaster)" and "Rock Of The Westies (Remastered)" -- the
-    same remasters (2026-10-29). Marked, the original/remaster step does not
-    judge the group; sample rate and length do.
+    same remasters (2026-10-29). The known copies keep their order: switching
+    the step off for the whole group let Glen Campbell's "Rhinestone Cowboy
+    (Remix)" beat the plain original on sample rate (Streamrip batch 7).
     """
-    if any(
-        not (m.get("album") or "").strip()
+    unknown = [
+        m
+        for m in members
+        if not (m.get("album") or "").strip()
         and not _is_reissue(m)
         and not _is_remix(m)
         and not _title_says_original(m)
-        for m in members
-    ):
-        for m in members:
-            m["album_unknown"] = True
+    ]
+    known = [_era(m) for m in members if not any(m is u for u in unknown)]
+    for m in unknown:
+        # Set by the whole group first (swap tool): a pair's own comparison must
+        # not re-grade it against one copy (CodeRabbit, review of #263).
+        m.setdefault("era_as", min(known, default=0))
 
 
 def _title_says_original(m: dict) -> bool:
@@ -491,7 +502,7 @@ def _rank(members: list[dict]) -> None:
     # not leave its mark behind (Codex review of #248, round 3).
     for m in members:
         m.pop("live_take", None)
-        m.pop("album_unknown", None)
+        m.pop("era_as", None)
     _share_live_take(members)
     _share_unknown_album(members)
     members.sort(key=_keeper_sort_key)
