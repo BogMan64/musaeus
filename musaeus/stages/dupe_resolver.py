@@ -349,7 +349,15 @@ def _is_arranged(m: dict) -> bool:
                 depth = max(depth - 1, 0)
             elif depth and (
                 _ARRANGED_RE.search(piece)
-                or (_LOWER_VERSION_RE.search(piece) and not _CREDIT_RE.match(piece))
+                or _LOWER_VERSION_RE.search(
+                    # A credit's own words never count; a label after it does:
+                    # "(feat. Jane - Acoustic Version)" (CodeRabbit, #266).
+                    piece.split(" - ", 1)[1]
+                    if _CREDIT_RE.match(piece) and " - " in piece
+                    else ""
+                    if _CREDIT_RE.match(piece)
+                    else piece
+                )
             ):
                 return True
     return False
@@ -384,7 +392,7 @@ def _share_baked_mark(members: list[dict]) -> None:
     but read on its own it never looked baked, and won: 119 masters were
     swapped for identical copies of themselves (2026-09-26).
     """
-    baked = {_hash_of(m) for m in members if _looks_baked(m)} - {None}
+    baked = {_hash_of(m) for m in members if _looks_baked(m)} - {None, ""}
     for m in members:
         if _hash_of(m) in baked:
             m["lufs_baked_at"] = m.get("lufs_baked_at") or "same audio as a baked copy"
@@ -406,7 +414,7 @@ def _share_version_label(members: list[dict]) -> None:
     demo: read alone, the unlabelled one could beat the original on quality
     (CodeRabbit, review of #266). Shared by audio identity, as the baked record is.
     """
-    lower = {_hash_of(m) for m in members if _is_arranged(m)} - {None}
+    lower = {_hash_of(m) for m in members if _is_arranged(m)} - {None, ""}
     for m in members:
         if _hash_of(m) in lower:
             m["lower_version"] = True

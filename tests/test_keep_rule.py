@@ -211,3 +211,29 @@ def test_a_copy_with_the_audio_of_a_labelled_demo_is_the_demo_too():
     _rank(members)
 
     assert members[0] is original
+
+
+def test_a_label_after_a_credit_still_counts():
+    """CodeRabbit, review of #266: "(feat. Jane - Acoustic Version)"."""
+    plain = {
+        "codec": "alac",
+        "title": "Song",
+        "album": "A",
+        "sample_rate": 44100,
+        "duration": 200.0,
+    }
+    labelled = {**plain, "title": "Song (feat. Jane - Acoustic Version)", "sample_rate": 96000}
+
+    assert decide(labelled, plain) == ("library", "original/arrangement")
+
+
+def test_an_empty_audio_hash_shares_no_label():
+    """CodeRabbit, review of #266: two rows with an empty hash are not one recording."""
+    from musaeus.stages.dupe_resolver import _share_version_label
+
+    demo = {"title": "Song (Demo)", "audio_hash": ""}
+    other = {"title": "Song", "audio_hash": ""}
+
+    _share_version_label([demo, other])
+
+    assert not other.get("lower_version")

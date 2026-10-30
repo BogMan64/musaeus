@@ -61,6 +61,7 @@ from musaeus.config import MusicConfig  # noqa: E402
 from musaeus.hasher import audio_hash_safe  # noqa: E402
 from musaeus.keep_rule import decide, keep_key  # noqa: E402
 from musaeus.stages.dupe_resolver import (  # noqa: E402
+    _is_arranged,
     _share_baked_mark,
     _share_live_take,
     _share_unknown_album,
@@ -215,6 +216,15 @@ def review_wins(
         # 2026-10-29), as the resolver's _keeper_sort_key ranks it.
         if winner == "tie" and best["finalized_at"] and best["id"] < lib["id"]:
             winner, step = "review", "tie: in the library first"
+        # The same audio as a library copy labelled a lower version ("Song (Demo)"):
+        # promoting would gain no sound and drop the label (CodeRabbit, #266).
+        if (
+            winner == "review"
+            and best["audio_hash"]
+            and best["audio_hash"] == lib["audio_hash"]
+            and _is_arranged(dict(lib))
+        ):
+            winner, step = "tie", ""
         tally[f"{winner} ({step})" if step else winner] += 1
         if winner == "review":
             wins.append(Pair(rows[best["id"]], library, step))
