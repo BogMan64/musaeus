@@ -59,7 +59,8 @@ def c(**kw):
             ("library", "original/remaster"),
         ),
         (c(title="Song (Surround Mix)", sample_rate=96000), c(), ("library", "original/remaster")),
-        (c(title="Song (Single Mix)"), c(), ("tie", "")),
+        # Grey, 2026-10-30: single, radio, 7'' and film versions -- "album wins"
+        (c(title="Song (Single Mix)"), c(), ("library", "original/remaster")),
         (c(title="Song (1965 Stereo Mix)"), c(), ("tie", "")),
         (c(title="Song (Original 1973 Stereo Mix)"), c(), ("tie", "")),
         (c(title="Song - Original Re-Mix (Stereo)"), c(), ("tie", "")),
@@ -237,3 +238,85 @@ def test_an_empty_audio_hash_shares_no_label():
     _share_version_label([demo, other])
 
     assert not other.get("lower_version")
+
+
+_ALBUM = {"codec": "alac", "title": "My Love", "album": "FutureSex/LoveSounds",
+          "sample_rate": 44100, "duration": 276.0}  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["Art Mix", "Steve Angello & Sebastian Ingrosso Mix", "Radio Edit", "Edit",
+     "Single Version", "7'' Version", "Film Version", "Extended Version", "Club Mix",
+     "Single Version - Mono Version"],
+)  # fmt: skip
+def test_an_edit_or_named_mix_ranks_below_the_album_version(label):
+    """Grey, 2026-10-30: named mixes rank lower, like a remix; single, radio, 7''
+    and film versions: "album wins"."""
+    edit = {**_ALBUM, "title": f"My Love ({label})", "sample_rate": 96000, "duration": 613.0}
+
+    assert decide(edit, _ALBUM) == ("library", "original/remaster")
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["My Love (Original Mix)", "My Love (Album Version)", "My Love (Stereo Mix)",
+     "My Love (Mono)", 'My Love (From The Film "Pitch Perfect")', "Club Tropicana"],
+)  # fmt: skip
+def test_a_neutral_label_is_not_a_new_mix(title):
+    other = {**_ALBUM, "title": title, "sample_rate": 96000}
+    base = {**_ALBUM, "title": title.split(" (")[0]}
+
+    assert decide(other, base)[1] == "quality"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "My Love (feat. Little Mix)",
+        'My Love (From The Film "The Mix")',
+        "My Love (with The Edit Crew)",
+    ],
+)
+def test_a_credit_or_film_title_is_not_a_new_mix(title):
+    """CodeRabbit, review of #267: words in a credit or a film's title."""
+    other = {**_ALBUM, "title": title, "sample_rate": 96000}
+
+    assert decide(other, _ALBUM)[1] == "quality"
+
+
+def test_an_original_label_does_not_hide_an_edit_beside_it():
+    """CodeRabbit, review of #267: "(Original Mix - Radio Edit)"."""
+    edit = {**_ALBUM, "title": "My Love (Original Mix - Radio Edit)", "sample_rate": 96000}
+
+    assert decide(edit, _ALBUM) == ("library", "original/remaster")
+
+
+def test_a_copy_with_the_audio_of_a_radio_edit_is_the_edit_too():
+    """CodeRabbit, review of #267: identical audio shares the new-mix label."""
+    from musaeus.stages.dupe_resolver import _rank
+
+    album = {**_ALBUM, "audio_hash": "album", "finalized_at": "x", "id": 1}
+    edit = {**_ALBUM, "title": "My Love (Radio Edit)", "audio_hash": "edit", "id": 2}
+    bare = {**_ALBUM, "audio_hash": "edit", "sample_rate": 96000, "id": 3}
+    members = [bare, edit, album]
+
+    _rank(members)
+
+    assert members[0] is album
+
+
+def test_a_copy_with_no_album_does_not_inherit_original_from_a_shared_edit():
+    """CodeRabbit, review of #267: the unlabelled copy of a radio edit read as era
+    0 in the best-known grade, so an album-less copy beat both edits."""
+    from musaeus.stages.dupe_resolver import _rank
+
+    edit = {**_ALBUM, "title": "My Love (Radio Edit)", "audio_hash": "e", "sample_rate": 96000,
+            "id": 1, "finalized_at": "x"}  # fmt: skip
+    bare_edit = {**edit, "title": "My Love", "id": 2}
+    unknown = {**_ALBUM, "album": None, "audio_hash": "u", "id": 3}
+    members = [unknown, bare_edit, edit]
+
+    _rank(members)
+
+    assert members[0] is not unknown, "the 44.1 kHz copy beat both 96 kHz edits on the era step"

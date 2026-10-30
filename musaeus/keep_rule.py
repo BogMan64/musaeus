@@ -27,7 +27,10 @@ answered yes to each reading:
                      (Grey, 2026-10-30: "lower"), then the original beats
                      a remaster: two steps, so one never cancels the other.
                      A remaster beats a new mix ("2009 Mix", "Remix"; Grey,
-                     2026-10-27): closer to the original. A copy with no
+                     2026-10-27): closer to the original. A named mix, an
+                     edit, an extended, club, dub, single, radio, 7''/12'',
+                     film or movie version is a new mix too (Grey,
+                     2026-10-30: "album wins"). A copy with no
                      album yet is not known to be the original: on this step it
                      counts as the best known copy of its group (Grey,
                      2026-10-29), and the known copies keep their order
@@ -94,7 +97,7 @@ def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int, int]:
     # and albums exactly the way it does.
     from .stages.dupe_resolver import _era, _is_arranged, _is_live, _looks_baked
 
-    era = m["era_as"] if "era_as" in m else _era(dict(m))
+    era = 2 if m.get("new_mix") else m["era_as"] if "era_as" in m else _era(dict(m))
     return (
         1 if _is_live(dict(m)) else 0,
         _format_rank(m.get("codec")),

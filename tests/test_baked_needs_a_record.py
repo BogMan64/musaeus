@@ -78,7 +78,7 @@ def test_the_resolver_ranks_the_same_way():
 
 def test_a_song_named_original_is_not_an_original_label():
     # CodeRabbit, review of #262: "Original Sin" is the song's name.
-    download = _copy(title="Original Sin - Single Version", album=None)
+    download = _copy(title="Original Sin - Mono", album=None)
     grey = _copy(title="Original Sin", album="The Swing (Remastered)", sample_rate=96000)
 
     assert decide(download, grey) == ("library", "quality")

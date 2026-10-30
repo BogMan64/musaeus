@@ -231,6 +231,18 @@ _REMIX_RE = re.compile(
     re.IGNORECASE,
 )
 _ORIGINAL_RE = re.compile(r"\boriginal\b", re.IGNORECASE)
+# Grey, 2026-10-30: a named mix ("Art Mix", "Steve Angello & Sebastian Ingrosso
+# Mix"), an edit, and an extended, club, dub, single, radio, 7''/12'', film or
+# movie version rank as a new mix ("yes"; "album wins"). Read only in a label,
+# a bracket or a " - " part: a song may be named "Club Tropicana".
+_LOWER_MIX_RE = re.compile(
+    r"\bmix\b|\bedit\b|\bextended\b"
+    r"|(?:\b(?:single|radio|film|movie|club|dub|pop|dance)|\b(?:7|12)(?:''|\"|-inch))"
+    r"\s+(?:version|edit|mix)\b",
+    re.IGNORECASE,
+)
+#: Mixes that are not new ones: the album's own, its stereo or mono form.
+_NEUTRAL_MIX_RE = re.compile(r"\b(?:original|album|lp|stereo|mono)\s+(?:mix|version)\b", re.I)
 # An arrangement is not the original either: Bach's "Air" for orchestra over
 # its longer piano arrangement (Grey, 2026-10-26: "A. Original"). Read inside
 # a bracket only, "(Arr. For Piano)": a song may be NAMED "The Arrangement"
@@ -311,6 +323,21 @@ def _is_remix(m: dict) -> bool:
         for hit in _REMIX_RE.finditer(text):
             if not _ORIGINAL_RE.search(_label_of(text, hit.start())):
                 return True
+        for hit in _LOWER_MIX_RE.finditer(text):
+            label = _label_of(text, hit.start())
+            if label == text:
+                continue
+            # Each part on its own: "(Original Mix - Radio Edit)" is an edit; a
+            # credit or a film's title is no mix: "(feat. Little Mix)", "(From
+            # The Film "The Mix")" (CodeRabbit, review of #267).
+            inner = re.sub(rf"^\s*[{OPEN}]|[{CLOSE}]\s*$", "", label)
+            for part in re.split(r"\s+-\s+|\s*/\s*", inner):
+                if _ORIGINAL_RE.search(part) or _CREDIT_RE.match(part):
+                    continue
+                if re.match(r"\s*from\b", part, re.IGNORECASE):
+                    continue
+                if _LOWER_MIX_RE.search(_NEUTRAL_MIX_RE.sub(" ", part)):
+                    return True
     return False
 
 
@@ -415,9 +442,13 @@ def _share_version_label(members: list[dict]) -> None:
     (CodeRabbit, review of #266). Shared by audio identity, as the baked record is.
     """
     lower = {_hash_of(m) for m in members if _is_arranged(m)} - {None, ""}
+    # A new mix too: an unlabelled copy of a "(Radio Edit)" is that edit (#267).
+    mixed = {_hash_of(m) for m in members if _is_remix(m)} - {None, ""}
     for m in members:
         if _hash_of(m) in lower:
             m["lower_version"] = True
+        if _hash_of(m) in mixed:
+            m["new_mix"] = True
 
 
 def _share_live_take(members: list[dict]) -> None:
@@ -460,7 +491,10 @@ def _share_unknown_album(members: list[dict]) -> None:
         and not _is_remix(m)
         and not _title_says_original(m)
     ]
-    known = [_era(m) for m in members if not any(m is u for u in unknown)]
+    # A copy sharing a new mix's audio is that mix, as keep_key ranks it (#267).
+    known = [
+        2 if m.get("new_mix") else _era(m) for m in members if not any(m is u for u in unknown)
+    ]
     for m in unknown:
         # Set by the whole group first (swap tool): a pair's own comparison must
         # not re-grade it against one copy (CodeRabbit, review of #263).
@@ -536,6 +570,7 @@ def _rank(members: list[dict]) -> None:
     for m in members:
         m.pop("live_take", None)
         m.pop("lower_version", None)
+        m.pop("new_mix", None)
         m.pop("era_as", None)
     _share_live_take(members)
     _share_version_label(members)
