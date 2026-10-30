@@ -491,7 +491,10 @@ def _share_unknown_album(members: list[dict]) -> None:
         and not _is_remix(m)
         and not _title_says_original(m)
     ]
-    known = [_era(m) for m in members if not any(m is u for u in unknown)]
+    # A copy sharing a new mix's audio is that mix, as keep_key ranks it (#267).
+    known = [
+        2 if m.get("new_mix") else _era(m) for m in members if not any(m is u for u in unknown)
+    ]
     for m in unknown:
         # Set by the whole group first (swap tool): a pair's own comparison must
         # not re-grade it against one copy (CodeRabbit, review of #263).
