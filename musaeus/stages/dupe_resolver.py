@@ -429,7 +429,9 @@ def _share_unknown_album(members: list[dict]) -> None:
     ]
     known = [_era(m) for m in members if not any(m is u for u in unknown)]
     for m in unknown:
-        m["era_as"] = min(known, default=0)
+        # Set by the whole group first (swap tool): a pair's own comparison must
+        # not re-grade it against one copy (CodeRabbit, review of #263).
+        m.setdefault("era_as", min(known, default=0))
 
 
 def _title_says_original(m: dict) -> bool:
