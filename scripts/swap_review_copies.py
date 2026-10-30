@@ -262,7 +262,7 @@ def promote(conn: sqlite3.Connection, pairs: list[Pair], execute: bool) -> colle
         # An empty fact on the library copy keeps the copy's own: a download with no
         # album blanked the album of 16 put-back copies, which then read as "album
         # unknown" and lost to the same download again (2026-10-30).
-        sets = ", ".join(f"{f} = COALESCE(NULLIF(?, ''), {f})" for f in FACTS)
+        sets = ", ".join(f"{f} = COALESCE(?, {f})" for f in FACTS)
         conn.execute(
             f"UPDATE archive SET status='CATALOGUED', {sets}, canonicalized_at=NULL, "
             "finalized_at=NULL, "
@@ -274,7 +274,7 @@ def promote(conn: sqlite3.Connection, pairs: list[Pair], execute: bool) -> colle
             "b.lufs_baked_target FROM archive b WHERE b.audio_hash=archive.audio_hash "
             "AND b.lufs_baked_at != '' LIMIT 1)) "
             "WHERE id=? AND status='DUPE_REVIEW'",
-            (*(lib[f] for f in FACTS), r["id"]),
+            (*(lib[f] if str(lib[f] or "").strip() else None for f in FACTS), r["id"]),
         )
         conn.execute(
             "INSERT INTO events (run_id, ts, event_type, file_path, old_value, new_value, stage, note) "

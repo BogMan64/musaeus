@@ -511,7 +511,8 @@ def test_an_empty_fact_on_the_library_copy_does_not_blank_the_copy(vault):
     # 2026-10-30: the download had no album, so Frankie Valli's original lost its
     # album on promotion, read as "album unknown" and lost to the download again.
     lib, rev, _, _ = _lib_and_better_review(vault)
-    vault.conn.execute("UPDATE archive SET album=NULL, mb_artist_id='' WHERE id=?", (lib,))
+    # NULL, empty and spaces-only all count as empty (CodeRabbit, review of #264).
+    vault.conn.execute("UPDATE archive SET album='  ', mb_artist_id='' WHERE id=?", (lib,))
     vault.conn.execute("UPDATE archive SET mb_artist_id='own' WHERE id=?", (rev,))
     vault.conn.commit()
 
