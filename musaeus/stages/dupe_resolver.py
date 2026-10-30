@@ -756,6 +756,10 @@ def _held_by_person(
     if keeper is None or keeper.get("kept_by_person_at") or not norm(keeper.get("title")):
         return None
     rejected: dict[str, dict] = {}  # rejected version -> the copy kept over it
+    # The same take with its label gone: "Nowhere To Run" at the length of the
+    # "(Original Mix)" Grey rejected replaced the kept single (batch 10, 2026-10-30).
+    takes: list[tuple[str, float, float, dict]] = []  # base title, rejected s, kept s
+    base = lambda s: norm(re.sub(rf"[{OPEN}][^{OPEN}{CLOSE}]*[{CLOSE}]", " ", s or ""))  # noqa: E731
     for m in members:
         if not m.get("kept_by_person_at") or not m.get("current_hash") or not _is_there(m):
             continue
@@ -766,7 +770,7 @@ def _held_by_person(
         # (rounds 1-5). Not kept is rejected: moved ('archive'), or a move that
         # failed (left 'pending' by the console, 'stale' by a sheet; round 7).
         rows = conn.execute(
-            "SELECT k.title, d.title FROM duplicates k "
+            "SELECT k.title, d.title, d.audio_hash FROM duplicates k "
             "JOIN duplicates d ON d.group_id = k.group_id AND d.status <> 'keep' "
             "WHERE k.status = 'keep' AND k.title IS NOT NULL AND d.title IS NOT NULL "
             "AND k.audio_hash = ?",
@@ -777,12 +781,33 @@ def _held_by_person(
         # decision -- a title tidied since changes neither (round 6). Same titles
         # were a choice between copies, and a better copy may still replace the
         # kept one (2026-10-10).
-        for k, d in rows:
+        for k, d, dh in rows:
             if norm(d) != norm(k):
                 rejected.setdefault(norm(d), m)
+                was = (
+                    dh
+                    and conn.execute(
+                        "SELECT duration FROM archive WHERE audio_hash = ? AND duration IS NOT NULL",
+                        (dh,),
+                    ).fetchone()
+                )
+                if was and m.get("duration"):
+                    takes.append((base(d), float(was[0]), float(m["duration"]), m))
+
+    def held_over(c: dict) -> dict | None:
+        """The kept copy *c* is a rejected version of, or None."""
+        if c.get("kept_by_person_at"):
+            return None
+        if norm(c.get("title")) in rejected:
+            return rejected[norm(c.get("title"))]
+        d = float(c.get("duration") or 0)
+        for title, rejected_s, kept_s, kept in takes:
+            if base(c.get("title")) == title and abs(d - rejected_s) <= 0.5 < abs(d - kept_s):
+                return kept
+        return None
 
     def of_rejected(c: dict) -> bool:
-        return not c.get("kept_by_person_at") and norm(c.get("title")) in rejected
+        return held_over(c) is not None
 
     if not of_rejected(keeper):
         return None
@@ -790,7 +815,7 @@ def _held_by_person(
     # old order without the rejected copy is not the keep rule's (round 10).
     eligible = [c for c in pool if not of_rejected(c)]
     _rank(eligible)
-    return eligible[0] if eligible else rejected[norm(keeper.get("title"))]
+    return eligible[0] if eligible else held_over(keeper)
 
 
 def _pick_keeper_and_losers(members: list[dict]) -> tuple[dict | None, list[dict]]:
