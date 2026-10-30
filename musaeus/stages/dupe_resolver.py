@@ -498,7 +498,10 @@ def _share_unknown_album(members: list[dict]) -> None:
     for m in unknown:
         # Set by the whole group first (swap tool): a pair's own comparison must
         # not re-grade it against one copy (CodeRabbit, review of #263).
-        m.setdefault("era_as", min(known, default=0))
+        # No label at all: the original or a remaster, never a new mix -- so not
+        # below a remaster: "Roses Are Red" lost to its own "(Single Version)"
+        # when the single was the only known copy (library check, 2026-10-30).
+        m.setdefault("era_as", min(min(known, default=0), 1))
 
 
 def _title_says_original(m: dict) -> bool:

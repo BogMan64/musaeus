@@ -320,3 +320,19 @@ def test_a_copy_with_no_album_does_not_inherit_original_from_a_shared_edit():
     _rank(members)
 
     assert members[0] is not unknown, "the 44.1 kHz copy beat both 96 kHz edits on the era step"
+
+
+def test_a_copy_with_no_album_is_never_ranked_as_a_new_mix():
+    """Library check, 2026-10-30: "Roses Are Red" (no album) took the grade of the
+    only known copy, its "(Single Version)", and lost on length."""
+    from musaeus.stages.dupe_resolver import _rank
+
+    single = {**_ALBUM, "title": "Roses Are Red (Single Version)", "duration": 160.0,
+              "audio_hash": "s", "id": 1, "finalized_at": "x"}  # fmt: skip
+    plain = {**_ALBUM, "title": "Roses Are Red", "album": None, "duration": 150.0,
+             "audio_hash": "p", "id": 2, "finalized_at": "x"}  # fmt: skip
+    members = [single, plain]
+
+    _rank(members)
+
+    assert members[0] is plain
