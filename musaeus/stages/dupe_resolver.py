@@ -240,10 +240,13 @@ _ORIGINAL_RE = re.compile(r"\boriginal\b", re.IGNORECASE)
 # demo, alternate, outtake or rehearsal version ranks lower, like an arrangement.
 # Not "session" ("The Sun Sessions" are the originals) nor "take" ("Master Take").
 _ARRANGED_RE = re.compile(
-    r"\b(?:arr|arranged|arrangement|transcribed|transcription|bearbeitung"
-    r"|jam|instrumental|acoustic|demo|alternate|outtake|rehearsal)\b",
-    re.IGNORECASE,
+    r"\b(?:arr|arranged|arrangement|transcribed|transcription|bearbeitung)\b", re.IGNORECASE
 )
+_LOWER_VERSION_RE = re.compile(
+    r"\b(?:jam|instrumental|acoustic|demo|alternate|outtake|rehearsal)\b", re.IGNORECASE
+)
+#: An artist credit in a bracket: "(feat. Pearl Jam)" is not a jam (CodeRabbit, #266).
+_CREDIT_RE = re.compile(r"^\s*(?:feat\.?|featuring|ft\.?|with)\s", re.IGNORECASE)
 _BRACKET_SPLIT_RE = re.compile(rf"([{OPEN}{CLOSE}])")
 
 
@@ -344,7 +347,10 @@ def _is_arranged(m: dict) -> bool:
                 depth += 1
             elif re.fullmatch(rf"[{CLOSE}]", piece):
                 depth = max(depth - 1, 0)
-            elif depth and _ARRANGED_RE.search(piece):
+            elif depth and (
+                _ARRANGED_RE.search(piece)
+                or (_LOWER_VERSION_RE.search(piece) and not _CREDIT_RE.match(piece))
+            ):
                 return True
     return False
 

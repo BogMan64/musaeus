@@ -180,3 +180,12 @@ def test_a_master_take_or_the_sun_sessions_is_not_a_lower_version(title):
     labelled = {**plain, "title": title, "sample_rate": 96000}
 
     assert decide(labelled, plain)[1] == "quality"
+
+
+@pytest.mark.parametrize("credit", ["feat. Pearl Jam", "with The Jam", "ft. Acoustic Alchemy"])
+def test_an_artist_credit_is_not_a_lower_version(credit):
+    """CodeRabbit, review of #266: "(feat. Pearl Jam)" matched "jam"."""
+    plain = {"codec": "alac", "title": "Song", "album": "A", "sample_rate": 44100, "duration": 200.0}
+    credited = {**plain, "title": f"Song ({credit})", "sample_rate": 96000}
+
+    assert decide(credited, plain)[1] == "quality"
