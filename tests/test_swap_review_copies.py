@@ -458,3 +458,23 @@ def test_a_review_copy_whose_audio_is_recorded_baked_elsewhere_is_baked(vault):
     wins, tally = vault.mod.review_wins(vault.conn)
 
     assert wins == [] and tally["library (original/baked)"] == 1
+
+
+def test_a_review_copy_with_no_album_does_not_let_a_remix_beat_the_original(vault):
+    # Streamrip batch 7: Glen Campbell "Rhinestone Cowboy (Remix)", 192 kHz, was
+    # about to replace the 44.1 kHz original because a third copy had no album.
+    lib_path = vault.masters / "Country/Glen Campbell/Rhinestone Cowboy/Glen Campbell - Rhinestone Cowboy.m4a"
+    remix_path = vault.review_dir / "a/Glen Campbell - Rhinestone Cowboy (Remix).m4a"
+    bare_path = vault.review_dir / "b/Glen Campbell - Rhinestone Cowboy.m4a"
+    vault.row(lib_path, "CATALOGUED", "L", artist="Glen Campbell", title="Rhinestone Cowboy",
+              album="Rhinestone Cowboy")  # fmt: skip
+    vault.row(remix_path, "DUPE_REVIEW", "R", artist="Glen Campbell", album="Rhinestone Cowboy",
+              title="Rhinestone Cowboy (Remix)", sample_rate=192000)  # fmt: skip
+    vault.row(bare_path, "DUPE_REVIEW", "B", artist="Glen Campbell", title="Rhinestone Cowboy",
+              album=None, finalized_at=None)  # fmt: skip
+    vault.set_aside(remix_path, lib_path)
+    vault.set_aside(bare_path, lib_path)
+
+    wins, _ = vault.mod.review_wins(vault.conn)
+
+    assert wins == []

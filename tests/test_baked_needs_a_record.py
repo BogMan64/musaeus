@@ -236,3 +236,19 @@ def test_the_dry_run_works_on_a_catalogue_without_the_bake_columns(tmp_path, mon
     db.close()
 
     assert _main(_script(), monkeypatch, tmp_path) == 0
+
+
+def test_a_copy_with_no_album_does_not_lift_a_remix_over_the_original():
+    # Streamrip batch 7: a third copy with no album switched the step off for the
+    # whole group, and "Rhinestone Cowboy (Remix)" beat the original on sample rate.
+    original = _copy(title="Rhinestone Cowboy", album="Rhinestone Cowboy", id=80544,
+                     finalized_at="x")  # fmt: skip
+    remix = _copy(title="Rhinestone Cowboy (Remix)", album="Rhinestone Cowboy",
+                  sample_rate=192000, id=23207, finalized_at="x")  # fmt: skip
+    unknown = _copy(title="Rhinestone Cowboy", album=None, id=90001)
+    members = [remix, unknown, original]
+
+    _rank(members)
+
+    assert members[0] is original
+    assert members[-1] is remix
