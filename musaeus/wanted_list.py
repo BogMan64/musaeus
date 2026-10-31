@@ -79,6 +79,18 @@ def extract_credited_artist(title: str) -> str | None:
     return None
 
 
+def medley_songs(title: str) -> list[str]:
+    """The songs a medley's title names.
+
+    >>> medley_songs("Medley: Little Sister / Get Back (August 12 - Midnight Show)")
+    ['Little Sister', 'Get Back']
+    >>> medley_songs("Cape Breton Medley")
+    []
+    """
+    t = re.sub(r"^.*?\bmedley\b\s*[:-]?\s*", "", strip_bracketed(title or ""), flags=re.IGNORECASE)
+    return [p.strip(" :-") for p in re.split(r"\s*[/;]\s*", t) if p.strip(" :-")]
+
+
 def clean_title(title: str) -> str:
     """The song title with the knock-off's own markup removed.
 
@@ -136,16 +148,24 @@ def wanted_lines(conn: sqlite3.Connection, quarantined: list[dict]) -> list[str]
     """ "Artist - Title" lines for TuneMyMusic, from a batch of quarantined
     rows.
 
-    *quarantined* items need "title" (and may have "artist", used only
-    for logging/debugging, not for the credit extraction itself -- the
-    credited artist comes from the TITLE, because that is where the
-    knock-off names the original). Only rows where a credit was found
-    AND the real artist/title combination is not already owned appear
-    in the result. Order follows *quarantined*'s own order.
+    *quarantined* items need "title" (and may have "artist", not used for
+    the credit extraction itself -- the credited artist comes from the
+    TITLE, because that is where the knock-off names the original). Only
+    rows where a credit was found AND the real artist/title combination is
+    not already owned appear in the result. A medley (reason "medley") lists
+    each song it names under its own "artist" instead. Order follows
+    *quarantined*'s own order.
     """
     lines: list[str] = []
     for item in quarantined:
         title = item.get("title") or ""
+        artist = item.get("artist") or ""
+        if item.get("reason") == "medley":
+            # Each song a medley names, by the medley's own artist (Grey,
+            # 2026-10-31: "place individual tracks onto tunemymusic").
+            lines += [f"{artist} - {s}" for s in medley_songs(title)
+                      if artist and not already_owned(conn, artist, s)]  # fmt: skip
+            continue
         credited = extract_credited_artist(title)
         if not credited:
             continue

@@ -425,3 +425,48 @@ def test_the_stage_leaves_a_library_artists_compilation_track_alone(ctx: RunCont
     TributeQuarantineStage().run(ctx)
     assert arrival.exists(), "a library artist's song was quarantined for its compilation album"
     assert not stranger.exists(), "an unknown act on a relaxing album should still be caught"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Medley: Little Sister / Get Back (August 12 - Midnight Show)",
+        "Kodachrome / Maybellene",
+        "Your Move / All Good People",
+        "Tennessee Whiskey / I'd Rather Go Blind",
+        "Cape Breton Medley",
+    ],
+)
+def test_a_medley_is_set_aside(title):
+    """Grey, 2026-10-31: "No medley in my library moving forward ... all"."""
+    assert is_junk("Some Band", title, "Album", known_artist=True) == (True, "medley")
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Dancing In A Dance Club (Live/Edit)",
+        "Money (That's What I Want) (Single Version / Mono)",
+        "24/7",
+        'Purcell: Dido And Aeneas / Act 3: "Thy Hand, Belinda...When I Am Laid In Earth"',
+        "Handel: Rinaldo, HWV 7a / Act 2: \"Lascia Ch'io Pianga\"",
+    ],
+)
+def test_a_label_a_number_or_an_opera_act_is_not_a_medley(title):
+    assert is_junk("Some Band", title, "Album", known_artist=True) == (False, "")
+
+
+def test_a_medleys_songs_go_on_the_wanted_list():
+    """Grey, 2026-10-31: "place individual tracks onto tunemymusic"; a song
+    already in the library is not wanted."""
+    import sqlite3
+
+    from musaeus.wanted_list import wanted_lines
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE archive (status TEXT, artist TEXT, title TEXT, file_path TEXT)")
+    conn.execute("INSERT INTO archive VALUES ('CATALOGUED', 'Elvis Presley', 'Little Sister', '/x')")
+    medley = {"artist": "Elvis Presley", "title": "Medley: Little Sister / Get Back (Live)",
+              "reason": "medley"}  # fmt: skip
+
+    assert wanted_lines(conn, [medley]) == ["Elvis Presley - Get Back"]
