@@ -344,7 +344,25 @@ def _is_different_piece(title_a: str, title_b: str) -> bool:
     # (Codex review of #255), and so does "VIII. Hornpipe" from "VII. Bourrée -
     # VIII. Hornpipe", one track holding two movements.
     ma, mb = _movements(title_a), _movements(title_b)
-    return bool(ma and mb and ma != mb)
+    if ma and mb and ma != mb:
+        return True
+    # A part number closing both titles: "Synchronicity I" is not "Synchronicity
+    # II". Grouped at 96.8, the studio "Synchronicity I" was set aside for review
+    # and deleted with the review losers (2026-10-30). One side only stays the
+    # ordinary "Song" vs "Song 2" case.
+    pa, pb = _closing_part(title_a), _closing_part(title_b)
+    return bool(pa and pb and pa != pb)
+
+
+#: A part number closing a title, after a word: "Synchronicity II", "Shout, Pt. 2".
+_CLOSING_PART_RE = re.compile(r"[^\W\d_]{2,}\.?,?\s+(?:pts?\.?\s*)?([IVX]{1,4}|\d{1,2})$", re.IGNORECASE)
+
+
+def _closing_part(title: str) -> int | None:
+    """The part number closing a title, labels and " - " suffixes left off."""
+    bare = re.split(rf"\s*[{OPEN}]|\s+-\s+", title or "", maxsplit=1)[0].strip()
+    m = _CLOSING_PART_RE.search(bare)
+    return _marker_number(m.group(1)) if m else None
 
 
 #: A variation is its own piece, never a movement: "Variation 1" is not
