@@ -358,8 +358,13 @@ def test_a_mono_single_beats_a_remix():
 
 @pytest.mark.parametrize(
     "title",
-    ["Song (Mono Remix)", "Song (2009 Mono Mix)", "Mono (Single Version)", "Song (Club Mix / Mono)",
-     "Song (Extended Version - Mono)"],
+    [
+        "Song (Mono Remix)",
+        "Song (2009 Mono Mix)",
+        "Mono (Single Version)",
+        "Song (Club Mix / Mono)",
+        "Song (Extended Version - Mono)",
+    ],
 )
 def test_a_mono_remix_or_a_song_named_mono_is_still_a_new_mix(title):
     remaster = {**_ISLEY, "title": "Song (Remastered)", "duration": 171.0}
