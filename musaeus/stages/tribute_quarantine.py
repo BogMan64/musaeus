@@ -104,7 +104,9 @@ JUNK_TITLE_PATTERNS: list[re.Pattern[str]] = [
 # Act 3"). The medleys already filed stay: this stage reads arrivals only.
 _MEDLEY_RE = re.compile(r"\bmedley\b", re.IGNORECASE)
 _WORD_RE = re.compile(r"[^\W\d_]{2,}")
-_CLASSICAL_RE = re.compile(r"\b(?:act|scene|op\.|bwv|hwv|rv|k\.|z\.?)\s*(?:\d|[ivx]+\b)", re.IGNORECASE)
+_CLASSICAL_RE = re.compile(
+    r"\b(?:act|scene|op\.|bwv|hwv|rv|k\.|z\.?)\s*(?:\d|[ivx]+\b)", re.IGNORECASE
+)
 
 
 def is_medley(title: str) -> bool:
