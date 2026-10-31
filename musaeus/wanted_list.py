@@ -42,7 +42,7 @@ from __future__ import annotations
 import re
 import sqlite3
 
-from .brackets import strip_bracketed
+from .brackets import CLOSE, OPEN, strip_bracketed
 
 #: The three phrases that both flag a knock-off AND name the original.
 #: Verified against the live library 2026-09-02: these three, and only
@@ -107,7 +107,7 @@ def medley_songs(title: str) -> list[str]:
     """
     t = title or ""
     # A bracket holding the song list, not a label (CodeRabbit, review of #271).
-    lists = [b for b in re.findall(r"[([{]([^()[\]{}]*)[)\]}]", t)
+    lists = [b for b in re.findall(rf"[{OPEN}]([^{OPEN}{CLOSE}]*)[{CLOSE}]", t)
              if _SONG_LIST_RE.search(b) and not VERSION_LABEL_RE.search(b)]  # fmt: skip
     t = lists[0] if lists else strip_label_suffix(strip_bracketed(t))
     trailing = re.search(r"\s*\bmedley\s*$", t, re.IGNORECASE)
