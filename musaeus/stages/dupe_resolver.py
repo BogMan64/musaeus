@@ -244,6 +244,8 @@ _LOWER_MIX_RE = re.compile(
 #: Mixes that are not new ones: the album's own, its stereo or mono form.
 _NEUTRAL_MIX_RE = re.compile(r"\b(?:original|album|lp|stereo|mono)\s+(?:mix|version)\b", re.I)
 _MONO_RE = re.compile(r"\bmono\b", re.IGNORECASE)
+#: The old release a mono label lifts: a single or an edit, never a club or extended mix.
+_MONO_RELEASE_RE = re.compile(r"\b(?:single|edit)\b|\b(?:7|45)(?:''|\"|-inch)", re.IGNORECASE)
 # An arrangement is not the original either: Bach's "Air" for orchestra over
 # its longer piano arrangement (Grey, 2026-10-26: "A. Original"). Read inside
 # a bracket only, "(Arr. For Piano)": a song may be NAMED "The Arrangement"
@@ -349,7 +351,8 @@ def _mix_kind(m: dict) -> int:
                 if re.match(r"\s*from\b", part, re.IGNORECASE):
                     continue
                 if _LOWER_MIX_RE.search(_NEUTRAL_MIX_RE.sub(" ", part)):
-                    if not mono:
+                    # "(Club Mix / Mono)" is still a mix (CodeRabbit, review of #269).
+                    if not mono or not _MONO_RELEASE_RE.search(part):
                         return 2
                     kind = 1
     return kind
@@ -458,11 +461,16 @@ def _share_version_label(members: list[dict]) -> None:
     lower = {_hash_of(m) for m in members if _is_arranged(m)} - {None, ""}
     # A new mix too: an unlabelled copy of a "(Radio Edit)" is that edit (#267).
     mixed = {_hash_of(m) for m in members if _is_remix(m)} - {None, ""}
+    # And a mono single: an unlabelled copy of it is not the original (CodeRabbit,
+    # review of #269). Before the unknown-album grade, which keeps it.
+    mono = {_hash_of(m) for m in members if _mix_kind(m) == 1} - {None, ""} - mixed
     for m in members:
         if _hash_of(m) in lower:
             m["lower_version"] = True
         if _hash_of(m) in mixed:
             m["new_mix"] = True
+        if _hash_of(m) in mono:
+            m.setdefault("era_as", 1)
 
 
 def _share_live_take(members: list[dict]) -> None:
@@ -508,7 +516,9 @@ def _share_unknown_album(members: list[dict]) -> None:
     ]
     # A copy sharing a new mix's audio is that mix, as keep_key ranks it (#267).
     known = [
-        2 if m.get("new_mix") else _era(m) for m in members if not any(m is u for u in unknown)
+        2 if m.get("new_mix") else m.get("era_as", _era(m))
+        for m in members
+        if not any(m is u for u in unknown)
     ]
     for m in unknown:
         # Set by the whole group first (swap tool): a pair's own comparison must

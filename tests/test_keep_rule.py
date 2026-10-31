@@ -357,7 +357,9 @@ def test_a_mono_single_beats_a_remix():
 
 
 @pytest.mark.parametrize(
-    "title", ["Song (Mono Remix)", "Song (2009 Mono Mix)", "Mono (Single Version)"]
+    "title",
+    ["Song (Mono Remix)", "Song (2009 Mono Mix)", "Mono (Single Version)", "Song (Club Mix / Mono)",
+     "Song (Extended Version - Mono)"],
 )
 def test_a_mono_remix_or_a_song_named_mono_is_still_a_new_mix(title):
     remaster = {**_ISLEY, "title": "Song (Remastered)", "duration": 171.0}
@@ -374,6 +376,22 @@ def test_a_mono_single_with_no_album_still_loses_to_the_album_version():
              "id": 1, "finalized_at": "x"}  # fmt: skip
     single = {**_MONO_SINGLE, "album": None, "audio_hash": "s", "id": 2, "finalized_at": "x"}
     members = [single, album]
+
+    _rank(members)
+
+    assert members[0] is album
+
+
+def test_a_copy_with_the_audio_of_a_mono_single_is_the_single_too():
+    """CodeRabbit, review of #269: an unlabelled copy of a 96 kHz mono single read
+    as the original and beat the album version on sample rate."""
+    from musaeus.stages.dupe_resolver import _rank
+
+    album = {**_ISLEY, "title": "This Old Heart Of Mine", "duration": 171.0, "audio_hash": "a",
+             "id": 1, "finalized_at": "x"}  # fmt: skip
+    single = {**_MONO_SINGLE, "sample_rate": 96000, "audio_hash": "s", "id": 2}
+    bare = {**single, "title": "This Old Heart Of Mine", "id": 3}
+    members = [bare, single, album]
 
     _rank(members)
 
