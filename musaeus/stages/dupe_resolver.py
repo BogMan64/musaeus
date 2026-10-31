@@ -238,7 +238,9 @@ _ORIGINAL_RE = re.compile(r"\boriginal\b", re.IGNORECASE)
 _LOWER_MIX_RE = re.compile(
     r"\bmix\b|\bedit\b|\bextended\b"
     r"|(?:\b(?:single|radio|film|movie|club|dub|pop|dance)|\b(?:7|12)(?:''|\"|-inch))"
-    r"\s+(?:version|edit|mix)\b",
+    r"\s+(?:version|edit|mix)\b"
+    # "(Mono Single)": a single without "Version" (CodeRabbit, review of #269).
+    r"|\bmono\s+single\b",
     re.IGNORECASE,
 )
 #: Mixes that are not new ones: the album's own, its stereo or mono form.
@@ -331,6 +333,9 @@ def _mix_kind(m: dict) -> int:
     remaster: above any new mix, still below the album ("album wins").
     """
     kind = 0
+    # "Song (Single Version)" on "The Singles (Mono)" is a mono single too
+    # (CodeRabbit, review of #269).
+    album_mono = bool(_MONO_RE.search(m.get("album") or ""))
     for text in (m.get("title") or "", m.get("album") or ""):
         for hit in _REMIX_RE.finditer(text):
             if not _ORIGINAL_RE.search(_label_of(text, hit.start())):
@@ -343,12 +348,16 @@ def _mix_kind(m: dict) -> int:
             # credit or a film's title is no mix: "(feat. Little Mix)", "(From
             # The Film "The Mix")" (CodeRabbit, review of #267).
             inner = re.sub(rf"^\s*[{OPEN}]|[{CLOSE}]\s*$", "", label)
-            parts = re.split(r"\s+-\s+|\s*/\s*", inner)
-            mono = any(_MONO_RE.search(p) for p in parts)
+            # A credit or a film's title says nothing of the mix, mono included:
+            # "(Single Version / From The Film Mono)" (CodeRabbit, review of #269).
+            parts = [
+                p
+                for p in re.split(r"\s+-\s+|\s*/\s*", inner)
+                if not _CREDIT_RE.match(p) and not re.match(r"\s*from\b", p, re.IGNORECASE)
+            ]
+            mono = album_mono or any(_MONO_RE.search(p) for p in parts)
             for part in parts:
-                if _ORIGINAL_RE.search(part) or _CREDIT_RE.match(part):
-                    continue
-                if re.match(r"\s*from\b", part, re.IGNORECASE):
+                if _ORIGINAL_RE.search(part):
                     continue
                 if _LOWER_MIX_RE.search(_NEUTRAL_MIX_RE.sub(" ", part)):
                     # "(Club Mix / Mono)" is still a mix (CodeRabbit, review of #269).

@@ -401,3 +401,31 @@ def test_a_copy_with_the_audio_of_a_mono_single_is_the_single_too():
     _rank(members)
 
     assert members[0] is album
+
+
+_REMIX = {**_ISLEY, "title": "Song (Jesse Javan Remix)", "album": None, "duration": 250.0}
+
+
+@pytest.mark.parametrize(
+    ("title", "album"),
+    [("Song (Mono Single)", "Album"), ("Song (Single Version)", "The Singles (Mono)")],
+)
+def test_a_mono_single_however_labelled_beats_a_remix(title, album):
+    """CodeRabbit, review of #269: "(Mono Single)" read as the original; a mono
+    label on the album was not read, and the longer remix won."""
+    single = {**_ISLEY, "title": title, "album": album, "duration": 171.0}
+
+    assert decide(_REMIX, single) == ("library", "original/remaster")
+    assert decide(single, {**_ISLEY, "title": "Song", "duration": 171.0}) == (
+        "library",
+        "original/remaster",
+    )
+
+
+def test_a_film_named_mono_is_no_mono_label():
+    """CodeRabbit, review of #269: "(Single Version / From The Film Mono)"."""
+    single = {**_ISLEY, "title": "Song (Single Version / From The Film Mono)", "sample_rate": 96000,
+              "duration": 171.0}  # fmt: skip
+    remaster = {**_ISLEY, "title": "Song (Remastered)", "duration": 171.0}
+
+    assert decide(single, remaster) == ("library", "original/remaster")
