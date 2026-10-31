@@ -272,6 +272,22 @@ class TestClassicalWorksAreNotDuplicates:
         assert not _is_different_piece("Yesterday", "Yesterday (Remaster)")
         assert not _is_different_piece("Feel Like Making Love", "Feel like Makin' Love")
 
+    def test_a_closing_part_number_on_both_sides_is_a_different_song(self):
+        """The studio "Synchronicity I" was grouped with "Synchronicity II" at
+        96.8, set aside and deleted with the review losers (2026-10-30)."""
+        assert _is_different_piece("Synchronicity I", "Synchronicity II")
+        assert _is_different_piece(
+            "Synchronicity I (Live In Atlanta, 1983 - Remastered 2003)", "Synchronicity II"
+        )
+        assert _is_different_piece("Another Brick In The Wall, Pt. 1", "Another Brick In The Wall, Pt. 2")
+
+    def test_the_same_closing_part_number_is_not_a_difference(self):
+        assert not _is_different_piece("Synchronicity II", "Synchronicity II (Remastered 2003)")
+        assert not _is_different_piece("A Love Supreme, Pt. I - Acknowledgement", "A Love Supreme Part 1")
+        assert not _is_different_piece("Summer Of 69", "Summer Of '69")
+        assert not _is_different_piece("5:15", "5 - 15")
+        assert not _is_different_piece("Candle In The Wind 1997", "Candle In The Wind 97")
+
     def test_one_sided_markers_do_not_assert_a_difference(self):
         """Conservative by design.
 
@@ -281,6 +297,7 @@ class TestClassicalWorksAreNotDuplicates:
         """
         assert not _is_different_piece("Symphony No. 5", "Symphony")
         assert not _is_different_piece("Sonata - I. Allegro", "Sonata")
+        assert not _is_different_piece("Lonely Teardrops 2 (Remastered)", "Lonely Teardrops (Original)")
 
 
 def test_an_original_mix_label_is_a_version_label():
