@@ -446,6 +446,8 @@ def test_a_medley_is_set_aside(title):
     "title",
     [
         "Dancing In A Dance Club (Live/Edit)",
+        "Song - Live/Edit",
+        "Song - Single Version/Edit",
         "Money (That's What I Want) (Single Version / Mono)",
         "24/7",
         'Purcell: Dido And Aeneas / Act 3: "Thy Hand, Belinda...When I Am Laid In Earth"',
@@ -470,3 +472,21 @@ def test_a_medleys_songs_go_on_the_wanted_list():
               "reason": "medley"}  # fmt: skip
 
     assert wanted_lines(conn, [medley]) == ["Elvis Presley - Get Back"]
+
+
+@pytest.mark.parametrize(
+    ("title", "songs"),
+    [
+        ("Medley (Little Sister / Get Back)", ["Little Sister", "Get Back"]),
+        ("Little Sister / Get Back Medley", ["Little Sister", "Get Back"]),
+        ("A Medley Of Stevie Wonder Songs (You Are The Sunshine Of My Life; Don't You Worry 'Bout A Thing)",
+         ["You Are The Sunshine Of My Life", "Don't You Worry 'Bout A Thing"]),
+        ("Kodachrome / Maybellene - Live", ["Kodachrome", "Maybellene"]),
+        ("Cape Breton Medley", []),
+    ],
+)  # fmt: skip
+def test_a_medley_names_its_songs_wherever_they_are_written(title, songs):
+    """CodeRabbit, review of #271: songs in a bracket or before a closing "Medley"."""
+    from musaeus.wanted_list import medley_songs
+
+    assert medley_songs(title) == songs

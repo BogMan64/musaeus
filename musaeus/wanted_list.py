@@ -79,15 +79,42 @@ def extract_credited_artist(title: str) -> str | None:
     return None
 
 
+#: Words of an edition label, never of a song list: "(Live/Edit)", "- Single Version/Edit".
+VERSION_LABEL_RE = re.compile(
+    r"\b(?:live|edit|version|mix|remaster\w*|mono|stereo|single|re-?record\w*|demo|acoustic)\b",
+    re.IGNORECASE,
+)
+_SONG_LIST_RE = re.compile(r"[/;]")
+
+
+def strip_label_suffix(title: str) -> str:
+    """The title without an edition label after its last " - ": "Song - Live/Edit"."""
+    head, sep, tail = (title or "").rpartition(" - ")
+    return head if sep and VERSION_LABEL_RE.search(tail) else title or ""
+
+
 def medley_songs(title: str) -> list[str]:
     """The songs a medley's title names.
 
     >>> medley_songs("Medley: Little Sister / Get Back (August 12 - Midnight Show)")
     ['Little Sister', 'Get Back']
+    >>> medley_songs("Medley (Little Sister / Get Back)")
+    ['Little Sister', 'Get Back']
+    >>> medley_songs("Little Sister / Get Back Medley")
+    ['Little Sister', 'Get Back']
     >>> medley_songs("Cape Breton Medley")
     []
     """
-    t = re.sub(r"^.*?\bmedley\b\s*[:-]?\s*", "", strip_bracketed(title or ""), flags=re.IGNORECASE)
+    t = title or ""
+    # A bracket holding the song list, not a label (CodeRabbit, review of #271).
+    lists = [b for b in re.findall(r"[([{]([^()[\]{}]*)[)\]}]", t)
+             if _SONG_LIST_RE.search(b) and not VERSION_LABEL_RE.search(b)]  # fmt: skip
+    t = lists[0] if lists else strip_label_suffix(strip_bracketed(t))
+    trailing = re.search(r"\s*\bmedley\s*$", t, re.IGNORECASE)
+    if trailing:
+        # "Little Sister / Get Back Medley" names its songs; "Cape Breton Medley" does not.
+        t = t[: trailing.start()] if _SONG_LIST_RE.search(t) else ""
+    t = re.sub(r"^.*?\bmedley\b\s*[:-]?\s*", "", t, flags=re.IGNORECASE)
     return [p.strip(" :-") for p in re.split(r"\s*[/;]\s*", t) if p.strip(" :-")]
 
 

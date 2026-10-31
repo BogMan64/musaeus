@@ -44,7 +44,7 @@ from pathlib import Path
 from ..artist_form import comparison_key
 from ..brackets import strip_bracketed
 from ..context import RunContext, StageResult, elision
-from ..wanted_list import wanted_lines
+from ..wanted_list import strip_label_suffix, wanted_lines
 from .base import BaseStage
 from .organize import build_track_filename, sanitize_path_component, unique_path
 
@@ -110,7 +110,8 @@ _CLASSICAL_RE = re.compile(r"\b(?:act|scene|op\.|bwv|hwv|rv|k\.|z\.?)\s*(?:\d|[i
 def is_medley(title: str) -> bool:
     """True for a medley title (see _MEDLEY_RE above)."""
     t = title or ""
-    parts = strip_bracketed(t).split("/")
+    # "Song - Live/Edit" is a label, not two songs (CodeRabbit, review of #271).
+    parts = strip_label_suffix(strip_bracketed(t)).split("/")
     joined = len(parts) > 1 and all(_WORD_RE.search(p) for p in parts)
     return bool(_MEDLEY_RE.search(t) or (joined and not _CLASSICAL_RE.search(t)))
 
