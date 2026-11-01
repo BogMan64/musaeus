@@ -333,10 +333,14 @@ def _mix_kind(m: dict) -> int:
     remaster: above any new mix, still below the album ("album wins").
     """
     kind = 0
-    # "Song (Single Version)" on "The Singles (Mono)" is a mono single too
-    # (CodeRabbit, review of #269).
-    album_mono = bool(_MONO_RE.search(m.get("album") or ""))
-    for text in (m.get("title") or "", m.get("album") or ""):
+    title, album = m.get("title") or "", m.get("album") or ""
+    # "Song (Single Version)" on "The Singles (Mono)", or "Song (Single Version)
+    # (Mono)", is a mono single too; a song NAMED "Mono" is not (CodeRabbit,
+    # review of #269).
+    labels = [*_bracket_labels(title), *_bracket_labels(album), _outside(album),
+              *_outside(title).split(" - ")[1:]]  # fmt: skip
+    mono = any(_MONO_RE.search(p) for label in labels for p in _mix_parts(label))
+    for text in (title, album):
         for hit in _REMIX_RE.finditer(text):
             if not _ORIGINAL_RE.search(_label_of(text, hit.start())):
                 return 2
@@ -348,15 +352,7 @@ def _mix_kind(m: dict) -> int:
             # credit or a film's title is no mix: "(feat. Little Mix)", "(From
             # The Film "The Mix")" (CodeRabbit, review of #267).
             inner = re.sub(rf"^\s*[{OPEN}]|[{CLOSE}]\s*$", "", label)
-            # A credit or a film's title says nothing of the mix, mono included:
-            # "(Single Version / From The Film Mono)" (CodeRabbit, review of #269).
-            parts = [
-                p
-                for p in re.split(r"\s+-\s+|\s*/\s*", inner)
-                if not _CREDIT_RE.match(p) and not re.match(r"\s*from\b", p, re.IGNORECASE)
-            ]
-            mono = album_mono or any(_MONO_RE.search(p) for p in parts)
-            for part in parts:
+            for part in _mix_parts(inner):
                 if _ORIGINAL_RE.search(part):
                     continue
                 if _LOWER_MIX_RE.search(_NEUTRAL_MIX_RE.sub(" ", part)):
@@ -365,6 +361,26 @@ def _mix_kind(m: dict) -> int:
                         return 2
                     kind = 1
     return kind
+
+
+def _mix_parts(label: str) -> list[str]:
+    """A label's parts that can speak of the mix. A credit or a film's title says
+    nothing of it, mono included: "(Single Version / From The Film Mono)",
+    "(Single Version, From The Film Mono)" (CodeRabbit, review of #269)."""
+    parts = re.split(r"\s+-\s+|\s*/\s*|\s*,\s*(?=from\b)", label, flags=re.IGNORECASE)
+    return [
+        p for p in parts if not _CREDIT_RE.match(p) and not re.match(r"\s*from\b", p, re.IGNORECASE)
+    ]
+
+
+def _bracket_labels(text: str) -> list[str]:
+    """What each innermost bracket holds: "(Single Version) (Mono)" -> both."""
+    return re.findall(rf"[{OPEN}]([^{OPEN}{CLOSE}]*)[{CLOSE}]", text)
+
+
+def _outside(text: str) -> str:
+    """The text with its brackets taken out."""
+    return re.sub(rf"[{OPEN}][^{OPEN}{CLOSE}]*[{CLOSE}]", " ", text).strip()
 
 
 def _label_of(text: str, at: int) -> str:
