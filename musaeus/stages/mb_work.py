@@ -47,6 +47,10 @@ _MB_RECORDING = (
     "&inc=artist-credits+work-rels+releases+release-groups"
 )
 _MB_RATE_S = 1.05
+#: A recording lookup lists at most 25 releases; past that every release is browsed,
+#: so a live album further down still counts (CodeRabbit, review of #276).
+_MB_LISTED = 25
+_MB_RELEASES = "https://musicbrainz.org/ws/2/release?recording={}&inc=release-groups&fmt=json&limit=100&offset={}"
 _COMMIT_EVERY = 50
 _LIVE_RE = re.compile(r"\blive\b", re.IGNORECASE)
 
@@ -67,12 +71,33 @@ def recording_works(mbid: str) -> tuple[list[str], str, set[str]]:
     )
     credit = data.get("artist-credit") or []
     first = str((credit[0].get("name") if credit else "") or "")
+    if len(data.get("releases") or []) >= _MB_LISTED:
+        data = {**data, "releases": _all_releases(mbid)}
     return works, first, live_albums(data)
+
+
+def _all_releases(mbid: str) -> list[dict]:
+    """Every release of a recording, a page of 100 at a time at MusicBrainz's rate."""
+    releases: list[dict] = []
+    while True:
+        time.sleep(_MB_RATE_S)
+        try:
+            page = _get_json(_MB_RELEASES.format(mbid, len(releases)))
+        except Unavailable:
+            raise
+        except Exception as exc:  # the network policy's refusal, in a preview
+            raise Unavailable(str(exc)) from exc
+        got = page.get("releases") or []
+        releases += got
+        if not got or len(releases) >= int(page.get("release-count") or 0):
+            return releases
 
 
 def album_key(title: str | None) -> str:
     """An album title to compare by: "One More From the Road (Deluxe)" = "One More From The Road"."""
-    return re.sub(r"[^\w]+", " ", strip_bracketed(title or "").casefold()).strip()
+    # "It's Alive" is "Its Alive" (CodeRabbit, review of #276).
+    joined = re.sub(r"(?<=\w)['’](?=\w)", "", strip_bracketed(title or "").casefold())
+    return re.sub(r"[^\w]+", " ", joined).strip()
 
 
 def live_albums(data: dict) -> set[str]:

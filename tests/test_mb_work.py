@@ -270,3 +270,24 @@ def test_a_studio_copy_matched_to_a_live_recording_stays_studio(ctx, monkeypatch
     mw.MBWorkStage().execute(ctx)
 
     assert ctx.conn.execute("SELECT MAX(mb_live) FROM archive").fetchone()[0] == 0
+
+
+def test_a_live_album_past_the_listed_releases_still_counts(monkeypatch):
+    """CodeRabbit, review of #276: a lookup lists 25 releases; the rest are browsed."""
+    listed = [_rel(f"Hits {i}", "Compilation") for i in range(25)]
+    pages = {0: {"releases": listed[:20], "release-count": 26},
+             20: {"releases": [*listed[20:], _rel("Before the Flood", "Live")], "release-count": 26}}  # fmt: skip
+
+    def get(url):
+        if "/recording/" in url:
+            return {"disambiguation": "", "relations": [], "artist-credit": [], "releases": listed}
+        return pages[int(url.rsplit("offset=", 1)[1])]
+
+    monkeypatch.setattr(mw, "_get_json", get)
+    monkeypatch.setattr(mw, "_MB_RATE_S", 0)
+
+    assert mw.album_key("Before The Flood") in mw.recording_works("rec")[2]
+
+
+def test_an_apostrophe_inside_a_word_is_left_out():
+    assert mw.album_key("It's Alive") == mw.album_key("Its Alive") == "its alive"
