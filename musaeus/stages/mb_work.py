@@ -40,8 +40,16 @@ from .dupe_resolver import _rank
 
 logger = logging.getLogger(__name__)
 
-_MB_RECORDING = "https://musicbrainz.org/ws/2/recording/{}?fmt=json&inc=artist-credits+work-rels"
+_MB_RECORDING = (
+    "https://musicbrainz.org/ws/2/recording/{}?fmt=json"
+    "&inc=artist-credits+work-rels+releases+release-groups"
+)
 _MB_RATE_S = 1.05
+#: MusicBrainz lists at most this many releases with a recording. A recording on
+#: more is not judged by its albums: a studio release past the list may be missed
+#: (CodeRabbit, review of #275). shortcut: no paging; page the release browse if a
+#: live recording on 25+ releases is ever read as studio.
+_MB_RELEASES_LISTED = 25
 _COMMIT_EVERY = 50
 _LIVE_RE = re.compile(r"\blive\b", re.IGNORECASE)
 
@@ -62,7 +70,25 @@ def recording_works(mbid: str) -> tuple[list[str], str, bool]:
     )
     credit = data.get("artist-credit") or []
     first = str((credit[0].get("name") if credit else "") or "")
-    return works, first, bool(_LIVE_RE.search(data.get("disambiguation") or ""))
+    releases = data.get("releases") or []
+    return (
+        works,
+        first,
+        _LIVE_RE.search(data.get("disambiguation") or "") is not None
+        or (len(releases) < _MB_RELEASES_LISTED and on_live_albums_only(releases)),
+    )
+
+
+def on_live_albums_only(releases: list[dict]) -> bool:
+    """True when every release of the recording, compilations left aside, is a live one.
+
+    MusicBrainz marks few recordings live itself; a whole live album often carries
+    no mark ("Before The Flood"). Any studio album, single or EP says studio: "Live
+    Forever" sits on "Definitely Maybe" (Grey, 2026-11-01: "make it a rule").
+    """
+    kinds = [set((r.get("release-group") or {}).get("secondary-types") or []) for r in releases]
+    kinds = [k for k in kinds if "Compilation" not in k or "Live" in k]
+    return bool(kinds) and all("Live" in k for k in kinds)
 
 
 def same_song_pairs(rows: list[dict], grouped: set[frozenset[str]]) -> list[tuple[dict, dict, str]]:
