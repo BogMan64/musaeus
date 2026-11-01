@@ -358,9 +358,10 @@ def _is_different_piece(title_a: str, title_b: str) -> bool:
 
 #: A part number closing a title, after a word: "Synchronicity II", "Shout, Pt. 2".
 _CLOSING_PART_RE = re.compile(
-    r"([^\W\d_]{2,})\.?,?\s+(?:pts?\.?\s*)?((?-i:[IVXivx]{1,4})|\d{1,2})$", re.IGNORECASE
+    r"([^\W\d_]{2,})\.?,?\s+(pts?\.?\s*)?((?-i:[IVXivx]{1,4})|\d{1,2})$", re.IGNORECASE
 )
-#: A work or catalogue number closes a title too, "RV 93", "No. 3": not a part.
+#: A work or catalogue number closes a title too, "RV 93", "No. 3": not a part,
+#: unless "Pt." names it one: "Opus, Pt. 2".
 _CATALOGUE_WORDS = frozenset({"no", "nr", "op", "opus", "bwv", "hwv", "rv", "kv", "hob", "wwv", "sz",
                               "vol", "volume", "track"})  # fmt: skip
 
@@ -369,9 +370,9 @@ def _closing_part(title: str) -> int | None:
     """The part number closing a title, labels and " - " suffixes left off."""
     bare = re.split(rf"\s*[{OPEN}]|\s+-\s+", title or "", maxsplit=1)[0].strip()
     m = _CLOSING_PART_RE.search(bare)
-    if not m or m.group(1).casefold() in _CATALOGUE_WORDS:
+    if not m or (m.group(1).casefold() in _CATALOGUE_WORDS and not m.group(2)):
         return None
-    return _marker_number(m.group(2))
+    return _marker_number(m.group(3))
 
 
 #: A variation is its own piece, never a movement: "Variation 1" is not

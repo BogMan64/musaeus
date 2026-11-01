@@ -293,6 +293,11 @@ class TestClassicalWorksAreNotDuplicates:
             "Concerto No. 3, I. Allegro, RV 93", "Concerto RV 93, I. Allegro, No. 3"
         )
 
+    def test_a_part_label_after_a_catalogue_word_is_a_part(self):
+        """CodeRabbit, review of #270: "Pt." names a part even after "Opus" or "Track"."""
+        assert _is_different_piece("Opus, Pt. 1", "Opus, Pt. 2")
+        assert _is_different_piece("The Track Pts. 1", "The Track Pts. 2")
+
     @pytest.mark.parametrize(
         ("a", "b"),
         [
