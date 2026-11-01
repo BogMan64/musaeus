@@ -446,3 +446,43 @@ def test_a_film_named_mono_is_no_mono_label(title, album):
     }
 
     assert decide(single, remaster) == ("library", "original/remaster")
+
+
+_SOLO = {"codec": "alac", "title": "You Don't Know Me", "album": "Modern Sounds", "duration": 196.0}
+
+
+@pytest.mark.parametrize(
+    "with_guest",
+    ["Ray Charles, Diana Krall", "Ray Charles & Diana Krall", "Ray Charles feat. Diana Krall",
+     "Ray Charles with Diana Krall"],
+)  # fmt: skip
+def test_the_act_alone_beats_the_song_with_a_guest(with_guest):
+    """Grey, 2026-11-01: "keep solo version" -- above sample rate and length."""
+    solo = {**_SOLO, "artist": "Ray Charles", "sample_rate": 44100}
+    duet = {**_SOLO, "artist": with_guest, "sample_rate": 192000, "duration": 235.0}
+
+    assert decide(duet, solo) == ("library", "solo")
+    assert decide(solo, duet) == ("review", "solo")
+
+
+def test_the_acts_own_band_is_no_guest():
+    """ "Barney Bentall & The Legendary Hearts" is one act: quality decides."""
+    plain = {**_SOLO, "artist": "Barney Bentall", "sample_rate": 44100}
+    band = {**_SOLO, "artist": "Barney Bentall & The Legendary Hearts", "sample_rate": 96000}
+
+    assert decide(band, plain) == ("review", "quality")
+
+
+def test_solo_ranks_below_studio_and_the_original():
+    """Studio beats live, and the original beats a remix, whoever is credited."""
+    live = {**_SOLO, "artist": "Waylon Jennings", "title": "Mamas (Live)", "duration": 187.0}
+    duet = {
+        **_SOLO,
+        "artist": "Waylon Jennings, Willie Nelson",
+        "title": "Mamas",
+        "duration": 158.0,
+    }
+    assert decide(live, duet) == ("library", "studio/live")
+    remix = {**_SOLO, "artist": "Delerium", "title": "Lost And Found (DJ Dan Club Mix)"}
+    original = {**_SOLO, "artist": "Delerium, Jaël", "title": "Lost And Found"}
+    assert decide(remix, original) == ("library", "original/remaster")

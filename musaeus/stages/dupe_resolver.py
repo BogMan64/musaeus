@@ -319,7 +319,9 @@ def _is_live(m: dict) -> bool:
 
 
 def _labelled_live(m: dict) -> bool:
-    """The copy's own title or album says live -- never a length read from another copy.
+    """The copy's own title or album says live, or MusicBrainz marks its recording
+    live (mb-work: "Before The Flood" names no "live"; Grey, 2026-11-01) -- never a
+    length read from another copy.
 
     A label says it ("(Live)", "- Live 1983"); a name only by a live phrase
     (_LIVE_PHRASE_RE): 21 studio songs named "Live And Let Die", "Live Forever",
@@ -335,7 +337,8 @@ def _labelled_live(m: dict) -> bool:
         labels += tail
         names.append(name)
     return (
-        any(_LIVE_RE.search(label) for label in labels)
+        bool(m.get("mb_live"))
+        or any(_LIVE_RE.search(label) for label in labels)
         or any(_LIVE_NAME_RE.search(n) or _LIVE_PHRASE_RE.search(n) for n in names)
         # An album named for it: "April Wine Live", "Live!". A song so named is
         # not: "How Do I Live".
@@ -618,8 +621,9 @@ def _keeper_sort_key(m: dict) -> tuple[int, ...]:
     applied by _rank (a sort key cannot hold a 2 s tolerance).
 
     Order: already moved away; format; an original over an old baked copy;
-    studio over live; original over remaster; sample rate; then the copy
-    already filed stays, then the one catalogued first (Grey, 2026-10-29: a
+    studio over live; original over remaster; the act alone over the song with
+    a guest; sample rate; then the copy already filed stays, then the one
+    catalogued first (Grey, 2026-10-29: a
     tie makes the copy in the library first "the winner moving forward");
     bitrate and size only break a tie nothing else can
     (a fixed order, not a judgement of quality).
@@ -693,7 +697,7 @@ def _get_group_members(conn, group_id: str) -> list[dict]:
                d.audio_hash AS recorded_hash, a.audio_hash AS current_hash, a.id AS current_row,
                a.status AS current_status, a.finalized_at, a.lufs,
                a.artist, a.album, a.title, a.ext, a.codec, a.bitrate, a.size_bytes,
-               a.sample_rate, a.duration, a.kept_by_person_at, a.lufs_baked_at
+               a.sample_rate, a.duration, a.kept_by_person_at, a.lufs_baked_at, a.mb_live
           FROM duplicates d
           LEFT JOIN archive a USING (file_path)
          WHERE d.group_id = ?
@@ -755,7 +759,7 @@ def _get_live_exact_clusters(conn) -> list[list[dict]]:
             """
             SELECT id, file_path, artist, album, title, ext, codec, bitrate, size_bytes,
                    finalized_at, lufs, audio_hash, sample_rate, duration, kept_by_person_at,
-                   lufs_baked_at
+                   lufs_baked_at, mb_live
               FROM archive
              WHERE audio_hash = ? AND status = 'CATALOGUED'
             """,

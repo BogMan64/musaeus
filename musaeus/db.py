@@ -191,6 +191,14 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # any intake, so the albums already there can be told from arrivals: they
     # are stamped ALBUM_BEFORE_THE_CHECK and never checked (Codex review of #229).
     ("archive", "album_verified_at", "TEXT"),
+    # The song a recording performs, by MusicBrainz work (Grey, 2026-10-31/11-01:
+    # "B list items move copies to review"), its first credited artist, and
+    # whether MusicBrainz marks the recording live. Written by mb-work; here so
+    # the resolver can read mb_live on a catalogue that stage has never seen.
+    ("archive", "mb_work_ids", "TEXT"),
+    ("archive", "mb_work_artist", "TEXT"),
+    ("archive", "mb_live", "INTEGER"),
+    ("archive", "mb_work_checked_at", "TEXT"),
     ("archive", "lufs", "REAL"),
     ("archive", "lufs_tp", "REAL"),
     ("archive", "rg_gain", "REAL"),

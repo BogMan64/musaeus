@@ -37,6 +37,7 @@ from musaeus.stages.health import HealthStage
 from musaeus.stages.identity_tag import IdentityTagStage
 from musaeus.stages.ingest import IngestStage
 from musaeus.stages.mb_enrich import MBEnrichStage
+from musaeus.stages.mb_work import MBWorkStage
 from musaeus.stages.neardupe import NearDupeStage
 from musaeus.stages.normalize import NormalizeStage
 from musaeus.stages.organize import OrganizeStage
@@ -187,6 +188,9 @@ def test_full_default_pipeline_order_matches_current_design():
         # Deferred 2026-08-31 (a 21-hour first pass over 10,656 files), back
         # 2026-09-25 on the wiped vault. See stages/__init__.py.
         AcousticIDStage,
+        # Grey, 2026-11-01: copies of one song by MusicBrainz work, after the
+        # recording AcoustID gives them.
+        MBWorkStage,
         # Grey, 2026-10-03: the 2026-09 album scripts wired in, after the
         # fingerprint they read and before identity is written to the files.
         AlbumFillStage,
