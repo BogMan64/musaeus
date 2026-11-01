@@ -2103,3 +2103,53 @@ def test_older_person_decisions_get_the_title_of_their_own_copy(tmp_path):
         "keep": "The Tide Is High (Remastered 2001)",
         "archive": "The Tide Is High (Mono)",
     }
+
+
+@pytest.mark.parametrize(
+    ("title", "album"),
+    [
+        ("Live And Let Die", "Use Your Illusion I"),
+        ("How Do I Live", ""),
+        ("Live", "Best Of The Bangles"),
+        ("Something To Live For", "Barney Bentall And The Legendary Hearts"),
+        ("Live It Up, Pts. 1 & 2", ""),
+        ("Live Is Life", "Live Is Life - Single"),
+    ],
+)
+def test_live_in_a_songs_name_is_no_live_recording(title, album):
+    """2026-11-01: 21 studio songs named "Live ..." ranked as live and lost to any copy."""
+    from musaeus.stages.dupe_resolver import _is_live
+
+    assert not _is_live({"title": title, "album": album})
+
+
+@pytest.mark.parametrize(
+    ("title", "album"),
+    [
+        ("Song (Live)", ""),
+        ("Song - Live", ""),
+        ("Song (Live At Leeds)", ""),
+        ("Blee Blop Blues (Live (1957/Newport))", ""),
+        ("Live From Matt Molloy's Pub", ""),
+        ("Song", "April Wine Live"),
+        ("Song", "Live!"),
+        ("Song", "Live 8: One Day One Concert One World"),
+        ("Song", "Live 1975"),
+        ("Song", "Unplugged"),
+        ("Synchronicity I (Live In Atlanta, 1983 - Remastered 2003)", "Synchronicity"),
+    ],
+)
+def test_a_live_label_phrase_or_album_is_still_live(title, album):
+    from musaeus.stages.dupe_resolver import _is_live
+
+    assert _is_live({"title": title, "album": album})
+
+
+def test_a_cha_cha_named_after_the_song_is_an_arrangement():
+    """Grey, 2026-11-01: "add words then standard rules apply"."""
+    from musaeus.stages.dupe_resolver import _is_arranged
+
+    assert _is_arranged({"title": "Moon River Cha Cha"})
+    assert _is_arranged({"title": "Moon River (Cha-Cha Version)"})
+    assert _is_arranged({"title": "Moon River Cha Cha (Remastered (2003))"})
+    assert not _is_arranged({"title": "Cha Cha Slide"})

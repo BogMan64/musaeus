@@ -260,8 +260,11 @@ _ARRANGED_RE = re.compile(
     r"\b(?:arr|arranged|arrangement|transcribed|transcription|bearbeitung)\b", re.IGNORECASE
 )
 _LOWER_VERSION_RE = re.compile(
-    r"\b(?:jam|instrumental|acoustic|demo|alternate|outtake|rehearsal)\b", re.IGNORECASE
+    r"\b(?:jam|instrumental|acoustic|demo|alternate|outtake|rehearsal|cha[\s-]cha)\b", re.IGNORECASE
 )
+#: A dance arrangement named after the song, outside a bracket: "Moon River Cha Cha"
+#: (Grey, 2026-11-01: "add words then standard rules apply").
+_DANCE_ARRANGEMENT_RE = re.compile(r"\s(?:cha[\s-]cha)\s*$", re.IGNORECASE)
 #: An artist credit in a bracket: "(feat. Pearl Jam)" is not a jam (CodeRabbit, #266).
 _CREDIT_RE = re.compile(r"^\s*(?:feat\.?|featuring|ft\.?|with)\s", re.IGNORECASE)
 _BRACKET_SPLIT_RE = re.compile(rf"([{OPEN}{CLOSE}])")
@@ -287,6 +290,22 @@ _LIVE_RE = re.compile(
     + r")\b",
     re.IGNORECASE,
 )
+#: In a song's or album's NAME the word "live" is a word of the name -- "Live And
+#: Let Die", "How Do I Live", the single "Live Is Life" -- so there only a live
+#: phrase counts ("Live At Leeds", "Live Version", "Live 8"), or an album name
+#: ending in it ("April Wine Live", "Live!"). In a label it always counts: "(Live)",
+#: "- Live 1983".
+_LIVE_PHRASE_RE = re.compile(
+    r"\blive\s+(?:at|from|in|version|recordings?|sessions?|albums?|\d+)\b", re.IGNORECASE
+)
+_LIVE_NAME_RE = re.compile(
+    r"\b(?:"
+    + "|".join(
+        re.escape(w) for w in sorted(_LIVE_MARKERS, key=len, reverse=True) if "live" not in w
+    )
+    + r")\b",
+    re.IGNORECASE,
+)
 
 
 def _is_live(m: dict) -> bool:
@@ -302,9 +321,29 @@ def _is_live(m: dict) -> bool:
 def _labelled_live(m: dict) -> bool:
     """The copy's own title or album says live, or MusicBrainz marks its recording
     live (mb-work: "Before The Flood" names no "live"; Grey, 2026-11-01) -- never a
-    length read from another copy."""
-    haystack = f"{m.get('title') or ''} {m.get('album') or ''}"
-    return bool(m.get("mb_live")) or bool(_LIVE_RE.search(haystack))
+    length read from another copy.
+
+    A label says it ("(Live)", "- Live 1983"); a name only by a live phrase
+    (_LIVE_PHRASE_RE): 21 studio songs named "Live And Let Die", "Live Forever",
+    "How Do I Live" ranked as live and lost to any other copy (2026-11-01).
+    """
+    labels, names = [], []
+    for text in (m.get("title") or "", m.get("album") or ""):
+        # Inner brackets first, then the ones around them: "(Live (1957/Newport))".
+        while inner := _bracket_labels(text):
+            labels += inner
+            text = _outside(text)
+        name, *tail = text.split(" - ")
+        labels += tail
+        names.append(name)
+    return (
+        bool(m.get("mb_live"))
+        or any(_LIVE_RE.search(label) for label in labels)
+        or any(_LIVE_NAME_RE.search(n) or _LIVE_PHRASE_RE.search(n) for n in names)
+        # An album named for it: "April Wine Live", "Live!". A song so named is
+        # not: "How Do I Live".
+        or bool(re.search(r"\blive\W*$", names[1], re.IGNORECASE))
+    )
 
 
 def _is_reissue(m: dict) -> bool:
@@ -411,6 +450,11 @@ def _is_arranged(m: dict) -> bool:
     Title and album apart: "Song (Original Mix" must not run on into its album.
     Brackets are counted, so "(For Piano [2024] Arr.)" is still inside one.
     """
+    name = m.get("title") or ""
+    while _bracket_labels(name):  # "Moon River Cha Cha (Remastered (2003))"
+        name = _outside(name)
+    if _DANCE_ARRANGEMENT_RE.search(name):
+        return True
     for text in (m.get("title") or "", m.get("album") or ""):
         depth = 0
         for piece in _BRACKET_SPLIT_RE.split(text):
