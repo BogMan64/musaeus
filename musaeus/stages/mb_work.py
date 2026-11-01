@@ -45,6 +45,11 @@ _MB_RECORDING = (
     "&inc=artist-credits+work-rels+releases+release-groups"
 )
 _MB_RATE_S = 1.05
+#: MusicBrainz lists at most this many releases with a recording. A recording on
+#: more is not judged by its albums: a studio release past the list may be missed
+#: (CodeRabbit, review of #275). shortcut: no paging; page the release browse if a
+#: live recording on 25+ releases is ever read as studio.
+_MB_RELEASES_LISTED = 25
 _COMMIT_EVERY = 50
 _LIVE_RE = re.compile(r"\blive\b", re.IGNORECASE)
 
@@ -65,11 +70,12 @@ def recording_works(mbid: str) -> tuple[list[str], str, bool]:
     )
     credit = data.get("artist-credit") or []
     first = str((credit[0].get("name") if credit else "") or "")
+    releases = data.get("releases") or []
     return (
         works,
         first,
         _LIVE_RE.search(data.get("disambiguation") or "") is not None
-        or (on_live_albums_only(data.get("releases") or [])),
+        or (len(releases) < _MB_RELEASES_LISTED and on_live_albums_only(releases)),
     )
 
 

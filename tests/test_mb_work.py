@@ -166,6 +166,14 @@ def _rel(*secondary):
         ([_rel("Live"), {"release-group": {"primary-type": "Single"}}], False),  # a studio single
         ([_rel("Compilation")], False),  # nothing says live
         ([_rel("Soundtrack")], False),
+        # A live single is live (CodeRabbit, review of #275, declined).
+        (
+            [
+                _rel("Live"),
+                {"release-group": {"primary-type": "Single", "secondary-types": ["Live"]}},
+            ],
+            True,
+        ),
         ([], False),
     ],
 )
@@ -180,3 +188,16 @@ def test_the_lookup_reads_the_live_albums(monkeypatch):
     monkeypatch.setattr(mw, "_get_json", lambda url: data)
 
     assert mw.recording_works("rec") == (["w1"], "Bob Dylan", True)
+
+
+def test_a_recording_on_more_releases_than_listed_is_not_judged_by_its_albums(monkeypatch):
+    """CodeRabbit, review of #275: MusicBrainz lists 25 releases; a studio one may be past them."""
+    data = {
+        "disambiguation": "",
+        "relations": [],
+        "artist-credit": [],
+        "releases": [_rel("Live")] * 25,
+    }
+    monkeypatch.setattr(mw, "_get_json", lambda url: data)
+
+    assert mw.recording_works("rec")[2] is False
