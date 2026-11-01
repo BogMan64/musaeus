@@ -110,7 +110,9 @@ def same_song_pairs(rows: list[dict], grouped: set[frozenset[str]]) -> list[tupl
             keeper = copies[0]
             # Only a pair that passes on its own: a link through a copy left out
             # (kept by hand, 160 s between 100 s and 250 s) is no link (CodeRabbit,
-            # review of #274).
+            # review of #274). Nor a link through a copy that moves: staging 160/250
+            # too would let the resolver rank all three and move the 250 s copy
+            # against one under half its length, the pair Grey's guard leaves alone.
             pairs += [
                 (keeper, m, works)
                 for m in copies[1:]

@@ -187,3 +187,17 @@ def test_a_link_through_a_kept_copy_is_no_link():
     long = _row(3, "Song (Extended)", duration=250.0)
 
     assert mw.same_song_pairs([first, kept, long], set()) == []
+
+
+def test_a_copy_linked_only_through_a_moving_copy_stays():
+    """CodeRabbit, review of #274 (declined): 250 s is over twice 100 s; staging the
+    160/250 link too would have the resolver move it against the 100 s keeper."""
+    first = _row(1, "Song", sample_rate=192000, duration=100.0)
+    middle, long = (
+        _row(2, "Song (Single)", duration=160.0),
+        _row(3, "Song (Extended)", duration=250.0),
+    )
+
+    assert [
+        (k["id"], lo["id"]) for k, lo, _ in mw.same_song_pairs([first, middle, long], set())
+    ] == [(1, 2)]
