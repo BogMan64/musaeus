@@ -42,7 +42,7 @@ from __future__ import annotations
 import re
 import sqlite3
 
-from .brackets import strip_bracketed
+from .brackets import CLOSE, OPEN, strip_bracketed
 
 #: The three phrases that both flag a knock-off AND name the original.
 #: Verified against the live library 2026-09-02: these three, and only
@@ -77,6 +77,61 @@ def extract_credited_artist(title: str) -> str | None:
             name = re.sub(r"\s*[-–]\s*$", "", name)
             return name or None
     return None
+
+
+#: Words of an edition label, never of a song list: "(Live/Edit)", "- Single Version/Edit".
+VERSION_LABEL_RE = re.compile(
+    r"\b(?:live|edit|version|mix|remaster\w*|mono|stereo|single|re-?record\w*|demo|acoustic)\b",
+    re.IGNORECASE,
+)
+_SONG_LIST_RE = re.compile(r"[/;]")
+#: Text just after the word "Medley" is its song list, even a song named "Live And Let Die".
+_AFTER_MEDLEY_RE = re.compile(r"\bmedley\W*$", re.IGNORECASE)
+
+
+def _is_label_only(text: str) -> bool:
+    """Every part is label words and numbers only: "Live/Edit", "Single Version / Mono"."""
+    return all(
+        not re.sub(r"[\W\d_]+", "", VERSION_LABEL_RE.sub("", p)) for p in re.split(r"[/;]", text)
+    )
+
+
+def strip_label_suffix(title: str) -> str:
+    """The title without an edition label after its last " - ": "Song - Live/Edit"."""
+    head, sep, tail = (title or "").rpartition(" - ")
+    return (
+        head
+        if sep
+        and VERSION_LABEL_RE.search(tail)
+        and (_is_label_only(tail) or not _AFTER_MEDLEY_RE.search(head))
+        else title or ""
+    )
+
+
+def medley_songs(title: str) -> list[str]:
+    """The songs a medley's title names.
+
+    >>> medley_songs("Medley: Little Sister / Get Back (August 12 - Midnight Show)")
+    ['Little Sister', 'Get Back']
+    >>> medley_songs("Medley (Little Sister / Get Back)")
+    ['Little Sister', 'Get Back']
+    >>> medley_songs("Little Sister / Get Back Medley")
+    ['Little Sister', 'Get Back']
+    >>> medley_songs("Cape Breton Medley")
+    []
+    """
+    t = title or ""
+    # A bracket holding the song list, not a label (CodeRabbit, review of #271).
+    lists = [m.group(1) for m in re.finditer(rf"[{OPEN}]([^{OPEN}{CLOSE}]*)[{CLOSE}]", t)
+             if _SONG_LIST_RE.search(m.group(1)) and not _is_label_only(m.group(1))
+             and (_AFTER_MEDLEY_RE.search(t[: m.start()]) or not VERSION_LABEL_RE.search(m.group(1)))]  # fmt: skip
+    t = lists[0] if lists else strip_label_suffix(strip_bracketed(t))
+    trailing = re.search(r"\s*\bmedley\s*$", t, re.IGNORECASE)
+    if trailing:
+        # "Little Sister / Get Back Medley" names its songs; "Cape Breton Medley" does not.
+        t = t[: trailing.start()] if _SONG_LIST_RE.search(t) else ""
+    t = re.sub(r"^.*?\bmedley\b\s*[:-]?\s*", "", t, flags=re.IGNORECASE)
+    return [p.strip(" :-") for p in re.split(r"\s*[/;]\s*", t) if p.strip(" :-")]
 
 
 def clean_title(title: str) -> str:
@@ -136,16 +191,24 @@ def wanted_lines(conn: sqlite3.Connection, quarantined: list[dict]) -> list[str]
     """ "Artist - Title" lines for TuneMyMusic, from a batch of quarantined
     rows.
 
-    *quarantined* items need "title" (and may have "artist", used only
-    for logging/debugging, not for the credit extraction itself -- the
-    credited artist comes from the TITLE, because that is where the
-    knock-off names the original). Only rows where a credit was found
-    AND the real artist/title combination is not already owned appear
-    in the result. Order follows *quarantined*'s own order.
+    *quarantined* items need "title" (and may have "artist", not used for
+    the credit extraction itself -- the credited artist comes from the
+    TITLE, because that is where the knock-off names the original). Only
+    rows where a credit was found AND the real artist/title combination is
+    not already owned appear in the result. A medley (reason "medley") lists
+    each song it names under its own "artist" instead. Order follows
+    *quarantined*'s own order.
     """
     lines: list[str] = []
     for item in quarantined:
         title = item.get("title") or ""
+        artist = item.get("artist") or ""
+        if item.get("reason") == "medley":
+            # Each song a medley names, by the medley's own artist (Grey,
+            # 2026-10-31: "place individual tracks onto tunemymusic").
+            lines += [f"{artist} - {s}" for s in medley_songs(title)
+                      if artist and not already_owned(conn, artist, s)]  # fmt: skip
+            continue
         credited = extract_credited_artist(title)
         if not credited:
             continue
