@@ -299,6 +299,9 @@ def test_a_pair_whose_titles_differ_stays_for_grey(tmp_path, monkeypatch):
         ("Interlude (2020)", "Interlude (2021)", False),
         ("Live and Let Die", "And Let Die", False),
         ("Song - 2011 Remaster", "Song", True),
+        # Several labels in one bracket (CodeRabbit, review of #272).
+        ("Song (Live / Remastered)", "Song", True),
+        ("Song (Live/Edit)", "Song", True),
     ],
 )
 def test_only_a_version_label_is_set_aside_before_titles_are_compared(a, b, same):

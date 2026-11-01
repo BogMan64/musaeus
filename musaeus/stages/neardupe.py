@@ -95,8 +95,10 @@ STRIP_WORDS: tuple[str, ...] = (
 LABEL_WORDS: tuple[str, ...] = (*STRIP_WORDS, "edit", "original")
 _LABELS = r"|".join(re.escape(w) for w in sorted(LABEL_WORDS, key=len, reverse=True))
 
+#: Several labels in one bracket too: "(Live / Remastered)", "(Live/Edit)".
 _VERSION_BRACKET_WORDS = re.compile(
-    rf"[{OPEN}]\s*(?:(?:19|20)\d{{2}}\s+)?(?:{_LABELS})[\s\d,./+-]*[{CLOSE}]",
+    rf"[{OPEN}]\s*(?:(?:19|20)\d{{2}}\s+)?(?:{_LABELS})(?:[\s\d,./+-]+(?:{_LABELS}))*"
+    rf"[\s\d,./+-]*[{CLOSE}]",
     re.IGNORECASE,
 )
 #: The same label as a " - " suffix: "Song - 2011 Remaster", "Song - Original".
@@ -112,9 +114,12 @@ _YEAR_BRACKET_RE = re.compile(rf"[{OPEN}]\s*(?:19|20)\d{{2}}\s*[{CLOSE}]")  # "(
 _NUM_BRACKET_RE = re.compile(rf"[{OPEN}]\s*\d{{1,2}}\s*[{CLOSE}]")  # "[2]"
 
 # Same words also stripped as bare whole-words (catches "Song Title Remix"
-# with no surrounding parens at all).
+# with no surrounding parens at all). Not "live": in a name it is a word of the
+# song -- "Live Forever" is not "Forever (Live)" (CodeRabbit, review of #272).
 _STRIP_WORDS_RE = re.compile(
-    r"\b(?:" + "|".join(re.escape(w) for w in sorted(STRIP_WORDS, key=len, reverse=True)) + r")\b",
+    r"\b(?:"
+    + "|".join(re.escape(w) for w in sorted(STRIP_WORDS, key=len, reverse=True) if w != "live")
+    + r")\b",
     re.IGNORECASE,
 )
 

@@ -157,6 +157,28 @@ class TestNearDupeRun:
         dupes = ctx.conn.execute("SELECT * FROM duplicates WHERE duplicate_type='NEAR'").fetchall()
         assert len(dupes) >= 2  # Both files in the group
 
+    def test_a_song_named_live_is_not_its_live_take(self, ctx, cfg, tmp_path):
+        """CodeRabbit, review of #272: "Live Forever" and "Forever (Live)" both
+        read as "forever" once "live" was stripped as a bare word."""
+        _insert_catalogued(ctx, str(tmp_path / "a.flac"), "Oasis", "Live Forever")
+        _insert_catalogued(ctx, str(tmp_path / "b.flac"), "Oasis", "Forever (Live)")
+
+        assert NearDupeStage().execute(ctx).files_changed == 0
+
+    @pytest.mark.parametrize(
+        ("a", "b"),
+        [
+            ("Live", "Live (Remastered)"),
+            ("Silly Love Songs", "Silly Love Songs (Live / Remastered)"),
+            ("Dancing In A Dance Club", "Dancing In A Dance Club (Live/Edit)"),
+        ],
+    )
+    def test_live_in_a_label_still_pairs(self, ctx, cfg, tmp_path, a, b):
+        _insert_catalogued(ctx, str(tmp_path / "a.flac"), "Wings", a)
+        _insert_catalogued(ctx, str(tmp_path / "b.flac"), "Wings", b)
+
+        assert NearDupeStage().execute(ctx).files_changed == 1
+
     def test_run_different_artists_not_matched(self, ctx, cfg, tmp_path):
         _insert_catalogued(ctx, str(tmp_path / "a.flac"), "Artist A", "Same Title")
         _insert_catalogued(ctx, str(tmp_path / "b.flac"), "Artist B", "Same Title")
