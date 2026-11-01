@@ -238,11 +238,16 @@ _ORIGINAL_RE = re.compile(r"\boriginal\b", re.IGNORECASE)
 _LOWER_MIX_RE = re.compile(
     r"\bmix\b|\bedit\b|\bextended\b"
     r"|(?:\b(?:single|radio|film|movie|club|dub|pop|dance)|\b(?:7|12)(?:''|\"|-inch))"
-    r"\s+(?:version|edit|mix)\b",
+    r"\s+(?:version|edit|mix)\b"
+    # "(Mono Single)": a single without "Version" (CodeRabbit, review of #269).
+    r"|\bmono\s+single\b",
     re.IGNORECASE,
 )
 #: Mixes that are not new ones: the album's own, its stereo or mono form.
 _NEUTRAL_MIX_RE = re.compile(r"\b(?:original|album|lp|stereo|mono)\s+(?:mix|version)\b", re.I)
+_MONO_RE = re.compile(r"\bmono\b", re.IGNORECASE)
+#: The old release a mono label lifts: a single or an edit, never a club or extended mix.
+_MONO_RELEASE_RE = re.compile(r"\b(?:single|edit)\b|\b(?:7|45)(?:''|\"|-inch)", re.IGNORECASE)
 # An arrangement is not the original either: Bach's "Air" for orchestra over
 # its longer piano arrangement (Grey, 2026-10-26: "A. Original"). Read inside
 # a bracket only, "(Arr. For Piano)": a song may be NAMED "The Arrangement"
@@ -312,17 +317,33 @@ def _is_reissue(m: dict) -> bool:
 
 
 def _is_remix(m: dict) -> bool:
-    """True if this copy's title or album says it is a new mix.
+    """True if this copy's title or album says it is a new mix."""
+    return _mix_kind(m) == 2
+
+
+def _mix_kind(m: dict) -> int:
+    """2 a new mix, 1 a single or edit labelled mono, 0 neither.
 
     Title and album apart: a title "Original" must not hide an album "Remixed"
     (Codex review of #258). "Original" in the marker's own label says it is the
     original mix, "(Original (Re-Mix))"; a song NAMED "Original Sin" can still
-    be remixed.
+    be remixed. Grey, 2026-10-31, keeping the Isley Brothers' "This Old Heart Of
+    Mine (Single Version / Mono)" over its longer "(Jesse Javan Remix)": "mono
+    beats remix". A mono single or edit is the old release, so it ranks with a
+    remaster: above any new mix, still below the album ("album wins").
     """
-    for text in (m.get("title") or "", m.get("album") or ""):
+    kind = 0
+    title, album = m.get("title") or "", m.get("album") or ""
+    # "Song (Single Version)" on "The Singles (Mono)", or "Song (Single Version)
+    # (Mono)", is a mono single too; a song NAMED "Mono" is not (CodeRabbit,
+    # review of #269).
+    labels = [*_bracket_labels(title), *_bracket_labels(album), _outside(album),
+              *_outside(title).split(" - ")[1:]]  # fmt: skip
+    mono = any(_MONO_RE.search(p) for label in labels for p in _mix_parts(label))
+    for text in (title, album):
         for hit in _REMIX_RE.finditer(text):
             if not _ORIGINAL_RE.search(_label_of(text, hit.start())):
-                return True
+                return 2
         for hit in _LOWER_MIX_RE.finditer(text):
             label = _label_of(text, hit.start())
             if label == text:
@@ -331,14 +352,35 @@ def _is_remix(m: dict) -> bool:
             # credit or a film's title is no mix: "(feat. Little Mix)", "(From
             # The Film "The Mix")" (CodeRabbit, review of #267).
             inner = re.sub(rf"^\s*[{OPEN}]|[{CLOSE}]\s*$", "", label)
-            for part in re.split(r"\s+-\s+|\s*/\s*", inner):
-                if _ORIGINAL_RE.search(part) or _CREDIT_RE.match(part):
-                    continue
-                if re.match(r"\s*from\b", part, re.IGNORECASE):
+            for part in _mix_parts(inner):
+                if _ORIGINAL_RE.search(part):
                     continue
                 if _LOWER_MIX_RE.search(_NEUTRAL_MIX_RE.sub(" ", part)):
-                    return True
-    return False
+                    # "(Club Mix / Mono)" is still a mix (CodeRabbit, review of #269).
+                    if not mono or not _MONO_RELEASE_RE.search(part):
+                        return 2
+                    kind = 1
+    return kind
+
+
+def _mix_parts(label: str) -> list[str]:
+    """A label's parts that can speak of the mix. A credit or a film's title says
+    nothing of it, mono included: "(Single Version / From The Film Mono)",
+    "(Single Version, From The Film Mono)" (CodeRabbit, review of #269)."""
+    parts = re.split(r"\s+-\s+|\s*/\s*|\s*,\s*(?=from\b)", label, flags=re.IGNORECASE)
+    return [
+        p for p in parts if not _CREDIT_RE.match(p) and not re.match(r"\s*from\b", p, re.IGNORECASE)
+    ]
+
+
+def _bracket_labels(text: str) -> list[str]:
+    """What each innermost bracket holds: "(Single Version) (Mono)" -> both."""
+    return re.findall(rf"[{OPEN}]([^{OPEN}{CLOSE}]*)[{CLOSE}]", text)
+
+
+def _outside(text: str) -> str:
+    """The text with its brackets taken out."""
+    return re.sub(rf"[{OPEN}][^{OPEN}{CLOSE}]*[{CLOSE}]", " ", text).strip()
 
 
 def _label_of(text: str, at: int) -> str:
@@ -444,11 +486,16 @@ def _share_version_label(members: list[dict]) -> None:
     lower = {_hash_of(m) for m in members if _is_arranged(m)} - {None, ""}
     # A new mix too: an unlabelled copy of a "(Radio Edit)" is that edit (#267).
     mixed = {_hash_of(m) for m in members if _is_remix(m)} - {None, ""}
+    # And a mono single: an unlabelled copy of it is not the original (CodeRabbit,
+    # review of #269). Before the unknown-album grade, which keeps it.
+    mono = {_hash_of(m) for m in members if _mix_kind(m) == 1} - {None, ""} - mixed
     for m in members:
         if _hash_of(m) in lower:
             m["lower_version"] = True
         if _hash_of(m) in mixed:
             m["new_mix"] = True
+        if _hash_of(m) in mono:
+            m.setdefault("era_as", 1)
 
 
 def _share_live_take(members: list[dict]) -> None:
@@ -468,8 +515,9 @@ def _share_live_take(members: list[dict]) -> None:
 
 
 def _era(m: dict) -> int:
-    """Keep rule step 3: 0 the original, 1 a remaster, 2 a new mix."""
-    return 2 if _is_remix(m) else 1 if _is_reissue(m) else 0
+    """Keep rule step 3: 0 the original, 1 a remaster or a mono single, 2 a new mix."""
+    kind = _mix_kind(m)
+    return 2 if kind == 2 else 1 if kind or _is_reissue(m) else 0
 
 
 def _share_unknown_album(members: list[dict]) -> None:
@@ -488,12 +536,14 @@ def _share_unknown_album(members: list[dict]) -> None:
         for m in members
         if not (m.get("album") or "").strip()
         and not _is_reissue(m)
-        and not _is_remix(m)
+        and not _mix_kind(m)
         and not _title_says_original(m)
     ]
     # A copy sharing a new mix's audio is that mix, as keep_key ranks it (#267).
     known = [
-        2 if m.get("new_mix") else _era(m) for m in members if not any(m is u for u in unknown)
+        2 if m.get("new_mix") else m.get("era_as", _era(m))
+        for m in members
+        if not any(m is u for u in unknown)
     ]
     for m in unknown:
         # Set by the whole group first (swap tool): a pair's own comparison must

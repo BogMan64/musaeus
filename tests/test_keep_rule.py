@@ -248,7 +248,7 @@ _ALBUM = {"codec": "alac", "title": "My Love", "album": "FutureSex/LoveSounds",
     "label",
     ["Art Mix", "Steve Angello & Sebastian Ingrosso Mix", "Radio Edit", "Edit",
      "Single Version", "7'' Version", "Film Version", "Extended Version", "Club Mix",
-     "Single Version - Mono Version"],
+     "Single Version - Mono Version", "Single Version / Mono"],
 )  # fmt: skip
 def test_an_edit_or_named_mix_ranks_below_the_album_version(label):
     """Grey, 2026-10-30: named mixes rank lower, like a remix; single, radio, 7''
@@ -338,3 +338,111 @@ def test_a_copy_with_no_album_is_never_ranked_as_a_new_mix():
     _rank(members)
 
     assert members[0] is plain
+
+
+_ISLEY = {"codec": "alac", "album": "This Old Heart Of Mine", "sample_rate": 44100}
+_MONO_SINGLE = {**_ISLEY, "title": "This Old Heart Of Mine (Is Weak For You) (Single Version / Mono)",
+                "duration": 171.0}  # fmt: skip
+
+
+def test_a_mono_single_beats_a_remix():
+    """Grey, 2026-10-31: the Isley Brothers' 1966 mono single over the longer
+    "(Jesse Javan Remix)": "mono beats remix". Both read as new mixes, and the
+    remix won on length."""
+    remix = {**_ISLEY, "title": "This Old Heart Of Mine (Jesse Javan Remix)", "album": None,
+             "duration": 250.0}  # fmt: skip
+
+    assert decide(remix, _MONO_SINGLE) == ("library", "original/remaster")
+    assert decide(_MONO_SINGLE, remix) == ("review", "original/remaster")
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Song (Mono Remix)",
+        "Song (2009 Mono Mix)",
+        "Mono (Single Version)",
+        "Song (Club Mix / Mono)",
+        "Song (Extended Version - Mono)",
+    ],
+)
+def test_a_mono_remix_or_a_song_named_mono_is_still_a_new_mix(title):
+    remaster = {**_ISLEY, "title": "Song (Remastered)", "duration": 171.0}
+    other = {**_ISLEY, "title": title, "sample_rate": 96000, "duration": 171.0}
+
+    assert decide(other, remaster) == ("library", "original/remaster")
+
+
+def test_a_mono_single_with_no_album_still_loses_to_the_album_version():
+    """A labelled mono single is not an unknown copy: it keeps its own grade."""
+    from musaeus.stages.dupe_resolver import _rank
+
+    album = {**_ISLEY, "title": "This Old Heart Of Mine", "duration": 160.0, "audio_hash": "a",
+             "id": 1, "finalized_at": "x"}  # fmt: skip
+    single = {**_MONO_SINGLE, "album": None, "audio_hash": "s", "id": 2, "finalized_at": "x"}
+    members = [single, album]
+
+    _rank(members)
+
+    assert members[0] is album
+
+
+def test_a_copy_with_the_audio_of_a_mono_single_is_the_single_too():
+    """CodeRabbit, review of #269: an unlabelled copy of a 96 kHz mono single read
+    as the original and beat the album version on sample rate."""
+    from musaeus.stages.dupe_resolver import _rank
+
+    album = {**_ISLEY, "title": "This Old Heart Of Mine", "duration": 171.0, "audio_hash": "a",
+             "id": 1, "finalized_at": "x"}  # fmt: skip
+    single = {**_MONO_SINGLE, "sample_rate": 96000, "audio_hash": "s", "id": 2}
+    bare = {**single, "title": "This Old Heart Of Mine", "id": 3}
+    members = [bare, single, album]
+
+    _rank(members)
+
+    assert members[0] is album
+
+
+_REMIX = {**_ISLEY, "title": "Song (Jesse Javan Remix)", "album": None, "duration": 250.0}
+
+
+@pytest.mark.parametrize(
+    ("title", "album"),
+    [
+        ("Song (Mono Single)", "Album"),
+        ("Song (Single Version)", "The Singles (Mono)"),
+        ("Song (Single Version) (Mono)", "Album"),
+    ],
+)
+def test_a_mono_single_however_labelled_beats_a_remix(title, album):
+    """CodeRabbit, review of #269: "(Mono Single)" read as the original; a mono
+    label on the album was not read, and the longer remix won."""
+    single = {**_ISLEY, "title": title, "album": album, "duration": 171.0}
+
+    assert decide(_REMIX, single) == ("library", "original/remaster")
+    assert decide(single, {**_ISLEY, "title": "Song", "duration": 171.0}) == (
+        "library",
+        "original/remaster",
+    )
+
+
+@pytest.mark.parametrize(
+    ("title", "album"),
+    [
+        ("Song (Single Version / From The Film Mono)", "Album"),
+        ("Song (Single Version, From The Film Mono)", "Album"),
+        ("Song (Single Version)", "Album (From The Film Mono)"),
+        ("Mono (Radio Edit)", "Album"),
+    ],
+)
+def test_a_film_named_mono_is_no_mono_label(title, album):
+    """CodeRabbit, review of #269: a film, or a song, named "Mono" is no mono label."""
+    single = {**_ISLEY, "title": title, "album": album, "sample_rate": 96000, "duration": 171.0}
+    remaster = {
+        **_ISLEY,
+        "title": title.split(" (")[0] + " (Remastered)",
+        "album": album,
+        "duration": 171.0,
+    }
+
+    assert decide(single, remaster) == ("library", "original/remaster")

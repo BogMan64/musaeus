@@ -30,7 +30,9 @@ answered yes to each reading:
                      2026-10-27): closer to the original. A named mix, an
                      edit, an extended, club, dub, single, radio, 7''/12'',
                      film or movie version is a new mix too (Grey,
-                     2026-10-30: "album wins"). A copy with no
+                     2026-10-30: "album wins"). A single or edit
+                     labelled mono ranks with a remaster: "mono beats
+                     remix" (Grey, 2026-10-31). A copy with no
                      album yet is not known to be the original: on this step it
                      counts as the best known copy of its group (Grey,
                      2026-10-29), and the known copies keep their order
