@@ -92,9 +92,11 @@ def same_song_pairs(rows: list[dict], grouped: set[frozenset[str]]) -> list[tupl
                 da, db = float(a.get("duration") or 0), float(b.get("duration") or 0)
                 if min(da, db) <= 0 or 2 * min(da, db) < max(da, db):
                     continue
-                if frozenset((a["audio_hash"], b["audio_hash"])) in grouped:
-                    continue
-                fit.add(frozenset((a["audio_hash"], b["audio_hash"])))
+                # A pair already grouped is not staged again, but it still links its
+                # copies: a second run before the resolver must rank 1, 2 and 3 as
+                # the resolver will, not stage 2/3 apart (CodeRabbit, review of #274).
+                if frozenset((a["audio_hash"], b["audio_hash"])) not in grouped:
+                    fit.add(frozenset((a["audio_hash"], b["audio_hash"])))
                 joined = linked[i] | linked[j]
                 for k in joined:
                     linked[k] = joined

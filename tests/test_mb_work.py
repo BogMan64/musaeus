@@ -201,3 +201,12 @@ def test_a_copy_linked_only_through_a_moving_copy_stays():
     assert [
         (k["id"], lo["id"]) for k, lo, _ in mw.same_song_pairs([first, middle, long], set())
     ] == [(1, 2)]
+
+
+def test_a_second_run_before_the_resolver_keeps_the_first_runs_link():
+    """CodeRabbit, review of #274: 1/2 staged by an earlier run; 2/3 staged now would
+    let the resolver move 3 against 1, over twice its length."""
+    rows = [_row(1, "Song", sample_rate=192000, duration=100.0),
+            _row(2, "Song (Single)", duration=160.0), _row(3, "Song (Extended)", duration=250.0)]  # fmt: skip
+
+    assert mw.same_song_pairs(rows, {frozenset(("h1", "h2"))}) == []
