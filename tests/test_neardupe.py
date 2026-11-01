@@ -272,6 +272,54 @@ class TestClassicalWorksAreNotDuplicates:
         assert not _is_different_piece("Yesterday", "Yesterday (Remaster)")
         assert not _is_different_piece("Feel Like Making Love", "Feel like Makin' Love")
 
+    def test_a_closing_part_number_on_both_sides_is_a_different_song(self):
+        """The studio "Synchronicity I" was grouped with "Synchronicity II" at
+        96.8, set aside and deleted with the review losers (2026-10-30)."""
+        assert _is_different_piece("Synchronicity I", "Synchronicity II")
+        assert _is_different_piece(
+            "Synchronicity I (Live In Atlanta, 1983 - Remastered 2003)", "Synchronicity II"
+        )
+        assert _is_different_piece(
+            "Another Brick In The Wall, Pt. 1", "Another Brick In The Wall, Pt. 2"
+        )
+
+    def test_a_closing_zero_is_a_part_number(self):
+        """CodeRabbit, review of #270: part 0 was read as no part."""
+        assert _is_different_piece("Synchronicity 0", "Synchronicity 1")
+
+    def test_a_closing_catalogue_number_is_not_a_part(self):
+        """CodeRabbit, review of #270: "RV 93" and "No. 3" close one work's titles."""
+        assert not _is_different_piece(
+            "Concerto No. 3, I. Allegro, RV 93", "Concerto RV 93, I. Allegro, No. 3"
+        )
+
+    def test_a_part_label_after_a_catalogue_word_is_a_part(self):
+        """CodeRabbit, review of #270: "Pt." names a part even after "Opus" or "Track"."""
+        assert _is_different_piece("Opus, Pt. 1", "Opus, Pt. 2")
+        assert _is_different_piece("The Track Pts. 1", "The Track Pts. 2")
+
+    @pytest.mark.parametrize(
+        ("a", "b"),
+        [
+            ("Song ı", "Song II"),
+            ("Sonata - ı. Allegro", "Sonata - II. Adagio"),
+            ("Mass Nr. İ", "Mass Nr. II"),
+        ],
+    )
+    def test_a_turkish_i_is_no_roman_numeral(self, a, b):
+        """CodeRabbit, review of #270: ignoring case, [IVX] matched "ı" and "İ" and
+        _marker_number raised KeyError, stopping the NearDupe run."""
+        assert not _is_different_piece(a, b)
+
+    def test_the_same_closing_part_number_is_not_a_difference(self):
+        assert not _is_different_piece("Synchronicity II", "Synchronicity II (Remastered 2003)")
+        assert not _is_different_piece(
+            "A Love Supreme, Pt. I - Acknowledgement", "A Love Supreme Part 1"
+        )
+        assert not _is_different_piece("Summer Of 69", "Summer Of '69")
+        assert not _is_different_piece("5:15", "5 - 15")
+        assert not _is_different_piece("Candle In The Wind 1997", "Candle In The Wind 97")
+
     def test_one_sided_markers_do_not_assert_a_difference(self):
         """Conservative by design.
 
@@ -281,6 +329,9 @@ class TestClassicalWorksAreNotDuplicates:
         """
         assert not _is_different_piece("Symphony No. 5", "Symphony")
         assert not _is_different_piece("Sonata - I. Allegro", "Sonata")
+        assert not _is_different_piece(
+            "Lonely Teardrops 2 (Remastered)", "Lonely Teardrops (Original)"
+        )
 
 
 def test_an_original_mix_label_is_a_version_label():

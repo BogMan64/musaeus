@@ -163,8 +163,10 @@ def _same_take(a: dict, b: dict) -> bool:
 _WORK_RE = re.compile(r"\b(?:No\.|Op\.|BWV|HWV|RV|K\.|D\.|Hob\.)\s*(\d+[a-z]?)", re.IGNORECASE)
 _MOVEMENT_RE = re.compile(
     # "II.Allegro" too, but not "I.G.Y" or "Fake I.D." (Codex review of #255).
-    r"(?:^|[\s\-–—:,(\[])(?:([IVXLC]{1,5})\.(?=\s|[^\W\d_]{2})|"
-    r"(?:Movement|Mvt\.?|Part|Act|Scene|Variation|Var\.)\s*(\d+|[IVXLC]{1,5})\b)",
+    # Roman numerals in ASCII only: ignoring case, [IVX] also matched Turkish
+    # "ı" and "İ", and _marker_number raised KeyError (CodeRabbit, review of #270).
+    r"(?:^|[\s\-–—:,(\[])(?:((?-i:[IVXLCivxlc]{1,5}))\.(?=\s|[^\W\d_]{2})|"
+    r"(?:Movement|Mvt\.?|Part|Act|Scene|Variation|Var\.)\s*(\d+|(?-i:[IVXLCivxlc]{1,5}))\b)",
     re.IGNORECASE,
 )
 
@@ -215,7 +217,7 @@ _VOCAL_WORK_RE = re.compile(
 )
 #: "No. 1" and "No. 3" of one catalogue number are two items of one work.
 #: "No. 3", "No. III" and "Nr. 3" are one item (Codex review of #255).
-_ITEM_RE = re.compile(r"\bN[or]\.\s*(\d+|[IVXLC]{1,5}\b)", re.IGNORECASE)
+_ITEM_RE = re.compile(r"\bN[or]\.\s*(\d+|(?-i:[IVXLCivxlc]{1,5})\b)", re.IGNORECASE)
 #: Words no movement is named by: articles, and how a copy was made ("- Live",
 #: "Remastered") -- a shared "Live" paired two Mass sections (Codex review of #255).
 _NAME_STOP = frozenset(
@@ -344,7 +346,33 @@ def _is_different_piece(title_a: str, title_b: str) -> bool:
     # (Codex review of #255), and so does "VIII. Hornpipe" from "VII. Bourrée -
     # VIII. Hornpipe", one track holding two movements.
     ma, mb = _movements(title_a), _movements(title_b)
-    return bool(ma and mb and ma != mb)
+    if ma and mb and ma != mb:
+        return True
+    # A part number closing both titles: "Synchronicity I" is not "Synchronicity
+    # II". Grouped at 96.8, the studio "Synchronicity I" was set aside for review
+    # and deleted with the review losers (2026-10-30). One side only stays the
+    # ordinary "Song" vs "Song 2" case.
+    pa, pb = _closing_part(title_a), _closing_part(title_b)
+    return pa is not None and pb is not None and pa != pb
+
+
+#: A part number closing a title, after a word: "Synchronicity II", "Shout, Pt. 2".
+_CLOSING_PART_RE = re.compile(
+    r"([^\W\d_]{2,})\.?,?\s+(pts?\.?\s*)?((?-i:[IVXivx]{1,4})|\d{1,2})$", re.IGNORECASE
+)
+#: A work or catalogue number closes a title too, "RV 93", "No. 3": not a part,
+#: unless "Pt." names it one: "Opus, Pt. 2".
+_CATALOGUE_WORDS = frozenset({"no", "nr", "op", "opus", "bwv", "hwv", "rv", "kv", "hob", "wwv", "sz",
+                              "vol", "volume", "track"})  # fmt: skip
+
+
+def _closing_part(title: str) -> int | None:
+    """The part number closing a title, labels and " - " suffixes left off."""
+    bare = re.split(rf"\s*[{OPEN}]|\s+-\s+", title or "", maxsplit=1)[0].strip()
+    m = _CLOSING_PART_RE.search(bare)
+    if not m or (m.group(1).casefold() in _CATALOGUE_WORDS and not m.group(2)):
+        return None
+    return _marker_number(m.group(3))
 
 
 #: A variation is its own piece, never a movement: "Variation 1" is not
