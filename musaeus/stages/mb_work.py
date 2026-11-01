@@ -83,6 +83,7 @@ def same_song_pairs(rows: list[dict], grouped: set[frozenset[str]]) -> list[tupl
     for (_, works), members in by_song.items():
         # The copies each one is linked to by a pair, through any number of others.
         linked = {i: {i} for i in range(len(members))}
+        fit: set[frozenset[str]] = set()  # pairs that pass every guard on their own
         for i, a in enumerate(members):
             for j in range(i + 1, len(members)):
                 b = members[j]
@@ -93,6 +94,7 @@ def same_song_pairs(rows: list[dict], grouped: set[frozenset[str]]) -> list[tupl
                     continue
                 if frozenset((a["audio_hash"], b["audio_hash"])) in grouped:
                     continue
+                fit.add(frozenset((a["audio_hash"], b["audio_hash"])))
                 joined = linked[i] | linked[j]
                 for k in joined:
                     linked[k] = joined
@@ -106,7 +108,15 @@ def same_song_pairs(rows: list[dict], grouped: set[frozenset[str]]) -> list[tupl
                 copies = [m for m in copies if not m.get("kept_by_person_at")]
                 _rank(copies)
             keeper = copies[0]
-            pairs += [(keeper, m, works) for m in copies[1:] if not m.get("kept_by_person_at")]
+            # Only a pair that passes on its own: a link through a copy left out
+            # (kept by hand, 160 s between 100 s and 250 s) is no link (CodeRabbit,
+            # review of #274).
+            pairs += [
+                (keeper, m, works)
+                for m in copies[1:]
+                if not m.get("kept_by_person_at")
+                and frozenset((keeper["audio_hash"], m["audio_hash"])) in fit
+            ]
     return pairs
 
 

@@ -177,3 +177,13 @@ def test_a_copy_kept_by_hand_that_ranks_first_keeps_the_song():
         (1, 2),
         (1, 3),
     ]
+
+
+def test_a_link_through_a_kept_copy_is_no_link():
+    """CodeRabbit, review of #274: 100 s and 250 s are linked only through the kept
+    160 s copy; 250 s is over twice 100 s, so the two are never paired."""
+    first = _row(1, "Song", sample_rate=192000, duration=100.0)
+    kept = _row(2, "Song (Single Version)", duration=160.0, kept_by_person_at="2026-10-21")
+    long = _row(3, "Song (Extended)", duration=250.0)
+
+    assert mw.same_song_pairs([first, kept, long], set()) == []
