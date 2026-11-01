@@ -66,10 +66,14 @@ def recording_works(mbid: str) -> tuple[list[str], str, bool]:
 
 
 def same_song_pairs(rows: list[dict], grouped: set[frozenset[str]]) -> list[tuple[dict, dict, str]]:
-    """(keeper, loser, works) for each pair of copies one act holds of the same works.
+    """(keeper, loser, works) for each copy to stage against the keeper of its song.
 
     *rows* are catalogue rows with mb_work_ids; *grouped* the audio pairs already in
-    one duplicate group. The keeper is the keep rule's, as the resolver will rank it.
+    one duplicate group. Copies linked by staged pairs are one song to the resolver,
+    which ranks them together, so they are ranked together here: a copy kept by hand
+    never loses, not even through a third copy (2026-11-01, Lynyrd Skynyrd: two pairs
+    sharing "Introduction - Workin' For MCA" moved the kept "One More From The Road"
+    take). The keeper is the keep rule's among the copies that may lose.
     """
     by_song: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for r in rows:
@@ -77,8 +81,11 @@ def same_song_pairs(rows: list[dict], grouped: set[frozenset[str]]) -> list[tupl
             by_song[(r["mb_work_artist"].casefold(), r["mb_work_ids"])].append(r)
     pairs = []
     for (_, works), members in by_song.items():
+        # The copies each one is linked to by a pair, through any number of others.
+        linked = {i: {i} for i in range(len(members))}
         for i, a in enumerate(members):
-            for b in members[i + 1 :]:
+            for j in range(i + 1, len(members)):
+                b = members[j]
                 if not a["audio_hash"] or not b["audio_hash"] or a["audio_hash"] == b["audio_hash"]:
                     continue  # no audio identity, or one recording twice (EXACT finds that)
                 da, db = float(a.get("duration") or 0), float(b.get("duration") or 0)
@@ -86,12 +93,20 @@ def same_song_pairs(rows: list[dict], grouped: set[frozenset[str]]) -> list[tupl
                     continue
                 if frozenset((a["audio_hash"], b["audio_hash"])) in grouped:
                     continue
-                ranked = [dict(a), dict(b)]
-                _rank(ranked)
-                keeper, loser = ranked
-                if loser.get("kept_by_person_at"):
-                    continue
-                pairs.append((keeper, loser, works))
+                joined = linked[i] | linked[j]
+                for k in joined:
+                    linked[k] = joined
+        songs = {id(s): [dict(members[k]) for k in sorted(s)] for s in linked.values()}
+        for copies in songs.values():
+            if len(copies) < 2:
+                continue
+            _rank(copies)
+            # A copy kept by hand is the keeper or is left out (Grey, 2026-11-01).
+            if not copies[0].get("kept_by_person_at"):
+                copies = [m for m in copies if not m.get("kept_by_person_at")]
+                _rank(copies)
+            keeper = copies[0]
+            pairs += [(keeper, m, works) for m in copies[1:] if not m.get("kept_by_person_at")]
     return pairs
 
 

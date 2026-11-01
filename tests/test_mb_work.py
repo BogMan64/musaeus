@@ -150,3 +150,17 @@ def test_an_unreachable_musicbrainz_stamps_nothing(ctx, monkeypatch):
         ).fetchone()[0]
         == 0
     )
+
+
+def test_a_copy_kept_by_hand_never_loses_through_a_third_copy():
+    """2026-11-01, Lynyrd Skynyrd: "Introduction - Workin' For MCA" paired with the
+    studio take and with the kept live take; the resolver ranked the three together
+    and moved the kept one to REVIEW."""
+    studio = _row(1, "Workin' For MCA", sample_rate=192000, duration=287.0)
+    kept = _row(2, "Introduction By Alex Cooley - Workin' For MCA", sample_rate=192000,
+                duration=332.0, kept_by_person_at="2026-10-21")  # fmt: skip
+    single = _row(3, "Introduction - Workin' For MCA", sample_rate=96000, duration=338.0)
+
+    pairs = mw.same_song_pairs([studio, kept, single], set())
+
+    assert [(k["id"], lo["id"]) for k, lo, _ in pairs] == [(1, 3)]
