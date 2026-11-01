@@ -162,6 +162,7 @@ from .identity_tag import IdentityTagStage
 from .ingest import IngestStage
 from .integrity import IntegrityStage
 from .mb_enrich import MBEnrichStage
+from .mb_work import MBWorkStage
 from .neardupe import NearDupeStage
 from .normalize import NormalizeStage
 from .organize import OrganizeStage
@@ -213,6 +214,7 @@ __all__ = [
     "AlbumFillStage",
     "TitleCompleteStage",
     "IdentityTagStage",
+    "MBWorkStage",
     "AcoustIDNameStage",
     "TranscodeStage",
     "IntegrityStage",
@@ -421,6 +423,10 @@ ENRICHMENT: list[type] = [
     # DIFFERENT audio hashes that are the same recording, which PCM
     # hashing structurally cannot detect. That is why it is worth
     # finishing rather than abandoning.
+    # AFTER AcoustID, whose recording it asks about: copies of one song by
+    # MusicBrainz work, staged for the next run's resolver (Grey, 2026-11-01:
+    # "B list items move copies to review").
+    MBWorkStage,
     # AFTER AcoustID: an empty album is filled from the fingerprint that
     # stage just stored, then Discogs, then Deezer (Grey, 2026-10-03: the
     # three album scripts of 2026-09, wired in). Before IdentityTag, so the
@@ -502,5 +508,6 @@ ENRICH_PIPELINE: list[type] = [
     EnrichStage,
     MBEnrichStage,
     AcousticIDStage,
+    MBWorkStage,
     AlbumFillStage,
 ]

@@ -300,9 +300,11 @@ def _is_live(m: dict) -> bool:
 
 
 def _labelled_live(m: dict) -> bool:
-    """The copy's own title or album says live -- never a length read from another copy."""
+    """The copy's own title or album says live, or MusicBrainz marks its recording
+    live (mb-work: "Before The Flood" names no "live"; Grey, 2026-11-01) -- never a
+    length read from another copy."""
     haystack = f"{m.get('title') or ''} {m.get('album') or ''}"
-    return bool(_LIVE_RE.search(haystack))
+    return bool(m.get("mb_live")) or bool(_LIVE_RE.search(haystack))
 
 
 def _is_reissue(m: dict) -> bool:
@@ -651,7 +653,7 @@ def _get_group_members(conn, group_id: str) -> list[dict]:
                d.audio_hash AS recorded_hash, a.audio_hash AS current_hash, a.id AS current_row,
                a.status AS current_status, a.finalized_at, a.lufs,
                a.artist, a.album, a.title, a.ext, a.codec, a.bitrate, a.size_bytes,
-               a.sample_rate, a.duration, a.kept_by_person_at, a.lufs_baked_at
+               a.sample_rate, a.duration, a.kept_by_person_at, a.lufs_baked_at, a.mb_live
           FROM duplicates d
           LEFT JOIN archive a USING (file_path)
          WHERE d.group_id = ?
@@ -713,7 +715,7 @@ def _get_live_exact_clusters(conn) -> list[list[dict]]:
             """
             SELECT id, file_path, artist, album, title, ext, codec, bitrate, size_bytes,
                    finalized_at, lufs, audio_hash, sample_rate, duration, kept_by_person_at,
-                   lufs_baked_at
+                   lufs_baked_at, mb_live
               FROM archive
              WHERE audio_hash = ? AND status = 'CATALOGUED'
             """,

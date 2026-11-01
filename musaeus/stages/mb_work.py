@@ -1,0 +1,214 @@
+"""
+MUSAEUS -- Enrichment: one song held twice under two titles, found by its MusicBrainz work.
+
+Grey, 2026-10-31: "MB does have a 'work' ID for the song itself = this along with
+our existing rules should resolve the issue ... B as its own step"; 2026-11-01: "B
+list items move copies to review". MusicBrainz links each recording to the work (the
+song) it performs. Two library copies by one act (MusicBrainz's first credited
+artist) of the same works are one song, whatever their titles or our credit text say:
+"Synchronicity I (Live In Atlanta, 1983 ...)" and "Synchronicity I", "Tone-Lōc" and
+"Tone-Loc". Each pair is staged as a WORK group; the next run's resolver keeps one by
+the keep rule and moves the other to REVIEW.
+
+Left alone (Grey, 2026-11-01, "leave them"):
+  - a pair whose losing copy a person kept by hand;
+  - a copy under half the other's length: a 48 s instrumental is not the song;
+  - a pair already in one duplicate group: kept together, or listed for a person.
+The SAME works, not one shared: "Everybody Has A Dream" holds a reprise of "The
+Stranger", and "Tune-Up - When Lights Are Low" two tunes.
+
+MusicBrainz's live mark on the recording ("live, 1974-01-30: Madison Square
+Garden") is stored as mb_live, which the keep rule reads: "Before The Flood" names
+no "live". Each song is asked about once (mb_work_checked_at), at MusicBrainz's 1
+request a second. shortcut: a recording re-fingerprinted later keeps its old answer;
+clear mb_work_checked_at to ask again.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import time
+import uuid
+from collections import defaultdict
+from datetime import datetime, timezone
+
+from ..context import RunContext, StageResult
+from .album_fill import Unavailable, _get_json
+from .base import BaseStage
+from .dupe_resolver import _rank
+
+logger = logging.getLogger(__name__)
+
+_MB_RECORDING = "https://musicbrainz.org/ws/2/recording/{}?fmt=json&inc=artist-credits+work-rels"
+_MB_RATE_S = 1.05
+_COMMIT_EVERY = 50
+_LIVE_RE = re.compile(r"\blive\b", re.IGNORECASE)
+
+
+def recording_works(mbid: str) -> tuple[list[str], str, bool]:
+    """(work ids, first credited artist, marked live) of a recording.
+
+    Raises Unavailable when MusicBrainz could not be asked.
+    """
+    try:
+        data = _get_json(_MB_RECORDING.format(mbid))
+    except Unavailable:
+        raise
+    except Exception as exc:  # the network policy's refusal, in a preview
+        raise Unavailable(str(exc)) from exc
+    works = sorted(
+        {r["work"]["id"] for r in data.get("relations") or [] if (r.get("work") or {}).get("id")}
+    )
+    credit = data.get("artist-credit") or []
+    first = str((credit[0].get("name") if credit else "") or "")
+    return works, first, bool(_LIVE_RE.search(data.get("disambiguation") or ""))
+
+
+def same_song_pairs(rows: list[dict], grouped: set[frozenset[str]]) -> list[tuple[dict, dict, str]]:
+    """(keeper, loser, works) for each pair of copies one act holds of the same works.
+
+    *rows* are catalogue rows with mb_work_ids; *grouped* the audio pairs already in
+    one duplicate group. The keeper is the keep rule's, as the resolver will rank it.
+    """
+    by_song: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for r in rows:
+        if r.get("mb_work_ids") and r.get("mb_work_artist"):
+            by_song[(r["mb_work_artist"].casefold(), r["mb_work_ids"])].append(r)
+    pairs = []
+    for (_, works), members in by_song.items():
+        for i, a in enumerate(members):
+            for b in members[i + 1 :]:
+                if not a["audio_hash"] or not b["audio_hash"] or a["audio_hash"] == b["audio_hash"]:
+                    continue  # no audio identity, or one recording twice (EXACT finds that)
+                da, db = float(a.get("duration") or 0), float(b.get("duration") or 0)
+                if min(da, db) <= 0 or 2 * min(da, db) < max(da, db):
+                    continue
+                if frozenset((a["audio_hash"], b["audio_hash"])) in grouped:
+                    continue
+                ranked = [dict(a), dict(b)]
+                _rank(ranked)
+                keeper, loser = ranked
+                if loser.get("kept_by_person_at"):
+                    continue
+                pairs.append((keeper, loser, works))
+    return pairs
+
+
+def _grouped(conn) -> set[frozenset[str]]:
+    """Audio pairs already together in one duplicate group that still stands."""
+    groups: dict[str, set[str]] = defaultdict(set)
+    for r in conn.execute(
+        "SELECT group_id, audio_hash FROM duplicates "
+        "WHERE COALESCE(audio_hash, '') <> '' AND status <> 'stale'"
+    ):
+        groups[r["group_id"]].add(r["audio_hash"])
+    return {frozenset((a, b)) for hs in groups.values() for a in hs for b in hs if a < b}
+
+
+class MBWorkStage(BaseStage):
+    """Stage copies of one song held under two titles, found by MusicBrainz work."""
+
+    NAME = "mb-work"
+
+    def validate(self, ctx: RunContext) -> None:
+        """Nothing to refuse: a copy with no recording is simply not asked about."""
+
+    def _to_ask(self, ctx: RunContext) -> list:
+        from .acousticid import _ensure_columns as _fingerprint_columns
+
+        _fingerprint_columns(ctx.conn)  # acousticid_recording, on a vault that has never had it
+        return ctx.conn.execute(
+            "SELECT id, file_path, acousticid_recording FROM archive "
+            "WHERE status = 'CATALOGUED' AND COALESCE(acousticid_recording, '') <> '' "
+            "AND COALESCE(mb_work_checked_at, '') = '' ORDER BY id"
+        ).fetchall()
+
+    def _pairs(self, ctx: RunContext) -> list[tuple[dict, dict, str]]:
+        rows = [
+            dict(r)
+            for r in ctx.conn.execute(
+                "SELECT * FROM archive WHERE status = 'CATALOGUED' "
+                "AND COALESCE(mb_work_ids, '') <> ''"
+            )
+        ]
+        return same_song_pairs(rows, _grouped(ctx.conn))
+
+    def dry_run(self, ctx: RunContext) -> StageResult:
+        result = self._make_result(dry_run=True)
+        asks, pairs = self._to_ask(ctx), self._pairs(ctx)
+        result.files_processed = len(asks)
+        result.notes.append(
+            f"{len(asks)} recording(s) to ask MusicBrainz about (no lookup in a preview); "
+            f"{len(pairs)} pair(s) of one song would be staged from what is known"
+        )
+        ctx.record_stage(result)
+        return result
+
+    def verify_effect(self, ctx: RunContext, result: StageResult) -> list[str]:
+        """Every pair this run says it staged must be a pending WORK group."""
+        rows = ctx.conn.execute(
+            "SELECT e.file_path FROM events e WHERE e.run_id = ? "
+            "AND e.event_type = 'MB_WORK_DUPE_FOUND' AND NOT EXISTS (SELECT 1 FROM duplicates d "
+            "WHERE d.file_path = e.file_path AND d.duplicate_type = 'WORK' AND d.run_id = e.run_id)",
+            (ctx.run_id,),
+        ).fetchall()
+        return [f"{len(rows)} staged pair(s) have no WORK group: {rows[0][0]}"] if rows else []
+
+    def run(self, ctx: RunContext) -> StageResult:
+        result = self._make_result(dry_run=False)
+        rows = self._to_ask(ctx)
+        unavailable = 0
+        for n, row in enumerate(rows, 1):
+            result.files_processed += 1
+            try:
+                works, first, live = recording_works(row["acousticid_recording"])
+            except Unavailable as exc:
+                unavailable += 1
+                logger.debug("[mb-work] could not ask for %s: %s", row["file_path"], exc)
+                if unavailable >= 20 and unavailable == n:
+                    result.notes.append(
+                        "MusicBrainz could not be reached -- stopped; nothing stamped"
+                    )
+                    break
+                continue
+            finally:
+                time.sleep(_MB_RATE_S)
+            ctx.conn.execute(
+                "UPDATE archive SET mb_work_ids = ?, mb_work_artist = ?, mb_live = ?, "
+                "mb_work_checked_at = ? WHERE id = ?",
+                (",".join(works), first, int(live),
+                 datetime.now(timezone.utc).isoformat(timespec="seconds"), row["id"]),
+            )  # fmt: skip
+            if n % _COMMIT_EVERY == 0:
+                ctx.conn.commit()
+        ctx.conn.commit()
+
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        pairs = self._pairs(ctx)
+        for keeper, loser, works in pairs:
+            group_id = f"work_{uuid.uuid4().hex[:8]}"
+            for member in (keeper, loser):
+                ctx.conn.execute(
+                    "INSERT OR IGNORE INTO duplicates (group_id, file_path, duplicate_type, "
+                    "confidence, status, run_id, staged_at, audio_hash) "
+                    "VALUES (?, ?, 'WORK', 1.0, 'pending', ?, ?, ?)",
+                    (group_id, member["file_path"], ctx.run_id, now, member["audio_hash"]),
+                )
+            ctx.log_event(
+                "MB_WORK_DUPE_FOUND",
+                file_path=loser["file_path"],
+                new_value=keeper["file_path"],
+                stage=self.NAME,
+                note=f"one song by MusicBrainz work {works}; the keep rule keeps {keeper['title']!r}",
+            )
+            logger.info("[mb-work] %r == %r", loser["title"], keeper["title"])
+        ctx.conn.commit()
+        result.files_changed = len(pairs)
+        result.notes.append(
+            f"asked {result.files_processed - unavailable}; {len(pairs)} pair(s) of one song "
+            "staged for the resolver (moved to REVIEW next run)"
+            + (f"; {unavailable} not reachable (asked again next run)" if unavailable else "")
+        )
+        ctx.record_stage(result)
+        return result
