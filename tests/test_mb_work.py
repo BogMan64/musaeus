@@ -291,3 +291,9 @@ def test_a_live_album_past_the_listed_releases_still_counts(monkeypatch):
 
 def test_an_apostrophe_inside_a_word_is_left_out():
     assert mw.album_key("It's Alive") == mw.album_key("Its Alive") == "its alive"
+
+
+def test_a_live_bracket_stays_in_the_album_key():
+    """CodeRabbit, review of #276: "Greatest Hits (Live)" must not match a studio "Greatest Hits"."""
+    assert mw.album_key("Greatest Hits (Live)") != mw.album_key("Greatest Hits")
+    assert mw.album_key("The Last Waltz (Deluxe Version)") == mw.album_key("The Last Waltz")

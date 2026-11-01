@@ -34,7 +34,7 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from ..brackets import strip_bracketed
+from ..brackets import CLOSE, OPEN, strip_bracketed
 from ..context import RunContext, StageResult
 from .album_fill import Unavailable, _get_json
 from .base import BaseStage
@@ -53,6 +53,10 @@ _MB_LISTED = 25
 _MB_RELEASES = "https://musicbrainz.org/ws/2/release?recording={}&inc=release-groups&fmt=json&limit=100&offset={}"
 _COMMIT_EVERY = 50
 _LIVE_RE = re.compile(r"\blive\b", re.IGNORECASE)
+_LIVE_BRACKET_RE = re.compile(
+    rf"[{OPEN}]([^{OPEN}{CLOSE}]*\b(?:live|concert|unplugged)\b[^{OPEN}{CLOSE}]*)[{CLOSE}]",
+    re.IGNORECASE,
+)
 
 
 def recording_works(mbid: str) -> tuple[list[str], str, set[str]]:
@@ -95,8 +99,10 @@ def _all_releases(mbid: str) -> list[dict]:
 
 def album_key(title: str | None) -> str:
     """An album title to compare by: "One More From the Road (Deluxe)" = "One More From The Road"."""
-    # "It's Alive" is "Its Alive" (CodeRabbit, review of #276).
-    joined = re.sub(r"(?<=\w)['’](?=\w)", "", strip_bracketed(title or "").casefold())
+    # A bracket that says live stays: "Greatest Hits (Live)" is not "Greatest Hits";
+    # "(Deluxe)" goes. "It's Alive" is "Its Alive" (CodeRabbit, review of #276).
+    kept = _LIVE_BRACKET_RE.sub(r" \1 ", title or "")
+    joined = re.sub(r"(?<=\w)['’](?=\w)", "", strip_bracketed(kept).casefold())
     return re.sub(r"[^\w]+", " ", joined).strip()
 
 
