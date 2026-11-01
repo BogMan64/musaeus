@@ -486,6 +486,10 @@ def test_a_medleys_songs_go_on_the_wanted_list():
         ("Kodachrome / Maybellene - Live", ["Kodachrome", "Maybellene"]),
         ("Cape Breton Medley", []),
         ("Angelina / Zooma Zooma (Medley / Live At Lake Tahoe / 1957 / Remastered 1999)", ["Angelina", "Zooma Zooma"]),
+        ("Medley (Live/Edit)", []),
+        ("Medley - Live/Edit", []),
+        ("Little Sister / Get Back Medley (Live/Edit)", ["Little Sister", "Get Back"]),
+        ("Kodachrome / Maybellene Medley - Live/Edit", ["Kodachrome", "Maybellene"]),
     ],
 )  # fmt: skip
 def test_a_medley_names_its_songs_wherever_they_are_written(title, songs):

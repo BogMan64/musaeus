@@ -89,12 +89,21 @@ _SONG_LIST_RE = re.compile(r"[/;]")
 _AFTER_MEDLEY_RE = re.compile(r"\bmedley\W*$", re.IGNORECASE)
 
 
+def _is_label_only(text: str) -> bool:
+    """Every part is label words and numbers only: "Live/Edit", "Single Version / Mono"."""
+    return all(
+        not re.sub(r"[\W\d_]+", "", VERSION_LABEL_RE.sub("", p)) for p in re.split(r"[/;]", text)
+    )
+
+
 def strip_label_suffix(title: str) -> str:
     """The title without an edition label after its last " - ": "Song - Live/Edit"."""
     head, sep, tail = (title or "").rpartition(" - ")
     return (
         head
-        if sep and VERSION_LABEL_RE.search(tail) and not _AFTER_MEDLEY_RE.search(head)
+        if sep
+        and VERSION_LABEL_RE.search(tail)
+        and (_is_label_only(tail) or not _AFTER_MEDLEY_RE.search(head))
         else title or ""
     )
 
@@ -114,7 +123,7 @@ def medley_songs(title: str) -> list[str]:
     t = title or ""
     # A bracket holding the song list, not a label (CodeRabbit, review of #271).
     lists = [m.group(1) for m in re.finditer(rf"[{OPEN}]([^{OPEN}{CLOSE}]*)[{CLOSE}]", t)
-             if _SONG_LIST_RE.search(m.group(1))
+             if _SONG_LIST_RE.search(m.group(1)) and not _is_label_only(m.group(1))
              and (_AFTER_MEDLEY_RE.search(t[: m.start()]) or not VERSION_LABEL_RE.search(m.group(1)))]  # fmt: skip
     t = lists[0] if lists else strip_label_suffix(strip_bracketed(t))
     trailing = re.search(r"\s*\bmedley\s*$", t, re.IGNORECASE)
