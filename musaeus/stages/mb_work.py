@@ -186,7 +186,7 @@ class MBWorkStage(BaseStage):
 
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         pairs = self._pairs(ctx)
-        for keeper, loser, works in pairs:
+        for keeper, loser, song_works in pairs:
             group_id = f"work_{uuid.uuid4().hex[:8]}"
             for member in (keeper, loser):
                 ctx.conn.execute(
@@ -200,7 +200,7 @@ class MBWorkStage(BaseStage):
                 file_path=loser["file_path"],
                 new_value=keeper["file_path"],
                 stage=self.NAME,
-                note=f"one song by MusicBrainz work {works}; the keep rule keeps {keeper['title']!r}",
+                note=f"one song by MusicBrainz work {song_works}; the keep rule keeps {keeper['title']!r}",
             )
             logger.info("[mb-work] %r == %r", loser["title"], keeper["title"])
         ctx.conn.commit()
