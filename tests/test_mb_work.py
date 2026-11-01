@@ -185,9 +185,13 @@ def test_a_recording_on_live_albums_only_is_live(releases, live):
 def test_the_lookup_reads_the_live_albums(monkeypatch):
     data = {"disambiguation": "", "relations": [{"work": {"id": "w1"}}],
             "artist-credit": [{"name": "Bob Dylan"}], "releases": [_rel("Live")]}  # fmt: skip
-    monkeypatch.setattr(mw, "_get_json", lambda url: data)
+    asked: list[str] = []
+    monkeypatch.setattr(mw, "_get_json", lambda url: asked.append(url) or data)
 
     assert mw.recording_works("rec") == (["w1"], "Bob Dylan", True)
+    # The releases come only if the lookup asks for them (CodeRabbit, review of #275).
+    assert asked == ["https://musicbrainz.org/ws/2/recording/rec?fmt=json"
+                     "&inc=artist-credits+work-rels+releases+release-groups"]  # fmt: skip
 
 
 def test_a_recording_on_more_releases_than_listed_is_not_judged_by_its_albums(monkeypatch):
