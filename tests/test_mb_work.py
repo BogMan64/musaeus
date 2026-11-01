@@ -150,3 +150,33 @@ def test_an_unreachable_musicbrainz_stamps_nothing(ctx, monkeypatch):
         ).fetchone()[0]
         == 0
     )
+
+
+def _rel(*secondary):
+    return {"release-group": {"primary-type": "Album", "secondary-types": list(secondary)}}
+
+
+@pytest.mark.parametrize(
+    ("releases", "live"),
+    [
+        ([_rel("Live")], True),  # "Before The Flood"
+        ([_rel("Live"), _rel("Compilation")], True),  # a hits set leaves it live
+        ([_rel("Live", "Compilation")], True),  # a live compilation
+        ([_rel("Live"), _rel()], False),  # also on a studio album
+        ([_rel("Live"), {"release-group": {"primary-type": "Single"}}], False),  # a studio single
+        ([_rel("Compilation")], False),  # nothing says live
+        ([_rel("Soundtrack")], False),
+        ([], False),
+    ],
+)
+def test_a_recording_on_live_albums_only_is_live(releases, live):
+    """Grey, 2026-11-01: MusicBrainz's "Live" album type counts as live ("make it a rule")."""
+    assert mw.on_live_albums_only(releases) is live
+
+
+def test_the_lookup_reads_the_live_albums(monkeypatch):
+    data = {"disambiguation": "", "relations": [{"work": {"id": "w1"}}],
+            "artist-credit": [{"name": "Bob Dylan"}], "releases": [_rel("Live")]}  # fmt: skip
+    monkeypatch.setattr(mw, "_get_json", lambda url: data)
+
+    assert mw.recording_works("rec") == (["w1"], "Bob Dylan", True)
