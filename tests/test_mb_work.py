@@ -150,3 +150,58 @@ def test_an_unreachable_musicbrainz_stamps_nothing(ctx, monkeypatch):
         ).fetchone()[0]
         == 0
     )
+
+
+def _rel(*secondary):
+    return {"release-group": {"primary-type": "Album", "secondary-types": list(secondary)}}
+
+
+@pytest.mark.parametrize(
+    ("releases", "live"),
+    [
+        ([_rel("Live")], True),  # "Before The Flood"
+        ([_rel("Live"), _rel("Compilation")], True),  # a hits set leaves it live
+        ([_rel("Live", "Compilation")], True),  # a live compilation
+        ([_rel("Live"), _rel()], False),  # also on a studio album
+        ([_rel("Live"), {"release-group": {"primary-type": "Single"}}], False),  # a studio single
+        ([_rel("Compilation")], False),  # nothing says live
+        ([_rel("Soundtrack")], False),
+        # A live single is live (CodeRabbit, review of #275, declined).
+        (
+            [
+                _rel("Live"),
+                {"release-group": {"primary-type": "Single", "secondary-types": ["Live"]}},
+            ],
+            True,
+        ),
+        ([], False),
+    ],
+)
+def test_a_recording_on_live_albums_only_is_live(releases, live):
+    """Grey, 2026-11-01: MusicBrainz's "Live" album type counts as live ("make it a rule")."""
+    assert mw.on_live_albums_only(releases) is live
+
+
+def test_the_lookup_reads_the_live_albums(monkeypatch):
+    data = {"disambiguation": "", "relations": [{"work": {"id": "w1"}}],
+            "artist-credit": [{"name": "Bob Dylan"}], "releases": [_rel("Live")]}  # fmt: skip
+    asked: list[str] = []
+    monkeypatch.setattr(mw, "_get_json", lambda url: asked.append(url) or data)
+
+    assert mw.recording_works("rec") == (["w1"], "Bob Dylan", True)
+    # The releases come only if the lookup asks for them (CodeRabbit, review of #275).
+    assert asked == ["https://musicbrainz.org/ws/2/recording/rec?fmt=json"
+                     "&inc=artist-credits+work-rels+releases+release-groups"]  # fmt: skip
+
+
+def test_a_recording_on_more_releases_than_listed_is_not_judged_by_its_albums(monkeypatch):
+    """CodeRabbit, review of #275: MusicBrainz lists 25 releases; a studio one may be past them."""
+    data = {
+        "disambiguation": "",
+        "relations": [],
+        "artist-credit": [],
+        "releases": [_rel("Live")] * 25,
+    }
+    monkeypatch.setattr(mw, "_get_json", lambda url: data)
+
+    assert mw.recording_works("rec")[2] is False
