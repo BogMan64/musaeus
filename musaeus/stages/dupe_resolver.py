@@ -575,8 +575,9 @@ def _keeper_sort_key(m: dict) -> tuple[int, ...]:
     applied by _rank (a sort key cannot hold a 2 s tolerance).
 
     Order: already moved away; format; an original over an old baked copy;
-    studio over live; original over remaster; sample rate; then the copy
-    already filed stays, then the one catalogued first (Grey, 2026-10-29: a
+    studio over live; original over remaster; the act alone over the song with
+    a guest; sample rate; then the copy already filed stays, then the one
+    catalogued first (Grey, 2026-10-29: a
     tie makes the copy in the library first "the winner moving forward");
     bitrate and size only break a tie nothing else can
     (a fixed order, not a judgement of quality).

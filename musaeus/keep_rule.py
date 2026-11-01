@@ -36,6 +36,10 @@ answered yes to each reading:
                      album yet is not known to be the original: on this step it
                      counts as the best known copy of its group (Grey,
                      2026-10-29), and the known copies keep their order
+  3b. solo          the act alone beats the same song with a guest: "Ray
+                     Charles" over "Ray Charles, Diana Krall" (Grey,
+                     2026-11-01: "keep solo version"). "& The Legendary
+                     Hearts" is the act's own band, not a guest
   4. quality         SAMPLE RATE only. Bitrate between two ALAC copies of one
                      recording is noise; counting it would swap masters for
                      no audible gain (AC/DC "Big Gun", 2026-10-03)
@@ -56,6 +60,7 @@ and the resolver can never disagree about what counts as live.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -73,11 +78,22 @@ STEPS = (
     "original/baked",
     "original/arrangement",
     "original/remaster",
+    "solo",
     "quality",
     "length",
 )
 #: Lengths closer than this are the same length (a fade, a gap of silence).
 LENGTH_SLACK_S = 2.0
+#: Where a credit names one more act: "Ray Charles, Diana Krall", "Santana feat. Rob
+#: Thomas". "& The Legendary Hearts" is the act's own band, not a guest.
+_GUEST_RE = re.compile(
+    r"\s*,\s*|\s+&\s+(?!the\b)|\s+(?:feat\.?|ft\.|featuring|with)\s+", re.IGNORECASE
+)
+
+
+def guests(artist: str | None) -> int:
+    """How many acts a credit names after the first: 0 for the act alone."""
+    return max(0, len([n for n in _GUEST_RE.split(artist or "") if n.strip()]) - 1)
 
 
 def _format_rank(codec: str | None) -> int:
@@ -89,8 +105,9 @@ def _format_rank(codec: str | None) -> int:
     return 1 if c in LOSSLESS or c.startswith("pcm_") else 3
 
 
-def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int, int]:
-    """Steps 1-4; smaller is better. *m* needs codec, title, album, sample_rate, lufs_baked_at.
+def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int, int, int]:
+    """Steps 1-4; smaller is better. *m* needs codec, title, album, artist, sample_rate,
+    lufs_baked_at.
 
     Length (step 5) is not in the key: "at least 2 s longer" is a tolerance,
     and a sort key cannot hold one without bucketing 201.9 s and 202.1 s apart.
@@ -106,6 +123,7 @@ def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int, int]:
         1 if _looks_baked(dict(m)) else 0,
         1 if m.get("lower_version") or _is_arranged(dict(m)) else 0,
         era,
+        guests(m.get("artist")),
         -int(m.get("sample_rate") or 0),
     )
 
