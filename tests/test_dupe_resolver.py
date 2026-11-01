@@ -2134,6 +2134,7 @@ def test_live_in_a_songs_name_is_no_live_recording(title, album):
         ("Song", "April Wine Live"),
         ("Song", "Live!"),
         ("Song", "Live 8: One Day One Concert One World"),
+        ("Song", "Live 1975"),
         ("Song", "Unplugged"),
         ("Synchronicity I (Live In Atlanta, 1983 - Remastered 2003)", "Synchronicity"),
     ],
@@ -2150,4 +2151,5 @@ def test_a_cha_cha_named_after_the_song_is_an_arrangement():
 
     assert _is_arranged({"title": "Moon River Cha Cha"})
     assert _is_arranged({"title": "Moon River (Cha-Cha Version)"})
+    assert _is_arranged({"title": "Moon River Cha Cha (Remastered (2003))"})
     assert not _is_arranged({"title": "Cha Cha Slide"})

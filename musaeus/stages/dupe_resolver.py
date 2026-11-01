@@ -296,7 +296,7 @@ _LIVE_RE = re.compile(
 #: ending in it ("April Wine Live", "Live!"). In a label it always counts: "(Live)",
 #: "- Live 1983".
 _LIVE_PHRASE_RE = re.compile(
-    r"\blive\s+(?:at|from|in|version|recordings?|sessions?|albums?|\d)\b", re.IGNORECASE
+    r"\blive\s+(?:at|from|in|version|recordings?|sessions?|albums?|\d+)\b", re.IGNORECASE
 )
 _LIVE_NAME_RE = re.compile(
     r"\b(?:"
@@ -447,7 +447,10 @@ def _is_arranged(m: dict) -> bool:
     Title and album apart: "Song (Original Mix" must not run on into its album.
     Brackets are counted, so "(For Piano [2024] Arr.)" is still inside one.
     """
-    if _DANCE_ARRANGEMENT_RE.search(_outside(m.get("title") or "")):
+    name = m.get("title") or ""
+    while _bracket_labels(name):  # "Moon River Cha Cha (Remastered (2003))"
+        name = _outside(name)
+    if _DANCE_ARRANGEMENT_RE.search(name):
         return True
     for text in (m.get("title") or "", m.get("album") or ""):
         depth = 0
