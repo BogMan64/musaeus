@@ -42,8 +42,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..artist_form import comparison_key
+from ..brackets import strip_bracketed
 from ..context import RunContext, StageResult, elision
-from ..wanted_list import wanted_lines
+from ..wanted_list import strip_label_suffix, wanted_lines
 from .base import BaseStage
 from .organize import build_track_filename, sanitize_path_component, unique_path
 
@@ -96,6 +97,26 @@ JUNK_TITLE_PATTERNS: list[re.Pattern[str]] = [
     # in this library actually use.
     re.compile(r"\bpiano cover\b", re.IGNORECASE),
 ]
+
+# Grey, 2026-10-31: "No medley in my library moving forward ... all". A title
+# saying "Medley", or songs joined by "/" outside a label ("Kodachrome /
+# Maybellene"); never "(Live/Edit)", "24/7", or an opera act ("Dido And Aeneas /
+# Act 3"). The medleys already filed stay: this stage reads arrivals only.
+_MEDLEY_RE = re.compile(r"\bmedley\b", re.IGNORECASE)
+_WORD_RE = re.compile(r"[^\W\d_]{2,}")
+_CLASSICAL_RE = re.compile(
+    r"\b(?:act|scene|op\.|bwv|hwv|rv|k\.|z\.?)\s*(?:\d|[ivx]+\b)", re.IGNORECASE
+)
+
+
+def is_medley(title: str) -> bool:
+    """True for a medley title (see _MEDLEY_RE above)."""
+    t = title or ""
+    # "Song - Live/Edit" is a label, not two songs (CodeRabbit, review of #271).
+    parts = strip_label_suffix(strip_bracketed(t)).split("/")
+    joined = len(parts) > 1 and all(_WORD_RE.search(p) for p in parts)
+    return bool(_MEDLEY_RE.search(t) or (joined and not _CLASSICAL_RE.search(t)))
+
 
 JUNK_ALBUM_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\bkaraoke\b", re.IGNORECASE),
@@ -223,6 +244,9 @@ def is_junk(artist: str, title: str, album: str, *, known_artist: bool = False) 
             continue
         if pat.search(title or ""):
             return True, f"title_pattern: {pat.pattern}"
+
+    if is_medley(title):
+        return True, "medley"
 
     for pat in JUNK_ALBUM_PATTERNS:
         if known_artist and pat.pattern not in _STRONG_ALBUM:
