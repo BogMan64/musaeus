@@ -485,6 +485,7 @@ def test_a_medleys_songs_go_on_the_wanted_list():
          ["You Are The Sunshine Of My Life", "Don't You Worry 'Bout A Thing"]),
         ("Kodachrome / Maybellene - Live", ["Kodachrome", "Maybellene"]),
         ("Cape Breton Medley", []),
+        ("Angelina / Zooma Zooma (Medley / Live At Lake Tahoe / 1957 / Remastered 1999)", ["Angelina", "Zooma Zooma"]),
     ],
 )  # fmt: skip
 def test_a_medley_names_its_songs_wherever_they_are_written(title, songs):
@@ -492,3 +493,14 @@ def test_a_medley_names_its_songs_wherever_they_are_written(title, songs):
     from musaeus.wanted_list import medley_songs
 
     assert medley_songs(title) == songs
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Medley (Live And Let Die / Band On The Run)", "Medley - Live And Let Die / Band On The Run"],
+)
+def test_a_song_named_with_a_label_word_stays_in_its_medley(title):
+    """CodeRabbit, review of #271: "Live And Let Die" is a song, not a "Live" label."""
+    from musaeus.wanted_list import medley_songs
+
+    assert medley_songs(title) == ["Live And Let Die", "Band On The Run"]
