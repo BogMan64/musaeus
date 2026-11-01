@@ -152,6 +152,66 @@ def test_an_unreachable_musicbrainz_stamps_nothing(ctx, monkeypatch):
     )
 
 
+def test_a_copy_kept_by_hand_never_loses_through_a_third_copy():
+    """2026-11-01, Lynyrd Skynyrd: "Introduction - Workin' For MCA" paired with the
+    studio take and with the kept live take; the resolver ranked the three together
+    and moved the kept one to REVIEW."""
+    studio = _row(1, "Workin' For MCA", sample_rate=192000, duration=287.0)
+    kept = _row(2, "Introduction By Alex Cooley - Workin' For MCA", sample_rate=192000,
+                duration=332.0, mb_live=1, kept_by_person_at="2026-10-21")  # fmt: skip
+    single = _row(3, "Introduction - Workin' For MCA", codec="aac", sample_rate=96000,
+                  duration=338.0, mb_live=1)  # fmt: skip
+
+    pairs = mw.same_song_pairs([studio, kept, single], set())
+
+    assert [(k["id"], lo["id"]) for k, lo, _ in pairs] == [(1, 3)]
+
+
+def test_a_copy_kept_by_hand_that_ranks_first_keeps_the_song():
+    kept = _row(1, "Song", sample_rate=192000, kept_by_person_at="2026-10-21")
+    others = [_row(2, "Song (Single Version)"), _row(3, "Song (Remastered)")]
+
+    assert sorted(
+        (k["id"], lo["id"]) for k, lo, _ in mw.same_song_pairs([kept, *others], set())
+    ) == [
+        (1, 2),
+        (1, 3),
+    ]
+
+
+def test_a_link_through_a_kept_copy_is_no_link():
+    """CodeRabbit, review of #274: 100 s and 250 s are linked only through the kept
+    160 s copy; 250 s is over twice 100 s, so the two are never paired."""
+    first = _row(1, "Song", sample_rate=192000, duration=100.0)
+    kept = _row(2, "Song (Single Version)", duration=160.0, kept_by_person_at="2026-10-21")
+    long = _row(3, "Song (Extended)", duration=250.0)
+
+    assert mw.same_song_pairs([first, kept, long], set()) == []
+
+
+def test_a_copy_linked_only_through_a_moving_copy_stays():
+    """CodeRabbit, review of #274 (declined): 250 s is over twice 100 s; staging the
+    160/250 link too would have the resolver move it against the 100 s keeper."""
+    first = _row(1, "Song", sample_rate=192000, duration=100.0)
+    middle, long = (
+        _row(2, "Song (Single)", duration=160.0),
+        _row(3, "Song (Extended)", duration=250.0),
+    )
+
+    assert [
+        (k["id"], lo["id"]) for k, lo, _ in mw.same_song_pairs([first, middle, long], set())
+    ] == [(1, 2)]
+
+
+def test_a_second_run_before_the_resolver_keeps_the_first_runs_link():
+    """CodeRabbit, review of #274: 1/2 staged by an earlier run; 2/3 staged now would
+    let the resolver move 3 against 1, over twice its length."""
+    rows = [_row(1, "Song", sample_rate=192000, duration=100.0),
+            _row(2, "Song (Single)", duration=160.0), _row(3, "Song (Extended)", duration=250.0)]  # fmt: skip
+
+    assert mw.same_song_pairs(rows, {frozenset(("h1", "h2"))}) == []
+
+
 def _rel(*secondary):
     return {"release-group": {"primary-type": "Album", "secondary-types": list(secondary)}}
 
