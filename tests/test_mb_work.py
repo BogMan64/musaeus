@@ -158,9 +158,22 @@ def test_a_copy_kept_by_hand_never_loses_through_a_third_copy():
     and moved the kept one to REVIEW."""
     studio = _row(1, "Workin' For MCA", sample_rate=192000, duration=287.0)
     kept = _row(2, "Introduction By Alex Cooley - Workin' For MCA", sample_rate=192000,
-                duration=332.0, kept_by_person_at="2026-10-21")  # fmt: skip
-    single = _row(3, "Introduction - Workin' For MCA", sample_rate=96000, duration=338.0)
+                duration=332.0, mb_live=1, kept_by_person_at="2026-10-21")  # fmt: skip
+    single = _row(3, "Introduction - Workin' For MCA", codec="aac", sample_rate=96000,
+                  duration=338.0, mb_live=1)  # fmt: skip
 
     pairs = mw.same_song_pairs([studio, kept, single], set())
 
     assert [(k["id"], lo["id"]) for k, lo, _ in pairs] == [(1, 3)]
+
+
+def test_a_copy_kept_by_hand_that_ranks_first_keeps_the_song():
+    kept = _row(1, "Song", sample_rate=192000, kept_by_person_at="2026-10-21")
+    others = [_row(2, "Song (Single Version)"), _row(3, "Song (Remastered)")]
+
+    assert sorted(
+        (k["id"], lo["id"]) for k, lo, _ in mw.same_song_pairs([kept, *others], set())
+    ) == [
+        (1, 2),
+        (1, 3),
+    ]
