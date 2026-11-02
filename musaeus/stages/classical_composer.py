@@ -138,6 +138,14 @@ def composer_for(artist: str, title: str, canon: dict[str, str]) -> tuple[str | 
         hit = canon.get(part.strip().lower())
         if hit:
             return hit, "artist credit"
+    # Last: one composer named in full anywhere in the title, "... Op. 71a, Pyotr
+    # Ilyich Tchaikovsky" (2026-11-02). Canonical names only: the canon also maps
+    # performers to a composer ("András Schiff" -> Bach).
+    in_title = {
+        c for c in set(canon.values()) if re.search(rf"\b{re.escape(c)}\b", title or "", re.I)
+    }
+    if len(in_title) == 1:
+        return in_title.pop(), "title"
     return None, ""
 
 

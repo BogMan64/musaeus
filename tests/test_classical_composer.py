@@ -106,6 +106,23 @@ class TestCanonMatching:
             "George Frideric Handel"
         )
 
+    def test_a_composer_named_at_the_end_of_the_title_resolves_it(self):
+        """2026-11-02: "March, The Nutcracker Suite, Op. 71a, Pyotr Ilyich Tchaikovsky"
+        by The London Pops Orchestra was filed under the orchestra."""
+        canon = dict(CANON, **{"pyotr ilyich tchaikovsky": "Pyotr Ilyich Tchaikovsky"})
+        title = "March, The Nutcracker Suite, Op. 71a, Pyotr Ilyich Tchaikovsky"
+        got = composer_for("The London Pops Orchestra, Conducted By Nelson Riddle", title, canon)
+        assert got == ("Pyotr Ilyich Tchaikovsky", "title")
+
+    def test_a_title_naming_two_composers_or_a_performer_resolves_nothing(self):
+        canon = dict(CANON, **{"andrás schiff": "Johann Sebastian Bach"})
+        assert composer_for("Orchestra", "Johann Sebastian Bach And Antonio Vivaldi", canon) == (
+            None,
+            "",
+        )
+        # The canon maps performers to a composer; a performer named in the title is not one.
+        assert composer_for("Orchestra", "Sonata No. 11, András Schiff", canon) == (None, "")
+
     def test_a_colon_prefix_that_is_no_composer_resolves_nothing(self):
         assert composer_for("The London Philharmonic Orchestra", "The Valkyrie: Ride Of The Valkyries",
                             CANON)[0] is None  # fmt: skip
