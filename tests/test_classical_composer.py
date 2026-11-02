@@ -135,6 +135,9 @@ class TestCanonMatching:
         """CodeRabbit, review of #278: "Handel" is another composer, though not written in full."""
         title = "Variations, Johann Sebastian Bach, Handel"
         assert composer_for("Orchestra", title, CANON) == (None, "")
+        # A separate credit after it is no ensemble's name (CodeRabbit, round 2).
+        title = "Variations, Johann Sebastian Bach, Handel, Orchestra"
+        assert composer_for("Orchestra", title, CANON) == (None, "")
 
     def test_a_colon_prefix_that_is_no_composer_resolves_nothing(self):
         assert composer_for("The London Philharmonic Orchestra", "The Valkyrie: Ride Of The Valkyries",

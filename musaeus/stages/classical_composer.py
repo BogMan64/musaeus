@@ -153,7 +153,9 @@ def _named(name: str, title: str) -> bool:
     """*name* as whole words in *title*, not the start of an ensemble's name:
     "Franz Liszt Chamber Orchestra" is an orchestra (CodeRabbit, review of #278)."""
     for m in re.finditer(rf"\b{re.escape(name)}\b", title, re.I):
-        after = _fold(title[m.end() :]).split()[:1]
+        # Only the words of this credit: "Handel, Orchestra" is two (CodeRabbit, round 2).
+        own = re.split(r"[,;/:()\[\]–-]", title[m.end() :], maxsplit=1)[0]
+        after = _fold(own).split()[:1]
         if not (after and after[0] in _ENSEMBLE_WORDS):
             return True
     return False
