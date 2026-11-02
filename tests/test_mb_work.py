@@ -247,6 +247,26 @@ def test_a_release_typed_live_counts_for_its_own_album(releases, album, live):
     assert (mw.album_key(album) in mw.live_albums({"releases": releases})) is live
 
 
+@pytest.mark.parametrize(
+    ("releases", "album"),
+    [
+        ([_rel("Hotel California", "Live"), _rel("Hotel California")], "Hotel California"),
+        (
+            [
+                _rel("American Idiot (20th Anniversary - On Holiday)", "Live"),
+                _rel("American Idiot"),
+            ],
+            "American Idiot (20th Anniversary Deluxe Edition)",
+        ),
+    ],
+)
+def test_an_album_name_also_on_a_studio_release_is_not_live(releases, album):
+    """2026-11-02: the studio "New Kid In Town" (5:04, Hotel California) sits on a
+    release of that name MusicBrainz types Live; a live disc's bracket comes off
+    and leaves the studio album's name ("Favorite Son", American Idiot)."""
+    assert mw.album_key(album) not in mw.live_albums({"releases": releases})
+
+
 def test_the_lookup_reads_the_releases(monkeypatch):
     data = {"disambiguation": "", "relations": [{"work": {"id": "w1"}}],
             "artist-credit": [{"name": "Bob Dylan"}], "releases": [_rel("Before the Flood", "Live")]}  # fmt: skip

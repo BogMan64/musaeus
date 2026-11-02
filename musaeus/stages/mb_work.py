@@ -118,14 +118,17 @@ def live_albums(data: dict) -> set[str]:
     Head, "Changes" on Hunky Dory), whose mark would make the studio copy lose
     (2026-11-01). A whole live album that MusicBrainz types Live counts ("Before
     The Flood", "One More From The Road"); so does every release of a recording
-    MusicBrainz itself calls live (Grey, 2026-11-01: "make it a rule").
+    MusicBrainz itself calls live (Grey, 2026-11-01: "make it a rule"). A name the
+    recording also has on a release not typed Live is not one: the studio "New Kid
+    In Town" is on a "Hotel California" typed Live (2026-11-02).
     """
     marked = _LIVE_RE.search(data.get("disambiguation") or "") is not None
-    return {
-        album_key(r.get("title"))
-        for r in data.get("releases") or []
-        if marked or "Live" in ((r.get("release-group") or {}).get("secondary-types") or [])
-    } - {""}
+    live: set[str] = set()
+    studio: set[str] = set()
+    for r in data.get("releases") or []:
+        types = (r.get("release-group") or {}).get("secondary-types") or []
+        (live if marked or "Live" in types else studio).add(album_key(r.get("title")))
+    return live - studio - {""}
 
 
 def same_song_pairs(rows: list[dict], grouped: set[frozenset[str]]) -> list[tuple[dict, dict, str]]:
