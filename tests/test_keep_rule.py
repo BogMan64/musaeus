@@ -486,3 +486,33 @@ def test_solo_ranks_below_studio_and_the_original():
     remix = {**_SOLO, "artist": "Delerium", "title": "Lost And Found (DJ Dan Club Mix)"}
     original = {**_SOLO, "artist": "Delerium, Jaël", "title": "Lost And Found"}
     assert decide(remix, original) == ("library", "original/remaster")
+
+
+def test_of_two_live_recordings_the_earlier_is_kept():
+    """Grey, 2026-11-02 (Strawberry's rule of 10-29, "Crossroads 1968 over 1988"):
+    of two live recordings the earlier is kept, above sound quality; studio first."""
+    early = c(title="Crossroads (Live 1968)", codec="aac", duration=250.0)
+    late = c(title="Crossroads (Live 1988)", sample_rate=192000, duration=300.0)
+    assert decide(early, late) == ("review", "live/earlier")
+    assert decide(late, early) == ("library", "live/earlier")
+
+
+def test_a_live_copy_with_no_year_leaves_the_years_out():
+    # Either take may be the earlier one: the rest of the rule decides.
+    dated = c(title="Song (Live 1968)", codec="aac", duration=250.0)
+    undated = c(title="Song (Live)", sample_rate=192000, duration=300.0)
+    assert decide(dated, undated) == ("library", "format")
+
+
+def test_a_remaster_year_is_no_recording_year():
+    remastered = c(title="Song (Live) (2009 Remaster)", duration=250.0)
+    dated = c(title="Song (Live 1975)", codec="aac", duration=300.0)
+    assert decide(remastered, dated) == ("review", "format")
+
+
+def test_a_studio_copy_still_beats_the_earliest_live_one():
+    # Its own length: a copy at a live copy's length is that live take (#248).
+    assert decide(c(codec="aac", duration=210.0), c(title="Song (Live 1968)")) == (
+        "review",
+        "studio/live",
+    )

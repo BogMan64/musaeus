@@ -7,6 +7,9 @@ answered yes to each reading:
   1. studio / live   a studio recording beats a live one -- above everything
                      else, sound quality included (Grey, 2026-10-22: "Studio
                      beats live. If both are studio, keep the longer one")
+  1b. live/earlier   of two live recordings, the earlier one (Grey, 2026-11-02;
+                     Strawberry's rule of 10-29, "Crossroads 1968 over 1988"),
+                     when every live copy names its year in a live label
   2. format          ALAC or FLAC, then any other lossless, then lossy (a copy
                      whose codec is unknown is never taken for lossless).
                      ALAC and FLAC are equal (Grey, 2026-10-22): a FLAC
@@ -74,6 +77,7 @@ LOSSLESS = frozenset({"alac", "flac", "wavpack", "ape", "tta", "mlp", "truehd", 
                       "mp4als", "als", "wmalossless", "tak", "ralf"})  # fmt: skip
 STEPS = (
     "studio/live",
+    "live/earlier",
     "format",
     "original/baked",
     "original/arrangement",
@@ -105,7 +109,7 @@ def _format_rank(codec: str | None) -> int:
     return 1 if c in LOSSLESS or c.startswith("pcm_") else 3
 
 
-def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int, int, int]:
+def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int, int, int, int]:
     """Steps 1-4; smaller is better. *m* needs codec, title, album, artist, sample_rate,
     lufs_baked_at.
 
@@ -119,6 +123,7 @@ def keep_key(m: Mapping[str, Any]) -> tuple[int, int, int, int, int, int, int]:
     era = 2 if m.get("new_mix") else m["era_as"] if "era_as" in m else _era(dict(m))
     return (
         1 if _is_live(dict(m)) else 0,
+        m.get("live_year") or 0,  # set by _share_live_year, for live copies only
         _format_rank(m.get("codec")),
         1 if _looks_baked(dict(m)) else 0,
         1 if m.get("lower_version") or _is_arranged(dict(m)) else 0,
@@ -142,6 +147,7 @@ def decide(review: Mapping[str, Any], library: Mapping[str, Any]) -> tuple[str, 
     from .stages.dupe_resolver import (
         _share_baked_mark,
         _share_live_take,
+        _share_live_year,
         _share_unknown_album,
         _share_version_label,
     )
@@ -149,6 +155,7 @@ def decide(review: Mapping[str, Any], library: Mapping[str, Any]) -> tuple[str, 
     review, library = dict(review), dict(library)
     _share_baked_mark([review, library])
     _share_live_take([review, library])
+    _share_live_year([review, library])
     _share_version_label([review, library])
     _share_unknown_album([review, library])
     for step, r, lib in zip(STEPS, keep_key(review), keep_key(library), strict=False):
