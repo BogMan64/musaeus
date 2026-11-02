@@ -123,6 +123,19 @@ class TestCanonMatching:
         # The canon maps performers to a composer; a performer named in the title is not one.
         assert composer_for("Orchestra", "Sonata No. 11, András Schiff", canon) == (None, "")
 
+    def test_a_composer_named_only_inside_an_ensemble_name_resolves_nothing(self):
+        """CodeRabbit, review of #278: "Franz Liszt Chamber Orchestra" is an orchestra."""
+        canon = dict(CANON, **{"franz liszt": "Franz Liszt"})
+        assert composer_for("Orchestra", "Concerto, Franz Liszt Chamber Orchestra", canon) == (
+            None,
+            "",
+        )
+
+    def test_a_title_naming_another_composer_by_a_short_name_resolves_nothing(self):
+        """CodeRabbit, review of #278: "Handel" is another composer, though not written in full."""
+        title = "Variations, Johann Sebastian Bach, Handel"
+        assert composer_for("Orchestra", title, CANON) == (None, "")
+
     def test_a_colon_prefix_that_is_no_composer_resolves_nothing(self):
         assert composer_for("The London Philharmonic Orchestra", "The Valkyrie: Ride Of The Valkyries",
                             CANON)[0] is None  # fmt: skip

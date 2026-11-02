@@ -140,13 +140,23 @@ def composer_for(artist: str, title: str, canon: dict[str, str]) -> tuple[str | 
             return hit, "artist credit"
     # Last: one composer named in full anywhere in the title, "... Op. 71a, Pyotr
     # Ilyich Tchaikovsky" (2026-11-02). Canonical names only: the canon also maps
-    # performers to a composer ("András Schiff" -> Bach).
-    in_title = {
-        c for c in set(canon.values()) if re.search(rf"\b{re.escape(c)}\b", title or "", re.I)
-    }
-    if len(in_title) == 1:
-        return in_title.pop(), "title"
+    # performers to a composer ("András Schiff" -> Bach). Any other name the canon
+    # knows makes it two (CodeRabbit, review of #278).
+    full = {c for c in set(canon.values()) if _named(c, title or "")}
+    known = {c for v, c in canon.items() if _named(v, title or "")}
+    if len(full) == 1 and known <= full:
+        return full.pop(), "title"
     return None, ""
+
+
+def _named(name: str, title: str) -> bool:
+    """*name* as whole words in *title*, not the start of an ensemble's name:
+    "Franz Liszt Chamber Orchestra" is an orchestra (CodeRabbit, review of #278)."""
+    for m in re.finditer(rf"\b{re.escape(name)}\b", title, re.I):
+        after = _fold(title[m.end() :]).split()[:1]
+        if not (after and after[0] in _ENSEMBLE_WORDS):
+            return True
+    return False
 
 
 def _fold(name: str) -> str:
