@@ -17,9 +17,10 @@ Left alone (Grey, 2026-11-01, "leave them"):
 The SAME works, not one shared: "Everybody Has A Dream" holds a reprise of "The
 Stranger", and "Tune-Up - When Lights Are Low" two tunes.
 
-MusicBrainz's live mark on the recording ("live, 1974-01-30: Madison Square
-Garden") is stored as mb_live, which the keep rule reads: "Before The Flood" names
-no "live". Each song is asked about once (mb_work_checked_at), at MusicBrainz's 1
+MusicBrainz's live mark ("live, 1974-01-30: Madison Square Garden", or a release
+typed Live) is stored as mb_live, which the keep rule reads -- only when the copy's
+own album is one of those live releases: "Before The Flood" names no "live", and
+AcoustID matches some studio files to a live recording of the song. Each song is asked about once (mb_work_checked_at), at MusicBrainz's 1
 request a second. shortcut: a recording re-fingerprinted later keeps its old answer;
 clear mb_work_checked_at to ask again.
 """
@@ -33,6 +34,7 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 
+from ..brackets import CLOSE, OPEN, has_bracketed, strip_bracketed
 from ..context import RunContext, StageResult
 from .album_fill import Unavailable, _get_json
 from .base import BaseStage
@@ -45,17 +47,20 @@ _MB_RECORDING = (
     "&inc=artist-credits+work-rels+releases+release-groups"
 )
 _MB_RATE_S = 1.05
-#: MusicBrainz lists at most this many releases with a recording. A recording on
-#: more is not judged by its albums: a studio release past the list may be missed
-#: (CodeRabbit, review of #275). shortcut: no paging; page the release browse if a
-#: live recording on 25+ releases is ever read as studio.
-_MB_RELEASES_LISTED = 25
+#: A recording lookup lists at most 25 releases; past that every release is browsed,
+#: so a live album further down still counts (CodeRabbit, review of #276).
+_MB_LISTED = 25
+_MB_RELEASES = "https://musicbrainz.org/ws/2/release?recording={}&inc=release-groups&fmt=json&limit=100&offset={}"
 _COMMIT_EVERY = 50
 _LIVE_RE = re.compile(r"\blive\b", re.IGNORECASE)
+_LIVE_BRACKET_RE = re.compile(
+    rf"[{OPEN}]([^{OPEN}{CLOSE}]*\b(?:live|concert|unplugged)\b[^{OPEN}{CLOSE}]*)[{CLOSE}]",
+    re.IGNORECASE,
+)
 
 
-def recording_works(mbid: str) -> tuple[list[str], str, bool]:
-    """(work ids, first credited artist, marked live) of a recording.
+def recording_works(mbid: str) -> tuple[list[str], str, set[str]]:
+    """(work ids, first credited artist, the albums it is live on) of a recording.
 
     Raises Unavailable when MusicBrainz could not be asked.
     """
@@ -70,25 +75,57 @@ def recording_works(mbid: str) -> tuple[list[str], str, bool]:
     )
     credit = data.get("artist-credit") or []
     first = str((credit[0].get("name") if credit else "") or "")
-    releases = data.get("releases") or []
-    return (
-        works,
-        first,
-        _LIVE_RE.search(data.get("disambiguation") or "") is not None
-        or (len(releases) < _MB_RELEASES_LISTED and on_live_albums_only(releases)),
-    )
+    if len(data.get("releases") or []) >= _MB_LISTED:
+        data = {**data, "releases": _all_releases(mbid)}
+    return works, first, live_albums(data)
 
 
-def on_live_albums_only(releases: list[dict]) -> bool:
-    """True when every release of the recording, compilations left aside, is a live one.
+def _all_releases(mbid: str) -> list[dict]:
+    """Every release of a recording, a page of 100 at a time at MusicBrainz's rate."""
+    releases: list[dict] = []
+    while True:
+        time.sleep(_MB_RATE_S)
+        try:
+            page = _get_json(_MB_RELEASES.format(mbid, len(releases)))
+        except Unavailable:
+            raise
+        except Exception as exc:  # the network policy's refusal, in a preview
+            raise Unavailable(str(exc)) from exc
+        got = page.get("releases") or []
+        releases += got
+        if not got or len(releases) >= int(page.get("release-count") or 0):
+            return releases
 
-    MusicBrainz marks few recordings live itself; a whole live album often carries
-    no mark ("Before The Flood"). Any studio album, single or EP says studio: "Live
-    Forever" sits on "Definitely Maybe" (Grey, 2026-11-01: "make it a rule").
+
+def album_key(title: str | None) -> str:
+    """An album title to compare by: "One More From the Road (Deluxe)" = "One More From The Road"."""
+    # A bracket that says live stays: "Greatest Hits (Live)" is not "Greatest Hits";
+    # "(Deluxe)" goes. "It's Alive" is "Its Alive" (CodeRabbit, review of #276).
+    # Brackets inside brackets peel from the inside out: "(Deluxe (Live))" keeps "live".
+    text, live = title or "", []
+    while has_bracketed(text):
+        live += _LIVE_BRACKET_RE.findall(text)
+        text = strip_bracketed(text)
+    joined = re.sub(r"(?<=\w)['’](?=\w)", "", " ".join([text, *live]).casefold())
+    return re.sub(r"[^\w]+", " ", joined).strip()
+
+
+def live_albums(data: dict) -> set[str]:
+    """The releases on which MusicBrainz says this recording is live, by album_key.
+
+    A live mark counts for a copy only on its OWN album: AcoustID matches some
+    studio files to a live recording of the song ("Smoke On The Water" on Machine
+    Head, "Changes" on Hunky Dory), whose mark would make the studio copy lose
+    (2026-11-01). A whole live album that MusicBrainz types Live counts ("Before
+    The Flood", "One More From The Road"); so does every release of a recording
+    MusicBrainz itself calls live (Grey, 2026-11-01: "make it a rule").
     """
-    kinds = [set((r.get("release-group") or {}).get("secondary-types") or []) for r in releases]
-    kinds = [k for k in kinds if "Compilation" not in k or "Live" in k]
-    return bool(kinds) and all("Live" in k for k in kinds)
+    marked = _LIVE_RE.search(data.get("disambiguation") or "") is not None
+    return {
+        album_key(r.get("title"))
+        for r in data.get("releases") or []
+        if marked or "Live" in ((r.get("release-group") or {}).get("secondary-types") or [])
+    } - {""}
 
 
 def same_song_pairs(rows: list[dict], grouped: set[frozenset[str]]) -> list[tuple[dict, dict, str]]:
@@ -174,7 +211,7 @@ class MBWorkStage(BaseStage):
 
         _fingerprint_columns(ctx.conn)  # acousticid_recording, on a vault that has never had it
         return ctx.conn.execute(
-            "SELECT id, file_path, acousticid_recording FROM archive "
+            "SELECT id, file_path, album, acousticid_recording FROM archive "
             "WHERE status = 'CATALOGUED' AND COALESCE(acousticid_recording, '') <> '' "
             "AND COALESCE(mb_work_checked_at, '') = '' ORDER BY id"
         ).fetchall()
@@ -217,7 +254,7 @@ class MBWorkStage(BaseStage):
         for n, row in enumerate(rows, 1):
             result.files_processed += 1
             try:
-                works, first, live = recording_works(row["acousticid_recording"])
+                works, first, live_on = recording_works(row["acousticid_recording"])
             except Unavailable as exc:
                 unavailable += 1
                 logger.debug("[mb-work] could not ask for %s: %s", row["file_path"], exc)
@@ -232,7 +269,7 @@ class MBWorkStage(BaseStage):
             ctx.conn.execute(
                 "UPDATE archive SET mb_work_ids = ?, mb_work_artist = ?, mb_live = ?, "
                 "mb_work_checked_at = ? WHERE id = ?",
-                (",".join(works), first, int(live),
+                (",".join(works), first, int(album_key(row["album"]) in live_on),
                  datetime.now(timezone.utc).isoformat(timespec="seconds"), row["id"]),
             )  # fmt: skip
             if n % _COMMIT_EVERY == 0:

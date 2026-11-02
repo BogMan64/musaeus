@@ -94,7 +94,8 @@ def ctx(tmp_path):
         fp = f"/l/{i}.m4a"
         upsert_archive(c.conn, {"file_path": fp, "status": "CATALOGUED", "title": title,
                                 "artist": "The Police", "codec": "alac", "audio_hash": f"h{i}",
-                                "duration": dur, "sample_rate": 44100})  # fmt: skip
+                                "duration": dur, "sample_rate": 44100,
+                                "album": "Live In Atlanta" if i == 1 else "Synchronicity"})  # fmt: skip
         c.conn.execute("UPDATE archive SET acousticid_recording = ? WHERE file_path = ?", (rec, fp))
     c.conn.commit()
     return c
@@ -102,8 +103,8 @@ def ctx(tmp_path):
 
 def test_the_stage_asks_stamps_and_stages_a_pending_work_group(ctx, monkeypatch):
     answers = {
-        "rec-studio": (["w1"], "The Police", False),
-        "rec-live": (["w1"], "The Police", True),
+        "rec-studio": (["w1"], "The Police", set()),
+        "rec-live": (["w1"], "The Police", {"live in atlanta"}),
     }
     monkeypatch.setattr(mw, "recording_works", lambda rec: answers[rec])
     monkeypatch.setattr(mw, "_MB_RATE_S", 0)
@@ -128,7 +129,7 @@ def test_the_stage_asks_stamps_and_stages_a_pending_work_group(ctx, monkeypatch)
 
 
 def test_a_second_run_stages_nothing_new(ctx, monkeypatch):
-    monkeypatch.setattr(mw, "recording_works", lambda rec: (["w1"], "The Police", False))
+    monkeypatch.setattr(mw, "recording_works", lambda rec: (["w1"], "The Police", set()))
     monkeypatch.setattr(mw, "_MB_RATE_S", 0)
     mw.MBWorkStage().execute(ctx)
     mw.MBWorkStage().execute(ctx)
@@ -212,56 +213,100 @@ def test_a_second_run_before_the_resolver_keeps_the_first_runs_link():
     assert mw.same_song_pairs(rows, {frozenset(("h1", "h2"))}) == []
 
 
-def _rel(*secondary):
-    return {"release-group": {"primary-type": "Album", "secondary-types": list(secondary)}}
+def _rel(title, *secondary):
+    return {
+        "title": title,
+        "release-group": {"primary-type": "Album", "secondary-types": list(secondary)},
+    }
+
+
+def test_a_live_mark_counts_only_on_the_copys_own_album():
+    """2026-11-01: AcoustID matched the studio "Smoke On The Water" (Machine Head) to a
+    live recording; its mark must not make the studio copy live."""
+    data = {
+        "disambiguation": "live, 1972-08-16: Osaka",
+        "releases": [_rel("Made in Japan", "Live")],
+    }
+
+    assert mw.album_key("Machine Head") not in mw.live_albums(data)
+    assert mw.album_key("Made In Japan (Remastered)") in mw.live_albums(data)
 
 
 @pytest.mark.parametrize(
-    ("releases", "live"),
+    ("releases", "album", "live"),
     [
-        ([_rel("Live")], True),  # "Before The Flood"
-        ([_rel("Live"), _rel("Compilation")], True),  # a hits set leaves it live
-        ([_rel("Live", "Compilation")], True),  # a live compilation
-        ([_rel("Live"), _rel()], False),  # also on a studio album
-        ([_rel("Live"), {"release-group": {"primary-type": "Single"}}], False),  # a studio single
-        ([_rel("Compilation")], False),  # nothing says live
-        ([_rel("Soundtrack")], False),
-        # A live single is live (CodeRabbit, review of #275, declined).
-        (
-            [
-                _rel("Live"),
-                {"release-group": {"primary-type": "Single", "secondary-types": ["Live"]}},
-            ],
-            True,
-        ),
-        ([], False),
+        ([_rel("Before the Flood", "Live")], "Before The Flood", True),
+        ([_rel("One More From the Road", "Live")], "One More From The Road (Deluxe Edition)", True),
+        ([_rel("Before the Flood", "Live"), _rel("Blonde on Blonde")], "Blonde On Blonde", False),
+        ([_rel("Greatest Hits", "Compilation")], "Greatest Hits", False),
+        ([_rel("Before the Flood", "Live")], None, False),
     ],
 )
-def test_a_recording_on_live_albums_only_is_live(releases, live):
+def test_a_release_typed_live_counts_for_its_own_album(releases, album, live):
     """Grey, 2026-11-01: MusicBrainz's "Live" album type counts as live ("make it a rule")."""
-    assert mw.on_live_albums_only(releases) is live
+    assert (mw.album_key(album) in mw.live_albums({"releases": releases})) is live
 
 
-def test_the_lookup_reads_the_live_albums(monkeypatch):
+def test_the_lookup_reads_the_releases(monkeypatch):
     data = {"disambiguation": "", "relations": [{"work": {"id": "w1"}}],
-            "artist-credit": [{"name": "Bob Dylan"}], "releases": [_rel("Live")]}  # fmt: skip
+            "artist-credit": [{"name": "Bob Dylan"}], "releases": [_rel("Before the Flood", "Live")]}  # fmt: skip
     asked: list[str] = []
     monkeypatch.setattr(mw, "_get_json", lambda url: asked.append(url) or data)
 
-    assert mw.recording_works("rec") == (["w1"], "Bob Dylan", True)
+    assert mw.recording_works("rec") == (["w1"], "Bob Dylan", {"before the flood"})
     # The releases come only if the lookup asks for them (CodeRabbit, review of #275).
     assert asked == ["https://musicbrainz.org/ws/2/recording/rec?fmt=json"
                      "&inc=artist-credits+work-rels+releases+release-groups"]  # fmt: skip
 
 
-def test_a_recording_on_more_releases_than_listed_is_not_judged_by_its_albums(monkeypatch):
-    """CodeRabbit, review of #275: MusicBrainz lists 25 releases; a studio one may be past them."""
-    data = {
-        "disambiguation": "",
-        "relations": [],
-        "artist-credit": [],
-        "releases": [_rel("Live")] * 25,
-    }
+def test_a_studio_copy_matched_to_a_live_recording_stays_studio(ctx, monkeypatch):
+    """2026-11-01: 204 copies were marked live, many studio ("Smoke On The Water",
+    "Band On The Run"), because AcoustID matched them to a live recording."""
+    data = {"disambiguation": "live, 1972-08-16: Osaka", "relations": [{"work": {"id": "w1"}}],
+            "artist-credit": [{"name": "The Police"}], "releases": [_rel("Made in Japan", "Live")]}  # fmt: skip
     monkeypatch.setattr(mw, "_get_json", lambda url: data)
+    monkeypatch.setattr(mw, "_MB_RATE_S", 0)
 
-    assert mw.recording_works("rec")[2] is False
+    mw.MBWorkStage().execute(ctx)
+
+    assert ctx.conn.execute("SELECT MAX(mb_live) FROM archive").fetchone()[0] == 0
+
+
+def test_a_live_album_past_the_listed_releases_still_counts(monkeypatch):
+    """CodeRabbit, review of #276: a lookup lists 25 releases; the rest are browsed."""
+    listed = [_rel(f"Hits {i}", "Compilation") for i in range(25)]
+    pages = {0: {"releases": listed[:20], "release-count": 26},
+             20: {"releases": [*listed[20:], _rel("Before the Flood", "Live")], "release-count": 26}}  # fmt: skip
+
+    def get(url):
+        if "/recording/" in url:
+            return {"disambiguation": "", "relations": [], "artist-credit": [], "releases": listed}
+        return pages[int(url.rsplit("offset=", 1)[1])]
+
+    monkeypatch.setattr(mw, "_get_json", get)
+    monkeypatch.setattr(mw, "_MB_RATE_S", 0)
+
+    assert mw.album_key("Before The Flood") in mw.recording_works("rec")[2]
+
+
+def test_an_apostrophe_inside_a_word_is_left_out():
+    assert mw.album_key("It's Alive") == mw.album_key("Its Alive") == "its alive"
+
+
+def test_a_live_bracket_stays_in_the_album_key():
+    """CodeRabbit, review of #276: "Greatest Hits (Live)" must not match a studio "Greatest Hits"."""
+    assert mw.album_key("Greatest Hits (Live)") != mw.album_key("Greatest Hits")
+    assert mw.album_key("The Last Waltz (Deluxe Version)") == mw.album_key("The Last Waltz")
+
+
+@pytest.mark.parametrize(
+    ("nested", "plain"),
+    [
+        ("Greatest Hits (Deluxe (Live))", "Greatest Hits (Live)"),
+        ("Greatest Hits (Live (Deluxe))", "Greatest Hits (Live)"),
+        ("Greatest Hits (Deluxe (Remastered))", "Greatest Hits"),
+    ],
+)
+def test_a_bracket_inside_a_bracket_is_peeled_too(nested, plain):
+    """CodeRabbit, review of #276: a live mark inside an edition bracket still counts."""
+    assert mw.album_key(nested) == mw.album_key(plain)
