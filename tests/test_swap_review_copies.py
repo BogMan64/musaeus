@@ -58,7 +58,7 @@ def vault(tmp_path, monkeypatch):
     )
     conn.execute(
         "CREATE TABLE duplicates (id INTEGER PRIMARY KEY, group_id TEXT, file_path TEXT, "
-        "status TEXT, audio_hash TEXT)"
+        "status TEXT, audio_hash TEXT, title TEXT, staged_at TEXT)"
     )
     on_disk: dict[str, str] = {}  # path -> the audio hash its file really carries
     monkeypatch.setattr(mod, "audio_hash_safe", lambda p: (on_disk.get(str(p)), None))
@@ -154,6 +154,35 @@ def test_a_master_a_person_kept_is_never_offered_for_a_swap(vault):
     losers: list[int] = []
     wins, tally = vault.mod.review_wins(vault.conn, losers)
     assert wins == [] and losers == [] and tally["kept by a person"] == 1
+
+
+def test_a_review_copy_a_person_rejected_is_never_offered_for_a_swap(vault):
+    """Marvin Gaye "My Name Is 'T' / End Credits" (25197, 2026-10-30): Grey's Oct 21
+    sheet sent this copy to review over the library's; it wins on quality, and the
+    tool offered to put it back. A person's choice stands: it is a loser instead."""
+    lib, rev, lib_path, rev_path = _lib_and_better_review(vault)
+    vault.conn.executemany(
+        "INSERT INTO duplicates (group_id, file_path, status, audio_hash, title, staged_at) "
+        "VALUES ('sheet_1', ?, ?, ?, 'Rosanna', '2026-10-21')",
+        [(str(lib_path), "keep", "L"), (str(rev_path), "archive", "R")],
+    )
+    vault.conn.commit()
+    losers: list[int] = []
+    wins, tally = vault.mod.review_wins(vault.conn, losers)
+    assert wins == [] and losers == [rev] and tally["rejected by a person"] == 1
+
+
+def test_a_later_person_keep_of_the_copy_lifts_the_rejection(vault):
+    lib, rev, lib_path, rev_path = _lib_and_better_review(vault)
+    vault.conn.executemany(
+        "INSERT INTO duplicates (group_id, file_path, status, audio_hash, title, staged_at) "
+        "VALUES (?, ?, ?, ?, 'Rosanna', ?)",
+        [("sheet_1", str(rev_path), "archive", "R", "2026-10-21"),
+         ("sheet_2", str(rev_path), "keep", "R", "2026-10-28")],
+    )  # fmt: skip
+    vault.conn.commit()
+    wins, _ = vault.mod.review_wins(vault.conn)
+    assert [p.review["id"] for p in wins] == [rev]
 
 
 def test_promote_dry_run_changes_nothing(vault):

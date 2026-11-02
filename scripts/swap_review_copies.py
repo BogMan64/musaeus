@@ -142,6 +142,22 @@ def library_copy(conn: sqlite3.Connection, review: sqlite3.Row) -> sqlite3.Row |
     ).fetchone()
 
 
+def rejected_by_person(conn: sqlite3.Connection, review: sqlite3.Row) -> bool:
+    """The latest person's decision about this copy's audio sent it to review.
+
+    Only a person's decision (a sheet's or the console's) stores titles, as the
+    resolver reads them (_held_by_person); a later keep of the same audio lifts it.
+    """
+    if not review["audio_hash"]:
+        return False
+    last = conn.execute(
+        "SELECT status FROM duplicates WHERE audio_hash = ? AND title IS NOT NULL "
+        "ORDER BY COALESCE(staged_at, '') DESC, id DESC LIMIT 1",
+        (review["audio_hash"],),
+    ).fetchone()
+    return last is not None and last[0] != "keep"
+
+
 def review_wins(
     conn: sqlite3.Connection, losers: list[int] | None = None
 ) -> tuple[list[Pair], collections.Counter]:
@@ -167,6 +183,13 @@ def review_wins(
         # never swapped, never deleted here -- 143 of 144 swaps listed 2026-10-25.
         if library["kept_by_person_at"]:
             tally["kept by a person"] += 1
+            continue
+        # A person sent this copy to review (Marvin Gaye 25197, Grey's Oct 21 sheet):
+        # their choice stands, so it is a loser, never a swap (2026-10-30).
+        if rejected_by_person(conn, review):
+            tally["rejected by a person"] += 1
+            if losers is not None:
+                losers.append(review["id"])
             continue
         by_song.setdefault(library["id"], (library, []))[1].append(review)
 
