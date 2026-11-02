@@ -297,3 +297,16 @@ def test_a_live_bracket_stays_in_the_album_key():
     """CodeRabbit, review of #276: "Greatest Hits (Live)" must not match a studio "Greatest Hits"."""
     assert mw.album_key("Greatest Hits (Live)") != mw.album_key("Greatest Hits")
     assert mw.album_key("The Last Waltz (Deluxe Version)") == mw.album_key("The Last Waltz")
+
+
+@pytest.mark.parametrize(
+    ("nested", "plain"),
+    [
+        ("Greatest Hits (Deluxe (Live))", "Greatest Hits (Live)"),
+        ("Greatest Hits (Live (Deluxe))", "Greatest Hits (Live)"),
+        ("Greatest Hits (Deluxe (Remastered))", "Greatest Hits"),
+    ],
+)
+def test_a_bracket_inside_a_bracket_is_peeled_too(nested, plain):
+    """CodeRabbit, review of #276: a live mark inside an edition bracket still counts."""
+    assert mw.album_key(nested) == mw.album_key(plain)

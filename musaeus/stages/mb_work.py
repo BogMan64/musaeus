@@ -34,7 +34,7 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from ..brackets import CLOSE, OPEN, strip_bracketed
+from ..brackets import CLOSE, OPEN, has_bracketed, strip_bracketed
 from ..context import RunContext, StageResult
 from .album_fill import Unavailable, _get_json
 from .base import BaseStage
@@ -101,8 +101,12 @@ def album_key(title: str | None) -> str:
     """An album title to compare by: "One More From the Road (Deluxe)" = "One More From The Road"."""
     # A bracket that says live stays: "Greatest Hits (Live)" is not "Greatest Hits";
     # "(Deluxe)" goes. "It's Alive" is "Its Alive" (CodeRabbit, review of #276).
-    kept = _LIVE_BRACKET_RE.sub(r" \1 ", title or "")
-    joined = re.sub(r"(?<=\w)['’](?=\w)", "", strip_bracketed(kept).casefold())
+    # Brackets inside brackets peel from the inside out: "(Deluxe (Live))" keeps "live".
+    text, live = title or "", []
+    while has_bracketed(text):
+        live += _LIVE_BRACKET_RE.findall(text)
+        text = strip_bracketed(text)
+    joined = re.sub(r"(?<=\w)['’](?=\w)", "", " ".join([text, *live]).casefold())
     return re.sub(r"[^\w]+", " ", joined).strip()
 
 
