@@ -58,7 +58,7 @@ def vault(tmp_path, monkeypatch):
     )
     conn.execute(
         "CREATE TABLE duplicates (id INTEGER PRIMARY KEY, group_id TEXT, file_path TEXT, "
-        "status TEXT, audio_hash TEXT, title TEXT, staged_at TEXT)"
+        "status TEXT, audio_hash TEXT, title TEXT, staged_at TEXT, decided_at TEXT)"
     )
     on_disk: dict[str, str] = {}  # path -> the audio hash its file really carries
     monkeypatch.setattr(mod, "audio_hash_safe", lambda p: (on_disk.get(str(p)), None))
@@ -179,6 +179,22 @@ def test_a_later_person_keep_of_the_copy_lifts_the_rejection(vault):
         "VALUES (?, ?, ?, ?, 'Rosanna', ?)",
         [("sheet_1", str(rev_path), "archive", "R", "2026-10-21"),
          ("sheet_2", str(rev_path), "keep", "R", "2026-10-28")],
+    )  # fmt: skip
+    vault.conn.commit()
+    wins, _ = vault.mod.review_wins(vault.conn)
+    assert [p.review["id"] for p in wins] == [rev]
+
+
+def test_the_latest_decision_is_the_one_made_last_not_the_set_found_last(vault):
+    """A console decision marks the rows Act 2 staged when it found the set
+    (CodeRabbit, review of #279): a keep made on Oct 30 in a set found on Oct 2
+    comes after a rejection made on Oct 21 in a set found on Oct 10."""
+    lib, rev, lib_path, rev_path = _lib_and_better_review(vault)
+    vault.conn.executemany(
+        "INSERT INTO duplicates (group_id, file_path, status, audio_hash, title, staged_at, "
+        "decided_at) VALUES (?, ?, ?, 'R', 'Rosanna', ?, ?)",
+        [("act2_1", str(rev_path), "keep", "2026-10-02", "2026-10-30"),
+         ("act2_2", str(rev_path), "archive", "2026-10-10", "2026-10-21")],
     )  # fmt: skip
     vault.conn.commit()
     wins, _ = vault.mod.review_wins(vault.conn)

@@ -110,10 +110,12 @@ def test_the_decision_keeps_each_copys_title(cfg, tmp_path):
     _run(cfg, _sheet(tmp_path, [("1", "KEEP", k, kp), ("1", "REMOVE?", r, rp)]), True)
     conn = open_db(cfg.db_path)
     got = conn.execute(
-        "SELECT status, title FROM duplicates WHERE duplicate_type = 'PERSON'"
+        "SELECT status, title, decided_at IS NOT NULL FROM duplicates "
+        "WHERE duplicate_type = 'PERSON'"
     ).fetchall()
     conn.close()
-    assert sorted(map(tuple, got)) == [("archive", "Song"), ("keep", "Song")]
+    # And when it was decided (review of #279).
+    assert sorted(map(tuple, got)) == [("archive", "Song", 1), ("keep", "Song", 1)]
 
 
 def test_the_resolver_leaves_a_carried_out_sheet_alone(cfg, tmp_path):
