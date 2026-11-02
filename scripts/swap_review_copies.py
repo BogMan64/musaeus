@@ -58,6 +58,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from musaeus.config import MusicConfig  # noqa: E402
+from musaeus.db import open_db  # noqa: E402
 from musaeus.hasher import audio_hash_safe  # noqa: E402
 from musaeus.keep_rule import decide, keep_key  # noqa: E402
 from musaeus.stages.dupe_resolver import (  # noqa: E402
@@ -142,6 +143,23 @@ def library_copy(conn: sqlite3.Connection, review: sqlite3.Row) -> sqlite3.Row |
     ).fetchone()
 
 
+def rejected_by_person(conn: sqlite3.Connection, review: sqlite3.Row) -> bool:
+    """The latest person's decision about this copy's audio sent it to review.
+
+    Only a person's decision (a sheet's or the console's) stores titles, as the
+    resolver reads them (_held_by_person); a later keep of the same audio lifts it.
+    """
+    if not review["audio_hash"]:
+        return False
+    last = conn.execute(
+        "SELECT status FROM duplicates WHERE audio_hash = ? AND title IS NOT NULL "
+        # By when it was decided; a sheet's own rows are staged at the decision.
+        "ORDER BY COALESCE(decided_at, staged_at, '') DESC, id DESC LIMIT 1",
+        (review["audio_hash"],),
+    ).fetchone()
+    return last is not None and last[0] != "keep"
+
+
 def review_wins(
     conn: sqlite3.Connection, losers: list[int] | None = None
 ) -> tuple[list[Pair], collections.Counter]:
@@ -167,6 +185,13 @@ def review_wins(
         # never swapped, never deleted here -- 143 of 144 swaps listed 2026-10-25.
         if library["kept_by_person_at"]:
             tally["kept by a person"] += 1
+            continue
+        # A person sent this copy to review (Marvin Gaye 25197, Grey's Oct 21 sheet):
+        # their choice stands, so it is a loser, never a swap (2026-10-30).
+        if rejected_by_person(conn, review):
+            tally["rejected by a person"] += 1
+            if losers is not None:
+                losers.append(review["id"])
             continue
         by_song.setdefault(library["id"], (library, []))[1].append(review)
 
@@ -382,8 +407,7 @@ def main() -> int:
         hold_for_process(exclusive=True, what="scripts/swap_review_copies.py")
 
     cfg = MusicConfig.from_env()
-    conn = sqlite3.connect(cfg.db_path)
-    conn.row_factory = sqlite3.Row
+    conn = open_db(cfg.db_path)  # with its columns added: decided_at (review of #279)
     conn.execute("PRAGMA busy_timeout = 60000")
     if args.write_losers:
         losers: list[int] = []
