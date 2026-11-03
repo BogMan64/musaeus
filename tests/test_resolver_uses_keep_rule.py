@@ -113,3 +113,18 @@ def test_a_full_tie_keeps_the_copy_catalogued_first():
     grey = _m("grey", id=20063, bitrate=900)
     download = _m("download", id=82234, bitrate=1_100)
     assert _keeper(download, grey) == "grey"
+
+
+def test_the_earlier_live_recording_is_kept():
+    """Grey, 2026-11-02: of two live recordings, the earlier; "Live At ..., 1981" names it."""
+    early = _m(
+        "early",
+        title="Song (Live At Central Park, September 19, 1981)",
+        codec="aac",
+        duration=250.0,
+    )
+    late = _m("late", title="Song (Live In Berlin/2010)", sample_rate=192000, duration=300.0)
+    assert _keeper(late, early) == "early"
+    # A third, undated live copy: the years say nothing, quality decides.
+    undated = _m("undated", title="Song (Live)", sample_rate=96000, duration=280.0)
+    assert _keeper(late, early, undated) == "late"

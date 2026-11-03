@@ -65,6 +65,7 @@ from musaeus.stages.dupe_resolver import (  # noqa: E402
     _is_arranged,
     _share_baked_mark,
     _share_live_take,
+    _share_live_year,
     _share_unknown_album,
     _share_version_label,
 )
@@ -219,6 +220,7 @@ def review_wins(
                     c["lufs_baked_at"] = rec[0]
         _share_baked_mark([lib, *copies])
         _share_live_take([lib, *copies])
+        _share_live_year([lib, *copies])
         _share_version_label([lib, *copies])
         _share_unknown_album([lib, *copies])
         # Ties keep catalogue order -- filed first, then the older row -- as the
@@ -299,7 +301,13 @@ def promote(conn: sqlite3.Connection, pairs: list[Pair], execute: bool) -> colle
         # An empty fact on the library copy keeps the copy's own: a download with no
         # album blanked the album of 16 put-back copies, which then read as "album
         # unknown" and lost to the same download again (2026-10-30).
-        sets = ", ".join(f"{f} = COALESCE(?, {f})" for f in FACTS)
+        # A copy chosen as another recording keeps its own album: the library's
+        # "Album (Live 1988)" is not the 1968 take's, nor a studio copy's
+        # (CodeRabbit, review of #282).
+        facts = [
+            f for f in FACTS if f != "album" or pair.step not in ("studio/live", "live/earlier")
+        ]
+        sets = ", ".join(f"{f} = COALESCE(?, {f})" for f in facts)
         conn.execute(
             f"UPDATE archive SET status='CATALOGUED', {sets}, canonicalized_at=NULL, "
             "finalized_at=NULL, "
@@ -311,7 +319,7 @@ def promote(conn: sqlite3.Connection, pairs: list[Pair], execute: bool) -> colle
             "b.lufs_baked_target FROM archive b WHERE b.audio_hash=archive.audio_hash "
             "AND b.lufs_baked_at != '' LIMIT 1)) "
             "WHERE id=? AND status='DUPE_REVIEW'",
-            (*(lib[f] if str(lib[f] or "").strip() else None for f in FACTS), r["id"]),
+            (*(lib[f] if str(lib[f] or "").strip() else None for f in facts), r["id"]),
         )
         conn.execute(
             "INSERT INTO events (run_id, ts, event_type, file_path, old_value, new_value, stage, note) "

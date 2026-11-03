@@ -414,9 +414,63 @@ def _mix_parts(label: str) -> list[str]:
     ]
 
 
+#: A year in a live label: "(Live 1968)", "(Live At Central Park ... September 19, 1981)".
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+
+def _recorded_year(m: dict) -> int | None:
+    """The year a live copy was recorded, from its own label that says live:
+    "Crossroads (Live 1968)" -> 1968. A label that also says remaster(ed) is not
+    read: its year may be the remaster's ("(Live / Remastered 2009)"). Read whole,
+    nested brackets in it: "(Live 2009 (Remastered))" (CodeRabbit, review of #282)."""
+    for text in (m.get("title") or "", m.get("album") or ""):
+        outside = text
+        while _bracket_labels(outside):
+            outside = _outside(outside)
+        for label in _outer_labels(text) + outside.split(" - ")[1:]:
+            if _LIVE_RE.search(label) and not re.search(r"remaster", label, re.IGNORECASE):
+                years = [int(y) for y in _YEAR_RE.findall(label)]
+                if years:
+                    return min(years)
+    return None
+
+
+def _share_live_year(members: list[dict]) -> None:
+    """Grey, 2026-11-02 (Strawberry's rule of 10-29, "Crossroads 1968 over 1988"):
+    of two live recordings, the earlier is kept. Marked only when every live
+    member names its year and the years differ: one undated take may be the
+    earliest. Set by the whole group first (swap tool): a pair's own comparison
+    keeps it, as _share_unknown_album does (CodeRabbit, review of #263)."""
+    if members and all("live_year" in m for m in members):
+        return
+    live = [m for m in members if _is_live(m)]
+    years = [_recorded_year(m) for m in live]
+    marked = len(live) >= 2 and all(years) and len(set(years)) > 1
+    for m in members:
+        m["live_year"] = None
+    if marked:
+        for m, year in zip(live, years, strict=True):
+            m["live_year"] = year
+
+
 def _bracket_labels(text: str) -> list[str]:
     """What each innermost bracket holds: "(Single Version) (Mono)" -> both."""
     return re.findall(rf"[{OPEN}]([^{OPEN}{CLOSE}]*)[{CLOSE}]", text)
+
+
+def _outer_labels(text: str) -> list[str]:
+    """What each outermost bracket holds, nested brackets kept:
+    "(Live 2009 (Remastered))" -> ["Live 2009 (Remastered)"]."""
+    labels, depth, start = [], 0, 0
+    for i, ch in enumerate(text):
+        if re.fullmatch(rf"[{OPEN}]", ch):
+            start = start if depth else i + 1
+            depth += 1
+        elif re.fullmatch(rf"[{CLOSE}]", ch) and depth:
+            depth -= 1
+            if not depth:
+                labels.append(text[start:i])
+    return labels
 
 
 def _outside(text: str) -> str:
@@ -672,7 +726,9 @@ def _rank(members: list[dict]) -> None:
         m.pop("lower_version", None)
         m.pop("new_mix", None)
         m.pop("era_as", None)
+        m.pop("live_year", None)
     _share_live_take(members)
+    _share_live_year(members)
     _share_version_label(members)
     _share_unknown_album(members)
     members.sort(key=_keeper_sort_key)
