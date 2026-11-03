@@ -248,16 +248,17 @@ _KIND_RES = tuple((re.compile("|".join(forms)), m, f) for forms, m, f in PROBLEM
 #: Sentinel's line is "audio does not decode cleanly: <file name>: <what the
 #: decoder said>"; only the decoder's words say whether the machine failed.
 _SENTINEL_LINE = re.compile(
-    r"^audio does not decode cleanly: .*?\.(?:flac|m4a|mp3|wav|aiff?|ogg|opus|wma|ape|wv|aac|mp4): (.*)$",
+    r"^audio does not decode cleanly: (.*?\.(?:flac|alac|m4a|mp3|wav|aiff?|ogg|opus|wma|ape|wv|aac|mp4)): (.*)$",
     re.IGNORECASE | re.DOTALL,
 )
 
 
 def _decoder_said(line: str) -> str:
     """What the decoder said, without the file name (a file named "Permission
-    Denied.flac" is not a machine failure; Codex review of #261, round 4)."""
+    Denied.flac" is not a machine failure; Codex review of #261, round 4) --
+    also where the decoder's words name it again (CodeRabbit, review of #280)."""
     m = _SENTINEL_LINE.match(line.strip())
-    return m.group(1) if m else line
+    return m.group(2).replace(m.group(1), "<file>") if m else line
 
 
 def explain(errors: list[str], known_only: bool = False) -> list[tuple[str, str, int]]:

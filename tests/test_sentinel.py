@@ -682,8 +682,8 @@ class TestAFlakyMountDoesNotBookAPurchase:
             "streams": [{"codec_type": "audio", "codec_name": "alac"}],
         }
 
-    def _run(self, ctx, tmp_path, err):
-        f = tmp_path / "INBOX" / "Journey - Keep on Runnin.m4a"
+    def _run(self, ctx, tmp_path, err, name="Journey - Keep on Runnin.m4a"):
+        f = tmp_path / "INBOX" / name
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(b"x")
         _insert_pending(ctx, str(f))
@@ -729,3 +729,9 @@ class TestAFlakyMountDoesNotBookAPurchase:
             f"a file ffmpeg refused to decode is the whole point of the list. err={err!r}"
         )
         assert "Keep on Runnin" in csv_path.read_text(encoding="utf-8")
+
+    def test_a_file_named_like_a_machine_error_still_lists(self, ctx, tmp_path):
+        """The hasher's error names the file's path (CodeRabbit, review of #280)."""
+        f = tmp_path / "INBOX" / "Permission Denied.m4a"
+        csv_path = self._run(ctx, tmp_path, f"ffmpeg exited 1 for {f}: invalid residual", f.name)
+        assert csv_path.exists(), "a damaged file is listed whatever it is called"

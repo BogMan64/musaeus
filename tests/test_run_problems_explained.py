@@ -301,10 +301,19 @@ def test_a_stage_with_errors_and_damaged_notes_explains_both(tmp_path: Path) -> 
 # Codex review of #261, round 4.
 
 
-def test_a_file_named_like_a_machine_error_is_still_damaged() -> None:
-    [(meaning, _, _)] = explain(
-        ["audio does not decode cleanly: Permission Denied.flac: invalid residual"]
-    )
+@pytest.mark.parametrize(
+    "line",
+    [
+        "audio does not decode cleanly: Permission Denied.flac: invalid residual",
+        # CodeRabbit, review of #280: an .alac name, and the hasher's words
+        # naming the file's path again.
+        "audio does not decode cleanly: Permission Denied.alac: invalid residual",
+        "audio does not decode cleanly: Permission Denied.flac: "
+        "ffmpeg exited 1 for /INBOX/Permission Denied.flac: invalid residual",
+    ],
+)
+def test_a_file_named_like_a_machine_error_is_still_damaged(line: str) -> None:
+    [(meaning, _, _)] = explain([line])
     assert meaning == _MEANING["damaged"]
 
 
