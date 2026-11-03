@@ -341,7 +341,8 @@ def bake_command(source: Path, output: Path, loudnorm: str, info: dict) -> list[
         cmd += ["-map", "0:v:0", *audio, "-c:v", "copy", "-disposition:v:0", "attached_pic"]
     else:
         cmd += audio
-    return [*cmd, "-map_metadata", "0", "-f", "mp4", str(output)]
+    # Apple M4A label: PerfectTUNES calls an `isom` file "Corrupted" (2026-11-03).
+    return [*cmd, "-map_metadata", "0", "-brand", "M4A ", "-f", "mp4", str(output)]
 
 
 def parse_achieved(stderr: str) -> float | None:

@@ -56,6 +56,12 @@ def test_a_bake_lands_at_minus_18_and_keeps_the_masters_rate_and_depth(tmp_path)
     assert eb.sample_fmt_for(info) == "s16p", "a 16-bit master must not become a 24-bit copy"
 
 
+def test_the_copy_is_labelled_as_an_apple_m4a(tmp_path):
+    out = tmp_path / "c.m4a"
+    eb.bake(_master(tmp_path / "m.m4a"), out)
+    assert out.read_bytes()[8:12] == b"M4A ", "an isom label reads as corrupted in PerfectTUNES"
+
+
 def test_the_copy_keeps_the_masters_tags_but_never_its_gain(tmp_path):
     master = _master(tmp_path / "m.m4a")
     _tag(
