@@ -510,6 +510,22 @@ def test_a_remaster_year_is_no_recording_year():
     assert decide(remastered, dated) == ("review", "format")
 
 
+@pytest.mark.parametrize(
+    "title", ["Song (Live 2009 (Remastered))", "Song [Live 2009 (2019 Remaster)]"]
+)
+def test_a_remaster_inside_the_live_label_reads_no_year(title):
+    # The whole label counts, nested brackets in it (CodeRabbit, review of #282).
+    remastered = c(title=title, duration=250.0)
+    dated = c(title="Song (Live 1975)", codec="aac", duration=300.0)
+    assert decide(remastered, dated) == ("review", "format")
+
+
+def test_a_year_beside_a_nested_label_is_still_read():
+    early = c(title="Crossroads (Live 1968 (Mono))", codec="aac", duration=250.0)
+    late = c(title="Crossroads (Live 1988)", sample_rate=192000, duration=300.0)
+    assert decide(early, late) == ("review", "live/earlier")
+
+
 def test_a_studio_copy_still_beats_the_earliest_live_one():
     # Its own length: a copy at a live copy's length is that live take (#248).
     assert decide(c(codec="aac", duration=210.0), c(title="Song (Live 1968)")) == (

@@ -232,6 +232,32 @@ def test_promote_hands_the_copy_to_act_3_with_the_masters_filing_facts(vault):
     )
 
 
+@pytest.mark.parametrize(
+    "lib_album, rev_title, rev_album, step",
+    [
+        ("Live (Live 1988)", "Rosanna (Live)", "Live (Live 1968)", "live/earlier"),
+        ("Live In Tokyo", "Rosanna", "Toto IV", "studio/live"),
+    ],
+)
+def test_a_copy_chosen_as_another_recording_keeps_its_own_album(
+    vault, lib_album, rev_title, rev_album, step
+):
+    """The library's "Album (Live 1988)" is not the 1968 take's, nor a studio
+    copy's; a later run would read it as theirs (CodeRabbit, review of #282)."""
+    lib_path = vault.masters / "Rock/Toto/Live/Toto - Rosanna.m4a"
+    vault.row(lib_path, "CATALOGUED", "L", title="Rosanna (Live)", album=lib_album)
+    rev_path = vault.review_dir / "Toto/My playlist/Toto - Rosanna.m4a"
+    rev = vault.row(
+        rev_path, "DUPE_REVIEW", "R", title=rev_title, album=rev_album, codec="aac", duration=300.0
+    )
+    vault.set_aside(rev_path, lib_path)
+    [pair] = vault.mod.review_wins(vault.conn)[0]
+    assert pair.step == step
+    vault.mod.promote(vault.conn, [pair], execute=True)
+    album = vault.conn.execute("SELECT album FROM archive WHERE id=?", (rev,)).fetchone()[0]
+    assert album == rev_album
+
+
 def test_a_review_copy_whose_audio_changed_is_refused(vault):
     _, rev, _, rev_path = _lib_and_better_review(vault)
     vault.on_disk[str(rev_path)] = "SOMETHING ELSE"

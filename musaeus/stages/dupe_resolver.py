@@ -421,14 +421,13 @@ _YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 def _recorded_year(m: dict) -> int | None:
     """The year a live copy was recorded, from its own label that says live:
     "Crossroads (Live 1968)" -> 1968. A label that also says remaster(ed) is not
-    read: its year may be the remaster's ("(Live / Remastered 2009)")."""
+    read: its year may be the remaster's ("(Live / Remastered 2009)"). Read whole,
+    nested brackets in it: "(Live 2009 (Remastered))" (CodeRabbit, review of #282)."""
     for text in (m.get("title") or "", m.get("album") or ""):
-        labels: list[str] = []
-        while inner := _bracket_labels(text):
-            labels += inner
-            text = _outside(text)
-        labels += text.split(" - ")[1:]
-        for label in labels:
+        outside = text
+        while _bracket_labels(outside):
+            outside = _outside(outside)
+        for label in _outer_labels(text) + outside.split(" - ")[1:]:
             if _LIVE_RE.search(label) and not re.search(r"remaster", label, re.IGNORECASE):
                 years = [int(y) for y in _YEAR_RE.findall(label)]
                 if years:
@@ -457,6 +456,21 @@ def _share_live_year(members: list[dict]) -> None:
 def _bracket_labels(text: str) -> list[str]:
     """What each innermost bracket holds: "(Single Version) (Mono)" -> both."""
     return re.findall(rf"[{OPEN}]([^{OPEN}{CLOSE}]*)[{CLOSE}]", text)
+
+
+def _outer_labels(text: str) -> list[str]:
+    """What each outermost bracket holds, nested brackets kept:
+    "(Live 2009 (Remastered))" -> ["Live 2009 (Remastered)"]."""
+    labels, depth, start = [], 0, 0
+    for i, ch in enumerate(text):
+        if re.fullmatch(rf"[{OPEN}]", ch):
+            start = start if depth else i + 1
+            depth += 1
+        elif re.fullmatch(rf"[{CLOSE}]", ch) and depth:
+            depth -= 1
+            if not depth:
+                labels.append(text[start:i])
+    return labels
 
 
 def _outside(text: str) -> str:
