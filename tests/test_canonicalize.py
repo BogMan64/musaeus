@@ -232,6 +232,9 @@ class TestConvert:
         assert new_path.exists()
         assert not path.exists()  # original .flac gone
         assert _probe_codec(new_path) == "alac"
+        assert new_path.read_bytes()[8:12] == b"M4A ", (
+            "an isom label reads as corrupted in PerfectTUNES"
+        )
 
     def test_duration_preserved(self, ctx):
         path = ctx.inbox / "source.flac"
@@ -281,6 +284,9 @@ class TestTranscode:
         assert new_path.exists()
         assert not path.exists()
         assert _probe_codec(new_path) == "aac"
+        assert new_path.read_bytes()[8:12] == b"M4A ", (
+            "an isom label reads as corrupted in PerfectTUNES"
+        )
 
     def test_transcode_logged_to_tunemymusic_csv(self, ctx):
         path = ctx.inbox / "source.mp3"
