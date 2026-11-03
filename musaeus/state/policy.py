@@ -24,7 +24,7 @@ from typing import Final
 # Path itself is inert, but keeping it as a string makes it visibly a
 # recorded policy value rather than something a caller can casually
 # .mkdir() or .exists() on by reflex.
-# Grey's ruling (2026-10-21): /home/grey/Projects/MUSAEUS_RECOVERY, as first
+# Grey's ruling (2026-10-21): ~/Projects/MUSAEUS_RECOVERY on this machine, as first
 # recorded. Under each user's home, so the Debian package works for others.
 FUTURE_RECOVERY_ROOT: Final[str] = str(Path.home() / "Projects" / "MUSAEUS_RECOVERY")
 

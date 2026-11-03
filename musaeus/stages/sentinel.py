@@ -212,7 +212,10 @@ def _want_replacement(ctx, path: Path, err: str) -> str | None:
         # service, which is the only thing this list is for.
         return None
 
-    if _is_environmental(err):
+    # The file's own path taken out, as corrupt.py does: the hasher's error
+    # names it, and a file NAMED "Permission Denied.m4a" is not the machine's
+    # failure (CodeRabbit, review of #280).
+    if _is_environmental(err.replace(str(path), "<file>")):
         # Leave the row alone: it stays unhashed and the next run retries it.
         logger.warning(
             "[sentinel] %s failed to decode, but the error looks environmental "

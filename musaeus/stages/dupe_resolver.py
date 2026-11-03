@@ -1394,9 +1394,11 @@ class DupeResolverStage(BaseStage):
         # Each copy's title, stored with the person's decision: a later copy of
         # the version they rejected never replaces their choice, even once review
         # is cleared (Grey, 2026-10-25; Codex review of #239, round 5) -- a copy
-        # whose move failed included: it is still rejected (round 7).
+        # whose move failed included: it is still rejected (round 7). And when it
+        # was decided: staged_at is when the set was found (review of #279).
         ctx.conn.executemany(
-            f"UPDATE duplicates SET title = ? WHERE group_id IN ({','.join('?' * len(groups))}) "
+            "UPDATE duplicates SET title = ?, decided_at = datetime('now') "
+            f"WHERE group_id IN ({','.join('?' * len(groups))}) "
             "AND file_path = ?",
             [(by_path[p].get("title"), *groups, p) for p in chosen],
         )

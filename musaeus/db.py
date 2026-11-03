@@ -186,6 +186,10 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # decisions are filled once, from that copy: at the decision's path or where
     # it was moved for review, and with its audio.
     ("duplicates", "title", "TEXT"),
+    # When a person's decision was carried out. A console decision marks the rows
+    # Act 2 staged when it found the set, so staged_at is not the decision's time
+    # (CodeRabbit, review of #279). Empty for older decisions.
+    ("duplicates", "decided_at", "TEXT"),
     # An album a song ARRIVED with, checked with MusicBrainz by album-fill
     # (Grey, 2026-10-23). Added here, when the catalogue is opened and before
     # any intake, so the albums already there can be told from arrivals: they
