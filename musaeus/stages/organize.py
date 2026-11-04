@@ -535,6 +535,8 @@ def unmatched_person_acts(
         f"SELECT artist, {mb}, genre, album, title, file_path, audio_hash FROM archive "
         "WHERE status = 'CATALOGUED' AND artist IS NOT NULL AND title IS NOT NULL"
     ):
+        if not Path(path).exists():  # moves nothing (CodeRabbit, review of #284)
+            continue
         rel = library_relpath(
             artist, mb_name, genre, album, title, Path(path).suffix, filing, audio_hash
         )

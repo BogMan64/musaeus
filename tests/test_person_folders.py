@@ -397,3 +397,26 @@ def test_the_curator_export_keeps_the_person_level(f):
     row = {"artist": "Wings", "album": "Band On The Run", "title": "Jet", "file_path": "/m/x.m4a"}
     parts = _dest_path(Path("/export"), row, filing=f).relative_to("/export").parts
     assert parts[:3] == ("Paul McCartney", "Wings", "Band On The Run")
+
+
+@pytest.mark.parametrize("case", ["the near act is listed too", "the near act's file is gone"])
+def test_a_name_near_an_act_that_files_nothing_new_only_warns(tmp_path, case):
+    # CodeRabbit, review of #284: a listed act is meant as written, and a row
+    # whose file is gone moves nothing, so neither makes a near name a typo.
+    from musaeus.stages.organize import OrganizeStage
+
+    persons = "Bob Seger\tBob Seger\tRock\nBob Segre & The Silver Bullet Band\tBob Seger\n"
+    if case == "the near act is listed too":
+        persons += "Bob Seger & The Silver Bullet Band\tBob Seger\n"
+    ctx, (_, band) = _person_ctx(
+        tmp_path,
+        persons,
+        [("Bob Seger", "Turn The Page"), ("Bob Seger & The Silver Bullet Band", "Night Moves")],
+    )
+    if case == "the near act's file is gone":
+        band.unlink()
+
+    result = OrganizeStage().dry_run(ctx)
+
+    assert any("Bob Segre & The Silver Bullet Band" in n for n in result.notes), "not named"
+    assert not [e for e in result.errors if "typo" in e], result.errors
