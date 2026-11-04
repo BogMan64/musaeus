@@ -41,7 +41,7 @@ import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..artist_form import comparison_key
+from ..artist_form import act_key, comparison_key
 from ..brackets import strip_bracketed
 from ..context import RunContext, StageResult, elision
 from ..wanted_list import strip_label_suffix, wanted_lines
@@ -107,13 +107,16 @@ _WORD_RE = re.compile(r"[^\W\d_]{2,}")
 _CLASSICAL_RE = re.compile(
     r"\b(?:act|scene|op\.|bwv|hwv|rv|k\.|z\.?)\s*(?:\d|[ivx]+\b)", re.IGNORECASE
 )
+# One song each (Grey's test vault, 2026-11-04): "Jesus in 3/4 Time" (a time
+# signature) and "What Goes Around.../...Comes Around" (one line carried on).
+_NOT_A_JOIN_RE = re.compile(r"(?<=\d)/(?=\d)|(?<=[.\u2026])\s*/|/(?=\s*[.\u2026])")
 
 
 def is_medley(title: str) -> bool:
     """True for a medley title (see _MEDLEY_RE above)."""
     t = title or ""
     # "Song - Live/Edit" is a label, not two songs (CodeRabbit, review of #271).
-    parts = strip_label_suffix(strip_bracketed(t)).split("/")
+    parts = _NOT_A_JOIN_RE.sub(" ", strip_label_suffix(strip_bracketed(t))).split("/")
     joined = len(parts) > 1 and all(_WORD_RE.search(p) for p in parts)
     return bool(_MEDLEY_RE.search(t) or (joined and not _CLASSICAL_RE.search(t)))
 
@@ -257,6 +260,33 @@ def is_junk(artist: str, title: str, album: str, *, known_artist: bool = False) 
     return False, ""
 
 
+#: Songs Grey put back from REVIEW/TRIBUTE_REMOVED (artist TAB title): never
+#: set aside again. "Scarborough Fair / Canticle", hand-kept on 2026-10-31,
+#: was caught again as a medley when its Streamrip copy arrived (2026-11-04).
+KEEP_FILENAME = "tribute_keep.tsv"
+
+
+def _song_key(artist: str, title: str) -> tuple[str, str]:
+    """One song across spellings: "Scarborough Fair / Canticle" is "...Fair/Canticle"."""
+    return act_key(artist or ""), act_key(strip_bracketed(title or ""))
+
+
+def _kept_songs(meta_dir: Path | None) -> set[tuple[str, str]]:
+    """MetaData/tribute_keep.tsv by _song_key; empty when there is no list."""
+    if meta_dir is None or not (path := Path(meta_dir) / KEEP_FILENAME).is_file():
+        return set()
+    kept = set()
+    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if len(fields) < 2 or not fields[1].strip():
+            logger.warning("%s line %d: want artist TAB title, skipped: %r", KEEP_FILENAME, n, line)
+            continue
+        kept.add(_song_key(fields[0], fields[1]))
+    return kept
+
+
 def _library_artists(conn) -> set[str]:  # type: ignore[no-untyped-def]
     """Artists the library already holds (filed masters), by comparison key."""
     rows = conn.execute(
@@ -294,7 +324,10 @@ class TributeQuarantineStage(BaseStage):
         missing = 0
         # The stage's own rule, known artists included (#231).
         known = _library_artists(conn)
+        kept = _kept_songs(cfg.meta_dir)
         for row in rows:
+            if _song_key(row["artist"], row["title"]) in kept:
+                continue
             matched, reason = is_junk(
                 row["artist"] or "",
                 row["title"] or "",
@@ -520,9 +553,12 @@ class TributeQuarantineStage(BaseStage):
         result = self._make_result(dry_run=False)
         candidates = self._get_candidates(ctx)
         known = _library_artists(ctx.conn)
+        kept = _kept_songs(ctx.config.meta_dir)
 
         matches: list[tuple[dict, str]] = []
         for row in candidates:
+            if _song_key(row.get("artist") or "", row.get("title") or "") in kept:
+                continue
             matched, reason = is_junk(
                 row.get("artist") or "",
                 row.get("title") or "",
@@ -632,9 +668,12 @@ class TributeQuarantineStage(BaseStage):
         result = self._make_result(dry_run=True)
         candidates = self._get_candidates(ctx)
         known = _library_artists(ctx.conn)
+        kept = _kept_songs(ctx.config.meta_dir)
 
         matches = []
         for row in candidates:
+            if _song_key(row.get("artist") or "", row.get("title") or "") in kept:
+                continue
             matched, reason = is_junk(
                 row.get("artist") or "",
                 row.get("title") or "",
