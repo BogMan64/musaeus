@@ -435,6 +435,7 @@ def test_the_stage_leaves_a_library_artists_compilation_track_alone(ctx: RunCont
         "Your Move / All Good People",
         "Tennessee Whiskey / I'd Rather Go Blind",
         "Cape Breton Medley",
+        "Song. / Another Song",  # a period is not an ellipsis (CodeRabbit, #285)
     ],
 )
 def test_a_medley_is_set_aside(title):
@@ -452,6 +453,10 @@ def test_a_medley_is_set_aside(title):
         "24/7",
         'Purcell: Dido And Aeneas / Act 3: "Thy Hand, Belinda...When I Am Laid In Earth"',
         'Handel: Rinaldo, HWV 7a / Act 2: "Lascia Ch\'io Pianga"',
+        # Grey's Streamrip test vault, 2026-11-04: one song each.
+        "Jesus in 3/4 Time",
+        "What Goes Around.../...Comes Around (Interlude)",
+        "What Goes Around… / …Comes Around",
     ],
 )
 def test_a_label_a_number_or_an_opera_act_is_not_a_medley(title):
@@ -508,3 +513,36 @@ def test_a_song_named_with_a_label_word_stays_in_its_medley(title):
     from musaeus.wanted_list import medley_songs
 
     assert medley_songs(title) == ["Live And Let Die", "Band On The Run"]
+
+
+def test_a_song_grey_put_back_is_never_set_aside_again(ctx: RunContext, cfg) -> None:
+    # 2026-11-04: Grey hand-kept "Scarborough Fair / Canticle" on 10-31, and its
+    # Streamrip copy was set aside as a medley in the test vault.
+    (cfg.meta_dir / "tribute_keep.tsv").write_text(
+        "# artist TAB title\nSimon & Garfunkel\tScarborough Fair / Canticle\n", encoding="utf-8"
+    )
+    kept = _make_row(ctx, "in/sf.m4a", "Simon & Garfunkel", "Scarborough Fair/Canticle")
+    medley = _make_row(ctx, "in/km.m4a", "Simon & Garfunkel", "Kodachrome / Maybellene")
+
+    actions, _ = TributeQuarantineStage.plan_actions(ctx.conn, cfg)
+    assert [a["source"] for a in actions] == [str(medley)], "the plan ignores the keep list"
+    TributeQuarantineStage().run(ctx)
+    assert kept.exists(), "a song Grey put back was set aside again"
+    assert not medley.exists(), "the keep list let an unlisted medley through"
+
+
+@pytest.mark.parametrize(
+    "entry, artist, title",
+    [
+        # CodeRabbit, review of #285: an all-non-Latin entry once keyed ("", "").
+        ("\u5742\u672c\u9f8d\u4e00\t\u5343\u306e\u30ca\u30a4\u30d5", "\u5b87\u591a\u7530\u30d2\u30ab\u30eb",
+         "\u685c\u6d41\u3057 / \u521d\u604b"),
+        # ... and a line with no artist matched an arrival with none.
+        ("\tKodachrome / Maybellene", "", "Kodachrome / Maybellene"),
+    ],
+)  # fmt: skip
+def test_a_keep_line_keeps_only_its_own_song(ctx: RunContext, cfg, entry, artist, title) -> None:
+    (cfg.meta_dir / "tribute_keep.tsv").write_text(entry + "\n", encoding="utf-8")
+    medley = _make_row(ctx, "in/m.m4a", artist, title)
+    TributeQuarantineStage().run(ctx)
+    assert not medley.exists(), "a keep line let a different song through"
