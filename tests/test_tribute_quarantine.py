@@ -435,6 +435,7 @@ def test_the_stage_leaves_a_library_artists_compilation_track_alone(ctx: RunCont
         "Your Move / All Good People",
         "Tennessee Whiskey / I'd Rather Go Blind",
         "Cape Breton Medley",
+        "Song. / Another Song",  # a period is not an ellipsis (CodeRabbit, #285)
     ],
 )
 def test_a_medley_is_set_aside(title):
@@ -528,3 +529,20 @@ def test_a_song_grey_put_back_is_never_set_aside_again(ctx: RunContext, cfg) -> 
     TributeQuarantineStage().run(ctx)
     assert kept.exists(), "a song Grey put back was set aside again"
     assert not medley.exists(), "the keep list let an unlisted medley through"
+
+
+@pytest.mark.parametrize(
+    "entry, artist, title",
+    [
+        # CodeRabbit, review of #285: an all-non-Latin entry once keyed ("", "").
+        ("\u5742\u672c\u9f8d\u4e00\t\u5343\u306e\u30ca\u30a4\u30d5", "\u5b87\u591a\u7530\u30d2\u30ab\u30eb",
+         "\u685c\u6d41\u3057 / \u521d\u604b"),
+        # ... and a line with no artist matched an arrival with none.
+        ("\tKodachrome / Maybellene", "", "Kodachrome / Maybellene"),
+    ],
+)  # fmt: skip
+def test_a_keep_line_keeps_only_its_own_song(ctx: RunContext, cfg, entry, artist, title) -> None:
+    (cfg.meta_dir / "tribute_keep.tsv").write_text(entry + "\n", encoding="utf-8")
+    medley = _make_row(ctx, "in/m.m4a", artist, title)
+    TributeQuarantineStage().run(ctx)
+    assert not medley.exists(), "a keep line let a different song through"

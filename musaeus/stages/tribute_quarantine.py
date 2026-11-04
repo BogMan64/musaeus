@@ -38,10 +38,11 @@ import shlex
 import shutil
 import sqlite3
 import stat
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..artist_form import act_key, comparison_key
+from ..artist_form import comparison_key
 from ..brackets import strip_bracketed
 from ..context import RunContext, StageResult, elision
 from ..wanted_list import strip_label_suffix, wanted_lines
@@ -109,7 +110,9 @@ _CLASSICAL_RE = re.compile(
 )
 # One song each (Grey's test vault, 2026-11-04): "Jesus in 3/4 Time" (a time
 # signature) and "What Goes Around.../...Comes Around" (one line carried on).
-_NOT_A_JOIN_RE = re.compile(r"(?<=\d)/(?=\d)|(?<=[.\u2026])\s*/|/(?=\s*[.\u2026])")
+_NOT_A_JOIN_RE = re.compile(
+    r"(?<=\d)/(?=\d)|(?:(?<=\.\.\.)|(?<=\u2026))\s*/|/(?=\s*(?:\.\.\.|\u2026))"
+)
 
 
 def is_medley(title: str) -> bool:
@@ -266,9 +269,17 @@ def is_junk(artist: str, title: str, album: str, *, known_artist: bool = False) 
 KEEP_FILENAME = "tribute_keep.tsv"
 
 
+def _keep_key(text: str) -> str:
+    """act_key that keeps non-Latin letters: act_key keys "坂本龍一" to ""
+    (CodeRabbit, review of #285), and two such songs would share a key."""
+    n = unicodedata.normalize("NFKD", comparison_key(text or ""))
+    n = re.sub(r"\s*[&+]\s*", " and ", "".join(c for c in n if not unicodedata.combining(c)))
+    return re.sub(r"[\W_]", "", n.casefold())
+
+
 def _song_key(artist: str, title: str) -> tuple[str, str]:
     """One song across spellings: "Scarborough Fair / Canticle" is "...Fair/Canticle"."""
-    return act_key(artist or ""), act_key(strip_bracketed(title or ""))
+    return _keep_key(artist), _keep_key(strip_bracketed(title or ""))
 
 
 def _kept_songs(meta_dir: Path | None) -> set[tuple[str, str]]:
@@ -280,7 +291,7 @@ def _kept_songs(meta_dir: Path | None) -> set[tuple[str, str]]:
         if not line.strip() or line.startswith("#"):
             continue
         fields = line.split("\t")
-        if len(fields) < 2 or not fields[1].strip():
+        if len(fields) < 2 or not fields[0].strip() or not fields[1].strip():
             logger.warning("%s line %d: want artist TAB title, skipped: %r", KEEP_FILENAME, n, line)
             continue
         kept.add(_song_key(fields[0], fields[1]))
