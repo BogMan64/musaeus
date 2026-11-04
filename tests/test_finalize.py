@@ -833,9 +833,12 @@ def test_a_misspelled_act_in_the_person_list_stops_finalize_before_it_moves(ctx,
         encoding="utf-8",
     )
     song = _make_canonicalized_track(ctx, "in/ttp.m4a", "Bob Seger", "Live", "Turn The Page")
+    band = _make_canonicalized_track(
+        ctx, "in/nm.m4a", "Bob Seger & The Silver Bullet Band", "Live", "Night Moves"
+    )
 
     result = FinalizeStage().run(ctx)
 
     assert not result.success
     assert any("Bob Segre & The Silver Bullet Band" in n for n in result.notes)
-    assert song.exists(), "Finalize moved a song while the list named an unknown act"
+    assert song.exists() and band.exists(), "Finalize moved a song while the list had a typo"

@@ -503,53 +503,78 @@ _PATH_COLUMNS = (
 _AND_WORD = re.compile(r"\s+and\s+", re.I)
 
 
-def unmatched_person_acts(conn: sqlite3.Connection, filing: dict[str, str] | None) -> list[str]:
-    """Acts in MetaData/person_folders.tsv that no catalogued song files under.
+#: How close a listed act must come to an act that HAS songs to be read as its
+#: typo. "Bob Segre & The Silver Bullet Band" scores 97 against the real band;
+#: two real acts score lower ("Miles Davis Quintet" vs the Quartet: 88).
+_TYPO_SCORE = 92.0
 
-    Most likely a typo: that act's songs would stay flat while the person's
-    other acts nest. Organize and Finalize both ask before moving anything
-    (Codex review of #208): Finalize runs first and files by the same rule.
+
+def unmatched_person_acts(
+    conn: sqlite3.Connection, filing: dict[str, str] | None
+) -> dict[str, str]:
+    """Acts in MetaData/person_folders.tsv that no catalogued song files under,
+    each with the act it nearly spells that has songs ("" when none).
+
+    A name with no songs misfiles nothing: its songs have not arrived (a
+    test vault of one Streamrip batch named 18, 2026-11-04). A name that
+    nearly spells an act with songs is a typo: those songs would stay flat
+    while the person's other acts nest. Organize and Finalize both ask before
+    moving anything (Codex review of #208): Finalize runs first and files by
+    the same rule.
     """
     person_acts = getattr(filing, "person_acts", {})
     if not person_acts:
-        return []
+        return {}
     from ..artist_form import act_key
+    from ..fuzzy import similarity
 
     has_mb = "mb_artist_name" in {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
     mb = "mb_artist_name" if has_mb else "NULL"
-    seen: set[str] = set()
+    seen: dict[str, str] = {}
     for artist, mb_name, genre, album, title, path, audio_hash in conn.execute(
         f"SELECT artist, {mb}, genre, album, title, file_path, audio_hash FROM archive "
         "WHERE status = 'CATALOGUED' AND artist IS NOT NULL AND title IS NOT NULL"
     ):
+        if not Path(path).exists():  # moves nothing (CodeRabbit, review of #284)
+            continue
         rel = library_relpath(
             artist, mb_name, genre, album, title, Path(path).suffix, filing, audio_hash
         )
         if len(rel.parts) >= 3:
-            seen.add(act_key(rel.parts[-3]))  # .../Act/Album/file
-    return sorted(act for key, act in person_acts.items() if key not in seen)
+            seen.setdefault(act_key(rel.parts[-3]), rel.parts[-3])  # .../Act/Album/file
+    # A listed act with songs is meant as written, so it is no one's typo.
+    others = {key: act for key, act in seen.items() if key not in person_acts}
+    unmatched = {}
+    for key, act in sorted(person_acts.items(), key=lambda kv: kv[1]):
+        if key not in seen:
+            near = max(others, key=lambda k: similarity(key, k), default="")
+            unmatched[act] = others[near] if near and similarity(key, near) >= _TYPO_SCORE else ""
+    return unmatched
 
 
 def refuse_unmatched_person_acts(
     conn: sqlite3.Connection, filing: dict[str, str] | None, result: StageResult, stage: str
 ) -> bool:
-    """Name every unmatched listed act in *result*; True when a real run must stop."""
+    """Name every unmatched listed act in *result*; True when a real run must
+    stop because one is a typo of an act that has songs."""
     unmatched = unmatched_person_acts(conn, filing)
     for act in unmatched:
-        note = f"person_folders.tsv: {act!r} matches no song -- check the spelling"
+        note = f"person_folders.tsv: {act!r} matches no song yet"
         logger.warning("[%s] %s", stage, note)
         result.notes.append(note)
-    if not unmatched:
+    typos = {act: near for act, near in unmatched.items() if near}
+    if not typos:
         return False
     # The dry run fails too: it must not look ready for a run that will
     # refuse (Codex review of #208).
     result.success = False
     result.errors.append(
-        f"person_folders.tsv names {len(unmatched)} act(s) no song files under; "
+        "person_folders.tsv: "
+        + "; ".join(f"{act!r} looks like a typo of {near!r}" for act, near in typos.items())
         + (
-            "a real run would refuse -- correct the list first"
+            " -- a real run would refuse; correct the list first"
             if result.dry_run
-            else "nothing was moved -- correct the list and run again"
+            else " -- nothing was moved; correct the list and run again"
         )
     )
     return not result.dry_run
@@ -763,9 +788,9 @@ class OrganizeStage(BaseStage):
                    AND title IS NOT NULL ORDER BY file_path"""
         ).fetchall()
         filing = filing_load(cfg.meta_dir) if getattr(cfg, "meta_dir", None) else {}
-        unmatched = unmatched_person_acts(conn, filing)
-        if unmatched:
-            raise ValueError("person_folders.tsv has unmatched acts: " + ", ".join(unmatched[:5]))
+        typos = [a for a, near in unmatched_person_acts(conn, filing).items() if near]
+        if typos:
+            raise ValueError("person_folders.tsv has misspelt acts: " + ", ".join(typos[:5]))
         roots = cls._roots_for_config(cfg)
         vacated: set[Path] = set()
         reserved: set[Path] = set()
