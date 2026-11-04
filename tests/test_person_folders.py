@@ -282,13 +282,10 @@ def test_a_person_list_without_the_allowed_genre_list_is_refused(tmp_path):
         filing.load(meta)
 
 
-def test_a_listed_act_that_matches_no_song_is_named_before_anything_moves(tmp_path):
-    # Codex review of #208: "Bob Segre & The Silver Bullet Band" (a typo) left
-    # the band flat while the solo songs nested, without a word.
+def _person_ctx(tmp_path, persons: str, songs: list[tuple[str, str]]):
     from musaeus.config import MusicConfig
     from musaeus.context import RunContext
     from musaeus.db import open_db, upsert_archive
-    from musaeus.stages.organize import OrganizeStage
 
     cfg = MusicConfig(
         vault_root=tmp_path, inbox=tmp_path / "INBOX", staging=tmp_path / "STAGING",
@@ -298,22 +295,58 @@ def test_a_listed_act_that_matches_no_song_is_named_before_anything_moves(tmp_pa
     cfg.inbox.mkdir(parents=True)
     cfg.meta_dir.mkdir()
     (cfg.meta_dir / "Genre_Allowed.txt").write_text("Rock\n", encoding="utf-8")
-    (cfg.meta_dir / filing.PERSONS_FILENAME).write_text(
-        "Bob Seger\tBob Seger\tRock\nBob Segre & The Silver Bullet Band\tBob Seger\n",
-        encoding="utf-8",
-    )
+    (cfg.meta_dir / filing.PERSONS_FILENAME).write_text(persons, encoding="utf-8")
     ctx = RunContext.new(cfg, open_db(cfg.db_path), dry_run=True)
-    song = cfg.inbox / "flat" / "s.m4a"
-    song.parent.mkdir()
-    song.write_bytes(b"AUDIO")
-    upsert_archive(ctx.conn, {"file_path": str(song), "status": "CATALOGUED", "genre": "Rock",
-                              "artist": "Bob Seger", "album": "Live", "title": "Turn The Page"})  # fmt: skip
+    paths = []
+    for n, (artist, title) in enumerate(songs):
+        song = cfg.inbox / "flat" / f"{n}.m4a"
+        song.parent.mkdir(exist_ok=True)
+        song.write_bytes(b"AUDIO%d" % n)
+        upsert_archive(ctx.conn, {"file_path": str(song), "status": "CATALOGUED", "genre": "Rock",
+                                  "artist": artist, "album": "Live", "title": title})  # fmt: skip
+        paths.append(song)
     ctx.conn.commit()
+    return ctx, paths
+
+
+def test_a_listed_act_with_no_songs_yet_only_warns(tmp_path):
+    # 2026-11-04: a test vault holding one Streamrip batch named 18 listed acts
+    # with no songs in it ("Herb Alpert & The Tijuana Brass"), and Finalize
+    # filed nothing. A name whose songs have not arrived misfiles nothing.
+    from musaeus.stages.organize import OrganizeStage
+
+    ctx, (song,) = _person_ctx(
+        tmp_path,
+        "Bob Seger\tBob Seger\tRock\nBob Seger & The Last Heard\tBob Seger\n",
+        [("Bob Seger", "Turn The Page")],
+    )
+
+    result = OrganizeStage().dry_run(ctx)
+
+    assert any("Bob Seger & The Last Heard" in n for n in result.notes), "not named"
+    assert result.success, result.errors
+    ctx.dry_run = False
+    result = OrganizeStage().run(ctx)
+    assert result.success, result.errors
+    assert not song.exists(), "the song was not filed"
+
+
+def test_a_listed_act_that_matches_no_song_is_named_before_anything_moves(tmp_path):
+    # Codex review of #208: "Bob Segre & The Silver Bullet Band" (a typo) left
+    # the band flat while the solo songs nested, without a word.
+    from musaeus.stages.organize import OrganizeStage
+
+    ctx, (song, band) = _person_ctx(
+        tmp_path,
+        "Bob Seger\tBob Seger\tRock\nBob Segre & The Silver Bullet Band\tBob Seger\n",
+        [("Bob Seger", "Turn The Page"), ("Bob Seger & The Silver Bullet Band", "Night Moves")],
+    )
 
     result = OrganizeStage().dry_run(ctx)
 
     assert any("Bob Segre & The Silver Bullet Band" in n for n in result.notes)
     assert not any("'Bob Seger'" in n for n in result.notes), "a matched act was named"
+    assert any("Bob Seger & The Silver Bullet Band" in e for e in result.errors), "no near name"
     assert song.exists(), "a dry run moved a file"
     # Codex review of #208 (fourth round): the dry run must not look ready.
     assert not result.success, "the dry run reported OK for a run that will refuse"
@@ -323,7 +356,7 @@ def test_a_listed_act_that_matches_no_song_is_named_before_anything_moves(tmp_pa
     ctx.dry_run = False
     result = OrganizeStage().run(ctx)
     assert not result.success
-    assert song.exists(), "a real run moved files while the list named an unknown act"
+    assert song.exists() and band.exists(), "a real run moved files while the list had a typo"
 
 
 def test_the_old_car_script_keeps_the_person_level_too(tmp_path):
@@ -364,3 +397,26 @@ def test_the_curator_export_keeps_the_person_level(f):
     row = {"artist": "Wings", "album": "Band On The Run", "title": "Jet", "file_path": "/m/x.m4a"}
     parts = _dest_path(Path("/export"), row, filing=f).relative_to("/export").parts
     assert parts[:3] == ("Paul McCartney", "Wings", "Band On The Run")
+
+
+@pytest.mark.parametrize("case", ["the near act is listed too", "the near act's file is gone"])
+def test_a_name_near_an_act_that_files_nothing_new_only_warns(tmp_path, case):
+    # CodeRabbit, review of #284: a listed act is meant as written, and a row
+    # whose file is gone moves nothing, so neither makes a near name a typo.
+    from musaeus.stages.organize import OrganizeStage
+
+    persons = "Bob Seger\tBob Seger\tRock\nBob Segre & The Silver Bullet Band\tBob Seger\n"
+    if case == "the near act is listed too":
+        persons += "Bob Seger & The Silver Bullet Band\tBob Seger\n"
+    ctx, (_, band) = _person_ctx(
+        tmp_path,
+        persons,
+        [("Bob Seger", "Turn The Page"), ("Bob Seger & The Silver Bullet Band", "Night Moves")],
+    )
+    if case == "the near act's file is gone":
+        band.unlink()
+
+    result = OrganizeStage().dry_run(ctx)
+
+    assert any("Bob Segre & The Silver Bullet Band" in n for n in result.notes), "not named"
+    assert not [e for e in result.errors if "typo" in e], result.errors
