@@ -21,7 +21,9 @@ What it refuses, however old
 ----------------------------
 A file no held row points at: nothing says what it is. A dupe loser whose
 keeper has left the library: it may be the last copy. A tribute song on
-tribute_keep.tsv: Grey said keep, and only the file has yet to move back.
+tribute_keep.tsv: Grey said keep, and only the file has yet to move back. A
+file named in MetaData/hold_keep.txt: Grey said stay (2026-11-05, the 34 denied
+files with no proof of another copy).
 """
 
 from __future__ import annotations
@@ -41,7 +43,15 @@ logger = logging.getLogger(__name__)
 
 HOLD_DAYS = 30
 
+KEEP_FILENAME = "hold_keep.txt"
+
 _HELD_STATUSES = ("DUPE_REVIEW", "TRIBUTE_REVIEW", "QUARANTINED")
+
+
+def _kept_files(meta_dir: Path) -> set[str]:
+    """File names that stay, one per line, exactly as they are on disk."""
+    path = meta_dir / KEEP_FILENAME
+    return set(path.read_text(encoding="utf-8").splitlines()) if path.is_file() else set()
 
 
 def _expired(root: Path, cutoff: float) -> list[Path]:
@@ -165,6 +175,7 @@ class HoldExpiryStage(BaseStage):
             return result
 
         kept = _kept_songs(cfg.meta_dir)
+        kept_files = _kept_files(cfg.meta_dir)
         # Not in a preview: opening the ledger can create it (CodeRabbit, #286).
         ledger = None if dry_run else open_hash_index(cfg.hash_index_path)
         if ledger is not None:
@@ -176,7 +187,11 @@ class HoldExpiryStage(BaseStage):
                     "SELECT id, status, artist, title, audio_hash FROM archive WHERE file_path = ?",
                     (str(path),),
                 ).fetchone()
-                why = self._refusal(ctx, row, kept)
+                why = (
+                    f"it is on {KEEP_FILENAME}"
+                    if path.name in kept_files
+                    else self._refusal(ctx, row, kept)
+                )
                 if why:
                     result.files_skipped += 1
                     result.notes.append(f"kept past the hold: {path.name} -- {why}")

@@ -211,6 +211,19 @@ def test_a_song_on_the_keep_list_stays(ctx, past_the_hold):
     assert song.exists()
 
 
+def test_a_file_grey_said_stays_stays(ctx, past_the_hold):
+    folder = ctx.config.quarantine / "denied"
+    stays = _held(ctx, folder, "01. Stays.flac", "QUARANTINED", "h1")
+    goes = _held(ctx, folder, "02. Goes.flac", "QUARANTINED", "h2")
+    (ctx.config.meta_dir / "hold_keep.txt").write_text("01. Stays.flac\n", encoding="utf-8")
+
+    result = HoldExpiryStage().run(ctx)
+
+    assert stays.exists() and _row(ctx, stays)
+    assert not goes.exists()
+    assert any("hold_keep.txt" in n for n in result.notes)
+
+
 def test_a_file_no_held_row_vouches_for_stays(ctx, past_the_hold):
     folder = ctx.config.dupes_review_dir
     stray = folder / "stray.flac"
