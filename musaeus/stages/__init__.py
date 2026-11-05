@@ -57,6 +57,7 @@ Available stages:
                    number, Composer_Canon.tsv, or a title prefix. Added to
                    Act 1 2026-08-24, after GenreValidate
   MBEnrichStage  — MusicBrainz artist + release MBID enrichment
+  HoldExpiryStage — delete what REVIEW and QUARANTINE have held for 30 days
   OriginalYearStage — recover a recording's FIRST release year from
                    MusicBrainz into original_year, leaving `year` (the
                    edition year) untouched. Deliberately NOT in
@@ -158,6 +159,7 @@ from .forge import ForgeStage
 from .genre_validate import GenreValidateStage  # noqa: E402
 from .ghost import GhostStage
 from .health import HealthStage
+from .hold_expiry import HoldExpiryStage
 from .identity_tag import IdentityTagStage
 from .ingest import IngestStage
 from .integrity import IntegrityStage
@@ -214,6 +216,7 @@ __all__ = [
     "AlbumFillStage",
     "TitleCompleteStage",
     "IdentityTagStage",
+    "HoldExpiryStage",
     "MBWorkStage",
     "AcoustIDNameStage",
     "TranscodeStage",
@@ -439,6 +442,8 @@ ENRICHMENT: list[type] = [
     # learn. This is the stage whose absence let ~8,074 MBIDs live only in a
     # database that was later reset to 87 rows.
     IdentityTagStage,
+    # Grey, 2026-11-05: last, so nothing deletes before the run has done its work.
+    HoldExpiryStage,
 ]
 
 # The full canonical pipeline: Act 1 + Act 2 + Act 3 + Enrichment, in

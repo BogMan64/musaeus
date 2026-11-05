@@ -34,6 +34,7 @@ from musaeus.stages.finalize import FinalizeStage
 from musaeus.stages.forge import ForgeStage
 from musaeus.stages.genre_validate import GenreValidateStage
 from musaeus.stages.health import HealthStage
+from musaeus.stages.hold_expiry import HoldExpiryStage
 from musaeus.stages.identity_tag import IdentityTagStage
 from musaeus.stages.ingest import IngestStage
 from musaeus.stages.mb_enrich import MBEnrichStage
@@ -198,5 +199,7 @@ def test_full_default_pipeline_order_matches_current_design():
         # MusicBrainz recording, before identity is written to the files.
         TitleCompleteStage,
         IdentityTagStage,
+        # Grey, 2026-11-05: last, so nothing deletes before the run has done its work.
+        HoldExpiryStage,
     ]
     assert expected == DEFAULT_PIPELINE
