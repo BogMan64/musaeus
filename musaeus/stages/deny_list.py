@@ -35,7 +35,8 @@ What it does on a match
 Quarantines and reports. It never deletes: a deny-list acting on a false
 positive would destroy the only copy of something the owner had chosen to
 re-add on purpose, and there is no way to tell those two cases apart from
-inside the pipeline. Quarantine is reversible; deletion is not.
+inside the pipeline. Quarantine is reversible; deletion is not. HoldExpiryStage
+deletes it 30 days later (Grey, 2026-11-05): that is the window to undo.
 """
 
 from __future__ import annotations
