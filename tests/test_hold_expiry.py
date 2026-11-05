@@ -9,6 +9,7 @@ copy of a song, a song Grey put on the keep list, a file nothing vouches for.
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from pathlib import Path
 
@@ -266,6 +267,23 @@ def test_a_failed_delete_leaves_no_denial_for_the_next_file_to_commit(
     assert stuck.exists() and not goes.exists()
     assert not _denied(ctx, "h1")
     assert _denied(ctx, "h2")
+
+
+def test_a_database_error_before_the_delete_leaves_no_half_record(ctx, past_the_hold):
+    """BaseStage commits after a stage fails, so what is pending must be undone
+    first (CodeRabbit, #286). A real failure, part way through the writes."""
+    song = _held(ctx, ctx.config.tribute_review_dir, "song.flac", "TRIBUTE_REVIEW", "h1")
+    ctx.conn.execute(
+        "CREATE TRIGGER no_delete BEFORE DELETE ON archive "
+        "BEGIN SELECT RAISE(ABORT, 'refused'); END"
+    )
+
+    with pytest.raises(sqlite3.Error):
+        HoldExpiryStage().run(ctx)
+    ctx.conn.commit()
+
+    assert song.exists() and _row(ctx, song)
+    assert not ctx.conn.execute("SELECT 1 FROM events WHERE event_type = 'HOLD_EXPIRED'").fetchone()
 
 
 def test_a_file_that_will_not_delete_keeps_its_row(ctx, past_the_hold, monkeypatch):

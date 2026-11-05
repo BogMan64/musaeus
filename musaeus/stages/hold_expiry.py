@@ -29,6 +29,7 @@ files with no proof of another copy).
 from __future__ import annotations
 
 import logging
+import sqlite3
 import time
 from pathlib import Path
 
@@ -135,22 +136,22 @@ class HoldExpiryStage(BaseStage):
         crash before the commit leaves a row whose file is gone, which Ghost finds.
         """
         reason = f"held {HOLD_DAYS} days after {row['status']}"
-        # Audio another row carries is not denied: that would refuse the survivor.
         h = row["audio_hash"]
-        if (
-            deny
-            and h
-            and not ctx.conn.execute(
-                "SELECT 1 FROM archive WHERE audio_hash = ? AND id != ? LIMIT 1", (h, row["id"])
-            ).fetchone()
-        ):
-            deny_hash(ledger, h, reason, str(path))
-        ctx.log_event("HOLD_EXPIRED", file_path=str(path), stage=self.NAME, note=reason)
-        ctx.conn.execute("DELETE FROM archive_tier_hashes WHERE path = ?", (str(path),))
-        ctx.conn.execute("DELETE FROM archive WHERE id = ?", (row["id"],))
         try:
+            # Audio another row carries is not denied: that would refuse the survivor.
+            if (
+                deny
+                and h
+                and not ctx.conn.execute(
+                    "SELECT 1 FROM archive WHERE audio_hash = ? AND id != ? LIMIT 1", (h, row["id"])
+                ).fetchone()
+            ):
+                deny_hash(ledger, h, reason, str(path))
+            ctx.log_event("HOLD_EXPIRED", file_path=str(path), stage=self.NAME, note=reason)
+            ctx.conn.execute("DELETE FROM archive_tier_hashes WHERE path = ?", (str(path),))
+            ctx.conn.execute("DELETE FROM archive WHERE id = ?", (row["id"],))
             path.unlink()
-        except OSError:
+        except (OSError, sqlite3.Error):
             ledger.rollback()
             ctx.conn.rollback()
             raise
