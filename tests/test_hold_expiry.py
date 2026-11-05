@@ -68,16 +68,20 @@ def _held(ctx, folder: Path, name: str, status: str, audio_hash: str, **fields) 
     return path
 
 
-def _keeper(ctx, loser_hash: str, keeper_hash: str, keeper_status: str = "CATALOGUED") -> None:
+def _keeper(ctx, loser_hash: str, keeper_hash: str, keeper_status: str = "CATALOGUED") -> Path:
+    path = ctx.config.alac_library / "keeper.m4a"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"audio")
     upsert_archive(
         ctx.conn,
-        {"file_path": "/library/keeper.m4a", "status": keeper_status, "audio_hash": keeper_hash},
+        {"file_path": str(path), "status": keeper_status, "audio_hash": keeper_hash},
     )
     ctx.conn.executemany(
         "INSERT INTO duplicates (group_id, file_path, status, audio_hash) VALUES ('g', ?, ?, ?)",
         [("/inbox/keeper.flac", "keep", keeper_hash), ("/inbox/loser.flac", "archive", loser_hash)],
     )
     ctx.conn.commit()
+    return path
 
 
 def _denied(ctx, audio_hash: str) -> bool:
@@ -158,6 +162,16 @@ def test_a_dupe_loser_whose_keeper_left_the_library_is_the_last_copy(
     assert any("left the library" in n for n in result.notes)
 
 
+def test_a_keeper_row_with_no_file_does_not_prove_a_copy_survives(ctx, past_the_hold):
+    """Audit only reports a CATALOGUED row whose file has gone (CodeRabbit, #286)."""
+    song = _held(ctx, ctx.config.dupes_review_dir, "song.flac", "DUPE_REVIEW", "h1")
+    _keeper(ctx, "h1", "k1").unlink()
+
+    HoldExpiryStage().run(ctx)
+
+    assert song.exists() and _row(ctx, song)
+
+
 def test_a_dupe_loser_goes_when_its_keeper_has_moved_since(ctx, past_the_hold):
     """`duplicates` still has the keeper's INBOX path; only its audio is current."""
     song = _held(ctx, ctx.config.dupes_review_dir, "song.flac", "DUPE_REVIEW", "h1")
@@ -172,10 +186,7 @@ def test_audio_another_row_carries_is_not_denied(ctx, past_the_hold):
     """An exact copy shares its audio with the survivor; denying it would
     refuse the survivor on the next rebuild."""
     song = _held(ctx, ctx.config.dupes_review_dir, "song.flac", "DUPE_REVIEW", "shared")
-    upsert_archive(
-        ctx.conn, {"file_path": "/library/s.m4a", "status": "CATALOGUED", "audio_hash": "shared"}
-    )
-    ctx.conn.commit()
+    _keeper(ctx, "shared", "shared")
 
     HoldExpiryStage().run(ctx)
 
@@ -219,7 +230,7 @@ def test_a_preview_deletes_nothing(ctx, past_the_hold):
     result = HoldExpiryStage().dry_run(ctx)
 
     assert song.exists() and _row(ctx, song)
-    assert not _denied(ctx, "h1")
+    assert not ctx.config.hash_index_path.exists(), "a preview creates no ledger"
     assert result.files_changed == 1
 
 
@@ -233,4 +244,7 @@ def test_a_file_that_will_not_delete_keeps_its_row(ctx, past_the_hold, monkeypat
     result = HoldExpiryStage().run(ctx)
 
     assert _row(ctx, song)
+    assert not _denied(ctx, "h1"), "nothing is denied for a file still here"
+    assert not ctx.conn.execute("SELECT 1 FROM events WHERE event_type = 'HOLD_EXPIRED'").fetchone()
     assert result.files_errored == 1 and result.files_changed == 0
+    assert not result.success

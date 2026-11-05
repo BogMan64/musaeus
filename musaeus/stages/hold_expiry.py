@@ -61,28 +61,27 @@ def _keeper_in_library(conn, audio_hash: str | None) -> bool:
     """True when this audio, or the copy kept over it, is still in the library.
 
     By audio, not path: `duplicates` keeps the path a keeper had when its group
-    was decided, and Canonicalize and Finalize have moved it since.
+    was decided, and Canonicalize and Finalize have moved it since. The file is
+    looked for as well: Audit only reports a row whose file has gone, so a
+    CATALOGUED row alone does not prove a copy survives (CodeRabbit, #286).
     """
-    return (
-        conn.execute(
-            """
-            SELECT 1 FROM archive
-             WHERE status = 'CATALOGUED'
-               AND audio_hash IN (
-                   SELECT ?
-                   UNION
-                   SELECT keeper.audio_hash
-                     FROM duplicates loser
-                     JOIN duplicates keeper
-                       ON keeper.group_id = loser.group_id AND keeper.status = 'keep'
-                    WHERE loser.audio_hash = ?
-               )
-             LIMIT 1
-            """,
-            (audio_hash, audio_hash),
-        ).fetchone()
-        is not None
-    )
+    rows = conn.execute(
+        """
+        SELECT file_path FROM archive
+         WHERE status = 'CATALOGUED'
+           AND audio_hash IN (
+               SELECT ?
+               UNION
+               SELECT keeper.audio_hash
+                 FROM duplicates loser
+                 JOIN duplicates keeper
+                   ON keeper.group_id = loser.group_id AND keeper.status = 'keep'
+                WHERE loser.audio_hash = ?
+           )
+        """,
+        (audio_hash, audio_hash),
+    ).fetchall()
+    return any(Path(row["file_path"]).is_file() for row in rows)
 
 
 class HoldExpiryStage(BaseStage):
@@ -121,10 +120,11 @@ class HoldExpiryStage(BaseStage):
         return ""
 
     def _delete(self, ctx: RunContext, ledger, row, path: Path, deny: bool) -> None:
-        """File first, then the records, as scripts/delete_reviewed_tracks.py does:
-        a crash leaves a row whose file is gone, not a forgotten file."""
+        """Records first, then the file, then commit, as DenyListStage moves: a
+        delete cannot be rolled back and a DB write can (CodeRabbit, #286). A
+        crash before the commit leaves a row whose file is gone, which Ghost finds.
+        """
         reason = f"held {HOLD_DAYS} days after {row['status']}"
-        path.unlink()
         # Audio another row carries is not denied: that would refuse the survivor.
         h = row["audio_hash"]
         if (
@@ -135,10 +135,16 @@ class HoldExpiryStage(BaseStage):
             ).fetchone()
         ):
             deny_hash(ledger, h, reason, str(path))
-            ledger.commit()
         ctx.log_event("HOLD_EXPIRED", file_path=str(path), stage=self.NAME, note=reason)
         ctx.conn.execute("DELETE FROM archive_tier_hashes WHERE path = ?", (str(path),))
         ctx.conn.execute("DELETE FROM archive WHERE id = ?", (row["id"],))
+        try:
+            path.unlink()
+        except OSError:
+            ledger.rollback()
+            ctx.conn.rollback()
+            raise
+        ledger.commit()
         ctx.conn.commit()
 
     def _process(self, ctx: RunContext, dry_run: bool) -> StageResult:
@@ -159,8 +165,10 @@ class HoldExpiryStage(BaseStage):
             return result
 
         kept = _kept_songs(cfg.meta_dir)
-        ledger = open_hash_index(cfg.hash_index_path)
-        ensure_deny_list(ledger)
+        # Not in a preview: opening the ledger can create it (CodeRabbit, #286).
+        ledger = None if dry_run else open_hash_index(cfg.hash_index_path)
+        if ledger is not None:
+            ensure_deny_list(ledger)
         try:
             for path, root in expired:
                 result.files_processed += 1
@@ -174,13 +182,14 @@ class HoldExpiryStage(BaseStage):
                     result.notes.append(f"kept past the hold: {path.name} -- {why}")
                     continue
                 result.files_changed += 1
-                if dry_run:
+                if ledger is None:
                     result.notes.append(f"[DRY] would delete {path.name}")
                     continue
                 try:
                     # A damaged file is not denied: its replacement is wanted.
                     self._delete(ctx, ledger, row, path, deny=root != corrupted)
                 except OSError as exc:
+                    result.success = False
                     result.files_changed -= 1
                     result.files_errored += 1
                     result.errors.append(f"could not delete {path}: {exc}")
@@ -189,7 +198,8 @@ class HoldExpiryStage(BaseStage):
                 logger.info("[hold-expiry] deleted %s", path)
                 result.notes.append(f"deleted {path.name}")
         finally:
-            ledger.close()
+            if ledger is not None:
+                ledger.close()
 
         ctx.record_stage(result)
         return result
