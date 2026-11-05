@@ -234,6 +234,27 @@ def test_a_preview_deletes_nothing(ctx, past_the_hold):
     assert result.files_changed == 1
 
 
+def test_a_failed_delete_leaves_no_denial_for_the_next_file_to_commit(
+    ctx, past_the_hold, monkeypatch
+):
+    folder = ctx.config.tribute_review_dir
+    stuck = _held(ctx, folder, "a.flac", "TRIBUTE_REVIEW", "h1")
+    goes = _held(ctx, folder, "b.flac", "TRIBUTE_REVIEW", "h2")
+    real_unlink = Path.unlink
+
+    def refuse_one(self):
+        if self == stuck:
+            raise PermissionError("read-only")
+        real_unlink(self)
+
+    monkeypatch.setattr(Path, "unlink", refuse_one)
+    HoldExpiryStage().run(ctx)
+
+    assert stuck.exists() and not goes.exists()
+    assert not _denied(ctx, "h1")
+    assert _denied(ctx, "h2")
+
+
 def test_a_file_that_will_not_delete_keeps_its_row(ctx, past_the_hold, monkeypatch):
     song = _held(ctx, ctx.config.tribute_review_dir, "song.flac", "TRIBUTE_REVIEW", "h1")
 
