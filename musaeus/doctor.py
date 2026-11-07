@@ -491,9 +491,7 @@ def diagnose(cfg: MusicConfig) -> Report:
             # Friend's Girl, The" kept as "My Best Friend's Girl") is held.
             # Without it, 17 of 214 read as sole copies on 2026-11-07.
             and not (
-                linked
-                and r["status"] == "DUPE_REVIEW"
-                and keeper_in_library(conn, r["audio_hash"])
+                linked and r["status"] == "DUPE_REVIEW" and keeper_in_library(conn, r["audio_hash"])
             )
         ]
         rep.add(
