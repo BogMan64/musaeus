@@ -34,6 +34,7 @@ class TestExtractCreditedArtist:
             ),
             ("Don't You Want Me (As Made Famous by The Human League)", "The Human League"),
             ("Nuthin' But a G Thang - Sound-a-Like As Made Famous By - Dr. Dre", "Dr. Dre"),
+            ("Shop Around (Made Popular By Smokey Robinson) [Backing Version]", "Smokey Robinson"),
         ],
     )
     def test_the_three_proven_patterns(self, title, expected):
@@ -117,6 +118,12 @@ class TestWantedLines:
     def test_a_credited_unowned_track_produces_a_line(self, conn):
         items = [{"title": "Midnight Cruiser [In the Style of Steely Dan]"}]
         assert wanted_lines(conn, items) == ["Steely Dan - Midnight Cruiser"]
+
+    def test_a_made_popular_by_knock_off_names_its_original(self, conn):
+        """Set aside since 2026-11-07 by its title alone (CodeRabbit, #287):
+        the song it copies must still reach the wanted list."""
+        items = [{"title": "Shop Around (Made Popular By Smokey Robinson) [Backing Version]"}]
+        assert wanted_lines(conn, items) == ["Smokey Robinson - Shop Around"]
 
     def test_an_already_owned_credited_track_produces_nothing(self, conn):
         """The whole point of checking ownership at all -- see the module
