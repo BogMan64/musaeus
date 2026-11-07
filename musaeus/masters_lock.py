@@ -21,7 +21,6 @@ again later"); the monthly wrappers retry on that code.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import sys
@@ -30,6 +29,8 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+
+from .file_lock import try_lock, unlock
 
 EXIT_BUSY = 75
 LOCK_NAME = "masters.lock"
@@ -122,7 +123,7 @@ def masters_lock(runs_root: Path | str, *, exclusive: bool, what: str) -> Iterat
     inherited = _inherited(lock_dir / LOCK_NAME) if exclusive else None
     fh = inherited or open(lock_dir / LOCK_NAME, "a+")  # noqa: SIM115 -- held for the block
     try:
-        fcntl.flock(fh, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        try_lock(fh, exclusive=exclusive)
     except BlockingIOError:
         fh.close()
         raise MastersBusy(
@@ -149,7 +150,7 @@ def masters_lock(runs_root: Path | str, *, exclusive: bool, what: str) -> Iterat
         _open.remove((fh, exclusive))
         record.unlink(missing_ok=True)
         if inherited is None:  # never unlock the parent's hold
-            fcntl.flock(fh, fcntl.LOCK_UN)
+            unlock(fh)
         fh.close()
 
 

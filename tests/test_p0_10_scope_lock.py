@@ -415,19 +415,17 @@ def test_releasing_never_deletes_the_next_holders_record(tmp_path, lock_dir, mon
     """Review of #87, minor finding 2: release unlocked first and deleted the
     owner record second. A job taking the lock in between wrote its record,
     and the release then deleted it -- the lock held, its owner invisible."""
-    import fcntl
-
     from musaeus.safety import lock as lock_mod
 
     handle = acquire(_scope(tmp_path), lock_dir, run_id="run-A")
-    real_flock = fcntl.flock
+    real_unlock = lock_mod.unlock
 
-    def flock(fd, op):
-        real_flock(fd, op)
-        if op == fcntl.LOCK_UN:  # the next job gets in right here
-            handle.meta_path.write_text('{"run_id": "run-B"}', encoding="utf-8")
+    def unlock(fd):
+        real_unlock(fd)
+        # the next job gets in right here
+        handle.meta_path.write_text('{"run_id": "run-B"}', encoding="utf-8")
 
-    monkeypatch.setattr(lock_mod.fcntl, "flock", flock)
+    monkeypatch.setattr(lock_mod, "unlock", unlock)
     handle.release()
 
     assert handle.meta_path.exists(), "the next holder's record was deleted"

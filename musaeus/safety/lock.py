@@ -36,7 +36,6 @@ a lock that can be defeated by a stale write.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -44,6 +43,7 @@ import socket
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from musaeus.file_lock import try_lock, unlock
 from musaeus.state.schema import StateError, utc_now_iso
 
 # ── Scope classification ──────────────────────────────────────────────────────
@@ -270,7 +270,7 @@ class LockHandle:
         if current is not None and current.run_id == self.owner.run_id:
             self.meta_path.unlink(missing_ok=True)
         try:
-            fcntl.flock(self._fd, fcntl.LOCK_UN)
+            unlock(self._fd)
         finally:
             os.close(self._fd)
 
@@ -355,7 +355,7 @@ def acquire(
 
     fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try_lock(fd, exclusive=True)
     except OSError as exc:
         os.close(fd)
         holder = observe(scope, lock_dir)
@@ -375,7 +375,7 @@ def acquire(
     if stale is not None:
         blocking_reason = _refuses_takeover(stale)
         if blocking_reason is not None:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            unlock(fd)
             os.close(fd)
             raise LockConflictError(
                 f"scope {scope.root!r} records owner {stale.describe()}, and {blocking_reason}; "
