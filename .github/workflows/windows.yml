@@ -54,7 +54,9 @@ jobs:
           raise SystemExit(1 if failed else 0)
       - name: Run tests (not yet required)
         continue-on-error: true
-        run: pytest -q --tb=line -p no:cacheprovider --junitxml=windows-junit.xml
+        # Run what loads: test files that cannot import (fcntl, 2026-11-07) are
+        # counted as errors instead of stopping the whole run.
+        run: pytest -q --tb=line -p no:cacheprovider --continue-on-collection-errors --junitxml=windows-junit.xml
       - name: Summary
         if: always()
         shell: python
