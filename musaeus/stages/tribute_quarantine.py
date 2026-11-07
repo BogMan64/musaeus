@@ -79,6 +79,11 @@ JUNK_TITLE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"in the style of", re.IGNORECASE),
     re.compile(r"originally performed", re.IGNORECASE),
     re.compile(r"made famous by", re.IGNORECASE),
+    # Two more product phrasings that reached the hold on 2026-11-07: Party
+    # Tyme "Shop Around (Made Popular By Smokey Robinson)" (caught only by
+    # its artist name) and "Backing Version" tracks.
+    re.compile(r"made popular by", re.IGNORECASE),
+    re.compile(r"backing version", re.IGNORECASE),
     re.compile(r"instrumental version", re.IGNORECASE),
     re.compile(r"backing track", re.IGNORECASE),
     # "tribute" was in the ARTIST and ALBUM lists but not this one, so a

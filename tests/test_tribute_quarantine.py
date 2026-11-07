@@ -546,3 +546,18 @@ def test_a_keep_line_keeps_only_its_own_song(ctx: RunContext, cfg, entry, artist
     medley = _make_row(ctx, "in/m.m4a", artist, title)
     TributeQuarantineStage().run(ctx)
     assert not medley.exists(), "a keep line let a different song through"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Shop Around (Made Popular By Smokey Robinson)",
+        "Rehab (Backing Version)",
+    ],
+)
+def test_a_made_popular_by_or_backing_version_title_is_set_aside(title):
+    """The two product phrasings the patterns lacked (2026-11-07): an unknown
+    artist's copy is caught by its title, and a library artist's too -- no
+    real release is titled this way."""
+    assert is_junk("Some Session Singers", title, "")[0] is True
+    assert is_junk("Smokey Robinson", title, "", known_artist=True)[0] is True
