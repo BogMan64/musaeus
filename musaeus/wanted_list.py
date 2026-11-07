@@ -54,6 +54,7 @@ _CREDIT_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"in the style of ([^)\]}]+)", re.IGNORECASE),
     re.compile(r"originally performed by ([^)\]}]+)", re.IGNORECASE),
     re.compile(r"(?:as )?made famous by[ \-]+([^)\]}]+)", re.IGNORECASE),
+    re.compile(r"(?:as )?made popular by[ \-]+([^)\]}]+)", re.IGNORECASE),
 ]
 
 #: Trailing markup that survives bracket-stripping because it uses a
