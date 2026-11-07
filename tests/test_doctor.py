@@ -390,6 +390,24 @@ class TestSoleCopyFallsBackToAudioHash:
 
         assert line.count == 1
 
+    def test_an_old_catalogue_without_the_group_link_still_gets_a_report(self, vault):
+        """Doctor reads without upgrading (CodeRabbit, #288): a duplicates table
+        from before audio_hash must not crash the check."""
+        dupe = _add(vault, "dupe.m4a", artist="The Cars", title="Cars My Best Friend's Girl, The")
+        conn = sqlite3.connect(vault.db_path)
+        conn.execute("DROP TABLE duplicates")
+        conn.execute("CREATE TABLE duplicates (group_id TEXT, file_path TEXT, status TEXT)")
+        conn.execute(
+            "UPDATE archive SET audio_hash='h_dupe', status='DUPE_REVIEW' WHERE file_path=?",
+            (str(dupe),),
+        )
+        conn.commit()
+        conn.close()
+
+        line = next(f for f in diagnose(vault).findings if "sole copy" in f.check)
+
+        assert line.count == 1
+
     def test_a_quarantined_row_whose_audio_is_held_nowhere_still_fails(self, vault):
         """The check must keep working — this is the 4.17 signal."""
         import sqlite3
