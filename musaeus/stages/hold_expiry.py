@@ -68,7 +68,7 @@ def _expired(root: Path, cutoff: float) -> list[Path]:
     )
 
 
-def _keeper_in_library(conn, audio_hash: str | None) -> bool:
+def keeper_in_library(conn, audio_hash: str | None) -> bool:
     """True when this audio, or the copy kept over it, is still in the library.
 
     By audio, not path: `duplicates` keeps the path a keeper had when its group
@@ -124,7 +124,7 @@ class HoldExpiryStage(BaseStage):
         """Why this held file must stay, or "" when it may go."""
         if row is None or row["status"] not in _HELD_STATUSES:
             return "no held record points at it"
-        if row["status"] == "DUPE_REVIEW" and not _keeper_in_library(ctx.conn, row["audio_hash"]):
+        if row["status"] == "DUPE_REVIEW" and not keeper_in_library(ctx.conn, row["audio_hash"]):
             return "the copy kept over it has left the library"
         if row["status"] == "TRIBUTE_REVIEW" and _song_key(row["artist"], row["title"]) in kept:
             return "it is on tribute_keep.tsv"

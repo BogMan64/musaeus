@@ -475,11 +475,24 @@ def diagnose(cfg: MusicConfig) -> Report:
         # catalogued under Vivaldi and Bach. Without this, every classical
         # dedup produces a false FAIL.
         held_audio = {r["audio_hash"] for r in lib if r["audio_hash"] and r["file_path"] in on_disk}
+        # Here, not at the top: stages/corrupt.py imports this module.
+        from .stages.hold_expiry import keeper_in_library
+
+        # Doctor reads without upgrading, and an old catalogue lacks the column
+        # that links a dupe to its group (CodeRabbit, #288).
+        linked = "audio_hash" in {c[1] for c in conn.execute("PRAGMA table_info(duplicates)")}
         solo = [
             r
             for r in quarantined
             if held.isdisjoint(song_keys(r["artist"], r["title"]))
             and not (r["audio_hash"] and r["audio_hash"] in held_audio)
+            # ...and the hold's own test, through the duplicate group: a dupe
+            # whose keeper is filed under a cleaner name ("Cars My Best
+            # Friend's Girl, The" kept as "My Best Friend's Girl") is held.
+            # Without it, 17 of 214 read as sole copies on 2026-11-07.
+            and not (
+                linked and r["status"] == "DUPE_REVIEW" and keeper_in_library(conn, r["audio_hash"])
+            )
         ]
         rep.add(
             "fail" if solo else "ok",
