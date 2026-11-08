@@ -29,7 +29,16 @@ def fsync_file(path: Path | str) -> None:
     one raised "Bad file descriptor" there (Windows port, 2026-11-08). POSIX
     keeps read-only, which also works on a copy that inherited a read-only mode.
     """
-    fd = os.open(path, os.O_RDWR if sys.platform == "win32" else os.O_RDONLY)
+    try:
+        fd = os.open(path, os.O_RDWR if sys.platform == "win32" else os.O_RDONLY)
+    except PermissionError:
+        if sys.platform != "win32":
+            raise
+        # shortcut: a file marked read-only (copy2 carries the flag) gives no
+        # writable handle, so Windows cannot flush it by name; it reaches disk
+        # with the OS cache. Upgrade (clear the flag around the flush) if a
+        # power cut ever costs such a file.
+        return
     try:
         os.fsync(fd)
     finally:

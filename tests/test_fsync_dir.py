@@ -75,6 +75,21 @@ def test_a_save_completes_where_fsync_needs_a_writable_handle(tmp_path, monkeypa
     assert p.read_text(encoding="utf-8") == "new"
 
 
+def test_a_read_only_file_does_not_stop_the_flush_on_windows(tmp_path, monkeypatch):
+    """copy2 carries a read-only flag; Windows then gives no writable handle and
+    fsync_file raised PermissionError, stopping the step (Windows port)."""
+    import stat
+
+    p = tmp_path / "ro.bin"
+    p.write_bytes(b"x")
+    os.chmod(p, stat.S_IREAD)
+    monkeypatch.setattr(sys, "platform", "win32")
+    try:
+        fsync_file(p)
+    finally:
+        os.chmod(p, stat.S_IREAD | stat.S_IWRITE)  # so the temp folder can go
+
+
 def test_fsync_file_flushes_a_closed_file(tmp_path):
     p = tmp_path / "b.bin"
     p.write_bytes(b"x")
