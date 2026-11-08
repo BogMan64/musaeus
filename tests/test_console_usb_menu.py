@@ -59,13 +59,16 @@ def test_on_windows_the_menu_says_so_and_touches_nothing(cfg, monkeypatch, capsy
     con = _console(cfg)
     rec = _Recorder()
     monkeypatch.setattr("subprocess.run", rec)
-    monkeypatch.setattr("builtins.input", lambda *a, **k: pytest.fail("asked a question"))
+    asked: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda prompt="": asked.append(prompt) or "")
     monkeypatch.setattr(sys, "platform", "win32")
 
     con._usb_menu()
 
     assert rec.calls == []
     assert "Linux only" in capsys.readouterr().out
+    # It waits for Enter, so the main menu does not scroll the message away.
+    assert len(asked) == 1 and "Press Enter" in asked[0]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the USB transfer is Linux-only")
