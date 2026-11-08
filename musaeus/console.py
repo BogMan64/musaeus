@@ -1614,6 +1614,11 @@ class Console:
         import subprocess
 
         _section("USB Transfer")
+        if sys.platform == "win32":
+            # shortcut: the transfer wipes and formats with Linux tools (wipefs,
+            # parted, mkfs, /dev/sdX, sudo); a Windows transfer is its own work.
+            _warn("USB transfer runs on Linux only for now. Nothing was touched.")
+            return
         script = _USB_SCRIPT
         if not script.exists():
             _err(f"Script not found: {script}")
