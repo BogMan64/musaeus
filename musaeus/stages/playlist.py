@@ -231,7 +231,7 @@ class PlaylistStage(BaseStage):
             except ValueError:
                 outside.add(source)
                 return None
-            return str(Path("..") / rel)
+            return (Path("..") / rel).as_posix()  # "/" on Windows too: the car unit reads it
 
         # Per-genre playlists
         for genre, tracks in sorted(genre_tracks.items()):

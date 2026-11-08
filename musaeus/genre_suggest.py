@@ -47,6 +47,7 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from .network_policy import check as _network_check
+from .safe_save import fsync_file
 
 logger = logging.getLogger(__name__)
 
@@ -438,8 +439,7 @@ def _write_aside(path: Path, write: Callable[[Path], None]) -> None:
     part = path.with_name(path.name + ".part")
     try:
         write(part)
-        with open(part, "rb") as fh:
-            os.fsync(fh.fileno())
+        fsync_file(part)
         os.replace(part, path)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):

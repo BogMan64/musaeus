@@ -25,7 +25,7 @@ from musaeus.cli_gate import (
     enforce_execution_gate,
     gate_enabled,
 )
-from musaeus.safety.lock import CANONICAL, FIXTURE
+from musaeus.safety.lock import CANONICAL, FIXTURE, canonicalise
 from musaeus.state.migrator import migrate
 from musaeus.state.policy import FUTURE_RECOVERY_ROOT
 
@@ -280,5 +280,5 @@ class TestRequestConstruction:
         assert request.source_root == ready_vault.cfg.inbox
         assert request.destination_root == ready_vault.cfg.alac_library
         assert request.db_path == ready_vault.cfg.db_path
-        assert request.scope.root == str(ready_vault.cfg.vault_root)
+        assert request.scope.root == canonicalise(ready_vault.cfg.vault_root)  # normcase on Windows
         assert request.scope.classification == CANONICAL
