@@ -125,7 +125,7 @@ class TestTheOrderingItRunsIn:
         ).read_text()
         verify = src.index("if not _output_is_complete(")
         carry = src.index("_carry_cover_art(job.src, tmp)")
-        rename = src.index("tmp.rename(job.dst)")
+        rename = src.index("tmp.replace(job.dst)")
         assert verify < carry < rename
 
     def test_the_filter_graph_does_not_map_the_art(self):
