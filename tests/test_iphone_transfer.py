@@ -62,7 +62,7 @@ class TestItIsReadOnly:
     def test_the_source_contains_no_destructive_call(self):
         """The whole contract. It prints an rm for the operator to run
         deliberately; it must never run one itself."""
-        src = SCRIPT.read_text()
+        src = SCRIPT.read_text(encoding="utf-8")
         for bad in (
             "shutil.rmtree",
             "os.remove",
@@ -75,7 +75,7 @@ class TestItIsReadOnly:
     def test_it_never_invokes_ifuse_or_rsync(self):
         """Mounting and copying are the operator's to run. The only commands
         this may execute are the read-only probes."""
-        src = SCRIPT.read_text()
+        src = SCRIPT.read_text(encoding="utf-8")
         body = src[src.index("def main(") :]
         for cmd in ('"ifuse"', '"rsync"', '"fusermount"'):
             assert f"_run([{cmd}" not in body, f"must not execute {cmd}"
@@ -86,7 +86,7 @@ class TestItIsReadOnly:
         bracket-regex guard, which cannot tell a bracket ALPHABET from a
         bracket that happens to appear in source code -- and the guard is
         right to be blunt about it."""
-        src = SCRIPT.read_text()
+        src = SCRIPT.read_text(encoding="utf-8")
         calls = set()
         needle = "_run(["
         i = src.find(needle)
@@ -117,7 +117,7 @@ class TestItPrintsUsableSteps:
         ]
         assert block, "no commands found to check"
         script = tmp_path / "paste.sh"
-        script.write_text("\n".join(block) + "\n")
+        script.write_text("\n".join(block) + "\n", encoding="utf-8")
         r = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
         assert r.returncode == 0, f"the paste does not parse: {r.stderr}"
 

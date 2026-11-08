@@ -35,7 +35,7 @@ def test_does_not_match_the_shell_that_is_asking(tmp_path):
         capture_output=True,
         text=True,
     )
-    asker = pidfile.read_text().strip()
+    asker = pidfile.read_text(encoding="utf-8").strip()
     reported = set(r.stdout.split())
     assert asker not in reported, (
         f"reported the asking shell itself (pid {asker}); this is the pgrep -f self-match trap"

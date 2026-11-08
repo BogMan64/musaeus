@@ -150,7 +150,7 @@ def test_playlists_in_the_car_folder_are_not_unknown_files(cfg):
     # files. A real stray song is still listed.
     _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
     (cfg.car_library / "Playlists").mkdir(parents=True)
-    (cfg.car_library / "Playlists" / "Rock.m3u8").write_text("#EXTM3U\n")
+    (cfg.car_library / "Playlists" / "Rock.m3u8").write_text("#EXTM3U\n", encoding="utf-8")
     stray = cfg.car_library / "Nobody" / "Nothing" / "Nobody - Stray.m4a"
     stray.parent.mkdir(parents=True)
     stray.write_bytes(b"\0")
@@ -238,7 +238,10 @@ def test_only_the_edition_kinds_name_the_edition_folders():
         str(p.relative_to(root))
         for p in [*(root / "musaeus").rglob("*.py"), *(root / "scripts").rglob("*.py")]
         if p not in home
-        and ('"car_library"' in p.read_text() or '"iphone_library"' in p.read_text())
+        and (
+            '"car_library"' in p.read_text(encoding="utf-8")
+            or '"iphone_library"' in p.read_text(encoding="utf-8")
+        )
     ]
     assert offenders == [], offenders
 
@@ -500,12 +503,14 @@ def test_a_car_build_writes_the_playlists_that_travel_with_it(cfg):
     conn.close()
     playlists = cfg.car_library / "Playlists"
     playlists.mkdir(parents=True)
-    (playlists / "Holiday.m3u8").write_text("#EXTM3U\n../Old/Gone/Old - Gone.m4a\n")
+    (playlists / "Holiday.m3u8").write_text(
+        "#EXTM3U\n../Old/Gone/Old - Gone.m4a\n", encoding="utf-8"
+    )
     r = _cli(cfg, "car")
     assert r.returncode == 0, r.stdout + r.stderr
     rock = playlists / "Rock.m3u8"
     assert rock.is_file(), r.stdout
-    assert "../Stones/Hits/The Rolling Stones - Angie.m4a" in rock.read_text()
+    assert "../Stones/Hits/The Rolling Stones - Angie.m4a" in rock.read_text(encoding="utf-8")
     assert not (playlists / "Holiday.m3u8").exists(), "a stale playlist travelled on"
 
 
@@ -525,14 +530,14 @@ def test_an_unchanged_playlist_is_left_as_it_was(cfg):
     r = _cli(cfg, "car")
     assert r.returncode == 0, r.stdout + r.stderr
     rock = cfg.car_library / "Playlists" / "Rock.m3u8"
-    before = rock.read_text()
+    before = rock.read_text(encoding="utf-8")
     os.utime(rock, ns=(1_000_000_000, 1_000_000_000))
 
     r = _cli(cfg, "car")
 
     assert r.returncode == 0, r.stdout + r.stderr
     assert rock.is_file(), "an unchanged playlist was swept out as stale"
-    assert rock.read_text() == before
+    assert rock.read_text(encoding="utf-8") == before
     assert rock.stat().st_mtime_ns == 1_000_000_000, "rewritten with the same lines"
 
 
@@ -708,7 +713,7 @@ def test_playlists_are_left_as_they_are_when_nothing_is_catalogued(cfg):
     playlists = cfg.car_library / "Playlists"
     playlists.mkdir(parents=True, exist_ok=True)
     kept = playlists / "Rock.m3u8"
-    kept.write_text("#EXTM3U\n../Stones/Hits/The Rolling Stones - Angie.m4a\n")
+    kept.write_text("#EXTM3U\n../Stones/Hits/The Rolling Stones - Angie.m4a\n", encoding="utf-8")
     wipe = sqlite3.connect(cfg.db_path)
     wipe.execute("DELETE FROM archive")
     wipe.commit()

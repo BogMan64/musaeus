@@ -86,7 +86,7 @@ def test_an_unreadable_source_is_indistinguishable_from_a_bad_output(tmp_path: P
     good_out = _tone(tmp_path / "good_out.m4a", 5.0)
 
     unreadable_src = tmp_path / "unreadable.m4a"
-    unreadable_src.write_text("not audio at all")
+    unreadable_src.write_text("not audio at all", encoding="utf-8")
     assert _output_matches_source(unreadable_src, good_out) is False
 
     real_src = _tone(tmp_path / "real.m4a", 5.0)
@@ -98,7 +98,7 @@ def test_an_unreadable_source_is_indistinguishable_from_a_bad_output(tmp_path: P
 def test_probe_returns_none_for_an_unreadable_source(tmp_path: Path) -> None:
     """The signal the fix keys on."""
     junk = tmp_path / "junk.m4a"
-    junk.write_text("not audio at all")
+    junk.write_text("not audio at all", encoding="utf-8")
     assert _probe_duration(junk) is None
     assert _probe_duration(tmp_path / "does_not_exist.m4a") is None
     assert _probe_duration(_tone(tmp_path / "ok.m4a", 2.0)) == pytest.approx(2.0, abs=0.3)
@@ -128,7 +128,7 @@ def _run_resume_branch(source: Path, output: Path) -> str:
 def test_a_good_encode_survives_an_unreadable_source(tmp_path: Path) -> None:
     """The finding. Before the fix this deleted `output`."""
     source = tmp_path / "master.m4a"
-    source.write_text("the master has rotted, or was replaced by junk")
+    source.write_text("the master has rotted, or was replaced by junk", encoding="utf-8")
     output = _tone(tmp_path / "car.m4a", 5.0)
 
     with pytest.raises(RuntimeError):
@@ -179,7 +179,7 @@ def test_the_guard_is_present_in_the_shipped_code() -> None:
     Without this, the reproduction could pass for ever while the shipped
     caller went back to deleting — which is how a fixed defect comes back.
     """
-    src = Path(bal.__file__).read_text()
+    src = Path(bal.__file__).read_text(encoding="utf-8")
     branch = src.split("if output_file.exists() and not FORCE_REENCODE:")[1][:1400]
     guard = branch.index("_probe_duration(file_path) is None")
     unlink = branch.index("output_file.unlink()")

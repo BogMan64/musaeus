@@ -10,7 +10,9 @@ from pathlib import Path
 
 
 def test_audit_counts_the_review_queues_among_its_final_roots():
-    src = (Path(__file__).resolve().parent.parent / "musaeus" / "stages" / "audit.py").read_text()
+    src = (Path(__file__).resolve().parent.parent / "musaeus" / "stages" / "audit.py").read_text(
+        encoding="utf-8"
+    )
     block = src.split("final_roots = [", 1)[1].split("]", 1)[0]
     assert "dupes_review_dir" in block, "held dupes would be reported misplaced"
     assert "tribute_review_dir" in block
@@ -23,6 +25,8 @@ def test_audit_counts_the_review_queues_among_its_final_roots():
 
 
 def test_the_roots_are_config_derived_not_folder_names():
-    src = (Path(__file__).resolve().parent.parent / "musaeus" / "stages" / "audit.py").read_text()
+    src = (Path(__file__).resolve().parent.parent / "musaeus" / "stages" / "audit.py").read_text(
+        encoding="utf-8"
+    )
     block = src.split("final_roots = [", 1)[1].split("]", 1)[0]
     assert "DUPES_MOVED" not in block, "name-based root reintroduced"

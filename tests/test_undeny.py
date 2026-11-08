@@ -86,7 +86,7 @@ def vault(tmp_path, monkeypatch):
 
 def _run(vault, ids, execute=True):
     f = vault / "ids.txt"
-    f.write_text("\n".join(str(i) for i in ids))
+    f.write_text("\n".join(str(i) for i in ids), encoding="utf-8")
     cmd = [sys.executable, str(SCRIPT), str(f), "--reason", "kept after review"]
     if execute:
         cmd.append("--execute")

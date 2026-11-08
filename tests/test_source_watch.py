@@ -20,9 +20,9 @@ from musaeus.safety.source_watch import SourceWatch, auto_restart_enabled
 @pytest.fixture
 def pkg(tmp_path: Path) -> Path:
     (tmp_path / "sub").mkdir()
-    (tmp_path / "a.py").write_text("x = 1\n")
-    (tmp_path / "sub" / "b.py").write_text("y = 2\n")
-    (tmp_path / "notes.txt").write_text("not source\n")
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "sub" / "b.py").write_text("y = 2\n", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("not source\n", encoding="utf-8")
     return tmp_path
 
 
@@ -32,13 +32,13 @@ class TestDriftDetection:
 
     def test_an_edit_drifts(self, pkg):
         w = SourceWatch(pkg)
-        (pkg / "a.py").write_text("x = 2\n")
+        (pkg / "a.py").write_text("x = 2\n", encoding="utf-8")
         assert w.drifted()
         assert [p.name for p in w.drifted_files()] == ["a.py"]
 
     def test_a_new_file_drifts(self, pkg):
         w = SourceWatch(pkg)
-        (pkg / "c.py").write_text("z = 3\n")
+        (pkg / "c.py").write_text("z = 3\n", encoding="utf-8")
         assert w.drifted()
 
     def test_a_deleted_file_drifts(self, pkg):
@@ -56,7 +56,7 @@ class TestDriftDetection:
 
     def test_non_python_files_are_ignored(self, pkg):
         w = SourceWatch(pkg)
-        (pkg / "notes.txt").write_text("changed\n")
+        (pkg / "notes.txt").write_text("changed\n", encoding="utf-8")
         assert not w.drifted()
 
     def test_pycache_is_ignored(self, pkg):
@@ -65,7 +65,7 @@ class TestDriftDetection:
         cache = pkg / "__pycache__"
         cache.mkdir()
         (cache / "a.cpython-311.pyc").write_bytes(b"\x00\x01")
-        (cache / "stale.py").write_text("junk = 1\n")
+        (cache / "stale.py").write_text("junk = 1\n", encoding="utf-8")
         assert not w.drifted()
 
 

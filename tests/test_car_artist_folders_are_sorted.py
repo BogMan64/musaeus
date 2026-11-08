@@ -130,7 +130,7 @@ class TestItRunsBeforeThePathsAreRecorded:
         a phantom."""
         src = (
             Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         call = src.index("_sort_artist_folders(final_dir)")
         index = src.index("output_index = _index_output_by_tags(final_dir)")
         assert call < index, "the folders must be filed before their paths are recorded"

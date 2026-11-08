@@ -78,7 +78,7 @@ class TestTheWrapperTellsTheEncoderWhereToLook:
         pass the root -- which is the half that actually broke the build."""
         src = (
             Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         assert 'env["MUSAEUS_PUBLISHED_ROOT"]' in src
 
     def test_the_wrapper_does_not_use_dest_root_before_it_exists(self):
@@ -87,7 +87,7 @@ class TestTheWrapperTellsTheEncoderWhereToLook:
         caught before it fired, and pinned so it cannot come back."""
         src = (
             Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         env_line = src.index('env["MUSAEUS_PUBLISHED_ROOT"]')
         assign = src.index("dest_root = cfg.iphone_library")
         assert env_line < assign, "test premise: the env line comes first"
@@ -128,7 +128,7 @@ class TestItAgreesWithThePublisherAboutTheLayout:
         restatement of it, so the two cannot drift apart again quietly."""
         src = (
             Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         assert "tail = rel[-3:]" in src, (
             "publish_edition's rule changed -- _published_twin must change with it"
         )
@@ -159,7 +159,7 @@ class TestAMaskingRunDoesNotInheritThePreviousEdition:
     def test_the_wrapper_withholds_the_published_root_when_masking(self):
         src = (
             Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         assert "if not apply_masking:" in src, (
             "the published-twin skip must be conditional on masking"
         )
@@ -173,7 +173,7 @@ class TestAMaskingRunDoesNotInheritThePreviousEdition:
         real run, and a nine-hour job is a bad place to find one."""
         src = (
             Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         decided = min(src.index("apply_masking = True"), src.index("apply_masking = False"))
         used = src.index("if not apply_masking:")
         assert decided < used, "apply_masking must be decided before it is read"
@@ -184,5 +184,5 @@ class TestAMaskingRunDoesNotInheritThePreviousEdition:
         skip this turns off."""
         src = (
             Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         assert 'env.pop("MUSAEUS_PUBLISHED_ROOT", None)' in src
