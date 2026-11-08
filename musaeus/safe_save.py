@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
+import stat
 import sys
 import tempfile
 from collections.abc import Callable
@@ -31,14 +32,22 @@ def fsync_file(path: Path | str) -> None:
     """
     try:
         fd = os.open(path, os.O_RDWR if sys.platform == "win32" else os.O_RDONLY)
-    except PermissionError:
-        if sys.platform != "win32":
-            raise
+    except PermissionError as exc:
         # shortcut: a file marked read-only (copy2 carries the flag) gives no
         # writable handle, so Windows cannot flush it by name; it reaches disk
         # with the OS cache. Upgrade (clear the flag around the flush) if a
-        # power cut ever costs such a file.
-        return
+        # power cut ever costs such a file. Only that case: the flag is set
+        # (then no writable handle can exist) and the error is access denied
+        # (5) or carries no Windows code (os.open may give errno only). A
+        # sharing violation (32, a scanner holding it) or a file without the
+        # flag still stops the step (CodeRabbit, #295).
+        if (
+            sys.platform == "win32"
+            and not os.stat(path).st_mode & stat.S_IWRITE
+            and getattr(exc, "winerror", None) in (None, 5)
+        ):
+            return
+        raise
     try:
         os.fsync(fd)
     finally:
