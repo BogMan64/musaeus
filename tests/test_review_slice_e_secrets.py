@@ -6,10 +6,14 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 
 import pytest
 
 from musaeus.setup import wizard
+
+#: POSIX file modes. Windows keeps a file private with access lists instead.
+posix_modes = pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
 
 SECRET = "FAKEKEY-abcdef-SECRET-TAIL"
 
@@ -42,6 +46,7 @@ def test_the_wizard_never_shows_a_saved_key(config_dir, tmp_path, monkeypatch, c
     assert f"ACOUSTICID_API_KEY={SECRET}" in (config_dir / "credentials.env").read_text()
 
 
+@posix_modes
 def test_the_wizard_saves_credentials_readable_by_grey_alone(config_dir, tmp_path, monkeypatch):
     _run(tmp_path, monkeypatch)
     assert stat.S_IMODE((config_dir / "credentials.env").stat().st_mode) == 0o600
@@ -88,6 +93,7 @@ def test_a_key_typed_in_is_saved_and_not_shown(config_dir, tmp_path, monkeypatch
     assert f"ACOUSTICID_API_KEY={typed}" in (config_dir / "credentials.env").read_text()
 
 
+@posix_modes
 def test_the_key_manager_saves_private(config_dir, monkeypatch, capsys):
     for key in wizard.MANAGED_KEYS:
         monkeypatch.delenv(key, raising=False)
@@ -111,6 +117,7 @@ def test_a_symlinked_file_stays_a_symlink(config_dir, tmp_path):
     assert real.read_text() == "ACOUSTICID_API_KEY=new\n"
 
 
+@posix_modes
 def test_a_settings_file_keeps_its_mode(config_dir):
     settings = config_dir / "settings.env"
     settings.write_text("MUSAEUS_VAULT_ROOT=/v\n")

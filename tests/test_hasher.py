@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 import threading
 import time
 from pathlib import Path
@@ -29,6 +30,11 @@ from musaeus.hasher import HasherError, audio_hash
 
 _FLOOD_BYTES = 2_000_000
 _DEADLOCK_TIMEOUT = 15
+
+
+#: The stand-in runs by its #! line, which Windows does not read: there the
+#: real ffmpeg would answer instead.
+needs_shebang = pytest.mark.skipif(sys.platform == "win32", reason="stand-in ffmpeg needs #!")
 
 
 def _fake_ffmpeg(directory: Path, body: str) -> None:
@@ -74,6 +80,7 @@ def flooding_ffmpeg(tmp_path, monkeypatch):
     return src
 
 
+@needs_shebang
 def test_a_flood_of_stderr_does_not_deadlock(flooding_ffmpeg):
     """THE regression. Without concurrent draining this never returns."""
     finished, box, elapsed = _run_with_deadlock_guard(lambda: audio_hash(flooding_ffmpeg))
@@ -85,6 +92,7 @@ def test_a_flood_of_stderr_does_not_deadlock(flooding_ffmpeg):
     assert isinstance(box["value"], str) and len(box["value"]) == 64
 
 
+@needs_shebang
 def test_the_hash_is_of_stdout_not_stderr(flooding_ffmpeg):
     """Draining stderr must not let it contaminate the digest."""
     import hashlib
@@ -94,6 +102,7 @@ def test_the_hash_is_of_stdout_not_stderr(flooding_ffmpeg):
     assert box["value"] == hashlib.sha256(b"A" * 1024).hexdigest()
 
 
+@needs_shebang
 def test_a_failing_ffmpeg_still_reports_its_stderr(tmp_path, monkeypatch):
     """The diagnostic must survive being drained on a thread."""
     monkeypatch.setenv("PATH", os.environ["PATH"])
@@ -110,6 +119,7 @@ def test_a_failing_ffmpeg_still_reports_its_stderr(tmp_path, monkeypatch):
     assert "Invalid data found" in str(box["error"])
 
 
+@needs_shebang
 def test_a_silent_failing_ffmpeg_is_still_an_error(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", os.environ["PATH"])
     _fake_ffmpeg(tmp_path, "import sys\nsys.exit(3)\n")

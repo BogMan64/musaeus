@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import json
 import os
-import pwd
 import shutil
 import subprocess
 from pathlib import Path
@@ -68,6 +67,8 @@ def _scan(*paths: str) -> dict:
     The real home comes from the password database rather than the
     environment, so it is unaffected by the redirect.
     """
+    import pwd  # here, not at the top: Windows has no pwd and the module must import
+
     env = dict(os.environ)
     env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
     proc = subprocess.run(

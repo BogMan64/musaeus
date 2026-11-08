@@ -21,6 +21,9 @@ from types import SimpleNamespace
 
 import pytest
 
+if sys.platform == "win32":  # udisks, findmnt, fsck, O_NOFOLLOW: a Linux tool
+    pytest.skip("the USB transfer script is Linux-only", allow_module_level=True)
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import scripts.usb_transfer.transfer_to_usb as usb  # noqa: E402

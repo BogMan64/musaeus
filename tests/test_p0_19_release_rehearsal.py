@@ -41,7 +41,6 @@ import atexit
 import json
 import os
 import pathlib
-import pwd
 import shutil
 import sqlite3
 import subprocess
@@ -1856,13 +1855,18 @@ def test_g10_scheduled_run_is_preview_or_review_only(fixture_home):
         # naming a person: the first directory with 50 GB wins, and if none has
         # it the gate skips rather than reporting a failure it cannot tell apart
         # from a real one.
+        # NOT Path.home(): this rehearsal deliberately sandboxes HOME to a
+        # fixture dir, so Path.home() would report the fixture's tmpfs and
+        # this gate would skip on the one machine it can actually run on.
+        # The passwd database is not monkeypatched. Windows has none.
+        real_home_cache = None
+        if sys.platform != "win32":
+            import pwd
+
+            real_home_cache = str(pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir) / ".cache")
         candidates = [
             os.environ.get("MUSAEUS_TEST_SCRATCH"),
-            # NOT Path.home(): this rehearsal deliberately sandboxes HOME to a
-            # fixture dir, so Path.home() would report the fixture's tmpfs and
-            # this gate would skip on the one machine it can actually run on.
-            # The passwd database is not monkeypatched.
-            str(pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir) / ".cache"),
+            real_home_cache,
             tempfile.gettempdir(),
         ]
         wrapper_root = None

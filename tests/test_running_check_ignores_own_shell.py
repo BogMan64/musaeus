@@ -5,7 +5,13 @@ reported a running pipeline when nothing was running.
 """
 
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
+
+if sys.platform == "win32":  # a bash script around pgrep
+    pytest.skip("musaeus_running.sh is Linux-only", allow_module_level=True)
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "musaeus_running.sh"
 

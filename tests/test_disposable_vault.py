@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import socket
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,7 @@ from tests.disposable_vault import (
 # ── PathGuard: blocks real-library and real-config paths ─────────────────────
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="it guards this Linux box's real paths")
 class TestPathGuardBlocksRealPaths:
     """
     The core P0-01 safety proof: deliberately try to touch each protected
