@@ -36,7 +36,6 @@ a lock that can be defeated by a stale write.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -44,6 +43,7 @@ import socket
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from musaeus.file_lock import process_alive, try_lock, unlock
 from musaeus.state.schema import StateError, utc_now_iso
 
 # ── Scope classification ──────────────────────────────────────────────────────
@@ -224,21 +224,6 @@ class LockOwner:
         )
 
 
-def _process_is_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # It exists; we simply may not signal it. Existence is the answer.
-        return True
-    except OSError:
-        return True
-    return True
-
-
 # ── The lock ──────────────────────────────────────────────────────────────────
 
 
@@ -270,7 +255,7 @@ class LockHandle:
         if current is not None and current.run_id == self.owner.run_id:
             self.meta_path.unlink(missing_ok=True)
         try:
-            fcntl.flock(self._fd, fcntl.LOCK_UN)
+            unlock(self._fd)
         finally:
             os.close(self._fd)
 
@@ -355,7 +340,7 @@ def acquire(
 
     fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try_lock(fd, exclusive=True)
     except OSError as exc:
         os.close(fd)
         holder = observe(scope, lock_dir)
@@ -375,7 +360,7 @@ def acquire(
     if stale is not None:
         blocking_reason = _refuses_takeover(stale)
         if blocking_reason is not None:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            unlock(fd)
             os.close(fd)
             raise LockConflictError(
                 f"scope {scope.root!r} records owner {stale.describe()}, and {blocking_reason}; "
@@ -412,6 +397,6 @@ def _refuses_takeover(stale: LockOwner) -> str | None:
         return f"it was recorded on another host ({stale.hostname}), whose process state is unknowable from here"
     if stale.boot_id != _boot_id():
         return None  # different boot: that PID cannot be the same process
-    if _process_is_alive(stale.pid):
+    if process_alive(stale.pid):
         return f"process {stale.pid} is still alive"
     return None
