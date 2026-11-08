@@ -15,10 +15,28 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
+import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
+
+
+def fsync_dir(folder: Path | str) -> None:
+    """Make a rename in *folder* durable: fsync the folder itself.
+
+    Without it the rename can be lost even when the file's own data is safe.
+    Windows cannot open a folder as a file, and NTFS journals the rename on
+    its own, so there it does nothing (Windows port, 2026-11-08: four copies
+    of this block raised after every successful save there).
+    """
+    if sys.platform == "win32":
+        return
+    fd = os.open(folder, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def copy_to_new(src: Path | str, dst: Path | str) -> None:
@@ -37,7 +55,9 @@ def copy_to_new(src: Path | str, dst: Path | str) -> None:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(dst)
         try:
-            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            # Windows has no O_NOFOLLOW; there O_EXCL alone refuses a link at the name.
+            no_follow = getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow, 0o600)
         except FileExistsError:
             raise OSError(f"{dst} was claimed by something else while it was being made") from None
         with os.fdopen(fd, "wb") as wf:
@@ -76,11 +96,7 @@ def change_beside(
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp)
         raise
-    dir_fd = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+    fsync_dir(path.parent)
 
 
 def write_new(path: Path, data: bytes) -> None:

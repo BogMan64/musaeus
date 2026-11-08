@@ -27,6 +27,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .safe_save import fsync_dir
+
 logger = logging.getLogger(__name__)
 
 
@@ -129,11 +131,7 @@ def write_review_tsv(path: Path, entries: list[ReviewEntry]) -> int:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(part)
         raise
-    dir_fd = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+    fsync_dir(path.parent)
     return len(entries)
 
 
