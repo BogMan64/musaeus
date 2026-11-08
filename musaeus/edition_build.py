@@ -759,7 +759,8 @@ def busy_musaeus(procs: Iterable[tuple[int, int, str, list[str]]], me: int) -> l
 def _proc_table() -> Iterator[tuple[int, int, str, list[str]]]:
     for d in Path("/proc").glob("[0-9]*"):
         try:
-            stat = (d / "stat").read_text(encoding="utf-8")
+            # replace: the kernel cuts a long name mid-character (CodeRabbit, #299)
+            stat = (d / "stat").read_text(encoding="utf-8", errors="replace")
             argv = [a.decode("utf-8", "replace") for a in (d / "cmdline").read_bytes().split(b"\0")]
         except OSError:
             continue
