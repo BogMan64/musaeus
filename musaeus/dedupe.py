@@ -125,7 +125,8 @@ def _not_interrupted() -> Iterator[None]:
     if threading.current_thread() is not threading.main_thread():
         yield
         return
-    sigs = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    # Windows has no SIGHUP: only the signals this OS has.
+    sigs = tuple(getattr(signal, n) for n in ("SIGINT", "SIGTERM", "SIGHUP") if hasattr(signal, n))
     old = {s: signal.getsignal(s) for s in sigs}
     asked: list[float] = []
 

@@ -15,11 +15,51 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
+import stat
 import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
+
+
+def fsync_file(path: Path | str) -> None:
+    """Force a written, closed file's bytes to disk, by name.
+
+    Windows flushes only a handle opened for writing: fsync on a read-only
+    one raised "Bad file descriptor" there (Windows port, 2026-11-08). POSIX
+    keeps read-only, which also works on a copy that inherited a read-only mode.
+    """
+    try:
+        fd = os.open(path, os.O_RDWR if sys.platform == "win32" else os.O_RDONLY)
+    except PermissionError as exc:
+        # A file marked read-only (copy2 carries the flag) gives no writable
+        # handle, and finalize deletes the source after this flush: clear the
+        # flag around it (CodeRabbit, #295). Only that case: the flag is set and
+        # the error is access denied (5) or carries no Windows code (os.open may
+        # give errno only). A sharing violation (32, a scanner holding it) or a
+        # file without the flag still stops the step.
+        mode = os.stat(path).st_mode
+        if not (
+            sys.platform == "win32"
+            and not mode & stat.S_IWRITE
+            and getattr(exc, "winerror", None) in (None, 5)
+        ):
+            raise
+        os.chmod(path, mode | stat.S_IWRITE)
+        try:
+            fd = os.open(path, os.O_RDWR)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        finally:
+            os.chmod(path, mode)
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def fsync_dir(folder: Path | str) -> None:
@@ -89,8 +129,7 @@ def change_beside(
         change(tmp)
         if check is not None:
             check(tmp)
-        with open(tmp, "rb") as fh:
-            os.fsync(fh.fileno())
+        fsync_file(tmp)
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):

@@ -211,8 +211,10 @@ class IdleThrottle:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=5)
-        # Never leave children frozen because the build ended mid-pause.
-        self._signal(signal.SIGCONT)
+            # Never leave children frozen because the build ended mid-pause.
+            # Only the thread pauses anything; without it (no X, or Windows,
+            # which has no SIGCONT) there is nothing to resume.
+            self._signal(signal.SIGCONT)
         self._mark_paused(False)
         return None
 

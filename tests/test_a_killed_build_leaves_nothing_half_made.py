@@ -26,6 +26,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 pytestmark = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not available")
 
+if sys.platform == "win32":  # before the parametrize below names SIGHUP
+    pytest.skip("POSIX kill signals and /proc", allow_module_level=True)
+
 
 def _ffmpegs_writing(tmp_path: Path) -> list[int]:
     found = []

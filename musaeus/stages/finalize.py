@@ -103,7 +103,7 @@ from ..context import RunContext, StageResult, elision
 from ..db import open_hash_index, record_finalized_hash
 from ..filing import load as filing_load
 from ..hasher import audio_hash_safe, file_hash
-from ..safe_save import copy_to_new, fsync_dir
+from ..safe_save import copy_to_new, fsync_dir, fsync_file
 from ..safety.mutation import MutationBoundary, PreconditionError, UnmanagedPathError
 from ..safety.recovery import (
     JOURNAL_FILENAME,
@@ -185,8 +185,7 @@ def _copy_then_verify_then_swap(source: Path, target: Path) -> None:
         # The directory fsync is the half people forget: without it the
         # rename can be lost even when the file's own data is safe, leaving
         # the bytes on disk under a name nothing points to.
-        with open(tmp_target, "rb") as fh:
-            os.fsync(fh.fileno())
+        fsync_file(tmp_target)
 
         tmp_target.rename(target)  # tmp_target and target share a parent -> atomic
 
