@@ -60,6 +60,10 @@ from tests.disposable_vault import (
     snapshot_vault_state,
 )
 
+#: A Linux release gate: it sandboxes HOME and PATH the POSIX way. On Windows
+#: Python reads USERPROFILE, so the decoy settings are never found.
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX release rehearsal")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EVIDENCE_DIR = REPO_ROOT / "docs" / "p0_evidence" / "P0-19"
 

@@ -46,7 +46,8 @@ _RULES = _ROOT / ".semgrep" / "rules.yml"
 _IGNORE = _ROOT / ".semgrepignore"
 
 needs_semgrep = pytest.mark.skipif(
-    not shutil.which("semgrep"), reason="semgrep is a dev dependency"
+    not shutil.which("semgrep") or os.name == "nt",
+    reason="semgrep is a dev dependency and these tests need Unix (pwd, HOME)",
 )
 
 
@@ -156,7 +157,7 @@ def test_every_suppression_carries_a_reason() -> None:
     for path in sorted((_ROOT / "tests").rglob("*.py")):
         if path == Path(__file__):
             continue  # this file discusses suppressions; it does not use them
-        for i, line in enumerate(path.read_text().splitlines(), 1):
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.strip()
             # An actual suppression is a COMMENT. Prose that mentions the
             # word is not one -- a first draft of this check flagged its own
