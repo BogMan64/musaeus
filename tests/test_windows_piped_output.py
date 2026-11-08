@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_preflight_output_survives_a_cp1252_pipe(tmp_path: Path) -> None:
+    """`musaeus preflight` piped through cp1252 prints its check marks and exits 0."""
     vault = tmp_path / "vault"
     (vault / "INBOX").mkdir(parents=True)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("MUSAEUS_", "PYTHONUTF8"))}
@@ -35,3 +36,5 @@ def test_preflight_output_survives_a_cp1252_pipe(tmp_path: Path) -> None:
     err = done.stderr.decode("utf-8", "replace")
     assert "UnicodeEncodeError" not in err, err[-2000:]
     assert "✓" in done.stdout.decode("utf-8"), err[-2000:]
+    # Preflight is report-only: it exits 0 even when tools are missing.
+    assert done.returncode == 0, err[-2000:]
