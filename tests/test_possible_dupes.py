@@ -100,7 +100,11 @@ def test_the_sheet_and_the_catalogue(tmp_path, conn):
     pd.write_sheet(pd.find(conn), sheet, [Path("/lib")])
     with open(sheet, encoding="utf-8-sig", newline="") as fh:
         (row,) = list(csv.DictReader(fh))
-    assert row["file_a"] == "Rock/A/1.m4a" and row["length_a"] == "2:30" and row["decide"] == ""
+    assert (
+        Path(row["file_a"]).as_posix() == "Rock/A/1.m4a"
+        and row["length_a"] == "2:30"
+        and row["decide"] == ""
+    )
     assert conn.execute("SELECT * FROM archive ORDER BY file_path").fetchall() == before
     assert not [p for p in tmp_path.iterdir() if p.name.endswith(".part")]
 

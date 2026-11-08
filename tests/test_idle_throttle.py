@@ -23,6 +23,8 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 from musaeus.idle_throttle import (
     DEFAULT_IDLE_S,
     IdleThrottle,
@@ -78,6 +80,9 @@ class TestNeverLeavesChildrenFrozen:
             t._paused = True  # pretend a pause was in effect
         assert t._stop.is_set()
 
+    @pytest.mark.skipif(
+        not hasattr(signal, "SIGSTOP"), reason="no SIGSTOP (Windows); no X idle there either"
+    )
     def test_stopping_a_real_child_and_resuming_it_works(self) -> None:
         """SIGSTOP/SIGCONT round-trip: the mechanism the throttle relies on.
         A stopped process reports state T and runs again after SIGCONT."""

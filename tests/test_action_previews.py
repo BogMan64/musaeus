@@ -69,8 +69,10 @@ def test_organize_lists_move_and_keeps_source(vault) -> None:
     assert stage.candidates == 1
     assert stage.actions[0]["action"] == "move"
     assert stage.actions[0]["source"] == str(source)
-    assert stage.actions[0]["destination"].endswith(
-        "Unsorted/Test Artist/Album/Test Artist - Song.m4a"
+    assert (
+        Path(stage.actions[0]["destination"])
+        .as_posix()
+        .endswith("Unsorted/Test Artist/Album/Test Artist - Song.m4a")
     )
     assert source.exists()
     assert not Path(stage.actions[0]["destination"]).exists()

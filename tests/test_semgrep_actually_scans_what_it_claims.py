@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import json
 import os
-import pwd
 import shutil
 import subprocess
 from pathlib import Path
@@ -47,7 +46,8 @@ _RULES = _ROOT / ".semgrep" / "rules.yml"
 _IGNORE = _ROOT / ".semgrepignore"
 
 needs_semgrep = pytest.mark.skipif(
-    not shutil.which("semgrep"), reason="semgrep is a dev dependency"
+    not shutil.which("semgrep") or os.name == "nt",
+    reason="semgrep is a dev dependency and these tests need Unix (pwd, HOME)",
 )
 
 
@@ -68,6 +68,8 @@ def _scan(*paths: str) -> dict:
     The real home comes from the password database rather than the
     environment, so it is unaffected by the redirect.
     """
+    import pwd  # here, not at the top: Windows has no pwd and the module must import
+
     env = dict(os.environ)
     env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
     proc = subprocess.run(
@@ -88,13 +90,13 @@ def _scan(*paths: str) -> dict:
 def test_a_semgrepignore_exists_and_re_includes_tests() -> None:
     """Without this file, semgrep's defaults silently drop the tests tree."""
     assert _IGNORE.exists(), ".semgrepignore is gone; tests/ is unscanned again"
-    body = _IGNORE.read_text()
+    body = _IGNORE.read_text(encoding="utf-8")
     assert "!tests/" in body, "tests/ is no longer re-included"
 
 
 def test_the_vendor_exclusion_is_explicit_not_accidental() -> None:
     """It was excluded by a default nobody chose. Now it is a decision."""
-    body = _IGNORE.read_text()
+    body = _IGNORE.read_text(encoding="utf-8")
     assert "scripts/car_library/vendor/" in body
     assert "vendoring IS a deliberate re-implementation" in body, (
         "the vendor exclusion has lost the reason it was made"
@@ -155,7 +157,7 @@ def test_every_suppression_carries_a_reason() -> None:
     for path in sorted((_ROOT / "tests").rglob("*.py")):
         if path == Path(__file__):
             continue  # this file discusses suppressions; it does not use them
-        for i, line in enumerate(path.read_text().splitlines(), 1):
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.strip()
             # An actual suppression is a COMMENT. Prose that mentions the
             # word is not one -- a first draft of this check flagged its own

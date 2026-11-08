@@ -184,7 +184,7 @@ def test_a_cross_genre_merge_lands_in_the_targets_genre(vault):
     )
     row = _row(vault, rid)
     assert row["genre"] == "Folk Rock"
-    assert "/Folk Rock/Crosby, Stills, Nash & Young/Deja Vu/" in row["file_path"]
+    assert "/Folk Rock/Crosby, Stills, Nash & Young/Deja Vu/" in Path(row["file_path"]).as_posix()
     assert not (vault.cfg.alac_archive / "Hip Hop").exists()
 
 
@@ -200,7 +200,7 @@ def test_a_target_with_no_rows_keeps_each_rows_own_genre(vault):
     assert row["artist"] == "Grover Washington, Jr."
     # The folder drops the trailing dot, as every library folder does
     # (Hank Williams Jr, Run-D.M.C) -- but the suffix itself must not be split off.
-    assert "/Jazz/Grover Washington, Jr/Winelight/" in row["file_path"]
+    assert "/Jazz/Grover Washington, Jr/Winelight/" in Path(row["file_path"]).as_posix()
 
 
 def test_same_name_with_genre_refiles_in_place(vault):
@@ -211,7 +211,9 @@ def test_same_name_with_genre_refiles_in_place(vault):
         vault.mod.plan_merge(vault.cfg, vault.conn, "Delerium", "Delerium", "Celtic"),
     )
     row = _row(vault, rid)
-    assert row["genre"] == "Celtic" and "/Celtic/Delerium/Karma/" in row["file_path"]
+    assert (
+        row["genre"] == "Celtic" and "/Celtic/Delerium/Karma/" in Path(row["file_path"]).as_posix()
+    )
 
 
 @pytest.mark.parametrize("same_bytes", [False, True])

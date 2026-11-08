@@ -32,7 +32,7 @@ def test_the_tests_own_switches_are_not_cleared():
     (conftest,) = [
         m
         for m in list(sys.modules.values())
-        if str(getattr(m, "__file__", "")).endswith("tests/conftest.py")
+        if str(getattr(m, "__file__", "")).replace("\\", "/").endswith("tests/conftest.py")
     ]
     assert "MUSAEUS_ALAC_ARCHIVE" in conftest._CLEARED_MUSAEUS
     for switch in (

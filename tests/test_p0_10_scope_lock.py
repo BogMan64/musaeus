@@ -34,6 +34,7 @@ from musaeus.safety.lock import (
     Scope,
     ScopeError,
     ScopeNotLockableError,
+    _boot_id,
     acquire,
     canonicalise,
     classify,
@@ -379,7 +380,7 @@ def _plant_owner(lock_dir: Path, scope: Scope, **over) -> LockOwner:
         run_id="ghost-run",
         pid=os.getpid(),
         hostname=socket.gethostname(),
-        boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        boot_id=_boot_id(),  # not /proc directly: Windows has none
         acquired_at="2020-01-01T00:00:00Z",
         heartbeat_at="2020-01-01T00:00:00Z",
     )
