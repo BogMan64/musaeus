@@ -420,7 +420,7 @@ class BitRotStage(BaseStage):
             since = baselined.get(old or file_path or "")
             if since and ts and ts < since:
                 continue
-            if old and new and old != new and old.startswith("/") and new.startswith("/"):
+            if old and new and old != new and os.path.isabs(old) and os.path.isabs(new):
                 moved_to[old] = new  # the latest move from a path wins
             elif file_path and str(event_type).startswith("DELETED"):
                 deleted.add(file_path)
