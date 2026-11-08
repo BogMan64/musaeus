@@ -150,7 +150,7 @@ class PreflightStage(BaseStage):
             # Writability check: write + delete a marker file.
             probe = path / ".musaeus_preflight_write_test"
             try:
-                probe.write_text("ok")
+                probe.write_text("ok", encoding="utf-8")
                 probe.unlink()
             except OSError as exc:
                 fail.append(f"{label}: not writable ({path}): {exc}")

@@ -450,7 +450,7 @@ def main() -> int:
         # CSV first: the re-source record must survive a crash mid-run.
         if str(path) not in known:
             write_header = not csv_path.exists() or csv_path.stat().st_size == 0
-            with csv_path.open("a", newline="") as fh:
+            with csv_path.open("a", newline="", encoding="utf-8") as fh:
                 w = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
                 if write_header:
                     w.writeheader()
