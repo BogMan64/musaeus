@@ -101,7 +101,7 @@ def test_a_file_past_the_hold_goes_with_its_row_and_its_records_stay(ctx, past_t
     cfg = ctx.config
     song = _held(ctx, cfg.tribute_review_dir, "Hey Jude.flac", "TRIBUTE_REVIEW", "h1")
     manifest = song.parents[1] / "tribute_manifest.csv"
-    manifest.write_text("source,destination\n")
+    manifest.write_text("source,destination\n", encoding="utf-8")
 
     result = HoldExpiryStage().run(ctx)
 
@@ -196,7 +196,9 @@ def test_audio_another_row_carries_is_not_denied(ctx, past_the_hold):
 
 
 def test_a_song_on_the_keep_list_stays(ctx, past_the_hold):
-    (ctx.config.meta_dir / "tribute_keep.tsv").write_text("Randy Crawford\tStreet Life\n")
+    (ctx.config.meta_dir / "tribute_keep.tsv").write_text(
+        "Randy Crawford\tStreet Life\n", encoding="utf-8"
+    )
     song = _held(
         ctx,
         ctx.config.tribute_review_dir,

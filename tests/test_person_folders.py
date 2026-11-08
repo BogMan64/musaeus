@@ -90,7 +90,8 @@ def test_an_ambiguous_person_list_is_refused(tmp_path):
     meta = tmp_path / "MetaData"
     meta.mkdir()
     (meta / filing.PERSONS_FILENAME).write_text(
-        "Paul McCartney\tPaul McCartney\nWings\tPaul McCartney\nWings\tDenny Laine\n"
+        "Paul McCartney\tPaul McCartney\nWings\tPaul McCartney\nWings\tDenny Laine\n",
+        encoding="utf-8",
     )
     with pytest.raises(filing.FilingError):
         filing.load(meta)

@@ -55,7 +55,7 @@ def _event(c, old, new, kind="ORGANIZE_MOVE", run="run_test"):
 def test_a_move_that_landed_verifies(conn, tmp_path: Path) -> None:
     old, new = tmp_path / "a.m4a", tmp_path / "Artist" / "b.m4a"
     new.parent.mkdir(parents=True)
-    new.write_text("x")  # moved: only the new path exists
+    new.write_text("x", encoding="utf-8")  # moved: only the new path exists
     _event(conn, old, new)
     assert OrganizeStage().verify_effect(_Ctx(conn), None) == []
 
@@ -74,8 +74,8 @@ def test_a_copy_masquerading_as_a_move_is_reported(conn, tmp_path: Path) -> None
     library. Nothing that counts successes can see it."""
     old, new = tmp_path / "a.m4a", tmp_path / "Artist" / "a.m4a"
     new.parent.mkdir(parents=True)
-    old.write_text("x")
-    new.write_text("x")  # BOTH exist
+    old.write_text("x", encoding="utf-8")
+    new.write_text("x", encoding="utf-8")  # BOTH exist
     _event(conn, old, new)
     problems = OrganizeStage().verify_effect(_Ctx(conn), None)
     assert problems and "BOTH" in problems[0]
@@ -104,8 +104,8 @@ def test_a_rename_chain_is_not_a_copy(conn, tmp_path: Path) -> None:
     rename's old path holds the second rename's file, which is not a copy
     of anything (Copacabana; both files' audio matched their rows)."""
     plain, two, three = (tmp_path / f"Copacabana{s}.m4a" for s in ("", " (2)", " (3)"))
-    plain.write_text("was (2)")
-    two.write_text("was (3)")
+    plain.write_text("was (2)", encoding="utf-8")
+    two.write_text("was (3)", encoding="utf-8")
     _event(conn, two, plain, kind="ORGANIZE_RENAME")
     _event(conn, three, two, kind="ORGANIZE_RENAME")
     assert OrganizeStage().verify_effect(_Ctx(conn), None) == []

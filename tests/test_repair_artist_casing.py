@@ -213,7 +213,7 @@ def test_the_journal_is_durable_before_the_file_is_touched(tmp_path, monkeypatch
     )
     with pytest.raises(KeyboardInterrupt):
         rac.apply(planned, journal)
-    assert json.loads(journal.read_text().strip())["old_artist"] == "Tlc"
+    assert json.loads(journal.read_text(encoding="utf-8").strip())["old_artist"] == "Tlc"
 
 
 def test_undo_restores_both_fields(tmp_path):

@@ -223,7 +223,9 @@ def test_an_unreadable_master_is_not_an_all_clear(vault, monkeypatch):
 
     assert result.success is False
     assert any(n.startswith("COULD NOT READ") for n in result.notes)
-    wrapper = (Path(__file__).parents[1] / "scripts" / "bitrot_monthly.sh").read_text()
+    wrapper = (Path(__file__).parents[1] / "scripts" / "bitrot_monthly.sh").read_text(
+        encoding="utf-8"
+    )
     assert "COULD NOT" in wrapper, "the monthly summary must carry it"
 
 

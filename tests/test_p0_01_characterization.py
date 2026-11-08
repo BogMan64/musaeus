@@ -232,7 +232,7 @@ class TestResumeRecordsFailedStageAsCompleteCharacterization:
 
         import json
 
-        resume_state = json.loads(cli_mod._RESUME_FILE.read_text())
+        resume_state = json.loads(cli_mod._RESUME_FILE.read_text(encoding="utf-8"))
         assert "NearDupeStage" not in resume_state["completed"], (
             "fix regressed: a stage that FAILED validation was written "
             "into the resume file's 'completed' list"
@@ -285,8 +285,8 @@ class TestNetworkStageDryRunCharacterization:
 
     def test_enrich_dry_run_makes_no_lastfm_lookup(self, disposable_vault):
         disposable_vault.cfg.ensure_dirs()
-        (disposable_vault.cfg.meta_dir / "Genre_Allowed.txt").write_text("Rock\n")
-        (disposable_vault.cfg.meta_dir / "Genre_Canonical_Map.txt").write_text("")
+        (disposable_vault.cfg.meta_dir / "Genre_Allowed.txt").write_text("Rock\n", encoding="utf-8")
+        (disposable_vault.cfg.meta_dir / "Genre_Canonical_Map.txt").write_text("", encoding="utf-8")
         conn = disposable_vault.open_db()
         ctx = disposable_vault.new_context(conn, dry_run=True)
         self._catalogued_row(ctx, str(disposable_vault.root / "a.flac"))

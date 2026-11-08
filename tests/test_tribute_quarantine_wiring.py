@@ -117,7 +117,9 @@ def _scene(tmp_path: Path, *, moved=True, copied=False, restore=True):
     if copied or not moved:
         source.write_bytes(b"x")
     if restore:
-        (batch / "restore_20260901T000000Z.sh").write_text("#!/usr/bin/env bash\n")
+        (batch / "restore_20260901T000000Z.sh").write_text(
+            "#!/usr/bin/env bash\n", encoding="utf-8"
+        )
     return review, source, target
 
 

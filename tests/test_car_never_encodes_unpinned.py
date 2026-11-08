@@ -61,7 +61,7 @@ _SCRIPT = _VENDOR / "build_aac_library.py"
 def test_an_unreadable_source_yields_no_rate_at_all(tmp_path: Path) -> None:
     """Not a wrong rate -- an absent flag. That is why it was invisible."""
     junk = tmp_path / "junk.m4a"
-    junk.write_text("not audio")
+    junk.write_text("not audio", encoding="utf-8")
     assert probe_sample_rate(junk) is None
     assert probe_channels(junk) is None
     assert car_sample_rate(None) is None
@@ -103,7 +103,7 @@ def test_convert_one_refuses_before_it_can_build_a_command() -> None:
     Asserted on the shipped source because reaching this branch for real
     needs a staged file, a probe failure and a full encode path.
     """
-    text = _SCRIPT.read_text()
+    text = _SCRIPT.read_text(encoding="utf-8")
     body = text.split("def convert_one")[1]
     guard = body.index("could not read the source sample rate")
     build = body.index("cmd = build_ffmpeg_command(")
@@ -111,7 +111,7 @@ def test_convert_one_refuses_before_it_can_build_a_command() -> None:
 
 
 def test_the_guard_checks_both_properties() -> None:
-    text = _SCRIPT.read_text()
+    text = _SCRIPT.read_text(encoding="utf-8")
     # The whole function, not an arbitrary prefix -- a first draft sliced the
     # first 4,000 characters and missed a guard that is genuinely present,
     # which is a test reporting on its own window rather than on the code.
@@ -124,7 +124,7 @@ def test_the_guard_checks_both_properties() -> None:
 def test_the_probes_are_called_once_each_not_inline_twice() -> None:
     """They used to be called inside the argument list, so a reader could not
     see that a None there silently dropped a flag."""
-    text = _SCRIPT.read_text()
+    text = _SCRIPT.read_text(encoding="utf-8")
     assert "target_rate=car_sample_rate(probe_sample_rate(file_path))" not in text
 
 
@@ -165,7 +165,7 @@ def test_an_oserror_is_also_unreadable(fn: str, monkeypatch, tmp_path: Path) -> 
 
 def test_every_probe_still_declares_its_deadline() -> None:
     """Catching the timeout must not tempt anyone to drop it."""
-    tree = ast.parse(_SCRIPT.read_text())
+    tree = ast.parse(_SCRIPT.read_text(encoding="utf-8"))
     for name in (
         "probe_sample_rate",
         "probe_channels",

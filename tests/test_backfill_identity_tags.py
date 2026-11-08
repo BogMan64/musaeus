@@ -234,7 +234,7 @@ def test_the_journal_is_durable_before_the_file_is_touched(tmp_path, monkeypatch
     )
     with pytest.raises(KeyboardInterrupt):
         bit.apply(planned, journal)
-    assert json.loads(journal.read_text().strip())["mb_artist_id"] == MBID_A
+    assert json.loads(journal.read_text(encoding="utf-8").strip())["mb_artist_id"] == MBID_A
 
 
 def test_undo_removes_the_tag(tmp_path):

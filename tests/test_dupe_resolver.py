@@ -271,7 +271,7 @@ class TestDupeResolverSameBatchGroup:
         assert len(scripts) == 1
         assert scripts[0].stat().st_mode & 0o100  # executable bit set
 
-        content = manifests[0].read_text()
+        content = manifests[0].read_text(encoding="utf-8")
         assert "source,destination,group_id,duplicate_type" in content
         assert str(low) in content
 
@@ -614,7 +614,7 @@ class TestDupeResolverManifestEnrichment:
         manifest = next(
             (ctx.config.dupes_review_dir / _TEST_BATCH_DATE).glob("moved_manifest_*.csv")
         )
-        content = manifest.read_text()
+        content = manifest.read_text(encoding="utf-8")
         header = content.splitlines()[0]
         assert header == (
             "source,destination,group_id,duplicate_type,"

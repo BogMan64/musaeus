@@ -51,7 +51,7 @@ def test_the_post_move_update_is_guarded(module: str, marker: str) -> None:
     two rows contending for one destination path inside a live stage run;
     what matters is that the guard exists and names the right exception.
     """
-    text = (Path(__file__).resolve().parents[1] / module).read_text()
+    text = (Path(__file__).resolve().parents[1] / module).read_text(encoding="utf-8")
     assert marker in text, f"{module} no longer performs this update"
     assert "sqlite3.IntegrityError" in text, (
         f"{module} moves a file then updates file_path with no IntegrityError "
@@ -69,7 +69,7 @@ def test_the_post_move_update_is_guarded(module: str, marker: str) -> None:
 )
 def test_the_guard_attempts_a_revert(module: str) -> None:
     """Catching without reverting would still leave disk and DB disagreeing."""
-    text = (Path(__file__).resolve().parents[1] / module).read_text()
+    text = (Path(__file__).resolve().parents[1] / module).read_text(encoding="utf-8")
     block = text.split("sqlite3.IntegrityError")[1][:900]
     assert "shutil.move" in block, f"{module} catches the collision but never reverts"
     assert "COULD NOT REVERT" in block, (
@@ -87,7 +87,7 @@ def test_the_guard_attempts_a_revert(module: str) -> None:
 )
 def test_the_stage_continues_rather_than_aborting(module: str) -> None:
     """One collision must cost one file, not the rest of the run."""
-    text = (Path(__file__).resolve().parents[1] / module).read_text()
+    text = (Path(__file__).resolve().parents[1] / module).read_text(encoding="utf-8")
     # From the guard to the next `except` at the same nesting, rather than a
     # fixed character window -- a first draft used 900 characters and reported
     # corrupt.py as unguarded because its counter sits at 1,050. A test that
@@ -108,7 +108,7 @@ def test_every_stage_that_moves_then_updates_is_now_guarded() -> None:
     root = Path(__file__).resolve().parents[1] / "musaeus" / "stages"
     offenders = []
     for path in sorted(root.glob("*.py")):
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         if "shutil.move" not in text or "file_path" not in text:
             continue
         if "SAVEPOINT" in text or "sqlite3.IntegrityError" in text:

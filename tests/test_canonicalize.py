@@ -298,7 +298,7 @@ class TestTranscode:
 
         csv_path = ctx.config.tunemymusic_csv_path
         assert csv_path.exists()
-        content = csv_path.read_text()
+        content = csv_path.read_text(encoding="utf-8")
         assert "Title,Artist,Album" in content  # importable header, matches batch_*.csv
         # The track identity from its tags, not its filename ("source") --
         # the filename is what this asserted until 2026-09-27, and it is

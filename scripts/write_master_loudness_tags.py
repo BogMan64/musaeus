@@ -137,7 +137,7 @@ def main() -> int:
         "SELECT id, file_path, audio_hash, lufs FROM archive WHERE status = 'CATALOGUED' ORDER BY id"
     ).fetchall()
     if args.ids:
-        keep = {int(x) for x in args.ids.read_text().split()}
+        keep = {int(x) for x in args.ids.read_text(encoding="utf-8").split()}
         rows = [r for r in rows if r["id"] in keep]
     run_id = "write_master_loudness_tags_" + time.strftime("%Y%m%dT%H%M%S")
     changed = right = no_loudness = not_master = refused = 0

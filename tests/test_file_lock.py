@@ -19,7 +19,7 @@ def lock_file(tmp_path):
 
 
 def _open(path):
-    return open(path, "a+")  # noqa: SIM115 -- closed by the test
+    return open(path, "a+", encoding="utf-8")  # noqa: SIM115 -- closed by the test
 
 
 def test_an_exclusive_lock_turns_a_second_holder_away(lock_file):
@@ -77,12 +77,12 @@ def test_a_plain_file_number_works_like_a_file_object(lock_file):
 def test_a_locked_file_can_still_be_written_and_read(lock_file):
     """edition_build writes its pid into the file it locks; on Windows a lock
     over the content would make that unreadable to anyone else."""
-    holder = open(lock_file, "w")  # noqa: SIM115
+    holder = open(lock_file, "w", encoding="utf-8")  # noqa: SIM115
     try:
         try_lock(holder, exclusive=True)
         holder.write("4242")
         holder.flush()
-        assert lock_file.read_text() == "4242"
+        assert lock_file.read_text(encoding="utf-8") == "4242"
     finally:
         holder.close()
 

@@ -236,7 +236,7 @@ def create_checkpoint(
             source = source_root / entry.relative_path
         shutil.copy2(source, destination)
 
-    (root / MANIFEST_FILENAME).write_text(manifest.to_json())
+    (root / MANIFEST_FILENAME).write_text(manifest.to_json(), encoding="utf-8")
 
     checkpoint = Checkpoint(
         checkpoint_id=identifier,
@@ -265,7 +265,7 @@ def verify_checkpoint(checkpoint: Checkpoint, *, database_path: Path | None = No
             f"checkpoint {checkpoint.checkpoint_id} has no manifest",
             checkpoint_id=checkpoint.checkpoint_id,
         )
-    stored = Manifest.from_json(checkpoint.manifest_path.read_text())
+    stored = Manifest.from_json(checkpoint.manifest_path.read_text(encoding="utf-8"))
     if stored.digest != checkpoint.manifest_digest:
         raise CheckpointError(
             f"checkpoint {checkpoint.checkpoint_id} manifest digest does not match the "

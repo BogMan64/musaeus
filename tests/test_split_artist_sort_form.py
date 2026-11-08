@@ -211,7 +211,10 @@ def test_the_journal_is_durable_before_the_file_is_touched(tmp_path, monkeypatch
     )
     with pytest.raises(KeyboardInterrupt):
         sp.apply(planned, journal)
-    assert json.loads(journal.read_text().strip())["before"]["artist"] == "Stooges, The"
+    assert (
+        json.loads(journal.read_text(encoding="utf-8").strip())["before"]["artist"]
+        == "Stooges, The"
+    )
 
 
 def test_undo_restores_every_changed_field(tmp_path):

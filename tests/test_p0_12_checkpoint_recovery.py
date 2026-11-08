@@ -147,9 +147,9 @@ class TestCheckpoint:
 
     def test_a_tampered_manifest_fails_verification(self, library, recovery):
         checkpoint = create_checkpoint(library, recovery, checkpoint_id="c1", now=NOW)
-        data = json.loads(checkpoint.manifest_path.read_text())
+        data = json.loads(checkpoint.manifest_path.read_text(encoding="utf-8"))
         data["entries"][0]["sha256"] = "0" * 64
-        checkpoint.manifest_path.write_text(json.dumps(data))
+        checkpoint.manifest_path.write_text(json.dumps(data), encoding="utf-8")
         with pytest.raises(CheckpointError) as exc:
             verify_checkpoint(checkpoint)
         assert "digest does not match" in str(exc.value)
@@ -265,9 +265,9 @@ class TestJournal:
         path = tmp_path / JOURNAL_FILENAME
         journal = OperationJournal(path)
         journal.append(operation_kind=OP_MOVE, item_ref="a", now=NOW)
-        assert len(path.read_text().splitlines()) == 1
+        assert len(path.read_text(encoding="utf-8").splitlines()) == 1
         journal.append(operation_kind=OP_MOVE, item_ref="b", now=NOW)
-        assert len(path.read_text().splitlines()) == 2
+        assert len(path.read_text(encoding="utf-8").splitlines()) == 2
 
     def test_journal_survives_the_process_that_wrote_it(self, tmp_path):
         """Entries survive an abrupt `os._exit` with no interpreter
@@ -372,7 +372,7 @@ class TestQuarantine:
         offenders = [n for n in public if any(word in n.lower() for word in forbidden)]
         assert offenders == [], f"a deletion capability appeared in the public API: {offenders}"
 
-        source = Path(recovery_mod.__file__).read_text()
+        source = Path(recovery_mod.__file__).read_text(encoding="utf-8")
         assert "shutil.rmtree" not in source
         assert "os.remove" not in source
 
@@ -452,7 +452,7 @@ class TestTagCapture:
     def test_tagged_audio_contributes_no_payload_bytes(self, real_audio):
         from musaeus.safety.manifest import KIND_TAGGED_AUDIO, build_manifest
 
-        (real_audio / "notes.csv").write_text("a,b\n")
+        (real_audio / "notes.csv").write_text("a,b\n", encoding="utf-8")
         m = build_manifest(real_audio, checkpoint_id="c", created_at=NOW, capture_tags=True)
         kinds = {Path(e.relative_path).as_posix(): e.kind for e in m.entries}
         assert kinds["Artist/track0.m4a"] == KIND_TAGGED_AUDIO
@@ -563,7 +563,7 @@ class TestTagCapture:
             cp.manifest,
             entries=tuple(replace(e, tags=None) for e in cp.manifest.entries),
         )
-        cp.manifest_path.write_text(gutted.to_json())
+        cp.manifest_path.write_text(gutted.to_json(), encoding="utf-8")
         broken = replace(cp, manifest=gutted, manifest_digest=gutted.digest)
 
         with pytest.raises(CheckpointError) as exc:

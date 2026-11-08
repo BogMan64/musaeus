@@ -88,14 +88,14 @@ def _guard_env(tmp_path, monkeypatch, *, registered=True, script="exec", setting
 
     hook = tmp_path / "musaeus_pipeline_guard.sh"
     if script != "absent":
-        hook.write_text("#!/bin/bash\nexit 0\n")
+        hook.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
         _os.chmod(hook, 0o755 if script == "exec" else 0o644)
 
     st = tmp_path / "settings.json"
     if settings == "malformed":
-        st.write_text("{ not json")
+        st.write_text("{ not json", encoding="utf-8")
     elif settings == "list":
-        st.write_text("[1, 2, 3]")
+        st.write_text("[1, 2, 3]", encoding="utf-8")
     elif settings == "absent":
         pass
     else:
@@ -112,7 +112,8 @@ def _guard_env(tmp_path, monkeypatch, *, registered=True, script="exec", setting
                     "env": {"SECRET_TOKEN": "sk-must-not-leak"},
                     "hooks": {"PreToolUse": entries},
                 }
-            )
+            ),
+            encoding="utf-8",
         )
 
     monkeypatch.setattr(pf, "_CLAUDE_SETTINGS", st)
