@@ -39,7 +39,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import socket
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -86,12 +88,18 @@ def canonicalise(path: str | Path) -> str:
     the conservative direction (two scopes treated as distinct means an
     extra refusal, never a missed conflict on the literal path).
     """
-    return os.path.normpath(os.path.abspath(str(path)))
+    # normcase: on Windows "C:\\Music" and "c:\\music" are one folder; a no-op elsewhere.
+    return os.path.normcase(os.path.normpath(os.path.abspath(str(path))))
 
 
 def classify(root: str | Path) -> str:
     """Classify a scope root by text alone. Never stats, never resolves."""
     normalised = canonicalise(root)
+    # First: a vault set to one of these must not make it lockable (CodeRabbit, #293).
+    if normalised in ("/", "/home", "/mnt", "/tmp", "/var/tmp") or (
+        sys.platform == "win32" and _windows_rejected(normalised)
+    ):
+        return REJECTED
     configured_vault = os.environ.get("MUSAEUS_VAULT_ROOT", "").strip()
     if configured_vault:
         vault = canonicalise(os.path.expandvars(os.path.expanduser(configured_vault)))
@@ -105,8 +113,6 @@ def classify(root: str | Path) -> str:
             return INBOX
         if _is_at_or_under(normalised, vault):
             return CANONICAL
-    if normalised in ("/", "/home", "/mnt", "/tmp"):
-        return REJECTED
     # Only the temp folder holds disposable fixtures. Any other path may be
     # someone's music, so with no vault set it is real data (review of #211).
     return FIXTURE if _in_temp(normalised) else CANONICAL
@@ -115,7 +121,28 @@ def classify(root: str | Path) -> str:
 def _in_temp(normalised: str) -> bool:
     """Is the path in the system temp folder? By text, like classify(). Not
     TMPDIR: it can name a home folder (Codex review of #219, round 3)."""
+    if sys.platform == "win32":
+        return _windows_in_temp(normalised)
     return any(_is_at_or_under(normalised, temp) for temp in ("/tmp", "/var/tmp"))
+
+
+#: The Windows temp folders, by text like the POSIX list: the per-user one and
+#: the system one. Not %TEMP%, for the reason TMPDIR is not used above
+#: (Windows port, 2026-11-08). Matched on normcase'd text: lower case, "\\".
+_WINDOWS_TEMP = re.compile(r"[a-z]:\\(?:users\\[^\\]+\\appdata\\local|windows)\\temp")
+
+
+def _windows_in_temp(normalised: str) -> bool:
+    m = _WINDOWS_TEMP.match(normalised)
+    # At or under it: what follows the match is nothing or a new component.
+    return m is not None and normalised[m.end() :][:1] in ("", "\\")
+
+
+def _windows_rejected(normalised: str) -> bool:
+    """A drive, the Users folder, or a temp folder itself: never one scope."""
+    return bool(
+        re.fullmatch(r"[a-z]:\\(?:users)?", normalised) or _WINDOWS_TEMP.fullmatch(normalised)
+    )
 
 
 def _is_at_or_under(candidate: str, ancestor: str) -> bool:
@@ -146,10 +173,16 @@ class Scope:
     @property
     def classification(self) -> str:
         declared = self.declared_classification
+        actual = classify(self.root)
         # A declaration never makes a real path lockable: only a temp-folder
-        # path may be declared a fixture (Codex review of #219).
-        if declared is None or (declared == FIXTURE and not _in_temp(self.root)):
-            return classify(self.root)
+        # path may be declared a fixture (Codex review of #219), and never a
+        # refused root such as the temp folder itself (CodeRabbit, #293).
+        if (
+            declared is None
+            or actual == REJECTED
+            or (declared == FIXTURE and not _in_temp(self.root))
+        ):
+            return actual
         return declared
 
     @property

@@ -68,7 +68,7 @@ class TestScopeIdentity:
     def test_canonicalise_normalises_without_touching_the_filesystem(self, path_guard, tmp_path):
         before = len(path_guard.attempts)
         result = canonicalise(f"{tmp_path}/a/../b/./c")
-        assert result == str(tmp_path / "b" / "c")
+        assert result == os.path.normcase(str(tmp_path / "b" / "c"))
         assert len(path_guard.attempts) == before
 
     def test_classifying_a_protected_root_does_not_probe_it(self, path_guard):
@@ -80,9 +80,24 @@ class TestScopeIdentity:
         assert classify("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/INBOX/new") == INBOX
         assert len(path_guard.attempts) == before
 
-    @pytest.mark.parametrize("root, expected", [("/", REJECTED), ("/tmp", REJECTED)])
-    def test_bare_system_roots_are_rejected(self, root, expected):
-        assert classify(root) == expected
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX roots; Windows: test_windows_scope")
+    @pytest.mark.parametrize("root", ["/", "/tmp", "/var/tmp"])
+    def test_bare_system_roots_are_rejected(self, root):
+        assert classify(root) == REJECTED
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX roots; Windows: test_windows_scope")
+    @pytest.mark.parametrize("root", ["/", "/mnt", "/tmp"])
+    def test_a_vault_set_to_a_refused_root_does_not_make_it_lockable(self, monkeypatch, root):
+        """The vault check ran first, so MUSAEUS_VAULT_ROOT=/ made / canonical (CodeRabbit, #293)."""
+        monkeypatch.setenv("MUSAEUS_VAULT_ROOT", root)
+        monkeypatch.delenv("MUSAEUS_INBOX", raising=False)
+        assert classify(root) == REJECTED
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX roots; Windows: test_windows_scope")
+    @pytest.mark.parametrize("root", ["/tmp", "/var/tmp"])
+    def test_a_temp_folder_itself_declared_a_fixture_is_still_refused(self, root):
+        """A fixture declaration kept /tmp itself lockable (CodeRabbit, #293)."""
+        assert Scope.build(root, "library", classification=FIXTURE).classification == REJECTED
 
     def test_a_vault_with_no_setting_is_still_real_data(self, monkeypatch, path_guard):
         """A process that never read settings.env (a script, a test, a new
