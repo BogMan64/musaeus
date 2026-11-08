@@ -122,7 +122,7 @@ class TestTheOrderingItRunsIn:
             / "car_library"
             / "vendor"
             / "orpheus_noise_masker.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")  # the source is UTF-8; Windows reads cp1252 otherwise
         verify = src.index("if not _output_is_complete(")
         carry = src.index("_carry_cover_art(job.src, tmp)")
         rename = src.index("tmp.replace(job.dst)")

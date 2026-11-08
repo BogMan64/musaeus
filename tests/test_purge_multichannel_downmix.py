@@ -318,11 +318,12 @@ def test_identity_tags_and_permissions_survive_the_downmix(vault):
     m.tags["----:com.apple.iTunes:replaygain_track_gain"] = [MP4FreeForm(b"-3.00 dB")]
     m.save()
     os.chmod(song, 0o644)
+    mode = os.stat(song).st_mode & 0o777  # 0o644; Windows keeps only read-only, so 0o666
     mod.main()
     tags = MP4(song).tags
     assert bytes(tags["----:com.apple.iTunes:MusicBrainz Track Id"][0]) == b"rec-123"
     assert "----:com.apple.iTunes:replaygain_track_gain" not in tags, "loudness is measured again"
-    assert oct(os.stat(song).st_mode & 0o777) == "0o644"
+    assert oct(os.stat(song).st_mode & 0o777) == oct(mode)
 
 
 def test_the_checks_run_on_the_final_file_after_its_tags(vault, monkeypatch):
