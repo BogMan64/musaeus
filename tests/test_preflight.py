@@ -177,6 +177,7 @@ def test_a_missing_fdkaac_is_reported_as_a_fail(monkeypatch):
     # Preflight is report-only: the FAIL line is the whole effect (review of #219).
     from musaeus.stages import preflight
 
+    monkeypatch.setattr("sys.platform", "linux")  # the Debian message; Windows has its own
     monkeypatch.setattr(
         preflight.shutil, "which", lambda cmd: None if cmd == "fdkaac" else f"/usr/bin/{cmd}"
     )
