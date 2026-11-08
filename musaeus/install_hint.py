@@ -17,6 +17,7 @@ _WINDOWS_NAME = {
 
 
 def install_hint(apt_pkg: str) -> str:
+    """The fix to print for a missing program, named by its Debian package."""
     if sys.platform == "win32":
         name = _WINDOWS_NAME.get(apt_pkg, apt_pkg)
         return f"download {name} for Windows, unzip it, and add its folder to your user PATH"

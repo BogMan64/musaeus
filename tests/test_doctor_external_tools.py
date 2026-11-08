@@ -52,6 +52,11 @@ class TestWhenEverythingIsInstalled:
 
 
 class TestAMissingOptionalToolIsANote:
+    @pytest.fixture(autouse=True)
+    def _on_linux(self, monkeypatch):
+        """These are the Debian messages; Windows has its own (Windows port)."""
+        monkeypatch.setattr("sys.platform", "linux")
+
     def test_absent_ifuse_warns_and_says_how_to_fix_it(self, cfg, monkeypatch):
         monkeypatch.setattr(
             "musaeus.doctor.shutil.which", lambda n: None if n == "ifuse" else f"/usr/bin/{n}"
