@@ -94,23 +94,13 @@ def _windows_open_fails(monkeypatch, winerror):
 
 
 @pytest.mark.parametrize(
-    "winerror, read_only, skipped",
-    [
-        (5, True, True),
-        (None, True, True),
-        (5, False, False),
-        (None, False, False),
-        (32, True, False),
-        (32, False, False),
-    ],
+    "winerror, read_only", [(5, False), (None, False), (32, True), (32, False)]
 )
-def test_only_a_read_only_flagged_file_skips_the_flush(
-    tmp_path, monkeypatch, winerror, read_only, skipped
+def test_a_refusal_that_is_not_the_read_only_flag_still_stops_the_step(
+    tmp_path, monkeypatch, winerror, read_only
 ):
-    """copy2 carries a read-only flag; Windows then gives no writable handle and
-    fsync_file raised PermissionError, stopping the step (Windows port). Only that
-    case is skipped: a sharing violation or a denying access list on a writable
-    file must still stop it, or finalize could drop the source (CodeRabbit, #295)."""
+    """A sharing violation or a denying access list on a writable file must stop
+    the step, or finalize could drop the source unflushed (CodeRabbit, #295)."""
     import stat
 
     p = tmp_path / "f.bin"
@@ -119,24 +109,30 @@ def test_only_a_read_only_flagged_file_skips_the_flush(
         os.chmod(p, stat.S_IREAD)
     _windows_open_fails(monkeypatch, winerror)
     try:
-        if skipped:
+        with pytest.raises(PermissionError):
             fsync_file(p)
-        else:
-            with pytest.raises(PermissionError):
-                fsync_file(p)
     finally:
         os.chmod(p, stat.S_IREAD | stat.S_IWRITE)  # so the temp folder can go
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="the real Windows read-only flag")
-def test_a_read_only_file_on_real_windows_does_not_stop_the_step(tmp_path):
+def test_a_read_only_flagged_file_is_flushed_and_keeps_its_flag(tmp_path, monkeypatch):
+    """copy2 carries a read-only flag; Windows then gives no writable handle and
+    fsync_file raised PermissionError, stopping the step. Skipping the flush was
+    not enough: finalize deletes the source next (CodeRabbit, #295). Real on
+    Windows; on Linux the read-only mode refuses the writable open the same way."""
     import stat
 
     p = tmp_path / "ro.bin"
     p.write_bytes(b"x")
     os.chmod(p, stat.S_IREAD)
+    synced = []
+    real = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: synced.append(fd) or real(fd))
+    monkeypatch.setattr(sys, "platform", "win32")
     try:
         fsync_file(p)
+        assert len(synced) == 1, "the copy was flushed"
+        assert not os.stat(p).st_mode & stat.S_IWRITE, "the flag is back"
     finally:
         os.chmod(p, stat.S_IREAD | stat.S_IWRITE)
 

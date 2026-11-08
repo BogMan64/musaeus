@@ -33,21 +33,29 @@ def fsync_file(path: Path | str) -> None:
     try:
         fd = os.open(path, os.O_RDWR if sys.platform == "win32" else os.O_RDONLY)
     except PermissionError as exc:
-        # shortcut: a file marked read-only (copy2 carries the flag) gives no
-        # writable handle, so Windows cannot flush it by name; it reaches disk
-        # with the OS cache. Upgrade (clear the flag around the flush) if a
-        # power cut ever costs such a file. Only that case: the flag is set
-        # (then no writable handle can exist) and the error is access denied
-        # (5) or carries no Windows code (os.open may give errno only). A
-        # sharing violation (32, a scanner holding it) or a file without the
-        # flag still stops the step (CodeRabbit, #295).
-        if (
+        # A file marked read-only (copy2 carries the flag) gives no writable
+        # handle, and finalize deletes the source after this flush: clear the
+        # flag around it (CodeRabbit, #295). Only that case: the flag is set and
+        # the error is access denied (5) or carries no Windows code (os.open may
+        # give errno only). A sharing violation (32, a scanner holding it) or a
+        # file without the flag still stops the step.
+        mode = os.stat(path).st_mode
+        if not (
             sys.platform == "win32"
-            and not os.stat(path).st_mode & stat.S_IWRITE
+            and not mode & stat.S_IWRITE
             and getattr(exc, "winerror", None) in (None, 5)
         ):
-            return
-        raise
+            raise
+        os.chmod(path, mode | stat.S_IWRITE)
+        try:
+            fd = os.open(path, os.O_RDWR)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        finally:
+            os.chmod(path, mode)
+        return
     try:
         os.fsync(fd)
     finally:
