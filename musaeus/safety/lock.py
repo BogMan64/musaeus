@@ -108,7 +108,7 @@ def classify(root: str | Path) -> str:
             return INBOX
         if _is_at_or_under(normalised, vault):
             return CANONICAL
-    if normalised in ("/", "/home", "/mnt", "/tmp") or (
+    if normalised in ("/", "/home", "/mnt", "/tmp", "/var/tmp") or (
         sys.platform == "win32" and _windows_rejected(normalised)
     ):
         return REJECTED
@@ -172,10 +172,16 @@ class Scope:
     @property
     def classification(self) -> str:
         declared = self.declared_classification
+        actual = classify(self.root)
         # A declaration never makes a real path lockable: only a temp-folder
-        # path may be declared a fixture (Codex review of #219).
-        if declared is None or (declared == FIXTURE and not _in_temp(self.root)):
-            return classify(self.root)
+        # path may be declared a fixture (Codex review of #219), and never a
+        # refused root such as the temp folder itself (CodeRabbit, #293).
+        if (
+            declared is None
+            or actual == REJECTED
+            or (declared == FIXTURE and not _in_temp(self.root))
+        ):
+            return actual
         return declared
 
     @property

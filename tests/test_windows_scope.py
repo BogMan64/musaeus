@@ -8,9 +8,11 @@ whole classifier through them for real.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
-from musaeus.safety.lock import _windows_in_temp, _windows_rejected
+from musaeus.safety.lock import FIXTURE, REJECTED, Scope, _windows_in_temp, _windows_rejected
 
 USER_TEMP = r"c:\users\bob\appdata\local\temp"
 
@@ -48,3 +50,10 @@ def test_anything_else_is_not(path):
 )
 def test_a_drive_the_users_folder_or_a_temp_folder_itself_is_refused(path):
     assert _windows_rejected(path)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="real Windows paths")
+@pytest.mark.parametrize("root", [r"C:\Windows\Temp", r"C:\Users\bob\AppData\Local\Temp"])
+def test_a_temp_folder_itself_declared_a_fixture_is_still_refused(root):
+    """A fixture declaration kept the temp folder itself lockable (CodeRabbit, #293)."""
+    assert Scope.build(root, "library", classification=FIXTURE).classification == REJECTED
