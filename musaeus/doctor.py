@@ -1482,8 +1482,8 @@ def _changed_outside_musaeus(cfg: MusicConfig, rep: Report) -> None:
                 src
                 and dst
                 and src != dst
-                and str(src).startswith("/")
-                and str(dst).startswith("/")
+                and Path(str(src)).is_absolute()  # a Windows path starts with its drive, not "/"
+                and Path(str(dst)).is_absolute()
                 and Path(str(dst)).suffix.lower() in AUDIO_EXTENSIONS
                 and src in last_write
             ):

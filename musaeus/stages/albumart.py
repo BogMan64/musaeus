@@ -26,6 +26,7 @@ ORPHEUS equivalents: SCRIPTS/orpheus_album_art_report.py,
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -159,7 +160,7 @@ def _one_album_folder(ctx: RunContext, folder: Path) -> bool:
     """
     from ..artist_form import folder_artist
 
-    prefix = str(folder) + "/"
+    prefix = os.path.join(str(folder), "")  # one trailing separator, even at a drive root
     rows = ctx.conn.execute(
         "SELECT artist, album, file_path FROM archive WHERE substr(file_path, 1, ?) = ?",
         (len(prefix), prefix),
