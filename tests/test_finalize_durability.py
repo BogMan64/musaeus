@@ -61,7 +61,7 @@ def test_the_copy_is_fsynced() -> None:
 def test_the_directory_is_fsynced_too() -> None:
     """Without this the rename itself can be lost."""
     body = ast.unparse(_copy_fn())
-    assert "O_RDONLY" in body and body.count("os.fsync") >= 2, (
+    assert "fsync_dir(" in body and body.index(".rename(") < body.index("fsync_dir("), (
         "only the file is fsynced; the rename can still be lost"
     )
 

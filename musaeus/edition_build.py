@@ -41,7 +41,6 @@ ALAC makes large files of lossy audio. --lossy alac includes them.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import os
 import shutil
 import signal
@@ -67,6 +66,7 @@ from .edition_ledger import (
     measurements_of,
     record,
 )
+from .file_lock import try_lock
 from .safe_save import change_beside
 
 EDITION = "lossless"
@@ -788,12 +788,12 @@ def describe_work(pids: list[int]) -> str:
 
 @contextmanager
 def build_lock(lock_dir: Path, name: str = EDITION) -> Iterator[None]:
-    """One build of an edition at a time. fcntl.flock: the kernel frees it if we die."""
+    """One build of an edition at a time. file_lock: the OS frees it if we die."""
     lock_dir.mkdir(parents=True, exist_ok=True)
     fh = open(lock_dir / f"edition-build-{name}.lock", "w")  # noqa: SIM115
     try:
         try:
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try_lock(fh, exclusive=True)
         except BlockingIOError as exc:
             raise RuntimeError("another edition build is already running") from exc
         fh.write(str(os.getpid()))

@@ -21,7 +21,6 @@ again later"); the monthly wrappers retry on that code.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import sys
@@ -30,6 +29,8 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+
+from .file_lock import process_alive, try_lock, unlock
 
 EXIT_BUSY = 75
 LOCK_NAME = "masters.lock"
@@ -84,16 +85,6 @@ def _lock_dir(runs_root: Path | str) -> Path:
     return d
 
 
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 def holders(runs_root: Path | str) -> list[dict]:
     """Who holds the lock now, as far as their records say (dead ones dropped)."""
     out = []
@@ -102,7 +93,7 @@ def holders(runs_root: Path | str) -> list[dict]:
             h = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if _alive(int(h.get("pid", 0))):
+        if process_alive(int(h.get("pid", 0))):
             out.append(h)
     return out
 
@@ -122,7 +113,7 @@ def masters_lock(runs_root: Path | str, *, exclusive: bool, what: str) -> Iterat
     inherited = _inherited(lock_dir / LOCK_NAME) if exclusive else None
     fh = inherited or open(lock_dir / LOCK_NAME, "a+")  # noqa: SIM115 -- held for the block
     try:
-        fcntl.flock(fh, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        try_lock(fh, exclusive=exclusive)
     except BlockingIOError:
         fh.close()
         raise MastersBusy(
@@ -149,7 +140,7 @@ def masters_lock(runs_root: Path | str, *, exclusive: bool, what: str) -> Iterat
         _open.remove((fh, exclusive))
         record.unlink(missing_ok=True)
         if inherited is None:  # never unlock the parent's hold
-            fcntl.flock(fh, fcntl.LOCK_UN)
+            unlock(fh)
         fh.close()
 
 
