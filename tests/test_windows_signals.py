@@ -15,8 +15,13 @@ from musaeus.idle_throttle import IdleThrottle
 
 def test_the_carry_out_guard_works_without_sighup(monkeypatch):
     monkeypatch.delattr(signal, "SIGHUP", raising=False)
+    old = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
     with dedupe._not_interrupted():
-        pass
+        for s in old:  # both stops Windows has are held off during the carry-out
+            assert callable(signal.getsignal(s))
+            assert signal.getsignal(s) is not old[s]
+    for s, handler in old.items():
+        assert signal.getsignal(s) is handler
 
 
 def test_the_build_stop_handlers_work_without_sighup(monkeypatch):
