@@ -69,6 +69,7 @@ import sys
 from pathlib import Path
 
 from ..context import RunContext, StageResult
+from ..install_hint import install_hint
 from .base import BaseStage
 
 logger = logging.getLogger(__name__)
@@ -163,9 +164,10 @@ class PreflightStage(BaseStage):
             else:
                 fail.append(
                     f"{cmd}: not found on PATH -- required by {used_by}. "
-                    f"Fix: sudo apt install {apt_pkg}"
+                    f"Fix: {install_hint(apt_pkg)}"
                 )
-                self._missing_apt[cmd] = apt_pkg
+                if sys.platform != "win32":  # no apt there to offer
+                    self._missing_apt[cmd] = apt_pkg
 
     def _check_packages(self, ok: list, warn: list, fail: list) -> None:
         # Hard dependency: pyproject.toml declares this, tagger/forge import it.
