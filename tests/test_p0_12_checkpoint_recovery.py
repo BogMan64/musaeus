@@ -454,7 +454,7 @@ class TestTagCapture:
 
         (real_audio / "notes.csv").write_text("a,b\n")
         m = build_manifest(real_audio, checkpoint_id="c", created_at=NOW, capture_tags=True)
-        kinds = {e.relative_path: e.kind for e in m.entries}
+        kinds = {Path(e.relative_path).as_posix(): e.kind for e in m.entries}
         assert kinds["Artist/track0.m4a"] == KIND_TAGGED_AUDIO
         assert kinds["notes.csv"] != KIND_TAGGED_AUDIO
         assert m.payload_bytes == len("a,b\n")

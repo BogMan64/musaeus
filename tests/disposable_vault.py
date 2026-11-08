@@ -502,7 +502,7 @@ def snapshot_vault_state(vault: DisposableVault) -> VaultSnapshot:
 
     if root.exists():
         for p in sorted(root.rglob("*")):
-            rel = str(p.relative_to(root))
+            rel = p.relative_to(root).as_posix()  # same keys on Windows
             tree.append(rel + ("/" if p.is_dir() else ""))
             if p.is_file():
                 hashes[rel] = _sha256_file(p)

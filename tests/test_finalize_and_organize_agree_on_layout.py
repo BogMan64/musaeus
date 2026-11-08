@@ -165,7 +165,7 @@ def test_finalize_files_under_the_genre_and_honours_the_filing_rulings(tmp_path)
     FinalizeStage().execute(ctx)
     lib = ctx.config.alac_archive  # finalize files masters
     rel = {
-        r[0]: str(Path(r[1]).relative_to(lib))
+        r[0]: Path(r[1]).relative_to(lib).as_posix()
         for r in ctx.conn.execute("SELECT artist, file_path FROM archive")
     }
     assert rel["The Black Eyed Peas"].startswith("Hip Hop/Black Eyed Peas, The/")
