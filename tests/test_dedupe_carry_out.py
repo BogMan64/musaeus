@@ -213,14 +213,14 @@ def test_a_set_aside_close_out_does_not_call_a_live_copy_moved(ctx):
 
 def test_a_stop_during_a_carry_out_waits_until_it_is_done(ctx, monkeypatch):
     """Finding 1: Ctrl-C between moves left the keep unrecorded."""
-    import os
     import signal
 
     studio, live = _pair(ctx)
     real = DupeResolverStage._move_losers
 
     def interrupted(self, *args, **kwargs):
-        os.kill(os.getpid(), signal.SIGINT)  # Ctrl-C while moving
+        # raise_signal, not os.kill: on Windows os.kill ends the process.
+        signal.raise_signal(signal.SIGINT)  # Ctrl-C while moving
         return real(self, *args, **kwargs)
 
     monkeypatch.setattr(DupeResolverStage, "_move_losers", interrupted)
@@ -372,15 +372,14 @@ def test_a_partly_carried_out_set_counts_and_says_what_failed(ctx, monkeypatch, 
 
 def test_a_double_tap_of_ctrl_c_still_finishes_the_carry_out(ctx, monkeypatch):
     """Re-review of #149: a second Ctrl-C right after the first forced a stop."""
-    import os
     import signal
 
     studio, live = _pair(ctx)
     real = DupeResolverStage._move_losers
 
     def tapped_twice(self, *args, **kwargs):
-        os.kill(os.getpid(), signal.SIGINT)
-        os.kill(os.getpid(), signal.SIGINT)
+        signal.raise_signal(signal.SIGINT)
+        signal.raise_signal(signal.SIGINT)
         return real(self, *args, **kwargs)
 
     monkeypatch.setattr(DupeResolverStage, "_move_losers", tapped_twice)

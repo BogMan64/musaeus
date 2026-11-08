@@ -88,7 +88,10 @@ def _digest_from_disk(path: Path) -> str:
     fd = os.open(path, os.O_RDONLY)
     try:
         os.fsync(fd)
-        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        # shortcut: Windows cannot drop the cached pages, so there the check may
+        # read the copy still in memory; upgrade with an unbuffered read if needed.
+        if hasattr(os, "posix_fadvise"):
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
     finally:
         os.close(fd)
     return sha256_file(path)
