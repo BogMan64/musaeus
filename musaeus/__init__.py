@@ -22,3 +22,13 @@ Version: 0.1.0
 
 __version__ = "0.1.0"
 __author__ = "MUSAEUS contributors"
+
+
+def utf8_stdio() -> None:
+    """Write UTF-8 to stdout and stderr. Windows writes piped output in cp1252,
+    which has no "✓", so a log file or the Companion's pipe crashed the run."""
+    import sys
+
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")

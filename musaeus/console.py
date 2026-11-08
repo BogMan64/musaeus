@@ -1741,6 +1741,9 @@ class Console:
 
 def main() -> None:
     """Entry point for `musaeus console` and `python -m musaeus.console`."""
+    from . import utf8_stdio
+
+    utf8_stdio()
     Console().run()
 
 
