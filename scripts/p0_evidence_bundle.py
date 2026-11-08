@@ -206,7 +206,7 @@ def main() -> int:
         "gates": results,
         "not_covered": NOT_COVERED,
     }
-    (out / "evidence.json").write_text(json.dumps(bundle, indent=2, sort_keys=True))
+    (out / "evidence.json").write_text(json.dumps(bundle, indent=2, sort_keys=True), encoding="utf-8")
 
     lines = [
         "# MUSAEUS P0 acceptance evidence (partial)",
@@ -224,7 +224,7 @@ def main() -> int:
     lines.extend(["", "## Required by P0-19 and not covered here", ""])
     for name, why in NOT_COVERED.items():
         lines.append(f"- **{name}** — {why}")
-    (out / "evidence.md").write_text("\n".join(lines) + "\n")
+    (out / "evidence.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     print(f"\n{passed}/{len(GATES)} gates passing -> {out}/evidence.md")
     return 0 if passed == len(GATES) else 1

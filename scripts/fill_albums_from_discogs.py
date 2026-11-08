@@ -121,7 +121,7 @@ def main() -> int:
     db = sqlite3.connect(cfg.db_path, timeout=600)
     db.row_factory = sqlite3.Row
     prog = cfg.meta_dir / PROGRESS
-    done = {r["file_path"] for r in csv.DictReader(prog.open())} if prog.exists() else set()
+    done = {r["file_path"] for r in csv.DictReader(prog.open(encoding="utf-8"))} if prog.exists() else set()
 
     rows = [r for r in db.execute(
         "SELECT id, file_path, artist, title FROM archive "
@@ -136,7 +136,7 @@ def main() -> int:
         return 0
 
     existed = prog.exists()
-    fh = prog.open("a", newline="")
+    fh = prog.open("a", newline="", encoding="utf-8")
     w = csv.DictWriter(fh, fieldnames=["file_path", "artist", "title", "album", "reason"])
     if not existed:
         w.writeheader()

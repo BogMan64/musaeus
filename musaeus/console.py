@@ -1272,7 +1272,7 @@ class Console:
             return
         doc = docs[idx]
         try:
-            text = doc.read_text(errors="replace")
+            text = doc.read_text(errors="replace", encoding="utf-8")
         except OSError as exc:
             _err(f"Could not read {doc.name}: {exc}")
             return

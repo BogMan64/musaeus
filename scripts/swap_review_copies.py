@@ -363,7 +363,7 @@ def retire(cfg, ids: list[int], execute: bool) -> int:
         return 0
     ids_file = Path(cfg.runs_root) / "LOGS" / f"swap_retire_{datetime.now():%Y%m%d_%H%M%S}.txt"
     ids_file.parent.mkdir(parents=True, exist_ok=True)
-    ids_file.write_text("".join(f"{i}\n" for i in ids))
+    ids_file.write_text("".join(f"{i}\n" for i in ids), encoding="utf-8")
     cmd = [
         sys.executable, str(DELETE_TOOL), str(ids_file),
         "--reason", "Grey 2026-10-03 keep rule: replaced by a better copy (swap_review_copies)",
@@ -420,7 +420,7 @@ def main() -> int:
     if args.write_losers:
         losers: list[int] = []
         _, tally = review_wins(conn, losers)
-        Path(args.write_losers).write_text("".join(f"{i}\n" for i in losers))
+        Path(args.write_losers).write_text("".join(f"{i}\n" for i in losers), encoding="utf-8")
         for k, v in tally.most_common():
             print(f"  {v:6,}  {k}")
         print(f"\n{len(losers):,} review row(s) to delete -> {args.write_losers}")

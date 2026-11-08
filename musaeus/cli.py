@@ -246,7 +246,8 @@ _RESUME_FILE = Path.home() / ".config" / "musaeus" / "resume_state.json"
 def _save_resume(completed: list[str], all_stages: list[str], vault: str = "") -> None:
     _RESUME_FILE.parent.mkdir(parents=True, exist_ok=True)
     _RESUME_FILE.write_text(
-        json.dumps({"completed": completed, "all_stages": all_stages, "vault": vault}, indent=2)
+        json.dumps({"completed": completed, "all_stages": all_stages, "vault": vault}, indent=2),
+        encoding="utf-8",
     )
 
 
@@ -265,7 +266,7 @@ def _load_resume(all_stages: list[str], vault: str = "") -> list[str] | None:
     if not _RESUME_FILE.exists():
         return None
     try:
-        state = json.loads(_RESUME_FILE.read_text())
+        state = json.loads(_RESUME_FILE.read_text(encoding="utf-8"))
         if state.get("all_stages") != all_stages:
             return None
         if vault and state.get("vault", "") != vault:

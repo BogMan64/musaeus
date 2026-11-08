@@ -1107,7 +1107,8 @@ def _bake_aac(
                 measured, tap, bandwidth,
             )  # fmt: skip
             click = _click_in(
-                _peaks_in(tap.read_text()), window_peaks(tmp_output, rate, _deadline(seconds))
+                _peaks_in(tap.read_text(encoding="utf-8")),
+                window_peaks(tmp_output, rate, _deadline(seconds)),
             )
             if click is None or allow_click:
                 break
@@ -1141,7 +1142,7 @@ def _bake_aac_tries(
     """The encode, and again with the limiter lowered while it peaks over."""
     ceiling = CEILING
     for attempt in range(_PEAK_RETRIES + 1):
-        tap.write_text("")
+        tap.write_text("", encoding="utf-8")
         graph = aac_filter(loud, rate, channels, seconds, noise, ceiling, peaks_to=tap)
         proc = _run_pipeline(
             *aac_commands(source, tmp_output, graph, rate, bandwidth), _deadline(seconds)
