@@ -36,7 +36,6 @@ agreed again and every retry that day failed.
 
 from __future__ import annotations
 
-import fcntl
 import os
 import re
 import shutil
@@ -47,6 +46,7 @@ from datetime import date
 from pathlib import Path
 
 from .edition_ledger import LEDGER_FILENAME
+from .file_lock import try_lock
 
 PREFIX = "2.-MUSAEUS_ALAC_Archive_"
 _NAME_RE = re.compile(r"^2\.-MUSAEUS_ALAC_Archive_(\d{8})$")
@@ -215,10 +215,12 @@ def run(
     One run at a time on a root: two would build in the same .partial and
     race in _replace (review of #200, finding 4). The lock is on the root
     folder itself, so no file is added to the drive."""
+    # shortcut: Windows cannot open a folder to lock it, so this raises there;
+    # step 7 of the Windows plan gives backup its own way to copy and lock.
     fd = os.open(root, os.O_RDONLY)
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try_lock(fd, exclusive=True)
         except BlockingIOError:
             return Report(root, ["another backup run is using this drive"])
         return _run(vault, root, keep, today, allow_shrink)
