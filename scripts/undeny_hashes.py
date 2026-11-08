@@ -40,7 +40,7 @@ def main() -> int:
     ap.add_argument("--execute", action="store_true", help="actually lift (default: dry run)")
     args = ap.parse_args()
 
-    ids = [int(x) for x in args.ids.read_text().split() if x.strip().isdigit()]
+    ids = [int(x) for x in args.ids.read_text(encoding="utf-8").split() if x.strip().isdigit()]
     if not ids:
         print(f"no ids in {args.ids}")
         return 1

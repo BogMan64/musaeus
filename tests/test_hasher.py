@@ -41,7 +41,7 @@ def _fake_ffmpeg(directory: Path, body: str) -> None:
     """Put a stand-in `ffmpeg` (and `ffprobe`) at the front of PATH."""
     for name in ("ffmpeg", "ffprobe"):
         exe = directory / name
-        exe.write_text("#!/usr/bin/env python3\n" + body)
+        exe.write_text("#!/usr/bin/env python3\n" + body, encoding="utf-8")
         exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
     os.environ["PATH"] = f"{directory}{os.pathsep}{os.environ['PATH']}"
 

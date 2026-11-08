@@ -92,7 +92,7 @@ def build_manifest(cfg: MusicConfig, manifest: Path) -> list[dict]:
         rows.append({"path": str(p), "basename": p.name, "state": state, "why": why})
 
     manifest.parent.mkdir(parents=True, exist_ok=True)
-    with manifest.open("w", newline="") as fh:
+    with manifest.open("w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=["path", "basename", "state", "why"])
         w.writeheader()
         w.writerows(rows)
@@ -100,13 +100,13 @@ def build_manifest(cfg: MusicConfig, manifest: Path) -> list[dict]:
 
 
 def load(manifest: Path) -> list[dict]:
-    with manifest.open() as fh:
+    with manifest.open(encoding="utf-8") as fh:
         return list(csv.DictReader(fh))
 
 
 def save(manifest: Path, rows: list[dict]) -> None:
     tmp = manifest.with_suffix(".part")
-    with tmp.open("w", newline="") as fh:
+    with tmp.open("w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=["path", "basename", "state", "why"])
         w.writeheader()
         w.writerows(rows)

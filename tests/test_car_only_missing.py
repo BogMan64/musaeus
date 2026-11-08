@@ -129,7 +129,7 @@ class TestItStaysASubsetOfTheEditionSelection:
         budget had deliberately excluded."""
         src = (
             Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         sel = src.index("sel = select_edition(")
         filt = src.index("if only_missing:")
         assert sel < filt, "the gap filter must narrow select_edition's result"
@@ -137,6 +137,6 @@ class TestItStaysASubsetOfTheEditionSelection:
     def test_the_flag_reaches_the_stager(self):
         src = (
             Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         assert "only_missing=args.only_missing" in src
         assert '"--only-missing"' in src

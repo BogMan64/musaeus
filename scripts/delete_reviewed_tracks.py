@@ -170,7 +170,7 @@ def main() -> int:
 
         hold_for_process(exclusive=True, what="scripts/delete_reviewed_tracks.py")
 
-    ids = [int(x) for x in args.ids.read_text().split() if x.strip().isdigit()]
+    ids = [int(x) for x in args.ids.read_text(encoding="utf-8").split() if x.strip().isdigit()]
     # Once each: pass 2 works from the rows pass 1 read, so an id listed twice
     # would be deleted twice.
     ids = list(dict.fromkeys(ids))

@@ -103,7 +103,7 @@ class TestSourceSampleFmt:
     def test_unreadable_file_defers_to_ffmpeg(self, tmp_path: Path) -> None:
         """None means 'do not state a format', not 'assume 16-bit'."""
         bad = tmp_path / "not-audio.m4a"
-        bad.write_text("nonsense")
+        bad.write_text("nonsense", encoding="utf-8")
         assert source_sample_fmt(bad) is None
 
 

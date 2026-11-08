@@ -217,7 +217,7 @@ def _boot_id() -> str:
     unavailable, which makes the PID check *more* conservative (a mismatch
     can never be claimed), never less."""
     try:
-        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
     except OSError:
         return "unknown-boot"
 
@@ -303,7 +303,7 @@ def _write_atomic(path: Path, text: str) -> None:
     """Write via a temp file in the same directory plus os.replace, so a
     reader never sees a half-written owner record."""
     temp = path.with_name(path.name + f".tmp{os.getpid()}")
-    temp.write_text(text)
+    temp.write_text(text, encoding="utf-8")
     os.replace(temp, path)
 
 
@@ -331,7 +331,7 @@ def observe(scope: Scope, lock_dir: Path) -> LockOwner | None:
     if not meta_path.is_file():
         return None
     try:
-        return LockOwner.from_json(meta_path.read_text())
+        return LockOwner.from_json(meta_path.read_text(encoding="utf-8"))
     except OSError:
         return None
 

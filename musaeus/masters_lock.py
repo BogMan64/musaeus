@@ -111,7 +111,7 @@ def masters_lock(runs_root: Path | str, *, exclusive: bool, what: str) -> Iterat
     # Exclusive only: a shared request on the parent's open file would turn
     # the parent's exclusive hold into a shared one.
     inherited = _inherited(lock_dir / LOCK_NAME) if exclusive else None
-    fh = inherited or open(lock_dir / LOCK_NAME, "a+")  # noqa: SIM115 -- held for the block
+    fh = inherited or open(lock_dir / LOCK_NAME, "a+", encoding="utf-8")  # noqa: SIM115 -- held for the block
     try:
         try_lock(fh, exclusive=exclusive)
     except BlockingIOError:

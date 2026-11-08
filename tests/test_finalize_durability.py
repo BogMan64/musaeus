@@ -43,7 +43,7 @@ _COPY_FN = "_copy_then_verify_then_swap"
 
 
 def _copy_fn() -> ast.FunctionDef:
-    tree = ast.parse(_SRC.read_text())
+    tree = ast.parse(_SRC.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == _COPY_FN:
             return node

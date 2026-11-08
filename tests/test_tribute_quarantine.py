@@ -167,7 +167,7 @@ class TestTributeQuarantineRun:
         manifest_note = next(n for n in result.notes if n.startswith("manifest:"))
         manifest_path = Path(manifest_note.split("manifest: ", 1)[1])
         assert manifest_path.exists()
-        content = manifest_path.read_text()
+        content = manifest_path.read_text(encoding="utf-8")
         assert "source" in content and "destination" in content and "reason" in content
 
         restore_note = next(n for n in result.notes if n.startswith("restore script:"))
@@ -251,7 +251,9 @@ class TestWantedListExport:
 
         wanted_files = list((cfg.tribute_review_dir / _TEST_BATCH_DATE).glob("tunemymusic_*.csv"))
         assert len(wanted_files) == 1
-        assert wanted_files[0].read_text().strip() == "Steely Dan - Midnight Cruiser"
+        assert (
+            wanted_files[0].read_text(encoding="utf-8").strip() == "Steely Dan - Midnight Cruiser"
+        )
         assert any("wanted list" in n for n in result.notes)
 
     def test_an_already_owned_knockoff_writes_no_wanted_list(self, ctx, cfg) -> None:
@@ -295,7 +297,7 @@ class TestWantedListExport:
             (cfg.tribute_review_dir / _TEST_BATCH_DATE).glob("tribute_manifest_*.csv")
         )
         assert len(manifest_files) == 1
-        header = manifest_files[0].read_text().splitlines()[0]
+        header = manifest_files[0].read_text(encoding="utf-8").splitlines()[0]
         assert header == "source,destination,reason"
 
     def test_multiple_credited_tracks_all_appear(self, ctx, cfg) -> None:
@@ -314,7 +316,7 @@ class TestWantedListExport:
         TributeQuarantineStage().run(ctx)
 
         wanted_files = list((cfg.tribute_review_dir / _TEST_BATCH_DATE).glob("tunemymusic_*.csv"))
-        lines = wanted_files[0].read_text().strip().splitlines()
+        lines = wanted_files[0].read_text(encoding="utf-8").strip().splitlines()
         assert set(lines) == {"Artist One - Song A", "Artist Two - Song B"}
 
 

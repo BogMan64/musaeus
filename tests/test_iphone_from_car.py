@@ -142,7 +142,7 @@ class TestTheMaskerCannotClip:
             / "car_library"
             / "vendor"
             / "orpheus_noise_masker.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         assert "CEILING_LINEAR" in src
         # The FILTER STRING, not the prose around it. The first draft of this
         # test used src.index("alimiter"), which found the explanatory comment

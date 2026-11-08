@@ -154,7 +154,7 @@ def main() -> int:
     progress = cfg.meta_dir / PROGRESS
     done: set[str] = set()
     if progress.exists():
-        with progress.open() as fh:
+        with progress.open(encoding="utf-8") as fh:
             done = {r["file_path"] for r in csv.DictReader(fh)}
 
     rows = [r for r in db.execute(
@@ -167,7 +167,7 @@ def main() -> int:
     print(f"{len(rows):,} to try ({len(done):,} already attempted)", flush=True)
 
     new = progress.exists()
-    fh = progress.open("a", newline="")
+    fh = progress.open("a", newline="", encoding="utf-8")
     w = csv.DictWriter(fh, fieldnames=["file_path", "artist", "title", "album", "reason"])
     if not new:
         w.writeheader()

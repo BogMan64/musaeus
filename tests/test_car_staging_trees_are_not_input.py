@@ -109,7 +109,7 @@ def test_this_run_registers_its_own_cleanup(tmp_path: Path) -> None:
     atexit-style cleanup is registered for the staging directory at all --
     before the fix, the only rmtree calls were on entry and after a dry run.
     """
-    text = _SCRIPT.read_text()
+    text = _SCRIPT.read_text(encoding="utf-8")
     assert "atexit.register(shutil.rmtree, staging_dir" in text, (
         "this run's staging tree is not cleaned up on exit"
     )
@@ -128,7 +128,7 @@ def test_the_cleanup_is_scoped_to_this_process(tmp_path: Path) -> None:
     encoder spent 3,713 files reporting "No such file or directory". The
     per-process name is the guard; this pins that the cleanup respects it.
     """
-    text = _SCRIPT.read_text()
+    text = _SCRIPT.read_text(encoding="utf-8")
     reg = text.split("atexit.register(shutil.rmtree,")[1].split(")")[0]
     assert "staging_dir" in reg, reg
     for wildcard in ("_staged_*", "glob", "iterdir"):

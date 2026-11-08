@@ -115,7 +115,7 @@ def test_the_docstring_names_files_that_exist() -> None:
     as dead code long enough for all 51 map rules to never load.
     """
     doc = Path(GenreCanon.__module__.replace(".", "/") + ".py")
-    text = (Path(__file__).resolve().parents[1] / doc).read_text()
+    text = (Path(__file__).resolve().parents[1] / doc).read_text(encoding="utf-8")
     head = text.split('"""')[1]
 
     # Only the lines that NAME the backing files, not the paragraph that

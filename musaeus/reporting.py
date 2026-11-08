@@ -402,6 +402,6 @@ def write_report(report: RunReport, report_root: Path) -> tuple[Path, Path]:
     report_root.mkdir(parents=True, exist_ok=True)
     restricted = report_root / f"{report.run_id}.restricted.json"
     shareable = report_root / f"{report.run_id}.shareable.json"
-    restricted.write_text(render_json(report))
-    shareable.write_text(render_json(to_shareable(report)))
+    restricted.write_text(render_json(report), encoding="utf-8")
+    shareable.write_text(render_json(to_shareable(report)), encoding="utf-8")
     return restricted, shareable

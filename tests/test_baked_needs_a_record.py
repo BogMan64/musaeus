@@ -181,10 +181,10 @@ def test_execute_marks_only_the_reviewed_rows(tmp_path, monkeypatch):
                  "WHERE file_path = ?", (str(tmp_path / "old_baked_2.m4a"),))  # fmt: skip
     conn.commit()
     _main(mod, monkeypatch, tmp_path, "--write-ids", str(tmp_path / "all.tsv"))
-    listed = (tmp_path / "all.tsv").read_text().splitlines()
+    listed = (tmp_path / "all.tsv").read_text(encoding="utf-8").splitlines()
     assert len(listed) == 2, "the dry run lists every candidate"
     keep = next(x for x in listed if x.startswith(f"{_first(conn)}\t"))
-    (tmp_path / "reviewed.tsv").write_text(keep + "\n")
+    (tmp_path / "reviewed.tsv").write_text(keep + "\n", encoding="utf-8")
 
     _main(mod, monkeypatch, tmp_path, "--execute", "--ids", str(tmp_path / "reviewed.tsv"))
 
@@ -194,7 +194,9 @@ def test_execute_marks_only_the_reviewed_rows(tmp_path, monkeypatch):
 def test_an_id_whose_row_now_has_another_path_is_not_marked(tmp_path, monkeypatch):
     # CodeRabbit, review of #262: an id from another or rebuilt catalogue.
     mod, conn = _script(), _db(tmp_path)
-    (tmp_path / "reviewed.tsv").write_text(f"{_first(conn)}\t/elsewhere/old_baked.m4a\n")
+    (tmp_path / "reviewed.tsv").write_text(
+        f"{_first(conn)}\t/elsewhere/old_baked.m4a\n", encoding="utf-8"
+    )
 
     _main(mod, monkeypatch, tmp_path, "--execute", "--ids", str(tmp_path / "reviewed.tsv"))
 

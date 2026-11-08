@@ -759,7 +759,7 @@ def busy_musaeus(procs: Iterable[tuple[int, int, str, list[str]]], me: int) -> l
 def _proc_table() -> Iterator[tuple[int, int, str, list[str]]]:
     for d in Path("/proc").glob("[0-9]*"):
         try:
-            stat = (d / "stat").read_text()
+            stat = (d / "stat").read_text(encoding="utf-8")
             argv = [a.decode("utf-8", "replace") for a in (d / "cmdline").read_bytes().split(b"\0")]
         except OSError:
             continue
@@ -790,7 +790,7 @@ def describe_work(pids: list[int]) -> str:
 def build_lock(lock_dir: Path, name: str = EDITION) -> Iterator[None]:
     """One build of an edition at a time. file_lock: the OS frees it if we die."""
     lock_dir.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_dir / f"edition-build-{name}.lock", "w")  # noqa: SIM115
+    fh = open(lock_dir / f"edition-build-{name}.lock", "w", encoding="utf-8")  # noqa: SIM115
     try:
         try:
             try_lock(fh, exclusive=True)

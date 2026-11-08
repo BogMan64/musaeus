@@ -34,7 +34,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_the_console_hard_reset_clears_the_resume_file() -> None:
-    text = (_ROOT / "musaeus" / "console.py").read_text()
+    text = (_ROOT / "musaeus" / "console.py").read_text(encoding="utf-8")
     assert "_clear_resume" in text, (
         "the console deletes the database without clearing the resume file; "
         "the next run will skip stages against an empty database (P1-D)"
@@ -43,14 +43,14 @@ def test_the_console_hard_reset_clears_the_resume_file() -> None:
 
 def test_the_clear_happens_before_the_console_stops() -> None:
     """It sets self._running = False right after. Order matters."""
-    text = (_ROOT / "musaeus" / "console.py").read_text()
+    text = (_ROOT / "musaeus" / "console.py").read_text(encoding="utf-8")
     assert text.index("_clear_resume()") < text.index("self._running = False")
 
 
 def test_both_reset_paths_clear_it() -> None:
     """The CLI always did; the divergence is what made this a bug."""
     for module in ("cli.py", "console.py"):
-        assert "_clear_resume" in (_ROOT / "musaeus" / module).read_text(), module
+        assert "_clear_resume" in (_ROOT / "musaeus" / module).read_text(encoding="utf-8"), module
 
 
 # ── P1-K ─────────────────────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ def test_timeout_expired_is_not_an_oserror() -> None:
 
 
 def test_canonicalize_catches_a_stalled_subprocess() -> None:
-    text = (_ROOT / "musaeus" / "stages" / "canonicalize.py").read_text()
+    text = (_ROOT / "musaeus" / "stages" / "canonicalize.py").read_text(encoding="utf-8")
     assert "subprocess.TimeoutExpired" in text, (
         "a stalled ffmpeg still aborts the whole stage (P1-K)"
     )
@@ -71,7 +71,7 @@ def test_canonicalize_catches_a_stalled_subprocess() -> None:
 
 def test_the_timeout_handler_quarantines_like_the_others() -> None:
     """Catching without cleanup would leave the half-written staging file."""
-    text = (_ROOT / "musaeus" / "stages" / "canonicalize.py").read_text()
+    text = (_ROOT / "musaeus" / "stages" / "canonicalize.py").read_text(encoding="utf-8")
     block = text.split("subprocess.TimeoutExpired")[1].split("except OSError")[0]
     assert "_quarantine_failed_staging" in block, (
         "the timeout is caught but its partial output is not cleaned up"
@@ -81,7 +81,7 @@ def test_the_timeout_handler_quarantines_like_the_others() -> None:
 
 def test_the_timeout_handler_precedes_the_broad_one() -> None:
     """A later, broader `except` would shadow it and nothing would change."""
-    tree = ast.parse((_ROOT / "musaeus" / "stages" / "canonicalize.py").read_text())
+    tree = ast.parse((_ROOT / "musaeus" / "stages" / "canonicalize.py").read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if not isinstance(node, ast.Try):
             continue
