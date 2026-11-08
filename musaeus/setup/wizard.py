@@ -19,6 +19,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from ..safe_save import fsync_dir
+
 _CONFIG_DIR = Path.home() / ".config" / "musaeus"
 _SETTINGS_FILE = _CONFIG_DIR / "settings.env"
 _CREDENTIALS_FILE = _CONFIG_DIR / "credentials.env"
@@ -129,11 +131,7 @@ def _save_env(path: Path, env: dict[str, str], private: bool = False) -> None:
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
-    dir_fd = os.open(target.parent, os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+    fsync_dir(target.parent)
 
 
 def needs_setup() -> bool:
