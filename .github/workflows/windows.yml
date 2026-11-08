@@ -1,0 +1,84 @@
+name: Windows baseline
+
+# The Windows port (Grey, 2026-11-07: command line, no GUI) starts by
+# measuring. This job reports how much of MUSAEUS imports and how many tests
+# pass on Windows. It does NOT fail a pull request yet: each port PR moves the
+# numbers in the job summary, and once the suite is green here this job
+# becomes a required check like the Linux ones in ci.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Without ffmpeg the conversion and verification tests skip (see ci.yml).
+      - name: Install ffmpeg
+        run: choco install ffmpeg -y --no-progress
+      # Not ".[dev]": semgrep, ruff and mypy run on Linux in ci.yml.
+      - name: Install dependencies
+        run: pip install -e ".[fuzzy]" pytest openpyxl
+      - name: Import every module
+        id: imports
+        continue-on-error: true
+        shell: python
+        run: |
+          import importlib, os, pkgutil
+          import musaeus
+
+          failed = []
+          # Not __main__: importing it starts the program.
+          names = [
+              m.name
+              for m in pkgutil.walk_packages(musaeus.__path__, "musaeus.")
+              if not m.name.endswith(".__main__")
+          ]
+          for name in names:
+              try:
+                  importlib.import_module(name)
+              except Exception as exc:  # noqa: BLE001 -- every failure is the finding
+                  failed.append(f"{name}: {type(exc).__name__}: {exc}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write(f"## Imports\n\n{len(names) - len(failed)} of {len(names)} modules import.\n\n")
+              out.writelines(f"- `{line}`\n" for line in failed)
+          print("\n".join(failed) or "all modules import")
+          raise SystemExit(1 if failed else 0)
+      - name: Run tests (not yet required)
+        continue-on-error: true
+        # Run what loads: test files that cannot import (fcntl, 2026-11-07) are
+        # counted as errors instead of stopping the whole run.
+        run: pytest -q --tb=line -p no:cacheprovider --continue-on-collection-errors --junitxml=windows-junit.xml
+      - name: Summary
+        if: always()
+        shell: python
+        run: |
+          import os
+          import xml.etree.ElementTree as ET
+
+          out = open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8")
+          if not os.path.exists("windows-junit.xml"):
+              out.write("## Tests\n\nNo test report: pytest did not get as far as writing one.\n")
+              raise SystemExit(0)
+          suite = ET.parse("windows-junit.xml").getroot()
+          suite = suite.find("testsuite") if suite.tag == "testsuites" else suite
+          n = {k: int(suite.get(k, 0)) for k in ("tests", "failures", "errors", "skipped")}
+          passed = n["tests"] - n["failures"] - n["errors"] - n["skipped"]
+          out.write(
+              f"## Tests\n\n{passed} passed, {n['failures']} failed, {n['errors']} errors, "
+              f"{n['skipped']} skipped (of {n['tests']}).\n"
+          )
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-baseline
+          path: windows-junit.xml
+          if-no-files-found: ignore
