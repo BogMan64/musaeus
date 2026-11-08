@@ -129,7 +129,7 @@ def _downmix_to_stereo(src: Path, dest: Path) -> str | None:
         # Its extended attributes too; one that cannot be set stops the swap
         # (Codex review of #237, round 14).
         try:
-            names = os.listxattr(src)
+            names = os.listxattr(src) if hasattr(os, "listxattr") else []  # Windows has none
         except OSError as exc:
             # Only "this filesystem has none" is nothing to carry; any other
             # error stops the swap (Codex review of #237, round 15).

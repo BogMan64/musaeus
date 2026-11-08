@@ -439,6 +439,7 @@ def test_a_failed_lossless_cleanup_rolls_the_swap_back_for_a_retry(vault, monkey
     )
 
 
+@pytest.mark.skipif(not hasattr(os, "setxattr"), reason="no extended attributes (Windows)")
 def test_extended_attributes_survive_the_downmix(vault):
     """Codex review of #237, round 14 (reproduced): a user.* attribute on the master
     was lost when the stereo copy replaced it."""
@@ -462,9 +463,18 @@ def test_an_unreadable_attribute_list_stops_the_swap(vault, monkeypatch):
     def _io(path):
         raise OSError(errno.EIO, "I/O error")
 
-    monkeypatch.setattr(mod.os, "listxattr", _io)
+    monkeypatch.setattr(mod.os, "listxattr", _io, raising=False)  # Windows has none
     mod.main()
     assert _probe(song, "stream=channels").split()[0].strip(",") == "6"
+
+
+def test_a_system_without_extended_attributes_still_downmixes(vault, monkeypatch):
+    """Windows port, 2026-11-08: Windows has no os.listxattr. The AttributeError
+    was caught as "downmix failed" and every surround song stayed 6-channel."""
+    mod, cfg, song = vault
+    monkeypatch.delattr(mod.os, "listxattr", raising=False)
+    assert mod.main() == 0
+    assert _probe(song, "stream=channels").split()[0].strip(",") == "2"
 
 
 @pytest.mark.parametrize("where", ["the master", "a car copy"])
