@@ -72,6 +72,15 @@ def test_a_flat_folder_of_many_artists_is_not(ctx, tmp_path):
     assert not _one_album_folder(ctx, folder)
 
 
+def test_a_mixed_folder_at_a_drive_root_is_not_one_album(ctx, tmp_path):
+    """'/' or 'C:\\' plus a separator made '//' or 'C:\\\\': no row matched, so the
+    folder read as one album and its cover could go on every song (CodeRabbit, #296)."""
+    folder = Path(tmp_path.anchor)
+    _row(ctx, folder / "a.m4a", "America", "Hearts")
+    _row(ctx, folder / "b.m4a", "Glenn Miller", "Kings of Swing")
+    assert not _one_album_folder(ctx, folder)
+
+
 @needs_ffmpeg
 def test_a_mixed_folders_cover_jpg_is_never_embedded(ctx, tmp_path, monkeypatch):
     folder = tmp_path / "INBOX" / "flat"

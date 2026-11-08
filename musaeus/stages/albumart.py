@@ -160,7 +160,7 @@ def _one_album_folder(ctx: RunContext, folder: Path) -> bool:
     """
     from ..artist_form import folder_artist
 
-    prefix = str(folder) + os.sep
+    prefix = os.path.join(str(folder), "")  # one trailing separator, even at a drive root
     rows = ctx.conn.execute(
         "SELECT artist, album, file_path FROM archive WHERE substr(file_path, 1, ?) = ?",
         (len(prefix), prefix),

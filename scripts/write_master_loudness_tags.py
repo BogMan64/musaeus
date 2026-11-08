@@ -126,7 +126,7 @@ def main() -> int:
     db = sqlite3.connect(cfg.db_path)
     db.row_factory = sqlite3.Row
     ledger = open_for_reading(ledger_path(cfg))
-    root = str(Path(cfg.alac_archive)) + os.sep
+    root = os.path.join(str(Path(cfg.alac_archive)), "")  # one trailing separator
     if args.execute:
         # A copy a killed run left beside a master (<name>.tagging): nothing else
         # sweeps the archive, and the exclusive lock is held (review of
