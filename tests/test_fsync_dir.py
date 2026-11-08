@@ -29,12 +29,12 @@ def _folders_cannot_be_opened(monkeypatch):
 
 def test_a_save_completes_where_folders_cannot_be_opened(tmp_path, monkeypatch):
     p = tmp_path / "a.txt"
-    p.write_text("old", encoding="utf-8")
+    p.write_text("old")
     _folders_cannot_be_opened(monkeypatch)
 
-    change_beside(p, lambda q: q.write_text("new", encoding="utf-8"), suffix=".part")
+    change_beside(p, lambda q: q.write_text("new"), suffix=".part")
 
-    assert p.read_text(encoding="utf-8") == "new"
+    assert p.read_text() == "new"
     assert not (tmp_path / "a.txt.part").exists()
 
 

@@ -239,7 +239,7 @@ class TestAcquireAndObserve:
 
     def test_unreadable_owner_json_reports_unknown_not_an_exception(self, tmp_path, lock_dir):
         scope = _scope(tmp_path)
-        (lock_dir / f"{scope.scope_id}.owner.json").write_text("{not json", encoding="utf-8")
+        (lock_dir / f"{scope.scope_id}.owner.json").write_text("{not json")
         assert observe(scope, lock_dir) is None
 
 
@@ -297,7 +297,7 @@ class TestMultiprocessConflict:
             assert owner["pid"] == holder.pid
             assert "holder-run" in str(exc.value)
         finally:
-            stop.write_text("stop", encoding="utf-8")
+            stop.write_text("stop")
             holder.wait(timeout=30)
 
         # And once the holder is gone, the scope is acquirable again.
@@ -351,7 +351,7 @@ class TestMultiprocessConflict:
             assert exc.value.details["owner"] is None
             assert "unidentified run" in str(exc.value)
         finally:
-            stop.write_text("stop", encoding="utf-8")
+            stop.write_text("stop")
             holder.wait(timeout=30)
 
     def test_the_refused_process_makes_no_change(self, tmp_path, lock_dir):
@@ -359,11 +359,11 @@ class TestMultiprocessConflict:
         rewrite the owner record it failed to take."""
         scope = _scope(tmp_path)
         with acquire(scope, lock_dir, run_id="run-A", now="2026-08-23T22:00:00Z"):
-            before = (lock_dir / f"{scope.scope_id}.owner.json").read_text(encoding="utf-8")
+            before = (lock_dir / f"{scope.scope_id}.owner.json").read_text()
             # Same process cannot conflict with itself via flock, so this
             # asserts the metadata is untouched by an observation.
             assert observe(scope, lock_dir).run_id == "run-A"
-            after = (lock_dir / f"{scope.scope_id}.owner.json").read_text(encoding="utf-8")
+            after = (lock_dir / f"{scope.scope_id}.owner.json").read_text()
         assert before == after
 
 
@@ -385,7 +385,7 @@ def _plant_owner(lock_dir: Path, scope: Scope, **over) -> LockOwner:
         heartbeat_at="2020-01-01T00:00:00Z",
     )
     owner = LockOwner(**{**asdict(base), **over})
-    (lock_dir / f"{scope.scope_id}.owner.json").write_text(owner.as_json(), encoding="utf-8")
+    (lock_dir / f"{scope.scope_id}.owner.json").write_text(owner.as_json())
     return owner
 
 

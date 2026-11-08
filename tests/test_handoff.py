@@ -42,7 +42,7 @@ def test_a_clean_run_STILL_writes_a_document(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path, [_ok("ingest"), _ok("sentinel"), _ok("scholar")])
     path = write_handoff_doc(ctx)
     assert path is not None and path.is_file()
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text()
     assert "Nothing went wrong" in text
     assert "## What this run did" in text
 
@@ -50,7 +50,7 @@ def test_a_clean_run_STILL_writes_a_document(tmp_path: Path) -> None:
 def test_a_clean_run_says_plainly_that_nothing_broke(tmp_path: Path) -> None:
     """The reader must not have to infer health from absence."""
     ctx = _ctx(tmp_path, [_ok("ingest")])
-    text = write_handoff_doc(ctx).read_text(encoding="utf-8")
+    text = write_handoff_doc(ctx).read_text()
     assert "No stage crashed" in text
     assert "Stage crashes" not in text
     assert "Verification failures" not in text
@@ -61,7 +61,7 @@ def test_the_summary_carries_what_each_stage_actually_did(tmp_path: Path) -> Non
     r = _ok("genre-validate", files_processed=11555, files_changed=881)
     r.notes.append("genre agrees: 11,274")
     ctx = _ctx(tmp_path, [r])
-    text = write_handoff_doc(ctx).read_text(encoding="utf-8")
+    text = write_handoff_doc(ctx).read_text()
     assert "11,555" in text and "881" in text
     assert "genre agrees: 11,274" in text
     assert "881 file(s) changed" in text
@@ -72,7 +72,7 @@ def test_a_failing_run_still_gets_the_summary_as_well_as_the_problems(tmp_path: 
     bad = StageResult(stage_name="finalize", success=False, files_errored=3)
     bad.errors.append("ERROR: disk full")
     ctx = _ctx(tmp_path, [_ok("ingest", files_changed=10), bad])
-    text = write_handoff_doc(ctx).read_text(encoding="utf-8")
+    text = write_handoff_doc(ctx).read_text()
     assert "## What this run did" in text
     assert "Stages that reported failure" in text
     assert "Nothing went wrong" not in text
@@ -83,7 +83,7 @@ def test_the_verified_column_distinguishes_no_claim_from_a_pass(tmp_path: Path) 
     the stage made no claim, True means it checked and it held."""
     checked = StageResult(stage_name="a", success=True, verified=True)
     silent = StageResult(stage_name="b", success=True, verified=None)
-    text = write_handoff_doc(_ctx(tmp_path, [checked, silent])).read_text(encoding="utf-8")
+    text = write_handoff_doc(_ctx(tmp_path, [checked, silent])).read_text()
     assert "no claim" in text
 
 
@@ -107,7 +107,7 @@ def test_a_verification_failure_is_the_priority_section(tmp_path: Path) -> None:
     # notes. Asserted positively -- naming the value that is wanted, not
     # the one to avoid.
     assert path.name == "ForClaudeHandoff_run_test.md"
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text()
     assert "Verification failures" in text
     assert "corrupt" in text
     assert "Song.m4a: decode failed" in text
@@ -125,7 +125,7 @@ def test_a_stage_that_reported_failure_without_crashing_is_captured(tmp_path: Pa
     path = write_handoff_doc(ctx)
 
     assert path is not None
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text()
     assert "Stages that reported failure" in text
     assert "mb_enrich" in text
     assert "network timeout for 'Some Artist'" in text
@@ -149,14 +149,14 @@ def test_a_crash_report_is_read_and_inlined_not_just_pointed_at(tmp_path: Path) 
         "last_item": "/vault/Some Album/track.flac",
     }
     (failures_dir / "canonicalize_run_test_20260908T000000000000Z.json").write_text(
-        json.dumps(report), encoding="utf-8"
+        json.dumps(report)
     )
 
     ctx = _ctx(tmp_path, [], run_id="run_test")
     path = write_handoff_doc(ctx)
 
     assert path is not None
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text()
     assert "Stage crashes" in text
     assert "canonicalize" in text
     assert "CanonicalizeError" in text
@@ -182,8 +182,7 @@ def test_only_this_runs_failure_reports_are_included(tmp_path: Path) -> None:
                 "run_id": "run_OLD",
                 "occurred_at": "x",
             }
-        ),
-        encoding="utf-8",
+        )
     )
 
     bad = StageResult(
@@ -192,7 +191,7 @@ def test_only_this_runs_failure_reports_are_included(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path, [bad], run_id="run_TODAY")
     path = write_handoff_doc(ctx)
 
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text()
     assert "today's problem" in text
     assert "OldError" not in text
     assert "from a previous run" not in text
@@ -204,7 +203,7 @@ def test_a_run_with_both_kinds_of_issue_gets_both_sections(tmp_path: Path) -> No
     )
     failed = StageResult(stage_name="mb_enrich", success=False, errors=["timeout"])
     ctx = _ctx(tmp_path, [bad, failed])
-    text = write_handoff_doc(ctx).read_text(encoding="utf-8")
+    text = write_handoff_doc(ctx).read_text()
     assert "Verification failures" in text
     assert "Stages that reported failure" in text
 
@@ -212,9 +211,7 @@ def test_a_run_with_both_kinds_of_issue_gets_both_sections(tmp_path: Path) -> No
 def test_an_unreadable_failure_report_is_skipped_not_fatal(tmp_path: Path) -> None:
     failures_dir = tmp_path / "RUNS" / "FAILURES"
     failures_dir.mkdir(parents=True)
-    (failures_dir / "x_run_test_20260101T000000000000Z.json").write_text(
-        "{not valid json", encoding="utf-8"
-    )
+    (failures_dir / "x_run_test_20260101T000000000000Z.json").write_text("{not valid json")
 
     bad = StageResult(
         stage_name="corrupt", success=True, verified=False, verify_notes=["real problem"]
@@ -223,7 +220,7 @@ def test_an_unreadable_failure_report_is_skipped_not_fatal(tmp_path: Path) -> No
     # must not raise despite the corrupt report sitting alongside a real issue
     path = write_handoff_doc(ctx)
     assert path is not None
-    assert "real problem" in path.read_text(encoding="utf-8")
+    assert "real problem" in path.read_text()
 
 
 def test_the_doc_orients_a_tool_less_reader(tmp_path: Path) -> None:
@@ -231,7 +228,7 @@ def test_the_doc_orients_a_tool_less_reader(tmp_path: Path) -> None:
     it should say so, not just dump data."""
     bad = StageResult(stage_name="corrupt", success=True, verified=False, verify_notes=["x"])
     ctx = _ctx(tmp_path, [bad])
-    text = write_handoff_doc(ctx).read_text(encoding="utf-8")
+    text = write_handoff_doc(ctx).read_text()
     assert "no file or tool access" in text.lower()
     assert "cannot verify" in text.lower()
 
@@ -272,7 +269,7 @@ def test_a_stage_with_thousands_of_errors_stays_pasteable(tmp_path: Path) -> Non
         errors=[f"Missing: /vault/INBOX/track_{n}.m4a" for n in range(3094)],
     )
     ctx = _ctx(tmp_path, [flood])
-    text = write_handoff_doc(ctx).read_text(encoding="utf-8")
+    text = write_handoff_doc(ctx).read_text()
 
     assert text.count("ERROR: Missing:") == 20
     assert "- ... and 3074 more" in text
@@ -329,7 +326,7 @@ def test_the_undo_record_survives_truncation(tmp_path: Path) -> None:
         errors=["one bad path"],
         notes=notes,
     )
-    text = write_handoff_doc(_ctx(tmp_path, [failed])).read_text(encoding="utf-8")
+    text = write_handoff_doc(_ctx(tmp_path, [failed])).read_text()
 
     assert "restore script: /vault/DUPES_MOVED_FOR_REVIEW/2026-09-04/restore.sh" in text
     assert "manifest: /vault/DUPES_MOVED_FOR_REVIEW/2026-09-04/manifest.json" in text
@@ -404,7 +401,7 @@ class TestPerActReports:
         ctx = _ctx(tmp_path, [_ok("IngestStage", files_changed=7)])
         path = write_act_handoff(ctx, "act1")
         assert path is not None and path.name.endswith("_act1.md")
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text()
         assert "IngestStage" in text
         assert "## What this run did" in text
 
@@ -417,7 +414,7 @@ class TestPerActReports:
         bad.errors.append("ERROR: act 2 blew up")
         ctx = _ctx(tmp_path, [_ok("IngestStage", files_changed=7), bad])
 
-        text = write_act_handoff(ctx, "act1").read_text(encoding="utf-8")
+        text = write_act_handoff(ctx, "act1").read_text()
         assert "IngestStage" in text
         assert "CrossDupeStage" not in text
         assert "act 2 blew up" not in text
@@ -430,7 +427,7 @@ class TestPerActReports:
         bad.errors.append("ERROR: act 2 blew up")
         ctx = _ctx(tmp_path, [_ok("IngestStage"), bad])
 
-        text = write_act_handoff(ctx, "act2").read_text(encoding="utf-8")
+        text = write_act_handoff(ctx, "act2").read_text()
         assert "act 2 blew up" in text
         assert "Nothing went wrong" not in text
 
@@ -484,7 +481,7 @@ class TestTheErrorListBetweenActs:
         r.errors.append(
             "duplicate group g1: nothing moved -- /x/b.m4a: the file at that path is now a different recording"
         )
-        text = write_act_handoff(_ctx(tmp_path, [r]), "act2").read_text(encoding="utf-8")
+        text = write_act_handoff(_ctx(tmp_path, [r]), "act2").read_text()
         assert "Nothing went wrong" not in text
         assert "Problems in stages that still finished" in text
         assert "now a different recording" in text
@@ -508,11 +505,10 @@ class TestTheErrorListBetweenActs:
                     "exception_message": "disk full",
                     "last_item": "/inbox/7.m4a",
                 }
-            ),
-            encoding="utf-8",
+            )
         )
         path = write_problems_tsv(ctx)
-        rows = path.read_text(encoding="utf-8").splitlines()
+        rows = path.read_text().splitlines()
         assert rows[0] == "act\tstage\tkind\tmessage"
         assert sum("Missing:" in r for r in rows) == 60, (
             "the report caps its lists; this file must not"

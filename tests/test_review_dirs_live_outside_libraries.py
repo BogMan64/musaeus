@@ -53,9 +53,7 @@ def test_doctor_excludes_review_dirs_without_hardcoding_their_names():
     lives in the _under_any() helper, so asserting only against the orphan
     comprehension would pass a name-based implementation hidden one call away.
     """
-    src = (Path(__file__).resolve().parent.parent / "musaeus" / "doctor.py").read_text(
-        encoding="utf-8"
-    )
+    src = (Path(__file__).resolve().parent.parent / "musaeus" / "doctor.py").read_text()
 
     body = src.split("orphans = [", 1)[1].split("]", 1)[0]
     assert "DUPES_MOVED_FOR_REVIEW" not in body, "name-based exclusion reintroduced"

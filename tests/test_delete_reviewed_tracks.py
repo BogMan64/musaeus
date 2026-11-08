@@ -118,7 +118,7 @@ def _tone(path: Path, label: str, seconds: float = 0.3, noise: bool = False) -> 
 
 def _run(vault, ids, execute=True, extra=()):
     f = vault / "ids.txt"
-    f.write_text("\n".join(str(i) for i in ids), encoding="utf-8")
+    f.write_text("\n".join(str(i) for i in ids))
     cmd = [sys.executable, str(SCRIPT), str(f), "--reason", "test", *extra]
     if execute:
         cmd.append("--execute")

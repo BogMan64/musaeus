@@ -53,8 +53,7 @@ def _checkpoint(root: Path, name: str, days_old: float, *, manifest: bool = True
                     "entries": [],
                     "source_root": "/x",
                 }
-            ),
-            encoding="utf-8",
+            )
         )
     return d
 

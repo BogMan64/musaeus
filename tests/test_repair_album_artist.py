@@ -214,7 +214,7 @@ def test_apply_writes_every_planned_change_and_journals_it(tmp_path):
     assert not result["FAILED"]
     assert _albumartist_on_disk(p) == "50 Cent"
 
-    rec = json.loads(journal.read_text(encoding="utf-8").strip())
+    rec = json.loads(journal.read_text().strip())
     assert rec["old_albumartist"] == "50 Cent, Nate Dogg"
     assert rec["new_albumartist"] == "50 Cent"
 
@@ -235,7 +235,7 @@ def test_the_journal_record_is_durable_before_the_file_is_touched(tmp_path, monk
     with pytest.raises(KeyboardInterrupt):
         raa.apply(planned, journal)
 
-    rec = json.loads(journal.read_text(encoding="utf-8").strip())
+    rec = json.loads(journal.read_text().strip())
     assert rec["old_albumartist"] == "50 Cent, Nate Dogg"
 
 

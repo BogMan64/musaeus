@@ -72,7 +72,7 @@ def test_the_force_flag_reads_its_value_not_its_presence() -> None:
 
     Reassigning it at runtime would not help -- it is read at import.
     """
-    tree = ast.parse(_SCRIPT.read_text(encoding="utf-8"))
+    tree = ast.parse(_SCRIPT.read_text())
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Assign)
@@ -96,7 +96,7 @@ def test_no_comment_promises_a_flag_the_script_does_not_define() -> None:
     Parses the file for the arguments it really defines, then checks that no
     comment sends the operator to one that is absent.
     """
-    text = _SCRIPT.read_text(encoding="utf-8")
+    text = _SCRIPT.read_text()
     tree = ast.parse(text)
     defined = {
         a.value
@@ -139,7 +139,7 @@ def test_every_ffprobe_helper_has_a_deadline(fn: str) -> None:
     stalls silently. Asserted per-helper so a new one cannot be added
     without one.
     """
-    tree = ast.parse(_SCRIPT.read_text(encoding="utf-8"))
+    tree = ast.parse(_SCRIPT.read_text())
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef) or node.name != fn:
             continue
@@ -157,6 +157,6 @@ def test_every_ffprobe_helper_has_a_deadline(fn: str) -> None:
 
 
 def test_the_probe_timeout_is_named_once() -> None:
-    text = _SCRIPT.read_text(encoding="utf-8")
+    text = _SCRIPT.read_text()
     assert "_PROBE_TIMEOUT_SEC = 30" in text
     assert text.count("timeout=_PROBE_TIMEOUT_SEC") >= 4

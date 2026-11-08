@@ -449,9 +449,7 @@ class TestTuneMyMusicDedup:
 
     def test_finds_an_existing_track(self, tmp_path: Path):
         csv_path = tmp_path / "TuneMyMusic.csv"
-        csv_path.write_text(
-            'Title,Artist,Album\nCenterfold,"J. Geils Band, The",Freeze Frame\n', encoding="utf-8"
-        )
+        csv_path.write_text('Title,Artist,Album\nCenterfold,"J. Geils Band, The",Freeze Frame\n')
         assert _tunemymusic_csv_has_track(csv_path, "Centerfold", "J. Geils Band, The") is True
         assert _tunemymusic_csv_has_track(csv_path, "Centerfold", "Someone Else") is False
         assert (
@@ -461,7 +459,7 @@ class TestTuneMyMusicDedup:
 
     def test_matching_ignores_case_and_padding(self, tmp_path: Path):
         csv_path = tmp_path / "TuneMyMusic.csv"
-        csv_path.write_text("Title,Artist,Album\nCenterfold,J. Geils Band,\n", encoding="utf-8")
+        csv_path.write_text("Title,Artist,Album\nCenterfold,J. Geils Band,\n")
         assert _tunemymusic_csv_has_track(csv_path, " centerfold ", "j. geils band") is True
 
 
@@ -500,7 +498,7 @@ class TestMarkMultichannelSkipped:
         _mark_multichannel_skipped(ctx, track)
 
         csv_path = ctx.config.tunemymusic_csv_path
-        content = csv_path.read_text(encoding="utf-8")
+        content = csv_path.read_text()
         assert "Song,Artist" in content  # the track's identity from the archive row,
         # not its filename -- the CSV exists to be imported into a streaming
         # service, which searches for artist and title, not a path
@@ -523,9 +521,7 @@ class TestMarkMultichannelSkipped:
         _mark_multichannel_skipped(ctx, track)
 
         csv_path = ctx.config.tunemymusic_csv_path
-        assert (
-            csv_path.read_text(encoding="utf-8").count("Song,Artist") == 1
-        )  # deduped on Title+Artist
+        assert csv_path.read_text().count("Song,Artist") == 1  # deduped on Title+Artist
 
 
 class TestProcessOneMultichannel:

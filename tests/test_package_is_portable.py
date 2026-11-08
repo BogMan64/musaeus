@@ -13,10 +13,7 @@ CODE = ROOT / "musaeus"
 # The helper scripts the build puts beside the code, read from its own list
 # (CodeRabbit, review of #281).
 HELPERS = (
-    re.search(
-        r"for helper in ([^;]+); do",
-        (ROOT / "packaging" / "build-deb.sh").read_text(encoding="utf-8"),
-    )
+    re.search(r"for helper in ([^;]+); do", (ROOT / "packaging" / "build-deb.sh").read_text())
     .group(1)
     .split()
 )

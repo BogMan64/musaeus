@@ -914,7 +914,7 @@ def test_a_known_composers_name_before_a_colon_is_classical(env):
     """Grey, 2026-10-23, option B: "Mozart: ..." with Mozart a known composer."""
     env.cfg.meta_dir.mkdir(parents=True, exist_ok=True)
     (env.cfg.meta_dir / "Composer_Canon.tsv").write_text(
-        "Wolfgang Amadeus Mozart\tWolfgang Amadeus Mozart\n", encoding="utf-8"
+        "Wolfgang Amadeus Mozart\tWolfgang Amadeus Mozart\n"
     )
     p = env.add("Mozart: Piano Concerto No. 23 in A major: II. Adagio", artist="Vladimir Horowitz",
                 album="Mozart Concertos")  # fmt: skip

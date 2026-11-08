@@ -45,7 +45,7 @@ def test_a_child_not_handed_the_hold_is_refused(tmp_path):
 
 def test_a_forged_number_is_not_the_lock(tmp_path):
     runs = tmp_path / "RUNS"
-    other = open(tmp_path / "other.file", "a+", encoding="utf-8")  # noqa: SIM115
+    other = open(tmp_path / "other.file", "a+")  # noqa: SIM115
     try:
         with ml.masters_lock(runs, exclusive=True, what="parent"):
             import os

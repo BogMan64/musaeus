@@ -179,7 +179,7 @@ def test_the_index_is_built_once_outside_the_matching_loop() -> None:
     src_path = (
         Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
     )
-    tree = ast.parse(src_path.read_text(encoding="utf-8"), filename=str(src_path))
+    tree = ast.parse(src_path.read_text(), filename=str(src_path))
 
     main_fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main")
 

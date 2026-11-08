@@ -253,8 +253,7 @@ def test_adopt_a_file_an_interrupted_finalize_already_moved(tmp_path):
                 },
             }
         )
-        + "\n",
-        encoding="utf-8",
+        + "\n"
     )
     result = FinalizeStage().execute(ctx)
     fp, fin = ctx.conn.execute("SELECT file_path, finalized_at FROM archive").fetchone()
@@ -297,8 +296,7 @@ def test_adopt_never_takes_a_different_recording_at_that_path(tmp_path):
                 },
             }
         )
-        + "\n",
-        encoding="utf-8",
+        + "\n"
     )
     FinalizeStage().execute(ctx)
     (fp,) = ctx.conn.execute("SELECT file_path FROM archive").fetchone()

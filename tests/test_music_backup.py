@@ -29,7 +29,7 @@ def vault(tmp_path):
         p.parent.mkdir(parents=True)
         p.write_bytes(b"audio" * 1000)
     (v / "MetaData").mkdir()
-    (v / "MetaData" / "MasterLaw.csv").write_text("artist,genre\n", encoding="utf-8")
+    (v / "MetaData" / "MasterLaw.csv").write_text("artist,genre\n")
     (v / "_db_backups").mkdir()
     for db in (v / "musaeus.db", v / "_db_backups" / "editions.db"):
         sqlite3.connect(db).execute("create table t(x)").connection.commit()

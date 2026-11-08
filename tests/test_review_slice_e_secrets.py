@@ -25,7 +25,7 @@ def config_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(wizard, "_CONFIG_DIR", d)
     monkeypatch.setattr(wizard, "_SETTINGS_FILE", d / "settings.env")
     monkeypatch.setattr(wizard, "_CREDENTIALS_FILE", d / "credentials.env")
-    (d / "credentials.env").write_text(f"ACOUSTICID_API_KEY={SECRET}\n", encoding="utf-8")
+    (d / "credentials.env").write_text(f"ACOUSTICID_API_KEY={SECRET}\n")
     os.chmod(d / "credentials.env", 0o644)
     return d
 
@@ -43,9 +43,7 @@ def test_the_wizard_never_shows_a_saved_key(config_dir, tmp_path, monkeypatch, c
     _run(tmp_path, monkeypatch)
     out = capsys.readouterr().out
     assert SECRET not in out and SECRET[:8] not in out, "a saved key was printed"
-    assert f"ACOUSTICID_API_KEY={SECRET}" in (config_dir / "credentials.env").read_text(
-        encoding="utf-8"
-    )
+    assert f"ACOUSTICID_API_KEY={SECRET}" in (config_dir / "credentials.env").read_text()
 
 
 @posix_modes
@@ -65,9 +63,7 @@ def test_a_save_cut_short_leaves_the_old_file_whole(config_dir):
     creds = config_dir / "credentials.env"
     with pytest.raises(OSError):
         wizard._save_env(creds, {"A_KEY": "new", "B_KEY": _DiskFull()})  # type: ignore[dict-item]
-    assert creds.read_text(encoding="utf-8") == f"ACOUSTICID_API_KEY={SECRET}\n", (
-        "a failed save cut the file"
-    )
+    assert creds.read_text() == f"ACOUSTICID_API_KEY={SECRET}\n", "a failed save cut the file"
     assert sorted(p.name for p in config_dir.iterdir()) == ["credentials.env"]
 
 
@@ -94,9 +90,7 @@ def test_a_key_typed_in_is_saved_and_not_shown(config_dir, tmp_path, monkeypatch
     )
     wizard.run_wizard(force=True)
     assert typed not in capsys.readouterr().out
-    assert f"ACOUSTICID_API_KEY={typed}" in (config_dir / "credentials.env").read_text(
-        encoding="utf-8"
-    )
+    assert f"ACOUSTICID_API_KEY={typed}" in (config_dir / "credentials.env").read_text()
 
 
 @posix_modes
@@ -114,19 +108,19 @@ def test_the_key_manager_saves_private(config_dir, monkeypatch, capsys):
 def test_a_symlinked_file_stays_a_symlink(config_dir, tmp_path):
     real = tmp_path / "elsewhere" / "credentials.env"
     real.parent.mkdir()
-    real.write_text("ACOUSTICID_API_KEY=old\n", encoding="utf-8")
+    real.write_text("ACOUSTICID_API_KEY=old\n")
     link = config_dir / "credentials.env"
     link.unlink()
     link.symlink_to(real)
     wizard._save_env(link, {"ACOUSTICID_API_KEY": "new"}, private=True)
     assert link.is_symlink()
-    assert real.read_text(encoding="utf-8") == "ACOUSTICID_API_KEY=new\n"
+    assert real.read_text() == "ACOUSTICID_API_KEY=new\n"
 
 
 @posix_modes
 def test_a_settings_file_keeps_its_mode(config_dir):
     settings = config_dir / "settings.env"
-    settings.write_text("MUSAEUS_VAULT_ROOT=/v\n", encoding="utf-8")
+    settings.write_text("MUSAEUS_VAULT_ROOT=/v\n")
     os.chmod(settings, 0o600)
     wizard._save_env(settings, {"MUSAEUS_VAULT_ROOT": "/w"})
     assert stat.S_IMODE(settings.stat().st_mode) == 0o600

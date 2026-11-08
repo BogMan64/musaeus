@@ -48,7 +48,7 @@ def test_each_kind_is_explained_once_with_its_count() -> None:
 
 def test_the_report_explains_each_problem_under_its_stage(tmp_path: Path) -> None:
     ctx = SimpleNamespace(stage_results=[_failed(DAMAGED)], runs_root=tmp_path, run_id="run_t")
-    text = write_handoff_doc(ctx).read_text(encoding="utf-8")
+    text = write_handoff_doc(ctx).read_text()
     failure = text.split("## Stages that reported failure", 1)[1]
     assert "What this means" in failure and "Get the song again" in failure
 
@@ -59,11 +59,7 @@ def test_a_stages_notes_are_not_mixed_in_with_its_errors(tmp_path: Path) -> None
     r = _failed(DAMAGED)
     r.notes.append("DUPLICATE: a.flac == b.m4a")
     ctx = SimpleNamespace(stage_results=[r], runs_root=tmp_path, run_id="run_t")
-    failure = (
-        write_handoff_doc(ctx)
-        .read_text(encoding="utf-8")
-        .split("## Stages that reported failure", 1)[1]
-    )
+    failure = write_handoff_doc(ctx).read_text().split("## Stages that reported failure", 1)[1]
     assert failure.index("not errors") < failure.index("DUPLICATE: a.flac")
 
 
@@ -144,9 +140,7 @@ def test_a_failed_self_check_is_explained_in_the_report_too(tmp_path: Path) -> N
         stage_name="organize", success=True, verified=False, verify_notes=["3 files not moved"]
     )
     ctx = SimpleNamespace(stage_results=[bad], runs_root=tmp_path, run_id="run_t")
-    section = (
-        write_handoff_doc(ctx).read_text(encoding="utf-8").split("## Verification failures", 1)[1]
-    )
+    section = write_handoff_doc(ctx).read_text().split("## Verification failures", 1)[1]
     assert "What this means" in section and "How to fix it" in section
 
 
@@ -155,11 +149,7 @@ def test_a_failed_stage_with_only_notes_does_not_call_them_not_errors(tmp_path: 
     r = StageResult(stage_name="bitrot", success=False)
     r.notes.append("MASTERS MISSING: 2 recording(s) the catalogue still holds are not on disk")
     ctx = SimpleNamespace(stage_results=[r], runs_root=tmp_path, run_id="run_t")
-    section = (
-        write_handoff_doc(ctx)
-        .read_text(encoding="utf-8")
-        .split("## Stages that reported failure", 1)[1]
-    )
+    section = write_handoff_doc(ctx).read_text().split("## Stages that reported failure", 1)[1]
     assert "not errors" not in section
     assert "MASTERS MISSING" in section and "no longer on the disk" in section
     assert "MASTERS MISSING" in "\n".join(problem_summary([r]))
@@ -238,9 +228,7 @@ def test_damaged_arrivals_noted_without_an_error_line_still_get_the_fix(tmp_path
     ]
     ctx = SimpleNamespace(stage_results=[r], runs_root=tmp_path, run_id="run_t")
     section = (
-        write_handoff_doc(ctx)
-        .read_text(encoding="utf-8")
-        .split("## Problems in stages that still finished", 1)[1]
+        write_handoff_doc(ctx).read_text().split("## Problems in stages that still finished", 1)[1]
     )
     assert "Get the song again" in section
     assert "Get the song again" in "\n".join(problem_summary([r]))
@@ -304,11 +292,7 @@ def test_a_stage_with_errors_and_damaged_notes_explains_both(tmp_path: Path) -> 
         "  ⚠ b.m4a: does not decode, moved to /Q/b.m4a",
     ]
     ctx = SimpleNamespace(stage_results=[r], runs_root=tmp_path, run_id="run_t")
-    section = (
-        write_handoff_doc(ctx)
-        .read_text(encoding="utf-8")
-        .split("## Stages that reported failure", 1)[1]
-    )
+    section = write_handoff_doc(ctx).read_text().split("## Stages that reported failure", 1)[1]
     screen = "\n".join(problem_summary([r]))
     for text in (section, screen):
         assert _MEANING["decoder"] in text and _MEANING["damaged"] in text
@@ -338,11 +322,7 @@ def test_a_damaged_arrival_beside_an_error_is_not_listed_as_not_an_error(tmp_pat
     r.errors.append("a.m4a: arrival not decoded: ffmpeg gone")
     r.notes += ["✓ No corrupt files detected", "  ⚠ b.m4a: does not decode, moved to /Q/b.m4a"]
     ctx = SimpleNamespace(stage_results=[r], runs_root=tmp_path, run_id="run_t")
-    section = (
-        write_handoff_doc(ctx)
-        .read_text(encoding="utf-8")
-        .split("## Stages that reported failure", 1)[1]
-    )
+    section = write_handoff_doc(ctx).read_text().split("## Stages that reported failure", 1)[1]
     assert "PROBLEM: ⚠ b.m4a" in section
     assert section.index("not errors") > section.index("b.m4a")
     assert "No corrupt files detected" in section.split("not errors", 1)[1]

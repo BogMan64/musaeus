@@ -33,7 +33,7 @@ BUILDERS = [
 
 @pytest.mark.parametrize("path", BUILDERS, ids=lambda p: p.name)
 def test_the_builder_measures_before_it_bakes(path: Path) -> None:
-    src = path.read_text(encoding="utf-8")
+    src = path.read_text()
     assert "ffmpeg_measure_loudnorm" in src, "no measurement pass"
     assert "build_second_pass_filter" in src, "no second-pass filter"
     m = re.search(r"def build_second_pass_filter\(.*?\n(?=\n\n|\ndef )", src, re.S)
@@ -55,7 +55,7 @@ def test_no_single_pass_loudnorm_writes_an_output(path: Path) -> None:
     Anything else carrying `I=` without `measured_I=` would be a single-pass
     bake.
     """
-    src = path.read_text(encoding="utf-8")
+    src = path.read_text()
     for lit in re.findall(r'f?"loudnorm=[^"]*"', src):
         if "measured_I" in lit:
             continue  # the real bake

@@ -165,13 +165,13 @@ class TestB_CheckpointRoot:
         vault = tmp_path / "vault"
         staged = vault / "STAGING" / "a.txt"
         staged.parent.mkdir(parents=True)
-        staged.write_text("checkpointed\n", encoding="utf-8")
+        staged.write_text("checkpointed\n")
         boundary, _ = _boundary(vault / "STAGING", tmp_path / "rec", vault)
-        staged.write_text("CONCURRENTLY MODIFIED\n", encoding="utf-8")
+        staged.write_text("CONCURRENTLY MODIFIED\n")
 
         with pytest.raises(PreconditionError):
             boundary.write_bytes(staged, b"run output\n")
-        assert staged.read_text(encoding="utf-8") == "CONCURRENTLY MODIFIED\n"
+        assert staged.read_text() == "CONCURRENTLY MODIFIED\n"
 
     def test_canonicalize_layout_rollback_brings_the_inbox_original_back(self, tmp_path):
         vault = tmp_path / "vault"
@@ -296,7 +296,7 @@ def test_finalize_moves_and_rolls_back_a_real_tagged_alac(tmp_path):
     result = FinalizeStage().run(ctx)
 
     root = cfg.runs_root / "recovery" / f"finalize_{ctx.run_id}"
-    manifest = Manifest.from_json((root / "manifest.json").read_text(encoding="utf-8"))
+    manifest = Manifest.from_json((root / "manifest.json").read_text())
     assert [e.kind for e in manifest.entries] == [KIND_TAGGED_AUDIO]
     assert result.files_errored == 0, result.errors
     assert len(list(cfg.alac_archive.rglob("*.m4a"))) == 1 and not staged.exists()
@@ -367,14 +367,14 @@ def test_F2_rollback_of_a_quarantine_keeps_work_that_arrived_since(tmp_path):
     lib = tmp_path / "lib"
     lib.mkdir()
     path = lib / "a.txt"
-    path.write_text("checkpointed\n", encoding="utf-8")
+    path.write_text("checkpointed\n")
     boundary, _ = _boundary(lib, tmp_path / "rec", lib)
     boundary.quarantine(path, reason="test")
-    path.write_text("NEW WORK written after the quarantine\n", encoding="utf-8")
+    path.write_text("NEW WORK written after the quarantine\n")
 
     with pytest.raises(RollbackFailedError):
         boundary.rollback()
-    assert path.read_text(encoding="utf-8") == "NEW WORK written after the quarantine\n"
+    assert path.read_text() == "NEW WORK written after the quarantine\n"
 
 
 # ── F3: a checkpointed file that vanished is not "new" ──────────────────────
@@ -384,7 +384,7 @@ def test_F3_write_bytes_on_a_vanished_checkpointed_file_is_refused(tmp_path):
     lib = tmp_path / "lib"
     lib.mkdir()
     path = lib / "b.txt"
-    path.write_text("checkpointed\n", encoding="utf-8")
+    path.write_text("checkpointed\n")
     boundary, _ = _boundary(lib, tmp_path / "rec", lib)
     path.unlink()  # a concurrent process removes it
 
@@ -399,8 +399,8 @@ def test_F3_write_bytes_on_a_vanished_checkpointed_file_is_refused(tmp_path):
 def test_F4_an_unexpected_error_is_reported_and_the_rest_restored(tmp_path, monkeypatch):
     lib = tmp_path / "lib"
     lib.mkdir()
-    (lib / "one.txt").write_text("one original\n", encoding="utf-8")
-    (lib / "two.txt").write_text("two original\n", encoding="utf-8")
+    (lib / "one.txt").write_text("one original\n")
+    (lib / "two.txt").write_text("two original\n")
     boundary, journal = _boundary(lib, tmp_path / "rec", lib)
     first = boundary.write_bytes(lib / "one.txt", b"one CHANGED\n")
     boundary.write_bytes(lib / "two.txt", b"two CHANGED\n")  # undone first
@@ -419,7 +419,7 @@ def test_F4_an_unexpected_error_is_reported_and_the_rest_restored(tmp_path, monk
 
     result = caught.value.details["result"]
     assert len(result.failures) == 1 and result.failures[0]["message"] == "injected"
-    assert (lib / "one.txt").read_text(encoding="utf-8") == "one original\n"
+    assert (lib / "one.txt").read_text() == "one original\n"
     assert any(e.operation_id == first and e.status == STATUS_RESTORED for e in journal.entries())
 
 
@@ -442,7 +442,7 @@ class TestF6_JournalCost:
         lib = tmp_path / "lib"
         lib.mkdir()
         for n in range(300):
-            (lib / f"{n}.txt").write_text(f"{n}\n", encoding="utf-8")
+            (lib / f"{n}.txt").write_text(f"{n}\n")
         boundary, _ = _boundary(lib, tmp_path / "rec", lib)
         for n in range(290):
             boundary.write_bytes(lib / f"{n}.txt", b"changed\n")
@@ -524,12 +524,12 @@ def test_a_file_written_twice_rolls_back_without_a_false_failure(tmp_path):
     lib = tmp_path / "lib"
     lib.mkdir()
     path = lib / "a.txt"
-    path.write_text("original\n", encoding="utf-8")
+    path.write_text("original\n")
     boundary, _ = _boundary(lib, tmp_path / "rec", lib)
     boundary.write_bytes(path, b"first\n")
     boundary.write_bytes(path, b"second\n")
 
     result = boundary.rollback()
 
-    assert path.read_text(encoding="utf-8") == "original\n"
+    assert path.read_text() == "original\n"
     assert result.outcome == "completed", "the restore worked but was reported as failed"

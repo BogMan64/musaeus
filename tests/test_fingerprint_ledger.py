@@ -158,6 +158,6 @@ class TestTheStageActuallyUsesIt:
 
         src = (
             Path(__file__).resolve().parents[1] / "musaeus" / "stages" / "acousticid.py"
-        ).read_text(encoding="utf-8")
+        ).read_text()
         assert "_remember_in_ledger(" in src
         assert "_restore_from_ledger(" in src

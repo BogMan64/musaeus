@@ -81,9 +81,7 @@ _CLEARED_MUSAEUS = sorted(
     set(
         re.findall(
             r'"(MUSAEUS_[A-Z_]+)"',
-            (Path(__file__).resolve().parents[1] / "musaeus" / "config.py").read_text(
-                encoding="utf-8"
-            ),
+            (Path(__file__).resolve().parents[1] / "musaeus" / "config.py").read_text(),
         )
     )
 )

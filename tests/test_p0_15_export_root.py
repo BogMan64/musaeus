@@ -160,7 +160,7 @@ class TestValidation:
 
     def test_a_file_is_not_a_directory(self, tmp_path):
         target = tmp_path / "not-a-dir"
-        target.write_text("x", encoding="utf-8")
+        target.write_text("x")
         resolved = resolve_export_root(override=target, configured=None)
         with pytest.raises(ExportRootError) as exc:
             validate_export_root(resolved)

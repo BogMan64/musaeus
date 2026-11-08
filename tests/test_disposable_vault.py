@@ -59,14 +59,14 @@ class TestPathGuardBlocksRealPaths:
         target = Path("/home/grey/.config/musaeus/__musaeus_p0_01_isolation_probe__.txt")
         assert not target.exists()
         with pytest.raises(RealPathAccessError):
-            target.write_text("should never be written", encoding="utf-8")
+            target.write_text("should never be written")
         assert not target.exists()
 
     def test_blocks_write_under_real_vault(self, path_guard):
         target = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/__musaeus_p0_01_isolation_probe__.txt")
         assert not target.exists()
         with pytest.raises(RealPathAccessError):
-            target.write_text("should never be written", encoding="utf-8")
+            target.write_text("should never be written")
         assert not target.exists()
 
     def test_blocks_write_under_real_test_vault(self, path_guard):
@@ -75,7 +75,7 @@ class TestPathGuardBlocksRealPaths:
         )
         assert not target.exists()
         with pytest.raises(RealPathAccessError):
-            target.write_text("should never be written", encoding="utf-8")
+            target.write_text("should never be written")
         assert not target.exists()
 
     def test_blocks_mkdir_under_future_recovery_root(self, path_guard):

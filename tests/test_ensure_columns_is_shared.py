@@ -110,7 +110,7 @@ def test_only_db_may_alter_a_table() -> None:
         if path.name == "db.py":
             continue  # the one legitimate home
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            tree = ast.parse(path.read_text(), filename=str(path))
         except SyntaxError:  # pragma: no cover
             continue
         # Bare string statements -- module, class and function docstrings,

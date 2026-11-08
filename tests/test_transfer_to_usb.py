@@ -536,7 +536,7 @@ class TestPlaylistCopy:
             "#EXTINF:-1,Other Artist - Other Song\n"
             "../RUNS/AAC-Car-Masked/_output/2026-08-17/Other Artist/Album/Other Song.m4a\n"
         )
-        (cfg.vault_root / "Playlists" / "Rock.m3u8").write_text(content, encoding="utf-8")
+        (cfg.vault_root / "Playlists" / "Rock.m3u8").write_text(content)
 
         dest = tmp_path / "device"
         dest.mkdir()
@@ -551,7 +551,7 @@ class TestPlaylistCopy:
 
         assert written == ["Rock.m3u8"]
         out_file = dest / "Playlists" / "Rock.m3u8"
-        out = out_file.read_text(encoding="utf-8")
+        out = out_file.read_text()
         assert "Artist - Song" in out
         assert "Other Artist - Other Song" not in out
         assert "2026-08-17/Artist/Album/Song.m4a" in out
@@ -571,7 +571,7 @@ class TestPlaylistCopy:
             "#EXTINF:-1,Other Artist - Other Song\n"
             "../RUNS/AAC-Car-Masked/_output/2026-08-17/Other Artist/Album/Other Song.m4a\n"
         )
-        (cfg.vault_root / "Playlists" / "Jazz.m3u8").write_text(content, encoding="utf-8")
+        (cfg.vault_root / "Playlists" / "Jazz.m3u8").write_text(content)
 
         dest = tmp_path / "device"
         dest.mkdir()
@@ -602,14 +602,14 @@ class TestPlaylistCopy:
             "#EXTINF:-1,Artist - B\n"
             "../ALAC-Library/2026-08-17/Artist/Album/b.m4a\n"
         )
-        (cfg.vault_root / "Playlists" / "All.m3u8").write_text(content, encoding="utf-8")
+        (cfg.vault_root / "Playlists" / "All.m3u8").write_text(content)
 
         dest = tmp_path / "device"
         dest.mkdir()
         written = copy_playlists(cfg.vault_root, cfg.alac_library, dest)
 
         assert written == ["All.m3u8"]
-        out = (dest / "Playlists" / "All.m3u8").read_text(encoding="utf-8")
+        out = (dest / "Playlists" / "All.m3u8").read_text()
         assert out.count("#EXTINF") == 2
 
 
@@ -1838,7 +1838,7 @@ class TestPlaylistEntriesResolve:
         copy_playlists(cfg.vault_root, source_root, dest)
         entries = [
             ln
-            for ln in (dest / "Playlists" / "Rock.m3u8").read_text(encoding="utf-8").splitlines()
+            for ln in (dest / "Playlists" / "Rock.m3u8").read_text().splitlines()
             if ln and not ln.startswith("#")
         ]
         assert entries == ["../2026-08-17/Artist/Album/Song.m4a"]
@@ -1868,7 +1868,7 @@ class TestPlaylistEntriesResolve:
 
         assert not (cfg.vault_root / "Playlists").exists()
         assert copy_playlists(cfg.vault_root, cfg.alac_library, dest) == []
-        assert existing.read_text(encoding="utf-8") == "#EXTM3U\n"
+        assert existing.read_text() == "#EXTM3U\n"
 
 
 # ── Names a FAT32 stick cannot hold (Grey, 2026-10-03) ──────────────────────
@@ -2060,13 +2060,13 @@ def test_the_manifest_and_playlists_are_never_written_through_a_link(tmp_path):
     song = src_root / "A" / "s.m4a"
     song.write_bytes(b"X")
     victim = outside / "victim.txt"
-    victim.write_text("PRIVATE", encoding="utf-8")
+    victim.write_text("PRIVATE")
     (stick / (usb_mod._SYNC_MANIFEST + usb_mod._PART_SUFFIX)).symlink_to(victim)
     usb_mod.update_sync_manifest(stick, src_root, [song])
-    assert victim.read_text(encoding="utf-8") == "PRIVATE"
+    assert victim.read_text() == "PRIVATE"
     assert not (stick / usb_mod._SYNC_MANIFEST).is_symlink()
 
     (vault / "Playlists" / "Mix.m3u8").write_text(f"#EXTM3U\n{song}\n", encoding="utf-8")
     (stick / "Playlists" / "Mix.m3u8").symlink_to(victim)
     usb_mod.copy_playlists(vault, src_root, stick)
-    assert victim.read_text(encoding="utf-8") == "PRIVATE"
+    assert victim.read_text() == "PRIVATE"

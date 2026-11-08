@@ -73,7 +73,7 @@ def _catalogue_one_master(cfg: MusicConfig) -> None:
 def _build_iphone(cfg: MusicConfig, tmp_path: Path) -> subprocess.CompletedProcess[str]:
     hook = tmp_path / "hook"
     hook.mkdir(exist_ok=True)
-    (hook / "sitecustomize.py").write_text(_ALWAYS_CLICKS, encoding="utf-8")
+    (hook / "sitecustomize.py").write_text(_ALWAYS_CLICKS)
     repo = Path(__file__).resolve().parents[1]
     env = {**os.environ, "MUSAEUS_VAULT_ROOT": str(cfg.vault_root),
            "MUSAEUS_DB_PATH": str(cfg.db_path), "PYTHONPATH": f"{hook}{os.pathsep}{repo}",
@@ -94,8 +94,7 @@ def test_a_listed_song_gets_its_iphone_copy_though_the_check_flags_it(cfg, tmp_p
     _catalogue_one_master(cfg)
     (cfg.meta_dir / "click_allowed.tsv").write_text(
         "# audio hash<TAB>edition<TAB>song: Grey listened, no click\n"
-        f"{H}\tiphone\tA - Song (no click heard, 2026-10-19)\n",
-        encoding="utf-8",
+        f"{H}\tiphone\tA - Song (no click heard, 2026-10-19)\n"
     )
 
     r = _build_iphone(cfg, tmp_path)
@@ -107,16 +106,12 @@ def test_a_listed_song_gets_its_iphone_copy_though_the_check_flags_it(cfg, tmp_p
 @needs_encoders
 def test_a_song_not_on_the_list_is_still_refused(cfg, tmp_path):
     _catalogue_one_master(cfg)
-    (cfg.meta_dir / "click_allowed.tsv").write_text(
-        f"{'0' * 64}\tiphone\tsomeone else\n", encoding="utf-8"
-    )
+    (cfg.meta_dir / "click_allowed.tsv").write_text(f"{'0' * 64}\tiphone\tsomeone else\n")
 
     r = _build_iphone(cfg, tmp_path)
 
     assert "Baked 0" in r.stdout and "1 failed" in r.stdout, r.stdout + r.stderr
-    logs = "".join(
-        p.read_text(encoding="utf-8") for p in (cfg.runs_root / "LOGS").glob("edition_iphone_*")
-    )
+    logs = "".join(p.read_text() for p in (cfg.runs_root / "LOGS").glob("edition_iphone_*"))
     assert "click" in logs, logs
     assert _copies(cfg) == []
 
@@ -152,7 +147,7 @@ def test_a_song_allowed_for_the_iphone_is_not_allowed_in_the_car(cfg, tmp_path):
     # Codex review of #210: Grey listened to the iPhone copy; a car copy
     # nobody heard is still checked.
     _catalogue_one_master(cfg)
-    (cfg.meta_dir / "click_allowed.tsv").write_text(f"{H}\tcar\tA - Song\n", encoding="utf-8")
+    (cfg.meta_dir / "click_allowed.tsv").write_text(f"{H}\tcar\tA - Song\n")
 
     r = _build_iphone(cfg, tmp_path)
 
@@ -162,9 +157,7 @@ def test_a_song_allowed_for_the_iphone_is_not_allowed_in_the_car(cfg, tmp_path):
 
 def test_the_list_reads_hash_and_edition_and_skips_notes(tmp_path):
     f = tmp_path / "click_allowed.tsv"
-    f.write_text(
-        f"# a note\n\n{H}\tiphone\tA - Song\n  {'1' * 64}  \t car \n{'2' * 64}\n", encoding="utf-8"
-    )
+    f.write_text(f"# a note\n\n{H}\tiphone\tA - Song\n  {'1' * 64}  \t car \n{'2' * 64}\n")
     assert eb.load_click_allowed(f, "iphone") == frozenset({H})
     assert eb.load_click_allowed(f, "car") == frozenset({"1" * 64})
     assert eb.load_click_allowed(tmp_path / "none.tsv", "iphone") == frozenset()
@@ -192,7 +185,7 @@ def test_the_lossless_bake_is_called_as_before(tmp_path, monkeypatch):
 @needs_encoders
 def test_a_kept_copy_is_not_made_again_while_it_stays_listed(cfg, tmp_path):
     _catalogue_one_master(cfg)
-    (cfg.meta_dir / "click_allowed.tsv").write_text(f"{H}\tiphone\tA - Song\n", encoding="utf-8")
+    (cfg.meta_dir / "click_allowed.tsv").write_text(f"{H}\tiphone\tA - Song\n")
     assert "Baked 1" in _build_iphone(cfg, tmp_path).stdout
 
     r = _build_iphone(cfg, tmp_path)
@@ -207,9 +200,9 @@ def test_a_copy_taken_off_the_list_leaves_the_edition(cfg, tmp_path):
     # up to date, so a copy nobody allows any more stayed on the iPhone.
     _catalogue_one_master(cfg)
     listed = cfg.meta_dir / "click_allowed.tsv"
-    listed.write_text(f"{H}\tiphone\tA - Song\n", encoding="utf-8")
+    listed.write_text(f"{H}\tiphone\tA - Song\n")
     assert "Baked 1" in _build_iphone(cfg, tmp_path).stdout
-    listed.write_text("# nothing allowed now\n", encoding="utf-8")
+    listed.write_text("# nothing allowed now\n")
 
     r = _build_iphone(cfg, tmp_path)
 

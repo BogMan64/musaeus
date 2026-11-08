@@ -45,7 +45,7 @@ pytestmark = pytest.mark.skip(
 
 
 def _main_body() -> list[ast.stmt]:
-    tree = ast.parse(_SCRIPT.read_text(encoding="utf-8"))
+    tree = ast.parse(_SCRIPT.read_text())
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "main":
             return node.body
@@ -54,7 +54,7 @@ def _main_body() -> list[ast.stmt]:
 
 def _line_of_first(pattern: str) -> int:
     """1-indexed line of the first occurrence, or -1."""
-    for i, line in enumerate(_SCRIPT.read_text(encoding="utf-8").splitlines(), 1):
+    for i, line in enumerate(_SCRIPT.read_text().splitlines(), 1):
         if pattern in line:
             return i
     return -1

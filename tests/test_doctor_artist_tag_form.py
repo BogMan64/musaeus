@@ -175,9 +175,7 @@ class TestThePredicateItself:
         """A reviewer swapping the predicate back would pass every data test
         above only if they also reproduced the bug -- but the import is the
         cheap, unambiguous tell, and it fails loudly."""
-        src = (Path(__file__).resolve().parents[1] / "musaeus" / "doctor.py").read_text(
-            encoding="utf-8"
-        )
+        src = (Path(__file__).resolve().parents[1] / "musaeus" / "doctor.py").read_text()
         body = src[src.index("def _artist_tag_is_natural_form") :]
         body = body[: body.index("\ndef _")]
         assert "has_article" not in body.replace("has_article()", ""), (

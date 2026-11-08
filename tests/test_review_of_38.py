@@ -133,7 +133,7 @@ def test_3_the_review_sheet_does_not_propose_undoing_the_capitals(tmp_path):
     _row(ctx, ctx.inbox / "a.m4a", "Peter, Paul And Mary", "Leaving On A Jet Plane")
     out = tmp_path / "artist_review.tsv"
     report = generate_artist_review(ctx.conn, canon, out)
-    assert report.generated == 0, out.read_text(encoding="utf-8") if out.exists() else report
+    assert report.generated == 0, out.read_text() if out.exists() else report
 
 
 # ── 4, 6, 9: one filing lookup, whatever the capitals ────────────────────────

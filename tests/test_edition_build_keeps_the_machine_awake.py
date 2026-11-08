@@ -72,8 +72,7 @@ def test_a_real_build_holds_the_inhibitor_and_a_dry_run_does_not(tmp_path):
         'case "$*" in *--why=probe*) exit 0;; esac\n'
         f'echo "$*" >> "{log}"\n'
         'while [ "$1" != "--mode=block" ]; do shift; done; shift\n'
-        'exec "$@"\n',
-        encoding="utf-8",
+        'exec "$@"\n'
     )
     fake.chmod(0o755)
     env = {**os.environ, "MUSAEUS_VAULT_ROOT": str(tmp_path),
@@ -94,8 +93,6 @@ def test_a_real_build_holds_the_inhibitor_and_a_dry_run_does_not(tmp_path):
     assert not log.exists(), "a dry run took the inhibitor"
     real = run("--limit", "0")
     assert real.returncode == 0, real.stdout + real.stderr
-    assert "--what=sleep:idle" in log.read_text(encoding="utf-8"), (
-        "the build ran without the inhibitor"
-    )
+    assert "--what=sleep:idle" in log.read_text(), "the build ran without the inhibitor"
     assert "Car edition" in real.stdout, "the inhibited child did not run the build"
     assert sqlite3.connect(tmp_path / "musaeus.db").execute("SELECT 1").fetchone()

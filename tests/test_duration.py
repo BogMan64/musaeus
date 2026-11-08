@@ -172,7 +172,7 @@ def test_the_standalone_scripts_agree_on_the_value() -> None:
         "scripts/car_library/vendor/orpheus_noise_generator.py",
         "scripts/car_library/vendor/orpheus_noise_masker.py",
     ):
-        src = (root / rel).read_text(encoding="utf-8")
+        src = (root / rel).read_text()
         found = re.findall(r"_DURATION_TOLERANCE_SEC\s*=\s*([0-9.]+)", src)
         assert found, f"{rel} lost its tolerance constant"
         assert float(found[0]) == 2.0, f"{rel} has {found[0]}, expected 2.0"

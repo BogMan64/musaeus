@@ -14,7 +14,7 @@ from musaeus import run_records as rr
 
 def _touch(p: Path, age: int, text: str = "x") -> Path:
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(text, encoding="utf-8")
+    p.write_text(text)
     t = 1_800_000_000 - age * 60
     os.utime(p, (t, t))
     return p
@@ -28,7 +28,7 @@ def test_the_run_log_captures_print_and_logging_and_restores_the_streams(tmp_pat
     logging.getLogger("musaeus.test").warning("a logged warning")
     log.close()
     log.close()  # idempotent: the run closes it, then atexit does
-    text = log.path.read_text(encoding="utf-8")
+    text = log.path.read_text()
     assert log.path.name == "run_run_20260924T150000Z_abc123.log"
     assert "stage summary line" in text and "an error line" in text and "a logged warning" in text
     assert (sys.stdout, sys.stderr) == before

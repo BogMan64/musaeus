@@ -64,10 +64,7 @@ def test_a_credit_with_its_own_genre_takes_the_lead_artists_ruling(vault):
 
 def test_an_exact_ruling_for_the_credit_still_wins(vault):
     law = vault.config.meta_dir / "MasterLaw.csv"
-    law.write_text(
-        law.read_text(encoding="utf-8") + "Stevie Ray Vaughan & Double Trouble,Southern Rock\n",
-        encoding="utf-8",
-    )
+    law.write_text(law.read_text() + "Stevie Ray Vaughan & Double Trouble,Southern Rock\n")
     fp = _add(vault, "a.m4a", artist="Stevie Ray Vaughan & Double Trouble", genre="Southern Rock")
     GenreValidateStage().execute(vault)
     assert _get(vault, fp, "genre") == "Southern Rock"

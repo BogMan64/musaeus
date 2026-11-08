@@ -147,7 +147,7 @@ class TestSafetyGateIsDocumentedTruthfully:
         gate gates authority -- it does not make a run recoverable."""
         from musaeus import cli_gate
 
-        text = Path(cli_gate.__file__).read_text(encoding="utf-8")
+        text = Path(cli_gate.__file__).read_text()
         for overclaim in ("safe to run", "fully recoverable", "production ready"):
             assert overclaim not in text.lower()
 

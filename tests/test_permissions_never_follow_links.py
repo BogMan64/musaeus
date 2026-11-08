@@ -42,11 +42,11 @@ def _mode(p: Path) -> int:
 def test_a_link_to_a_private_file_outside_is_never_changed(ctx, tmp_path):
     secret = tmp_path / "elsewhere" / "credentials.env"
     secret.parent.mkdir()
-    secret.write_text("KEY=dummy", encoding="utf-8")
+    secret.write_text("KEY=dummy")
     secret.chmod(0o600)
     private_dir = tmp_path / "elsewhere" / "private"
     private_dir.mkdir()
-    (private_dir / "inner.txt").write_text("x", encoding="utf-8")
+    (private_dir / "inner.txt").write_text("x")
     (private_dir / "inner.txt").chmod(0o600)
     private_dir.chmod(0o700)
     own = ctx.inbox / "song.m4a"
@@ -65,7 +65,7 @@ def test_a_link_to_a_private_file_outside_is_never_changed(ctx, tmp_path):
 
 def test_a_dry_run_does_not_list_a_links_target(ctx, tmp_path):
     secret = tmp_path / "credentials.env"
-    secret.write_text("KEY=dummy", encoding="utf-8")
+    secret.write_text("KEY=dummy")
     secret.chmod(0o600)
     (ctx.inbox / "readme.txt").symlink_to(secret)
 
@@ -92,7 +92,7 @@ def test_a_link_swapped_in_after_the_scan_is_left_alone(tmp_path):
     from musaeus.stages.permissions import _chmod_no_follow
 
     secret = tmp_path / "credentials.env"
-    secret.write_text("KEY=dummy", encoding="utf-8")
+    secret.write_text("KEY=dummy")
     secret.chmod(0o600)
     link = tmp_path / "song.m4a"
     link.symlink_to(secret)

@@ -98,7 +98,7 @@ def test_no_inline_tolerance_literal_survives() -> None:
     it. A guard that cannot tell code from prose is the same class of
     mistake as a guard that cannot see an inline literal.
     """
-    tree = ast.parse(_SCRIPT.read_text(encoding="utf-8"))
+    tree = ast.parse(_SCRIPT.read_text())
     offenders = []
     for node in ast.walk(tree):
         if not (
@@ -159,6 +159,6 @@ def test_a_real_truncation_is_still_rejected_by_both(tmp_path: Path) -> None:
 
 def test_the_resume_check_uses_the_shared_rule(tmp_path: Path) -> None:
     """Structural: the caller must reach the named rule, not re-inline one."""
-    text = _SCRIPT.read_text(encoding="utf-8")
+    text = _SCRIPT.read_text()
     body = text.split("def _output_matches_source")[1].split("\ndef ")[0]
     assert "_duration_tolerance(" in body, "the resume check no longer uses the shared tolerance"

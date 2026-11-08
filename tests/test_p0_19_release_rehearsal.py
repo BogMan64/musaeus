@@ -1171,22 +1171,16 @@ def test_g5_failed_stage_not_skipped_on_resume(seeded_vault, monkeypatch, tmp_pa
         third = make_stage("P019StageThree", fail=False)
         pipeline = [first, broken, third]
 
-        state_before_first = (
-            resume_file.read_text(encoding="utf-8") if resume_file.exists() else "(absent)"
-        )
+        state_before_first = resume_file.read_text() if resume_file.exists() else "(absent)"
         exit_first = cli._run_pipeline(list(pipeline), dry_run=False)
-        state_after_first = (
-            resume_file.read_text(encoding="utf-8") if resume_file.exists() else "(absent)"
-        )
+        state_after_first = resume_file.read_text() if resume_file.exists() else "(absent)"
         recorded = json.loads(state_after_first)["completed"] if resume_file.exists() else []
 
         ran.clear()
         monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False, raising=False)
         exit_second = cli._run_pipeline(list(pipeline), dry_run=False)
         second_run_stages = list(ran)
-        state_after_second = (
-            resume_file.read_text(encoding="utf-8") if resume_file.exists() else "(absent)"
-        )
+        state_after_second = resume_file.read_text() if resume_file.exists() else "(absent)"
 
         gate.reachability = "cli"
         gate.reachability_detail = (

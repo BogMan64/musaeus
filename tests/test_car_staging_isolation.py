@@ -24,7 +24,7 @@ from pathlib import Path
 
 _SRC = (
     Path(__file__).resolve().parents[1] / "scripts" / "car_library" / "build_car_library.py"
-).read_text(encoding="utf-8")
+).read_text()
 
 
 def test_staging_path_is_process_scoped() -> None:

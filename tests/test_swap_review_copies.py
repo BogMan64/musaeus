@@ -307,7 +307,7 @@ def test_retire_waits_for_act_3_then_hands_the_master_to_the_delete_tool(vault, 
     assert vault.mod.retire(vault.cfg, [lib], execute=False) == 0
     cmd = calls[0]
     assert Path(cmd[1]).name == "delete_reviewed_tracks.py" and "--execute" not in cmd
-    assert Path(cmd[2]).read_text(encoding="utf-8") == f"{lib}\n"
+    assert Path(cmd[2]).read_text() == f"{lib}\n"
 
 
 def test_one_rule_decides_both_lists(vault):

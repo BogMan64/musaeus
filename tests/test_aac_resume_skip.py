@@ -79,7 +79,7 @@ def test_a_truncated_encode_is_redone_not_kept(tmp_path: Path) -> None:
 def test_an_unreadable_output_is_redone(tmp_path: Path) -> None:
     src, out = tmp_path / "src.m4a", tmp_path / "out.m4a"
     _tone(src, 5.0)
-    out.write_text("not audio at all", encoding="utf-8")
+    out.write_text("not audio at all")
     assert _output_matches_source(src, out) is False
 
 
@@ -103,5 +103,5 @@ def test_probe_duration_reads_a_real_file_and_rejects_junk(tmp_path: Path) -> No
     _tone(good, 2.0)
     assert _probe_duration(good) == pytest.approx(2.0, abs=0.3)
     bad = tmp_path / "bad.m4a"
-    bad.write_text("junk", encoding="utf-8")
+    bad.write_text("junk")
     assert _probe_duration(bad) is None

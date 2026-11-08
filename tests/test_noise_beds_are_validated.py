@@ -121,7 +121,7 @@ class TestTheGate:
         triggered. Refusing is the only safe reading of "I cannot tell".
         """
         bogus = tmp_path / "not_audio.m4a"
-        bogus.write_text("this is not an MP4", encoding="utf-8")
+        bogus.write_text("this is not an MP4")
 
         ok, why = _noise_bed_is_shippable(bogus)
         assert not ok
@@ -131,7 +131,7 @@ class TestTheGate:
         """A bed silently dropped is as bad as a bad bed silently shipped:
         both end with the operator believing the edition holds what it does not."""
         bogus = tmp_path / "x.m4a"
-        bogus.write_text("nope", encoding="utf-8")
+        bogus.write_text("nope")
 
         for path in (bogus, truncated_bed):
             ok, why = _noise_bed_is_shippable(path)
@@ -161,7 +161,7 @@ class TestItReusesRatherThanReimplements:
             / "car_library"
             / "vendor"
             / "build_aac_library.py"
-        ).read_text(encoding="utf-8")
+        ).read_text()
         body = src.split("def copy_noise_tracks(")[1].split("\ndef ")[0]
 
         assert "_noise_bed_is_shippable" in body

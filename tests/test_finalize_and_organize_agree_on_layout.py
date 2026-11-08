@@ -37,7 +37,7 @@ _FINALIZE = Path(__file__).resolve().parents[1] / "musaeus" / "stages" / "finali
 
 class TestBothStagesUseOneRule:
     def test_organize_calls_genre_folder(self):
-        src = _ORGANIZE.read_text(encoding="utf-8")
+        src = _ORGANIZE.read_text()
         assert "genre_folder(" in src, (
             "organize.py no longer calls genre_folder -- it has its own idea of "
             "where a track lives, and will fight finalize on every run"
@@ -46,7 +46,7 @@ class TestBothStagesUseOneRule:
     def test_organize_selects_the_genre_column(self):
         """It cannot file by genre if it never reads one. The query returning
         artist/album/title but not genre is how this broke the first time."""
-        src = _ORGANIZE.read_text(encoding="utf-8")
+        src = _ORGANIZE.read_text()
         assert "title, genre" in src or "genre, title" in src, (
             "organize.py's row query does not select `genre`"
         )
@@ -55,7 +55,7 @@ class TestBothStagesUseOneRule:
         """A second definition is how two stages drift back apart."""
         defs = 0
         for f in (_ORGANIZE, _FINALIZE):
-            tree = ast.parse(f.read_text(encoding="utf-8"))
+            tree = ast.parse(f.read_text())
             defs += sum(
                 1
                 for n in ast.walk(tree)
@@ -103,7 +103,7 @@ def _vault(tmp_path):
     )
     cfg.ensure_dirs()
     (cfg.meta_dir / "artist_filing.tsv").write_text(
-        "Benny Goodman & His Orchestra\tBenny Goodman\n", encoding="utf-8"
+        "Benny Goodman & His Orchestra\tBenny Goodman\n"
     )
     return RunContext.new(cfg, open_db(cfg.db_path), dry_run=False)
 

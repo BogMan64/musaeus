@@ -36,7 +36,7 @@ def repo(tmp_path):
     _git(["init", "-q", "-b", "main"], root)
     _git(["config", "user.email", "t@example.invalid"], root)
     _git(["config", "user.name", "Test"], root)
-    (root / "a.txt").write_text("one\n", encoding="utf-8")
+    (root / "a.txt").write_text("one\n")
     _git(["add", "-A"], root)
     _git(["commit", "-qm", "first"], root)
     return root
@@ -92,7 +92,7 @@ def test_marks_only_the_checkout_the_call_came_from(repo, tmp_path):
 
 def test_clean_and_dirty_are_distinguishable(repo):
     assert list_worktrees(repo)[0].dirty == 0
-    (repo / "b.txt").write_text("untracked\n", encoding="utf-8")
+    (repo / "b.txt").write_text("untracked\n")
     assert list_worktrees(repo)[0].dirty == 1
 
 
@@ -120,7 +120,7 @@ def test_not_a_repo_returns_empty_rather_than_raising(tmp_path):
 def test_unmerged_commits_counts_only_what_base_lacks(repo, tmp_path):
     other = tmp_path / "wt"
     _git(["worktree", "add", "-q", "-b", "work/x", str(other)], repo)
-    (other / "c.txt").write_text("parked\n", encoding="utf-8")
+    (other / "c.txt").write_text("parked\n")
     _git(["add", "-A"], other)
     _git(["commit", "-qm", "parked work"], other)
 
@@ -189,7 +189,7 @@ def test_docs_come_back_newest_first(monkeypatch, tmp_path):
     d.mkdir(parents=True)
     for name, mtime in (("old.md", 1_000_000), ("new.md", 2_000_000)):
         p = d / name
-        p.write_text("#\n", encoding="utf-8")
+        p.write_text("#\n")
         import os
 
         os.utime(p, (mtime, mtime))
@@ -201,7 +201,7 @@ def test_docs_respect_the_limit(monkeypatch, tmp_path):
     d = tmp_path / "docs" / "musaeus"
     d.mkdir(parents=True)
     for i in range(10):
-        (d / f"{i}.md").write_text("#\n", encoding="utf-8")
+        (d / f"{i}.md").write_text("#\n")
     monkeypatch.setenv("MUSAEUS_DOC_ROOT", str(tmp_path))
     assert len(list_docs(limit=3)) == 3
 

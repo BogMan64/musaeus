@@ -254,8 +254,8 @@ class TestPersistence:
         restricted, shareable = write_report(_report(), report_root)
 
         assert restricted.is_file() and shareable.is_file()
-        restricted_text = restricted.read_text(encoding="utf-8")
-        shareable_text = shareable.read_text(encoding="utf-8")
+        restricted_text = restricted.read_text()
+        shareable_text = shareable.read_text()
 
         assert "/fixtures/vault" in restricted_text
         assert "/fixtures/vault" not in shareable_text
@@ -290,7 +290,7 @@ class TestPersistence:
 
         import musaeus.reporting as reporting_mod
 
-        tree = ast.parse(Path(reporting_mod.__file__).read_text(encoding="utf-8"))
+        tree = ast.parse(Path(reporting_mod.__file__).read_text())
         imported: set[str] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):

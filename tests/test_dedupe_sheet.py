@@ -297,8 +297,7 @@ def test_a_sheet_that_cannot_be_read_is_refused_before_anything(
 ):
     path = tmp_path / "bad.csv"
     path.write_text(
-        ",".join(header) + "\n" + ",".join(["1", action, "7", "/x", "pcm:x"][: len(header)]) + "\n",
-        encoding="utf-8",
+        ",".join(header) + "\n" + ",".join(["1", action, "7", "/x", "pcm:x"][: len(header)]) + "\n"
     )
     with pytest.raises(ValueError, match=problem):
         dedupe.apply_sheet(cfg, path, execute=True, out=lambda s: None)

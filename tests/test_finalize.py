@@ -637,7 +637,7 @@ class TestFinalizeRecoveryBoundary:
         assert len(landed) == 1 and not src.exists()
 
         root = ctx.config.runs_root / "recovery" / f"finalize_{ctx.run_id}"
-        manifest = Manifest.from_json((root / "manifest.json").read_text(encoding="utf-8"))
+        manifest = Manifest.from_json((root / "manifest.json").read_text())
         checkpoint = Checkpoint(
             checkpoint_id=manifest.checkpoint_id,
             root=root,
