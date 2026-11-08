@@ -138,7 +138,7 @@ class TestTheOrderingItRunsIn:
             / "car_library"
             / "vendor"
             / "orpheus_noise_masker.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         start = src.index("cmd = [")
         block = src[start : src.index("]", src.index("str(tmp)", start))]
         # Strip comment lines. The block explains WHY the stream map was
