@@ -55,7 +55,9 @@ def _copy_fn() -> ast.FunctionDef:
 
 def test_the_copy_is_fsynced() -> None:
     body = ast.unparse(_copy_fn())
-    assert "os.fsync" in body, "the copy is not forced to disk before the source is deleted (P0-C)"
+    assert "fsync_file(" in body, (
+        "the copy is not forced to disk before the source is deleted (P0-C)"
+    )
 
 
 def test_the_directory_is_fsynced_too() -> None:
@@ -69,7 +71,7 @@ def test_the_directory_is_fsynced_too() -> None:
 def test_the_fsync_precedes_the_rename() -> None:
     """Order is the whole point: syncing after the rename protects nothing."""
     body = ast.unparse(_copy_fn())
-    assert body.index("os.fsync") < body.index(".rename("), (
+    assert body.index("fsync_file(") < body.index(".rename("), (
         "the file is renamed before it is durable"
     )
 

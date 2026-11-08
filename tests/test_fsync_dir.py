@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from musaeus.safe_save import change_beside, fsync_dir
+from musaeus.safe_save import change_beside, fsync_dir, fsync_file
 
 
 def _folders_cannot_be_opened(monkeypatch):
@@ -47,3 +47,35 @@ def test_the_folder_is_fsynced_where_it_can_be(tmp_path, monkeypatch):
     fsync_dir(tmp_path)
 
     assert len(synced) == 1
+
+
+def _fsync_needs_a_writable_handle(monkeypatch):
+    """What Windows does: fsync on a handle opened read-only fails (EBADF)."""
+    import fcntl
+
+    real = os.fsync
+
+    def fsync(fd):
+        if fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY:
+            raise OSError(9, "Bad file descriptor")
+        return real(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="simulates Windows with POSIX fcntl")
+def test_a_save_completes_where_fsync_needs_a_writable_handle(tmp_path, monkeypatch):
+    p = tmp_path / "a.txt"
+    p.write_text("old", encoding="utf-8")
+    _fsync_needs_a_writable_handle(monkeypatch)
+
+    change_beside(p, lambda q: q.write_text("new", encoding="utf-8"), suffix=".part")
+
+    assert p.read_text(encoding="utf-8") == "new"
+
+
+def test_fsync_file_flushes_a_closed_file(tmp_path):
+    p = tmp_path / "b.bin"
+    p.write_bytes(b"x")
+    fsync_file(p)  # on Windows this is the writable-handle path for real

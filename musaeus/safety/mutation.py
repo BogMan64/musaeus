@@ -48,6 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from musaeus.safe_save import fsync_file
 from musaeus.safety.manifest import (
     KIND_FILE,
     KIND_TAGGED_AUDIO,
@@ -85,15 +86,15 @@ ROLLBACK_FAILED = "failed"
 def _digest_from_disk(path: Path) -> str:
     """SHA-256 of what the disk holds: flush and drop the cached pages first,
     or the check reads back the copy still in memory."""
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-        # shortcut: Windows cannot drop the cached pages, so there the check may
-        # read the copy still in memory; upgrade with an unbuffered read if needed.
-        if hasattr(os, "posix_fadvise"):
+    fsync_file(path)
+    # shortcut: Windows cannot drop the cached pages, so there the check may
+    # read the copy still in memory; upgrade with an unbuffered read if needed.
+    if hasattr(os, "posix_fadvise"):
+        fd = os.open(path, os.O_RDONLY)
+        try:
             os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
-    finally:
-        os.close(fd)
+        finally:
+            os.close(fd)
     return sha256_file(path)
 
 
