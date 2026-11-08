@@ -2449,6 +2449,9 @@ def _pipeline_for_run(args) -> tuple[list, dict]:
 
 
 def main() -> None:
+    from . import utf8_stdio
+
+    utf8_stdio()
     parser = _build_parser()
     # --safety-gate is read from the raw command line by cli_gate; argparse
     # rejected it as unrecognized, so the documented flag could not be used
