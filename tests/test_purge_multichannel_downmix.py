@@ -318,11 +318,12 @@ def test_identity_tags_and_permissions_survive_the_downmix(vault):
     m.tags["----:com.apple.iTunes:replaygain_track_gain"] = [MP4FreeForm(b"-3.00 dB")]
     m.save()
     os.chmod(song, 0o644)
+    mode = os.stat(song).st_mode & 0o777  # 0o644; Windows keeps only read-only, so 0o666
     mod.main()
     tags = MP4(song).tags
     assert bytes(tags["----:com.apple.iTunes:MusicBrainz Track Id"][0]) == b"rec-123"
     assert "----:com.apple.iTunes:replaygain_track_gain" not in tags, "loudness is measured again"
-    assert oct(os.stat(song).st_mode & 0o777) == "0o644"
+    assert oct(os.stat(song).st_mode & 0o777) == oct(mode)
 
 
 def test_the_checks_run_on_the_final_file_after_its_tags(vault, monkeypatch):
@@ -439,6 +440,7 @@ def test_a_failed_lossless_cleanup_rolls_the_swap_back_for_a_retry(vault, monkey
     )
 
 
+@pytest.mark.skipif(not hasattr(os, "setxattr"), reason="no extended attributes (Windows)")
 def test_extended_attributes_survive_the_downmix(vault):
     """Codex review of #237, round 14 (reproduced): a user.* attribute on the master
     was lost when the stereo copy replaced it."""
@@ -462,9 +464,18 @@ def test_an_unreadable_attribute_list_stops_the_swap(vault, monkeypatch):
     def _io(path):
         raise OSError(errno.EIO, "I/O error")
 
-    monkeypatch.setattr(mod.os, "listxattr", _io)
+    monkeypatch.setattr(mod.os, "listxattr", _io, raising=False)  # Windows has none
     mod.main()
     assert _probe(song, "stream=channels").split()[0].strip(",") == "6"
+
+
+def test_a_system_without_extended_attributes_still_downmixes(vault, monkeypatch):
+    """Windows port, 2026-11-08: Windows has no os.listxattr. The AttributeError
+    was caught as "downmix failed" and every surround song stayed 6-channel."""
+    mod, cfg, song = vault
+    monkeypatch.delattr(mod.os, "listxattr", raising=False)
+    assert mod.main() == 0
+    assert _probe(song, "stream=channels").split()[0].strip(",") == "2"
 
 
 @pytest.mark.parametrize("where", ["the master", "a car copy"])

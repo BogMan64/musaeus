@@ -122,10 +122,10 @@ class TestTheOrderingItRunsIn:
             / "car_library"
             / "vendor"
             / "orpheus_noise_masker.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")  # the source is UTF-8; Windows reads cp1252 otherwise
         verify = src.index("if not _output_is_complete(")
         carry = src.index("_carry_cover_art(job.src, tmp)")
-        rename = src.index("tmp.rename(job.dst)")
+        rename = src.index("tmp.replace(job.dst)")
         assert verify < carry < rename
 
     def test_the_filter_graph_does_not_map_the_art(self):
@@ -138,7 +138,7 @@ class TestTheOrderingItRunsIn:
             / "car_library"
             / "vendor"
             / "orpheus_noise_masker.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         start = src.index("cmd = [")
         block = src[start : src.index("]", src.index("str(tmp)", start))]
         # Strip comment lines. The block explains WHY the stream map was

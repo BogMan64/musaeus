@@ -307,7 +307,7 @@ def mix_track(job: Job) -> tuple[bool, str]:
     # touched, and before the rename, so what lands at job.dst is complete.
     _carry_cover_art(job.src, tmp)
 
-    tmp.rename(job.dst)
+    tmp.replace(job.dst)  # rename() refuses an existing file on Windows
     return True, f"OK: {job.dst.name}"
 
 
