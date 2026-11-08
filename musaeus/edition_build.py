@@ -1287,7 +1287,9 @@ def _stop_on_signals() -> Callable[[], None]:
     def stop(signum, frame):
         raise KeyboardInterrupt
 
-    old = {s: signal.signal(s, stop) for s in (signal.SIGTERM, signal.SIGHUP)}
+    # Windows has no SIGHUP: only the signals this OS has.
+    stops = [getattr(signal, n) for n in ("SIGTERM", "SIGHUP") if hasattr(signal, n)]
+    old = {s: signal.signal(s, stop) for s in stops}
 
     def restore() -> None:
         for s, handler in old.items():
