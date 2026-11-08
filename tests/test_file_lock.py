@@ -99,3 +99,15 @@ def test_a_finished_process_and_a_nonsense_pid_are_not_alive():
     assert process_alive(child.pid) is False
     assert process_alive(0) is False
     assert process_alive(-1) is False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the POSIX branch")
+def test_a_process_we_may_not_signal_is_alive(monkeypatch):
+    """CodeRabbit on #290: EPERM means it exists under another user. Read as
+    gone, safety.lock would take over a live holder's lock."""
+
+    def kill(pid, sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "kill", kill)
+    assert process_alive(12345) is True
