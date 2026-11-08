@@ -90,13 +90,13 @@ def _scan(*paths: str) -> dict:
 def test_a_semgrepignore_exists_and_re_includes_tests() -> None:
     """Without this file, semgrep's defaults silently drop the tests tree."""
     assert _IGNORE.exists(), ".semgrepignore is gone; tests/ is unscanned again"
-    body = _IGNORE.read_text()
+    body = _IGNORE.read_text(encoding="utf-8")
     assert "!tests/" in body, "tests/ is no longer re-included"
 
 
 def test_the_vendor_exclusion_is_explicit_not_accidental() -> None:
     """It was excluded by a default nobody chose. Now it is a decision."""
-    body = _IGNORE.read_text()
+    body = _IGNORE.read_text(encoding="utf-8")
     assert "scripts/car_library/vendor/" in body
     assert "vendoring IS a deliberate re-implementation" in body, (
         "the vendor exclusion has lost the reason it was made"
