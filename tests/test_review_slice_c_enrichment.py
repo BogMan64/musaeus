@@ -41,8 +41,10 @@ def ctx(tmp_path: Path) -> RunContext:
 
 
 def test_enrich_resolves_through_the_vaults_genre_files(ctx):
-    (ctx.config.meta_dir / "Genre_Allowed.txt").write_text("Rock\n")
-    (ctx.config.meta_dir / "Genre_Canonical_Map.txt").write_text("classic rock => Rock\n")
+    (ctx.config.meta_dir / "Genre_Allowed.txt").write_text("Rock\n", encoding="utf-8")
+    (ctx.config.meta_dir / "Genre_Canonical_Map.txt").write_text(
+        "classic rock => Rock\n", encoding="utf-8"
+    )
     upsert_archive(ctx.conn, {"file_path": "/m/a.m4a", "status": "CATALOGUED", "artist": "The Who"})
     ctx.conn.commit()
     object.__setattr__(ctx.config, "lastfm_api_key", "fake-key")

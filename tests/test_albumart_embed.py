@@ -142,7 +142,7 @@ def test_embed_art_preserves_original_when_ffmpeg_fails(tmp_path: Path) -> None:
     before = audio.read_bytes()
 
     not_an_image = tmp_path / "cover.jpg"
-    not_an_image.write_text("this is not a JPEG")
+    not_an_image.write_text("this is not a JPEG", encoding="utf-8")
 
     assert _embed_art(str(audio), not_an_image) is False
     assert audio.read_bytes() == before, "original audio was modified by a failed embed"

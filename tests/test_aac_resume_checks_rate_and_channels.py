@@ -88,7 +88,7 @@ def test_the_probe_reads_both_fields_in_one_call(tmp_path: Path) -> None:
 
 def test_the_probe_fails_soft_on_junk(tmp_path: Path) -> None:
     junk = tmp_path / "junk.m4a"
-    junk.write_text("not audio")
+    junk.write_text("not audio", encoding="utf-8")
     assert _probe_rate_and_channels(junk) == (None, None)
     assert _probe_rate_and_channels(tmp_path / "missing.m4a") == (None, None)
 

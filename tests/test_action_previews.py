@@ -96,7 +96,7 @@ def test_organize_reserves_colliding_targets_in_plan(vault) -> None:
 
 def test_artist_consolidate_lists_canon_rename(vault) -> None:
     cfg, conn = vault
-    (cfg.meta_dir / "artist_canon.tsv").write_text("Old Name\tNew Name\n")
+    (cfg.meta_dir / "artist_canon.tsv").write_text("Old Name\tNew Name\n", encoding="utf-8")
     source = cfg.inbox / "song.m4a"
     add_track(conn, source, artist="Old Name")
 
@@ -251,7 +251,7 @@ def test_organize_a_move_into_a_path_an_earlier_move_frees_is_not_blocked(vault)
 def test_artist_consolidate_album_spellings_after_a_rename(vault) -> None:
     """The run renames first, then unifies albums (Codex review of #230, round 2)."""
     cfg, conn = vault
-    (cfg.meta_dir / "artist_canon.tsv").write_text("Old Name\tNew Name\n")
+    (cfg.meta_dir / "artist_canon.tsv").write_text("Old Name\tNew Name\n", encoding="utf-8")
     add_track(conn, cfg.inbox / "a.m4a", artist="Old Name", album="Kind of Blue", title="So What")
     add_track(
         conn, cfg.inbox / "b.m4a", artist="New Name", album="Kind Of Blue", title="Blue in Green"

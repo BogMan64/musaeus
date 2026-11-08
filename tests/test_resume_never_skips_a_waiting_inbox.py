@@ -50,8 +50,8 @@ class TestResumeGuard:
     def test_a_non_audio_file_is_not_work(self, inbox):
         """Manifests, logs and stray dotfiles live in the inbox too. Only
         audio means there is ingesting to do."""
-        (inbox / "notes.txt").write_text("hello")
-        (inbox / ".hidden").write_text("")
+        (inbox / "notes.txt").write_text("hello", encoding="utf-8")
+        (inbox / ".hidden").write_text("", encoding="utf-8")
         assert _resume_would_skip_new_work(["IngestStage"], inbox) is False
 
     def test_audio_in_a_subfolder_still_counts(self, inbox):

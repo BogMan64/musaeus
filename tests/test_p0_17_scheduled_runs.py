@@ -206,7 +206,7 @@ class TestNoMutation:
         reached for anything under a protected real root."""
         import musaeus.scheduling as scheduling_mod
 
-        source = Path(scheduling_mod.__file__).read_text()
+        source = Path(scheduling_mod.__file__).read_text(encoding="utf-8")
         for forbidden in ("crontab", "systemd", "at -f", "/etc/cron"):
             assert forbidden not in source
 
