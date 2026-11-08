@@ -43,7 +43,7 @@ import socket
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from musaeus.file_lock import try_lock, unlock
+from musaeus.file_lock import process_alive, try_lock, unlock
 from musaeus.state.schema import StateError, utc_now_iso
 
 # ── Scope classification ──────────────────────────────────────────────────────
@@ -224,21 +224,6 @@ class LockOwner:
         )
 
 
-def _process_is_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # It exists; we simply may not signal it. Existence is the answer.
-        return True
-    except OSError:
-        return True
-    return True
-
-
 # ── The lock ──────────────────────────────────────────────────────────────────
 
 
@@ -412,6 +397,6 @@ def _refuses_takeover(stale: LockOwner) -> str | None:
         return f"it was recorded on another host ({stale.hostname}), whose process state is unknowable from here"
     if stale.boot_id != _boot_id():
         return None  # different boot: that PID cannot be the same process
-    if _process_is_alive(stale.pid):
+    if process_alive(stale.pid):
         return f"process {stale.pid} is still alive"
     return None

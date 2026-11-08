@@ -30,7 +30,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from .file_lock import try_lock, unlock
+from .file_lock import process_alive, try_lock, unlock
 
 EXIT_BUSY = 75
 LOCK_NAME = "masters.lock"
@@ -85,16 +85,6 @@ def _lock_dir(runs_root: Path | str) -> Path:
     return d
 
 
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 def holders(runs_root: Path | str) -> list[dict]:
     """Who holds the lock now, as far as their records say (dead ones dropped)."""
     out = []
@@ -103,7 +93,7 @@ def holders(runs_root: Path | str) -> list[dict]:
             h = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if _alive(int(h.get("pid", 0))):
+        if process_alive(int(h.get("pid", 0))):
             out.append(h)
     return out
 

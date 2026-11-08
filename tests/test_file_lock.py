@@ -5,10 +5,12 @@ the Windows branch."""
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 
 import pytest
 
-from musaeus.file_lock import try_lock, unlock
+from musaeus.file_lock import process_alive, try_lock, unlock
 
 
 @pytest.fixture
@@ -83,3 +85,17 @@ def test_a_locked_file_can_still_be_written_and_read(lock_file):
         assert lock_file.read_text() == "4242"
     finally:
         holder.close()
+
+
+def test_our_own_process_is_alive_and_is_not_interrupted_by_asking():
+    """On Windows os.kill(pid, 0) sends CTRL_C_EVENT: asking about our own
+    pid raised KeyboardInterrupt and stopped the whole suite (2026-11-08)."""
+    assert process_alive(os.getpid()) is True
+
+
+def test_a_finished_process_and_a_nonsense_pid_are_not_alive():
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    assert process_alive(child.pid) is False
+    assert process_alive(0) is False
+    assert process_alive(-1) is False
