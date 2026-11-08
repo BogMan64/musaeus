@@ -38,11 +38,13 @@ import itertools
 import re
 import shutil
 import sqlite3
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .brackets import base_title
 from .config import MusicConfig
+from .install_hint import install_hint
 
 _NOISE_RE = re.compile(r"[^a-z0-9]")
 
@@ -1053,6 +1055,8 @@ _EXTERNAL_TOOLS: tuple[tuple[str, str, str, bool], ...] = (
     ("ifuse", "copying the iPhone edition onto the device", "ifuse", False),
     ("rsync", "the backup tiers", "rsync", False),
 )
+#: Their features (iPhone transfer, backup tiers) run on Linux only for now.
+_LINUX_ONLY_TOOLS = frozenset({"idevice_id", "ifuse", "rsync"})
 
 
 def _external_tools_present(cfg: MusicConfig, rep: Report) -> None:
@@ -1072,10 +1076,10 @@ def _external_tools_present(cfg: MusicConfig, rep: Report) -> None:
     missing_required: list[str] = []
     missing_optional: list[str] = []
     for name, why, pkg, required in _EXTERNAL_TOOLS:
-        if shutil.which(name):
+        if shutil.which(name) or (sys.platform == "win32" and name in _LINUX_ONLY_TOOLS):
             continue
         (missing_required if required else missing_optional).append(
-            f"{name} ({why}) -- sudo apt install {pkg}"
+            f"{name} ({why}) -- {install_hint(pkg)}"
         )
 
     if missing_required:

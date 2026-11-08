@@ -1348,13 +1348,14 @@ def _cmd_edition_build_inner(args) -> int:
         import shutil
 
         from . import edition_bake
+        from .install_hint import install_hint as _install_hint
 
         if not shutil.which(edition_bake.FDKAAC):
             # Without it every song is measured and then fails (second
             # review of #53).
             print(
                 "ERROR: fdkaac is not installed -- the car and iPhone editions encode with "
-                "it. Install it: sudo apt install fdkaac",
+                f"it. Install it: {_install_hint('fdkaac')}",
                 file=sys.stderr,
             )
             return 2

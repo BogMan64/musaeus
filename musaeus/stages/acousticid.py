@@ -51,6 +51,7 @@ from urllib.request import urlopen
 from ..brackets import base_title, part_numbers, same_part_spelling
 from ..context import RunContext, StageResult, elision
 from ..db import SET_ASIDE_STATUSES, ensure_columns
+from ..install_hint import install_hint
 from ..network_policy import check as _network_check
 from .base import BaseStage, StageError
 
@@ -616,7 +617,7 @@ class AcousticIDStage(BaseStage):
         if not shutil.which("fpcalc"):
             raise StageError(
                 "fpcalc not found in PATH. "
-                "Install chromaprint: sudo apt install libchromaprint-tools"
+                f"Install chromaprint: {install_hint('libchromaprint-tools')}"
             )
         api_key = ctx.config.acousticid_api_key
         if not api_key:
