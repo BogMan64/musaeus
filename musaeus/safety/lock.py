@@ -95,6 +95,11 @@ def canonicalise(path: str | Path) -> str:
 def classify(root: str | Path) -> str:
     """Classify a scope root by text alone. Never stats, never resolves."""
     normalised = canonicalise(root)
+    # First: a vault set to one of these must not make it lockable (CodeRabbit, #293).
+    if normalised in ("/", "/home", "/mnt", "/tmp", "/var/tmp") or (
+        sys.platform == "win32" and _windows_rejected(normalised)
+    ):
+        return REJECTED
     configured_vault = os.environ.get("MUSAEUS_VAULT_ROOT", "").strip()
     if configured_vault:
         vault = canonicalise(os.path.expandvars(os.path.expanduser(configured_vault)))
@@ -108,10 +113,6 @@ def classify(root: str | Path) -> str:
             return INBOX
         if _is_at_or_under(normalised, vault):
             return CANONICAL
-    if normalised in ("/", "/home", "/mnt", "/tmp", "/var/tmp") or (
-        sys.platform == "win32" and _windows_rejected(normalised)
-    ):
-        return REJECTED
     # Only the temp folder holds disposable fixtures. Any other path may be
     # someone's music, so with no vault set it is real data (review of #211).
     return FIXTURE if _in_temp(normalised) else CANONICAL

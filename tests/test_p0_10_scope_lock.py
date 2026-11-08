@@ -86,6 +86,14 @@ class TestScopeIdentity:
         assert classify(root) == REJECTED
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX roots; Windows: test_windows_scope")
+    @pytest.mark.parametrize("root", ["/", "/mnt", "/tmp"])
+    def test_a_vault_set_to_a_refused_root_does_not_make_it_lockable(self, monkeypatch, root):
+        """The vault check ran first, so MUSAEUS_VAULT_ROOT=/ made / canonical (CodeRabbit, #293)."""
+        monkeypatch.setenv("MUSAEUS_VAULT_ROOT", root)
+        monkeypatch.delenv("MUSAEUS_INBOX", raising=False)
+        assert classify(root) == REJECTED
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX roots; Windows: test_windows_scope")
     @pytest.mark.parametrize("root", ["/tmp", "/var/tmp"])
     def test_a_temp_folder_itself_declared_a_fixture_is_still_refused(self, root):
         """A fixture declaration kept /tmp itself lockable (CodeRabbit, #293)."""
