@@ -11,6 +11,7 @@ nothing real ever executes.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,25 @@ class _Recorder:
         return _Result()
 
 
+def test_on_windows_the_menu_says_so_and_touches_nothing(cfg, monkeypatch, capsys) -> None:
+    """The transfer is Linux-only (wipefs, parted, mkfs, sudo); on Windows the
+    menu called os.geteuid after the prompts and crashed (Windows port)."""
+    con = _console(cfg)
+    rec = _Recorder()
+    monkeypatch.setattr("subprocess.run", rec)
+    asked: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda prompt="": asked.append(prompt) or "")
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    con._usb_menu()
+
+    assert rec.calls == []
+    assert "Linux only" in capsys.readouterr().out
+    # It waits for Enter, so the main menu does not scroll the message away.
+    assert len(asked) == 1 and "Press Enter" in asked[0]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the USB transfer is Linux-only")
 class TestUSBMenu:
     def test_back_does_nothing(self, cfg, monkeypatch, capsys) -> None:
         con = _console(cfg)
