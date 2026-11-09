@@ -46,7 +46,8 @@ class Repair:
 
 def backup_roots() -> list[Path]:
     raw = os.environ.get("MUSAEUS_BACKUP_ROOTS")
-    return [Path(p) for p in (raw.split(":") if raw else DEFAULT_BACKUP_ROOTS) if p]
+    # os.pathsep: ";" on Windows, where ":" is part of "C:\\".
+    return [Path(p) for p in (raw.split(os.pathsep) if raw else DEFAULT_BACKUP_ROOTS) if p]
 
 
 def backup_copies(roots: list[Path]) -> list[Path]:
