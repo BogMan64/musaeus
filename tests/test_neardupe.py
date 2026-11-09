@@ -204,15 +204,16 @@ class TestNearDupeRun:
         # Pre-insert an EXACT duplicate
         _insert_catalogued(ctx, str(tmp_path / "a.flac"), "Artist", "Song")
         _insert_catalogued(ctx, str(tmp_path / "b.flac"), "Artist", "Song (same)")
-        ctx.conn.execute(
-            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id) VALUES (?, ?, 'EXACT', 1.0, ?)",
-            ("dup_exact", str(tmp_path / "a.flac"), ctx.run_id),
-        )
+        for name in ("a.flac", "b.flac"):
+            ctx.conn.execute(
+                "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id) VALUES (?, ?, 'EXACT', 1.0, ?)",
+                ("dup_exact", str(tmp_path / name), ctx.run_id),
+            )
         ctx.conn.commit()
 
         NearDupeStage().execute(ctx)
-        # a.flac is in exact duplicates → should be skipped in neardupe
-        # The pair should not be flagged since a.flac is already EXACT
+        # The two are one EXACT group → should be skipped in neardupe
+        # One recording already: no NEAR row as well
         near_dupes = ctx.conn.execute(
             "SELECT * FROM duplicates WHERE duplicate_type='NEAR'"
         ).fetchall()

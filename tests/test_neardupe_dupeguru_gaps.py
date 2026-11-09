@@ -73,12 +73,13 @@ def test_a_credit_with_a_collaborator_is_compared_with_the_plain_name(ctx, tmp_p
     assert _staged(ctx) == 1
 
 
-def test_the_two_credits_must_also_be_the_same_length(ctx, tmp_path):
-    # Kenny Rogers "Ruby" 179.2 s with The First Edition, 167.4 s alone: two recordings
+def test_the_credit_with_a_second_act_is_the_same_song_at_any_length(ctx, tmp_path):
+    # Kenny Rogers "Ruby" 179.2 s with The First Edition, 167.4 s alone: one song
+    # whatever the second act (Grey, 2026-11-09), the keep rule picks the copy
     _add(ctx, str(tmp_path / "a.m4a"), "Kenny Rogers", "Ruby, Don't Take Your Love To Town", 167.4)
     _add(ctx, str(tmp_path / "b.m4a"), "Kenny Rogers, The First Edition",
          "Ruby, Don't Take Your Love To Town", 179.2)  # fmt: skip
-    assert _staged(ctx) == 0
+    assert _staged(ctx) == 1
 
 
 def test_a_credit_with_no_plain_bucket_is_left_alone(ctx, tmp_path):
@@ -97,21 +98,22 @@ def test_one_credit_spelled_two_ways_is_compared(ctx, tmp_path):
     assert _staged(ctx) == 1
 
 
-def test_one_credit_spelled_two_ways_must_also_be_the_same_length(ctx, tmp_path):
+def test_one_credit_spelled_two_ways_is_the_same_song_at_any_length(ctx, tmp_path):
     _add(ctx, str(tmp_path / "a.m4a"), "Pat Travers & Carmine Appice",
          "Boom Boom (Out Go The Lights)", 192.9)  # fmt: skip
     _add(ctx, str(tmp_path / "b.m4a"), "Pat Travers, Carmine Appice",
          "Boom Boom (Out Go The Lights)", 230.0)  # fmt: skip
-    assert _staged(ctx) == 0
+    assert _staged(ctx) == 1
 
 
-def test_two_credits_with_unknown_lengths_are_not_paired(ctx, tmp_path):
-    """No length is not one length (CodeRabbit review of #257)."""
+def test_two_credits_with_unknown_lengths_are_paired_by_the_song(ctx, tmp_path):
+    """No length is not one length (CodeRabbit review of #257), but one song by
+    its title needs none (Grey, 2026-11-09)."""
     _add(ctx, str(tmp_path / "a.m4a"), "Pat Travers & Carmine Appice",
          "Boom Boom (Out Go The Lights)", None)  # fmt: skip
     _add(ctx, str(tmp_path / "b.m4a"), "Pat Travers, Carmine Appice",
          "Boom Boom (Out Go The Lights)", None)  # fmt: skip
-    assert _staged(ctx) == 0
+    assert _staged(ctx) == 1
 
 
 def test_a_credit_naming_one_more_act_is_another_credit(ctx, tmp_path):
