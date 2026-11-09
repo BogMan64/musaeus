@@ -76,7 +76,9 @@ ORPHEUS equivalents:
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
+import os
 import re
 import sqlite3
 import unicodedata
@@ -655,6 +657,47 @@ def unique_path(target: Path, *, exists: Callable[[Path], bool] | None = None) -
         counter += 1
 
 
+def _taken_by_another(path: Path, current: Path) -> bool:
+    """True when *path* holds a file that is not *current* itself.
+
+    A case-blind disk (Windows) finds "Dead Or Alive - Song.m4a" while the
+    file is still "Dead or Alive - Song.m4a", and a symlinked root names one
+    file twice. Either way the song's own file is not a collision.
+    """
+    if not path.exists():
+        return False
+    try:
+        return not os.path.samefile(path, current)
+    except OSError:
+        return True
+
+
+def _match_folder_capitals(folder: Path, root: Path) -> None:
+    """Give each existing folder under *root* the capitals *folder* asks for.
+
+    Only a case-blind disk (Windows) needs this: there mkdir() finds "Dead or
+    Alive" for "Dead Or Alive" and the old capitals stay. On Linux mkdir()
+    has just made the exact name, so nothing here renames anything. The other
+    songs in a renamed folder go with it; their rows are refiled by this same
+    run, which visits every catalogued row.
+    """
+    here = root
+    for part in folder.relative_to(root).parts:
+        try:
+            names = os.listdir(here)
+        except OSError:
+            return
+        if part not in names:
+            same = [n for n in names if n.casefold() == part.casefold()]
+            if len(same) != 1:
+                return  # missing, or two spellings side by side: leave both alone
+            try:
+                (here / same[0]).rename(here / part)
+            except OSError:
+                return
+        here = here / part
+
+
 def _is_collision_name_for(
     current: Path, candidate: Path, *, exists: Callable[[Path], bool] | None = None
 ) -> bool:
@@ -795,8 +838,12 @@ class OrganizeStage(BaseStage):
         vacated: set[Path] = set()
         reserved: set[Path] = set()
 
-        def exists(path: Path) -> bool:
-            return path in reserved or (path not in vacated and path.exists())
+        def exists(path: Path, current: Path | None = None) -> bool:
+            if path in reserved:
+                return True
+            if path in vacated:
+                return False
+            return _taken_by_another(path, current) if current else path.exists()
 
         # A path another catalogue row owns: the real move hits the unique
         # file_path and is undone, so it is shown as blocked (Codex review of #230).
@@ -825,9 +872,13 @@ class OrganizeStage(BaseStage):
                 filing,
                 row["audio_hash"],
             )
-            if candidate == current or _is_collision_name_for(current, candidate, exists=exists):
+            if str(candidate) == str(current) or _is_collision_name_for(
+                current, candidate, exists=exists
+            ):
                 continue
-            target = unique_path(candidate, exists=exists)
+            target = unique_path(candidate, exists=functools.partial(exists, current=current))
+            if str(target) == str(current):
+                continue
             if str(target) in owned:
                 blocked += 1
                 actions.append(
@@ -1128,15 +1179,20 @@ class OrganizeStage(BaseStage):
             # would wrongly see that as "taken" and bump to " (2)".  Only
             # run collision-avoidance when the file is actually moving
             # somewhere new.
-            if candidate_path == current_path or _is_collision_name_for(
+            # Compared as text: a Windows path == ignores capitals, so a
+            # capitals-only change read as already done.
+            if str(candidate_path) == str(current_path) or _is_collision_name_for(
                 current_path, candidate_path
             ):
                 target_path = current_path
             else:
-                target_path = unique_path(candidate_path)
+                target_path = unique_path(
+                    candidate_path,
+                    exists=functools.partial(_taken_by_another, current=current_path),
+                )
 
             # Check if already organized
-            if current_path == target_path:
+            if str(current_path) == str(target_path):
                 skipped += 1
                 continue
 
@@ -1155,6 +1211,8 @@ class OrganizeStage(BaseStage):
                     result.files_errored += 1
                     result.errors.append(f"{current_path.name}: DB collision, skipped")
                     continue
+                if not dry_run:
+                    _match_folder_capitals(target_path.parent, dest_root)
 
                 renamed += 1
                 result.files_changed += 1
@@ -1181,6 +1239,7 @@ class OrganizeStage(BaseStage):
                         result.errors.append(f"{current_path.name}: DB collision, skipped")
                         continue
                     _remove_emptied_dirs(current_path.parent, dest_root)
+                    _match_folder_capitals(target_path.parent, dest_root)
 
                 moved += 1
                 result.files_changed += 1
