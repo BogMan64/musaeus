@@ -39,10 +39,12 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# AAC in an MP4 container: sample data plus per-frame and index overhead.
-# 2% is the measured ceiling on this library's encodes, and erring high is
+# AAC in an MP4 container: sample data plus per-frame and index overhead,
+# and the cover art each copy carries. The whole iPhone edition measured
+# 4.34% over its audio (2026-11-09, 2,773 copies, about 325 KB of art each);
+# 2% left out the art and a 20.63 GB budget built 21.1 GB. Erring high is
 # the safe direction for a device budget.
-_CONTAINER_OVERHEAD = 1.02
+_CONTAINER_OVERHEAD = 1.05
 
 
 @dataclass(frozen=True)

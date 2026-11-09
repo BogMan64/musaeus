@@ -100,6 +100,14 @@ class TestSizeEstimation:
         exact = 240.0 * 256 * 1000 / 8
         assert estimated_bytes(t, CAR) > exact
 
+    def test_estimate_covers_the_cover_art_in_each_copy(self) -> None:
+        """The real iPhone edition, 2026-11-09: 2,773 copies weighed 4.34% over
+        their audio at 256 kbps, the cover art in each copy included. At 2% a
+        20.63 GB budget built 21.1 GB, and iphone-sync stopped before the copy."""
+        t = _track(duration=240.0)
+        exact = 240.0 * 256 * 1000 / 8
+        assert estimated_bytes(t, CAR) >= exact * 1.0434
+
     def test_missing_duration_falls_back_to_master_size(self) -> None:
         """A budget that refuses an unmeasurable track beats one that overruns."""
         assert estimated_bytes(_track(duration=0.0), CAR) == 40_000_000
