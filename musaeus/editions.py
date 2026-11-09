@@ -43,6 +43,10 @@ from pathlib import Path
 # 2% is the measured ceiling on this library's encodes, and erring high is
 # the safe direction for a device budget.
 _CONTAINER_OVERHEAD = 1.02
+# The cover art each copy carries, whatever its length: the iPhone edition
+# (2026-11-09, 2,773 copies) averaged 171 KB over audio x 1.02, so a 20.63 GB
+# budget built 21.1 GB. 400 KB a copy covers it with room, short songs too.
+_ART_ALLOWANCE = 400_000
 
 
 @dataclass(frozen=True)
@@ -153,7 +157,7 @@ def estimated_bytes(track: Track, spec: EditionSpec) -> int:
         # a track it cannot measure is safer than one that overruns.
         return int(track.size_bytes or 0)
     bits = track.duration * (spec.bitrate_kbps or 0) * 1000
-    return int(bits / 8 * _CONTAINER_OVERHEAD)
+    return int(bits / 8 * _CONTAINER_OVERHEAD) + _ART_ALLOWANCE
 
 
 def genre_rank(genre: str, priority: tuple[str, ...]) -> tuple[int, str]:

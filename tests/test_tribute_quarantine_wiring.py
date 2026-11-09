@@ -161,6 +161,15 @@ def test_a_missing_restore_script_is_reported(conn, tmp_path: Path) -> None:
     assert any("no restore script" in p for p in problems)
 
 
+def test_a_python_restore_script_is_accepted(conn, tmp_path: Path) -> None:
+    review, source, target = _scene(tmp_path, restore=False)
+    (review / "2026-09-01" / "restore_20260901T000000Z.py").write_text(
+        "#!/usr/bin/env python3\n", encoding="utf-8"
+    )
+    _quarantined(conn, source, target)
+    assert TributeQuarantineStage().verify_effect(_Ctx(conn, review), _Result()) == []
+
+
 def test_changes_claimed_with_no_events_is_a_problem_not_a_pass(conn, tmp_path: Path) -> None:
     review = tmp_path / "TRIBUTE_REVIEW"
     review.mkdir()
