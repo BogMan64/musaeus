@@ -128,3 +128,14 @@ def test_the_command_is_wired_into_the_cli():
         capture_output=True, text=True, cwd=Path(__file__).resolve().parents[1], timeout=60,
     )  # fmt: skip
     assert r.returncode == 0 and "--mount" in r.stdout
+
+
+def test_an_edition_too_big_for_the_phone_is_not_started_and_vlc_is_kept(phone):
+    """CodeRabbit on #310: a build can leave the edition over its budget. VLC
+    must not be cleared for a copy that cannot fit."""
+    src, mount, st = phone
+    st["free"] = s.HEADROOM + 1000 - 500  # after clearing: room for 1000 bytes, the edition is 1001
+    (src / "Toto" / "IV" / "extra.m4a").write_bytes(b"e")
+    assert s.sync(src, mount, ask=lambda q: "yes") == 1
+    assert (mount / "Old - Song.m4a").is_file(), "VLC cleared for a copy that cannot fit"
+    assert st["rsyncs"] == 0 and not st["mounted"]

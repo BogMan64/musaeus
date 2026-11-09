@@ -184,6 +184,15 @@ def sync(src: Path, mount: Path, ask: Callable[[str], str] = input) -> int:
     if not src.is_dir():
         print(f"  The iPhone edition does not exist yet at {src}.")
         return 1
+    # A build can end over its budget (CodeRabbit on #310): never clear VLC for
+    # a copy that cannot fit.
+    if wipe and _size(src)[1] > free + held - HEADROOM:
+        print(
+            f"  The iPhone edition is {_gb(_size(src)[1])}; after clearing VLC the phone "
+            f"would have {_gb(free + held)} with {_gb(HEADROOM)} kept spare. Nothing on the "
+            "phone was changed."
+        )
+        return 1
     if not _mount(mount):
         return 1
     try:
