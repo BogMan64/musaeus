@@ -664,6 +664,14 @@ def _run_pipeline_inner(
             exit_code = 1
             failed_before = True
 
+        # Preflight remains report-only for its normal environment warnings.
+        # The ffmpeg self-test is the sole exception: if its detector canary
+        # fails, later stages must not alter files while damage checks are
+        # untrusted.
+        if isinstance(stage, PreflightStage) and stage.ffmpeg_selftest_failed:
+            print("  STOPPED: ffmpeg self-test failed; no later stage was run.", file=sys.stderr)
+            break
+
         # An Act's report, written the moment that Act ends rather than at
         # the end of the run. A run that dies in Act 2 otherwise hands Grey
         # nothing at all -- including nothing about the Act 1 that finished
