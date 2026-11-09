@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -103,7 +105,9 @@ _NAMES = [
     "Ty Dolla $ign - Song.m4a",
     "$(touch PWNED) - Song.m4a",
     "`touch PWNED2` - Song.m4a",
-    'Say "Hello" - Song.m4a',
+    "Björk - Jóga.m4a",
+    "Moon \U0001f319 Song.m4a",  # outside the BMP: JSON writes it as two escapes
+    *(['Say "Hello" - Song.m4a'] if os.name != "nt" else ["O'Malley & $ign `Song`.m4a"]),
 ]
 
 
@@ -121,9 +125,48 @@ def test_restore_script_puts_back_paths_with_shell_characters(ctx, tmp_path, sta
         moves.append(move)
 
     _, script = stage()._write_manifest_and_restore_script(ctx, "2026-01-15", moves)
-    run = subprocess.run(["bash", str(script)], cwd=tmp_path, capture_output=True, text=True)
+    if os.name == "nt":
+        command = [sys.executable, str(script.with_suffix(".py"))]
+    else:
+        command = ["bash", str(script)]
+    run = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True)
 
     assert run.returncode == 0, run.stderr
     for m in moves:
         assert Path(m["source"]).read_bytes() == Path(m["source"]).name.encode()
     assert not list(tmp_path.rglob("PWNED*")), "a path ran as a command"
+
+    if os.name != "nt":
+        for m in moves:
+            Path(m["source"]).replace(Path(m["destination"]))
+        run = subprocess.run(
+            [sys.executable, str(script.with_suffix(".py"))],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert run.returncode == 0, run.stderr
+        for m in moves:
+            assert Path(m["source"]).read_bytes() == Path(m["source"]).name.encode()
+
+
+@pytest.mark.parametrize("stage", [TributeQuarantineStage, DupeResolverStage])
+def test_python_restore_script_never_overwrites_an_existing_source(ctx, tmp_path, stage):
+    source = ctx.alac_library / "Artist" / "Album" / "original.m4a"
+    destination = tmp_path / "REVIEW_HOLD" / "replacement.m4a"
+    source.parent.mkdir(parents=True)
+    destination.parent.mkdir(parents=True)
+    source.write_bytes(b"original")
+    destination.write_bytes(b"replacement")
+    move = {"source": str(source), "destination": str(destination)}
+    if stage is TributeQuarantineStage:
+        move["reason"] = "test"
+
+    _, script = stage()._write_manifest_and_restore_script(ctx, "2026-01-15", [move])
+    run = subprocess.run(
+        [sys.executable, str(script.with_suffix(".py"))], capture_output=True, text=True, check=True
+    )
+
+    assert "skipped (source exists):" in run.stdout
+    assert source.read_bytes() == b"original"
+    assert destination.read_bytes() == b"replacement"

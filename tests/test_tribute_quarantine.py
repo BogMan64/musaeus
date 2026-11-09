@@ -11,6 +11,7 @@ rationale as DupeResolverStage's own test suite.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -173,6 +174,7 @@ class TestTributeQuarantineRun:
         restore_note = next(n for n in result.notes if n.startswith("restore script:"))
         restore_path = Path(restore_note.split("restore script: ", 1)[1])
         assert restore_path.exists()
+        assert restore_path.with_suffix(".py").exists()
         assert os.access(restore_path, os.X_OK)
 
     def test_restore_script_actually_reverses_the_move(self, ctx):
@@ -186,7 +188,18 @@ class TestTributeQuarantineRun:
 
         restore_note = next(n for n in result.notes if n.startswith("restore script:"))
         restore_path = restore_note.split("restore script: ", 1)[1]
-        subprocess.run(["bash", restore_path], check=True)
+        python_restore_path = str(Path(restore_path).with_suffix(".py"))
+        moved_path = next(ctx.config.tribute_review_dir.rglob("*.m4a"))
+        if os.name == "nt":
+            subprocess.run([sys.executable, python_restore_path], check=True)
+        else:
+            python_run = subprocess.run(
+                [sys.executable, python_restore_path], check=True, capture_output=True, text=True
+            )
+            assert "restored:" in python_run.stdout
+            assert path.exists()
+            path.replace(moved_path)
+            subprocess.run(["bash", restore_path], check=True)
 
         assert path.exists()
         assert path.read_bytes() == original_content
