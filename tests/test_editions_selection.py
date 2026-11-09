@@ -83,10 +83,10 @@ def _track(**kw) -> Track:
 
 class TestSizeEstimation:
     def test_lossy_estimate_comes_from_duration_and_bitrate(self) -> None:
-        """4 minutes at 256 kbps is ~7.7 MB, whatever the master weighs."""
+        """4 minutes at 256 kbps is ~7.7 MB of audio, whatever the master weighs."""
         t = _track(duration=240.0, size_bytes=40_000_000)
         got = estimated_bytes(t, CAR)
-        assert 7_500_000 < got < 8_200_000
+        assert 7_500_000 < got < 8_400_000
         assert got < t.size_bytes / 4, "a lossy edition must be far smaller"
 
     def test_lossless_estimate_is_the_master_size(self) -> None:
@@ -99,6 +99,21 @@ class TestSizeEstimation:
         t = _track(duration=240.0)
         exact = 240.0 * 256 * 1000 / 8
         assert estimated_bytes(t, CAR) > exact
+
+    def test_estimate_covers_the_cover_art_in_each_copy(self) -> None:
+        """The real iPhone edition, 2026-11-09: 2,773 copies weighed 4.34% over
+        their audio at 256 kbps, the cover art in each copy included. At 2% a
+        20.63 GB budget built 21.1 GB, and iphone-sync stopped before the copy."""
+        t = _track(duration=240.0)
+        exact = 240.0 * 256 * 1000 / 8
+        assert estimated_bytes(t, CAR) >= exact * 1.0434
+
+    def test_a_short_song_carries_the_same_art(self) -> None:
+        """CodeRabbit on #312: art does not shrink with the song. One minute of
+        audio and 325 KB of art must both be counted."""
+        t = _track(duration=60.0)
+        exact = 60.0 * 256 * 1000 / 8
+        assert estimated_bytes(t, CAR) >= exact * 1.02 + 325_000
 
     def test_missing_duration_falls_back_to_master_size(self) -> None:
         """A budget that refuses an unmeasurable track beats one that overruns."""
@@ -153,7 +168,7 @@ class TestBudget:
         """With room for one, the higher-priority genre wins."""
         _add(conn, "/m/jazz.m4a", genre="Jazz", duration=240.0)
         _add(conn, "/m/rock.m4a", genre="Rock", duration=240.0)
-        sel = select_edition(conn, CAR, budget_bytes=8_200_000)
+        sel = select_edition(conn, CAR, budget_bytes=8_500_000)
         assert len(sel.included) == 1
         assert sel.included[0].genre == "Rock"
 
