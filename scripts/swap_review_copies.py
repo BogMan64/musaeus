@@ -373,8 +373,7 @@ def retire(cfg, ids: list[int], execute: bool) -> int:
     print(f"  {len(ids)} replaced master(s) -> {DELETE_TOOL.name} ({ids_file})")
     from musaeus.masters_lock import handoff
 
-    fds, env = handoff()
-    return subprocess.run(cmd, check=False, pass_fds=fds, env=env).returncode
+    return subprocess.run(cmd, check=False, **handoff()).returncode
 
 
 def main() -> int:

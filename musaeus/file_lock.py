@@ -77,9 +77,9 @@ if sys.platform == "win32":
     # One byte at offset 2**63 - 1: past the end of any real file.
     _AT_LOW, _AT_HIGH = 0xFFFFFFFF, 0x7FFFFFFF
 
-    def _region() -> _Overlapped:
+    def _region(low: int = _AT_LOW) -> _Overlapped:
         o = _Overlapped()
-        o.Offset, o.OffsetHigh = _AT_LOW, _AT_HIGH
+        o.Offset, o.OffsetHigh = low, _AT_HIGH
         return o
 
     def _handle(f: FileLike) -> int:
@@ -97,6 +97,23 @@ if sys.platform == "win32":
     def unlock(f: FileLike) -> None:
         """Give the lock back."""
         if not _KERNEL32.UnlockFileEx(_handle(f), 0, 1, 0, ctypes.byref(_region())):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    # Windows only: the byte next to the lock's, held by a child that was handed
+    # a lock (masters_lock.handoff). Windows frees a lock when the process that
+    # took it dies, even while a child still has the file open.
+    def try_lock_handoff(f: FileLike, *, exclusive: bool) -> None:
+        """try_lock on the handoff byte."""
+        flags = _FAIL_IMMEDIATELY | (_EXCLUSIVE if exclusive else 0)
+        if not _KERNEL32.LockFileEx(_handle(f), flags, 0, 1, 0, ctypes.byref(_region(_AT_LOW - 1))):
+            err = ctypes.get_last_error()
+            if err in _BUSY:
+                raise BlockingIOError(err, "a handed-down holder still runs")
+            raise ctypes.WinError(err)
+
+    def unlock_handoff(f: FileLike) -> None:
+        """Give the handoff byte back."""
+        if not _KERNEL32.UnlockFileEx(_handle(f), 0, 1, 0, ctypes.byref(_region(_AT_LOW - 1))):
             raise ctypes.WinError(ctypes.get_last_error())
 
     def process_alive(pid: int) -> bool:
