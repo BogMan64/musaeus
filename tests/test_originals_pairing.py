@@ -267,20 +267,24 @@ def test_live_a_baked_live_copy_is_paired_with_its_own_original(tmp_path):
     assert not baked.exists(), "the baked live copy was never paired with its original"
 
 
-def test_live_two_concerts_of_one_song_are_still_not_paired(tmp_path):
+# Grey, 2026-11-02 and 11-09: two live copies of one song are a duplicate;
+# the keep rule keeps the earlier recording.
+
+
+def test_live_two_concerts_of_one_song_are_paired(tmp_path):
     ctx = _ctx(tmp_path)
     _live_pair(ctx, orig_duration=398.0)  # a different night
     NearDupeStage().run(ctx)
     near = ctx.conn.execute("SELECT COUNT(*) FROM duplicates WHERE duplicate_type='NEAR'")
-    assert near.fetchone()[0] == 0
+    assert near.fetchone()[0] == 2
 
 
-def test_live_two_live_titles_that_differ_are_still_not_paired(tmp_path):
+def test_live_two_live_titles_that_differ_only_in_brackets_are_paired(tmp_path):
     ctx = _ctx(tmp_path)
     _live_pair(ctx, orig_duration=412.0, orig_title="Midnight Rambler (Live In Paris)")
     NearDupeStage().run(ctx)
     near = ctx.conn.execute("SELECT COUNT(*) FROM duplicates WHERE duplicate_type='NEAR'")
-    assert near.fetchone()[0] == 0
+    assert near.fetchone()[0] == 2
 
 
 def test_stuck_a_pair_closed_as_stale_is_judged_again_when_it_is_whole(tmp_path):
