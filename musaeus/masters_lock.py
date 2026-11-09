@@ -36,6 +36,8 @@ if sys.platform == "win32":
     import _winapi
     import msvcrt
 
+    from .file_lock import try_lock_handoff, unlock_handoff
+
 from .file_lock import process_alive, try_lock, unlock
 
 EXIT_BUSY = 75
@@ -110,6 +112,28 @@ def _inherited(lock_file: Path):
     return os.fdopen(fd, "a+")
 
 
+def _take(fh, *, exclusive: bool, handed_down: bool) -> None:
+    """Lock, or raise BlockingIOError. flock: a handed-down file shares the
+    parent's lock, and keeps it if the parent dies. Windows refuses a second
+    lock even on the parent's own file, and frees the parent's lock when the
+    parent dies (CodeRabbit on #309). So there a handed-down child holds the
+    handoff byte, and every other holder checks that byte is free."""
+    if sys.platform == "win32":
+        if handed_down:
+            try_lock_handoff(fh, exclusive=True)
+            return
+        try_lock(fh, exclusive=exclusive)
+        try:
+            # No race: a child takes the byte only while its parent holds the lock.
+            try_lock_handoff(fh, exclusive=False)
+        except BlockingIOError:
+            unlock(fh)
+            raise
+        unlock_handoff(fh)
+    else:
+        try_lock(fh, exclusive=exclusive)
+
+
 class MastersBusy(RuntimeError):
     """Another job holds the masters lock in a mode this one cannot share."""
 
@@ -148,10 +172,7 @@ def masters_lock(runs_root: Path | str, *, exclusive: bool, what: str) -> Iterat
     inherited = _inherited(lock_dir / LOCK_NAME) if exclusive else None
     fh = inherited or open(lock_dir / LOCK_NAME, "a+", encoding="utf-8")  # noqa: SIM115 -- held for the block
     try:
-        # Windows refuses a second lock even on the parent's own file, so there
-        # the handed-down file is the hold.
-        if inherited is None or sys.platform != "win32":
-            try_lock(fh, exclusive=exclusive)
+        _take(fh, exclusive=exclusive, handed_down=inherited is not None)
     except BlockingIOError:
         fh.close()
         raise MastersBusy(
@@ -179,6 +200,8 @@ def masters_lock(runs_root: Path | str, *, exclusive: bool, what: str) -> Iterat
         record.unlink(missing_ok=True)
         if inherited is None:  # never unlock the parent's hold
             unlock(fh)
+        elif sys.platform == "win32":
+            unlock_handoff(fh)
         fh.close()
 
 
