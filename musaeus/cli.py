@@ -27,6 +27,8 @@ Pipeline commands:
     edition-build    Build an edition from the masters: lossless (-18 LUFS ALAC),
                      car (-14 AAC, noise under), iphone (-14 AAC, --budget-gb);
                      rows untouched (--dry-run)
+    iphone-sync      Put the iPhone edition on the phone: sized to its free space,
+                     asks before clearing VLC (Linux: ifuse + rsync)
     forge            Measure EBU R128 loudness + write ReplayGain tags
     tagger           Write normalised DB metadata back to file tags
     auditor          Pre-forge LUFS audit (flags out-of-window files)
@@ -2253,6 +2255,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--list", action="store_true", help="Print every selected track, not just the summary"
     )
 
+    # iphone-sync
+    sync_p = sub.add_parser(
+        "iphone-sync",
+        help="Put the iPhone edition on the phone, sized to its free space; asks before clearing VLC",
+    )
+    sync_p.add_argument(
+        "--mount", default=str(Path.home() / "iphone"), help="where to mount (default: ~/iphone)"
+    )
+
     # edition-build
     eb_p = sub.add_parser(
         "edition-build",
@@ -2855,6 +2866,10 @@ def main() -> None:
             sys.exit(_cmd_edition(args))
         elif command == "edition-build":
             sys.exit(_cmd_edition_build(args))
+        elif command == "iphone-sync":
+            from .iphone_sync import sync
+
+            sys.exit(sync(get_config().iphone_library, Path(args.mount)))
 
         elif command == "playlist":
             sys.exit(_run_pipeline([PlaylistStage], dry_run=dry_run))
