@@ -12,6 +12,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -129,7 +130,20 @@ def _plain_m4a(path: Path) -> None:
                    check=True)  # fmt: skip
 
 
-@pytest.mark.parametrize("what", ["not an MP4", "a whole MP4 with no marker", "cannot be opened"])
+@pytest.mark.parametrize(
+    "what",
+    [
+        "not an MP4",
+        "a whole MP4 with no marker",
+        pytest.param(
+            "cannot be opened",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="chmod(0) only sets read-only on Windows; the file stays readable",
+            ),
+        ),
+    ],
+)
 def test_anything_but_a_damaged_mp4_still_blocks(cfg, what):
     _master(cfg, REL, "h1")
     target = cfg.alac_library / REL
