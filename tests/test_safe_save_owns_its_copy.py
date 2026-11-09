@@ -22,10 +22,17 @@ def _open_handle_count() -> int:
     if sys.platform != "win32":
         return len(os.listdir("/proc/self/fd"))
     import ctypes
+    from ctypes import wintypes
 
-    count = ctypes.c_ulong()
-    assert ctypes.windll.kernel32.GetProcessHandleCount(
-        ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(count)
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # Pointer-sized handle: untyped, GetCurrentProcess()'s -1 arrived as a
+    # 32-bit int and the call failed (CodeRabbit, #304).
+    k32.GetCurrentProcess.restype = wintypes.HANDLE
+    k32.GetProcessHandleCount.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    k32.GetProcessHandleCount.restype = wintypes.BOOL
+    count = wintypes.DWORD()
+    assert k32.GetProcessHandleCount(k32.GetCurrentProcess(), ctypes.byref(count)), (
+        ctypes.get_last_error()
     )
     return count.value
 

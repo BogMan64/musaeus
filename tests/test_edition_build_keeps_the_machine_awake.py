@@ -49,6 +49,7 @@ def test_the_reexec_keeps_python_dash_m(monkeypatch):
     assert seen[0][-5:] == [sys.executable, "-m", "musaeus.cli", "edition-build", "car"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the inhibitor stub is a POSIX shell script")
 @pytest.mark.skipif(
     not (shutil.which("ffmpeg") and shutil.which("fdkaac")),
     reason="ffmpeg and fdkaac are required for a real car edition build.",
