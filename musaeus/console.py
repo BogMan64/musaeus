@@ -52,6 +52,7 @@ from .stages import (
     TributeQuarantineStage,
 )
 from .stages.base import BaseStage
+from .stages.preflight import stops_the_run
 from .workspace import doc_root, list_docs, list_worktrees, unmerged_commits
 
 logger = logging.getLogger(__name__)
@@ -555,6 +556,10 @@ class Console:
                             _info(note)
                         for err in result.errors:
                             _err(f"  ERROR: {err}")
+
+                        if stops_the_run(stage):
+                            _err("  STOPPED: ffmpeg self-test failed; no later stage was run.")
+                            break
 
                 print()
                 all_ok = all(r.success for r in ctx.stage_results)

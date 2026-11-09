@@ -59,6 +59,14 @@ def test_run_tty_declines_batch_prompt_is_report_only(disposable_vault, monkeypa
     must fall back to the old report-only text, no subprocess call."""
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda *_a: "n")
+    # The ffmpeg compatibility canary legitimately invokes ffmpeg during a
+    # real preflight. This test isolates the older promise: declining the
+    # optional package-install prompt itself never starts an installer.
+    monkeypatch.setattr(
+        PreflightStage,
+        "_check_ffmpeg_selftest",
+        lambda _self, _ctx, ok, _warn, _fail: ok.append("ffmpeg self-test: stubbed"),
+    )
 
     def _boom(*a, **k):
         raise AssertionError("declining the batch prompt must never call subprocess")
