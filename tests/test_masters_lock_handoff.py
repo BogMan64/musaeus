@@ -30,8 +30,7 @@ def _child(runs: Path, **kw) -> subprocess.CompletedProcess[str]:
 def test_a_child_handed_the_hold_runs_and_the_parent_still_holds_after(tmp_path):
     runs = tmp_path / "RUNS"
     with ml.masters_lock(runs, exclusive=True, what="parent"):
-        fds, env = ml.handoff()
-        handed = _child(runs, pass_fds=fds, env=env)
+        handed = _child(runs, **ml.handoff())
         assert handed.returncode == 0 and "HELD" in handed.stdout, handed.stderr
         stranger = _child(runs)
         assert stranger.returncode == ml.EXIT_BUSY, "the child's exit let go of the parent's hold"
@@ -48,11 +47,7 @@ def test_a_forged_number_is_not_the_lock(tmp_path):
     other = open(tmp_path / "other.file", "a+", encoding="utf-8")  # noqa: SIM115
     try:
         with ml.masters_lock(runs, exclusive=True, what="parent"):
-            import os
-
-            os.set_inheritable(other.fileno(), True)
-            env = {**os.environ, ml._FD_ENV: str(other.fileno())}
-            r = _child(runs, pass_fds=(other.fileno(),), env=env)
+            r = _child(runs, **ml._hand_down(other))
             assert r.returncode == ml.EXIT_BUSY
     finally:
         other.close()
