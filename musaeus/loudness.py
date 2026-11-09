@@ -112,7 +112,8 @@ def _extract_loudnorm_json(stderr: str) -> dict | None:
 #: Any number of "[ctx @ 0x..] " prefixes: ffmpeg 7 prints two before a
 #: decoder's error ("[aist#0:0/alac @ ..] [dec:alac @ ..] [error] ..."), and
 #: with one allowed that damage read as clean (review of #198, finding 1).
-_LEVEL_RE = re.compile(r"^(?P<ctx>(?:\[[^\]]+ @ 0x[0-9a-f]+\] )*)\[(?P<level>[a-z]+)\] ?")
+#: Windows ffmpeg prints the address without "0x": "@ 0000018f5e7c2a40".
+_LEVEL_RE = re.compile(r"^(?P<ctx>(?:\[[^\]]+ @ (?:0x)?[0-9a-fA-F]+\] )*)\[(?P<level>[a-z]+)\] ?")
 _ERROR_LEVELS = frozenset({"error", "fatal", "panic"})
 
 

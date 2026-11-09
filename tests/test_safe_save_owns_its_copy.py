@@ -10,11 +10,31 @@ through a planted `<song>.musaeus_cover.jpg` or dangling `cover.jpg` link.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
 
 from musaeus.safe_save import change_beside
+
+
+def _open_handle_count() -> int:
+    if sys.platform != "win32":
+        return len(os.listdir("/proc/self/fd"))
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # Pointer-sized handle: untyped, GetCurrentProcess()'s -1 arrived as a
+    # 32-bit int and the call failed (CodeRabbit, #304).
+    k32.GetCurrentProcess.restype = wintypes.HANDLE
+    k32.GetProcessHandleCount.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    k32.GetProcessHandleCount.restype = wintypes.BOOL
+    count = wintypes.DWORD()
+    assert k32.GetProcessHandleCount(k32.GetCurrentProcess(), ctypes.byref(count)), (
+        ctypes.get_last_error()
+    )
+    return count.value
 
 
 def _pair(tmp_path: Path) -> tuple[Path, Path]:
@@ -139,9 +159,9 @@ def test_copy_to_new_never_writes_through_and_leaks_nothing(tmp_path):
     assert other.read_bytes() == b"ANOTHER RECORDING"
     assert not dst.is_symlink() and dst.read_bytes() == b"SONG"
 
-    before = len(os.listdir("/proc/self/fd"))
+    before = _open_handle_count()
     for _ in range(5):
         with pytest.raises(OSError):
             copy_to_new(tmp_path / "missing.m4a", tmp_path / "x.tmp")
-    assert len(os.listdir("/proc/self/fd")) == before, "a handle leaked"
+    assert _open_handle_count() == before, "a handle leaked"
     assert not (tmp_path / "x.tmp").exists()

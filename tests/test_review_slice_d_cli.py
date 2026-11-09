@@ -15,6 +15,7 @@ from musaeus.stages import IngestStage
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("MUSAEUS_VAULT_ROOT", str(tmp_path / "vault"))
     monkeypatch.setenv("MUSAEUS_VERBOSE", "0")
     monkeypatch.setenv("MUSAEUS_PROGRESS", "0")

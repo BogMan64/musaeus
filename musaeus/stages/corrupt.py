@@ -253,7 +253,8 @@ _IMAGE_DECODER_TAGS = frozenset(
         "swscaler",
     }
 )
-_TAGGED_STDERR_RE = re.compile(r"^\[(?P<tag>[A-Za-z0-9_]+) @ 0x[0-9a-f]+\]")
+# Windows ffmpeg prints the address without "0x" (Windows port, 2026-11-08).
+_TAGGED_STDERR_RE = re.compile(r"^\[(?P<tag>[A-Za-z0-9_]+) @ (?:0x)?[0-9a-fA-F]+\]")
 _STREAM_DECODE_ERROR_RE = re.compile(r"^Error while decoding stream #\d+:(?P<idx>\d+)")
 # A muxer throughput complaint, not a statement about the audio. It only
 # appears without `-vn`; the rule is here so the classifier still holds if

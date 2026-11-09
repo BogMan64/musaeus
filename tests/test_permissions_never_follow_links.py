@@ -9,6 +9,7 @@ trees, and never through a link, may change.
 from __future__ import annotations
 
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,10 @@ def _mode(p: Path) -> int:
     return stat.S_IMODE(p.lstat().st_mode)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows cannot represent the POSIX permission bits this test asserts.",
+)
 def test_a_link_to_a_private_file_outside_is_never_changed(ctx, tmp_path):
     secret = tmp_path / "elsewhere" / "credentials.env"
     secret.parent.mkdir()
@@ -75,6 +80,10 @@ def test_a_dry_run_does_not_list_a_links_target(ctx, tmp_path):
     assert not any("credentials" in n for n in result.notes)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows does not support POSIX named pipes.",
+)
 def test_a_fifo_swapped_in_after_the_scan_does_not_hang_and_is_not_changed(tmp_path):
     # Review of #203, finding 1: opening a FIFO with no writer blocks for ever.
     import os
@@ -88,6 +97,10 @@ def test_a_fifo_swapped_in_after_the_scan_does_not_hang_and_is_not_changed(tmp_p
     assert _mode(fifo) == 0o600
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows cannot represent the POSIX permission bits this test asserts.",
+)
 def test_a_link_swapped_in_after_the_scan_is_left_alone(tmp_path):
     from musaeus.stages.permissions import _chmod_no_follow
 
@@ -101,6 +114,10 @@ def test_a_link_swapped_in_after_the_scan_is_left_alone(tmp_path):
     assert _mode(secret) == 0o600
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows cannot represent the POSIX permission bits this test asserts.",
+)
 def test_a_file_its_owner_cannot_read_is_still_fixed(ctx):
     own = ctx.inbox / "song.m4a"
     own.write_bytes(b"audio")
