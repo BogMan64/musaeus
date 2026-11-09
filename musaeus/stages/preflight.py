@@ -190,8 +190,7 @@ class PreflightStage(BaseStage):
             proc = subprocess.run(
                 ["ffmpeg", "-version"],
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 timeout=10,
             )
         except (OSError, subprocess.TimeoutExpired):
@@ -216,9 +215,7 @@ class PreflightStage(BaseStage):
         """Capture the corruption decoder's raw stderr for a handoff note."""
         try:
             proc = subprocess.run(
-                [
-                    "ffmpeg", "-nostdin", "-v", "error", "-i", str(path), "-vn", "-f", "null", "-"
-                ],
+                ["ffmpeg", "-nostdin", "-v", "error", "-i", str(path), "-vn", "-f", "null", "-"],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -324,7 +321,9 @@ class PreflightStage(BaseStage):
     def _check_ffmpeg_selftest(self, ctx: RunContext, ok: list, warn: list, fail: list) -> None:
         """Run the ALAC damage canary once per installed ffmpeg version."""
         if shutil.which("ffmpeg") is None:
-            warn.append("ffmpeg self-test: skipped because ffmpeg is not found (the command check reports this)")
+            warn.append(
+                "ffmpeg self-test: skipped because ffmpeg is not found (the command check reports this)"
+            )
             return
         version = self._ffmpeg_version()
         if version is None:
@@ -340,23 +339,32 @@ class PreflightStage(BaseStage):
 
         passed, failed_check, stderr = self._run_ffmpeg_selftest()
         if passed:
-            state_path.write_text(
-                json.dumps(
-                    {
-                        "version": version,
-                        "result": "pass",
-                        "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                    },
-                    indent=2,
+            try:
+                state_path.write_text(
+                    json.dumps(
+                        {
+                            "version": version,
+                            "result": "pass",
+                            "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        },
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
                 )
-                + "\n",
-                encoding="utf-8",
-            )
+            except OSError as exc:
+                # The test passed; only the memory of it is lost, so it reruns next time.
+                warn.append(
+                    f"ffmpeg self-test: passed for {version}, but could not save the result ({exc})"
+                )
+                return
             ok.append(f"ffmpeg self-test: passed for {version}")
             return
 
         handoff = self._write_ffmpeg_selftest_handoff(ctx, version, failed_check, stderr)
-        detail = f"; handoff: {handoff}" if handoff is not None else "; could not write handoff note"
+        detail = (
+            f"; handoff: {handoff}" if handoff is not None else "; could not write handoff note"
+        )
         fail.append(f"{version} {_FFMPEG_SELFTEST_FAILURE}{detail}")
         self.ffmpeg_selftest_failed = True
 
