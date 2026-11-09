@@ -307,10 +307,15 @@ class TestDupeResolverSameBatchGroup:
         import subprocess
 
         if os.name == "nt":
-            subprocess.run([sys.executable, str(python_restore_script)], check=True, capture_output=True)
+            subprocess.run(
+                [sys.executable, str(python_restore_script)], check=True, capture_output=True
+            )
         else:
             python_run = subprocess.run(
-                [sys.executable, str(python_restore_script)], check=True, capture_output=True, text=True
+                [sys.executable, str(python_restore_script)],
+                check=True,
+                capture_output=True,
+                text=True,
             )
             assert "restored:" in python_run.stdout
             assert low.exists()
