@@ -96,3 +96,10 @@ def test_a_reprise_is_not_the_song(ctx):
 
 def test_two_parts_are_not_one_song(ctx):
     assert _pair(ctx, "The Police", "Synchronicity I", "Synchronicity II (Live)", 203.0, 300.0) == 0
+
+
+def test_a_piece_from_a_named_work_is_not_every_piece_of_that_name(ctx):
+    """The live catalogue, 2026-11-09: one "Main Theme" is from Thelma And
+    Louise, the other is not."""
+    assert _pair(ctx, "The City Of Prague Philharmonic Orchestra",
+                 "Main Theme (From Thelma And Louise)", "Main Theme", 180.0, 202.9) == 0  # fmt: skip

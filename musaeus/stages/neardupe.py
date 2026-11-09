@@ -537,6 +537,10 @@ _FEAT_TAIL = re.compile(r"\s+(?:-\s+)?(?:feat\.|featuring|ft\.)\s.*$", re.IGNORE
 #: Not the song itself: a medley, an improvisation on it, or its reprise
 #: ("Sgt. Pepper's ... (Reprise)" is a second track of the album).
 _NOT_THE_SONG_RE = re.compile(r"\bimprovis|\bmedley|\breprise\b", re.IGNORECASE)
+#: A bracket naming the work a piece is from: "Main Theme (From Thelma And
+#: Louise)" is not every "Main Theme", nor "Air (From The Harpsichord Suite In
+#: E Minor)" every Handel "Air" (2026-11-09, the live catalogue).
+_FROM_BRACKET = re.compile(rf"[{OPEN}]\s*from\s[^{CLOSE}]*[{CLOSE}]", re.IGNORECASE)
 
 
 def _song_key(title: str) -> str:
@@ -544,6 +548,11 @@ def _song_key(title: str) -> str:
     part kept ("Song (Part 2)" is "Song - Part 2"), a guest after the title
     left off, "&" read as "and"."""
     return _normalise(_FEAT_TAIL.sub("", base_title(title or "")))
+
+
+def _from_work(title: str) -> str:
+    m = _FROM_BRACKET.search(title or "")
+    return _normalise(m.group(0)) if m else ""
 
 
 def _same_song(title_a: str, title_b: str) -> bool:
@@ -560,6 +569,7 @@ def _same_song(title_a: str, title_b: str) -> bool:
         and key == _song_key(title_b)
         and bool(_NOT_THE_SONG_RE.search(title_a or ""))
         == bool(_NOT_THE_SONG_RE.search(title_b or ""))
+        and _from_work(title_a) == _from_work(title_b)
         and not _is_different_piece(title_a, title_b)
     )
 
