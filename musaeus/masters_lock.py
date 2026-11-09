@@ -23,12 +23,20 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
+
+if sys.platform == "win32":
+    import _winapi
+    import msvcrt
+
+    from .file_lock import try_lock_handoff, unlock_handoff
 
 from .file_lock import process_alive, try_lock, unlock
 
@@ -38,13 +46,20 @@ _HOLDERS = "masters.holders"
 _held: list = []  # hold_for_process keeps its file open here until exit
 #: (open lock file, exclusive) for every hold this process has now.
 _open: list = []
-#: The fd number of a parent's held lock file, passed down by handoff().
+#: The fd number (a handle on Windows) of a parent's held lock file, passed
+#: down by handoff().
 _FD_ENV = "MUSAEUS_MASTERS_LOCK_FD"
+#: Windows: an inherited handle on the parent process holding the lock it
+#: handed down. A handle, not a pid: Windows never reuses a pid while a handle
+#: on that process is open (CodeRabbit on #309).
+_PARENT_ENV = "MUSAEUS_MASTERS_LOCK_PARENT"
+_SYNCHRONIZE = 0x00100000  # enough to wait on it, nothing more
 
 
-def handoff() -> tuple[tuple[int, ...], dict[str, str]]:
-    """(pass_fds, env) for a child that must run under THIS process's
-    exclusive hold, taking no lock of its own (Codex audit 2026-10-16, F9).
+def handoff() -> dict[str, Any]:
+    """subprocess.run() arguments for a child that must run under THIS
+    process's exclusive hold, taking no lock of its own (Codex audit
+    2026-10-16, F9).
 
     The swap tool chooses what to retire under the lock and the delete tool
     deletes it; let go in between, another job could change the choice. The
@@ -53,10 +68,36 @@ def handoff() -> tuple[tuple[int, ...], dict[str, str]]:
     succeeds while the parent -- waiting on it -- still holds it."""
     for fh, exclusive in _open:
         if exclusive:
-            fd = fh.fileno()
-            os.set_inheritable(fd, True)
-            return (fd,), {**os.environ, _FD_ENV: str(fd)}
-    return (), dict(os.environ)
+            return _hand_down(fh)
+    return {"env": dict(os.environ)}
+
+
+def _hand_down(fh) -> dict[str, Any]:
+    if sys.platform == "win32":
+        # Windows has no pass_fds: the handle itself is inherited, and only it.
+        h = msvcrt.get_osfhandle(fh.fileno())
+        os.set_handle_inheritable(h, True)
+        me = _winapi.GetCurrentProcess()
+        # shortcut: one small handle per handoff stays open; fine for one child per run.
+        parent = _winapi.DuplicateHandle(me, me, me, _SYNCHRONIZE, True, 0)
+        return {
+            "close_fds": True,
+            "startupinfo": subprocess.STARTUPINFO(lpAttributeList={"handle_list": [h, parent]}),
+            "env": {**os.environ, _FD_ENV: str(h), _PARENT_ENV: str(parent)},
+        }
+    fd = fh.fileno()
+    os.set_inheritable(fd, True)
+    return {"pass_fds": (fd,), "env": {**os.environ, _FD_ENV: str(fd)}}
+
+
+def _own_copy(raw: int) -> int:
+    """A new fd on the handed-down file. Closing it (a nested hold ending)
+    never closes the parent's (re-review of #202)."""
+    if sys.platform == "win32":
+        me = _winapi.GetCurrentProcess()
+        h = _winapi.DuplicateHandle(me, raw, me, 0, False, _winapi.DUPLICATE_SAME_ACCESS)
+        return msvcrt.open_osfhandle(h, 0)
+    return os.dup(raw)
 
 
 def _inherited(lock_file: Path):
@@ -66,13 +107,56 @@ def _inherited(lock_file: Path):
     if not raw.isdigit():
         return None
     try:
-        if not os.path.samestat(os.fstat(int(raw)), os.stat(lock_file)):
-            return None
-        # A copy of the handle: the same lock, but closing it (a nested hold
-        # ending) never closes the parent's (re-review of #202).
-        return os.fdopen(os.dup(int(raw)), "a+")
-    except OSError:
+        fd = _own_copy(int(raw))
+    except (OSError, OverflowError):
         return None
+    try:
+        same = os.path.samestat(os.fstat(fd), os.stat(lock_file))
+    except OSError:
+        same = False
+    if not same:
+        os.close(fd)
+        return None
+    return os.fdopen(fd, "a+")
+
+
+def _parent_alive() -> bool:
+    """Windows: the parent that handed down the lock still runs."""
+    raw = os.environ.get(_PARENT_ENV, "")
+    if sys.platform == "win32" and raw.isdigit():
+        try:
+            return _winapi.WaitForSingleObject(int(raw), 0) == _winapi.WAIT_TIMEOUT
+        except (OSError, OverflowError):
+            return False
+    return False
+
+
+def _take(fh, *, exclusive: bool, handed_down: bool) -> None:
+    """Lock, or raise BlockingIOError. flock: a handed-down file shares the
+    parent's lock, and keeps it if the parent dies. Windows refuses a second
+    lock even on the parent's own file, and frees the parent's lock when the
+    parent dies (CodeRabbit on #309). So there a handed-down child holds the
+    handoff byte, and every other holder checks that byte is free."""
+    if sys.platform == "win32":
+        if handed_down:
+            try_lock_handoff(fh, exclusive=True)
+            # The parent may have died before this child took the byte; another
+            # job may hold the lock now (CodeRabbit on #309). Alive, the parent
+            # still holds it, so nobody else can.
+            if not _parent_alive():
+                unlock_handoff(fh)
+                raise BlockingIOError("the parent that handed down the lock has ended")
+            return
+        try_lock(fh, exclusive=exclusive)
+        try:
+            # No race: a child takes the byte only while its parent holds the lock.
+            try_lock_handoff(fh, exclusive=False)
+        except BlockingIOError:
+            unlock(fh)
+            raise
+        unlock_handoff(fh)
+    else:
+        try_lock(fh, exclusive=exclusive)
 
 
 class MastersBusy(RuntimeError):
@@ -113,7 +197,7 @@ def masters_lock(runs_root: Path | str, *, exclusive: bool, what: str) -> Iterat
     inherited = _inherited(lock_dir / LOCK_NAME) if exclusive else None
     fh = inherited or open(lock_dir / LOCK_NAME, "a+", encoding="utf-8")  # noqa: SIM115 -- held for the block
     try:
-        try_lock(fh, exclusive=exclusive)
+        _take(fh, exclusive=exclusive, handed_down=inherited is not None)
     except BlockingIOError:
         fh.close()
         raise MastersBusy(
@@ -141,6 +225,8 @@ def masters_lock(runs_root: Path | str, *, exclusive: bool, what: str) -> Iterat
         record.unlink(missing_ok=True)
         if inherited is None:  # never unlock the parent's hold
             unlock(fh)
+        elif sys.platform == "win32":
+            unlock_handoff(fh)
         fh.close()
 
 
