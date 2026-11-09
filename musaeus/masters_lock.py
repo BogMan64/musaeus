@@ -49,6 +49,8 @@ _open: list = []
 #: The fd number (a handle on Windows) of a parent's held lock file, passed
 #: down by handoff().
 _FD_ENV = "MUSAEUS_MASTERS_LOCK_FD"
+#: Windows: the pid of the parent holding the lock it handed down.
+_PID_ENV = "MUSAEUS_MASTERS_LOCK_PID"
 
 
 def handoff() -> dict[str, Any]:
@@ -75,7 +77,7 @@ def _hand_down(fh) -> dict[str, Any]:
         return {
             "close_fds": True,
             "startupinfo": subprocess.STARTUPINFO(lpAttributeList={"handle_list": [h]}),
-            "env": {**os.environ, _FD_ENV: str(h)},
+            "env": {**os.environ, _FD_ENV: str(h), _PID_ENV: str(os.getpid())},
         }
     fd = fh.fileno()
     os.set_inheritable(fd, True)
@@ -121,6 +123,14 @@ def _take(fh, *, exclusive: bool, handed_down: bool) -> None:
     if sys.platform == "win32":
         if handed_down:
             try_lock_handoff(fh, exclusive=True)
+            # The parent may have died before this child took the byte; another
+            # job may hold the lock now (CodeRabbit on #309). Alive, the parent
+            # still holds it, so nobody else can.
+            # shortcut: a pid reused within that instant passes, upgrade if seen.
+            parent = os.environ.get(_PID_ENV, "")
+            if not (parent.isdigit() and process_alive(int(parent))):
+                unlock_handoff(fh)
+                raise BlockingIOError("the parent that handed down the lock has ended")
             return
         try_lock(fh, exclusive=exclusive)
         try:
