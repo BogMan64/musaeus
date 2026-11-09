@@ -9,6 +9,10 @@ and declining the batch install prompt must never touch subprocess.
 
 from __future__ import annotations
 
+import sys
+
+import pytest
+
 from musaeus.stages.preflight import PreflightStage
 
 
@@ -135,6 +139,10 @@ def test_edit_guard_not_registered_warns(tmp_path, monkeypatch):
     assert not fail, "a missing hook must never fail the run"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows cannot make a file non-executable using POSIX mode bits.",
+)
 def test_edit_guard_not_executable_warns(tmp_path, monkeypatch):
     ok, warn, fail = _guard_env(tmp_path, monkeypatch, script="noexec")
     assert any("not executable" in m for m in warn)

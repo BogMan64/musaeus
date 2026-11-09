@@ -10,6 +10,7 @@ mock would hide exactly the kind of bug a real move can produce.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -120,7 +121,11 @@ class TestDupeResolverSameBatchGroup:
 
         assert plan.candidates == 1
         assert plan.actions[0]["source"] == str(low)
-        assert plan.actions[0]["destination"].endswith("Artist/Album/Artist - Title.m4a")
+        assert (
+            Path(plan.actions[0]["destination"])
+            .as_posix()
+            .endswith("Artist/Album/Artist - Title.m4a")
+        )
         assert str(high) in plan.actions[0]["reason"]
         assert high.exists() and low.exists()
 
@@ -253,6 +258,10 @@ class TestDupeResolverSameBatchGroup:
         assert still is not None and still["status"] == "CATALOGUED"
         assert pairs[2][1].exists(), "the file that could not move must stay put"
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows does not preserve the POSIX executable bit asserted here.",
+    )
     def test_manifest_and_restore_script_written(self, ctx):
         high = _make_archive_row(
             ctx, "high.flac", "Artist", "Album", "Title", bitrate=900_000, size_bytes=500

@@ -247,7 +247,10 @@ def test_the_throttle_reports_the_time_it_held_children_stopped() -> None:
     assert t.paused_seconds == 0.0
     t._mark_paused(True)
     _t.sleep(0.05)
-    assert t.paused_seconds >= 0.05
+    # Windows can wake a short sleep a few milliseconds early.  This still
+    # proves the throttle counted the paused interval without relying on an
+    # exact scheduler quantum.
+    assert t.paused_seconds >= 0.04
     t._mark_paused(False)
     settled = t.paused_seconds
     _t.sleep(0.05)

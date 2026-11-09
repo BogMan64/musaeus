@@ -148,7 +148,7 @@ def _env_for(scratch: dict[str, Path]) -> dict[str, str]:
 
         site_packages = str(Path(_coverage.__file__).resolve().parent.parent)
         existing = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = f"{site_packages}:{existing}" if existing else site_packages
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, (site_packages, existing)))
     return env
 
 

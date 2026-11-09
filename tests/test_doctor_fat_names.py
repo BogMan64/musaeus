@@ -8,6 +8,7 @@ edition -- so a name that would break the stick shows up before a copy does.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,10 @@ def test_clean_libraries_are_ok(cfg):
     assert found["FAT32-safe names: Car"][0] == "ok"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows filesystems cannot create two directory names that differ only by case.",
+)
 def test_folders_differing_only_by_case_are_reported(cfg):
     _touch(cfg.alac_archive / "Rock/Pink Floyd/The Dark Side Of The Moon/Pink Floyd - Time.m4a")
     _touch(cfg.alac_archive / "Rock/Pink Floyd/The Dark Side of the Moon/Pink Floyd - Money.m4a")
@@ -62,6 +67,10 @@ def test_folders_differing_only_by_case_are_reported(cfg):
     assert "1 folder pair" in detail and "differ only by letter case" in detail
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows filesystems cannot create two file paths that differ only by case.",
+)
 def test_files_that_would_overwrite_each_other_are_reported(cfg):
     _touch(cfg.car_library / "Usher/Unsorted/Usher - Yeah.m4a")
     _touch(cfg.car_library / "USHER/Unsorted/Usher - Yeah.m4a")
@@ -70,6 +79,10 @@ def test_files_that_would_overwrite_each_other_are_reported(cfg):
     assert "would overwrite" in detail
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows does not permit ':' in file names.",
+)
 def test_a_forbidden_character_is_reported(cfg):
     _touch(cfg.iphone_library / "AC:DC/Back In Black/AC:DC - Hells Bells.m4a")
     level, detail = _findings(cfg)["FAT32-safe names: iPhone"]

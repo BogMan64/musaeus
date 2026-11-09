@@ -452,7 +452,7 @@ class TestTagCapture:
     def test_tagged_audio_contributes_no_payload_bytes(self, real_audio):
         from musaeus.safety.manifest import KIND_TAGGED_AUDIO, build_manifest
 
-        (real_audio / "notes.csv").write_text("a,b\n", encoding="utf-8")
+        (real_audio / "notes.csv").write_bytes(b"a,b\n")
         m = build_manifest(real_audio, checkpoint_id="c", created_at=NOW, capture_tags=True)
         kinds = {Path(e.relative_path).as_posix(): e.kind for e in m.entries}
         assert kinds["Artist/track0.m4a"] == KIND_TAGGED_AUDIO

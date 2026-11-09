@@ -43,6 +43,7 @@ from pathlib import Path
 _SESSION_FAKE_HOME = Path(tempfile.mkdtemp(prefix="musaeus_pytest_home_"))
 
 os.environ["HOME"] = str(_SESSION_FAKE_HOME)
+os.environ["USERPROFILE"] = str(_SESSION_FAKE_HOME)
 os.environ["XDG_CONFIG_HOME"] = str(_SESSION_FAKE_HOME / ".config")
 os.environ["XDG_DATA_HOME"] = str(_SESSION_FAKE_HOME / ".local" / "share")
 os.environ["XDG_CACHE_HOME"] = str(_SESSION_FAKE_HOME / ".cache")
