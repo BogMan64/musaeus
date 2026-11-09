@@ -15,6 +15,7 @@ ignores their capitals, and in a song title "with" is an ordinary word).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -197,7 +198,8 @@ def test_7_the_old_folder_is_removed_when_the_tier_is_reached_by_a_symlink(tmp_p
     ctx.conn.commit()
     OrganizeStage().run(ctx)
     assert (real / "Rock" / "Dead Or Alive" / "Album" / "Dead Or Alive - Song.m4a").is_file()
-    assert not (real / "Rock" / "Dead or Alive").exists(), "the old folder was left behind"
+    # listdir, not exists(): a case-blind disk (Windows) finds the new folder by the old name.
+    assert os.listdir(real / "Rock") == ["Dead Or Alive"], "the old folder was left behind"
 
 
 # ── 10: Normalize checks the titles it now rewrites ──────────────────────────
