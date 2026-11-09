@@ -51,3 +51,50 @@ def test_a_forged_number_is_not_the_lock(tmp_path):
             assert r.returncode == ml.EXIT_BUSY
     finally:
         other.close()
+
+
+CHILD_STAYS = (
+    "import pathlib, sys, time; from musaeus.masters_lock import hold_for_process; "
+    "hold_for_process(exclusive=True, what='child', runs_root=sys.argv[1]); "
+    "pathlib.Path(sys.argv[2]).write_text('HELD'); time.sleep(60)"
+)
+PARENT_DIES = (
+    "import os, pathlib, subprocess, sys, time; from musaeus import masters_lock as ml\n"
+    "runs, mark = sys.argv[1], pathlib.Path(sys.argv[2])\n"
+    "with ml.masters_lock(runs, exclusive=True, what='parent'):\n"
+    "    child = subprocess.Popen([sys.executable, '-c', sys.argv[3], runs, str(mark)],\n"
+    "        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
+    "        **ml.handoff())\n"
+    "    for _ in range(600):\n"
+    "        if mark.exists(): break\n"
+    "        time.sleep(0.1)\n"
+    "    print(child.pid, flush=True)\n"
+    "    os._exit(0)  # dies holding the lock; the child runs on\n"
+)
+
+
+def test_a_dead_parent_does_not_free_the_masters_while_its_child_runs(tmp_path):
+    """CodeRabbit on #309: Windows frees a lock when the process that took it
+    dies, even while a child still has the same file open. Another job must
+    still be refused until the handed-down child has finished too."""
+    import os
+    import signal
+    import time
+
+    runs, mark = tmp_path / "RUNS", tmp_path / "child_holds"
+    parent = subprocess.run(
+        [sys.executable, "-c", PARENT_DIES, str(runs), str(mark), CHILD_STAYS],
+        capture_output=True, text=True, cwd=Path(__file__).resolve().parents[1], timeout=90,
+    )  # fmt: skip
+    assert mark.exists(), parent.stderr
+    pid = int(parent.stdout.split()[0])
+    try:
+        assert _child(runs).returncode == ml.EXIT_BUSY, "another job ran beside the child"
+    finally:
+        os.kill(pid, signal.SIGTERM)
+    for _ in range(50):  # the child is gone: the masters are free again
+        if _child(runs).returncode == 0:
+            break
+        time.sleep(0.2)
+    else:
+        raise AssertionError("the masters stayed locked after the child ended")
