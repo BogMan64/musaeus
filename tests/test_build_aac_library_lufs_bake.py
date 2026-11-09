@@ -130,6 +130,8 @@ def _env_for(scratch: dict[str, Path]) -> dict[str, str]:
         "ORPHEUS_AAC_OUTPUT_DIR": str(scratch["output"]),
         "ORPHEUS_ROOT": str(scratch["orpheus_root"]),
         "ORPHEUS_DB_PATH": str(scratch["db"]),
+        # Windows finds the home folder only through USERPROFILE.
+        "USERPROFILE": str(scratch["db"].parent),
     }
     if os.environ.get("MUSAEUS_COVERAGE_SUBPROCESS"):
         # Parallel-mode data files land at this base path + a unique
