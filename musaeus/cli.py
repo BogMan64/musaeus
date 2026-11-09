@@ -163,6 +163,7 @@ from .stages import (
     TranscodeStage,
 )
 from .stages.base import BaseStage
+from .stages.preflight import stops_the_run
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 
@@ -663,6 +664,10 @@ def _run_pipeline_inner(
         if not result.success:
             exit_code = 1
             failed_before = True
+
+        if stops_the_run(stage):
+            print("  STOPPED: ffmpeg self-test failed; no later stage was run.", file=sys.stderr)
+            break
 
         # An Act's report, written the moment that Act ends rather than at
         # the end of the run. A run that dies in Act 2 otherwise hands Grey

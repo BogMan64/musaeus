@@ -62,14 +62,19 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
 import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
+from .. import loudness
 from ..context import RunContext, StageResult
 from ..install_hint import install_hint
+from . import corrupt
 from .base import BaseStage
 
 logger = logging.getLogger(__name__)
@@ -101,6 +106,11 @@ _REQUIRED_COMMANDS: tuple[tuple[str, str, str], ...] = (
 _CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 _EDIT_GUARD_SCRIPT = Path.home() / ".claude" / "hooks" / "musaeus_pipeline_guard.sh"
 
+_FFMPEG_SELFTEST_STATE = "ffmpeg_selftest.json"
+_FFMPEG_SELFTEST_FAILURE = (
+    "no longer reports damaged files the way MUSAEUS expects; damage checks cannot be trusted"
+)
+
 
 class PreflightStage(BaseStage):
     """
@@ -122,6 +132,10 @@ class PreflightStage(BaseStage):
         # state between runs.
         self._missing_apt: dict[str, str] = {}  # cmd -> apt package name
         self._missing_pip: list[str] = []
+        # Unlike the other report-only preflight failures, this one makes it
+        # unsafe to let a pipeline alter files. The runner checks this narrow
+        # flag after it has printed the report.
+        self.ffmpeg_selftest_failed = False
 
     def validate(self, ctx: RunContext) -> None:
         # Nothing to validate before validating -- if ctx/config didn't
@@ -168,6 +182,194 @@ class PreflightStage(BaseStage):
                 )
                 if sys.platform != "win32":  # no apt there to offer
                     self._missing_apt[cmd] = apt_pkg
+
+    @staticmethod
+    def _ffmpeg_version() -> str | None:
+        """Return ffmpeg's first version line, or None when it cannot run."""
+        try:
+            proc = subprocess.run(
+                ["ffmpeg", "-version"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        lines = (proc.stdout or b"").decode("utf-8", "replace").splitlines()
+        return lines[0].strip() if proc.returncode == 0 and lines else None
+
+    @staticmethod
+    def _selftest_state_path(ctx: RunContext) -> Path:
+        return ctx.config.runs_root / _FFMPEG_SELFTEST_STATE
+
+    @staticmethod
+    def _read_ffmpeg_selftest_state(path: Path) -> dict:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _cut_file_stderr(path: Path) -> str:
+        """Capture the corruption decoder's raw stderr for a handoff note."""
+        try:
+            proc = subprocess.run(
+                ["ffmpeg", "-nostdin", "-v", "error", "-i", str(path), "-vn", "-f", "null", "-"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return f"<could not capture ffmpeg stderr: {type(exc).__name__}: {exc}>"
+        return (proc.stderr or b"").decode("utf-8", "replace")
+
+    @staticmethod
+    def _run_ffmpeg_selftest() -> tuple[bool, str, str]:
+        """Exercise MUSAEUS's actual damage detectors on a tiny ALAC canary."""
+        with tempfile.TemporaryDirectory(prefix="musaeus_ffmpeg_selftest_") as temp_dir:
+            clean = Path(temp_dir) / "clean.m4a"
+            cut = Path(temp_dir) / "cut.m4a"
+            try:
+                made = subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-nostdin",
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-y",
+                        "-f",
+                        "lavfi",
+                        "-i",
+                        "anoisesrc=d=3",
+                        "-c:a",
+                        "alac",
+                        "-movflags",
+                        "+faststart",
+                        str(clean),
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    timeout=30,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                return False, f"could not create ALAC canary ({type(exc).__name__}: {exc})", ""
+            if made.returncode != 0 or not clean.exists():
+                return (
+                    False,
+                    "could not create ALAC canary",
+                    (made.stderr or b"").decode("utf-8", "replace"),
+                )
+
+            try:
+                payload = clean.read_bytes()
+                cut.write_bytes(payload[: int(len(payload) * 0.6)])
+            except OSError as exc:
+                return False, f"could not create cut ALAC canary ({exc})", ""
+            cut_stderr = PreflightStage._cut_file_stderr(cut)
+
+            clean_loudness = loudness.measure_loudness(clean)[2]
+            try:
+                clean_decode, _ = corrupt.ffmpeg_decode_check(clean)
+            except corrupt.DecodeUnavailable as exc:
+                return False, f"whole-file corruption decoder unavailable ({exc})", cut_stderr
+            if clean_loudness not in {"ok", "silence"}:
+                return False, f"loudness marked the whole ALAC {clean_loudness!r}", cut_stderr
+            if not clean_decode:
+                return False, "corruption decoder marked the whole ALAC damaged", cut_stderr
+
+            cut_loudness = loudness.measure_loudness(cut)[2]
+            try:
+                cut_decode, _ = corrupt.ffmpeg_decode_check(cut)
+            except corrupt.DecodeUnavailable as exc:
+                return False, f"cut-file corruption decoder unavailable ({exc})", cut_stderr
+            if cut_loudness != "damaged":
+                return (
+                    False,
+                    f"loudness did not mark the cut ALAC damaged (got {cut_loudness!r})",
+                    cut_stderr,
+                )
+            if cut_decode:
+                return False, "corruption decoder marked the cut ALAC clean", cut_stderr
+            return True, "", cut_stderr
+
+    @staticmethod
+    def _write_ffmpeg_selftest_handoff(
+        ctx: RunContext, version: str, failed_check: str, stderr: str
+    ) -> Path | None:
+        try:
+            handoffs = ctx.config.runs_root / "HANDOFFS"
+            handoffs.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            path = handoffs / f"ffmpeg_selftest_FAILED_{stamp}.txt"
+            path.write_text(
+                "Paste this note into any AI chat for help diagnosing the ffmpeg compatibility failure.\n\n"
+                f"ffmpeg version line: {version}\n"
+                f"OS: {platform.platform()}\n"
+                f"Check that failed: {failed_check}\n"
+                "Expected: the intact ALAC is clean, while the 60%-byte cut ALAC is damaged "
+                "in both MUSAEUS detectors.\n\n"
+                "Exact stderr from ffmpeg decoding the cut ALAC:\n"
+                f"{stderr}\n",
+                encoding="utf-8",
+            )
+            return path
+        except OSError as exc:
+            logger.error("[preflight] could not write ffmpeg self-test handoff: %s", exc)
+            return None
+
+    def _check_ffmpeg_selftest(self, ctx: RunContext, ok: list, warn: list, fail: list) -> None:
+        """Run the ALAC damage canary once per installed ffmpeg version."""
+        if shutil.which("ffmpeg") is None:
+            warn.append(
+                "ffmpeg self-test: skipped because ffmpeg is not found (the command check reports this)"
+            )
+            return
+        version = self._ffmpeg_version()
+        if version is None:
+            fail.append("ffmpeg self-test: could not read ffmpeg -version")
+            self.ffmpeg_selftest_failed = True
+            return
+
+        state_path = self._selftest_state_path(ctx)
+        state = self._read_ffmpeg_selftest_state(state_path)
+        if state.get("version") == version and state.get("result") == "pass":
+            ok.append(f"ffmpeg self-test: already passed for {version}")
+            return
+
+        passed, failed_check, stderr = self._run_ffmpeg_selftest()
+        if passed:
+            try:
+                state_path.write_text(
+                    json.dumps(
+                        {
+                            "version": version,
+                            "result": "pass",
+                            "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        },
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                # The test passed; only the memory of it is lost, so it reruns next time.
+                warn.append(
+                    f"ffmpeg self-test: passed for {version}, but could not save the result ({exc})"
+                )
+                return
+            ok.append(f"ffmpeg self-test: passed for {version}")
+            return
+
+        handoff = self._write_ffmpeg_selftest_handoff(ctx, version, failed_check, stderr)
+        detail = (
+            f"; handoff: {handoff}" if handoff is not None else "; could not write handoff note"
+        )
+        fail.append(f"{version} {_FFMPEG_SELFTEST_FAILURE}{detail}")
+        self.ffmpeg_selftest_failed = True
 
     def _check_packages(self, ok: list, warn: list, fail: list) -> None:
         # Hard dependency: pyproject.toml declares this, tagger/forge import it.
@@ -387,13 +589,19 @@ class PreflightStage(BaseStage):
                 "(whether the running editor has LOADED it is not visible from here)"
             )
 
-    def _run_checks(self, ctx: RunContext) -> tuple[list, list, list]:
+    def _run_checks(self, ctx: RunContext, dry_run: bool) -> tuple[list, list, list]:
         ok: list[str] = []
         warn: list[str] = []
         fail: list[str] = []
 
         self._check_directories(ctx, ok, warn, fail)
         self._check_commands(ok, warn, fail)
+        # A preview is intentionally zero-mutation. The canary writes its
+        # version cache on success, so reserve it for a real preflight run.
+        if dry_run:
+            ok.append("ffmpeg self-test: not run in dry-run mode")
+        else:
+            self._check_ffmpeg_selftest(ctx, ok, warn, fail)
         self._check_packages(ok, warn, fail)
         self._check_disk_space(ctx, ok, warn, fail)
         self._check_db_integrity(ctx, ok, warn, fail)
@@ -404,7 +612,7 @@ class PreflightStage(BaseStage):
 
     def _report(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
-        ok, warn, fail = self._run_checks(ctx)
+        ok, warn, fail = self._run_checks(ctx, dry_run)
 
         # Interactive-only, and only for a real run -- dry_run() must stay
         # zero-mutation per BaseStage's contract, and a non-interactive
@@ -428,6 +636,12 @@ class PreflightStage(BaseStage):
             result.errors.append(item)
             logger.error("[preflight] %s", item)
 
+        if self.ffmpeg_selftest_failed:
+            result.success = False
+            result.notes.append(
+                "ffmpeg self-test failed: musaeus run will stop before later stages can change files"
+            )
+
         result.notes.append(f"Preflight: {len(ok)} OK, {len(warn)} WARN, {len(fail)} FAIL")
 
         # Report-only: preflight itself never fails the stage result over a
@@ -444,3 +658,14 @@ class PreflightStage(BaseStage):
 
     def run(self, ctx: RunContext) -> StageResult:
         return self._report(ctx, dry_run=False)
+
+
+def stops_the_run(stage: object) -> bool:
+    """True when a finished stage must stop the pipeline before the next one.
+
+    Preflight is report-only, with one exception: a failed ffmpeg self-test,
+    because later stages must not change files while damage checks are
+    untrusted. The CLI and the console both ask this, so neither runner can
+    forget it.
+    """
+    return isinstance(stage, PreflightStage) and stage.ffmpeg_selftest_failed
