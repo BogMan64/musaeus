@@ -49,7 +49,10 @@ def test_the_reexec_keeps_python_dash_m(monkeypatch):
     assert seen[0][-5:] == [sys.executable, "-m", "musaeus.cli", "edition-build", "car"]
 
 
-@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not available")
+@pytest.mark.skipif(
+    not (shutil.which("ffmpeg") and shutil.which("fdkaac")),
+    reason="ffmpeg and fdkaac are required for a real car edition build.",
+)
 def test_a_real_build_holds_the_inhibitor_and_a_dry_run_does_not(tmp_path):
     from musaeus.db import open_db, upsert_archive
 

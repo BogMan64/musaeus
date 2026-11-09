@@ -10,11 +10,24 @@ through a planted `<song>.musaeus_cover.jpg` or dangling `cover.jpg` link.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
 
 from musaeus.safe_save import change_beside
+
+
+def _open_handle_count() -> int:
+    if sys.platform != "win32":
+        return len(os.listdir("/proc/self/fd"))
+    import ctypes
+
+    count = ctypes.c_ulong()
+    assert ctypes.windll.kernel32.GetProcessHandleCount(
+        ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(count)
+    )
+    return count.value
 
 
 def _pair(tmp_path: Path) -> tuple[Path, Path]:
@@ -139,9 +152,9 @@ def test_copy_to_new_never_writes_through_and_leaks_nothing(tmp_path):
     assert other.read_bytes() == b"ANOTHER RECORDING"
     assert not dst.is_symlink() and dst.read_bytes() == b"SONG"
 
-    before = len(os.listdir("/proc/self/fd"))
+    before = _open_handle_count()
     for _ in range(5):
         with pytest.raises(OSError):
             copy_to_new(tmp_path / "missing.m4a", tmp_path / "x.tmp")
-    assert len(os.listdir("/proc/self/fd")) == before, "a handle leaked"
+    assert _open_handle_count() == before, "a handle leaked"
     assert not (tmp_path / "x.tmp").exists()
