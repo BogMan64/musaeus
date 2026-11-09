@@ -672,14 +672,14 @@ def _taken_by_another(path: Path, current: Path) -> bool:
         return True
 
 
-def _match_folder_capitals(folder: Path, root: Path) -> None:
+def _match_folder_capitals(conn: sqlite3.Connection, folder: Path, root: Path) -> None:
     """Give each existing folder under *root* the capitals *folder* asks for.
 
     Only a case-blind disk (Windows) needs this: there mkdir() finds "Dead or
     Alive" for "Dead Or Alive" and the old capitals stay. On Linux mkdir()
-    has just made the exact name, so nothing here renames anything. The other
-    songs in a renamed folder go with it; their rows are refiled by this same
-    run, which visits every catalogued row.
+    has just made the exact name, so nothing here renames anything. Every
+    file in a renamed folder goes with it, so every row naming one follows
+    (CodeRabbit on #308: a PENDING file in INBOX would be scanned in again).
     """
     here = root
     for part in folder.relative_to(root).parts:
@@ -691,11 +691,39 @@ def _match_folder_capitals(folder: Path, root: Path) -> None:
             same = [n for n in names if n.casefold() == part.casefold()]
             if len(same) != 1:
                 return  # missing, or two spellings side by side: leave both alone
+            old, new = here / same[0], here / part
             try:
-                (here / same[0]).rename(here / part)
+                old.rename(new)
             except OSError:
                 return
+            if not _refile_folder_rows(conn, old, new):
+                with contextlib.suppress(OSError):
+                    new.rename(old)
+                return
         here = here / part
+
+
+def _refile_folder_rows(conn: sqlite3.Connection, old: Path, new: Path) -> bool:
+    """Every row under *old* now names *new*; on any database error, none does."""
+    o, n = str(old) + os.sep, str(new) + os.sep
+    conn.execute("SAVEPOINT organize_folder")
+    try:
+        for table, col in (("archive", "file_path"), *_PATH_COLUMNS):
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone():
+                conn.execute(
+                    f"UPDATE {table} SET {col} = ? || substr({col}, ?) "
+                    f"WHERE substr({col}, 1, ?) = ?",
+                    (n, len(o) + 1, len(o), o),
+                )
+    except sqlite3.Error as exc:
+        conn.execute("ROLLBACK TO organize_folder")
+        conn.execute("RELEASE organize_folder")
+        logger.error("[organize] could not refile rows under %s (%s); folder kept", old, exc)
+        return False
+    conn.execute("RELEASE organize_folder")
+    return True
 
 
 def _is_collision_name_for(
@@ -1197,7 +1225,10 @@ class OrganizeStage(BaseStage):
                 continue
 
             # Check if only needs rename (same directory)
-            if current_path.parent == target_path.parent and current_path.name != target_path.name:
+            # Text differs (checked above), so equal parents mean a rename. On
+            # Windows that includes an album-capitals-only change, where the
+            # parents compare equal and the file name does not change.
+            if current_path.parent == target_path.parent:
                 # Just rename
                 logger.info(
                     "[organize] rename  %s → %s",
@@ -1212,7 +1243,7 @@ class OrganizeStage(BaseStage):
                     result.errors.append(f"{current_path.name}: DB collision, skipped")
                     continue
                 if not dry_run:
-                    _match_folder_capitals(target_path.parent, dest_root)
+                    _match_folder_capitals(ctx.conn, target_path.parent, dest_root)
 
                 renamed += 1
                 result.files_changed += 1
@@ -1239,7 +1270,7 @@ class OrganizeStage(BaseStage):
                         result.errors.append(f"{current_path.name}: DB collision, skipped")
                         continue
                     _remove_emptied_dirs(current_path.parent, dest_root)
-                    _match_folder_capitals(target_path.parent, dest_root)
+                    _match_folder_capitals(ctx.conn, target_path.parent, dest_root)
 
                 moved += 1
                 result.files_changed += 1
