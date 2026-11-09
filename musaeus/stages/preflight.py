@@ -264,8 +264,11 @@ class PreflightStage(BaseStage):
                     (made.stderr or b"").decode("utf-8", "replace"),
                 )
 
-            payload = clean.read_bytes()
-            cut.write_bytes(payload[: int(len(payload) * 0.6)])
+            try:
+                payload = clean.read_bytes()
+                cut.write_bytes(payload[: int(len(payload) * 0.6)])
+            except OSError as exc:
+                return False, f"could not create cut ALAC canary ({exc})", ""
             cut_stderr = PreflightStage._cut_file_stderr(cut)
 
             clean_loudness = loudness.measure_loudness(clean)[2]

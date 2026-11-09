@@ -196,3 +196,16 @@ def test_selftest_failure_stops_the_console_pipeline_too(disposable_vault, monke
     con._config = disposable_vault.cfg
     con._run_pipeline_inner(False, [preflight.PreflightStage, WouldChangeFiles], "Pipeline")
     assert not called
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg unavailable")
+def test_a_full_temp_disk_is_a_failed_check_not_a_crash(monkeypatch):
+    """CodeRabbit on #305: cutting the canary can hit a full temp disk."""
+
+    def disk_full(*_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_bytes", disk_full)
+    passed, failed_check, _stderr = preflight.PreflightStage._run_ffmpeg_selftest()
+    assert not passed
+    assert "could not create cut ALAC canary" in failed_check
