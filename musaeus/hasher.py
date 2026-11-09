@@ -173,11 +173,16 @@ def _audio_hash_and_stderr(path: Path, *, allow_fallback: bool = True) -> tuple[
     except FileNotFoundError as exc:
         raise HasherError(f"ffmpeg not found — cannot compute audio hash for {path}") from exc
 
+    # Set by the timer before it kills: the exit code cannot say so on every
+    # OS (-9 on POSIX, but 1 on Windows, the same as an ffmpeg error).
+    timed_out = threading.Event()
+
     def _kill_on_timeout(p: subprocess.Popen, timeout: int) -> None:  # type: ignore[type-arg]
         try:
             p.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             logger.warning("ffmpeg timed out after %ds for %s — killing", timeout, path)
+            timed_out.set()
             p.kill()
 
     timer = threading.Thread(target=_kill_on_timeout, args=(proc, _TIMEOUT_SECS), daemon=True)
@@ -240,13 +245,13 @@ def _audio_hash_and_stderr(path: Path, *, allow_fallback: bool = True) -> tuple[
 
     if rc != 0:
         stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace").strip()
-        if rc == -9 and not allow_fallback:
+        if timed_out.is_set() and not allow_fallback:
             # A strict caller (the bit-rot check) compares this against a
             # stored audio identity. A whole-file hash there reads as changed
             # audio, so a healthy re-tagged master looked rotted and a
             # rebaseline stored the wrong kind of hash (review of #87, 5).
             raise HasherTimeout(f"audio decode timed out (>{_TIMEOUT_SECS}s) for {path}")
-        if rc == -9:  # SIGKILL from the timeout thread
+        if timed_out.is_set():  # killed by the timeout thread
             # An ACTUAL timeout, which is the only thing that now justifies
             # the container-hash fallback. Predicting one from the sample
             # rate sent 47% of the library down this path unnecessarily; a
