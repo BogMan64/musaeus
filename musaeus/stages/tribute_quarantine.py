@@ -45,6 +45,7 @@ from pathlib import Path
 from ..artist_form import comparison_key
 from ..brackets import strip_bracketed
 from ..context import RunContext, StageResult, elision
+from ..restore_script import write_python_restore_script
 from ..wanted_list import strip_label_suffix, wanted_lines
 from .base import BaseStage
 from .organize import build_track_filename, sanitize_path_component, unique_path
@@ -457,6 +458,7 @@ class TributeQuarantineStage(BaseStage):
             lines.append(f"mv -n {shlex.quote(dst)} {shlex.quote(src)}")
         restore_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         restore_path.chmod(restore_path.stat().st_mode | stat.S_IEXEC)
+        write_python_restore_script(restore_path.with_suffix(".py"), moved)
 
         return manifest_path, restore_path
 
@@ -557,7 +559,7 @@ class TributeQuarantineStage(BaseStage):
             )
 
         review_dir = ctx.config.tribute_review_dir / self._batch_date(ctx)
-        if not any(review_dir.glob("restore_*.sh")):
+        if not any(review_dir.glob("restore_*.sh")) and not any(review_dir.glob("restore_*.py")):
             problems.append(
                 f"no restore script in {review_dir} — files were moved with no "
                 f"way back, which is the one thing this stage promises"

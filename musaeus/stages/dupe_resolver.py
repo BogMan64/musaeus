@@ -94,6 +94,7 @@ from ..context import RunContext, StageResult
 from ..db import SET_ASIDE_STATUSES
 from ..dedupe import ACTED_ON_SQL
 from ..keep_rule import LENGTH_SLACK_S, keep_key
+from ..restore_script import PYTHON_RESTORE_HEADER, python_restore_call
 from .base import BaseStage
 from .organize import (
     _remove_emptied_dirs,
@@ -1092,6 +1093,7 @@ class _MoveLog:
         self.stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         self.manifest_path: Path | None = None
         self.restore_path: Path | None = None
+        self.python_restore_path: Path | None = None
 
     def _open(self) -> None:
         if self.restore_path is not None:
@@ -1103,6 +1105,8 @@ class _MoveLog:
         self.restore_path = self.review_dir / f"restore_{self.stamp}.sh"
         self.restore_path.write_text("#!/usr/bin/env bash\nset -euo pipefail\n\n", encoding="utf-8")
         self.restore_path.chmod(self.restore_path.stat().st_mode | stat.S_IEXEC)
+        self.python_restore_path = self.review_dir / f"restore_{self.stamp}.py"
+        self.python_restore_path.write_text(PYTHON_RESTORE_HEADER, encoding="utf-8")
 
     @staticmethod
     def _append(path: Path, text: str) -> None:
@@ -1113,7 +1117,7 @@ class _MoveLog:
 
     def before_move(self, source: str, destination: str) -> None:
         self._open()
-        assert self.restore_path is not None
+        assert self.restore_path is not None and self.python_restore_path is not None
         # shlex.quote: a path is data, never shell (review of #86, finding 4).
         src, dst = shlex.quote(source), shlex.quote(destination)
         self._append(
@@ -1121,6 +1125,7 @@ class _MoveLog:
             f"if [ -e {dst} ]; then mkdir -p {shlex.quote(os.path.dirname(source))}; "
             f"mv -n {dst} {src}; fi\n",
         )
+        self._append(self.python_restore_path, python_restore_call(source, destination))
 
     def after_move(self, row: dict) -> None:
         self._open()

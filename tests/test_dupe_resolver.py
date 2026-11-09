@@ -10,6 +10,7 @@ mock would hide exactly the kind of bug a real move can produce.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -276,8 +277,10 @@ class TestDupeResolverSameBatchGroup:
         review_dir = ctx.config.dupes_review_dir / _TEST_BATCH_DATE
         manifests = list(review_dir.glob("moved_manifest_*.csv"))
         scripts = list(review_dir.glob("restore_*.sh"))
+        python_scripts = list(review_dir.glob("restore_*.py"))
         assert len(manifests) == 1
         assert len(scripts) == 1
+        assert len(python_scripts) == 1
         assert scripts[0].stat().st_mode & 0o100  # executable bit set
 
         content = manifests[0].read_text(encoding="utf-8")
@@ -298,10 +301,21 @@ class TestDupeResolverSameBatchGroup:
 
         review_dir = ctx.config.dupes_review_dir / _TEST_BATCH_DATE
         restore_script = next(review_dir.glob("restore_*.sh"))
+        python_restore_script = restore_script.with_suffix(".py")
+        moved_path = next(review_dir.rglob("*.m4a"))
 
         import subprocess
 
-        subprocess.run(["bash", str(restore_script)], check=True, capture_output=True)
+        if os.name == "nt":
+            subprocess.run([sys.executable, str(python_restore_script)], check=True, capture_output=True)
+        else:
+            python_run = subprocess.run(
+                [sys.executable, str(python_restore_script)], check=True, capture_output=True, text=True
+            )
+            assert "restored:" in python_run.stdout
+            assert low.exists()
+            low.replace(moved_path)
+            subprocess.run(["bash", str(restore_script)], check=True, capture_output=True)
 
         assert low.exists()  # back where it started
 

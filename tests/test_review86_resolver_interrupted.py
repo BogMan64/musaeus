@@ -6,8 +6,10 @@ committed as it completes, and its restore line is on disk before the file moves
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -88,5 +90,9 @@ def test_a_killed_run_leaves_its_moves_recorded_and_restorable(ctx):
 
     scripts = list(ctx.config.dupes_review_dir.rglob("restore_*.sh"))
     assert scripts, "no restore script for the moves already made"
-    subprocess.run(["bash", str(scripts[0])], check=True)
+    if os.name == "nt":
+        command = [sys.executable, str(scripts[0].with_suffix(".py"))]
+    else:
+        command = ["bash", str(scripts[0])]
+    subprocess.run(command, check=True)
     assert moved_from.exists(), "the restore script did not bring the file back"
