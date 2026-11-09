@@ -165,3 +165,34 @@ def test_selftest_failure_stops_pipeline_before_next_stage(disposable_vault, mon
 
     assert cli._run_pipeline_inner([preflight.PreflightStage, WouldChangeFiles], dry_run=False) == 1
     assert not called
+
+
+def test_selftest_failure_stops_the_console_pipeline_too(disposable_vault, monkeypatch):
+    """CodeRabbit on #305: the console runs its own stage loop."""
+    from musaeus.console import Console
+
+    called = []
+
+    def forced_failure(self, _ctx, _ok, _warn, fail):
+        fail.append("forced ffmpeg self-test failure")
+        self.ffmpeg_selftest_failed = True
+
+    class WouldChangeFiles(BaseStage):
+        NAME = "would_change_files"
+
+        def validate(self, ctx):
+            pass
+
+        def run(self, ctx):
+            called.append(True)
+            return self._make_result()
+
+        def dry_run(self, ctx):
+            return self._make_result(dry_run=True)
+
+    disposable_vault.cfg.ensure_dirs()
+    monkeypatch.setattr(preflight.PreflightStage, "_check_ffmpeg_selftest", forced_failure)
+    con = Console()
+    con._config = disposable_vault.cfg
+    con._run_pipeline_inner(False, [preflight.PreflightStage, WouldChangeFiles], "Pipeline")
+    assert not called

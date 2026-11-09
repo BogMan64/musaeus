@@ -163,6 +163,7 @@ from .stages import (
     TranscodeStage,
 )
 from .stages.base import BaseStage
+from .stages.preflight import stops_the_run
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 
@@ -664,11 +665,7 @@ def _run_pipeline_inner(
             exit_code = 1
             failed_before = True
 
-        # Preflight remains report-only for its normal environment warnings.
-        # The ffmpeg self-test is the sole exception: if its detector canary
-        # fails, later stages must not alter files while damage checks are
-        # untrusted.
-        if isinstance(stage, PreflightStage) and stage.ffmpeg_selftest_failed:
+        if stops_the_run(stage):
             print("  STOPPED: ffmpeg self-test failed; no later stage was run.", file=sys.stderr)
             break
 

@@ -655,3 +655,14 @@ class PreflightStage(BaseStage):
 
     def run(self, ctx: RunContext) -> StageResult:
         return self._report(ctx, dry_run=False)
+
+
+def stops_the_run(stage: object) -> bool:
+    """True when a finished stage must stop the pipeline before the next one.
+
+    Preflight is report-only, with one exception: a failed ffmpeg self-test,
+    because later stages must not change files while damage checks are
+    untrusted. The CLI and the console both ask this, so neither runner can
+    forget it.
+    """
+    return isinstance(stage, PreflightStage) and stage.ffmpeg_selftest_failed
