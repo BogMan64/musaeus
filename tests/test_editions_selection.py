@@ -168,7 +168,7 @@ class TestBudget:
         """With room for one, the higher-priority genre wins."""
         _add(conn, "/m/jazz.m4a", genre="Jazz", duration=240.0)
         _add(conn, "/m/rock.m4a", genre="Rock", duration=240.0)
-        sel = select_edition(conn, CAR, budget_bytes=8_200_000)
+        sel = select_edition(conn, CAR, budget_bytes=8_500_000)
         assert len(sel.included) == 1
         assert sel.included[0].genre == "Rock"
 
