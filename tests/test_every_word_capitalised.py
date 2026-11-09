@@ -22,6 +22,7 @@ in this form, so none of them undoes another.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -198,8 +199,9 @@ def test_organize_refiles_under_the_new_capitals_and_clears_the_old_folder(tmp_p
     OrganizeStage().run(ctx)
     (fp,) = ctx.conn.execute("SELECT file_path FROM archive").fetchone()
     new = ctx.config.alac_archive / "Rock" / "Dead Or Alive" / "Album" / "Dead Or Alive - Song.m4a"
-    assert Path(fp) == new and new.is_file()
-    assert not (ctx.config.alac_archive / "Rock" / "Dead or Alive").exists(), (
+    assert fp == str(new) and new.is_file()
+    # listdir, not exists(): a case-blind disk (Windows) finds the new folder by the old name.
+    assert os.listdir(ctx.config.alac_archive / "Rock") == ["Dead Or Alive"], (
         "the emptied old-capitals folder was left behind"
     )
 
