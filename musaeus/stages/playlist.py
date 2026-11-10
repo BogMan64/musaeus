@@ -26,6 +26,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from ..context import RunContext, StageResult
+from ..editions import primary_genre
 from .base import BaseStage
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,7 @@ def _safe_genre(genre: str) -> str:
 
 def _primary_genre(genre: str) -> str:
     """Take the first genre when a field contains comma-separated values."""
-    return genre.split(",")[0].strip()
+    return primary_genre(genre)
 
 
 def _decade(year: str | None) -> str | None:

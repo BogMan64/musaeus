@@ -1321,6 +1321,9 @@ def _cmd_edition_build_inner(args) -> int:
     if args.budget_gb is not None and kind.name != "iphone":
         print("ERROR: --budget-gb is for the iphone edition only.", file=sys.stderr)
         return 2
+    if args.genre and args.budget_gb is None:
+        print("ERROR: --genre needs --budget-gb (the iphone edition).", file=sys.stderr)
+        return 2
     try:
         budget = _budget_bytes(args.budget_gb)
     except ValueError as exc:
@@ -1402,6 +1405,7 @@ def _cmd_edition_build_inner(args) -> int:
             plan, _ = eb.budgeted(
                 conn, ledger, masters_root, edition_root, kind,
                 budget, rebake_compressed=args.rebake_compressed, click_allowed=click_allowed,
+                genres=set(args.genre) if args.genre else None,
             )  # fmt: skip
         else:
             plan = eb.make_plan(
@@ -2242,7 +2246,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="NAME",
         default=None,
-        help="Restrict to this genre (exact match; repeatable)",
+        help="Restrict to this genre (a song's first genre; repeatable)",
     )
     edition_p.add_argument(
         "--artist",
@@ -2263,6 +2267,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sync_p.add_argument(
         "--mount", default=str(Path.home() / "iphone"), help="where to mount (default: ~/iphone)"
     )
+    sync_p.add_argument(
+        "--genre",
+        action="append",
+        metavar="NAME",
+        default=None,
+        help="put only this genre on the phone (a song's first genre; repeatable); yes replaces VLC",
+    )
 
     # edition-build
     eb_p = sub.add_parser(
@@ -2277,6 +2288,14 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="GB",
         default=None,
         help="iphone: the device budget; genres are filled in priority order",
+    )
+    eb_p.add_argument(
+        "--genre",
+        action="append",
+        metavar="NAME",
+        default=None,
+        help="iphone: fill the budget from this genre only (a song's first genre; repeatable); "
+        "copies of other genres are kept",
     )
     eb_p.add_argument("--dry-run", action="store_true", help="Show the plan; write nothing")
     eb_p.add_argument(
@@ -2867,9 +2886,25 @@ def main() -> None:
         elif command == "edition-build":
             sys.exit(_cmd_edition_build(args))
         elif command == "iphone-sync":
-            from .iphone_sync import sync
+            from .iphone_sync import genre_counts, sync
 
-            sys.exit(sync(get_config().iphone_library, Path(args.mount)))
+            cfg = get_config()
+            if args.genre:
+                import sqlite3
+
+                try:
+                    known = genre_counts(cfg.db_path)
+                except sqlite3.Error as exc:
+                    print(
+                        f"ERROR: cannot read the genres from {cfg.db_path}: {exc}", file=sys.stderr
+                    )
+                    sys.exit(1)
+                unknown = sorted(set(args.genre) - set(known))
+                if unknown:
+                    print(f"ERROR: no such genre: {', '.join(unknown)}", file=sys.stderr)
+                    print("Genres: " + ", ".join(sorted(known)), file=sys.stderr)
+                    sys.exit(2)
+            sys.exit(sync(cfg.iphone_library, Path(args.mount), genres=tuple(args.genre or ())))
 
         elif command == "playlist":
             sys.exit(_run_pipeline([PlaylistStage], dry_run=dry_run))

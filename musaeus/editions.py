@@ -169,6 +169,12 @@ def genre_rank(genre: str, priority: tuple[str, ...]) -> tuple[int, str]:
         return (len(priority), (genre or "￿").lower())
 
 
+def primary_genre(genre: str) -> str:
+    """The first genre of a "Pop, Rock" tag: the one a song is filed and listed
+    under (finalize, the playlists), so a genre pick means the same everywhere."""
+    return genre.split(",")[0].strip()
+
+
 def load_tracks(
     conn: sqlite3.Connection,
     *,
@@ -194,7 +200,7 @@ def load_tracks(
     for r in rows:
         genre = (r["genre"] or "").strip()
         artist = (r["artist"] or "").strip()
-        if genres is not None and genre not in genres:
+        if genres is not None and primary_genre(genre) not in genres:
             continue
         if artists is not None and artist not in artists:
             continue

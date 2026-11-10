@@ -695,12 +695,32 @@ def budgeted(
     *,
     rebake_compressed: bool = False,
     click_allowed: frozenset[str] | None = None,
+    genres: set[str] | None = None,
 ) -> tuple[Plan, editions.Selection]:
-    """The plan for a budgeted edition, and the selection that fills it."""
-    whole, sel = _whole_and_selection(conn, ledger, masters_root, edition_root, kind, budget_bytes)
+    """The plan for a budgeted edition, and the selection that fills it.
+
+    *genres*: fill the budget from these genres only. The copies already made
+    for other genres stay in the edition folder, so picking a genre never
+    costs hours of baking to get the others back (Grey, 2026-11-10).
+    """
+    whole, sel = _whole_and_selection(
+        conn, ledger, masters_root, edition_root, kind, budget_bytes, genres=genres
+    )
     # The masters that cannot be placed are let through the budget: blocked
     # again below, their copies kept -- not dropped "for space".
     allowed = {str(t.file_path) for t in sel.included} | set(whole.cannot_place)
+    if genres is not None:
+        # By audio hash, not the recorded master path: a master refiled since
+        # its copy was made must keep that copy too (CodeRabbit + Fable, #315).
+        built = set(copies(ledger, kind.name))
+        rows = conn.execute(
+            "SELECT file_path, audio_hash, genre FROM archive WHERE status = 'CATALOGUED'"
+        )
+        allowed |= {
+            str(Path(path))
+            for path, h, genre in rows
+            if (h or "") in built and editions.primary_genre(genre or "") not in genres
+        }
     plan = make_plan(
         conn, ledger, masters_root, edition_root,
         kind=kind, allowed=allowed, rebake_compressed=rebake_compressed,
