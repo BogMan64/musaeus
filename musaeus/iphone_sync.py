@@ -18,6 +18,7 @@ free, and the copy could not have fit.
 
 from __future__ import annotations
 
+import errno
 import math
 import os
 import shutil
@@ -69,7 +70,19 @@ def _free_bytes() -> int | None:
 
 def _mount(mount: Path) -> bool:
     """Mount VLC's Documents folder at *mount*; True only if it really is mounted."""
-    mount.mkdir(parents=True, exist_ok=True)
+    try:
+        mount.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        if e.errno not in (errno.EIO, errno.ENOTCONN):
+            raise
+        # A dead ifuse mount from an earlier run reads as an I/O error (11-09:
+        # its unmount had failed, then the phone locked). Unmount and try again.
+        _unmount(mount)
+        try:
+            mount.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            print(f"  {mount} is stuck ({e.strerror}). Run:  fusermount -u {mount}")
+            return False
     if os.path.ismount(mount):
         print(f"  {mount} is already mounted. Unmount it first:  fusermount -u {mount}")
         return False
@@ -84,7 +97,14 @@ def _mount(mount: Path) -> bool:
 
 
 def _unmount(mount: Path) -> None:
-    _run(["fusermount", "-u", str(mount)])
+    try:
+        r = _run(["fusermount", "-u", str(mount)])
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"  Could not run fusermount: {e}")
+        return
+    if r.returncode != 0 and os.path.ismount(mount):
+        print(f"  Could not unmount {mount}: {(r.stdout + r.stderr).strip()}")
+        print(f"  Close any window open on it, then run:  fusermount -u {mount}")
 
 
 def _files(root: Path) -> list[Path]:
@@ -129,7 +149,9 @@ def _build(budget_gb: float) -> int:
 
 
 def _rsync(src: Path, mount: Path) -> int:
-    cmd = ["rsync", "-a", "--info=progress2", f"--exclude=*{TMP_SUFFIX}", f"{src}/", f"{mount}/"]
+    # Not -a: its -p chmods each temp file, which ifuse does not do, so every
+    # file failed with "Function not implemented (38)" (2026-11-09).
+    cmd = ["rsync", "-rt", "--info=progress2", f"--exclude=*{TMP_SUFFIX}", f"{src}/", f"{mount}/"]
     return subprocess.run(cmd).returncode
 
 

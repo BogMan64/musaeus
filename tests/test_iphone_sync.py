@@ -139,3 +139,87 @@ def test_an_edition_too_big_for_the_phone_is_not_started_and_vlc_is_kept(phone):
     assert s.sync(src, mount, ask=lambda q: "yes") == 1
     assert (mount / "Old - Song.m4a").is_file(), "VLC cleared for a copy that cannot fit"
     assert st["rsyncs"] == 0 and not st["mounted"]
+
+
+def test_a_dead_mount_left_by_an_earlier_run_is_unmounted_first(tmp_path, monkeypatch, capsys):
+    """11-09: a failed unmount left ifuse running; once the phone locked, the
+    folder gave an I/O error and iphone-sync crashed with a traceback."""
+    mount = tmp_path / "iphone"
+    dead = {"on": True}
+    calls = []
+    real_mkdir = Path.mkdir
+
+    def mkdir(self, *a, **k):
+        if self == mount and dead["on"]:
+            raise OSError(5, "Input/output error")
+        return real_mkdir(self, *a, **k)
+
+    def run(cmd, timeout=60):
+        calls.append(cmd[0])
+        if cmd[0] == "fusermount":
+            dead["on"] = False
+
+        class _Done:
+            returncode, stdout, stderr = 0, "", ""
+
+        return _Done()
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    monkeypatch.setattr(s, "_run", run)
+    s._mount(mount)
+    assert calls[:2] == ["fusermount", "ifuse"]
+
+    # Still stuck after the unmount: a plain message, no traceback.
+    calls.clear()
+    dead["on"] = True
+    monkeypatch.setattr(s, "_run", lambda cmd, timeout=60: calls.append(cmd[0]) or _Fail())
+    assert s._mount(mount) is False
+    assert "ifuse" not in calls
+    assert f"fusermount -u {mount}" in capsys.readouterr().out
+
+
+class _Fail:
+    returncode, stdout, stderr = 1, "", "Device or resource busy"
+
+
+def test_a_failed_unmount_is_reported(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(s, "_run", lambda cmd, timeout=60: _Fail())
+    monkeypatch.setattr(s.os.path, "ismount", lambda p: True)
+    s._unmount(tmp_path)
+    out = capsys.readouterr().out
+    assert "Device or resource busy" in out and "fusermount -u" in out
+
+
+def test_only_a_dead_mount_is_unmounted(tmp_path, monkeypatch):
+    """CodeRabbit CLI: a permission error is not a dead mount; never unmount for it."""
+    mount = tmp_path / "iphone"
+    calls = []
+
+    def mkdir(self, *a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    monkeypatch.setattr(s, "_run", lambda cmd, timeout=60: calls.append(cmd[0]) or _Fail())
+    with pytest.raises(PermissionError):
+        s._mount(mount)
+    assert calls == []
+
+
+def test_an_unmount_that_hangs_is_reported_not_raised(tmp_path, monkeypatch, capsys):
+    def hang(cmd, timeout=60):
+        raise s.subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(s, "_run", hang)
+    s._unmount(tmp_path)
+    assert "Could not run fusermount" in capsys.readouterr().out
+
+
+def test_the_copy_does_not_ask_the_phone_to_set_permissions(tmp_path, monkeypatch):
+    """11-09: rsync -a failed every file on ifuse (mkstemp ... Function not
+    implemented (38)): -p chmods the temp file and ifuse has no chmod."""
+    seen = []
+    monkeypatch.setattr(s.subprocess, "run", lambda cmd, *a, **k: seen.append(cmd) or _Fail())
+    s._rsync(tmp_path / "src", tmp_path / "mnt")
+    flags = [f for f in seen[0] if f.startswith("-") and not f.startswith("--")]
+    assert flags == ["-rt"]
+    assert not {"--perms", "--archive", "-p"} & set(seen[0])
