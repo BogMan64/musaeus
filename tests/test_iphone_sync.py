@@ -212,3 +212,14 @@ def test_an_unmount_that_hangs_is_reported_not_raised(tmp_path, monkeypatch, cap
     monkeypatch.setattr(s, "_run", hang)
     s._unmount(tmp_path)
     assert "Could not run fusermount" in capsys.readouterr().out
+
+
+def test_the_copy_does_not_ask_the_phone_to_set_permissions(tmp_path, monkeypatch):
+    """11-09: rsync -a failed every file on ifuse (mkstemp ... Function not
+    implemented (38)): -p chmods the temp file and ifuse has no chmod."""
+    seen = []
+    monkeypatch.setattr(s.subprocess, "run", lambda cmd, *a, **k: seen.append(cmd) or _Fail())
+    s._rsync(tmp_path / "src", tmp_path / "mnt")
+    flags = [f for f in seen[0] if f.startswith("-") and not f.startswith("--")]
+    assert flags == ["-rt"]
+    assert not {"--perms", "--archive", "-p"} & set(seen[0])

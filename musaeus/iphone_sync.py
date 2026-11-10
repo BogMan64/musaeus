@@ -149,7 +149,9 @@ def _build(budget_gb: float) -> int:
 
 
 def _rsync(src: Path, mount: Path) -> int:
-    cmd = ["rsync", "-a", "--info=progress2", f"--exclude=*{TMP_SUFFIX}", f"{src}/", f"{mount}/"]
+    # Not -a: its -p chmods each temp file, which ifuse does not do, so every
+    # file failed with "Function not implemented (38)" (2026-11-09).
+    cmd = ["rsync", "-rt", "--info=progress2", f"--exclude=*{TMP_SUFFIX}", f"{src}/", f"{mount}/"]
     return subprocess.run(cmd).returncode
 
 
