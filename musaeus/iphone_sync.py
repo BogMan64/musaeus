@@ -131,7 +131,9 @@ def _picked(src: Path, genres: tuple[str, ...]) -> list[Path]:
         if not pl.is_file():
             continue
         out.append(pl)
-        for line in pl.read_text(encoding="utf-8").splitlines():
+        # shortcut: two genres whose names differ only by "/" vs "-" share one
+        # playlist file; none do today (stages/playlist.py _safe_genre).
+        for line in pl.read_text(encoding="utf-8", errors="replace").splitlines():
             if line.strip() and not line.startswith("#"):
                 f = Path(os.path.normpath(pl.parent / line.strip()))
                 if f.is_relative_to(src) and f.is_file():

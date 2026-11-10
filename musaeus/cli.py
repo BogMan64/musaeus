@@ -2889,11 +2889,21 @@ def main() -> None:
             from .iphone_sync import genre_counts, sync
 
             cfg = get_config()
-            unknown = sorted(set(args.genre or ()) - set(genre_counts(cfg.db_path)))
-            if unknown:
-                print(f"ERROR: no such genre: {', '.join(unknown)}", file=sys.stderr)
-                print("Genres: " + ", ".join(sorted(genre_counts(cfg.db_path))), file=sys.stderr)
-                sys.exit(2)
+            if args.genre:
+                import sqlite3
+
+                try:
+                    known = genre_counts(cfg.db_path)
+                except sqlite3.Error as exc:
+                    print(
+                        f"ERROR: cannot read the genres from {cfg.db_path}: {exc}", file=sys.stderr
+                    )
+                    sys.exit(1)
+                unknown = sorted(set(args.genre) - set(known))
+                if unknown:
+                    print(f"ERROR: no such genre: {', '.join(unknown)}", file=sys.stderr)
+                    print("Genres: " + ", ".join(sorted(known)), file=sys.stderr)
+                    sys.exit(2)
             sys.exit(sync(cfg.iphone_library, Path(args.mount), genres=tuple(args.genre or ())))
 
         elif command == "playlist":

@@ -1648,10 +1648,11 @@ class Console:
                 for i, g in enumerate(names, 1):
                     print(f"    {i:>3}  {g} ({counts[g]:,})")
                 raw = _prompt("Genre numbers, e.g. 1 4 7 (blank = all, in priority order)")
-                nums = [int(x) for x in raw.replace(",", " ").split() if x.isdigit()]
-                if len(nums) != len(raw.replace(",", " ").split()) or not all(
-                    1 <= n <= len(names) for n in nums
-                ):
+                try:
+                    nums = [int(x) for x in raw.replace(",", " ").split()]
+                except ValueError:
+                    nums = [0]  # not a number: refused below
+                if not all(1 <= n <= len(names) for n in nums):
                     _warn(f"Not a genre number: {raw!r}. Nothing was touched.")
                 else:
                     picked = tuple(dict.fromkeys(names[n - 1] for n in nums))

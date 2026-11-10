@@ -308,6 +308,7 @@ def _musaeus(tmp_path, *args):
 
     env = {
         **os.environ,
+        "HOME": str(tmp_path),  # never the real ~/.config/musaeus
         "MUSAEUS_VAULT_ROOT": str(tmp_path),
         "MUSAEUS_DB_PATH": str(tmp_path / "m.db"),
     }
@@ -332,3 +333,20 @@ def test_an_unknown_genre_is_refused_before_the_phone_is_touched(tmp_path):
 def test_edition_build_refuses_a_genre_without_a_budget(tmp_path):
     r = _musaeus(tmp_path, "edition-build", "car", "--genre", "Rock")
     assert r.returncode == 2 and "--genre needs --budget-gb" in r.stderr
+
+
+def test_without_a_genre_iphone_sync_does_not_read_the_catalogue(tmp_path, monkeypatch):
+    """CodeRabbit CLI: the genre check must not make a plain sync need the DB."""
+    import sys
+
+    import musaeus.cli as cli
+
+    seen = []
+    monkeypatch.setattr(s, "genre_counts", lambda db: seen.append(db) or {})
+    monkeypatch.setattr(s, "sync", lambda src, mount, genres=(): 0)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("MUSAEUS_VAULT_ROOT", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["musaeus", "iphone-sync"])
+    with pytest.raises(SystemExit) as e:
+        cli.main()
+    assert e.value.code == 0 and seen == []
