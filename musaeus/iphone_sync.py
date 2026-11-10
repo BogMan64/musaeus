@@ -63,6 +63,12 @@ def _attached() -> bool:
     return r.returncode == 0 and bool(r.stdout.strip())
 
 
+def _phones() -> list[str]:
+    """The UDIDs of the phones on the cable."""
+    r = _run(["idevice_id", "-l"])
+    return r.stdout.split() if r.returncode == 0 else []
+
+
 def _paired() -> bool:
     return _run(["idevicepair", "validate"]).returncode == 0
 
@@ -80,7 +86,7 @@ def _free_bytes() -> int | None:
     return int(out) if r.returncode == 0 and out.isdigit() else None
 
 
-def _mount(mount: Path) -> bool:
+def _mount(mount: Path, udid: str | None = None) -> bool:
     """Mount VLC's Documents folder at *mount*; True only if it really is mounted."""
     try:
         mount.mkdir(parents=True, exist_ok=True)
@@ -101,7 +107,7 @@ def _mount(mount: Path) -> bool:
     if any(mount.iterdir()):
         print(f"  {mount} is a folder on this PC with files in it. Empty or move it first.")
         return False
-    r = _run(["ifuse", "--documents", APP_ID, str(mount)])
+    r = _run(["ifuse", *(["-u", udid] if udid else []), "--documents", APP_ID, str(mount)])
     if r.returncode != 0:
         print(f"  Could not open VLC on the phone: {(r.stdout + r.stderr).strip()}")
         print("  Is VLC for iOS installed, and the phone unlocked?")
@@ -230,6 +236,13 @@ def sync(
     if not _attached():
         print("  No phone found. Plug it in with a data cable and unlock it.")
         return 1
+    phones = _phones()
+    if len(phones) > 1:
+        # pairing, free space and ifuse all take the first one; and a reconnect
+        # must find the same phone (CodeRabbit CLI on the reconnect PR)
+        print("  More than one phone is plugged in. Unplug all but the one to fill.")
+        return 1
+    phone = phones[0] if phones else None
     if not _paired() and not _pair(ask):
         print("  The phone is not paired. Unlock it, tap Trust, and run this again.")
         return 1
@@ -238,7 +251,7 @@ def sync(
         print("  Could not read the phone's free space. Unlock it and run this again.")
         return 1
 
-    if not _mount(mount):
+    if not _mount(mount, phone):
         return 1
     try:
         count, held = _size(mount)
@@ -282,7 +295,7 @@ def sync(
             "phone was changed."
         )
         return 1
-    if not _mount(mount):
+    if not _mount(mount, phone):
         return 1
     try:
         if wipe:
@@ -307,7 +320,7 @@ def sync(
             print(f"  The phone dropped the link. Reconnecting ({attempt} of {RECONNECTS}) ...")
             _unmount(mount)
             time.sleep(RECONNECT_WAIT)
-            if not (_attached() and _mount(mount)):
+            if phone not in _phones() or not _mount(mount, phone):
                 print("  The phone is not back. Plug it in, unlock it, and leave it alone.")
                 break
             rc = _rsync(src, mount, genres)
