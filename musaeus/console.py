@@ -1642,7 +1642,10 @@ class Console:
             from .iphone_sync import sync
 
             assert self._config is not None
-            sync(self._config.iphone_library, Path.home() / "iphone")  # the CLI default
+            try:
+                sync(self._config.iphone_library, Path.home() / "iphone")  # the CLI default
+            except Exception as exc:  # noqa: BLE001 -- keep the menu alive, say what broke
+                _err(f"iPhone sync stopped: {exc}")
             _prompt("Press Enter to go back")
             return
         library = ["alac", "car"][idx]

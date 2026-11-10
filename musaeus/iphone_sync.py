@@ -18,6 +18,7 @@ free, and the copy could not have fit.
 
 from __future__ import annotations
 
+import errno
 import math
 import os
 import shutil
@@ -71,7 +72,9 @@ def _mount(mount: Path) -> bool:
     """Mount VLC's Documents folder at *mount*; True only if it really is mounted."""
     try:
         mount.mkdir(parents=True, exist_ok=True)
-    except OSError:
+    except OSError as e:
+        if e.errno not in (errno.EIO, errno.ENOTCONN):
+            raise
         # A dead ifuse mount from an earlier run reads as an I/O error (11-09:
         # its unmount had failed, then the phone locked). Unmount and try again.
         _unmount(mount)
@@ -94,7 +97,11 @@ def _mount(mount: Path) -> bool:
 
 
 def _unmount(mount: Path) -> None:
-    r = _run(["fusermount", "-u", str(mount)])
+    try:
+        r = _run(["fusermount", "-u", str(mount)])
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"  Could not run fusermount: {e}")
+        return
     if r.returncode != 0 and os.path.ismount(mount):
         print(f"  Could not unmount {mount}: {(r.stdout + r.stderr).strip()}")
         print(f"  Close any window open on it, then run:  fusermount -u {mount}")

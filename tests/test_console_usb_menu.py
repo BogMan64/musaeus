@@ -180,3 +180,19 @@ def test_the_iphone_entry_runs_iphone_sync(cfg, monkeypatch) -> None:
     con = _console(dataclasses.replace(cfg, iphone_library=cfg.vault_root / "iPHONE_Library"))
     con._usb_menu()
     assert seen == [(cfg.vault_root / "iPHONE_Library", Path.home() / "iphone")]
+
+
+def test_a_crash_in_iphone_sync_keeps_the_menu(cfg, monkeypatch, capsys) -> None:
+    import musaeus.iphone_sync as iphone_sync
+
+    def boom(src, mount):
+        raise RuntimeError("phone went away")
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(iphone_sync, "sync", boom)
+    asked = []
+    responses = iter(["3", ""])
+    monkeypatch.setattr("builtins.input", lambda p="", *a, **k: asked.append(p) or next(responses))
+    _console(cfg)._usb_menu()
+    assert "phone went away" in capsys.readouterr().out
+    assert "Press Enter" in asked[-1]

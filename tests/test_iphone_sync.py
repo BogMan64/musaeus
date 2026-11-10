@@ -188,3 +188,27 @@ def test_a_failed_unmount_is_reported(tmp_path, monkeypatch, capsys):
     s._unmount(tmp_path)
     out = capsys.readouterr().out
     assert "Device or resource busy" in out and "fusermount -u" in out
+
+
+def test_only_a_dead_mount_is_unmounted(tmp_path, monkeypatch):
+    """CodeRabbit CLI: a permission error is not a dead mount; never unmount for it."""
+    mount = tmp_path / "iphone"
+    calls = []
+
+    def mkdir(self, *a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    monkeypatch.setattr(s, "_run", lambda cmd, timeout=60: calls.append(cmd[0]) or _Fail())
+    with pytest.raises(PermissionError):
+        s._mount(mount)
+    assert calls == []
+
+
+def test_an_unmount_that_hangs_is_reported_not_raised(tmp_path, monkeypatch, capsys):
+    def hang(cmd, timeout=60):
+        raise s.subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(s, "_run", hang)
+    s._unmount(tmp_path)
+    assert "Could not run fusermount" in capsys.readouterr().out
