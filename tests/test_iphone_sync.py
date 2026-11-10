@@ -30,7 +30,7 @@ def phone(tmp_path, monkeypatch):
     (mount / "Old - Song.m4a").write_bytes(b"o" * 500)
     st = {"mounted": False, "unmounts": 0, "builds": [], "rsyncs": 0, "free": FREE}
 
-    def mount_(m):
+    def mount_(m, udid=None):
         st["mounted"] = True
         return True
 
@@ -52,6 +52,7 @@ def phone(tmp_path, monkeypatch):
 
     monkeypatch.setattr(s.shutil, "which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setattr(s, "_attached", lambda: True)
+    monkeypatch.setattr(s, "_phones", lambda: ["PHONE1"], raising=False)
     monkeypatch.setattr(s, "_paired", lambda: True)
     monkeypatch.setattr(s, "_free_bytes", lambda: st["free"])
     monkeypatch.setattr(s, "_mount", mount_)
@@ -107,6 +108,7 @@ def test_a_folder_that_is_not_the_phone_is_never_cleared(phone, monkeypatch):
     calls = []
     monkeypatch.setattr(s.shutil, "which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setattr(s, "_attached", lambda: True)
+    monkeypatch.setattr(s, "_phones", lambda: ["PHONE1"], raising=False)
     monkeypatch.setattr(s, "_paired", lambda: True)
     monkeypatch.setattr(s, "_free_bytes", lambda: FREE)
     monkeypatch.setattr(s, "_build", lambda gb, genres=(): calls.append("build") or 0)
@@ -378,3 +380,87 @@ def test_a_picked_genre_with_no_songs_is_named(phone, capsys):
     assert s.sync(src, mount, ask=lambda q: "no", genres=("Rock", "Jazz")) == 0
     assert "No Jazz song is in the iPhone edition." in capsys.readouterr().out
     assert (mount / "Toto" / "IV" / "Toto - Rosanna.m4a").is_file()
+
+
+def _flaky(phone, monkeypatch, codes):
+    """rsync returns *codes* in turn; the phone fixture's mount/unmount count."""
+    src, mount, st = phone
+    tries = []
+
+    def rsync(a, b, genres=()):
+        assert st["mounted"], "copied while the phone was not mounted"
+        tries.append(st["mounted"])
+        return codes[len(tries) - 1]
+
+    monkeypatch.setattr(s, "_rsync", rsync)
+    monkeypatch.setattr("time.sleep", lambda secs: None)
+    return src, mount, st, tries
+
+
+def test_a_dropped_link_is_reconnected_and_the_copy_carries_on(phone, monkeypatch, capsys):
+    """11-09 and 11-10: the phone dropped mid-copy twice; the sync just stopped."""
+    src, mount, st, tries = _flaky(phone, monkeypatch, [11, 23, 0])
+    assert s.sync(src, mount, ask=lambda q: "no") == 0
+    assert len(tries) == 3
+    out = capsys.readouterr().out
+    assert "Reconnecting (2 of 3)" in out and "Done:" in out
+
+
+def test_ctrl_c_is_not_retried(phone, monkeypatch):
+    src, mount, st, tries = _flaky(phone, monkeypatch, [20, 0])
+    assert s.sync(src, mount, ask=lambda q: "no") == 20
+    assert len(tries) == 1 and not st["mounted"]
+
+
+def test_it_gives_up_after_the_last_reconnect(phone, monkeypatch, capsys):
+    src, mount, st, tries = _flaky(phone, monkeypatch, [11] * 9)
+    assert s.sync(src, mount, ask=lambda q: "no") == 11
+    assert len(tries) == 1 + s.RECONNECTS and not st["mounted"]
+    assert "Run again and type no" in capsys.readouterr().out
+
+
+def test_a_phone_that_does_not_come_back_stops_the_retries(phone, monkeypatch, capsys):
+    src, mount, st, tries = _flaky(phone, monkeypatch, [11, 0])
+    phones = iter([["PHONE1"], []])  # there at the start, gone after the drop
+    monkeypatch.setattr(s, "_phones", lambda: next(phones))
+    assert s.sync(src, mount, ask=lambda q: "no") == 11
+    assert len(tries) == 1
+    assert "The phone is not back" in capsys.readouterr().out
+
+
+def test_a_reconnect_never_fills_another_phone(phone, monkeypatch, capsys):
+    """CodeRabbit CLI: after a drop, ifuse took the first phone on the cable,
+    which could be another one."""
+    src, mount, st, tries = _flaky(phone, monkeypatch, [11, 0])
+    seen = iter([["PHONE1"], ["PHONE2"]])
+    monkeypatch.setattr(s, "_phones", lambda: next(seen), raising=False)
+    assert s.sync(src, mount, ask=lambda q: "no") == 11
+    assert len(tries) == 1 and "The phone is not back" in capsys.readouterr().out
+
+
+def test_two_phones_on_the_cable_are_refused(phone, monkeypatch, capsys):
+    src, mount, st = phone
+    monkeypatch.setattr(s, "_phones", lambda: ["PHONE1", "PHONE2"], raising=False)
+    assert s.sync(src, mount, ask=lambda q: "yes") == 1
+    assert st["builds"] == [] and (mount / "Old - Song.m4a").is_file()
+    assert "More than one phone" in capsys.readouterr().out
+
+
+def test_ifuse_is_told_which_phone(tmp_path, monkeypatch):
+    calls = []
+
+    class _Done:
+        returncode, stdout, stderr = 0, "", ""
+
+    monkeypatch.setattr(s, "_run", lambda cmd, timeout=60: calls.append(cmd) or _Done())
+    s._mount(tmp_path / "iphone", "PHONE1")
+    assert calls[0][:3] == ["ifuse", "-u", "PHONE1"]
+
+
+def test_a_phone_gone_before_the_udid_is_read_is_refused(phone, monkeypatch, capsys):
+    """CodeRabbit on #316: an empty phone list went on without a UDID."""
+    src, mount, st = phone
+    monkeypatch.setattr(s, "_phones", lambda: [], raising=False)
+    assert s.sync(src, mount, ask=lambda q: "yes") == 1
+    assert st["builds"] == [] and not st["mounted"]
+    assert "No phone found" in capsys.readouterr().out
