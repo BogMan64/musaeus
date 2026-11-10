@@ -52,7 +52,7 @@ def phone(tmp_path, monkeypatch):
 
     monkeypatch.setattr(s.shutil, "which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setattr(s, "_attached", lambda: True)
-    monkeypatch.setattr(s, "_phones", lambda: ["PHONE1"])
+    monkeypatch.setattr(s, "_phones", lambda: ["PHONE1"], raising=False)
     monkeypatch.setattr(s, "_paired", lambda: True)
     monkeypatch.setattr(s, "_free_bytes", lambda: st["free"])
     monkeypatch.setattr(s, "_mount", mount_)
@@ -108,7 +108,7 @@ def test_a_folder_that_is_not_the_phone_is_never_cleared(phone, monkeypatch):
     calls = []
     monkeypatch.setattr(s.shutil, "which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setattr(s, "_attached", lambda: True)
-    monkeypatch.setattr(s, "_phones", lambda: ["PHONE1"])
+    monkeypatch.setattr(s, "_phones", lambda: ["PHONE1"], raising=False)
     monkeypatch.setattr(s, "_paired", lambda: True)
     monkeypatch.setattr(s, "_free_bytes", lambda: FREE)
     monkeypatch.setattr(s, "_build", lambda gb, genres=(): calls.append("build") or 0)
@@ -433,14 +433,14 @@ def test_a_reconnect_never_fills_another_phone(phone, monkeypatch, capsys):
     which could be another one."""
     src, mount, st, tries = _flaky(phone, monkeypatch, [11, 0])
     seen = iter([["PHONE1"], ["PHONE2"]])
-    monkeypatch.setattr(s, "_phones", lambda: next(seen))
+    monkeypatch.setattr(s, "_phones", lambda: next(seen), raising=False)
     assert s.sync(src, mount, ask=lambda q: "no") == 11
     assert len(tries) == 1 and "The phone is not back" in capsys.readouterr().out
 
 
 def test_two_phones_on_the_cable_are_refused(phone, monkeypatch, capsys):
     src, mount, st = phone
-    monkeypatch.setattr(s, "_phones", lambda: ["PHONE1", "PHONE2"])
+    monkeypatch.setattr(s, "_phones", lambda: ["PHONE1", "PHONE2"], raising=False)
     assert s.sync(src, mount, ask=lambda q: "yes") == 1
     assert st["builds"] == [] and (mount / "Old - Song.m4a").is_file()
     assert "More than one phone" in capsys.readouterr().out
