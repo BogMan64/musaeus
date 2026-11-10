@@ -1028,3 +1028,23 @@ def test_a_genre_pick_keeps_the_copy_of_a_master_refiled_since(cfg):
         conn.close()
         ledger.close()
     assert not plan.remove, "picking Jazz removed the copy of the refiled Pop master"
+
+
+def test_a_lossless_build_writes_its_playlists_too(cfg):
+    """Grey, item 8 (2026-10-17): playlists for every library; until now only
+    the car and iPhone builds wrote them, so ALAC_Library had none."""
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    conn = sqlite3.connect(cfg.db_path)
+    conn.execute(
+        "UPDATE archive SET genre = 'Rock', artist = 'The Rolling Stones', title = 'Angie',"
+        " year = 1973"
+    )
+    conn.commit()
+    conn.close()
+    r = _cli(cfg, "lossless")
+    assert r.returncode == 0, r.stdout + r.stderr
+    playlists = cfg.alac_library / "Playlists"
+    rock = (playlists / "Rock.m3u8").read_text(encoding="utf-8")
+    copy = next(cfg.alac_library.rglob("*Angie.m4a"))
+    assert "../" + copy.relative_to(cfg.alac_library).as_posix() in rock
+    assert (playlists / "Era_1970s.m3u8").is_file() and (playlists / "All.m3u8").is_file()
