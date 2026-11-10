@@ -391,7 +391,7 @@ def _flaky(phone, monkeypatch, codes):
         return codes[len(tries) - 1]
 
     monkeypatch.setattr(s, "_rsync", rsync)
-    monkeypatch.setattr(s.time, "sleep", lambda secs: None)
+    monkeypatch.setattr("time.sleep", lambda secs: None)
     return src, mount, st, tries
 
 
