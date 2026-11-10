@@ -1630,13 +1630,20 @@ class Console:
             _err(f"Script not found: {script}")
             return
 
-        labels = ["ALAC (Lossless)", "Car", "Back"]
+        labels = ["ALAC (Lossless)", "Car", "iPhone (VLC, by cable)", "Back"]
         choice = _choose("Which library to transfer", labels)
         try:
             idx = int(choice)
         except ValueError:
             return
+        if idx == 3:
+            return
         if idx == 2:
+            from .iphone_sync import sync
+
+            assert self._config is not None
+            sync(self._config.iphone_library, Path.home() / "iphone")  # the CLI default
+            _prompt("Press Enter to go back")
             return
         library = ["alac", "car"][idx]
 
@@ -1675,7 +1682,7 @@ class Console:
             ("Run an Act…  (1 / 2 / 3 / Enrichment)", self._act_menu),
             ("Run single stage…", self._stage_menu),
             ("Build an Edition…  (Lossless / Car / iPhone)", self._edition_menu),
-            ("Transfer to USB…", self._usb_menu),
+            ("Transfer to USB / iPhone…", self._usb_menu),
             ("Dedupe review", self._run_dedupe),
             ("View recent runs", self._show_runs),
             ("Inspect a run", self._show_run_detail),

@@ -77,7 +77,7 @@ class TestUSBMenu:
         con = _console(cfg)
         rec = _Recorder()
         monkeypatch.setattr("subprocess.run", rec)
-        monkeypatch.setattr("builtins.input", lambda *a, **k: "3")  # 3 = Back
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "4")  # 4 = Back
         con._usb_menu()
         assert rec.calls == []
 
@@ -163,4 +163,20 @@ def test_the_entry_is_hidden_when_the_script_is_not_installed(cfg, monkeypatch, 
     )
     _console(cfg)._main_menu()
     assert "Quit" in seen
-    assert "Transfer to USB…" not in seen
+    assert "Transfer to USB / iPhone…" not in seen
+
+
+def test_the_iphone_entry_runs_iphone_sync(cfg, monkeypatch) -> None:
+    """Grey 11-09: iPhone sync belongs in the menu, beside the USB transfer."""
+    import dataclasses
+
+    import musaeus.iphone_sync as iphone_sync
+
+    seen = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(iphone_sync, "sync", lambda src, mount: seen.append((src, mount)) or 0)
+    responses = iter(["3", ""])  # 3 = iPhone, then Enter to go back
+    monkeypatch.setattr("builtins.input", lambda *a, **k: next(responses))
+    con = _console(dataclasses.replace(cfg, iphone_library=cfg.vault_root / "iPHONE_Library"))
+    con._usb_menu()
+    assert seen == [(cfg.vault_root / "iPHONE_Library", Path.home() / "iphone")]

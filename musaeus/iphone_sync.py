@@ -69,7 +69,17 @@ def _free_bytes() -> int | None:
 
 def _mount(mount: Path) -> bool:
     """Mount VLC's Documents folder at *mount*; True only if it really is mounted."""
-    mount.mkdir(parents=True, exist_ok=True)
+    try:
+        mount.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # A dead ifuse mount from an earlier run reads as an I/O error (11-09:
+        # its unmount had failed, then the phone locked). Unmount and try again.
+        _unmount(mount)
+        try:
+            mount.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            print(f"  {mount} is stuck ({e.strerror}). Run:  fusermount -u {mount}")
+            return False
     if os.path.ismount(mount):
         print(f"  {mount} is already mounted. Unmount it first:  fusermount -u {mount}")
         return False
@@ -84,7 +94,10 @@ def _mount(mount: Path) -> bool:
 
 
 def _unmount(mount: Path) -> None:
-    _run(["fusermount", "-u", str(mount)])
+    r = _run(["fusermount", "-u", str(mount)])
+    if r.returncode != 0 and os.path.ismount(mount):
+        print(f"  Could not unmount {mount}: {(r.stdout + r.stderr).strip()}")
+        print(f"  Close any window open on it, then run:  fusermount -u {mount}")
 
 
 def _files(root: Path) -> list[Path]:
