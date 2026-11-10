@@ -710,11 +710,16 @@ def budgeted(
     # again below, their copies kept -- not dropped "for space".
     allowed = {str(t.file_path) for t in sel.included} | set(whole.cannot_place)
     if genres is not None:
-        built = {c.master_path for c in copies(ledger, kind.name).values()}
+        # By audio hash, not the recorded master path: a master refiled since
+        # its copy was made must keep that copy too (CodeRabbit + Fable, #315).
+        built = set(copies(ledger, kind.name))
+        rows = conn.execute(
+            "SELECT file_path, audio_hash, genre FROM archive WHERE status = 'CATALOGUED'"
+        )
         allowed |= {
-            str(t.file_path)
-            for t in editions.load_tracks(conn)
-            if editions.primary_genre(t.genre) not in genres and str(t.file_path) in built
+            str(Path(path))
+            for path, h, genre in rows
+            if (h or "") in built and editions.primary_genre(genre or "") not in genres
         }
     plan = make_plan(
         conn, ledger, masters_root, edition_root,

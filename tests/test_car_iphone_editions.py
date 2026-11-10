@@ -998,3 +998,33 @@ def test_a_genre_pick_takes_a_song_by_its_first_genre(cfg):
         assert load_tracks(conn, genres={"Rock"}) == []
     finally:
         conn.close()
+
+
+def test_a_genre_pick_keeps_the_copy_of_a_master_refiled_since(cfg):
+    """CodeRabbit + Fable on #315: the kept copies were matched by the master
+    path recorded at bake time, so a master refiled since lost its copy."""
+    pop = _master(cfg, "Pop/Abba/Gold/ABBA - SOS.m4a", "h3")
+    jazz = _master(cfg, "Jazz/Miles/Kind/Miles Davis - So What.m4a", "h2")
+    c = sqlite3.connect(cfg.db_path)
+    for p, g in ((pop, "Pop"), (jazz, "Jazz")):
+        c.execute("UPDATE archive SET genre = ?, duration = 6.0 WHERE file_path = ?", (g, str(p)))
+    c.commit()
+    _build(cfg, eb.IPHONE_KIND, allowed={str(pop)})  # Pop built
+    moved = pop.parent.parent / "Gold (Remastered)" / pop.name
+    moved.parent.mkdir(parents=True)
+    pop.rename(moved)
+    c.execute("UPDATE archive SET file_path = ? WHERE file_path = ?", (str(moved), str(pop)))
+    c.commit()
+    c.close()
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    ledger = open_ledger(ledger_path(cfg))
+    try:
+        plan, _ = eb.budgeted(
+            conn, ledger, cfg.alac_archive, cfg.iphone_library, eb.IPHONE_KIND, 10**12,
+            genres={"Jazz"},
+        )  # fmt: skip
+    finally:
+        conn.close()
+        ledger.close()
+    assert not plan.remove, "picking Jazz removed the copy of the refiled Pop master"

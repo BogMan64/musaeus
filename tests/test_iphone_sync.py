@@ -280,9 +280,14 @@ def test_real_rsync_copies_only_the_listed_genre(tmp_path):
     (src / "Toto" / "IV" / "Toto - Rosanna.m4a").write_bytes(b"a" * 1000)
     dest.mkdir()
     _two_genres(src)
+    # Fable on #315: rsync takes a --files-from line starting with "#" as a comment.
+    (src / "#1 Hits" / "A").mkdir(parents=True)
+    (src / "#1 Hits" / "A" / "s.m4a").write_bytes(b"h")
+    with (src / "Playlists" / "Rock.m3u8").open("a", encoding="utf-8") as f:
+        f.write("../#1 Hits/A/s.m4a\n")
     assert s._rsync(src, dest, ("Rock",)) == 0
     got = sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file())
-    assert got == ["Playlists/Rock.m3u8", "Toto/IV/Toto - Rosanna.m4a"]
+    assert got == ["#1 Hits/A/s.m4a", "Playlists/Rock.m3u8", "Toto/IV/Toto - Rosanna.m4a"]
 
 
 def test_genre_counts_reads_the_catalogue(tmp_path):
@@ -364,3 +369,12 @@ def test_without_a_genre_iphone_sync_does_not_read_the_catalogue(tmp_path, monke
     with pytest.raises(SystemExit) as e:
         cli.main()
     assert e.value.code == 0 and seen == []
+
+
+def test_a_picked_genre_with_no_songs_is_named(phone, capsys):
+    """Fable on #315: Rock + Jazz with no Jazz song copied Rock and said nothing."""
+    src, mount, st = phone
+    _two_genres(src)
+    assert s.sync(src, mount, ask=lambda q: "no", genres=("Rock", "Jazz")) == 0
+    assert "No Jazz song is in the iPhone edition." in capsys.readouterr().out
+    assert (mount / "Toto" / "IV" / "Toto - Rosanna.m4a").is_file()

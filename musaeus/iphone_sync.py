@@ -193,7 +193,8 @@ def _rsync(src: Path, mount: Path, genres: tuple[str, ...] = ()) -> int:
     cmd = ["rsync", "-rt", "--info=progress2", f"--exclude=*{TMP_SUFFIX}"]
     if not genres:
         return subprocess.run([*cmd, f"{src}/", f"{mount}/"]).returncode
-    names = "\n".join(f.relative_to(src).as_posix() for f in _files(src, genres))
+    # "./": rsync drops a --files-from line starting with "#" or ";" as a comment.
+    names = "\n".join(f"./{f.relative_to(src).as_posix()}" for f in _files(src, genres))
     return subprocess.run(
         [*cmd, "--files-from=-", f"{src}/", f"{mount}/"], input=names, text=True
     ).returncode
@@ -258,11 +259,14 @@ def sync(
     if not src.is_dir():
         print(f"  The iPhone edition does not exist yet at {src}.")
         return 1
-    # A build can end over its budget (CodeRabbit on #310): never clear VLC for
-    # a copy that cannot fit.
+    for g in genres:  # said once, not skipped silently (Fable review of #315)
+        if not (src / "Playlists" / f"{_safe_genre(g)}.m3u8").is_file():
+            print(f"  No {g} song is in the iPhone edition.")
     if genres and not _files(src, genres):
         print("  The iPhone edition has no songs of those genres yet. Run again and type yes.")
         return 1
+    # A build can end over its budget (CodeRabbit on #310): never clear VLC for
+    # a copy that cannot fit.
     if wipe and _size(src, genres)[1] > free + held - HEADROOM:
         print(
             f"  The iPhone edition is {_gb(_size(src, genres)[1])}; after clearing VLC the phone "
