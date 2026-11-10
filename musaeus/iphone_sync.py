@@ -25,6 +25,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
@@ -36,6 +37,13 @@ from .stages.playlist import _safe_genre
 APP_ID = "org.videolan.vlc-ios"
 #: Left free on the phone: iOS needs room of its own, and sizes are estimates.
 HEADROOM = 5_000_000_000
+#: rsync exit codes for a link that broke mid-copy (file I/O, stream, partial,
+#: timeout): worth one more try. Never 20 -- that is Ctrl-C.
+LINK_LOST = frozenset({11, 12, 23, 30})
+#: Tries after the first copy when the phone drops the link (it did twice on
+#: 2026-11-09/10: a pulled cable, then the phone closed it when used).
+RECONNECTS = 3
+RECONNECT_WAIT = 10  # seconds for the phone to come back
 TOOLS = (
     ("idevice_id", "libimobiledevice-utils"),
     ("idevicepair", "libimobiledevice-utils"),
@@ -291,7 +299,22 @@ def sync(
                 return 1
         print("  Copying ...")
         rc = _rsync(src, mount, genres)
+        for attempt in range(1, RECONNECTS + 1):
+            if rc not in LINK_LOST:
+                break
+            # rsync skips what already arrived (same size and time), so a new
+            # try only copies the rest.
+            print(f"  The phone dropped the link. Reconnecting ({attempt} of {RECONNECTS}) ...")
+            _unmount(mount)
+            time.sleep(RECONNECT_WAIT)
+            if not (_attached() and _mount(mount)):
+                print("  The phone is not back. Plug it in, unlock it, and leave it alone.")
+                break
+            rc = _rsync(src, mount, genres)
     finally:
         _unmount(mount)
-    print("  Done: the songs are in VLC on the phone." if rc == 0 else f"  rsync stopped ({rc}).")
+    if rc == 0:
+        print("  Done: the songs are in VLC on the phone.")
+    else:
+        print(f"  rsync stopped ({rc}). Run again and type no: songs already there are kept.")
     return rc

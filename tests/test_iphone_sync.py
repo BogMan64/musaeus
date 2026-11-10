@@ -378,3 +378,49 @@ def test_a_picked_genre_with_no_songs_is_named(phone, capsys):
     assert s.sync(src, mount, ask=lambda q: "no", genres=("Rock", "Jazz")) == 0
     assert "No Jazz song is in the iPhone edition." in capsys.readouterr().out
     assert (mount / "Toto" / "IV" / "Toto - Rosanna.m4a").is_file()
+
+
+def _flaky(phone, monkeypatch, codes):
+    """rsync returns *codes* in turn; the phone fixture's mount/unmount count."""
+    src, mount, st = phone
+    tries = []
+
+    def rsync(a, b, genres=()):
+        assert st["mounted"], "copied while the phone was not mounted"
+        tries.append(st["mounted"])
+        return codes[len(tries) - 1]
+
+    monkeypatch.setattr(s, "_rsync", rsync)
+    monkeypatch.setattr(s.time, "sleep", lambda secs: None)
+    return src, mount, st, tries
+
+
+def test_a_dropped_link_is_reconnected_and_the_copy_carries_on(phone, monkeypatch, capsys):
+    """11-09 and 11-10: the phone dropped mid-copy twice; the sync just stopped."""
+    src, mount, st, tries = _flaky(phone, monkeypatch, [11, 23, 0])
+    assert s.sync(src, mount, ask=lambda q: "no") == 0
+    assert len(tries) == 3
+    out = capsys.readouterr().out
+    assert "Reconnecting (2 of 3)" in out and "Done:" in out
+
+
+def test_ctrl_c_is_not_retried(phone, monkeypatch):
+    src, mount, st, tries = _flaky(phone, monkeypatch, [20, 0])
+    assert s.sync(src, mount, ask=lambda q: "no") == 20
+    assert len(tries) == 1 and not st["mounted"]
+
+
+def test_it_gives_up_after_the_last_reconnect(phone, monkeypatch, capsys):
+    src, mount, st, tries = _flaky(phone, monkeypatch, [11] * 9)
+    assert s.sync(src, mount, ask=lambda q: "no") == 11
+    assert len(tries) == 1 + s.RECONNECTS and not st["mounted"]
+    assert "Run again and type no" in capsys.readouterr().out
+
+
+def test_a_phone_that_does_not_come_back_stops_the_retries(phone, monkeypatch, capsys):
+    src, mount, st, tries = _flaky(phone, monkeypatch, [11, 0])
+    attached = iter([True, False])  # there at the start, gone after the drop
+    monkeypatch.setattr(s, "_attached", lambda: next(attached))
+    assert s.sync(src, mount, ask=lambda q: "no") == 11
+    assert len(tries) == 1
+    assert "The phone is not back" in capsys.readouterr().out
