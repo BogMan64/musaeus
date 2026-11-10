@@ -950,3 +950,32 @@ def test_an_unmarked_listed_copy_whose_master_moved_is_made_at_its_new_place(
     assert "Goats Head Soup" in phone["h1"].output_path
     _build_listed(cfg, frozenset())
     assert _phone_files(cfg) == []
+
+
+def test_a_genre_pick_keeps_the_copies_of_other_genres(cfg):
+    """Grey 11-10: choose the genres for the iPhone. Songs of other genres are
+    skipped, and their copies stay in the edition folder: removing them would
+    cost hours of baking to get them back."""
+    rock = _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
+    jazz = _master(cfg, "Jazz/Miles/Kind/Miles Davis - So What.m4a", "h2")
+    pop = _master(cfg, "Pop/Abba/Gold/ABBA - SOS.m4a", "h3")
+    c = sqlite3.connect(cfg.db_path)
+    for p, g in ((rock, "Rock"), (jazz, "Jazz"), (pop, "Pop")):
+        c.execute("UPDATE archive SET genre = ?, duration = 6.0 WHERE file_path = ?", (g, str(p)))
+    c.commit()
+    c.close()
+    _build(cfg, eb.IPHONE_KIND, allowed={str(rock), str(pop)})  # Rock and Pop built
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    ledger = open_ledger(ledger_path(cfg))
+    try:
+        plan, sel = eb.budgeted(
+            conn, ledger, cfg.alac_archive, cfg.iphone_library, eb.IPHONE_KIND, 10**12,
+            genres={"Jazz"},
+        )  # fmt: skip
+    finally:
+        conn.close()
+        ledger.close()
+    assert [t.genre for t in sel.included] == ["Jazz"]
+    assert not plan.remove, "picking Jazz removed the Rock and Pop copies"
+    assert [m.audio_hash for m, _ in plan.bake] == ["h2"]

@@ -22,12 +22,14 @@ import errno
 import math
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
 
 from .edition_build import TMP_SUFFIX
+from .stages.playlist import _safe_genre
 
 APP_ID = "org.videolan.vlc-ios"
 #: Left free on the phone: iOS needs room of its own, and sizes are estimates.
@@ -107,12 +109,44 @@ def _unmount(mount: Path) -> None:
         print(f"  Close any window open on it, then run:  fusermount -u {mount}")
 
 
-def _files(root: Path) -> list[Path]:
+def genre_counts(db_path: Path) -> dict[str, int]:
+    """Songs per genre in the catalogue, most first (read-only)."""
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            "SELECT TRIM(genre), COUNT(*) FROM archive WHERE status = 'CATALOGUED'"
+            " AND TRIM(COALESCE(genre, '')) <> '' GROUP BY 1 ORDER BY 2 DESC, 1"
+        ).fetchall()
+    finally:
+        conn.close()
+    return dict(rows)
+
+
+def _picked(src: Path, genres: tuple[str, ...]) -> list[Path]:
+    """The songs of *genres* in the edition, read from its genre playlists
+    (written after every build), and those playlists themselves."""
+    out: list[Path] = []
+    for g in genres:
+        pl = src / "Playlists" / f"{_safe_genre(g)}.m3u8"
+        if not pl.is_file():
+            continue
+        out.append(pl)
+        for line in pl.read_text(encoding="utf-8").splitlines():
+            if line.strip() and not line.startswith("#"):
+                f = Path(os.path.normpath(pl.parent / line.strip()))
+                if f.is_relative_to(src) and f.is_file():
+                    out.append(f)
+    return sorted(set(out))
+
+
+def _files(root: Path, genres: tuple[str, ...] = ()) -> list[Path]:
+    if genres:
+        return _picked(root, genres)
     return [p for p in root.rglob("*") if p.is_file() and not p.name.endswith(TMP_SUFFIX)]
 
 
-def _size(root: Path) -> tuple[int, int]:
-    files = _files(root)
+def _size(root: Path, genres: tuple[str, ...] = ()) -> tuple[int, int]:
+    files = _files(root, genres)
     return len(files), sum(p.stat().st_size for p in files)
 
 
@@ -124,10 +158,10 @@ def _wipe(root: Path) -> None:
             child.unlink()
 
 
-def _missing_bytes(src: Path, dest: Path) -> int:
+def _missing_bytes(src: Path, dest: Path, genres: tuple[str, ...] = ()) -> int:
     """Bytes of *src* songs not on the phone yet (missing, or a different size)."""
     total = 0
-    for f in _files(src):
+    for f in _files(src, genres):
         size = f.stat().st_size
         there = dest / f.relative_to(src)
         if not (there.is_file() and there.stat().st_size == size):
@@ -135,7 +169,7 @@ def _missing_bytes(src: Path, dest: Path) -> int:
     return total
 
 
-def _build(budget_gb: float) -> int:
+def _build(budget_gb: float, genres: tuple[str, ...] = ()) -> int:
     cmd = [
         sys.executable,
         "-m",
@@ -145,23 +179,38 @@ def _build(budget_gb: float) -> int:
         "--budget-gb",
         f"{budget_gb}",
     ]
+    for g in genres:
+        cmd += ["--genre", g]
     return subprocess.run(cmd).returncode
 
 
-def _rsync(src: Path, mount: Path) -> int:
+def _rsync(src: Path, mount: Path, genres: tuple[str, ...] = ()) -> int:
     # Not -a: its -p chmods each temp file, which ifuse does not do, so every
     # file failed with "Function not implemented (38)" (2026-11-09).
-    cmd = ["rsync", "-rt", "--info=progress2", f"--exclude=*{TMP_SUFFIX}", f"{src}/", f"{mount}/"]
-    return subprocess.run(cmd).returncode
+    cmd = ["rsync", "-rt", "--info=progress2", f"--exclude=*{TMP_SUFFIX}"]
+    if not genres:
+        return subprocess.run([*cmd, f"{src}/", f"{mount}/"]).returncode
+    names = "\n".join(f.relative_to(src).as_posix() for f in _files(src, genres))
+    return subprocess.run(
+        [*cmd, "--files-from=-", f"{src}/", f"{mount}/"], input=names, text=True
+    ).returncode
 
 
 def _gb(n: int) -> str:
     return f"{n / 1e9:.1f} GB"
 
 
-def sync(src: Path, mount: Path, ask: Callable[[str], str] = input) -> int:
-    """Run the whole sync; 0 when the songs are on the phone."""
+def sync(
+    src: Path, mount: Path, ask: Callable[[str], str] = input, genres: tuple[str, ...] = ()
+) -> int:
+    """Run the whole sync; 0 when the songs are on the phone.
+
+    *genres*: only these go on the phone (Grey, 2026-11-10); with yes they
+    replace what VLC holds. The edition keeps its copies of other genres.
+    """
     print("iPhone sync\n" + "=" * 62)
+    if genres:
+        print("  Genres: " + ", ".join(genres))
     missing = [f"{tool} (sudo apt install {pkg})" for tool, pkg in TOOLS if not shutil.which(tool)]
     if missing:
         print("  Missing: " + ", ".join(missing))
@@ -198,7 +247,7 @@ def sync(src: Path, mount: Path, ask: Callable[[str], str] = input) -> int:
             return 1
         budget_gb = math.floor(budget / 1e7) / 100  # down, never up, to 0.01 GB
         print(f"\n  Building the iPhone edition to {budget_gb} GB ...")
-        rc = _build(budget_gb)
+        rc = _build(budget_gb, genres)
         if rc != 0:
             print("  The edition build failed; nothing on the phone was changed.")
             return rc
@@ -208,9 +257,12 @@ def sync(src: Path, mount: Path, ask: Callable[[str], str] = input) -> int:
         return 1
     # A build can end over its budget (CodeRabbit on #310): never clear VLC for
     # a copy that cannot fit.
-    if wipe and _size(src)[1] > free + held - HEADROOM:
+    if genres and not _files(src, genres):
+        print("  The iPhone edition has no songs of those genres yet. Run again and type yes.")
+        return 1
+    if wipe and _size(src, genres)[1] > free + held - HEADROOM:
         print(
-            f"  The iPhone edition is {_gb(_size(src)[1])}; after clearing VLC the phone "
+            f"  The iPhone edition is {_gb(_size(src, genres)[1])}; after clearing VLC the phone "
             f"would have {_gb(free + held)} with {_gb(HEADROOM)} kept spare. Nothing on the "
             "phone was changed."
         )
@@ -222,7 +274,7 @@ def sync(src: Path, mount: Path, ask: Callable[[str], str] = input) -> int:
             print(f"  Clearing VLC ({count:,} file(s)) ...")
             _wipe(mount)
         else:
-            need = _missing_bytes(src, mount)
+            need = _missing_bytes(src, mount, genres)
             if need > free - HEADROOM:
                 print(
                     f"  The songs not on the phone yet need {_gb(need)}; the phone has "
@@ -231,7 +283,7 @@ def sync(src: Path, mount: Path, ask: Callable[[str], str] = input) -> int:
                 )
                 return 1
         print("  Copying ...")
-        rc = _rsync(src, mount)
+        rc = _rsync(src, mount, genres)
     finally:
         _unmount(mount)
     print("  Done: the songs are in VLC on the phone." if rc == 0 else f"  rsync stopped ({rc}).")

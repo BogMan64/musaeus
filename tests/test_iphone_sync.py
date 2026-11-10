@@ -38,10 +38,16 @@ def phone(tmp_path, monkeypatch):
         st["mounted"] = False
         st["unmounts"] += 1
 
-    def rsync(a, b):
+    def rsync(a, b, genres=()):
         assert st["mounted"], "copied while the phone was not mounted"
         st["rsyncs"] += 1
-        shutil.copytree(a, b, dirs_exist_ok=True, ignore=shutil.ignore_patterns("*.edition_tmp"))
+        if not genres:
+            shutil.copytree(
+                a, b, dirs_exist_ok=True, ignore=shutil.ignore_patterns("*.edition_tmp")
+            )
+        for f in s._files(a, genres) if genres else ():
+            (b / f.relative_to(a)).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(f, b / f.relative_to(a))
         return 0
 
     monkeypatch.setattr(s.shutil, "which", lambda tool: f"/usr/bin/{tool}")
@@ -50,7 +56,7 @@ def phone(tmp_path, monkeypatch):
     monkeypatch.setattr(s, "_free_bytes", lambda: st["free"])
     monkeypatch.setattr(s, "_mount", mount_)
     monkeypatch.setattr(s, "_unmount", unmount)
-    monkeypatch.setattr(s, "_build", lambda gb: st["builds"].append(gb) or 0)
+    monkeypatch.setattr(s, "_build", lambda gb, genres=(): st["builds"].append((gb, genres)) or 0)
     monkeypatch.setattr(s, "_rsync", rsync)
     return src, mount, st
 
@@ -58,7 +64,7 @@ def phone(tmp_path, monkeypatch):
 def test_yes_sizes_the_edition_from_the_phone_then_clears_and_copies(phone):
     src, mount, st = phone
     assert s.sync(src, mount, ask=lambda q: "yes") == 0
-    assert st["builds"] == [math.floor((FREE + 500 - s.HEADROOM) / 1e7) / 100]
+    assert st["builds"] == [(math.floor((FREE + 500 - s.HEADROOM) / 1e7) / 100, ())]
     assert not (mount / "Old - Song.m4a").exists(), "VLC was not cleared"
     assert (mount / "Toto" / "IV" / "Toto - Rosanna.m4a").is_file()
     assert not st["mounted"] and st["unmounts"] == 2
@@ -82,7 +88,7 @@ def test_without_yes_a_copy_that_does_not_fit_is_not_started(phone):
 
 def test_a_failed_build_leaves_the_phone_alone(phone, monkeypatch):
     src, mount, st = phone
-    monkeypatch.setattr(s, "_build", lambda gb: 2)
+    monkeypatch.setattr(s, "_build", lambda gb, genres=(): 2)
     assert s.sync(src, mount, ask=lambda q: "yes") == 2
     assert (mount / "Old - Song.m4a").is_file() and st["rsyncs"] == 0
 
@@ -103,8 +109,8 @@ def test_a_folder_that_is_not_the_phone_is_never_cleared(phone, monkeypatch):
     monkeypatch.setattr(s, "_attached", lambda: True)
     monkeypatch.setattr(s, "_paired", lambda: True)
     monkeypatch.setattr(s, "_free_bytes", lambda: FREE)
-    monkeypatch.setattr(s, "_build", lambda gb: calls.append("build") or 0)
-    monkeypatch.setattr(s, "_rsync", lambda a, b: calls.append("rsync") or 0)
+    monkeypatch.setattr(s, "_build", lambda gb, genres=(): calls.append("build") or 0)
+    monkeypatch.setattr(s, "_rsync", lambda a, b, genres=(): calls.append("rsync") or 0)
 
     class _Done:
         returncode, stdout, stderr = 0, "", ""
@@ -223,3 +229,106 @@ def test_the_copy_does_not_ask_the_phone_to_set_permissions(tmp_path, monkeypatc
     flags = [f for f in seen[0] if f.startswith("-") and not f.startswith("--")]
     assert flags == ["-rt"]
     assert not {"--perms", "--archive", "-p"} & set(seen[0])
+
+
+def _two_genres(src):
+    """Toto is Rock (in Rock.m3u8); ABBA is Pop (in Pop.m3u8)."""
+    (src / "ABBA" / "Gold").mkdir(parents=True)
+    (src / "ABBA" / "Gold" / "ABBA - SOS.m4a").write_bytes(b"p" * 700)
+    (src / "Playlists").mkdir()
+    (src / "Playlists" / "Rock.m3u8").write_text(
+        "#EXTM3U\n#EXTINF:-1,Toto - Rosanna\n../Toto/IV/Toto - Rosanna.m4a\n", encoding="utf-8"
+    )
+    (src / "Playlists" / "Pop.m3u8").write_text(
+        "#EXTM3U\n../ABBA/Gold/ABBA - SOS.m4a\n", encoding="utf-8"
+    )
+
+
+def test_a_genre_pick_with_yes_replaces_vlc_with_that_genre_only(phone):
+    """Grey 11-10: choose the genres; yes replaces what VLC holds."""
+    src, mount, st = phone
+    _two_genres(src)
+    assert s.sync(src, mount, ask=lambda q: "yes", genres=("Rock",)) == 0
+    assert st["builds"][0][1] == ("Rock",), "the build was not told the genre"
+    assert not (mount / "Old - Song.m4a").exists(), "VLC was not cleared"
+    assert (mount / "Toto" / "IV" / "Toto - Rosanna.m4a").is_file()
+    assert (mount / "Playlists" / "Rock.m3u8").is_file()
+    assert not (mount / "ABBA").exists(), "a song of another genre went on the phone"
+    assert not (mount / "Playlists" / "Pop.m3u8").exists()
+
+
+def test_a_genre_with_no_songs_in_the_edition_leaves_the_phone_alone(phone):
+    src, mount, st = phone
+    _two_genres(src)
+    assert s.sync(src, mount, ask=lambda q: "no", genres=("Jazz",)) == 1
+    assert st["rsyncs"] == 0 and (mount / "Old - Song.m4a").is_file()
+
+
+def test_the_fit_check_counts_only_the_picked_genre(phone):
+    src, mount, st = phone
+    _two_genres(src)
+    st["free"] = s.HEADROOM + 1500  # Toto (1000) fits; Toto + ABBA (1700) would not
+    assert s.sync(src, mount, ask=lambda q: "no", genres=("Rock",)) == 0
+    assert (mount / "Toto" / "IV" / "Toto - Rosanna.m4a").is_file()
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="needs rsync")
+def test_real_rsync_copies_only_the_listed_genre(tmp_path):
+    """The real rsync, not a stand-in: 11-09 a stand-in hid that -a fails on ifuse."""
+    src, dest = tmp_path / "lib", tmp_path / "phone"
+    (src / "Toto" / "IV").mkdir(parents=True)
+    (src / "Toto" / "IV" / "Toto - Rosanna.m4a").write_bytes(b"a" * 1000)
+    dest.mkdir()
+    _two_genres(src)
+    assert s._rsync(src, dest, ("Rock",)) == 0
+    got = sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file())
+    assert got == ["Playlists/Rock.m3u8", "Toto/IV/Toto - Rosanna.m4a"]
+
+
+def test_genre_counts_reads_the_catalogue(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "m.db"
+    c = sqlite3.connect(db)
+    c.execute("CREATE TABLE archive (genre TEXT, status TEXT)")
+    c.executemany(
+        "INSERT INTO archive VALUES (?, ?)",
+        [("Rock", "CATALOGUED"), ("Rock ", "CATALOGUED"), ("Pop", "CATALOGUED"),
+         ("Jazz", "QUARANTINED"), ("", "CATALOGUED"), (None, "CATALOGUED")],
+    )  # fmt: skip
+    c.commit()
+    c.close()
+    assert s.genre_counts(db) == {"Rock": 2, "Pop": 1}
+
+
+def _musaeus(tmp_path, *args):
+    import os
+    import subprocess
+    import sys
+
+    env = {
+        **os.environ,
+        "MUSAEUS_VAULT_ROOT": str(tmp_path),
+        "MUSAEUS_DB_PATH": str(tmp_path / "m.db"),
+    }
+    return subprocess.run(
+        [sys.executable, "-m", "musaeus", *args], capture_output=True, text=True, env=env,
+        stdin=subprocess.DEVNULL, cwd=Path(__file__).resolve().parents[1], timeout=120,
+    )  # fmt: skip
+
+
+def test_an_unknown_genre_is_refused_before_the_phone_is_touched(tmp_path):
+    import sqlite3
+
+    c = sqlite3.connect(tmp_path / "m.db")
+    c.execute("CREATE TABLE archive (genre TEXT, status TEXT)")
+    c.execute("INSERT INTO archive VALUES ('Rock', 'CATALOGUED')")
+    c.commit()
+    c.close()
+    r = _musaeus(tmp_path, "iphone-sync", "--genre", "Rokc")
+    assert r.returncode == 2 and "no such genre: Rokc" in r.stderr and "Rock" in r.stderr
+
+
+def test_edition_build_refuses_a_genre_without_a_budget(tmp_path):
+    r = _musaeus(tmp_path, "edition-build", "car", "--genre", "Rock")
+    assert r.returncode == 2 and "--genre needs --budget-gb" in r.stderr

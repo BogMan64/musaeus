@@ -1639,11 +1639,24 @@ class Console:
         if idx == 3:
             return
         if idx == 2:
-            from .iphone_sync import sync
+            from .iphone_sync import genre_counts, sync
 
             assert self._config is not None
             try:
-                sync(self._config.iphone_library, Path.home() / "iphone")  # the CLI default
+                counts = genre_counts(self._config.db_path)
+                names = list(counts)
+                for i, g in enumerate(names, 1):
+                    print(f"    {i:>3}  {g} ({counts[g]:,})")
+                raw = _prompt("Genre numbers, e.g. 1 4 7 (blank = all, in priority order)")
+                nums = [int(x) for x in raw.replace(",", " ").split() if x.isdigit()]
+                if len(nums) != len(raw.replace(",", " ").split()) or not all(
+                    1 <= n <= len(names) for n in nums
+                ):
+                    _warn(f"Not a genre number: {raw!r}. Nothing was touched.")
+                else:
+                    picked = tuple(dict.fromkeys(names[n - 1] for n in nums))
+                    # ~/iphone is the CLI default mount
+                    sync(self._config.iphone_library, Path.home() / "iphone", genres=picked)
             except Exception as exc:  # noqa: BLE001 -- keep the menu alive, say what broke
                 _err(f"iPhone sync stopped: {exc}")
             _prompt("Press Enter to go back")

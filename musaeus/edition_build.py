@@ -695,12 +695,27 @@ def budgeted(
     *,
     rebake_compressed: bool = False,
     click_allowed: frozenset[str] | None = None,
+    genres: set[str] | None = None,
 ) -> tuple[Plan, editions.Selection]:
-    """The plan for a budgeted edition, and the selection that fills it."""
-    whole, sel = _whole_and_selection(conn, ledger, masters_root, edition_root, kind, budget_bytes)
+    """The plan for a budgeted edition, and the selection that fills it.
+
+    *genres*: fill the budget from these genres only. The copies already made
+    for other genres stay in the edition folder, so picking a genre never
+    costs hours of baking to get the others back (Grey, 2026-11-10).
+    """
+    whole, sel = _whole_and_selection(
+        conn, ledger, masters_root, edition_root, kind, budget_bytes, genres=genres
+    )
     # The masters that cannot be placed are let through the budget: blocked
     # again below, their copies kept -- not dropped "for space".
     allowed = {str(t.file_path) for t in sel.included} | set(whole.cannot_place)
+    if genres is not None:
+        built = {c.master_path for c in copies(ledger, kind.name).values()}
+        allowed |= {
+            str(t.file_path)
+            for t in editions.load_tracks(conn)
+            if t.genre not in genres and str(t.file_path) in built
+        }
     plan = make_plan(
         conn, ledger, masters_root, edition_root,
         kind=kind, allowed=allowed, rebake_compressed=rebake_compressed,
