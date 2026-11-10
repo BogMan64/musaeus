@@ -979,3 +979,22 @@ def test_a_genre_pick_keeps_the_copies_of_other_genres(cfg):
     assert [t.genre for t in sel.included] == ["Jazz"]
     assert not plan.remove, "picking Jazz removed the Rock and Pop copies"
     assert [m.audio_hash for m, _ in plan.bake] == ["h2"]
+
+
+def test_a_genre_pick_takes_a_song_by_its_first_genre(cfg):
+    """CodeRabbit on #315: the build must pick a "Pop, Rock" song for Pop, as
+    the Pop playlist (first genre) lists it, and skip it for Rock."""
+    from musaeus.editions import load_tracks
+
+    both = _master(cfg, "Pop/Abba/Gold/ABBA - SOS.m4a", "h1")
+    c = sqlite3.connect(cfg.db_path)
+    c.execute("UPDATE archive SET genre = 'Pop, Rock' WHERE file_path = ?", (str(both),))
+    c.commit()
+    c.close()
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        assert [str(t.file_path) for t in load_tracks(conn, genres={"Pop"})] == [str(both)]
+        assert load_tracks(conn, genres={"Rock"}) == []
+    finally:
+        conn.close()

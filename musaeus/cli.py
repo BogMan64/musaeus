@@ -2246,7 +2246,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="NAME",
         default=None,
-        help="Restrict to this genre (exact match; repeatable)",
+        help="Restrict to this genre (a song's first genre; repeatable)",
     )
     edition_p.add_argument(
         "--artist",
@@ -2272,7 +2272,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="NAME",
         default=None,
-        help="put only this genre on the phone (exact; repeatable); yes replaces what VLC holds",
+        help="put only this genre on the phone (a song's first genre; repeatable); yes replaces VLC",
     )
 
     # edition-build
@@ -2294,7 +2294,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="NAME",
         default=None,
-        help="iphone: fill the budget from this genre only (exact; repeatable); "
+        help="iphone: fill the budget from this genre only (a song's first genre; repeatable); "
         "copies of other genres are kept",
     )
     eb_p.add_argument("--dry-run", action="store_true", help="Show the plan; write nothing")

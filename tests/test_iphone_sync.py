@@ -301,6 +301,20 @@ def test_genre_counts_reads_the_catalogue(tmp_path):
     assert s.genre_counts(db) == {"Rock": 2, "Pop": 1}
 
 
+def test_a_two_genre_tag_counts_as_its_first_genre(tmp_path):
+    """CodeRabbit on #315: "Pop, Rock" is listed in Pop.m3u8 (its first genre),
+    so the menu must offer Pop for it, not a "Pop, Rock" no playlist holds."""
+    import sqlite3
+
+    db = tmp_path / "m.db"
+    c = sqlite3.connect(db)
+    c.execute("CREATE TABLE archive (genre TEXT, status TEXT)")
+    c.executemany("INSERT INTO archive VALUES (?, 'CATALOGUED')", [("Pop, Rock",), ("Pop",)])
+    c.commit()
+    c.close()
+    assert s.genre_counts(db) == {"Pop": 2}
+
+
 def _musaeus(tmp_path, *args):
     import os
     import subprocess

@@ -25,10 +25,12 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
 from .edition_build import TMP_SUFFIX
+from .editions import primary_genre
 from .stages.playlist import _safe_genre
 
 APP_ID = "org.videolan.vlc-ios"
@@ -110,16 +112,15 @@ def _unmount(mount: Path) -> None:
 
 
 def genre_counts(db_path: Path) -> dict[str, int]:
-    """Songs per genre in the catalogue, most first (read-only)."""
+    """Songs per genre in the catalogue, most first (read-only). A "Pop, Rock"
+    tag counts as Pop, its first genre, as the build and the playlists read it."""
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
-        rows = conn.execute(
-            "SELECT TRIM(genre), COUNT(*) FROM archive WHERE status = 'CATALOGUED'"
-            " AND TRIM(COALESCE(genre, '')) <> '' GROUP BY 1 ORDER BY 2 DESC, 1"
-        ).fetchall()
+        rows = conn.execute("SELECT genre FROM archive WHERE status = 'CATALOGUED'").fetchall()
     finally:
         conn.close()
-    return dict(rows)
+    counts = Counter(primary_genre(g) for (g,) in rows if g and primary_genre(g))
+    return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
 
 
 def _picked(src: Path, genres: tuple[str, ...]) -> list[Path]:

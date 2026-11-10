@@ -714,7 +714,7 @@ def budgeted(
         allowed |= {
             str(t.file_path)
             for t in editions.load_tracks(conn)
-            if t.genre not in genres and str(t.file_path) in built
+            if editions.primary_genre(t.genre) not in genres and str(t.file_path) in built
         }
     plan = make_plan(
         conn, ledger, masters_root, edition_root,
