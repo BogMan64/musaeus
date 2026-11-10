@@ -242,7 +242,10 @@ def sync(
         # must find the same phone (CodeRabbit CLI on the reconnect PR)
         print("  More than one phone is plugged in. Unplug all but the one to fill.")
         return 1
-    phone = phones[0] if phones else None
+    if not phones:  # gone between the two checks (CodeRabbit on #316)
+        print("  No phone found. Plug it in with a data cable and unlock it.")
+        return 1
+    phone = phones[0]
     if not _paired() and not _pair(ask):
         print("  The phone is not paired. Unlock it, tap Trust, and run this again.")
         return 1

@@ -455,3 +455,12 @@ def test_ifuse_is_told_which_phone(tmp_path, monkeypatch):
     monkeypatch.setattr(s, "_run", lambda cmd, timeout=60: calls.append(cmd) or _Done())
     s._mount(tmp_path / "iphone", "PHONE1")
     assert calls[0][:3] == ["ifuse", "-u", "PHONE1"]
+
+
+def test_a_phone_gone_before_the_udid_is_read_is_refused(phone, monkeypatch, capsys):
+    """CodeRabbit on #316: an empty phone list went on without a UDID."""
+    src, mount, st = phone
+    monkeypatch.setattr(s, "_phones", lambda: [], raising=False)
+    assert s.sync(src, mount, ask=lambda q: "yes") == 1
+    assert st["builds"] == [] and not st["mounted"]
+    assert "No phone found" in capsys.readouterr().out
