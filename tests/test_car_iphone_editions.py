@@ -190,6 +190,10 @@ def _cli(cfg, *args: str) -> subprocess.CompletedProcess[str]:
            "MUSAEUS_ALAC_LIBRARY": str(cfg.alac_library),
            "MUSAEUS_CAR_LIBRARY": str(cfg.car_library),
            "MUSAEUS_IPHONE_LIBRARY": str(cfg.iphone_library),
+           "MUSAEUS_LIBRARIES": str(cfg.libraries),
+           "MUSAEUS_ALAC_ARCHIVE": str(cfg.alac_archive),
+           "MUSAEUS_RUNS_ROOT": str(cfg.runs_root),
+           "MUSAEUS_META_DIR": str(cfg.meta_dir),
            "MUSAEUS_NO_SLEEP_INHIBIT": "1", "MUSAEUS_NO_IDLE_THROTTLE": "1"}  # fmt: skip
     return subprocess.run(
         [sys.executable, "-m", "musaeus.cli", "edition-build", *args],
@@ -1055,12 +1059,16 @@ def test_a_lossless_build_writes_its_playlists_too(cfg):
     assert (playlists / "Era_1970s.m3u8").is_file() and (playlists / "All.m3u8").is_file()
 
 
-def test_a_build_under_test_never_reaches_a_real_library(cfg, monkeypatch):
-    """CodeRabbit on #317: a MUSAEUS_*_LIBRARY left in the environment (a .env
-    restores it) sent the test build to that folder."""
+@pytest.mark.parametrize("edition", ["lossless", "car", "iphone"])
+def test_a_build_under_test_never_reaches_a_real_library(cfg, monkeypatch, edition):
+    """CodeRabbit on #317: a MUSAEUS_ folder setting left in the environment
+    (a .env restores it) sent the test build to that folder."""
     elsewhere = cfg.vault_root / "a_real_library"
-    for name in ("ALAC", "CAR", "IPHONE"):
-        monkeypatch.setenv(f"MUSAEUS_{name}_LIBRARY", str(elsewhere / name))
+    for name in ("ALAC_LIBRARY", "CAR_LIBRARY", "IPHONE_LIBRARY", "LIBRARIES",
+                 "ALAC_ARCHIVE", "RUNS_ROOT", "META_DIR"):  # fmt: skip
+        monkeypatch.setenv(f"MUSAEUS_{name}", str(elsewhere / name))
     _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
-    assert _cli(cfg, "lossless").returncode == 0
-    assert not elsewhere.exists(), "the build wrote outside the test's own libraries"
+    budget = ("--budget-gb", "1") if edition == "iphone" else ()
+    r = _cli(cfg, edition, *budget)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not elsewhere.exists(), "the build wrote outside the test's own folders"
