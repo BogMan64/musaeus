@@ -35,11 +35,13 @@ def _add(ctx, path, album, duration):
     ctx.conn.commit()
 
 
-def test_two_live_recordings_named_live_by_their_albums_stay_apart(ctx, tmp_path):
+def test_two_live_recordings_named_live_by_their_albums_are_one_song(ctx, tmp_path):
+    """Grey, 2026-11-02 and 11-09: two live copies are a duplicate; the keep
+    rule keeps the earlier recording."""
     _add(ctx, str(tmp_path / "a.m4a"), "Unplugged", 285.0)
     _add(ctx, str(tmp_path / "b.m4a"), "24 Nights (Live)", 410.0)
 
-    assert NearDupeStage().execute(ctx).files_changed == 0, "two live recordings were grouped"
+    assert NearDupeStage().execute(ctx).files_changed == 1
 
 
 def test_studio_against_live_is_still_compared(ctx, tmp_path):

@@ -51,7 +51,7 @@ try:
 except ImportError:
     _HAVE_RAPIDFUZZ = False
 
-from ..brackets import BRACKETED, CLOSE, OPEN
+from ..brackets import BRACKETED, CLOSE, OPEN, base_title
 from ..canon import ArtistCanon
 from ..context import RunContext, StageResult
 from .base import BaseStage, StageError
@@ -532,6 +532,48 @@ def _primary_artist_key(raw_artist: str) -> str:
     return _normalise(m.group(1)) if m and len(m.group(1).split()) >= 2 else ""
 
 
+#: A guest named after the title, outside brackets: "Smooth feat. Rob Thomas".
+_FEAT_TAIL = re.compile(r"\s+(?:-\s+)?(?:feat\.|featuring|ft\.)\s.*$", re.IGNORECASE)
+#: Not the song itself: a medley, an improvisation on it, or its reprise
+#: ("Sgt. Pepper's ... (Reprise)" is a second track of the album).
+_NOT_THE_SONG_RE = re.compile(r"\bimprovis|\bmedley|\breprise\b", re.IGNORECASE)
+#: A bracket naming the work a piece is from: "Main Theme (From Thelma And
+#: Louise)" is not every "Main Theme", nor "Air (From The Harpsichord Suite In
+#: E Minor)" every Handel "Air" (2026-11-09, the live catalogue).
+_FROM_BRACKET = re.compile(rf"[{OPEN}]\s*from\s[^{CLOSE}]*[{CLOSE}]", re.IGNORECASE)
+
+
+def _song_key(title: str) -> str:
+    """The song a title names: every bracket and version ending set aside, a
+    part kept ("Song (Part 2)" is "Song - Part 2"), a guest after the title
+    left off, "&" read as "and"."""
+    return _normalise(_FEAT_TAIL.sub("", base_title(title or "")))
+
+
+def _from_work(title: str) -> str:
+    m = _FROM_BRACKET.search(title or "")
+    return _normalise(m.group(0)) if m else ""
+
+
+def _same_song(title_a: str, title_b: str) -> bool:
+    """One song, whatever the brackets or guests say (Grey, 2026-11-09: live,
+    demo, remix, re-recording and guest versions are all duplicates; the keep
+    rule picks the copy). Never two parts, two classical movements or works,
+    or a medley or reprise against the song. A classical title is left to the
+    piece rules: its brackets can name the movement, "BWV 846 - I. (Prelude)"."""
+    if any(_catalogues(t) or _movements(t) for t in (title_a, title_b)):
+        return False
+    key = _song_key(title_a)
+    return (
+        bool(key)
+        and key == _song_key(title_b)
+        and bool(_NOT_THE_SONG_RE.search(title_a or ""))
+        == bool(_NOT_THE_SONG_RE.search(title_b or ""))
+        and _from_work(title_a) == _from_work(title_b)
+        and not _is_different_piece(title_a, title_b)
+    )
+
+
 def _without_artist_prefix(norm_title: str, norm_artist: str) -> str:
     """The title with the artist's own name taken off the front, for COMPARISON only.
 
@@ -720,8 +762,11 @@ class NearDupeStage(BaseStage):
 
         for artist_key, a, b, cross in _candidate_pairs():
             da, db = a["duration"] or 0, b["duration"] or 0
+            # One song by its title, at any length, with any guest or live
+            # marker (Grey, 2026-11-09). The guards below are for the rest.
+            same = _same_song(a["title"], b["title"])
             # No length is not one length (CodeRabbit review of #257).
-            if cross and (min(da, db) <= 0 or abs(da - db) > _COLLAB_SECONDS):
+            if cross and not same and (min(da, db) <= 0 or abs(da - db) > _COLLAB_SECONDS):
                 continue
 
             # Skip if the two are already an exact pair
@@ -750,13 +795,20 @@ class NearDupeStage(BaseStage):
                 and 2 * min(da, db) >= max(da, db)
                 and _same_piece(a["title"], b["title"])
             )
-            if not piece and _is_live(dict(a)) and _is_live(dict(b)) and not _same_take(a, b):
+            if (
+                not piece
+                and not same
+                and _is_live(dict(a))
+                and _is_live(dict(b))
+                and not _same_take(a, b)
+            ):
                 continue
 
             # A medley is never one of the songs it holds, nor an improvisation
-            # the piece it is played on (Codex review of #255).
-            if bool(_NOT_THE_PIECE_RE.search(a["title"])) != bool(
-                _NOT_THE_PIECE_RE.search(b["title"])
+            # the piece it is played on (Codex review of #255), nor a reprise
+            # the song: "Sgt. Pepper's ... (Reprise)" scored 88 against it.
+            if bool(_NOT_THE_SONG_RE.search(a["title"])) != bool(
+                _NOT_THE_SONG_RE.search(b["title"])
             ):
                 continue
 
@@ -782,7 +834,9 @@ class NearDupeStage(BaseStage):
                 fuzz.ratio(title_a, bare_b),
                 fuzz.ratio(bare_a, bare_b),
             )
-            if score < TITLE_THRESHOLD and not piece:
+            if same:
+                score = 100
+            elif score < TITLE_THRESHOLD and not piece:
                 # The same song with and without its guest named: "Smooth (feat.
                 # Rob Thomas)" and "Smooth" (Grey, 2026-10-12: the same song).
                 # Only at one length -- "Stay With Me (With The Royal

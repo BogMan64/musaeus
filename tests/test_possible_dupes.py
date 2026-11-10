@@ -77,11 +77,13 @@ def test_a_shared_credit_bracket_does_not_make_two_songs_one(conn):
     assert pd.find(conn) == []
 
 
-def test_two_live_nights_are_two_songs(conn):
+def test_two_live_nights_are_one_song(conn):
+    """Grey, 2026-11-02 and 11-09: two live copies are a duplicate; the keep
+    rule keeps the earlier recording."""
     _song(conn, "/m/1.m4a", "Cream", "Crossroads (Live)", 250.0, album="Wheels Of Fire")
     _song(conn, "/m/2.m4a", "Cream", "Crossroads (Live)", 256.0, album="Live Cream")
     conn.commit()
-    assert pd.find(conn) == []
+    assert len(pd.find(conn)) == 1
 
 
 def test_one_act_under_a_credit_is_compared(conn):
@@ -139,16 +141,18 @@ def test_a_pair_kept_both_stays_decided_when_a_fingerprint_changed(conn):
 @pytest.mark.parametrize(
     ("first", "second", "lengths"),
     [
-        ("Overs", "Overs (Live)", (130.0, 133.9)),  # studio against a live take
+        ("Overs", "Overs (Live)", (130.0, 193.9)),  # studio against a live take
         ("The Future's So Bright", "The Future's So Bright (Re-Recorded)", (180.0, 182.0)),
         ("Loca (feat. Dizzee Rascal)", "Loca (feat. El Cata)", (190.0, 196.0)),  # two guests
     ],
 )
-def test_not_one_recording(conn, first, second, lengths):
+def test_one_song_whatever_the_brackets_say(conn, first, second, lengths):
+    """Grey, 2026-11-09: a live take, a re-recording or another guest is the
+    same song; kept apart before (pre-merge review of #191)."""
     _song(conn, "/m/1.m4a", "Some Act", first, lengths[0])
     _song(conn, "/m/2.m4a", "Some Act", second, lengths[1])
     conn.commit()
-    assert pd.find(conn) == []
+    assert [p.why.split(",")[0] for p in pd.find(conn)] == ["same song"]
 
 
 @pytest.mark.parametrize(
@@ -168,3 +172,19 @@ def test_an_acoustid_pair_waiting_for_grey_says_so(conn):
     conn.commit()
     (pair,) = pd.find(conn)
     assert pair.why.startswith("AcoustID: same recording, waiting for you")
+
+
+def test_a_second_artist_is_ignored_for_one_song_only(conn):
+    """Grey, 2026-11-09: "Tom Petty & The Heartbreakers" (its own folder) meets
+    "Tom Petty" for one song by its title; songs only alike stay apart."""
+    _song(conn, "/m/1.m4a", "Tom Petty & The Heartbreakers", "Refugee (Live)", 260.0)
+    _song(conn, "/m/2.m4a", "Tom Petty", "Refugee", 202.0)
+    _song(conn, "/m/3.m4a", "Tom Petty", "Free Fallin'", 256.0)
+    _song(conn, "/m/4.m4a", "Tom Petty & The Heartbreakers", "Free Fallin", 256.0)
+    _song(conn, "/m/5.m4a", "Tom Petty", "Room At The Top", 300.0)
+    _song(conn, "/m/6.m4a", "Tom Petty & The Heartbreakers", "Rooms At The Top", 300.0)
+    conn.commit()
+    assert _titles(pd.find(conn)) == [
+        ("Free Fallin", "Free Fallin'"),
+        ("Refugee", "Refugee (Live)"),
+    ]

@@ -13,9 +13,14 @@ A pair is listed when it is one act's, its titles are the same song once
 Live, Mono ...) are folded, or nearly so, and the two are about the same
 length. "Shout (Part 1 & 2)" and "Shout (Part 1 And 2)" is the kind of pair.
 
+One song whatever its brackets or guests (Grey, 2026-11-09): "Layla
+(Unplugged)" and "Layla", "Smooth (feat. Rob Thomas)" and "Smooth - Live",
+also across "Stevie Nicks & Tom Petty" and "Stevie Nicks", at any length.
+
 Left out, because a check already decided them or they are not one song:
-the same audio, pairs Grey kept both of, different classical movements,
-and two live recordings of different nights.
+the same audio, pairs Grey kept both of, two parts, different classical
+movements, a medley or reprise against the song. Titles that are only alike
+still need one length, and two live nights of them stay two.
 
 Read-only: it opens the catalogue read-only and writes only the sheet. Nothing
 is moved or deleted. A pair is settled by hand: removing the copy not wanted.
@@ -106,8 +111,11 @@ def find(conn: sqlite3.Connection) -> list[Pair]:
     from rapidfuzz import fuzz  # type: ignore[import-untyped]
 
     from .artist_form import act_key, folder_artist
-    from .stages.dupe_resolver import _is_live
-    from .stages.neardupe import _SAME_TAKE_SECONDS, _credit, _is_different_piece, _same_take
+    from .stages.neardupe import (
+        _COLLAB_SPLIT_RE,
+        _is_different_piece,
+        _same_song,
+    )
 
     conn.row_factory = sqlite3.Row
     cols = {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
@@ -145,15 +153,19 @@ def find(conn: sqlite3.Connection) -> list[Pair]:
     def acoustid_waiting(a: sqlite3.Row, b: sqlite3.Row) -> bool:
         return any({a["file_path"], b["file_path"]} <= paths for paths in waiting.values())
 
-    acts: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    # Bucketed by the first named artist: "Stevie Nicks & Tom Petty" meets
+    # "Stevie Nicks" (Grey, 2026-11-09), but only for one song by its title.
+    acts: dict[str, list[tuple[str, sqlite3.Row]]] = defaultdict(list)
     for r in rows:
-        acts[act_key(folder_artist(r["artist"], r["mb_artist_name"]))].append(r)
+        name = folder_artist(r["artist"], r["mb_artist_name"])
+        first = _COLLAB_SPLIT_RE.split(name, maxsplit=1)[0] or name
+        acts[act_key(first)].append((act_key(name), r))
 
     pairs: list[Pair] = []
     for members in acts.values():
-        keyed = [(r, _title_key(r["title"])) for r in members]
-        for i, (a, ka) in enumerate(keyed):
-            for b, kb in keyed[i + 1 :]:
+        keyed = [(act, r, _title_key(r["title"])) for act, r in members]
+        for i, (act_a, a, ka) in enumerate(keyed):
+            for act_b, b, kb in keyed[i + 1 :]:
                 if a["audio_hash"] and a["audio_hash"] == b["audio_hash"]:
                     continue  # the same audio: CrossDupe's
                 if kept_both(a, b):
@@ -162,7 +174,13 @@ def find(conn: sqlite3.Connection) -> list[Pair]:
                 if not da or not db or not ka or not kb:
                     continue
                 gap = abs(da - db)
-                if ka == kb:
+                # One song, whatever the brackets or guests (Grey, 2026-11-09).
+                same = _same_song(a["title"], b["title"])
+                if same:
+                    why = "same song"
+                elif act_a != act_b:
+                    continue
+                elif ka == kb:
                     if gap > SAME_TITLE_LENGTH_S:
                         continue
                     why = "same title"
@@ -175,24 +193,33 @@ def find(conn: sqlite3.Connection) -> list[Pair]:
                     why = f"titles {score:.0f}% alike"
                 if _is_different_piece(a["title"], b["title"]):
                     continue
-                live_a, live_b = _is_live(dict(a)), _is_live(dict(b))
-                if live_a and live_b and not _same_take(dict(a), dict(b)):
-                    continue
-                # A live take against a studio one, a re-recording, two
-                # versions with different guests: not one recording (pre-merge
-                # review of #191).
-                if live_a != live_b and gap > _SAME_TAKE_SECONDS:
-                    continue
-                if bool(_REDONE.search(a["title"])) != bool(_REDONE.search(b["title"])):
-                    continue
-                ca, cb = _credit(a["title"]), _credit(b["title"])
-                if ca and cb and ca != cb:
+                if not same and _two_recordings(a, b, gap):
                     continue
                 if acoustid_waiting(a, b):
                     why = f"AcoustID: same recording, waiting for you; {why}"
                 pairs.append(Pair(f"{why}, {gap:.1f} s apart", a, b))
     pairs.sort(key=lambda p: ((p.a["artist"] or "").lower(), (p.a["title"] or "").lower()))
     return pairs
+
+
+def _two_recordings(a: sqlite3.Row, b: sqlite3.Row, gap: float) -> bool:
+    """Close titles that are still two recordings, when the titles do not
+    name one song (pre-merge review of #191)."""
+    from .stages.dupe_resolver import _is_live
+    from .stages.neardupe import _SAME_TAKE_SECONDS, _credit, _same_take
+
+    live_a, live_b = _is_live(dict(a)), _is_live(dict(b))
+    if live_a and live_b and not _same_take(dict(a), dict(b)):
+        return True
+    # A live take against a studio one, a re-recording, two
+    # versions with different guests: not one recording (pre-merge
+    # review of #191).
+    if live_a != live_b and gap > _SAME_TAKE_SECONDS:
+        return True
+    if bool(_REDONE.search(a["title"])) != bool(_REDONE.search(b["title"])):
+        return True
+    ca, cb = _credit(a["title"]), _credit(b["title"])
+    return bool(ca and cb and ca != cb)
 
 
 def _relative(path: str, roots: list[Path]) -> str:
