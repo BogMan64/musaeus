@@ -194,6 +194,7 @@ class Master:
     decode_ok: int | None = None  # 1 checked clean, 0 checked damaged, None never checked
     seconds_44k: float = 240.0  # its length, scaled to 44.1 kHz: what a bake costs
     seconds: float = 240.0  # its length
+    seconds_known: bool = True  # False: no length on record, 240 s assumed
     title: str = ""
     artist: str = ""
     album: str = ""
@@ -276,10 +277,24 @@ class Plan:
                 total += p.stat().st_size
         return total
 
-    #: A lossy master baked into ALAC is written at 32 bits, far above its own
-    #: size: measured 2026-11-11 on 87 copies, median 334 kB/s, max 368 kB/s
-    #: (6.1 GB from 0.66 GB of AAC). 48 kHz stereo at 32 bits bounds it.
-    LOSSY_ALAC_BYTES_PER_SECOND = 48_000 * 2 * 4
+    #: A lossy master baked into ALAC is written at 32 bits and its own rate,
+    #: far above its own size (2026-11-11: 6.1 GB from 0.66 GB of AAC; 55 of
+    #: the 87 at 96 kHz). Bound: 32-bit stereo PCM per 44.1 kHz second --
+    #: the copies measured 0.36-0.58 of it. Stereo: more channels are mixed
+    #: down on arrival (none catalogued).
+    LOSSY_ALAC_BYTES_PER_44K_SECOND = 44_100 * 2 * 4
+    #: A lossy master with no length on record: its size at 32 kbps, a floor
+    #: no catalogued AAC or MP3 goes under, bounds how long it can be.
+    LOSSY_MIN_BYTES_PER_SECOND = 4_000
+
+    def _lossless_bytes(self, m: Master) -> int:
+        if m.lossless:
+            return m.size_bytes
+        if m.seconds_known:
+            seconds_44k = m.seconds_44k
+        else:  # CodeRabbit on #319: four minutes is a guess, not a bound
+            seconds_44k = m.size_bytes / self.LOSSY_MIN_BYTES_PER_SECOND
+        return int(seconds_44k * self.LOSSY_ALAC_BYTES_PER_44K_SECOND)
 
     @property
     def bake_bytes(self) -> int:
@@ -288,10 +303,7 @@ class Plan:
         estimate, container overhead included) -- 256k is a fraction of
         the master, and counting the master overstated the car by ~8x."""
         if self.kind_name == EDITION:
-            return sum(
-                m.size_bytes if m.lossless else int(m.seconds * self.LOSSY_ALAC_BYTES_PER_SECOND)
-                for m, _ in self.bake
-            )
+            return sum(self._lossless_bytes(m) for m, _ in self.bake)
         # Each edition by its own format: the iPhone was sized with the car's
         # (cloud review of #53), right only while both say 256k.
         spec = editions.EDITIONS[self.kind_name]
@@ -415,6 +427,7 @@ def make_plan(
             decode_ok=r["decode_ok"],
             seconds_44k=float(r["duration"] or 240.0) * (int(r["sample_rate"] or 44_100) / 44_100),
             seconds=float(r["duration"] or 240.0),
+            seconds_known=float(r["duration"] or 0) > 0,
             title=r["title"] or "",
             artist=r["artist"] or "",
             album=r["album"] or "",
