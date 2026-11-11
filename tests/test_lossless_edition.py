@@ -218,6 +218,22 @@ def test_lossy_masters_are_baked_unless_left_out(cfg):
     assert not plan.lossy_left_out and out.baked == 1
 
 
+def test_a_lossy_bake_is_sized_by_its_length_not_its_small_file(cfg):
+    """Local CodeRabbit: an AAC master's ALAC copy is about 9x its size
+    (measured 2026-11-11); counted at the AAC size the space check fell short."""
+    _master(cfg, REL, "h1", codec="aac")
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    ledger = open_ledger(ledger_path(cfg))
+    try:
+        plan = eb.make_plan(conn, ledger, cfg.alac_archive, cfg.alac_library)
+    finally:
+        conn.close()
+        ledger.close()
+    ((m, _),) = plan.bake
+    assert plan.bake_bytes == int(m.seconds * 384_000) > 50 * m.size_bytes
+
+
 def test_a_failed_bake_leaves_nothing_behind(cfg, monkeypatch):
     _master(cfg, REL, "h1")
 

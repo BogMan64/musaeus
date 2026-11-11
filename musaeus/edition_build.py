@@ -276,6 +276,11 @@ class Plan:
                 total += p.stat().st_size
         return total
 
+    #: A lossy master baked into ALAC is written at 32 bits, far above its own
+    #: size: measured 2026-11-11 on 87 copies, median 334 kB/s, max 368 kB/s
+    #: (6.1 GB from 0.66 GB of AAC). 48 kHz stereo at 32 bits bounds it.
+    LOSSY_ALAC_BYTES_PER_SECOND = 48_000 * 2 * 4
+
     @property
     def bake_bytes(self) -> int:
         """What the bakes will write. A lossless copy is about its master's
@@ -283,7 +288,10 @@ class Plan:
         estimate, container overhead included) -- 256k is a fraction of
         the master, and counting the master overstated the car by ~8x."""
         if self.kind_name == EDITION:
-            return sum(m.size_bytes for m, _ in self.bake)
+            return sum(
+                m.size_bytes if m.lossless else int(m.seconds * self.LOSSY_ALAC_BYTES_PER_SECOND)
+                for m, _ in self.bake
+            )
         # Each edition by its own format: the iPhone was sized with the car's
         # (cloud review of #53), right only while both say 256k.
         spec = editions.EDITIONS[self.kind_name]
