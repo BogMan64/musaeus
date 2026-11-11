@@ -1859,6 +1859,29 @@ class DupeResolverStage(BaseStage):
                         )
                     continue
 
+            # No copy of the group is left: every one gone from disk and from
+            # the catalogue (refused again on arrival as songs deleted on
+            # purpose, 2026-11-07). Nothing can be kept or moved, and the
+            # rows came back on every run as "the copy to keep is not on
+            # disk" (13 groups, 2026-11-11). Closed as 'stale', as above.
+            # Only copies with neither a catalogue row nor a file: a catalogued
+            # copy whose drive is away for a while keeps its group (local
+            # CodeRabbit).
+            if members and all(
+                m.get("current_row") is None and not Path(m["file_path"]).exists() for m in members
+            ):
+                result.files_skipped += len(members)
+                if not dry_run:
+                    ctx.conn.executemany(
+                        "UPDATE duplicates SET status = 'stale' "
+                        f"WHERE group_id = ? AND {ACTED_ON_SQL}",
+                        [(gid,) for gid in component],
+                    )
+                result.notes.append(
+                    f"group {group_id}: no copy left on disk or in the catalogue: closed"
+                )
+                continue
+
             # One keeper for the whole component, so a file kept by one of
             # its groups can no longer be moved as another's loser.
             # Ranked again without the copies set aside: the keep rule's length
