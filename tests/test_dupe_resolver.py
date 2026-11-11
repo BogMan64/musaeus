@@ -2181,3 +2181,51 @@ def test_a_cha_cha_named_after_the_song_is_an_arrangement():
     assert _is_arranged({"title": "Moon River (Cha-Cha Version)"})
     assert _is_arranged({"title": "Moon River Cha Cha (Remastered (2003))"})
     assert not _is_arranged({"title": "Cha Cha Slide"})
+
+
+class TestAGroupWithNothingLeft:
+    """2026-11-11: 13 groups whose every copy had been refused again on arrival
+    (songs deleted on purpose) -- no catalogue row, no file. Each run said "the
+    copy to keep is not on disk -- nothing moved" and left them pending."""
+
+    def _gone_group(self, ctx):
+        paths = [str(ctx.inbox / f"gone_{i}.flac") for i in range(3)]  # never created
+        ctx.conn.executemany(
+            "INSERT INTO duplicates (group_id, file_path, duplicate_type, confidence, run_id, audio_hash) "
+            "VALUES ('dup_gone', ?, 'EXACT', 1.0, 'r', 'h_gone')",
+            [(p,) for p in paths],
+        )
+        ctx.conn.commit()
+
+    def test_it_is_closed_not_left_pending(self, ctx):
+        self._gone_group(ctx)
+        result = DupeResolverStage().execute(ctx)
+        statuses = {r[0] for r in ctx.conn.execute(
+            "SELECT status FROM duplicates WHERE group_id = 'dup_gone'")}  # fmt: skip
+        assert statuses == {"stale"}
+        assert not any("not on disk" in n for n in result.notes), result.notes
+        assert result.files_errored == 0
+
+    def test_a_dry_run_closes_nothing(self, ctx_dry):
+        self._gone_group(ctx_dry)
+        DupeResolverStage().execute(ctx_dry)
+        statuses = {r[0] for r in ctx_dry.conn.execute(
+            "SELECT status FROM duplicates WHERE group_id = 'dup_gone'")}  # fmt: skip
+        assert statuses == {"pending"}
+
+    def test_catalogued_copies_whose_files_are_away_stay_pending(self, ctx):
+        """A drive away for a while: the rows are still catalogued, the files
+        missing. The group must still be there when the drive is back."""
+        from musaeus.db import upsert_archive
+
+        paths = [ctx.inbox / f"away_{i}.flac" for i in range(2)]  # never created
+        for p in paths:
+            upsert_archive(ctx.conn, {"file_path": str(p), "audio_hash": f"pcm:{p.name}",
+                                      "status": "CATALOGUED", "artist": "A", "album": "B",
+                                      "title": "T", "bitrate": 900_000, "size_bytes": 100})  # fmt: skip
+        ctx.conn.commit()
+        _stage_duplicate_pair(ctx, "near_away", paths[0], paths[1], dtype="NEAR")
+        DupeResolverStage().execute(ctx)
+        statuses = {r[0] for r in ctx.conn.execute(
+            "SELECT status FROM duplicates WHERE group_id = 'near_away'")}  # fmt: skip
+        assert statuses == {"pending"}, statuses
