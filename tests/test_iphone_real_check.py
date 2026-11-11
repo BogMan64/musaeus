@@ -65,3 +65,14 @@ def test_a_failed_copy_fails_the_check(rc_mod, tmp_path, monkeypatch):
 def test_two_phones_are_refused(rc_mod, tmp_path, monkeypatch):
     monkeypatch.setattr(rc_mod.s, "_phones", lambda: ["a", "b"])
     assert rc_mod.check(_edition(tmp_path), tmp_path / "phone") == 1
+
+
+def test_a_phone_left_mounted_fails_the_check(rc_mod, tmp_path, monkeypatch):
+    """If the unmount fails the folder is not empty: rmdir refuses, and the
+    check must not report success (local CodeRabbit)."""
+    mount = tmp_path / "mnt"
+    mount.mkdir()
+    monkeypatch.setattr(rc_mod.tempfile, "mkdtemp", lambda prefix="": str(mount))
+    monkeypatch.setattr(rc_mod, "check", lambda edition, m: (m / "still_there").touch() or 0)
+    assert rc_mod.main() == 1
+    assert (mount / "still_there").is_file()

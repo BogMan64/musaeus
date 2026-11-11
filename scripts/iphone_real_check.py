@@ -77,12 +77,14 @@ def main() -> int:
     # be VLC on the phone if the unmount failed. rmdir only takes an empty folder.
     mount = Path(tempfile.mkdtemp(prefix="musaeus_phone_"))
     try:
-        return check(MusicConfig.from_env().iphone_library, mount)
+        rc = check(MusicConfig.from_env().iphone_library, mount)
     finally:
         try:
             mount.rmdir()
         except OSError:
             print(f"  Left {mount} in place (still mounted?). Run:  fusermount -u {mount}")
+            rc = 1  # the unmount is part of the check (local CodeRabbit)
+    return rc
 
 
 if __name__ == "__main__":
