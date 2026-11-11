@@ -1,5 +1,5 @@
 """
-MUSAEUS — an AAC edition's browsing index (car and iPhone).
+MUSAEUS — an edition's browsing index (Lossless, car and iPhone).
 
 Moved from scripts/car_library/write_car_index.py (cloud review of #53):
 `musaeus edition-build car|iphone` writes it after every build, as the

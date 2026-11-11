@@ -1514,7 +1514,8 @@ def _cmd_edition_build_inner(args) -> int:
         if outcome.stopped:
             print("  Stopped. Finished copies are kept; run it again to carry on.")
         index_failed = False
-        if kind.name in ("car", "iphone") and not outcome.stopped:
+        if not outcome.stopped:
+            # Every edition, the lossless one too (Grey, item 8, 2026-10-17).
             # The playlists travel with the edition (Grey, 2026-09-17), so
             # they are written after every build, as the retired builder did
             # (cloud review of #53: a stale index went to the USB). Its
