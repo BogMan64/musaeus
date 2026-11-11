@@ -117,3 +117,19 @@ def test_the_file_is_written_whole_and_reads_back(cfg, tmp_path):
     itunes_export.write(itunes_export.build(cfg), out)
     assert json.loads(out.read_text(encoding="utf-8"))["tracks"]
     assert not list(out.parent.glob("*.tmp"))
+
+
+def test_a_place_another_song_had_first_is_not_this_songs(cfg):
+    """Local CodeRabbit: A moved X -> Y; later B moved Z -> X, then X -> W.
+    A's history is X only; B's is X, then Z. X, claimed by both, is no
+    proof of either and is left out."""
+    a_master, a_out = _copy(cfg, "Rock/A/Y/A - Song.m4a")
+    b_master, b_out = _copy(cfg, "Rock/B/W/B - Song.m4a")
+    x = cfg.alac_archive / "Rock/X/X/X.m4a"
+    z = cfg.alac_archive / "Rock/Z/Z/Z.m4a"
+    _moved(cfg, x, a_master)  # A: X -> Y
+    _moved(cfg, z, x)  # B: Z -> X
+    _moved(cfg, x, b_master)  # B: X -> W
+    tracks = {t["path"]: t["previous_paths"] for t in itunes_export.build(cfg)["tracks"]}
+    assert tracks[str(a_out)] == []
+    assert tracks[str(b_out)] == [str(cfg.alac_library / "Rock/Z/Z/Z.m4a")]

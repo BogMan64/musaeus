@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from collections import Counter
 from pathlib import Path
 
 from .edition_build import EDITION, _mirror
@@ -43,32 +44,39 @@ def _read_only(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 
 
-def _moves(conn: sqlite3.Connection) -> dict[str, list[str]]:
-    """new path -> the paths it was moved from, newest first. Read once: a
-    query per song took five minutes on 7,991 songs."""
+def _moves(conn: sqlite3.Connection) -> dict[str, list[tuple[int, str]]]:
+    """new path -> (event id, the path it came from), newest first. Read
+    once: a query per song took five minutes on 7,991 songs."""
     qs = ",".join("?" * len(MOVE_EVENTS))
-    out: dict[str, list[str]] = {}
-    for old, new in conn.execute(
-        f"SELECT old_value, new_value FROM events WHERE event_type IN ({qs}) ORDER BY id DESC",
+    out: dict[str, list[tuple[int, str]]] = {}
+    for eid, old, new in conn.execute(
+        f"SELECT id, old_value, new_value FROM events WHERE event_type IN ({qs}) ORDER BY id DESC",
         MOVE_EVENTS,
     ):
         if old and new:
-            out.setdefault(new, []).append(old)
+            out.setdefault(new, []).append((eid, old))
     return out
 
 
-def _earlier_masters(moves: dict[str, list[str]], master: str) -> list[str]:
-    """Every path *master* had before, newest first, following the move chain."""
-    seen = {master}
+def _earlier_masters(moves: dict[str, list[tuple[int, str]]], master: str) -> list[str]:
+    """Every path *master* had before, newest first.
+
+    One step back at a time, each strictly older than the last: a path can
+    hold another song before or after this one, and only the latest arrival
+    before this song left it is this song's (local CodeRabbit: following
+    every arrival handed one song another's old place).
+    """
     out: list[str] = []
-    frontier = [master]
-    while frontier:
-        for old in moves.get(frontier.pop(), ()):
-            if old not in seen:
-                seen.add(old)
-                out.append(old)
-                frontier.append(old)
-    return out
+    path, before = master, None
+    while True:
+        step = next(
+            ((eid, old) for eid, old in moves.get(path, ()) if before is None or eid < before),
+            None,
+        )
+        if step is None or step[1] in out or step[1] == master:
+            return out
+        before, path = step
+        out.append(path)
 
 
 def _playlist_paths(playlist: Path, tracks: set[str]) -> list[str]:
@@ -118,6 +126,11 @@ def build(cfg: object) -> dict:
             if was != out and was not in current and was not in previous:
                 previous.append(was)
         tracks.append({"path": out, "previous_paths": previous})
+    # An old place two songs both had is no proof of either: left out, so the
+    # Companion never re-links one song's entry to the other.
+    claims = Counter(p for t in tracks for p in t["previous_paths"])
+    for t in tracks:
+        t["previous_paths"] = [p for p in t["previous_paths"] if claims[p] == 1]
 
     playlists = []
     index = library / INDEX_DIRNAME
@@ -138,6 +151,6 @@ def build(cfg: object) -> dict:
 def write(manifest: dict, out: Path) -> None:
     """Write *manifest* to *out*, whole or not at all."""
     out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(out.name + ".tmp")
+    tmp = out.with_name(f"{out.name}.{os.getpid()}.tmp")  # one per writer
     tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
     os.replace(tmp, out)
