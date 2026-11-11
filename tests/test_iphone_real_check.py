@@ -8,6 +8,7 @@ may touch: only `_musaeus_check`, never anything VLC already holds.
 from __future__ import annotations
 
 import importlib.util
+import shutil
 from pathlib import Path
 
 import pytest
@@ -34,12 +35,13 @@ def _edition(tmp_path: Path) -> Path:
     return tmp_path / "edition"
 
 
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="needs rsync")
 def test_one_song_goes_on_and_comes_off_and_nothing_else_is_touched(rc_mod, tmp_path, capsys):
     phone = tmp_path / "phone"
     (phone / "Rock").mkdir(parents=True)
     (phone / "Rock" / "kept.m4a").write_bytes(b"k")
     assert rc_mod.check(_edition(tmp_path), phone) == 0
-    assert "passed" in capsys.readouterr().out
+    assert "Copied and removed small.m4a" in capsys.readouterr().out
     assert sorted(p.relative_to(phone).as_posix() for p in phone.rglob("*")) == [
         "Rock",
         "Rock/kept.m4a",
@@ -67,7 +69,7 @@ def test_two_phones_are_refused(rc_mod, tmp_path, monkeypatch):
     assert rc_mod.check(_edition(tmp_path), tmp_path / "phone") == 1
 
 
-def test_a_phone_left_mounted_fails_the_check(rc_mod, tmp_path, monkeypatch):
+def test_a_phone_left_mounted_fails_the_check(rc_mod, tmp_path, monkeypatch, capsys):
     """If the unmount fails the folder is not empty: rmdir refuses, and the
     check must not report success (local CodeRabbit)."""
     mount = tmp_path / "mnt"
@@ -79,3 +81,5 @@ def test_a_phone_left_mounted_fails_the_check(rc_mod, tmp_path, monkeypatch):
     )
     assert rc_mod.main() == 1
     assert (mount / "still_there").is_file()
+    out = capsys.readouterr().out
+    assert "FAILED" in out and "passed" not in out

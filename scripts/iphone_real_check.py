@@ -68,7 +68,7 @@ def check(edition: Path, mount: Path) -> int:
     if not ok:
         print(f"  FAILED: rsync rc={rc}; the song did not arrive whole.")
         return 1
-    print(f"  Real phone check passed: copied and removed {song.name}.")
+    print(f"  Copied and removed {song.name}.")
     return 0
 
 
@@ -84,6 +84,9 @@ def main() -> int:
         except OSError:
             print(f"  Left {mount} in place (still mounted?). Run:  fusermount -u {mount}")
             rc = 1  # the unmount is part of the check (local CodeRabbit)
+    # Said only after the cleanup, so it never contradicts the exit status
+    # (CodeRabbit on #318).
+    print("  Real phone check passed." if rc == 0 else "  Real phone check FAILED.")
     return rc
 
 
