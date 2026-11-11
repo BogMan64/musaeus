@@ -34,8 +34,8 @@ The rules it keeps, and why each one exists:
   damaged masters are not baked  A master that does not decode cleanly
                    would make a copy that does, hiding the damage.
 
-Lossy masters are left out by default (Grey, 2026-09-27): baking AAC into
-ALAC makes large files of lossy audio. --lossy alac includes them.
+Lossy masters are baked into ALAC by default (Grey, 2026-11-11: they belong
+in the library; 2026-09-27 had left them out). --lossy leave-out leaves them out.
 """
 
 from __future__ import annotations
@@ -115,7 +115,9 @@ LOSSLESS_KIND = Kind(
     "lossless", edition_bake.TARGET_I, "alac_library", _mirror,
     # Looked up at call time, not bound at import: tests stand in for it.
     lambda src, tmp, known: edition_bake.bake(src, tmp, known=known),
-    include_lossy=False, list_compressed=True, label="Lossless",
+    # Grey, 2026-11-11: the lossy masters belong in the library too, made into
+    # ALAC; left out, a plain build never moved their copies after a refile.
+    include_lossy=True, list_compressed=True, label="Lossless",
     recipe_family=edition_bake.LOSSLESS_RECIPE,
 )  # fmt: skip
 
@@ -1418,7 +1420,7 @@ def plan_lines(plan: Plan, *, workers: int, free: int | None = None) -> list[str
     if plan.lossy_left_out:
         lines.append(
             f"  Lossy masters : {len(plan.lossy_left_out):,} left out "
-            f"(--lossy alac bakes them into ALAC)"
+            f"(--lossy alac, the default, bakes them into ALAC)"
         )
     if plan.same_audio:
         lines.append(f"  Same audio    : {len(plan.same_audio):,} second copy(ies), baked once")

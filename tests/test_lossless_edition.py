@@ -209,12 +209,13 @@ def test_an_adopted_copy_takes_the_masters_tags_of_today(cfg):
     assert again.retagged == 0 and again.baked == 0 and again.adopted == 0
 
 
-def test_lossy_masters_are_left_out_unless_asked_for(cfg):
+def test_lossy_masters_are_baked_unless_left_out(cfg):
+    """Grey, 2026-11-11: the lossy masters go into the library by default."""
     _master(cfg, REL, "h1", codec="aac")
-    plan, out, _ = _build(cfg)
+    plan, out, _ = _build(cfg, include_lossy=False)
     assert len(plan.lossy_left_out) == 1 and out.baked == 0
-    plan, out, _ = _build(cfg, include_lossy=True)
-    assert out.baked == 1
+    plan, out, _ = _build(cfg)
+    assert not plan.lossy_left_out and out.baked == 1
 
 
 def test_a_failed_bake_leaves_nothing_behind(cfg, monkeypatch):

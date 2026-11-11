@@ -1072,3 +1072,14 @@ def test_a_build_under_test_never_reaches_a_real_library(cfg, monkeypatch, editi
     r = _cli(cfg, edition, *budget)
     assert r.returncode == 0, r.stdout + r.stderr
     assert not elsewhere.exists(), "the build wrote outside the test's own folders"
+
+
+def test_a_plain_lossless_build_takes_the_lossy_masters(cfg):
+    """Grey, 2026-11-11: the lossy masters belong in the lossless library; a
+    plain build left them out and never moved their copies after a refile."""
+    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1", codec="aac")
+    plain = _cli(cfg, "lossless", "--dry-run")
+    assert plain.returncode == 0, plain.stdout + plain.stderr
+    assert "To bake       : 1 track(s)" in plain.stdout, plain.stdout
+    out = _cli(cfg, "lossless", "--dry-run", "--lossy", "leave-out")
+    assert "To bake       : 0 track(s)" in out.stdout and "1 left out" in out.stdout, out.stdout
