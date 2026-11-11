@@ -34,8 +34,8 @@ The rules it keeps, and why each one exists:
   damaged masters are not baked  A master that does not decode cleanly
                    would make a copy that does, hiding the damage.
 
-Lossy masters are left out by default (Grey, 2026-09-27): baking AAC into
-ALAC makes large files of lossy audio. --lossy alac includes them.
+Lossy masters are baked into ALAC by default (Grey, 2026-11-11: they belong
+in the library; 2026-09-27 had left them out). --lossy leave-out leaves them out.
 """
 
 from __future__ import annotations
@@ -115,7 +115,9 @@ LOSSLESS_KIND = Kind(
     "lossless", edition_bake.TARGET_I, "alac_library", _mirror,
     # Looked up at call time, not bound at import: tests stand in for it.
     lambda src, tmp, known: edition_bake.bake(src, tmp, known=known),
-    include_lossy=False, list_compressed=True, label="Lossless",
+    # Grey, 2026-11-11: the lossy masters belong in the library too, made into
+    # ALAC; left out, a plain build never moved their copies after a refile.
+    include_lossy=True, list_compressed=True, label="Lossless",
     recipe_family=edition_bake.LOSSLESS_RECIPE,
 )  # fmt: skip
 
@@ -192,6 +194,7 @@ class Master:
     decode_ok: int | None = None  # 1 checked clean, 0 checked damaged, None never checked
     seconds_44k: float = 240.0  # its length, scaled to 44.1 kHz: what a bake costs
     seconds: float = 240.0  # its length
+    seconds_known: bool = True  # False: no length on record, 240 s assumed
     title: str = ""
     artist: str = ""
     album: str = ""
@@ -274,6 +277,25 @@ class Plan:
                 total += p.stat().st_size
         return total
 
+    #: A lossy master baked into ALAC is written at 32 bits and its own rate,
+    #: far above its own size (2026-11-11: 6.1 GB from 0.66 GB of AAC; 55 of
+    #: the 87 at 96 kHz). Bound: 32-bit stereo PCM per 44.1 kHz second --
+    #: the copies measured 0.36-0.58 of it. Stereo: more channels are mixed
+    #: down on arrival (none catalogued).
+    LOSSY_ALAC_BYTES_PER_44K_SECOND = 44_100 * 2 * 4
+    #: A lossy master with no length on record: its size at 32 kbps, a floor
+    #: no catalogued AAC or MP3 goes under, bounds how long it can be.
+    LOSSY_MIN_BYTES_PER_SECOND = 4_000
+
+    def _lossless_bytes(self, m: Master) -> int:
+        if m.lossless:
+            return m.size_bytes
+        if m.seconds_known:
+            seconds_44k = m.seconds_44k
+        else:  # CodeRabbit on #319: four minutes is a guess, not a bound
+            seconds_44k = m.size_bytes / self.LOSSY_MIN_BYTES_PER_SECOND
+        return int(seconds_44k * self.LOSSY_ALAC_BYTES_PER_44K_SECOND)
+
     @property
     def bake_bytes(self) -> int:
         """What the bakes will write. A lossless copy is about its master's
@@ -281,7 +303,7 @@ class Plan:
         estimate, container overhead included) -- 256k is a fraction of
         the master, and counting the master overstated the car by ~8x."""
         if self.kind_name == EDITION:
-            return sum(m.size_bytes for m, _ in self.bake)
+            return sum(self._lossless_bytes(m) for m, _ in self.bake)
         # Each edition by its own format: the iPhone was sized with the car's
         # (cloud review of #53), right only while both say 256k.
         spec = editions.EDITIONS[self.kind_name]
@@ -405,6 +427,7 @@ def make_plan(
             decode_ok=r["decode_ok"],
             seconds_44k=float(r["duration"] or 240.0) * (int(r["sample_rate"] or 44_100) / 44_100),
             seconds=float(r["duration"] or 240.0),
+            seconds_known=float(r["duration"] or 0) > 0,
             title=r["title"] or "",
             artist=r["artist"] or "",
             album=r["album"] or "",
@@ -1418,7 +1441,7 @@ def plan_lines(plan: Plan, *, workers: int, free: int | None = None) -> list[str
     if plan.lossy_left_out:
         lines.append(
             f"  Lossy masters : {len(plan.lossy_left_out):,} left out "
-            f"(--lossy alac bakes them into ALAC)"
+            f"(--lossy alac, the default, bakes them into ALAC)"
         )
     if plan.same_audio:
         lines.append(f"  Same audio    : {len(plan.same_audio):,} second copy(ies), baked once")

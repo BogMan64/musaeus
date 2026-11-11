@@ -209,12 +209,46 @@ def test_an_adopted_copy_takes_the_masters_tags_of_today(cfg):
     assert again.retagged == 0 and again.baked == 0 and again.adopted == 0
 
 
-def test_lossy_masters_are_left_out_unless_asked_for(cfg):
+def test_lossy_masters_are_baked_unless_left_out(cfg):
+    """Grey, 2026-11-11: the lossy masters go into the library by default."""
     _master(cfg, REL, "h1", codec="aac")
-    plan, out, _ = _build(cfg)
+    plan, out, _ = _build(cfg, include_lossy=False)
     assert len(plan.lossy_left_out) == 1 and out.baked == 0
-    plan, out, _ = _build(cfg, include_lossy=True)
-    assert out.baked == 1
+    plan, out, _ = _build(cfg)
+    assert not plan.lossy_left_out and out.baked == 1
+
+
+def _lossless_plan(cfg):
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    ledger = open_ledger(ledger_path(cfg))
+    try:
+        return eb.make_plan(conn, ledger, cfg.alac_archive, cfg.alac_library)
+    finally:
+        conn.close()
+        ledger.close()
+
+
+@pytest.mark.parametrize("rate", [44_100, 96_000])
+def test_a_lossy_bake_is_sized_by_its_length_and_rate_not_its_small_file(cfg, rate):
+    """An AAC master's ALAC copy is written at 32 bits and its own rate:
+    about 9x the AAC (local CodeRabbit), more at 96 kHz (CodeRabbit on #319)."""
+    _master(cfg, REL, "h1", codec="aac")
+    sqlite3.connect(cfg.db_path).execute(
+        "UPDATE archive SET duration = 240, sample_rate = ?", (rate,)
+    ).connection.commit()
+    ((m, _),) = _lossless_plan(cfg).bake
+    expected = int(240 * rate / 44_100 * 44_100 * 2 * 4)
+    assert _lossless_plan(cfg).bake_bytes == expected > 50 * m.size_bytes
+
+
+def test_a_lossy_master_with_no_length_is_sized_from_its_file(cfg):
+    """CodeRabbit on #319: no length on record must not read as four minutes."""
+    _master(cfg, REL, "h1", codec="aac")
+    sqlite3.connect(cfg.db_path).execute("UPDATE archive SET duration = NULL").connection.commit()
+    plan = _lossless_plan(cfg)
+    ((m, _),) = plan.bake
+    assert plan.bake_bytes == int(m.size_bytes / 4_000 * 44_100 * 2 * 4)
 
 
 def test_a_failed_bake_leaves_nothing_behind(cfg, monkeypatch):

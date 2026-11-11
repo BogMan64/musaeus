@@ -1414,7 +1414,7 @@ def _cmd_edition_build_inner(args) -> int:
                 masters_root,
                 edition_root,
                 kind=kind,
-                include_lossy=(args.lossy == "alac") if kind.name == "lossless" else None,
+                include_lossy={"alac": True, "leave-out": False}.get(args.lossy),
                 rebake_compressed=args.rebake_compressed,
                 click_allowed=click_allowed,
             )
@@ -2320,7 +2320,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--lossy",
         choices=("leave-out", "alac"),
         default=None,
-        help="lossless only: leave lossy masters out (default) or bake them into ALAC "
+        help="lossless only: bake lossy masters into ALAC (default) or leave them out "
         "(car and iphone always include them)",
     )
 
