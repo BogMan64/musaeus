@@ -2228,4 +2228,4 @@ class TestAGroupWithNothingLeft:
         DupeResolverStage().execute(ctx)
         statuses = {r[0] for r in ctx.conn.execute(
             "SELECT status FROM duplicates WHERE group_id = 'near_away'")}  # fmt: skip
-        assert "stale" not in statuses, statuses
+        assert statuses == {"pending"}, statuses
