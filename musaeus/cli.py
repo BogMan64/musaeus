@@ -29,6 +29,8 @@ Pipeline commands:
                      rows untouched (--dry-run)
     iphone-sync      Put the iPhone edition on the phone: sized to its free space,
                      asks before clearing VLC (Linux: ifuse + rsync)
+    export itunes    Write the file the iTunes Companion reads (the lossless
+                     edition's songs and playlists); read-only otherwise
     forge            Measure EBU R128 loudness + write ReplayGain tags
     tagger           Write normalised DB metadata back to file tags
     auditor          Pre-forge LUFS audit (flags out-of-window files)
@@ -2276,6 +2278,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="put only this genre on the phone (a song's first genre; repeatable); yes replaces VLC",
     )
 
+    # export
+    export_p = sub.add_parser(
+        "export", help="export itunes: the file the iTunes Companion reads (read-only otherwise)"
+    )
+    export_p.add_argument("what", choices=("itunes",), help="what to export")
+    export_p.add_argument(
+        "--out",
+        default=None,
+        help="where to write (default: <vault>/Exports/musaeus-itunes-bridge.json)",
+    )
+
     # edition-build
     eb_p = sub.add_parser(
         "edition-build",
@@ -2906,6 +2919,19 @@ def main() -> None:
                     print("Genres: " + ", ".join(sorted(known)), file=sys.stderr)
                     sys.exit(2)
             sys.exit(sync(cfg.iphone_library, Path(args.mount), genres=tuple(args.genre or ())))
+
+        elif command == "export":
+            from . import itunes_export
+
+            cfg = get_config()
+            out = Path(args.out or Path(cfg.vault_root) / "Exports" / "musaeus-itunes-bridge.json")
+            manifest = itunes_export.build(cfg)
+            itunes_export.write(manifest, out)
+            moved = sum(1 for t in manifest["tracks"] if t["previous_paths"])
+            print(f"iTunes export: {out}")
+            print(f"  songs     : {len(manifest['tracks']):,} ({moved:,} with an earlier place)")
+            print(f"  playlists : {len(manifest['playlists'])}")
+            sys.exit(0)
 
         elif command == "playlist":
             sys.exit(_run_pipeline([PlaylistStage], dry_run=dry_run))
