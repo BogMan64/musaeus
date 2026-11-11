@@ -74,5 +74,8 @@ def test_a_phone_left_mounted_fails_the_check(rc_mod, tmp_path, monkeypatch):
     mount.mkdir()
     monkeypatch.setattr(rc_mod.tempfile, "mkdtemp", lambda prefix="": str(mount))
     monkeypatch.setattr(rc_mod, "check", lambda edition, m: (m / "still_there").touch() or 0)
+    monkeypatch.setattr(
+        rc_mod.MusicConfig, "from_env", lambda: type("C", (), {"iphone_library": tmp_path})
+    )
     assert rc_mod.main() == 1
     assert (mount / "still_there").is_file()
