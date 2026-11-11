@@ -44,39 +44,64 @@ def _read_only(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 
 
-def _moves(conn: sqlite3.Connection) -> dict[str, list[tuple[int, str]]]:
-    """new path -> (event id, the path it came from), newest first. Read
-    once: a query per song took five minutes on 7,991 songs."""
-    qs = ",".join("?" * len(MOVE_EVENTS))
-    out: dict[str, list[tuple[int, str]]] = {}
-    for eid, old, new in conn.execute(
-        f"SELECT id, old_value, new_value FROM events WHERE event_type IN ({qs}) ORDER BY id DESC",
-        MOVE_EVENTS,
-    ):
-        if old and new:
-            out.setdefault(new, []).append((eid, old))
-    return out
+class _History:
+    """The catalogue's record of where files went, read once (a query per
+    song took five minutes on 7,991 songs). Paths only: a drive letter or a
+    leading slash."""
 
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        #: path -> (event id, event type, where it came from), newest first:
+        #: EVERY event that names the path as a destination, not only moves.
+        self.arrivals: dict[str, list[tuple[int, str, str]]] = {}
+        #: path -> ids of events that took a file away from it, newest first.
+        self.departures: dict[str, list[int]] = {}
+        #: path -> (event id, audio fingerprint prefix), newest first.
+        self.hashes: dict[str, list[tuple[int, str]]] = {}
+        for eid, kind, file_path, old, new in conn.execute(
+            "SELECT id, event_type, file_path, old_value, new_value FROM events "
+            "WHERE new_value LIKE '/%' OR new_value LIKE '_:%' "
+            "OR old_value LIKE '/%' OR old_value LIKE '_:%' "
+            "OR event_type = 'HASH_COMPUTED' ORDER BY id DESC"
+        ):
+            if kind == "HASH_COMPUTED":
+                if file_path and new:
+                    self.hashes.setdefault(file_path, []).append((eid, new.rstrip("…")))
+                continue
+            if new and old:
+                self.arrivals.setdefault(new, []).append((eid, kind, old))
+            if old:
+                self.departures.setdefault(old, []).append(eid)
 
-def _earlier_masters(moves: dict[str, list[tuple[int, str]]], master: str) -> list[str]:
-    """Every path *master* had before, newest first.
+    def earlier_masters(self, master: str, audio_hash: str) -> list[str]:
+        """Every path *master* had before, newest first.
 
-    One step back at a time, each strictly older than the last: a path can
-    hold another song before or after this one, and only the latest arrival
-    before this song left it is this song's (local CodeRabbit: following
-    every arrival handed one song another's old place).
-    """
-    out: list[str] = []
-    path, before = master, None
-    while True:
-        step = next(
-            ((eid, old) for eid, old in moves.get(path, ()) if before is None or eid < before),
-            None,
-        )
-        if step is None or step[1] in out or step[1] == master:
-            return out
-        before, path = step
-        out.append(path)
+        One step back at a time, each strictly older than the last. A step
+        is taken only when it is surely this recording's (CodeRabbit on #321;
+        local CodeRabbit): the latest arrival at the path is one of the moves,
+        not a finalize, a restore or anything else; nothing left the path
+        between that arrival and this song leaving it; and where a
+        fingerprint was recorded at the old path, it is this recording's.
+        """
+        out: list[str] = []
+        path, before = master, None
+
+        def newest(items, key=lambda x: x):
+            return next((x for x in items if before is None or key(x) < before), None)
+
+        while True:
+            arrival = newest(self.arrivals.get(path, ()), key=lambda a: a[0])
+            if arrival is None or arrival[1] not in MOVE_EVENTS:
+                return out
+            eid, _, old = arrival
+            left = newest(self.departures.get(path, ()))
+            if left is not None and left > eid:
+                return out  # the file that arrived then left again
+            seen = next((h for i, h in self.hashes.get(old, ()) if i < eid), None)
+            if seen and not audio_hash.startswith(seen):
+                return out  # another recording was at the old path
+            if old != master and old not in out:
+                out.append(old)
+            path, before = old, eid
 
 
 def _playlist_paths(playlist: Path, tracks: set[str]) -> list[str]:
@@ -98,28 +123,28 @@ def build(cfg: object) -> dict:
     ledger = _read_only(ledger_path(cfg))
     try:
         rows = ledger.execute(
-            "SELECT output_path, master_path FROM edition_copies WHERE edition = ? "
+            "SELECT output_path, master_path, master_hash FROM edition_copies WHERE edition = ? "
             "ORDER BY output_path",
             (EDITION,),
         ).fetchall()
     finally:
         ledger.close()
     copies = [
-        (os.path.normpath(out), master)
-        for out, master in rows
+        (os.path.normpath(out), master, audio_hash)
+        for out, master, audio_hash in rows
         if Path(out).is_file() and Path(out).is_relative_to(library)
     ]
-    current = {out for out, _ in copies}
+    current = {out for out, _, _ in copies}
 
     catalogue = _read_only(Path(cfg.db_path))  # type: ignore[attr-defined]
     try:
-        moves = _moves(catalogue)
+        history = _History(catalogue)
     finally:
         catalogue.close()
     tracks = []
-    for out, master in copies:
+    for out, master, audio_hash in copies:
         previous: list[str] = []
-        for old in _earlier_masters(moves, master):
+        for old in history.earlier_masters(master, audio_hash or ""):
             if not Path(old).is_relative_to(masters):
                 continue  # it was not in the library then: no copy of it
             was = os.path.normpath(_mirror(masters, library, Path(old)))

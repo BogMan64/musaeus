@@ -133,3 +133,58 @@ def test_a_place_another_song_had_first_is_not_this_songs(cfg):
     tracks = {t["path"]: t["previous_paths"] for t in itunes_export.build(cfg)["tracks"]}
     assert tracks[str(a_out)] == []
     assert tracks[str(b_out)] == [str(cfg.alac_library / "Rock/Z/Z/Z.m4a")]
+
+
+def _hash(cfg, path: Path, prefix: str) -> None:
+    conn = open_db(cfg.db_path)
+    conn.execute(
+        "INSERT INTO events (run_id, event_type, file_path, new_value) "
+        "VALUES ('r', 'HASH_COMPUTED', ?, ?)",
+        (str(path), prefix + "…"),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_a_place_left_and_refilled_another_way_is_not_this_songs(cfg):
+    """CodeRabbit on #321: A moved X -> Y, left Y for review, and B was
+    finalized to Y. B's history must not reach X."""
+    y_master, y_out = _copy(cfg, "Rock/Y/Y/Y.m4a")
+    x = cfg.alac_archive / "Rock/X/X/X.m4a"
+    _moved(cfg, x, y_master)  # A: X -> Y
+    _moved(cfg, y_master, cfg.vault_root / "REVIEW/Y.m4a", "DUPE_MOVED_FOR_REVIEW")  # A leaves
+    _moved(cfg, cfg.vault_root / "STAGING/Y.m4a", y_master, "FINALIZE_MOVE")  # B arrives
+    (track,) = itunes_export.build(cfg)["tracks"]
+    assert track["path"] == str(y_out) and track["previous_paths"] == []
+
+
+def test_a_place_left_with_no_record_of_a_return_stops_the_history(cfg):
+    y_master, _ = _copy(cfg, "Rock/Y/Y/Y.m4a")
+    _moved(cfg, cfg.alac_archive / "Rock/X/X/X.m4a", y_master)
+    _moved(cfg, y_master, cfg.vault_root / "REVIEW/Y.m4a", "DUPE_MOVED_FOR_REVIEW")
+    (track,) = itunes_export.build(cfg)["tracks"]
+    assert track["previous_paths"] == []
+
+
+def test_another_recordings_fingerprint_at_the_old_place_stops_the_history(cfg):
+    master, _ = _copy(cfg, "Rock/Y/Y/Y.m4a")  # its master_hash is the rel path
+    x = cfg.alac_archive / "Rock/X/X/X.m4a"
+    _hash(cfg, x, "deadbeef")
+    _moved(cfg, x, master)
+    (track,) = itunes_export.build(cfg)["tracks"]
+    assert track["previous_paths"] == []
+
+
+def test_a_place_visited_twice_does_not_end_the_history(cfg):
+    """Local CodeRabbit on #321: Z -> A -> B -> A -> C reaches Z."""
+    c_master, _ = _copy(cfg, "Rock/C/C/C.m4a")
+    z, a, b = (cfg.alac_archive / f"Rock/{n}/{n}/{n}.m4a" for n in "ZAB")
+    for old, new in ((z, a), (a, b), (b, a), (a, c_master)):
+        _moved(cfg, old, new)
+    (track,) = itunes_export.build(cfg)["tracks"]
+    lib = cfg.alac_library
+    assert track["previous_paths"] == [
+        str(lib / "Rock/A/A/A.m4a"),
+        str(lib / "Rock/B/B/B.m4a"),
+        str(lib / "Rock/Z/Z/Z.m4a"),
+    ]
