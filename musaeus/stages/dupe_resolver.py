@@ -1864,7 +1864,12 @@ class DupeResolverStage(BaseStage):
             # purpose, 2026-11-07). Nothing can be kept or moved, and the
             # rows came back on every run as "the copy to keep is not on
             # disk" (13 groups, 2026-11-11). Closed as 'stale', as above.
-            if members and not any(_is_there(m) for m in members):
+            # Only copies with neither a catalogue row nor a file: a catalogued
+            # copy whose drive is away for a while keeps its group (local
+            # CodeRabbit).
+            if members and all(
+                m.get("current_row") is None and not Path(m["file_path"]).exists() for m in members
+            ):
                 result.files_skipped += len(members)
                 if not dry_run:
                     ctx.conn.executemany(
