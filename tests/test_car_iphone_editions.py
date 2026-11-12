@@ -1090,7 +1090,6 @@ def test_the_playlists_are_written_under_the_build_lock(cfg, monkeypatch):
     must never read playlists a build is still writing."""
     from musaeus import cli, edition_index
 
-    _master(cfg, "Rock/Stones/Hits/The Rolling Stones - Angie.m4a", "h1")
     held = []
 
     def index_while_locked(cfg_, root, apply):
@@ -1102,6 +1101,7 @@ def test_the_playlists_are_written_under_the_build_lock(cfg, monkeypatch):
         return [], []
 
     monkeypatch.setattr(edition_index, "write_index", index_while_locked)
+    monkeypatch.setattr(eb, "execute", lambda *a, **k: eb.Outcome())  # no audio needed
     monkeypatch.setattr(cli, "get_config", lambda: cfg)
     monkeypatch.setenv("MUSAEUS_NO_SLEEP_INHIBIT", "1")
     assert cli._cmd_edition_build(cli._build_parser().parse_args(["edition-build", "car"])) == 0
