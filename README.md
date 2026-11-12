@@ -291,6 +291,7 @@ options. The ones used most:
 | `doctor`, `bitrot`, `deep-scan`, `health-report` | checks |
 | `dedupe`, `possible-dupes` | choose duplicates by hand; list pairs that may be one song |
 | `edition`, `edition-build`, `iphone-sync`, `playlist` | editions |
+| `export itunes` | write the file the iTunes Companion reads: the lossless edition's songs and playlists (`<vault>/Exports/musaeus-itunes-bridge.json`); read-only otherwise |
 | `genre-suggest`, `genre-validate`, `canon-review` | genres and names |
 | `report`, `upgrade-check`, `spec-scout` | reports |
 | `reset` | wipe the database (you type RESET to confirm; files are not touched) |

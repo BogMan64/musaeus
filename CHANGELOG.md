@@ -3,7 +3,7 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 `0.2.0` is the first tagged version. `pyproject.toml` said `0.1.0` from July
-2026 while 301 pull requests were merged, so the sections below it are by
+2026 while 302 pull requests were merged, so the sections below it are by
 month, newest first, and name the pull requests. The full record is
 `gh pr list --state merged --limit 500`.
 
@@ -47,7 +47,7 @@ clone, with 13 test files.
 - `docs/TESTING_ON_YOUR_OWN_FILES.md`: real folder names; the hold deletes
   after 30 days.
 
-## 2026-11 (#269–#320)
+## 2026-11 (#269–#321)
 
 - **30-day hold** (#286): REVIEW and QUARANTINE are no longer checked by
   hand; audio held 30 days is deleted and denied.
@@ -63,6 +63,7 @@ clone, with 13 test files.
   UTF-8 everywhere, path handling, a Windows CI job. Paused 2026-11-10.
 - **Preflight** runs an ffmpeg self-test when the ffmpeg version changes
   (#305). The Debian package builds again (#281).
+- `musaeus export itunes` writes the file the iTunes Companion reads (#321).
 - Run problem lists judge machine failures by the decoder's words (#280).
   A duplicate group with no copy left is closed (#320).
 
