@@ -20,7 +20,8 @@ clone, with 13 test files.
 - `musaeus run` with no vault and no answer, and an abandoned
   `musaeus setup`, ended with exit code 0. Both now exit 1.
 - `musaeus report`, `upgrade-check`, `spec-scout` and `canon-review` crashed
-  with "No module named 'scripts'" when run from outside the checkout.
+  with "No module named 'scripts'" when run from outside the checkout, or
+  when another folder or package named `scripts` was found first.
 - `hold_keep.txt` saved with a byte-order mark or a trailing space no longer
   loses its first (or that) name; an unmatched name is deleted after the
   30-day hold.
