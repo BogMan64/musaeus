@@ -51,7 +51,7 @@ class _History:
     song took five minutes on 7,991 songs). Paths only: a drive letter or a
     leading slash."""
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: sqlite3.Connection | None) -> None:
         #: path -> (event id, event type, where it came from), newest first:
         #: EVERY event that names the path as a destination, not only moves.
         self.arrivals: dict[str, list[tuple[int, str, str]]] = {}
@@ -59,12 +59,17 @@ class _History:
         self.departures: dict[str, list[int]] = {}
         #: path -> (event id, audio fingerprint prefix), newest first.
         self.hashes: dict[str, list[tuple[int, str]]] = {}
-        for eid, kind, file_path, old, new in conn.execute(
-            "SELECT id, event_type, file_path, old_value, new_value FROM events "
-            "WHERE new_value LIKE '/%' OR new_value LIKE '_:%' "
-            "OR old_value LIKE '/%' OR old_value LIKE '_:%' "
-            "OR event_type = 'HASH_COMPUTED' ORDER BY id DESC"
-        ):
+        rows = (
+            conn.execute(
+                "SELECT id, event_type, file_path, old_value, new_value FROM events "
+                "WHERE new_value LIKE '/%' OR new_value LIKE '_:%' "
+                "OR old_value LIKE '/%' OR old_value LIKE '_:%' "
+                "OR event_type = 'HASH_COMPUTED' ORDER BY id DESC"
+            )
+            if conn is not None
+            else ()
+        )
+        for eid, kind, file_path, old, new in rows:
             if kind == "HASH_COMPUTED":
                 if file_path and new:
                     self.hashes.setdefault(file_path, []).append((eid, new.rstrip("…")))
@@ -137,10 +142,13 @@ def build(cfg: object) -> dict:
         ).fetchall()
     finally:
         ledger.close()
+    # Containment on the real paths: ".." and a symlink out both pass a plain
+    # is_relative_to (local CodeRabbit and CodeRabbit on #321).
+    real_library = Path(os.path.realpath(library))
     copies = []
     for out, master, audio_hash in rows:
-        out = os.path.normpath(out)  # before the root check: ".." passes is_relative_to
-        if not Path(out).is_relative_to(library):
+        out = os.path.normpath(out)
+        if not Path(os.path.realpath(out)).is_relative_to(real_library):
             continue
         # Its marker, not only a file: a stale record's path may hold another
         # master's copy (CodeRabbit on #321). No file reads as no marker.
@@ -148,11 +156,14 @@ def build(cfg: object) -> dict:
             copies.append((out, master, audio_hash))
     current = {out for out, _, _ in copies}
 
-    catalogue = _read_only(Path(cfg.db_path))  # type: ignore[attr-defined]
+    # After `musaeus reset` there is no catalogue: no history, the copies still go.
+    db = Path(cfg.db_path)  # type: ignore[attr-defined]
+    catalogue = _read_only(db) if db.is_file() else None
     try:
         history = _History(catalogue)
     finally:
-        catalogue.close()
+        if catalogue is not None:
+            catalogue.close()
     tracks = []
     for out, master, audio_hash in copies:
         previous: list[str] = []
@@ -161,6 +172,8 @@ def build(cfg: object) -> dict:
             if not Path(old).is_relative_to(masters):
                 continue  # it was not in the library then: no copy of it
             was = os.path.normpath(_mirror(masters, library, Path(old)))
+            if not Path(os.path.realpath(was)).is_relative_to(real_library):
+                continue
             if was != out and was not in current and was not in previous:
                 previous.append(was)
         tracks.append({"path": out, "previous_paths": previous})

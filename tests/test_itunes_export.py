@@ -282,6 +282,8 @@ def test_the_export_waits_for_no_lossless_build(cfg, tmp_path, monkeypatch):
     out = tmp_path / "bridge.json"
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("MUSAEUS_VAULT_ROOT", str(tmp_path))
+    # get_config() keeps its first answer: an earlier test's vault would hold no lock.
+    monkeypatch.setattr(cli, "get_config", lambda: cfg)
     monkeypatch.setattr(sys, "argv", ["musaeus", "export", "itunes", "--out", str(out)])
     with (
         edition_build.build_lock(cfg.runs_root / "locks", "lossless"),
@@ -289,3 +291,23 @@ def test_the_export_waits_for_no_lossless_build(cfg, tmp_path, monkeypatch):
     ):
         cli.main()
     assert e.value.code == 1 and not out.exists()
+
+
+def test_with_no_catalogue_the_copies_still_go_out(cfg):
+    """CodeRabbit on #321: `musaeus reset` deletes the catalogue; the ledger stays."""
+    _, out = _copy(cfg, "Rock/A/X/A - One.m4a")
+    cfg.db_path.unlink()
+    assert itunes_export.build(cfg)["tracks"] == [{"path": str(out), "previous_paths": []}]
+    assert not cfg.db_path.exists()
+
+
+def test_a_copy_behind_a_symlink_out_of_the_library_is_left_out(cfg, tmp_path):
+    """CodeRabbit on #321: a link inside the library to a folder outside it."""
+    outside = tmp_path / "Elsewhere"
+    outside.mkdir()
+    try:
+        (cfg.alac_library / "Linked").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("this system cannot make a symlink")
+    _copy(cfg, "Linked/A/X/A - Out.m4a")
+    assert itunes_export.build(cfg)["tracks"] == []
