@@ -2,8 +2,8 @@
 
 A token on a command line lands in shell history, in `ps` output, and in any
 log that records the invocation. So: an environment variable, or a file with
-mode 600 on the backup drive -- Grey's own convention, secrets never in a
-project directory or on the Desktop.
+mode 600 in the folder MUSAEUS_SECRETS_DIR names (in ~/.config/musaeus/settings.env)
+-- secrets never in a project directory or on the Desktop.
 """
 
 from __future__ import annotations
@@ -11,9 +11,16 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-#: Grey's convention: /mnt/NUC8TB_BACKUP/SECRETS/, not the project tree.
-DEFAULT_SECRETS = Path("/mnt/NUC8TB_BACKUP/SECRETS/listenbrainz.env")
 VAR = "LISTENBRAINZ_USER_TOKEN"
+FILE_NAME = "listenbrainz.env"
+
+
+def secrets_file() -> Path | None:
+    """listenbrainz.env in MUSAEUS_SECRETS_DIR, or None when that is not set."""
+    import musaeus.config  # noqa: F401  -- puts settings.env's values in os.environ
+
+    folder = (os.environ.get("MUSAEUS_SECRETS_DIR") or "").strip()
+    return Path(folder).expanduser() / FILE_NAME if folder else None
 
 
 class TokenMissing(RuntimeError):
@@ -30,8 +37,8 @@ def load_token(path: Path | None = None) -> str:
     if from_env:
         return from_env
 
-    p = path or DEFAULT_SECRETS
-    if p.exists():
+    p = path or secrets_file()
+    if p is not None and p.exists():
         try:
             for raw in p.read_text(encoding="utf-8").splitlines():
                 line = raw.strip()
@@ -46,11 +53,13 @@ def load_token(path: Path | None = None) -> str:
         except OSError as exc:
             raise TokenMissing(f"cannot read {p}: {exc}") from exc
 
+    where = p or f"<MUSAEUS_SECRETS_DIR>/{FILE_NAME}"
     raise TokenMissing(
         f"no ListenBrainz user token.\n"
         f"  Get one:   https://listenbrainz.org/settings/  (signs in via MusicBrainz)\n"
-        f"  Store it:  printf '{VAR}=%s\\n' 'the-token' > {DEFAULT_SECRETS}\n"
-        f"             chmod 600 {DEFAULT_SECRETS}\n"
+        f"  Store it:  printf '{VAR}=%s\\n' 'the-token' > {where}\n"
+        f"             chmod 600 {where}\n"
+        f"             (MUSAEUS_SECRETS_DIR is set in ~/.config/musaeus/settings.env)\n"
         f"  Or set:    export {VAR}=the-token\n"
         f"\n"
         f"  This is a USER TOKEN. It is not a MetaBrainz OAuth client id or\n"

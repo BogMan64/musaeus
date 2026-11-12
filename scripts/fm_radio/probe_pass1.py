@@ -35,8 +35,9 @@ from collections import Counter
 from pathlib import Path
 
 from musaeus.brackets import CLOSE, OPEN
+from musaeus.config import get_config  # noqa: E402  (the vault comes from settings.env)
 
-MB_CACHE = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/_db_backups/mb_cache.db")
+MB_CACHE = get_config().mb_cache_path
 LB = "https://api.listenbrainz.org/1/popularity/top-recordings-for-artist/{}"
 UA = "fm-radio-lab/0.1 (research probe; grey@localhost)"
 OUT = Path("/tmp/pass1_probe.md")

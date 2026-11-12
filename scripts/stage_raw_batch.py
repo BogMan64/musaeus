@@ -26,11 +26,10 @@ import shutil
 import sys
 from pathlib import Path
 
-sys.path.insert(0, "/mnt/FORGE2TB/Projects/MUSAEUS")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from musaeus.config import MusicConfig
 from musaeus.safe_save import copy_to_new
 
-RAW_ROOT = Path("/media/grey/USB1/2.- Curated.RAW.Files")
 MANIFEST_NAME = "raw_rebuild_manifest.csv"
 
 
@@ -41,7 +40,7 @@ MANIFEST_NAME = "raw_rebuild_manifest.csv"
 TERMINAL = {"denied", "verified-new", "missing"}
 
 
-def build_manifest(cfg: MusicConfig, manifest: Path) -> list[dict]:
+def build_manifest(cfg: MusicConfig, manifest: Path, raw_root: Path) -> list[dict]:
     """One row per raw file, with why we think it is already done.
 
     The archive query is deliberately unfiltered by status: a row in
@@ -75,7 +74,7 @@ def build_manifest(cfg: MusicConfig, manifest: Path) -> list[dict]:
         previous = {r["basename"]: r for r in load(manifest)}
 
     rows = []
-    for p in sorted(RAW_ROOT.rglob("*.m4a"), key=lambda x: x.name):
+    for p in sorted(raw_root.rglob("*.m4a"), key=lambda x: x.name):
         prior = previous.get(p.name)
         if prior and prior["state"] in TERMINAL:
             rows.append({"path": str(p), "basename": p.name,
@@ -126,6 +125,7 @@ def copy_verified(src: Path, dest: Path) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--raw-root", type=Path, required=True, help="the folder of raw .m4a files to stage")
     ap.add_argument("--count", type=int, default=0, help="how many to stage (0 = all pending)")
     ap.add_argument("--rebuild-manifest", action="store_true")
     ap.add_argument("--status", action="store_true")
@@ -135,7 +135,7 @@ def main() -> int:
     manifest = cfg.meta_dir / MANIFEST_NAME
 
     if args.rebuild_manifest or not manifest.exists():
-        rows = build_manifest(cfg, manifest)
+        rows = build_manifest(cfg, manifest, args.raw_root)
         print(f"manifest built: {manifest}")
     else:
         rows = load(manifest)

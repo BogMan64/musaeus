@@ -40,8 +40,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from musaeus.handoff import write_tool_handoff  # noqa: E402
 
-VAULT_DB = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db")
-
 #: Tiers this will write without further argument. "1-AGREED" means two or
 #: more independent sources named the same album; the single-source and
 #: disagreement tiers are judgement calls and stay out unless asked for.
@@ -139,7 +137,7 @@ def apply_rows(
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("csv_path", type=Path, help="proposal CSV from propose_album_names.py")
-    ap.add_argument("--db", type=Path, default=VAULT_DB)
+    ap.add_argument("--db", type=Path, help="default: the catalogue in your MUSAEUS settings")
     ap.add_argument(
         "--tier",
         action="append",
@@ -148,6 +146,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--live", action="store_true", help="actually write (default: dry run)")
     args = ap.parse_args(argv)
+    if args.db is None:
+        from musaeus.config import get_config
+
+        args.db = get_config().db_path
 
     tiers = tuple(args.tier) if args.tier else DEFAULT_TIERS
 

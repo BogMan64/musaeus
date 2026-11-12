@@ -40,7 +40,7 @@
 #   ./musaeus_overnight.sh --dry-run    # preview every stage, no mutations
 #
 # Schedule (cron example — run at 11pm):
-#   0 23 * * * /mnt/FORGE2TB/Projects/MUSAEUS/musaeus_overnight.sh >> /mnt/FORGE2TB/Projects/MUSAEUS_VAULT/RUNS/overnight.log 2>&1
+#   0 23 * * * /path/to/MUSAEUS/musaeus_overnight.sh >> /path/to/MUSAEUS_VAULT/RUNS/overnight.log 2>&1
 #
 # Note: uses `python3 -m musaeus`, not the bare `musaeus` console script --
 # cron's default PATH does not include ~/.local/bin, so the bare command
@@ -64,7 +64,14 @@ set -uo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VAULT_ROOT="${MUSAEUS_VAULT_ROOT:-/mnt/FORGE2TB/Projects/MUSAEUS_VAULT}"
+# The vault: the environment, else ~/.config/musaeus/settings.env (cron sets
+# neither). No built-in default: unset, the run stops here.
+SETTINGS="${HOME}/.config/musaeus/settings.env"
+if [ -z "${MUSAEUS_VAULT_ROOT:-}" ] && [ -f "$SETTINGS" ]; then
+    MUSAEUS_VAULT_ROOT="$(sed -n 's/^MUSAEUS_VAULT_ROOT=//p' "$SETTINGS" | tail -n 1 | tr -d "\"'")"
+fi
+VAULT_ROOT="${MUSAEUS_VAULT_ROOT:?not set: put MUSAEUS_VAULT_ROOT in ~/.config/musaeus/settings.env}"
+VAULT_ROOT="${VAULT_ROOT/#\~/$HOME}"
 LOG_DIR="${VAULT_ROOT}/RUNS/LOGS"
 MIN_FREE_GB=50          # minimum free GB required to run the canonical chain
 CURATOR_MIN_FREE_GB=400 # minimum free GB required to run Curator

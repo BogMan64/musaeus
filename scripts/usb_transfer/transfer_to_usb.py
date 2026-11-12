@@ -93,7 +93,7 @@ Usage:
     python3 scripts/usb_transfer/transfer_to_usb.py --list-devices
     python3 scripts/usb_transfer/transfer_to_usb.py --library alac        # dry run
     python3 scripts/usb_transfer/transfer_to_usb.py --library alac --device /dev/sdb --execute
-    python3 scripts/usb_transfer/transfer_to_usb.py --library car --no-format --dest /media/grey/MUSAEUS --execute
+    python3 scripts/usb_transfer/transfer_to_usb.py --library car --no-format --dest /media/you/MUSAEUS --execute
 """
 
 from __future__ import annotations
@@ -285,7 +285,7 @@ def critical_backing_disks(vault_root: Path, extra_mounts: list[Path] | None = N
     guarantee -- a long-attached backup drive in a USB enclosure can
     report RM=0 (excluding it from the picker) or RM=1 (a real risk this
     covers) depending on the controller/driver. Pass e.g.
-    --extra-critical-mount /mnt/NUC8TB_BACKUP for any other real data
+    --extra-critical-mount /mnt/backup for any other real data
     drive that should never be a wipe target regardless of how it reports."""
     critical: set[str] = set()
     for p in (Path("/"), Path("/home"), vault_root, *(extra_mounts or [])):
@@ -342,7 +342,7 @@ def confirm_wipe(device: BlockDevice) -> bool:
 def build_unmount_commands(device: BlockDevice) -> list[list[str]]:
     """Pure: unmount commands for every currently-mounted partition of
     *device*. wipefs refuses to touch a busy/mounted device -- hit for
-    real 2026-09-03: /dev/sde was still auto-mounted at /media/grey/MyTunes
+    real 2026-09-03: /dev/sde was still auto-mounted at /media/you/MyTunes
     from being plugged in, and wipefs failed with "Device or resource
     busy" instead of unmounting it first."""
     return [["umount", mp] for mp in device.mountpoints]
@@ -1404,7 +1404,7 @@ def _main(stack: contextlib.ExitStack) -> int:
         default=None,
         metavar="DIR",
         help=(
-            "Directory to copy into, for --no-format -- e.g. /media/grey/MUSAEUS. "
+            "Directory to copy into, for --no-format -- e.g. /media/you/MUSAEUS. "
             "Preferred over --device on that path: it says exactly which mounted "
             "filesystem to write to instead of guessing from the partition table."
         ),

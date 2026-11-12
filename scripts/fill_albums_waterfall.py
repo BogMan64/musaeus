@@ -26,13 +26,21 @@ Never overwrites an album that already exists.
 """
 from __future__ import annotations
 
-import argparse, csv, json, os, re, sqlite3, sys, time, unicodedata
+import argparse
+import csv
+import json
+import os
+import re
+import sqlite3
+import sys
+import time
+import unicodedata
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-sys.path.insert(0, "/mnt/FORGE2TB/Projects/MUSAEUS")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from musaeus.brackets import strip_bracketed
 from musaeus.config import MusicConfig
 

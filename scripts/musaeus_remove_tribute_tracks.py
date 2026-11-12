@@ -38,7 +38,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, "/mnt/FORGE2TB/Projects/MUSAEUS")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from musaeus.config import MusicConfig
 from musaeus.stages.organize import build_track_filename, sanitize_path_component, unique_path
 

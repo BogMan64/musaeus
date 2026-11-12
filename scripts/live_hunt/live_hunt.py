@@ -57,9 +57,8 @@ from pathlib import Path
 
 from musaeus.brackets import CLOSE, OPEN
 
-VAULT_DB = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db")
 # Resolved from THIS file's location, not from a hardcoded checkout path.
-# Until 2026-09-15 this named /mnt/FORGE2TB/Projects/MUSAEUS-sandbox, a
+# Until 2026-09-15 this named a MUSAEUS-sandbox checkout, a
 # directory that does not exist, so the tool could not run at all -- it exited
 # with its own "point --musaeus-src at a MUSAEUS checkout" message every time.
 # Living inside the repository is what makes the path knowable.
@@ -418,11 +417,15 @@ def summarise(tracks: list[Track], studio_songs: int, out: list[str]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Live-version hunting list. Read-only.")
-    p.add_argument("--db", type=Path, default=VAULT_DB)
+    p.add_argument("--db", type=Path, help="default: the catalogue in your MUSAEUS settings")
     p.add_argument("--musaeus-src", type=Path, default=MUSAEUS_SRC)
     p.add_argument("--status", default="CATALOGUED")
     p.add_argument("--out-dir", type=Path, default=Path.home() / "Desktop")
     args = p.parse_args(argv)
+    if args.db is None:
+        from musaeus.config import get_config
+
+        args.db = get_config().db_path
 
     markers = load_musaeus_live_markers(args.musaeus_src)
     live_re = build_live_re(markers)

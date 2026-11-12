@@ -54,6 +54,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from musaeus.config import get_config  # noqa: E402  (the vault comes from settings.env)
 from musaeus.stages.classical_composer import (  # noqa: E402
     composer_for,
     load_composer_canon,
@@ -64,7 +65,7 @@ from musaeus.stages.organize import (  # noqa: E402
     unique_path,
 )
 
-VAULT = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT")
+VAULT = get_config().vault_root
 DB = VAULT / "musaeus.db"
 CANON = VAULT / "MetaData" / "Composer_Canon.tsv"
 

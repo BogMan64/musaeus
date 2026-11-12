@@ -57,8 +57,6 @@ from fmradio.score import rank  # noqa: E402
 from fmradio.secrets import TokenMissing, load_token  # noqa: E402
 from fmradio.titles import base_title, provenance  # noqa: E402
 
-VAULT_DB = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db")
-MB_CACHE = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/_db_backups/mb_cache.db")
 DEFAULT_CACHE = Path.home() / ".cache" / "fm-radio-lab" / "cache.db"
 
 #: What the library actually holds, keyed (artist, title) lowercased. Populated
@@ -91,11 +89,14 @@ def library_songs(limit: int, *, only_multi: bool) -> list[tuple[str, str, str]]
 
     Both databases are opened mode=ro. Nothing here writes to the vault.
     """
-    if not VAULT_DB.exists():
-        log(f"no vault database at {VAULT_DB}")
+    from musaeus.config import get_config
+
+    cfg = get_config()
+    if not cfg.db_path.exists():
+        log(f"no vault database at {cfg.db_path}")
         return []
 
-    conn = sqlite3.connect(f"file:{VAULT_DB}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(archive)")}
@@ -144,8 +145,8 @@ def library_songs(limit: int, *, only_multi: bool) -> list[tuple[str, str, str]]
     # built -- 2,644 resolved artists as of 2026-09-10. Re-resolving them would
     # be one MusicBrainz call each for work already done.
     missing = {a for a, _t, m in out if not m}
-    if missing and MB_CACHE.exists():
-        c2 = sqlite3.connect(f"file:{MB_CACHE}?mode=ro", uri=True)
+    if missing and cfg.mb_cache_path.exists():
+        c2 = sqlite3.connect(f"file:{cfg.mb_cache_path}?mode=ro", uri=True)
         c2.row_factory = sqlite3.Row
         try:
             lookup = {

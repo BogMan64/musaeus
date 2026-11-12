@@ -43,13 +43,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from musaeus.config import get_config  # noqa: E402  (the vault comes from settings.env)
 from musaeus.stages.organize import (  # noqa: E402
     build_track_filename,
     sanitize_path_component,
     unique_path,
 )
 
-VAULT = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT")
+VAULT = get_config().vault_root
 DB = VAULT / "musaeus.db"
 PROTECTED = VAULT / "MetaData" / "Protected_Band_Names.txt"
 LAW = VAULT / "MetaData" / "MasterLaw.csv"

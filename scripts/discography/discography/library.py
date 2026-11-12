@@ -29,7 +29,7 @@ biggest collections are among the missing -- The Beatles (31 albums), Bob Dylan
 the network would be 22 searches before any real work started.
 
 They are already resolved in MUSAEUS's own cache:
-/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/_db_backups/mb_cache.db, table mb_artist,
+<vault>/_db_backups/mb_cache.db, table mb_artist,
 2,646 found of 3,186 looked up, keyed on the stored artist name lowercased. All
 four of the above resolve from it. So this reads that cache and needs no network
 for artist identity at all.
@@ -40,9 +40,6 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-
-VAULT_DB = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db")
-MB_CACHE = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/_db_backups/mb_cache.db")
 
 #: Album tags that name a container rather than a release. These are Grey's
 #: playlist exports and MUSAEUS's placeholders; treating "My playlist B" as an
@@ -125,8 +122,8 @@ def _resolve_mbids(artists: list[str], cache_db: Path) -> dict[str, tuple[str, s
 
 
 def load_artists(
-    db: Path = VAULT_DB,
-    cache_db: Path = MB_CACHE,
+    db: Path | None = None,
+    cache_db: Path | None = None,
     status: str = "CATALOGUED",
     min_albums: int = DEFAULT_MIN_ALBUMS,
     min_tracks: int = DEFAULT_MIN_TRACKS,
@@ -137,6 +134,12 @@ def load_artists(
     most of the library -- 422 of 464 artists -- and a report that silently drops
     91% of its input is one nobody can sanity-check.
     """
+    if db is None or cache_db is None:
+        from musaeus.config import get_config
+
+        cfg = get_config()
+        db = db or cfg.db_path
+        cache_db = cache_db or cfg.mb_cache_path
     if not db.is_file():
         raise SystemExit(f"Vault database not found: {db}")
     uri = f"file:{db}?mode=ro"

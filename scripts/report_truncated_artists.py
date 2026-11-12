@@ -52,9 +52,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from musaeus.config import get_config  # noqa: E402  (the vault comes from settings.env)
 from musaeus.stages.normalize import ARTICLE_LOOKALIKE_ARTISTS  # noqa: E402
 
-VAULT = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT")
+VAULT = get_config().vault_root
 ARTIST_CANON = VAULT / "MetaData" / "artist_canon.tsv"
 DB = VAULT / "musaeus.db"
 OUT = Path.home() / "Desktop" / "MUSAEUS_Truncated_Artist_Report.csv"

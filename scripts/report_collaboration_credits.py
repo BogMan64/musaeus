@@ -24,7 +24,11 @@ import sqlite3
 import sys
 from pathlib import Path
 
-VAULT = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from musaeus.config import get_config  # noqa: E402  (the vault comes from settings.env)
+
+VAULT = get_config().vault_root
 DB = VAULT / "musaeus.db"
 PROTECTED = VAULT / "MetaData" / "Protected_Band_Names.txt"
 OUT = Path.home() / "Desktop" / "MUSAEUS_Collaboration_Credits.csv"

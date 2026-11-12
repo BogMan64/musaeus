@@ -28,14 +28,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Repointed 2026-08-21 from /mnt/FORGE2TB/ACTIVE_PROJECTS/ORPHEUS, which is
-# being retired off FORGE2TB. That constant was already vestigial: the noise
+# Repointed 2026-08-21 from the retired ORPHEUS project folder. That constant was already vestigial: the noise
 # files have lived under MUSAEUS_VAULT/RUNS/Noise for some time, and the old
 # default directory did not exist at all -- so only the ORPHEUS_NOISE_DIR
 # override was keeping this working. Named VAULT_ROOT now because that is
 # what it actually is, and env-overridable so the next move needs no code
 # change.
-VAULT_ROOT = Path(os.environ.get("MUSAEUS_VAULT_ROOT", "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+import musaeus.config  # noqa: E402,F401  -- puts settings.env's MUSAEUS_VAULT_ROOT in os.environ
+
+# No built-in default: the vault comes from the settings or the caller.
+VAULT_ROOT = Path(os.environ.get("MUSAEUS_VAULT_ROOT", ""))
 NOISE_DIR = Path(os.environ.get("ORPHEUS_NOISE_DIR", str(VAULT_ROOT / "RUNS" / "Noise")))
 
 TARGET_LUFS = -16.0
@@ -351,6 +354,8 @@ def main() -> None:
         help="Generate only 30-minute tracks (skip 60-minute)",
     )
     args = parser.parse_args()
+    if not os.environ.get("MUSAEUS_VAULT_ROOT"):  # before anything is written
+        sys.exit("MUSAEUS_VAULT_ROOT is not set: put it in ~/.config/musaeus/settings.env")
     if not args.apply:
         print("\n>>> DRY-RUN: NO changes will be written.")
         try:
