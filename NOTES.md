@@ -21,6 +21,20 @@ was only read.
 - The lossless and car editions built and every copy decoded clean.
 - `doctor` agreed with the disk.
 
+## Tests on 2026-11-11
+
+- Branch `chore/wrap-up-20261111`: **5,347 passed, 15 skipped** (the 5,233
+  of `main`, 7 new, and the 107 lab tests the local runner used to skip).
+  `ruff`, `ruff format`, `mypy` and the semgrep rules are clean.
+- Coverage of `musaeus/`, measured in the same run: **83%**. The modules
+  that move or delete masters (canonicalize, finalize, the resolver, the
+  hold, organize, bit rot, backup, the safety layer) are at 86–100%.
+- The thin spots are older on-demand stages nobody uses daily:
+  `stages/integrity.py` 25%, `stages/auditor.py` 28%, `stages/transcode.py`
+  40%, `stages/curator.py` 60%. Decide to test them or retire them.
+  `cli.py` (55%) and `console.py` (59%) read low because tests that start
+  the program as a separate process are not counted.
+
 ## Known limitations
 
 1. **A base install fails two stages on every run.** Without `rapidfuzz`
