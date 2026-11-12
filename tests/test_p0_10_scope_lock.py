@@ -47,8 +47,8 @@ DOMAIN = "library-mutation"
 
 @pytest.fixture(autouse=True)
 def configured_real_scope(monkeypatch):
-    monkeypatch.setenv("MUSAEUS_VAULT_ROOT", "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT")
-    monkeypatch.setenv("MUSAEUS_INBOX", "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/INBOX")
+    monkeypatch.setenv("MUSAEUS_VAULT_ROOT", "/srv/music/MUSAEUS_VAULT")
+    monkeypatch.setenv("MUSAEUS_INBOX", "/srv/music/MUSAEUS_VAULT/INBOX")
 
 
 @pytest.fixture
@@ -77,8 +77,8 @@ class TestScopeIdentity:
         classify() reached for the filesystem, this test would error rather
         than pass -- which is what makes it a check."""
         before = len(path_guard.attempts)
-        assert classify("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/ALAC-Library") == CANONICAL
-        assert classify("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/INBOX/new") == INBOX
+        assert classify("/srv/music/MUSAEUS_VAULT/ALAC-Library") == CANONICAL
+        assert classify("/srv/music/MUSAEUS_VAULT/INBOX/new") == INBOX
         assert len(path_guard.attempts) == before
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX roots; Windows: test_windows_scope")
@@ -106,7 +106,7 @@ class TestScopeIdentity:
         folder is a disposable fixture (review of #211)."""
         monkeypatch.delenv("MUSAEUS_VAULT_ROOT")
         monkeypatch.delenv("MUSAEUS_INBOX")
-        assert classify("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/ALAC-Library") == CANONICAL
+        assert classify("/srv/music/MUSAEUS_VAULT/ALAC-Library") == CANONICAL
         assert classify("/srv/music/vault") == CANONICAL
 
     def test_tmpdir_does_not_make_a_home_folder_a_fixture(self, monkeypatch):
@@ -160,8 +160,8 @@ class TestClassificationIsNotAuthority:
     @pytest.mark.parametrize(
         "root",
         [
-            "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/INBOX",
-            "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/ALAC-Library",
+            "/srv/music/MUSAEUS_VAULT/INBOX",
+            "/srv/music/MUSAEUS_VAULT/ALAC-Library",
         ],
     )
     def test_real_scopes_cannot_be_locked_for_mutation(self, root, lock_dir):
@@ -175,7 +175,7 @@ class TestClassificationIsNotAuthority:
         assert exc.value.details["classification"] in (INBOX, CANONICAL)
 
     def test_refusal_creates_no_lock_artefacts(self, lock_dir):
-        scope = Scope.build("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/INBOX", DOMAIN)
+        scope = Scope.build("/srv/music/MUSAEUS_VAULT/INBOX", DOMAIN)
         with pytest.raises(ScopeNotLockableError):
             acquire(scope, lock_dir, run_id="run-A")
         assert list(lock_dir.iterdir()) == []

@@ -40,6 +40,7 @@ from musaeus.canon.protected_artists import (
     PROTECTED_ARTIST_NAMES,
     is_protected,
 )
+from tests.real_roots import REAL_VAULT
 
 
 @pytest.mark.parametrize(
@@ -106,7 +107,7 @@ def test_no_canon_entry_is_dormant() -> None:
 
 
 @pytest.mark.skipif(
-    not __import__("pathlib").Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db").exists(),
+    REAL_VAULT is None or not (REAL_VAULT / "musaeus.db").exists(),
     reason="live vault not present",
 )
 def test_the_live_library_spellings_are_all_protected() -> None:
@@ -115,7 +116,8 @@ def test_the_live_library_spellings_are_all_protected() -> None:
     Skipped when the vault is absent, so the suite stays portable; run
     against the real library it is the check that actually matters.
     """
-    conn = sqlite3.connect("file:/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db?mode=ro", uri=True)
+    assert REAL_VAULT is not None
+    conn = sqlite3.connect(f"file:{REAL_VAULT / 'musaeus.db'}?mode=ro", uri=True)
     keys = {GenreLaw._key(n) for n in PROTECTED_ARTIST_NAMES}
     unprotected = [
         a

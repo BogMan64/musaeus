@@ -146,7 +146,7 @@ class TestIdenticalSafetyBlocks:
     def test_a_canonical_scope_is_refused_the_same_way(self, scheduled_request):
         req = _replace(
             scheduled_request,
-            scope=Scope.build("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/ALAC-Library", DOMAIN),
+            scope=Scope.build("/srv/music/MUSAEUS_VAULT/ALAC-Library", DOMAIN),
         )
         outcome = run_scheduled(req, run_id="cron-1", started_at=STARTED)
         assert outcome.exit_code == EXIT_SAFETY_BLOCKED

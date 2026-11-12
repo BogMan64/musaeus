@@ -400,7 +400,7 @@ class TestTagCapture:
 
         NOT copies of real library tracks: the P0-01 PathGuard blocks any
         access under the real vault, and rightly so -- it caught this test
-        reaching for /mnt/FORGE2TB/.../ALAC-Library on its first version.
+        reaching for the live vault's ALAC-Library on its first version.
         ffmpeg gives us a real MP4 container that mutagen can tag and read
         back, which is what tag capture actually needs exercised.
         """

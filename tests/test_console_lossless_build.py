@@ -17,6 +17,7 @@ from musaeus import edition_build
 from musaeus.config import MusicConfig
 from musaeus.console import Console
 from musaeus.db import open_db, upsert_archive
+from tests.real_roots import REAL_HOME
 
 
 @pytest.fixture
@@ -87,7 +88,7 @@ def test_the_label_names_the_vault_not_home_music(cfg, monkeypatch, capsys):
     _run(cfg, monkeypatch, ["4"])  # Back
     out = capsys.readouterr().out
     assert "vault Libraries/ALAC_Library" in out
-    assert "/home/grey/Music" not in out
+    assert str(REAL_HOME / "Music") not in out
 
 
 @pytest.mark.parametrize("answer", ["", "y", "yes", "build", "no"])

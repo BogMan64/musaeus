@@ -19,7 +19,7 @@ Re-tested on 2026-09-15 when the tool moved into the repository, because
 
 A read-only reporting tool has no business doing that, so the ast read
 survived the move. What the move DID fix: the source path was hardcoded to
-/mnt/FORGE2TB/Projects/MUSAEUS-sandbox, a directory that does not exist, so
+a MUSAEUS-sandbox checkout, a directory that does not exist, so
 the tool exited with its own "point --musaeus-src at a checkout" message
 every single run. Inside the repo the path is knowable from __file__.
 """
