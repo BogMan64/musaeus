@@ -55,7 +55,7 @@ from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-sys.path.insert(0, "/mnt/FORGE2TB/Projects/MUSAEUS")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from musaeus.brackets import strip_bracketed
 from musaeus.config import MusicConfig
 

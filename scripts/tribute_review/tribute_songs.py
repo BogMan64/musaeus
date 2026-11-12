@@ -51,9 +51,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from musaeus.brackets import CLOSE, OPEN  # noqa: E402
 
-TRASH = Path("/mnt/FORGE2TB/.Trash-1000/files/TRIBUTE_REMOVED_FOR_REVIEW")
-VAULT_DB = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db")
-
 # ── Borrowed title folding ────────────────────────────────────────────────────
 # Same pattern as the other companion tools: use MUSAEUS's normaliser when it is
 # importable so this agrees with the deduplicator, and say which is in force.
@@ -357,11 +354,15 @@ def write_csv(rows: list[Row], path: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--root", type=Path, default=TRASH)
-    p.add_argument("--db", type=Path, default=VAULT_DB)
+    p.add_argument("--root", type=Path, required=True, help="the folder the tribute songs were moved to")
+    p.add_argument("--db", type=Path, help="default: the catalogue in your MUSAEUS settings")
     p.add_argument("--out", type=Path,
                    default=Path.home() / "Desktop" / "TRIBUTE_songs_and_real_artists.csv")
     args = p.parse_args(argv)
+    if args.db is None:
+        from musaeus.config import get_config
+
+        args.db = get_config().db_path
 
     manifest_rows = load_manifests(args.root)
     idx = library_index(args.db)

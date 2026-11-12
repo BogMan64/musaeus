@@ -106,9 +106,9 @@ hypothetical; it already happened once inside MUSAEUS itself.
 
 ## 2. System components
 
-- **MUSAEUS core pipeline** — `/mnt/FORGE2TB/Projects/MUSAEUS`, backed by
+- **MUSAEUS core pipeline** — `<repo>`, backed by
   SQLite (`musaeus.db`). Vault at
-  `/mnt/FORGE2TB/Projects/MUSAEUS_VAULT`, containing `INBOX`,
+  `<vault>`, containing `INBOX`,
   `ALAC-Library`, `MetaData`, `QUARANTINE`, `RUNS`, `STAGING`. `STAGING`
   is a transient write-here-first-then-verify buffer used during the
   Canonicalize → Finalize handoff (see §5 for the full flow) — it should
@@ -208,7 +208,7 @@ hypothetical; it already happened once inside MUSAEUS itself.
   thing as `ALAC_Archive` below** — resolved 2026-08-18 after Claude(chat)
   flagged the ambiguity: the true untouched-original tier this bullet
   describes already exists informally as Grey's own manually-maintained
-  external backup (`/media/grey/USB2/Curated.RAW.Files`, referenced in
+  external backup (`/media/<user>/USB2/Curated.RAW.Files`, referenced in
   §5's canonicalize-reorder entry), not as a MUSAEUS-built feature —
   still genuinely unbuilt as far as MUSAEUS's own pipeline is concerned.
 - **`ALAC_Archive`** (built and populated 2026-08-18) — a *different*,
@@ -875,7 +875,7 @@ situational judgment calls:
   of dedup, accepting a real tradeoff (a sub-lossless duplicate-loser
   would lose its pristine INBOX original to a wasted TRANSCODE before
   dedup could flag it — mitigated at the time by the confirmed
-  `/media/grey/USB2/Curated.RAW.Files` backup). Claude(chat) challenged
+  `/media/<user>/USB2/Curated.RAW.Files` backup). Claude(chat) challenged
   the motivating case the next day: the reversal only pays for itself if
   `CrossDupeStage` can't already catch cross-format duplicates (e.g. a
   FLAC and its future ALAC-in-`.m4a` twin) without Canonicalize running
@@ -986,7 +986,7 @@ situational judgment calls:
   exception rather than proceeding with a partial answer.
   **Real finding from a read-only smoke test:** running the (safe,
   lsblk-only) `--list-devices` path against this actual machine showed
-  `/dev/sdb` is currently `/mnt/NUC8TB_BACKUP`, a real 8TB backup drive —
+  `/dev/sdb` is currently `<backup drive>`, a real 8TB backup drive —
   not a spare test device, and not the placeholder used throughout this
   script's own docstrings/examples. It's excluded from the removable-
   device picker only incidentally (lsblk reports it non-removable), which
@@ -1826,7 +1826,7 @@ folded into §4 or §5 directly, not left here.
   `artist_canon.tsv`, the vocabulary and both new canon files live only
   in `MUSAEUS_VAULT/MetaData` — the music is mirrored twice, the
   decisions were not backed up at all. Now copied to
-  `/mnt/NUC8TB_BACKUP/MUSAEUS_METADATA/` (252 KB, `latest/` plus a
+  `<backup drive>/MUSAEUS_METADATA/` (252 KB, `latest/` plus a
   timestamped snapshot). **This needs to join whatever backup routine
   runs; it was done once, by hand.**
 

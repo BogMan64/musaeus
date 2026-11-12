@@ -2,9 +2,10 @@
 """
 MUSAEUS — Audit Stage (Act 3)
 
-The final gate before a batch's musaeus.db can be snapshotted and wiped
-(task 8). Report-only: never mutates the archive table, never moves or
-deletes a file. Its only job is to answer one question honestly:
+The last check of Act 3. It was written as the gate before a batch's
+musaeus.db was snapshotted and wiped (task 8); the catalogue has not been
+wiped since 2026-09-30 and cannot be rebuilt, so it is now only the check.
+Report-only: never mutates the archive table, never moves or deletes a file. Its only job is to answer one question honestly:
 "does ALAC-Library on disk actually contain what the DB thinks it
 finalized?" -- the same physical-presence-over-DB-trust principle
 Finalize is built on, applied one more time as an explicit checkpoint
@@ -323,10 +324,12 @@ class AuditStage(BaseStage):
             result.success = False
             result.notes.append(
                 f"AUDIT FAILED: {len(problems)} problem(s) found. "
-                f"Do NOT wipe the DB until these are resolved."
+                f"The catalogue and the disk disagree: look at these before the next run."
             )
         else:
-            result.notes.append("AUDIT PASSED: safe to snapshot and wipe the DB.")
+            # Not "safe to wipe the DB": the catalogue is never wiped (Grey,
+            # 2026-09-30) and cannot be rebuilt from the event log.
+            result.notes.append("AUDIT PASSED: the catalogue, the disk and the hash index agree.")
 
         ctx.record_stage(result)
         return result

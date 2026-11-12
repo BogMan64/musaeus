@@ -184,7 +184,7 @@ class TestRegistryDeclaration:
 
 class TestRecoveryPolicy:
     def test_fixed_values_are_exact(self):
-        # Grey's ruling (2026-10-21): /home/grey/Projects/MUSAEUS_RECOVERY.
+        # Grey's ruling (2026-10-21): ~/Projects/MUSAEUS_RECOVERY.
         assert str(Path.home() / "Projects" / "MUSAEUS_RECOVERY") == policy.FUTURE_RECOVERY_ROOT
         assert policy.RECOVERY_CAP_BYTES == 100 * 10**9
 

@@ -962,7 +962,7 @@ def _noise_bed_is_shippable(src: Path) -> tuple[bool, str]:
 def copy_noise_tracks(output_root: Path) -> None:
     """Copy generated noise tracks into the car library Artist/Album structure."""
     # RUNS_ROOT is ORPHEUS's own constant and points at
-    # /mnt/FORGE2TB/Projects/ORPHEUS/RUNS, which has no Noise/ -- MUSAEUS's
+    # the retired ORPHEUS project's RUNS folder, which has no Noise/ -- MUSAEUS's
     # noise tracks live under MUSAEUS_VAULT/RUNS/Noise. The wrapper already
     # passes ORPHEUS_NOISE_DIR for the masking step; honour it here too,
     # rather than reporting "no noise tracks found" while four of them sit

@@ -329,7 +329,7 @@ Two things that must agree, quietly ceasing to: the ReplayGain tag and the R128 
 
 ### Open, in the order I'd take them
 
-1. **Car build (running), then copy it to Grey's 257 GB stick** (`/media/grey/5651-0F05`, MBR + FAT32, never reformat). Then `edition-build lossless`, then `edition-build iphone` with no size limit (Grey: "unlimited"), then `doctor`.
+1. **Car build (running), then copy it to Grey's 257 GB stick** (`/media/<user>/5651-0F05`, MBR + FAT32, never reformat). Then `edition-build lossless`, then `edition-build iphone` with no size limit (Grey: "unlimited"), then `doctor`.
 2. **FAT32-safe names.**
    - Forbidden characters are already handled by the shared filing rule.
    - Names that differ only by case are not: 26 master folder pairs. On FAT32 they merge, and two files differing only by case would overwrite each other.
@@ -391,7 +391,7 @@ It supersedes every count below it.
   blocked on a red `lint` check since 2026-08-21, so its test jobs had
   **never run**. Clearing lint surfaced 11 CI failures, all fixed:
   `sleep_inhibit` exec'd before checking the inhibitor worked; P0-19's G10
-  hardcoded `/home/grey/.cache`; `doctor` let a missing `ifuse` fail the
+  hardcoded `~/.cache`; `doctor` let a missing `ifuse` fail the
   *library* verdict; `musaeus_notify.py` never asked `network_policy`.
   #14 was squash-merged 2026-09-23; #17, #18 and #23–#27 followed.
 - **Reviews.** `docs/REVIEW_BRIEF.md` points any reviewer at this codebase's
@@ -419,7 +419,7 @@ It supersedes every count below it.
   seeding's own record — `relink_car_exports.py` would have linked 197 tracks
   to the wrong recording. 7,716 after today's removals.
 - **Housekeeping:** three drifted TuneMyMusic lists merged into one (#26);
-  `/mnt/FORGE2TB/Projects` consolidated; `_db_backups` trimmed from 22 GB to
+  `<music drive>/Projects` consolidated; `_db_backups` trimmed from 22 GB to
   under 2 GB, the pre-reset history (20 GB, checksum-verified) moved to
   `NUC/3.-BACKUPS/musaeus_db_history_pre_reset`.
 - **The black-screen crash has evidence at last:** `i915: GPU HANG … Failed to
@@ -537,7 +537,7 @@ time you read them. What matters is the shape, not the totals.
 | `CAR_Library` | 0 — not yet rebuilt |
 | `iPHONE_Library` | 0 — not yet rebuilt |
 
-**Source of truth: `/media/grey/USB1/2.- Curated.RAW.Files`, 13,701 files.**
+**Source of truth: `/media/<user>/USB1/2.- Curated.RAW.Files`, 13,701 files.**
 Roughly a third ingested.
 
 ### What happened, and why
@@ -1002,7 +1002,7 @@ order, and the order is the point.
 **Why not the other way round.** USB2 is the off-site backup. Pointing the
 pipeline at it, or writing names into it before the vault agrees, makes the
 backup the thing being managed — the same mistake as letting MUSAEUS see
-`/home/grey/Music`. The vault is authoritative; USB2 receives.
+`~/Music`. The vault is authoritative; USB2 receives.
 
 #### The album-name utility, reviewed 2026-09-14
 
@@ -1927,7 +1927,7 @@ not a new obstacle.
    sitting in `denied/` since 2026-09-01.
 
 4. ~~**MUSAEUS_HOLD is 866 MB / 45 files**~~ **DONE — the directory no
-   longer exists anywhere under `/home/grey` or `/mnt/FORGE2TB`.** Re-checked
+   longer exists anywhere under `~` or `<music drive>`.** Re-checked
    2026-09-08. Stale entry; original text follows.
 
    ~~MUSAEUS_HOLD is 866 MB / 45 files, outside the vault, awaiting
@@ -2201,7 +2201,7 @@ it survives both cases above. ~1 hour with tests.
 ## P4 — with Kiro
 
 **The ORPHEUS harvest.** ~260 scripts, read-only, exploratory. Point it at
-`/mnt/FORGE2TB/Projects/ORPHEUS` — **never at `MUSAEUS_VAULT`.**
+`<music drive>/Projects/ORPHEUS` — **never at `MUSAEUS_VAULT`.**
 
 ~~**Do not spend the last Claude days on ORPHEUS archaeology.**~~ The
 deadline that motivated this is gone (subscription renewed), but the

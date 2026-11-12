@@ -1083,3 +1083,27 @@ def test_a_plain_lossless_build_takes_the_lossy_masters(cfg):
     assert "To bake       : 1 track(s)" in plain.stdout, plain.stdout
     out = _cli(cfg, "lossless", "--dry-run", "--lossy", "leave-out")
     assert "To bake       : 0 track(s)" in out.stdout and "1 left out" in out.stdout, out.stdout
+
+
+def test_the_playlists_are_written_under_the_build_lock(cfg, monkeypatch):
+    """Local CodeRabbit on #321: `export itunes` takes the build lock, so it
+    must never read playlists a build is still writing."""
+    from musaeus import cli, edition_index
+
+    open_db(cfg.db_path).close()  # an empty catalogue: the build itself is stubbed
+    held = []
+
+    def index_while_locked(cfg_, root, apply):
+        try:
+            with eb.build_lock(cfg.runs_root / "locks", "car"):
+                held.append(False)
+        except RuntimeError:
+            held.append(True)
+        return [], []
+
+    monkeypatch.setattr(edition_index, "write_index", index_while_locked)
+    monkeypatch.setattr(eb, "execute", lambda *a, **k: eb.Outcome())  # no audio needed
+    monkeypatch.setattr(cli, "get_config", lambda: cfg)
+    monkeypatch.setenv("MUSAEUS_NO_SLEEP_INHIBIT", "1")
+    assert cli._cmd_edition_build(cli._build_parser().parse_args(["edition-build", "car"])) == 0
+    assert held == [True]

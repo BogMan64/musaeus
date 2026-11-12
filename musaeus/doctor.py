@@ -207,6 +207,20 @@ def diagnose(cfg: MusicConfig) -> Report:
     else:
         rep.add("ok", "rows with a missing file", "none")
 
+    # 1b. Held rows whose file is gone. Hold-expiry walks files, not rows, so
+    # nothing else closes or reports these (1,955 on 2026-11-11).
+    # Here, not at the top: stages/corrupt.py imports this module.
+    from .stages.hold_expiry import _HELD_STATUSES
+
+    held_gone = sum(r["status"] in _HELD_STATUSES and r["file_path"] not in on_disk for r in rows)
+    if held_gone:
+        rep.add(
+            "warn",
+            "held rows with a missing file",
+            f"{held_gone} rows set aside in REVIEW or QUARANTINE whose file is no longer there",
+            held_gone,
+        )
+
     # 2. Files on disk that nothing in the database knows about.
     known = {r["file_path"] for r in rows}
     # Both tiers. Since 2026-09-25 finalize files MASTERS into alac_archive and

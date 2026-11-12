@@ -140,7 +140,8 @@ states are the fix.
 
 One only: a **ListenBrainz user token** from `listenbrainz.org/settings/`
 (signs in via MusicBrainz). Read from `LISTENBRAINZ_USER_TOKEN` or
-`/mnt/NUC8TB_BACKUP/SECRETS/listenbrainz.env`, never from an argument.
+`listenbrainz.env` in the folder `MUSAEUS_SECRETS_DIR` names (set in
+`~/.config/musaeus/settings.env`), never from an argument.
 
 It is **not** a MetaBrainz OAuth client id/secret and **not** a MetaBrainz
 access token; those are different credentials for different services and

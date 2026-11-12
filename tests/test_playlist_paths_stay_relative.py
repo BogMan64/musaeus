@@ -11,7 +11,7 @@ It bites hardest on an edition index. `write_car_index.py` points this stage
 at `CAR_Library/Playlists`, and a catalogued row with no `car_export_path`
 falls back to its `ALAC_Library` path -- outside that tree. Measured against
 the live vault on 2026-09-17: **406 rows** would have shipped to the car USB
-as `/mnt/FORGE2TB/...` lines.
+as absolute `/mnt/<drive>/...` lines.
 """
 
 from __future__ import annotations

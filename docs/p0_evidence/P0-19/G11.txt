@@ -9,7 +9,7 @@ minimum viable cov.: every one of the 5 protected roots asserted, the recovery r
 
 ## Coverage (what was actually examined)
   protected_roots_asserted = 5
-  protected_root_state = {'/home/grey/Music': 'present size=241664 mtime=1788215748', '/home/grey/.config/musaeus': 'present size=4096 mtime=1788921910', '/mnt/FORGE2TB/Projects/MUSAEUS_VAULT': 'present size=4096 mtime=1788920785', '/mnt/FORGE2TB/Projects/MUSAEUS_TEST_VAULT': 'absent', '/home/grey/Projects/MUSAEUS_RECOVERY': 'absent'}
+  protected_root_state = {'~/Music': 'present size=241664 mtime=1788215748', '~/.config/musaeus': 'present size=4096 mtime=1788921910', '<vault>': 'present size=4096 mtime=1788920785', '<test vault>': 'absent', '~/Projects/MUSAEUS_RECOVERY': 'absent'}
   future_recovery_root_absent = True
   path_guard_still_enabled = True
   path_guard_blocked_attempts = 0
@@ -19,10 +19,10 @@ minimum viable cov.: every one of the 5 protected roots asserted, the recovery r
   live_db_size_at_start = 1018736640
   live_db_size_now = 1028497408
   live_db_delta_bytes = 9760768
-  live_vault_processes_now = ['1676038 bash /home/grey/musaeus_jobs/bitrot.sh verify', '1676041 python3 -m musaeus bitrot', '1731386 /usr/bin/python3 /home/grey/.local/bin/musaeus']
+  live_vault_processes_now = ['1676038 bash ~/musaeus_jobs/bitrot.sh verify', '1676041 python3 -m musaeus bitrot', '1731386 /usr/bin/python3 ~/.local/bin/musaeus']
 
 ## Findings
-  - The live database moved by +9760768 bytes (1018736640 -> 1028497408). Per the brief's §3 this is a scheduling error, not a safety breach, and it is only distinguishable as such because the vault jobs were enumerated at start and end: ['1676038 bash /home/grey/musaeus_jobs/bitrot.sh verify', '1676041 python3 -m musaeus bitrot', '1731386 /usr/bin/python3 /home/grey/.local/bin/musaeus']. Nothing in this rehearsal opened that file — the PathGuard would have raised, and it recorded 0 blocked attempt(s), none of them a successful access.
+  - The live database moved by +9760768 bytes (1018736640 -> 1028497408). Per the brief's §3 this is a scheduling error, not a safety breach, and it is only distinguishable as such because the vault jobs were enumerated at start and end: ['1676038 bash ~/musaeus_jobs/bitrot.sh verify', '1676041 python3 -m musaeus bitrot', '1731386 /usr/bin/python3 ~/.local/bin/musaeus']. Nothing in this rehearsal opened that file — the PathGuard would have raised, and it recorded 0 blocked attempt(s), none of them a successful access.
   - §7 of the brief required a quiet disk before dispatch. It was not quiet. That weakens this gate's byte-size line specifically, and G10 entirely (see G10).
   - The PathGuard's attempt log is a log of BLOCKED accesses. A non-zero count would mean something tried and was stopped, not that something succeeded. Count: 0.
 
@@ -32,30 +32,30 @@ minimum viable cov.: every one of the 5 protected roots asserted, the recovery r
 # P0-19 G11 baseline — captured at rehearsal start (metadata only, stat not open)
 captured_at_utc: 2026-09-09T03:09:35Z
 
-/home/grey/Music size=241664 mtime=1788215748 mode=755
-/home/grey/.config/musaeus size=4096 mtime=1788921910 mode=755
-/mnt/FORGE2TB/Projects/MUSAEUS_VAULT size=4096 mtime=1788920785 mode=755
-/mnt/FORGE2TB/Projects/MUSAEUS_TEST_VAULT ABSENT
-/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db size=1018736640 mtime=1788922628 mode=644
+~/Music size=241664 mtime=1788215748 mode=755
+~/.config/musaeus size=4096 mtime=1788921910 mode=755
+<vault> size=4096 mtime=1788920785 mode=755
+<test vault> ABSENT
+<vault>/musaeus.db size=1018736640 mtime=1788922628 mode=644
 
 ## MUSAEUS_RECOVERY existence (must be absent)
-/home/grey/Projects/MUSAEUS_RECOVERY ABSENT (correct)
+~/Projects/MUSAEUS_RECOVERY ABSENT (correct)
 
 ## crontab snapshot (read-only)
     crontabs/grey/: fopen: Permission denied
 
 ## live musaeus/vault processes at rehearsal start
-    1676038 bash /home/grey/musaeus_jobs/bitrot.sh verify
+    1676038 bash ~/musaeus_jobs/bitrot.sh verify
     1676041 python3 -m musaeus bitrot
-    1731386 /usr/bin/python3 /home/grey/.local/bin/musaeus
+    1731386 /usr/bin/python3 ~/.local/bin/musaeus
 
 ----- protected roots now -----
 {
-  "/home/grey/.config/musaeus": "present size=4096 mtime=1788921910",
-  "/home/grey/Music": "present size=241664 mtime=1788215748",
-  "/home/grey/Projects/MUSAEUS_RECOVERY": "absent",
-  "/mnt/FORGE2TB/Projects/MUSAEUS_TEST_VAULT": "absent",
-  "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT": "present size=4096 mtime=1788920785"
+  "~/.config/musaeus": "present size=4096 mtime=1788921910",
+  "~/Music": "present size=241664 mtime=1788215748",
+  "~/Projects/MUSAEUS_RECOVERY": "absent",
+  "<test vault>": "absent",
+  "<vault>": "present size=4096 mtime=1788920785"
 }
 
 ----- PathGuard attempts (each one is a BLOCKED access, not a completed one) -----
@@ -65,7 +65,7 @@ captured_at_utc: 2026-09-09T03:09:35Z
 []
 
 ----- live vault processes now -----
-1676038 bash /home/grey/musaeus_jobs/bitrot.sh verify
+1676038 bash ~/musaeus_jobs/bitrot.sh verify
 1676041 python3 -m musaeus bitrot
-1731386 /usr/bin/python3 /home/grey/.local/bin/musaeus
+1731386 /usr/bin/python3 ~/.local/bin/musaeus
 

@@ -62,7 +62,7 @@ raise SystemExit(1)
 
 [exit 0]
 --- stdout ---
-CHILD_MUSAEUS_PACKAGE /mnt/FORGE2TB/Projects/MUSAEUS-kiro/musaeus
+CHILD_MUSAEUS_PACKAGE <repo>-kiro/musaeus
 CHILD_RESOLVED_CONFIG {"alac_library": "/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault/Libraries/ALAC-Library", "db_path": "/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault/musaeus.db", "runs_root": "/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault/RUNS", "vault_root": "/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault"}
 CHILD_PRECONDITION_OK fixture_root=/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault
 CHILD_REFUSED scope '/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault' (domain 'library-mutation') is held by run run-A (pid 1886719 on debian), acquired 2026-09-09T00:00:00Z, heartbeat 2026-09-09T00:00:00Z
@@ -111,7 +111,7 @@ raise SystemExit(1)
 
 [exit 0]
 --- stdout ---
-CHILD_MUSAEUS_PACKAGE /mnt/FORGE2TB/Projects/MUSAEUS-kiro/musaeus
+CHILD_MUSAEUS_PACKAGE <repo>-kiro/musaeus
 CHILD_RESOLVED_CONFIG {"alac_library": "/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault/Libraries/ALAC-Library", "db_path": "/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault/musaeus.db", "runs_root": "/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault/RUNS", "vault_root": "/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault"}
 CHILD_PRECONDITION_OK fixture_root=/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault
 CHILD_REFUSED scope '/tmp/pytest-of-grey/pytest-327/test_g7_lock_conflict0/vault' (domain 'library-mutation') is held by run run-A (pid 1886719 on debian), acquired 2026-09-09T00:00:00Z, heartbeat 2026-09-09T00:00:00Z

@@ -95,11 +95,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from musaeus.artist_form import comparison_key, natural_form  # noqa: E402
 from musaeus.brackets import CLOSE, OPEN  # noqa: E402
-from musaeus.doctor import song_key  # noqa: E402
 from musaeus.db import ensure_columns  # noqa: E402
+from musaeus.doctor import song_key  # noqa: E402
 from musaeus.handoff import write_tool_handoff  # noqa: E402
 
-VAULT_DB = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db")
 DEFAULT_CACHE = Path.home() / ".cache" / "album-names" / "cache.db"
 DEFAULT_OUT = Path.home() / "Desktop" / "MUSAEUS_album_names_PROPOSED.csv"
 
@@ -780,7 +779,7 @@ def write_csv(rows: list[dict], out: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--db", type=Path, default=VAULT_DB)
+    ap.add_argument("--db", type=Path, help="default: the catalogue in your MUSAEUS settings")
     ap.add_argument("--limit", type=int, default=0, help="max tracks to consider (0 = all)")
     ap.add_argument("--rate", type=float, default=RATE_S, help="seconds between requests, per source")
     ap.add_argument("--cache", type=Path, default=DEFAULT_CACHE)
@@ -794,6 +793,10 @@ def main(argv: list[str] | None = None) -> int:
              "(e.g. /mnt/.../Libraries/ALAC-Archival)",
     )
     args = ap.parse_args(argv)
+    if args.db is None:
+        from musaeus.config import get_config
+
+        args.db = get_config().db_path
 
     # Keys entered through the console's "Enter/Update API Keys" menu land in
     # ~/.config/musaeus/credentials.env, NOT in the environment. Reading only

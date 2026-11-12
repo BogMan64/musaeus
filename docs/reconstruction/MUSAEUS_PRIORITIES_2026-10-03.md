@@ -29,7 +29,7 @@
 ### 2. Then, in Grey's order
 
 1. Check the car library for names FAT32 cannot store.
-2. Copy it onto Grey's 257 GB stick: `/media/grey/5651-0F05`, already MBR + FAT32, **never reformat it**.
+2. Copy it onto Grey's 257 GB stick: `/media/<user>/5651-0F05`, already MBR + FAT32, **never reformat it**.
 3. `edition-build lossless`.
 4. `edition-build iphone` with **no size limit** (Grey, 2026-10-03), about 70 GB, so songs can be picked on the phone.
 5. `musaeus doctor`.

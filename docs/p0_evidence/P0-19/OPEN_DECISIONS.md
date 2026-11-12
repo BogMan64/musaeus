@@ -88,7 +88,7 @@ in the gate files.
 
 ## C. Explicitly NOT open, and recorded so it stays that way
 
-- The future recovery root is exactly `/home/grey/Projects/MUSAEUS_RECOVERY`
+- The future recovery root is exactly `~/Projects/MUSAEUS_RECOVERY`
   and the cap is exactly 100 GB (decimal, `100 * 10**9`). Confirmed as
   recorded values. The directory does not exist and was neither created nor
   probed by this rehearsal (`G3.txt`, `G11.txt`).
