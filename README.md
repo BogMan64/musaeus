@@ -14,7 +14,8 @@ the successor to ORPHEUS.
 
 > **`musaeus run` changes files at once.** It moves files out of INBOX,
 > converts them (the original of a converted file is held under
-> `RUNS/recovery/`), and sets duplicates aside. Work on copies, start small, and read
+> `RUNS/recovery/` for the ten newest runs that converted something, then
+> removed), and sets duplicates aside. Work on copies, start small, and read
 > [docs/TESTING_ON_YOUR_OWN_FILES.md](docs/TESTING_ON_YOUR_OWN_FILES.md)
 > before a first real run.
 
@@ -130,6 +131,15 @@ Both are `KEY=VALUE` files. A variable in the environment wins over both.
 | `MUSAEUS_DOC_ROOT` | `~/Documents/MUSAEUS` | the menu's document browser |
 | `MUSAEUS_BUSY_TIMEOUT_MS` | `300000` (5 min) | how long SQLite waits on a lock |
 | `MUSAEUS_NO_IDLE_THROTTLE` | unset | `1` stops long work pausing while you use the machine (the test suite sets it) |
+| `MUSAEUS_NO_SLEEP_INHIBIT` | unset | `1` lets the machine go to sleep during a long run |
+| `MUSAEUS_BATCH_FOLDERS` | off | `1` files each batch of masters under a dated folder |
+| `MUSAEUS_AUTO_RESTART` | on | `0` keeps a running program going after its own source files changed (debugging) |
+| `MUSAEUS_P0_SAFETY_GATE` | off | `1` is the same as `--safety-gate`: a stricter preflight that refuses a real vault (a rehearsal tool) |
+| `MUSAEUS_CANONICALIZE_CHECKPOINT`, `MUSAEUS_FINALIZE_CHECKPOINT` | on | `0` runs that stage with no recovery copy and no journal. An escape hatch; leave it alone |
+
+Set by the program for its own child processes, not by you:
+`MUSAEUS_VERBOSE`, `MUSAEUS_PROGRESS`, `MUSAEUS_MASTERS_LOCK_FD`,
+`MUSAEUS_MASTERS_LOCK_PARENT`, `MUSAEUS_SLEEP_INHIBITED`.
 
 API keys, all optional. A stage without its key does nothing and says so:
 

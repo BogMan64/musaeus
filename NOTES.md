@@ -73,6 +73,11 @@ was only read.
     failing on the base.
 12. **No GitHub release exists.** The `.deb` builds from a checkout only.
 
+13. **The original of a converted file is kept for ten runs, not for a
+    time.** `RUNS/recovery/` keeps the newest ten folders of each kind
+    (`run_records.py`, `KEEP = 10`). After ten more runs that convert
+    something, the FLAC behind an ALAC master is gone, however soon.
+
 ## Shortcuts taken
 
 - **Four commands load code from `scripts/`** (`report`, `upgrade-check`,

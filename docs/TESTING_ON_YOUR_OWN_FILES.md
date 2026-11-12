@@ -39,7 +39,8 @@ from, four files truncated behind intact headers. It is careful software
 **What is on your side:** a removal is a move first. The duplicate resolver
 writes a CSV manifest plus a restore script next to whatever it moved,
 damaged files go to `QUARANTINE/`, and the original of a converted file is
-held under `RUNS/recovery/`. If a run does something you did not want, look
+held under `RUNS/recovery/` for the ten newest runs that converted
+something. If a run does something you did not want, look
 in `RUNS/HANDOFFS/` and `REVIEW/DUPES_MOVED/` before you panic.
 
 **But the hold ends.** A file left in `REVIEW/` or `QUARANTINE/` for 30 days
