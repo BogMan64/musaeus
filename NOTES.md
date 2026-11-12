@@ -70,6 +70,9 @@ was only read.
   and accepted in `docs/REVIEW_BRIEF.md`; tests keep them alive.
 - **`--full`, `--archive` and `--maintain`** run pipelines from before the
   Acts. `--full` is shorter than the default, despite its name.
+- **`musaeus review-report` is listed and does nothing.** There is no
+  reviewer stage; the command prints the help and exits 1. `rebuild-db` is
+  listed and disabled on purpose.
 - **`scripts/` holds about 30 one-off repair scripts** with this machine's
   paths written into them. CI does not lint them (27 small lint findings,
   left alone: untested code, no gain).
