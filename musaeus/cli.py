@@ -2546,8 +2546,7 @@ def main() -> None:
     from .setup import run_wizard as _run_wizard
 
     if command == "setup":
-        _run_wizard(force=True)
-        return
+        sys.exit(0 if _run_wizard(force=True) else 1)
 
     if command == "reset":
         sys.exit(_cmd_reset())
@@ -2556,7 +2555,7 @@ def main() -> None:
         print("\n  Welcome to MUSAEUS! No configuration found.")
         print("  Running first-time setup wizard...\n")
         if not _run_wizard():
-            return
+            sys.exit(1)  # nothing ran: not a success for the script that called
 
     try:
         # Store progress settings in global state for pipeline runner

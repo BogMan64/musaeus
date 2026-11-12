@@ -19,6 +19,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from ..config import _expand
 from ..safe_save import fsync_dir
 
 _CONFIG_DIR = Path.home() / ".config" / "musaeus"
@@ -196,10 +197,12 @@ def run_wizard(force: bool = False) -> bool:
         print("  Vault root is required. Aborting setup.")
         return False
 
-    vault_path = Path(vault_root).resolve()
-    if not vault_path.is_absolute():
+    # Checked before resolve(), which makes every path absolute; and "~" is
+    # expanded, or "~/Music/vault" is a folder named "~" where you stand.
+    if not Path(os.path.expandvars(os.path.expanduser(vault_root))).is_absolute():
         print(f"  Error: must be an absolute path (got: {vault_root})")
         return False
+    vault_path = _expand(vault_root)
 
     settings_env["MUSAEUS_VAULT_ROOT"] = str(vault_path)
     print(f"  ✓ Vault: {vault_path}")
@@ -212,7 +215,7 @@ def run_wizard(force: bool = False) -> bool:
 
     default_inbox = settings_env.get("MUSAEUS_INBOX", str(vault_path / "INBOX"))
     inbox = _ask("Inbox path", default=default_inbox)
-    inbox_path = Path(inbox).resolve()
+    inbox_path = _expand(inbox)
     settings_env["MUSAEUS_INBOX"] = str(inbox_path)
     print(f"  ✓ Inbox: {inbox_path}")
     print()
