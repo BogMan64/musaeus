@@ -69,3 +69,32 @@ def test_an_abandoned_setup_is_not_a_success(tmp_path, monkeypatch, argv):
         cli.main()
 
     assert stop.value.code == 1
+
+
+def test_a_helper_command_runs_from_another_folder(tmp_path, monkeypatch, capsys):
+    """`musaeus report` crashed outside the checkout: "No module named
+    'scripts'", or another folder of that name (~/scripts) was found first.
+    So did upgrade-check, spec-scout and canon-review."""
+    from pathlib import Path
+
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "scripts").mkdir(parents=True)
+    (tmp_path / "vault").mkdir()
+    monkeypatch.chdir(elsewhere)
+    root = Path(cli.__file__).resolve().parent.parent
+    monkeypatch.setattr(
+        sys, "path", ["", *(p for p in sys.path if p and Path(p).resolve() != root)]
+    )
+    for name in [m for m in sys.modules if m.split(".")[0] == "scripts"]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("MUSAEUS_VAULT_ROOT", str(tmp_path / "vault"))
+    monkeypatch.setattr("musaeus.config._cached_config", None)
+    monkeypatch.setattr("musaeus.setup.needs_setup", lambda: False)
+    monkeypatch.setattr(sys, "argv", ["musaeus", "report"])
+
+    with pytest.raises(SystemExit) as stop:
+        cli.main()
+
+    assert stop.value.code == 0, capsys.readouterr().err

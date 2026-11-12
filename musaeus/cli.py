@@ -1666,6 +1666,19 @@ def _cmd_edition(args) -> int:
     return 0
 
 
+def _scripts_beside_the_package() -> None:
+    """Make `scripts.*` mean the folder beside this package, wherever you stand.
+
+    The four helper commands live in scripts/, which is not part of the
+    package. Outside the checkout the name was not found at all, or another
+    folder of that name (~/scripts) was found first, and `musaeus report`
+    crashed (first run in a clean home folder, 2026-11-11).
+    """
+    root = str(Path(__file__).resolve().parent.parent)
+    if sys.path[:1] != [root]:
+        sys.path.insert(0, root)
+
+
 def _cmd_upgrade_check(write_csv: bool = False, min_gap: int = 0) -> int:
     try:
         cfg = get_config()
@@ -1675,6 +1688,7 @@ def _cmd_upgrade_check(write_csv: bool = False, min_gap: int = 0) -> int:
 
     conn = open_db(cfg.db_path)
     try:
+        _scripts_beside_the_package()
         from scripts.musaeus_upgrade_check import _analyse, _gather, _print_report
 
         rows = _gather(conn)
@@ -1698,6 +1712,7 @@ def _cmd_spec_scout(write_csv: bool = False, min_bitrate: int = 0, max_bitrate: 
 
     conn = open_db(cfg.db_path)
     try:
+        _scripts_beside_the_package()
         from scripts.musaeus_spec_scout import _analyse, _gather, _print_report
 
         rows = _gather(conn)
@@ -1727,6 +1742,7 @@ def _cmd_canon_review(
 
     conn = open_db(cfg.db_path)
     try:
+        _scripts_beside_the_package()
         from scripts.musaeus_canon_review import _apply, _report
 
         if mode == "report":
@@ -2757,6 +2773,7 @@ def main() -> None:
         elif command == "report":
             import json as _json
 
+            _scripts_beside_the_package()
             from scripts.musaeus_report import _gather, _print_report
 
             cfg = get_config()
