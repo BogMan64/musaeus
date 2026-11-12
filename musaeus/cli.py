@@ -2921,12 +2921,19 @@ def main() -> None:
             sys.exit(sync(cfg.iphone_library, Path(args.mount), genres=tuple(args.genre or ())))
 
         elif command == "export":
-            from . import itunes_export
+            from . import edition_build, itunes_export
 
             cfg = get_config()
             out = Path(args.out or Path(cfg.vault_root) / "Exports" / "musaeus-itunes-bridge.json")
-            manifest = itunes_export.build(cfg)
-            itunes_export.write(manifest, out)
+            try:
+                # No lossless build moves copies while the list is made: the
+                # Companion refuses a list naming a file that is gone.
+                with edition_build.build_lock(cfg.runs_root / "locks", edition_build.EDITION):
+                    manifest = itunes_export.build(cfg)
+                    itunes_export.write(manifest, out)
+            except RuntimeError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                sys.exit(1)
             moved = sum(1 for t in manifest["tracks"] if t["previous_paths"])
             print(f"iTunes export: {out}")
             print(f"  songs     : {len(manifest['tracks']):,} ({moved:,} with an earlier place)")

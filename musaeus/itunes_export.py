@@ -42,7 +42,8 @@ MOVE_EVENTS = ("ORGANIZE_MOVE", "ORGANIZE_RENAME", "ARTIST_CONSOLIDATED")
 
 
 def _read_only(path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    # as_uri() escapes "#" and "?", which SQLite would read as URI syntax.
+    return sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
 
 
 class _History:
@@ -136,14 +137,15 @@ def build(cfg: object) -> dict:
         ).fetchall()
     finally:
         ledger.close()
-    copies = [
-        (os.path.normpath(out), master, audio_hash)
-        for out, master, audio_hash in rows
-        if Path(out).is_relative_to(library)
+    copies = []
+    for out, master, audio_hash in rows:
+        out = os.path.normpath(out)  # before the root check: ".." passes is_relative_to
+        if not Path(out).is_relative_to(library):
+            continue
         # Its marker, not only a file: a stale record's path may hold another
         # master's copy (CodeRabbit on #321). No file reads as no marker.
-        and edition_bake.read_marker(Path(out)) == marker_for(audio_hash)
-    ]
+        if edition_bake.read_marker(Path(out)) == marker_for(audio_hash):
+            copies.append((out, master, audio_hash))
     current = {out for out, _, _ in copies}
 
     catalogue = _read_only(Path(cfg.db_path))  # type: ignore[attr-defined]
@@ -155,6 +157,7 @@ def build(cfg: object) -> dict:
     for out, master, audio_hash in copies:
         previous: list[str] = []
         for old in history.earlier_masters(master, audio_hash or ""):
+            old = os.path.normpath(old)
             if not Path(old).is_relative_to(masters):
                 continue  # it was not in the library then: no copy of it
             was = os.path.normpath(_mirror(masters, library, Path(old)))

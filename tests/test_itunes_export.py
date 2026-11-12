@@ -19,21 +19,25 @@ from musaeus.edition_build import marker_for
 from musaeus.edition_ledger import ledger_path, open_ledger
 
 
-@pytest.fixture
-def cfg(tmp_path: Path) -> MusicConfig:
+def _make_cfg(root: Path) -> MusicConfig:
     c = MusicConfig(
-        vault_root=tmp_path,
-        inbox=tmp_path / "INBOX",
-        staging=tmp_path / "STAGING",
-        quarantine=tmp_path / "QUARANTINE",
-        runs_root=tmp_path / "RUNS",
-        meta_dir=tmp_path / "MetaData",
-        alac_library=tmp_path / "Libraries" / "ALAC_Library",
-        db_path=tmp_path / "musaeus.db",
+        vault_root=root,
+        inbox=root / "INBOX",
+        staging=root / "STAGING",
+        quarantine=root / "QUARANTINE",
+        runs_root=root / "RUNS",
+        meta_dir=root / "MetaData",
+        alac_library=root / "Libraries" / "ALAC_Library",
+        db_path=root / "musaeus.db",
     )
     c.ensure_dirs()
     open_db(c.db_path).close()
     return c
+
+
+@pytest.fixture
+def cfg(tmp_path: Path) -> MusicConfig:
+    return _make_cfg(tmp_path)
 
 
 @pytest.fixture(autouse=True)
@@ -248,3 +252,40 @@ def test_a_failed_write_leaves_no_temporary_file(cfg, tmp_path, monkeypatch):
     with pytest.raises(OSError, match="disk full"):
         itunes_export.write({"tracks": []}, out)
     assert not list(out.parent.iterdir())
+
+
+def test_a_vault_path_with_a_hash_sign_is_read(tmp_path):
+    """Local CodeRabbit on #321: "#" in a plain file: URI starts a fragment."""
+    c = _make_cfg(tmp_path / "Music #1")
+    _, out = _copy(c, "Rock/A/X/A - One.m4a")
+    assert [t["path"] for t in itunes_export.build(c)["tracks"]] == [str(out)]
+
+
+def test_a_path_that_climbs_out_of_its_root_is_left_out(cfg):
+    """Local CodeRabbit on #321: ".." passes a plain is_relative_to."""
+    master, out = _copy(cfg, "Rock/Y/Y/Y.m4a")
+    _copy(cfg, "../Other/A/X/A - Out.m4a")
+    _moved(cfg, cfg.alac_archive / "../Elsewhere/Z/Z/Z.m4a", master)
+    (track,) = itunes_export.build(cfg)["tracks"]
+    assert track == {"path": str(out), "previous_paths": []}
+
+
+def test_the_export_waits_for_no_lossless_build(cfg, tmp_path, monkeypatch):
+    """Local CodeRabbit on #321: a build moving copies while the list is made
+    leaves paths the Companion refuses."""
+    import sys
+
+    import musaeus.cli as cli
+    from musaeus import edition_build
+
+    _copy(cfg, "Rock/A/X/A - One.m4a")
+    out = tmp_path / "bridge.json"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("MUSAEUS_VAULT_ROOT", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["musaeus", "export", "itunes", "--out", str(out)])
+    with (
+        edition_build.build_lock(cfg.runs_root / "locks", "lossless"),
+        pytest.raises(SystemExit) as e,
+    ):
+        cli.main()
+    assert e.value.code == 1 and not out.exists()
