@@ -1090,6 +1090,7 @@ def test_the_playlists_are_written_under_the_build_lock(cfg, monkeypatch):
     must never read playlists a build is still writing."""
     from musaeus import cli, edition_index
 
+    open_db(cfg.db_path).close()  # an empty catalogue: the build itself is stubbed
     held = []
 
     def index_while_locked(cfg_, root, apply):
