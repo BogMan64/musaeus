@@ -58,12 +58,12 @@ in the checkout, which a plain `pip install .` does not copy.
 
 ### Debian package
 
-`packaging/build-deb.sh` builds `musaeus_0.2.0-1_all.deb` from a checkout
+`packaging/build-deb.sh` builds `dist/musaeus_0.2.0-1_all.deb` from a checkout
 (see [packaging/README.debian.md](packaging/README.debian.md)). No release
 has been published on GitHub yet, so there is nothing to download.
 
 ```bash
-sudo apt install ./musaeus_0.2.0-1_all.deb
+sudo apt install ./dist/musaeus_0.2.0-1_all.deb
 ```
 
 The package does not pull in `rapidfuzz`; see "What it needs".
@@ -243,7 +243,9 @@ copies the car edition to a USB stick.
 - Losers move to `REVIEW/DUPES_MOVED/<date>/` with a manifest and a restore
   script. `musaeus dedupe` lets you choose by hand instead.
 - **After 30 days in REVIEW or QUARANTINE a file is deleted** (the
-  `hold-expiry` stage, last in every run). What stays:
+  `hold-expiry` stage, last in the default pipeline: a plain `musaeus run`.
+  The older `--full`, `--archive` and `--maintain` chains do not run it).
+  What stays:
   - any held file whose name is in `MetaData/hold_keep.txt`. This is the
     only protection for a damaged or refused file in QUARANTINE;
   - a tribute copy whose song is in `MetaData/tribute_keep.tsv` (tribute

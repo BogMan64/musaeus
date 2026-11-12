@@ -44,7 +44,7 @@ something. If a run does something you did not want, look
 in `RUNS/HANDOFFS/` and `REVIEW/DUPES_MOVED/` before you panic.
 
 **But the hold ends.** A file left in `REVIEW/` or `QUARANTINE/` for 30 days
-is deleted by the last stage (`hold-expiry`) of a later run. Put it back, or
+is deleted by the last stage (`hold-expiry`) of a later plain `musaeus run`. Put it back, or
 name it in `MetaData/hold_keep.txt`, before then.
 
 ---
