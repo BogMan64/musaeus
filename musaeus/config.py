@@ -36,11 +36,15 @@ ALAC-Library is the canonical, finalized output of the pipeline — distinct
 from INBOX (mutable working area). Physical presence of a file in
 ALAC-Library is meant to be a trustworthy, DB-independent signal that
 processing is actually complete for that file, not just that a DB row
-claims so. musaeus.db itself is treated as transient per-batch working
-state and is expected to be wiped after each batch finalizes; anything
-that must survive across batches (the audio-hash index used for
-cross-batch dedup, the TuneMyMusic.csv sub-lossless log, DB snapshots)
-lives under ALAC-Library itself, not in the wipeable vault DB.
+claims so. Anything that must survive the loss of musaeus.db (the
+audio-hash index used for cross-batch dedup, the TuneMyMusic.csv
+sub-lossless log, DB snapshots) lives beside the masters, not in the vault
+DB.
+
+musaeus.db is NOT wiped between batches. Until 2026-09-30 this paragraph
+said it was "expected to be wiped after each batch finalizes"; Grey ended
+the wipes that day, and the catalogue cannot be rebuilt from the event log
+(README, "Design principles"). Back it up.
 """
 
 from __future__ import annotations
@@ -152,7 +156,7 @@ class MusicConfig:
         if not vault_str:
             raise ValueError(
                 "MUSAEUS_VAULT_ROOT is not set.\n"
-                "Set it in ~/.config/musaeus/settings.env or export it:\n"
+                "Run `musaeus setup`, set it in ~/.config/musaeus/settings.env, or export it:\n"
                 "  export MUSAEUS_VAULT_ROOT=/path/to/your/vault"
             )
         vault_root = _expand(vault_str)

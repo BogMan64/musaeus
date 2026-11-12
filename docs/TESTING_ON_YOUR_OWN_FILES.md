@@ -36,11 +36,16 @@ masters, a "dry run" deleting a staging directory a live encode was reading
 from, four files truncated behind intact headers. It is careful software
 *because* those happened.
 
-**What is on your side:** removals move, they do not delete. The recovery
-module deliberately exposes no delete operation at all, and the duplicate
-resolver writes a CSV manifest plus an executable restore script next to
-whatever it moved. If a run does something you did not want, look for
-`RUNS/` and `DUPES_MOVED_FOR_REVIEW/` before you panic.
+**What is on your side:** a removal is a move first. The duplicate resolver
+writes a CSV manifest plus a restore script next to whatever it moved,
+damaged files go to `QUARANTINE/`, and the original of a converted file is
+held under `RUNS/recovery/` for the ten newest runs that converted
+something. If a run does something you did not want, look
+in `RUNS/HANDOFFS/` and `REVIEW/DUPES_MOVED/` before you panic.
+
+**But the hold ends.** A file left in `REVIEW/` or `QUARANTINE/` for 30 days
+is deleted by the last stage (`hold-expiry`) of a later plain `musaeus run`. Put it back, or
+name it in `MetaData/hold_keep.txt`, before then.
 
 ---
 
@@ -71,8 +76,8 @@ After a run, look in:
 
 | Path | What is there |
 |---|---|
-| `vault/Libraries/ALAC-Library/` | your music, transcoded and organised `Artist/Album/` |
-| `vault/Libraries/ALAC_Archive/DUPES_MOVED_FOR_REVIEW/` | duplicates it set aside, with a restore script |
+| `vault/Libraries/ALAC-Archival/` | your music, converted and filed `Genre/Artist/Album/` |
+| `vault/REVIEW/DUPES_MOVED/<date>/` | duplicates it set aside, with a restore script |
 | `vault/RUNS/HANDOFFS/` | a written report of the run — start here |
 | `vault/RUNS/FAILURES/` | JSON detail for any stage that failed |
 | `vault/QUARANTINE/` | anything it refused to process |
@@ -112,18 +117,22 @@ ACOUSTICID_API_KEY=...
   if it gets noisy.
 - **The interactive console** (`docker compose run --rm musaeus console`)
   works — verified, menu and all, with the container's paths reported
-  correctly and no setup wizard. Two of its entries reach for locations
-  that only exist on the maintainer's machine, though: the documentation
-  browser defaults to `/mnt/FORGE2TB/DOCUMENTATION` unless you set
-  `MUSAEUS_DOC_ROOT`, and "Transfer to USB" expects a real removable
-  device. Nothing on the `run` path touches either.
+  correctly and no setup wizard. Two of its entries want something a
+  container does not have, though: the documentation browser reads
+  `~/Documents/MUSAEUS` unless you set `MUSAEUS_DOC_ROOT`, and "Transfer to
+  USB" expects a real removable device. Nothing on the `run` path touches
+  either.
+- **No car or iPhone edition in the container.** Those builds encode with
+  `fdkaac`, which the image does not install. The lossless edition builds.
 
 ## What has and has not been verified
 
 Being explicit, because "should work" is how the interesting bugs get shipped:
 
-**Verified by running it** — the image builds; the full test suite (2,123
-tests) passes inside the container, matching the maintainer's host exactly;
+**Verified by running it (September 2026; the image has not been rebuilt
+since)** — the image builds; the full test suite (2,123 tests then, about
+5,200 now) passes inside the container, matching the maintainer's host
+exactly;
 a real run over six files transcoded and organised five, set the exact
 duplicate aside with a restore script, quarantined the originals rather than
 deleting them, reached MusicBrainz over the network, and wrote its handoff

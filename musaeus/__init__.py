@@ -17,10 +17,10 @@ Architecture:
     (This line said the opposite until 2026-09-09 -- P2-C.)
   - Every stage MUST implement dry_run() — it is never optional
 
-Version: 0.1.0
+Version: 0.2.0
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "MUSAEUS contributors"
 
 

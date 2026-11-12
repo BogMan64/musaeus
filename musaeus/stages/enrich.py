@@ -138,7 +138,7 @@ class EnrichStage(BaseStage):
         if not cfg.lastfm_api_key:
             logger.warning(
                 "[enrich] LASTFM_API_KEY not set — stage will be a no-op. "
-                "Add it to ~/.config/musaeus/settings.env"
+                "Add it with `musaeus setup`"
             )
         count = ctx.conn.execute(
             "SELECT COUNT(*) FROM archive "
@@ -155,8 +155,7 @@ class EnrichStage(BaseStage):
         api_key = cfg.lastfm_api_key
         if not api_key:
             result.notes.append(
-                "LASTFM_API_KEY not set — skipping enrichment. "
-                "Set it in ~/.config/musaeus/settings.env"
+                "LASTFM_API_KEY not set — skipping enrichment. Add it with `musaeus setup`"
             )
             ctx.record_stage(result)
             return result

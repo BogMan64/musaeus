@@ -624,7 +624,7 @@ class AcousticIDStage(BaseStage):
             logger.warning(
                 "[acousticid] ACOUSTICID_API_KEY not set — fingerprints will be "
                 "computed but not matched against AcousticID. "
-                "Add key to ~/.config/musaeus/settings.env"
+                "Add it with `musaeus setup`"
             )
 
         try:

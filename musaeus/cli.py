@@ -7,8 +7,11 @@ Usage:
 
 Pipeline commands:
     preflight        Environment checks (commands, packages, disk, DB) — report-only
-    run              Run the default pipeline (Preflight → Ingest → Sentinel → Scholar)
-    run --full       Run the full pipeline  (+ Normalize → Forge → Tagger)
+    run              Run the whole pipeline: intake, duplicates, convert and file,
+                     enrichment (Acts 1-3). It changes files at once: preview
+                     with --dry-run, or stop after one Act with --act
+    run --full       Older short chain: catalogue + Normalize → Forge → Tagger
+                     (no duplicates, no filing)
     run --maintain   Run the maintenance pipeline (Ghost→Health→Normalize→Enrich→MBEnrich→NearDupe)
     dry-run          Preview the default pipeline without any mutations
     ingest           Run Ingest stage only
@@ -17,7 +20,7 @@ Pipeline commands:
     normalize        Article-suffix fix + ALL-CAPS repair on archived metadata
     canonicalize     Lossless→ALAC / sub-lossless→AAC, both as .m4a (Act 3)
     finalize         Move canonicalized files INBOX → ALAC-Library (Act 3)
-    audit            Physical-presence gate before DB snapshot+wipe (Act 3)
+    audit            Check every filed row against the disk and the hash index (Act 3)
     dupe-resolver    Physically relocate duplicate losers to review folder (Act 2)
     cross-dupe       Flag files already in ALAC-Library from a prior batch (Act 2)
     deep-scan        Decode-verify masters for silent truncation (idle-only)
@@ -1673,6 +1676,28 @@ def _cmd_edition(args) -> int:
     return 0
 
 
+def _scripts_beside_the_package() -> None:
+    """Make `scripts.*` mean the folder beside this package, wherever you stand.
+
+    The four helper commands live in scripts/, which is not part of the
+    package. Outside the checkout the name was not found at all, or another
+    folder of that name (~/scripts) was found first, and `musaeus report`
+    crashed (first run in a clean home folder, 2026-11-11).
+
+    Bound by name, not by the search path: a package called `scripts` (one
+    with an __init__.py) anywhere on the path wins over a plain folder, even
+    one listed first (local CodeRabbit, 2026-11-12).
+    """
+    import types
+
+    here = str(Path(__file__).resolve().parent.parent / "scripts")
+    known = sys.modules.get("scripts")
+    if known is None or here not in list(getattr(known, "__path__", [])):
+        package = types.ModuleType("scripts")
+        package.__path__ = [here]
+        sys.modules["scripts"] = package
+
+
 def _cmd_upgrade_check(write_csv: bool = False, min_gap: int = 0) -> int:
     try:
         cfg = get_config()
@@ -1682,6 +1707,7 @@ def _cmd_upgrade_check(write_csv: bool = False, min_gap: int = 0) -> int:
 
     conn = open_db(cfg.db_path)
     try:
+        _scripts_beside_the_package()
         from scripts.musaeus_upgrade_check import _analyse, _gather, _print_report
 
         rows = _gather(conn)
@@ -1705,6 +1731,7 @@ def _cmd_spec_scout(write_csv: bool = False, min_bitrate: int = 0, max_bitrate: 
 
     conn = open_db(cfg.db_path)
     try:
+        _scripts_beside_the_package()
         from scripts.musaeus_spec_scout import _analyse, _gather, _print_report
 
         rows = _gather(conn)
@@ -1734,6 +1761,7 @@ def _cmd_canon_review(
 
     conn = open_db(cfg.db_path)
     try:
+        _scripts_beside_the_package()
         from scripts.musaeus_canon_review import _apply, _report
 
         if mode == "report":
@@ -1779,7 +1807,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", metavar="command")
 
     # ── run ──────────────────────────────────────────────────────────────────
-    run_p = sub.add_parser("run", help="Run pipeline (Ingest→Sentinel→Scholar)")
+    run_p = sub.add_parser(
+        "run",
+        help="Run the whole pipeline (Acts 1-3 + enrichment); changes files at once, "
+        "preview with --dry-run",
+    )
     run_p.add_argument("--dry-run", action="store_true", help="Preview only, no mutations")
     run_p.add_argument(
         "--skip",
@@ -1806,7 +1838,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--enrich",
         action="store_true",
-        help="Run Enrich + MBEnrich + AcousticID + Reviewer pipeline",
+        help="Run Enrich + MBEnrich + AcousticID + MBWork + AlbumFill",
     )
     run_p.add_argument(
         "--reset",
@@ -1886,7 +1918,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # audit
     audit_p = sub.add_parser(
-        "audit", help="Physical-presence verification gate before DB snapshot+wipe"
+        "audit", help="Check every filed row against the disk and the hash index"
     )
     audit_p.add_argument(
         "--dry-run", action="store_true", help="Same as run -- audit is inherently read-only"
@@ -2119,7 +2151,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("health-report", help="Print validation issues summary")
 
     # rebuild-db
-    rebuild_p = sub.add_parser("rebuild-db", help="Rebuild archive table from event log")
+    rebuild_p = sub.add_parser(
+        "rebuild-db", help="DISABLED: says why (the event log cannot rebuild the archive)"
+    )
     rebuild_p.add_argument("--dry-run", action="store_true", help="Preview only")
 
     # curator
@@ -2163,7 +2197,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # review-report
-    sub.add_parser("review-report", help="Show AI reviewer issues summary")
+    sub.add_parser("review-report", help="Not implemented: there is no reviewer stage")
 
     # upgrade-check
     upgrade_p = sub.add_parser(
@@ -2204,7 +2238,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # overnight
     overnight_p = sub.add_parser(
         "overnight",
-        help="Automated nightly self-heal: Ghost→Health→Normalize→Enrich→MBEnrich→NearDupe→Reviewer",
+        help="Automated nightly self-heal: Ghost→Health→Normalize→Enrich→MBEnrich→NearDupe",
     )
     overnight_p.add_argument("--dry-run", action="store_true", help="Preview only")
 
@@ -2564,8 +2598,7 @@ def main() -> None:
     from .setup import run_wizard as _run_wizard
 
     if command == "setup":
-        _run_wizard(force=True)
-        return
+        sys.exit(0 if _run_wizard(force=True) else 1)
 
     if command == "reset":
         sys.exit(_cmd_reset())
@@ -2574,7 +2607,7 @@ def main() -> None:
         print("\n  Welcome to MUSAEUS! No configuration found.")
         print("  Running first-time setup wizard...\n")
         if not _run_wizard():
-            return
+            sys.exit(1)  # nothing ran: not a success for the script that called
 
     try:
         # Store progress settings in global state for pipeline runner
@@ -2776,6 +2809,7 @@ def main() -> None:
         elif command == "report":
             import json as _json
 
+            _scripts_beside_the_package()
             from scripts.musaeus_report import _gather, _print_report
 
             cfg = get_config()

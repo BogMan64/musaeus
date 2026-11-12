@@ -1,4 +1,4 @@
-# MUSAEUS 0.1.0-1 for Debian
+# MUSAEUS 0.2.0-1 for Debian
 
 This release adds an architecture-independent `.deb` for Debian 12.
 It installs the MUSAEUS command-line application and the helpers used by its
@@ -7,10 +7,10 @@ credentials, or include workstation-specific standalone utilities.
 
 ## Install
 
-Download `musaeus_0.1.0-1_all.deb` from this release and run:
+Download `musaeus_0.2.0-1_all.deb` from this release and run:
 
 ```sh
-sudo apt install ./musaeus_0.1.0-1_all.deb
+sudo apt install ./musaeus_0.2.0-1_all.deb
 musaeus setup
 musaeus run --dry-run
 ```

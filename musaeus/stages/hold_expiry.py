@@ -50,9 +50,15 @@ _HELD_STATUSES = ("DUPE_REVIEW", "TRIBUTE_REVIEW", "QUARANTINED")
 
 
 def _kept_files(meta_dir: Path) -> set[str]:
-    """File names that stay, one per line, exactly as they are on disk."""
+    """File names that stay, one per line, as they are on disk.
+
+    utf-8-sig and rstrip: a byte-order mark hid the first name and a trailing
+    space any other, and a name that does not match is deleted after the hold.
+    """
     path = meta_dir / KEEP_FILENAME
-    return set(path.read_text(encoding="utf-8").splitlines()) if path.is_file() else set()
+    if not path.is_file():
+        return set()
+    return {line.rstrip() for line in path.read_text(encoding="utf-8-sig").splitlines()}
 
 
 def _expired(root: Path, cutoff: float) -> list[Path]:
