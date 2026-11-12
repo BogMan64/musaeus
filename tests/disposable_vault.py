@@ -73,19 +73,14 @@ from musaeus.db import open_db
 
 # ── Protected real paths ──────────────────────────────────────────────────────
 #
-# These are Grey's actual, real paths — not test fixtures, not disposable.
+# The real folders on this machine -- not test fixtures, not disposable.
 # Nothing under these roots may ever be created, read, renamed, or deleted
-# by a test. Kept as a short, explicit, named list (per-path rationale in
-# comments) rather than a broad prefix like "all of /home/grey", so the
-# guard stays scoped to the specific safety property this task cares about
-# and doesn't false-positive on unrelated legitimate filesystem activity.
-PROTECTED_REAL_ROOTS: tuple[str, ...] = (
-    "/home/grey/Music",  # the real ~470GB personal music library
-    "/home/grey/.config/musaeus",  # real settings.env / credentials.env / resume_state.json
-    "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT",  # real live working vault (musaeus.db, INBOX, ALAC-Library)
-    "/mnt/FORGE2TB/Projects/MUSAEUS_TEST_VAULT",  # Grey's manual/persistent test vault — not disposable-per-test
-    "/home/grey/Projects/MUSAEUS_RECOVERY",  # policy.FUTURE_RECOVERY_ROOT for Grey; never create/probe this
-)
+# by a test. A short, named list (see tests/real_roots.py, which works them
+# out before conftest redirects HOME) rather than a broad prefix like "all
+# of the home folder", so the guard stays scoped to the specific safety
+# property this task cares about and doesn't false-positive on unrelated
+# legitimate filesystem activity.
+from tests.real_roots import PROTECTED_REAL_ROOTS  # noqa: E402
 
 
 def _is_under_protected_root(path_str: str) -> str | None:

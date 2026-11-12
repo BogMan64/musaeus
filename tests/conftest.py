@@ -19,7 +19,7 @@ that imports it) is ever imported in this process.
 
 Confirmed empirically during P0-01 (see tasks.md completion evidence):
 importing musaeus.config in an unmodified process injects
-MUSAEUS_VAULT_ROOT=/mnt/FORGE2TB/Projects/MUSAEUS_VAULT plus real API
+MUSAEUS_VAULT_ROOT=<the real vault> plus real API
 keys into os.environ, because config.py's _load_env() uses
 os.environ.setdefault(). Redirecting HOME first means that leak reads
 an empty, disposable settings.env location instead (nothing to set).
@@ -31,6 +31,10 @@ import os
 import re
 import tempfile
 from pathlib import Path
+
+# Before anything else: the real folders the PathGuard protects, read while
+# HOME is still the real one (tests/real_roots.py).
+import tests.real_roots  # noqa: F401
 
 # ── Step 1: redirect HOME/XDG before anything can leak real config ───────────
 #

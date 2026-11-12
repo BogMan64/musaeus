@@ -32,6 +32,7 @@ from tests.disposable_vault import (
     make_disposable_vault,
     snapshot_vault_state,
 )
+from tests.real_roots import REAL_HOME, REAL_VAULT
 
 # ── PathGuard: blocks real-library and real-config paths ─────────────────────
 
@@ -46,7 +47,7 @@ class TestPathGuardBlocksRealPaths:
     """
 
     def test_blocks_mkdir_under_real_music_library(self, path_guard):
-        target = Path("/home/grey/Music/__musaeus_p0_01_isolation_probe__")
+        target = REAL_HOME / "Music" / "__musaeus_p0_01_isolation_probe__"
         assert not target.exists(), (
             "probe path unexpectedly already exists on the real filesystem — "
             "aborting rather than risk touching it"
@@ -56,23 +57,25 @@ class TestPathGuardBlocksRealPaths:
         assert not target.exists()
 
     def test_blocks_write_under_real_musaeus_config(self, path_guard):
-        target = Path("/home/grey/.config/musaeus/__musaeus_p0_01_isolation_probe__.txt")
+        target = REAL_HOME / ".config" / "musaeus" / "__musaeus_p0_01_isolation_probe__.txt"
         assert not target.exists()
         with pytest.raises(RealPathAccessError):
             target.write_text("should never be written", encoding="utf-8")
         assert not target.exists()
 
     def test_blocks_write_under_real_vault(self, path_guard):
-        target = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/__musaeus_p0_01_isolation_probe__.txt")
+        if REAL_VAULT is None:
+            pytest.skip("no live vault is set up on this machine")
+        target = REAL_VAULT / "__musaeus_p0_01_isolation_probe__.txt"
         assert not target.exists()
         with pytest.raises(RealPathAccessError):
             target.write_text("should never be written", encoding="utf-8")
         assert not target.exists()
 
     def test_blocks_write_under_real_test_vault(self, path_guard):
-        target = Path(
-            "/mnt/FORGE2TB/Projects/MUSAEUS_TEST_VAULT/__musaeus_p0_01_isolation_probe__.txt"
-        )
+        if REAL_VAULT is None:
+            pytest.skip("no live vault is set up on this machine")
+        target = REAL_VAULT.parent / "MUSAEUS_TEST_VAULT" / "__musaeus_p0_01_isolation_probe__.txt"
         assert not target.exists()
         with pytest.raises(RealPathAccessError):
             target.write_text("should never be written", encoding="utf-8")
@@ -80,13 +83,13 @@ class TestPathGuardBlocksRealPaths:
 
     def test_blocks_mkdir_under_future_recovery_root(self, path_guard):
         """
-        /home/grey/Projects/MUSAEUS_RECOVERY is the fixed FUTURE recovery
-        root (policy.FUTURE_RECOVERY_ROOT for Grey): "no task creates or
+        ~/Projects/MUSAEUS_RECOVERY is the fixed FUTURE recovery
+        root (policy.FUTURE_RECOVERY_ROOT): "no task creates or
         probes that directory". It must not exist on disk at all right
         now — this test both proves the guard blocks it AND documents
         that expectation as an executable assertion, not just prose.
         """
-        real_recovery_root = Path("/home/grey/Projects/MUSAEUS_RECOVERY")
+        real_recovery_root = REAL_HOME / "Projects" / "MUSAEUS_RECOVERY"
         assert not real_recovery_root.exists(), (
             "the future-only recovery root must never be created; if this "
             "assertion fails, something in this repo violated that policy "
@@ -99,15 +102,15 @@ class TestPathGuardBlocksRealPaths:
     def test_the_guard_follows_the_policy_recovery_root(self):
         """The guard must protect the root the policy names. #219 moved the
         policy root and the guard kept the old one (Codex review of #219). Tests run with a fake HOME, so take the
-        policy's path below HOME and put it under Grey's real one."""
+        policy's path below HOME and put it under the real one."""
         below_home = Path(FUTURE_RECOVERY_ROOT).relative_to(Path.home())
-        grey_root = str(Path("/home/grey") / below_home)
-        assert _is_under_protected_root(grey_root) == grey_root
+        real_root = str(REAL_HOME / below_home)
+        assert _is_under_protected_root(real_root) == real_root
 
     def test_blocks_sqlite_connect_to_real_vault_db(self, path_guard):
         """
         Confirmed environment-dependent (2026-08-18): on Python 3.10 in
-        CI, where /mnt/FORGE2TB/... doesn't exist at all, sqlite3's C
+        CI, where the vault path doesn't exist at all, sqlite3's C
         extension raises its own OperationalError before -- or instead
         of -- the sys.addaudithook() callback getting a chance to raise
         RealPathAccessError (a CPython audit-hook-timing skew between
@@ -117,20 +120,22 @@ class TestPathGuardBlocksRealPaths:
         across Python versions and machines instead of coupling it to
         one specific interception mechanism.
         """
-        real_db = "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db"
+        if REAL_VAULT is None:
+            pytest.skip("no live vault is set up on this machine")
+        real_db = str(REAL_VAULT / "musaeus.db")
         with pytest.raises((RealPathAccessError, sqlite3.OperationalError)):
             sqlite3.connect(real_db)
 
     def test_records_attempts(self, path_guard):
         path_guard.reset_attempts()
-        target = Path("/home/grey/Music/__another_probe__")
+        target = REAL_HOME / "Music" / "__another_probe__"
         with pytest.raises(RealPathAccessError):
             target.mkdir()
         assert len(path_guard.attempts) == 1
         event, path_str, matched_root = path_guard.attempts[0]
         assert event == "os.mkdir"
         assert path_str == str(target)
-        assert matched_root == "/home/grey/Music"
+        assert matched_root == str(REAL_HOME / "Music")
 
     def test_disposable_vault_paths_are_unaffected(self, disposable_vault, path_guard):
         """The guard must not false-positive on ordinary disposable-vault
@@ -230,23 +235,23 @@ class TestEnvLeakClosed:
     """
 
     def test_musaeus_vault_root_env_is_not_the_real_vault(self):
-        assert os.environ.get("MUSAEUS_VAULT_ROOT") != "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT"
+        assert REAL_VAULT is None or os.environ.get("MUSAEUS_VAULT_ROOT") != str(REAL_VAULT)
 
     def test_config_module_user_config_dir_is_not_real_home(self):
         import musaeus.config as config_mod
 
-        assert str(config_mod._USER_CONFIG_DIR) != "/home/grey/.config/musaeus"
+        assert config_mod._USER_CONFIG_DIR != REAL_HOME / ".config" / "musaeus"
 
     def test_cli_resume_file_is_not_real_home(self):
         import musaeus.cli as cli_mod
 
-        assert "/home/grey" not in str(cli_mod._RESUME_FILE)
+        assert not Path(cli_mod._RESUME_FILE).is_relative_to(REAL_HOME)
 
     def test_wizard_settings_files_are_not_real_home(self):
         import musaeus.setup.wizard as wizard_mod
 
-        assert "/home/grey" not in str(wizard_mod._SETTINGS_FILE)
-        assert "/home/grey" not in str(wizard_mod._CREDENTIALS_FILE)
+        assert not Path(wizard_mod._SETTINGS_FILE).is_relative_to(REAL_HOME)
+        assert not Path(wizard_mod._CREDENTIALS_FILE).is_relative_to(REAL_HOME)
 
     def test_get_config_singleton_does_not_resolve_to_real_vault(self):
         """

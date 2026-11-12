@@ -28,9 +28,8 @@ empty measurements, and one whole subsystem that no live caller reaches:
     `import`, or `no-target`, and an `import` gate with no CLI path is
     recorded UNREACHABLE rather than passed.
 
-Nothing here reads or writes anything under `/mnt/FORGE2TB/Projects/
-MUSAEUS_VAULT`, `/home/grey/Music`, `/home/grey/.config/musaeus`, or
-`/home/grey/Projects/MUSAEUS_RECOVERY`. The session-wide `PathGuard` and
+Nothing here reads or writes anything under the live vault, `~/Music`,
+`~/.config/musaeus`, or `~/Projects/MUSAEUS_RECOVERY` (tests/real_roots.py). The session-wide `PathGuard` and
 `TransportDenialHarness` from `tests/conftest.py` stay installed and
 enabled throughout; no gate here disables, narrows, or skips either one.
 """
@@ -59,6 +58,7 @@ from tests.disposable_vault import (
     DisposableVault,
     snapshot_vault_state,
 )
+from tests.real_roots import REAL_HOME, REAL_VAULT
 
 #: A Linux release gate: it sandboxes HOME and PATH the POSIX way. On Windows
 #: Python reads USERPROFILE, so the decoy settings are never found.
@@ -430,7 +430,7 @@ def _p0_19_precondition() -> None:
         "  config.py's _load_env() reads it at MODULE IMPORT TIME via",
         "  os.environ.setdefault(). Here that is a decoy path under a temp",
         "  directory. On Grey's machine the same file names",
-        "  /mnt/FORGE2TB/Projects/MUSAEUS_VAULT (per the dispatch brief's §2.1",
+        "  the live vault (per the dispatch brief's §2.1",
         "  reproduction), so the same code path yields the LIVE MUSIC LIBRARY.",
         "  Case 2: the documented ValueError is reachable only when HOME has no",
         "  settings file -- i.e. only in the situation nobody is actually in.",
@@ -1860,7 +1860,7 @@ def test_g10_scheduled_run_is_preview_or_review_only(fixture_home):
         # A fixture VAULT_ROOT on a filesystem with headroom: the wrapper's own
         # disk guard aborts below 50 GB free AND sends an ntfy.sh push on abort,
         # which would be an external network attempt. /tmp has ~3 GB.
-        # This used to hardcode /home/grey/.cache, which is why this gate had
+        # This used to hardcode one user's ~/.cache, which is why this gate had
         # never once run anywhere but one laptop. Ask for headroom instead of
         # naming a person: the first directory with 50 GB wins, and if none has
         # it the gate skips rather than reporting a failure it cannot tell apart
@@ -1995,10 +1995,10 @@ def test_g10_scheduled_run_is_preview_or_review_only(fixture_home):
             "in a module the scheduler does not use."
         )
         gate.find(
-            "Also unconditional: the wrapper's own VAULT_ROOT default is fail-open "
-            "in the same shape as the Python side — line 67, "
-            '`VAULT_ROOT="${MUSAEUS_VAULT_ROOT:-/mnt/FORGE2TB/Projects/MUSAEUS_VAULT}"`. '
-            "Unset the variable and the scheduler points at the live vault."
+            "Also unconditional at the time: the wrapper's own VAULT_ROOT default "
+            "was fail-open in the same shape as the Python side -- a built-in path "
+            "to the live vault when MUSAEUS_VAULT_ROOT was unset. (2026-11-12: "
+            "it now reads settings.env and stops when the vault is unset.)"
         )
     finally:
         if wrapper_root is not None and wrapper_root.exists():
@@ -2238,10 +2238,10 @@ def test_g11_no_live_data_operation_audit(path_guard, transport_harness):
             except FileNotFoundError:
                 observed[root] = "absent"
 
-        recovery_root = "/home/grey/Projects/MUSAEUS_RECOVERY"
+        recovery_root = str(REAL_HOME / "Projects" / "MUSAEUS_RECOVERY")
         recovery_absent = not os.path.exists(recovery_root)
 
-        live_db = "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db"
+        live_db = str(REAL_VAULT / "musaeus.db") if REAL_VAULT else ""
         current_db_size = os.stat(live_db).st_size if os.path.exists(live_db) else None
 
         live = subprocess.run(
