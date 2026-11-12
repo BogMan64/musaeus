@@ -243,11 +243,16 @@ copies the car edition to a USB stick.
 - Losers move to `REVIEW/DUPES_MOVED/<date>/` with a manifest and a restore
   script. `musaeus dedupe` lets you choose by hand instead.
 - **After 30 days in REVIEW or QUARANTINE a file is deleted** (the
-  `hold-expiry` stage, last in every run), unless its name is in
-  `MetaData/hold_keep.txt`, its song is in `tribute_keep.tsv`, or the copy
-  kept over it has left the library. Most deleted audio goes on a deny list,
-  so the same download is refused if it arrives again (damaged files are
-  not denied, so a good copy can still arrive).
+  `hold-expiry` stage, last in every run). What stays:
+  - any held file whose name is in `MetaData/hold_keep.txt`. This is the
+    only protection for a damaged or refused file in QUARANTINE;
+  - a tribute copy whose song is in `MetaData/tribute_keep.tsv` (tribute
+    copies only);
+  - a duplicate whose kept copy has left the library (duplicates only);
+  - a file that no held row in the catalogue points at.
+- Most deleted audio goes on a deny list, so the same download is refused if
+  it arrives again. Damaged files are not denied, so a good copy can still
+  arrive.
 
 ---
 
