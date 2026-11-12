@@ -34,8 +34,6 @@ from discography import mb as mb_mod  # noqa: E402
 from discography.library import (  # noqa: E402
     DEFAULT_MIN_ALBUMS,
     DEFAULT_MIN_TRACKS,
-    MB_CACHE,
-    VAULT_DB,
     OwnedArtist,
     load_artists,
 )
@@ -127,17 +125,19 @@ def collect(
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--db", type=Path, default=VAULT_DB)
-    ap.add_argument("--mb-cache", type=Path, default=MB_CACHE)
+    ap.add_argument("--db", type=Path, help="default: the catalogue in your MUSAEUS settings")
+    ap.add_argument(
+        "--mb-cache", type=Path, help="default: the MusicBrainz cache in your MUSAEUS settings"
+    )
     ap.add_argument("--status", default="CATALOGUED")
     ap.add_argument("--min-albums", type=int, default=DEFAULT_MIN_ALBUMS)
     ap.add_argument("--min-tracks", type=int, default=DEFAULT_MIN_TRACKS)
     ap.add_argument("--limit", type=int, default=0, help="max artists to ask about (0 = all)")
+    ap.add_argument("--out", type=Path, default=Path.home() / "Desktop" / "DISCOGRAPHY_gaps.csv")
     ap.add_argument(
-        "--out", type=Path, default=Path.home() / "Desktop" / "DISCOGRAPHY_gaps.csv"
-    )
-    ap.add_argument(
-        "--cache", type=Path, default=None,
+        "--cache",
+        type=Path,
+        default=None,
         help="SQLite cache for MusicBrainz results (default: ~/.cache/discography-lab/mb_cache.db)",
     )
     ap.add_argument(

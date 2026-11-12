@@ -7,6 +7,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 month, newest first, and name the pull requests. The full record is
 `gh pr list --state merged --limit 500`.
 
+## [Unreleased]
+
+### Changed
+
+- No personal folders in the repository. The helper scripts, the nightly
+  `musaeus_overnight.sh` and the noise tools read the vault from
+  `~/.config/musaeus/settings.env` and stop when it is unset;
+  `scripts/music_backup.py` reads its drive from
+  `MUSAEUS_MASTERS_BACKUP_ROOT`, the ListenBrainz token file is in
+  `MUSAEUS_SECRETS_DIR`. `stage_raw_batch.py --raw-root` and
+  `tribute_songs.py --root` are now required. Tests and documents use
+  example paths; `tests/test_no_personal_paths.py` keeps it so.
+
 ## [0.2.0] - 2026-11-12
 
 Wrap-up check of 2026-11-11: a first run in a clean home folder, on a fresh

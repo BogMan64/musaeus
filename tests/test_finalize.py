@@ -678,7 +678,7 @@ class TestFinalizeRecoveryBoundary:
         """A row outside the checkpointed root must fail ALONE.
 
         The real regression, 2026-08-25: exactly one of 10,873 library rows
-        sat in a stray /mnt/FORGE2TB/Projects/<Artist>/INBOX/ directory,
+        sat in a stray <drive>/Projects/<Artist>/INBOX/ directory,
         outside the vault. The boundary correctly refused to move a file it
         could not restore -- but UnmanagedPathError was in neither arm of the
         per-row ``except (FinalizeError, OSError)``, so it escaped to the

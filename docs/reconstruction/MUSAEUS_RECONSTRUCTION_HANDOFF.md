@@ -54,7 +54,7 @@ Kiro Web works on the **repository**. It can read every code source this
 brief names — `musaeus/db.py`, `musaeus/stages/__init__.py` — because they
 are in the repo. It **cannot** reach two things:
 
-- `/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db`, the live database
+- `<vault>/musaeus.db`, the live database
 - the vault's `MetaData/` files
 
 So the "measure it yourself" instruction below cannot be followed there.
@@ -74,7 +74,7 @@ quoted, always.
 ### §1 — What MUSAEUS is
 
 **Source:** `MUSAEUS_RECONSTRUCTION.md` §3 and §4 (already written), plus
-`/mnt/FORGE2TB/Projects/MUSAEUS/README.md` if present.
+`<repo>/README.md` if present.
 
 One page. A personal music-library pipeline that takes audio in, canonicalises
 its metadata against a set of authorities, deduplicates it, and produces three
@@ -184,7 +184,7 @@ Do not estimate.
 ## Verify before you finish
 
 ```bash
-cd /mnt/FORGE2TB/Projects/MUSAEUS
+cd <repo>
 python3 -m pytest -q          # should be green
 python3 -m musaeus doctor     # the current health report
 ```

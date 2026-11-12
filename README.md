@@ -128,6 +128,8 @@ Both are `KEY=VALUE` files. A variable in the environment wins over both.
 | `MUSAEUS_PLAYLISTS` | `<libraries>/Playlists` | playlists |
 | `MUSAEUS_BACKUP_ROOTS` | none | backup folders the bit-rot repair may copy from (`:`-separated) |
 | `MUSAEUS_CURATOR_EXPORT_ROOT` | none | target of the older `curator` export |
+| `MUSAEUS_MASTERS_BACKUP_ROOT` | none | the drive `scripts/music_backup.py` copies the masters to (it stops if unset and no `--root`) |
+| `MUSAEUS_SECRETS_DIR` | none | the folder holding `listenbrainz.env` for `scripts/fm_radio` |
 | `MUSAEUS_DOC_ROOT` | `~/Documents/MUSAEUS` | the menu's document browser |
 | `MUSAEUS_BUSY_TIMEOUT_MS` | `300000` (5 min) | how long SQLite waits on a lock |
 | `MUSAEUS_NO_IDLE_THROTTLE` | unset | `1` stops long work pausing while you use the machine (the test suite sets it) |

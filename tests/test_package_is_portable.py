@@ -1,7 +1,7 @@
 """The Debian package refuses to build when the code names this workstation
 (packaging/build-deb.sh greps for it). Checked here, so a change that breaks the
 package fails the suite instead of the next release build (2026-11-02: a comment
-naming /home/grey/... in musaeus/state/policy.py stopped the build)."""
+naming one user's home folder in musaeus/state/policy.py stopped the build)."""
 
 import re
 from pathlib import Path

@@ -43,16 +43,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from musaeus.config import get_config  # noqa: E402  (the vault comes from settings.env)
 from musaeus.stages.organize import (  # noqa: E402
     build_track_filename,
     sanitize_path_component,
     unique_path,
 )
 
-VAULT = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT")
-DB = VAULT / "musaeus.db"
-PROTECTED = VAULT / "MetaData" / "Protected_Band_Names.txt"
-LAW = VAULT / "MetaData" / "MasterLaw.csv"
+CFG = get_config()
+VAULT = CFG.vault_root
+DB = CFG.db_path
+PROTECTED = CFG.meta_dir / "Protected_Band_Names.txt"
+LAW = CFG.meta_dir / "MasterLaw.csv"
 
 # Mirrors normalize.py's own article list. "Ceresband, De" and
 # "Bravos, Los" are article folds of "De Ceresband" and "Los Bravos" --

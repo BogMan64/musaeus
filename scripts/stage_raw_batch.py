@@ -18,6 +18,7 @@ Copies are written to a .part file, verified by size, then renamed. A 15-min
 timeout once killed a bare shutil.copy2 mid-write and left a truncated 4 MB
 file that looked finished; existence is not completeness.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,11 +27,10 @@ import shutil
 import sys
 from pathlib import Path
 
-sys.path.insert(0, "/mnt/FORGE2TB/Projects/MUSAEUS")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from musaeus.config import MusicConfig
 from musaeus.safe_save import copy_to_new
 
-RAW_ROOT = Path("/media/grey/USB1/2.- Curated.RAW.Files")
 MANIFEST_NAME = "raw_rebuild_manifest.csv"
 
 
@@ -41,7 +41,7 @@ MANIFEST_NAME = "raw_rebuild_manifest.csv"
 TERMINAL = {"denied", "verified-new", "missing"}
 
 
-def build_manifest(cfg: MusicConfig, manifest: Path) -> list[dict]:
+def build_manifest(cfg: MusicConfig, manifest: Path, raw_root: Path) -> list[dict]:
     """One row per raw file, with why we think it is already done.
 
     The archive query is deliberately unfiltered by status: a row in
@@ -52,10 +52,11 @@ def build_manifest(cfg: MusicConfig, manifest: Path) -> list[dict]:
     import sqlite3
 
     db = sqlite3.connect(cfg.db_path, timeout=300)
-    original = {r[0] for r in db.execute(
-        "SELECT filename FROM archive WHERE filename IS NOT NULL")}
-    renamed = {os.path.basename(r[0]) for r in db.execute(
-        "SELECT file_path FROM archive WHERE file_path IS NOT NULL")}
+    original = {r[0] for r in db.execute("SELECT filename FROM archive WHERE filename IS NOT NULL")}
+    renamed = {
+        os.path.basename(r[0])
+        for r in db.execute("SELECT file_path FROM archive WHERE file_path IS NOT NULL")
+    }
     db.close()
 
     led_path = cfg.vault_root / "_db_backups" / "hash_index.db"
@@ -65,21 +66,24 @@ def build_manifest(cfg: MusicConfig, manifest: Path) -> list[dict]:
         denied_names = {
             os.path.basename(r[0])
             for r in led.execute(
-                "SELECT source_path FROM denied_hashes WHERE source_path IS NOT NULL")
+                "SELECT source_path FROM denied_hashes WHERE source_path IS NOT NULL"
+            )
         }
         led.close()
 
     # Preserve any settled outcome from a previous manifest.
     previous: dict[str, dict] = {}
     if manifest.exists():
-        previous = {r["basename"]: r for r in load(manifest)}
+        # By full path: a file of the same name in another folder is another file.
+        previous = {r["path"]: r for r in load(manifest)}
 
     rows = []
-    for p in sorted(RAW_ROOT.rglob("*.m4a"), key=lambda x: x.name):
-        prior = previous.get(p.name)
+    for p in sorted(raw_root.rglob("*.m4a"), key=lambda x: x.name):
+        prior = previous.get(str(p))
         if prior and prior["state"] in TERMINAL:
-            rows.append({"path": str(p), "basename": p.name,
-                         "state": prior["state"], "why": prior["why"]})
+            rows.append(
+                {"path": str(p), "basename": p.name, "state": prior["state"], "why": prior["why"]}
+            )
             continue
         if p.name in original:
             state, why = "done", "archive.filename matches (original name)"
@@ -96,7 +100,13 @@ def build_manifest(cfg: MusicConfig, manifest: Path) -> list[dict]:
         w = csv.DictWriter(fh, fieldnames=["path", "basename", "state", "why"])
         w.writeheader()
         w.writerows(rows)
+    _root_file(manifest).write_text(str(raw_root), encoding="utf-8")
     return rows
+
+
+def _root_file(manifest: Path) -> Path:
+    """Beside the manifest: the folder it was built from (an empty one names none)."""
+    return manifest.with_suffix(".root")
 
 
 def load(manifest: Path) -> list[dict]:
@@ -126,21 +136,33 @@ def copy_verified(src: Path, dest: Path) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--raw-root", type=Path, required=True, help="the folder of raw .m4a files to stage"
+    )
     ap.add_argument("--count", type=int, default=0, help="how many to stage (0 = all pending)")
     ap.add_argument("--rebuild-manifest", action="store_true")
     ap.add_argument("--status", action="store_true")
     args = ap.parse_args()
+    args.raw_root = args.raw_root.resolve()  # the manifest keeps full paths
+    if not args.raw_root.is_dir():  # before the manifest is rebuilt from nothing
+        print(f"NOT RUN: {args.raw_root} is not a folder")
+        return 2
 
     cfg = MusicConfig.from_env()
     manifest = cfg.meta_dir / MANIFEST_NAME
 
     if args.rebuild_manifest or not manifest.exists():
-        rows = build_manifest(cfg, manifest)
+        rows = build_manifest(cfg, manifest, args.raw_root)
         print(f"manifest built: {manifest}")
     else:
         rows = load(manifest)
+        built_from = _root_file(manifest)
+        if not built_from.is_file() or built_from.read_text(encoding="utf-8") != str(args.raw_root):
+            print(f"NOT RUN: {manifest} was built for another folder; add --rebuild-manifest")
+            return 2
 
     from collections import Counter
+
     counts = Counter(r["state"] for r in rows)
     print(f"  total {len(rows):,}  " + "  ".join(f"{k} {v:,}" for k, v in sorted(counts.items())))
     if args.status:

@@ -7,7 +7,11 @@ import sqlite3
 import sys
 from pathlib import Path
 
-DB = "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/musaeus.db"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from musaeus.config import get_config  # noqa: E402  (the vault comes from settings.env)
+
+DB = str(get_config().db_path)
 APPLY = "--apply" in sys.argv
 
 conn = sqlite3.connect(DB)
@@ -63,7 +67,7 @@ for r in rows:
 
 # prune the now-empty old artist dirs
 if APPLY:
-    lib = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT/ALAC-Library")
+    lib = get_config().vault_root / "ALAC-Library"
     for d in sorted((p for p in lib.rglob("*") if p.is_dir() and "(the)" in p.name.lower()),
                     key=lambda p: len(p.parts), reverse=True):
         if {"DUPES_MOVED", "DUPES_MOVED_FOR_REVIEW"} & set(d.parts):

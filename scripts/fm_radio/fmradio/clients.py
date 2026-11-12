@@ -170,7 +170,7 @@ class ListenBrainz:
             raise AuthRequired(
                 "no ListenBrainz user token. Get one from listenbrainz.org "
                 "settings and put it in LISTENBRAINZ_USER_TOKEN, or in "
-                "/mnt/NUC8TB_BACKUP/SECRETS/listenbrainz.env. Note this is a "
+                "listenbrainz.env in MUSAEUS_SECRETS_DIR. Note this is a "
                 "USER TOKEN -- not a MetaBrainz OAuth client id/secret, and "
                 "not a MetaBrainz access token; those are different "
                 "credentials for different services."

@@ -54,7 +54,7 @@ main()
 
 [exit 1]
 --- stdout ---
-CHILD_MUSAEUS_PACKAGE /mnt/FORGE2TB/Projects/MUSAEUS-kiro/musaeus
+CHILD_MUSAEUS_PACKAGE <repo>-kiro/musaeus
 CHILD_RESOLVED_CONFIG {"alac_library": "/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/Libraries/ALAC-Library", "db_path": "/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/musaeus.db", "runs_root": "/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/RUNS", "vault_root": "/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault"}
 CHILD_PRECONDITION_OK fixture_root=/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault
 
@@ -113,7 +113,7 @@ main()
 
 [exit 1]
 --- stdout ---
-CHILD_MUSAEUS_PACKAGE /mnt/FORGE2TB/Projects/MUSAEUS-kiro/musaeus
+CHILD_MUSAEUS_PACKAGE <repo>-kiro/musaeus
 CHILD_RESOLVED_CONFIG {"alac_library": "/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/Libraries/ALAC-Library", "db_path": "/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/musaeus.db", "runs_root": "/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault/RUNS", "vault_root": "/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault"}
 CHILD_PRECONDITION_OK fixture_root=/tmp/pytest-of-grey/pytest-327/test_g9_big_kahuna_has_no_targ0/vault
 

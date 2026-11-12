@@ -47,10 +47,10 @@ from pathlib import Path
 # only ever covered AAC_CAR_SRC/AAC_CAR_OUT). Now reads ORPHEUS_NOISE_DIR
 # from the environment first; the old hardcoded path is only a fallback
 # default for the case where nothing else has set it, not a forced value.
-# Repointed 2026-08-21 from /mnt/FORGE2TB/ACTIVE_PROJECTS/ORPHEUS, which is
-# being retired off FORGE2TB. See the note above: the override was already
+# Repointed 2026-08-21 from the retired ORPHEUS project folder. See the note above: the override was already
 # doing the real work, because the old default directory did not exist.
-VAULT_ROOT = Path(os.environ.get("MUSAEUS_VAULT_ROOT", "/mnt/FORGE2TB/Projects/MUSAEUS_VAULT"))
+# No built-in default: the caller passes the vault (vendored: no MUSAEUS import).
+VAULT_ROOT = Path(os.environ.get("MUSAEUS_VAULT_ROOT", ""))
 NOISE_DIR = Path(os.environ.get("ORPHEUS_NOISE_DIR", str(VAULT_ROOT / "RUNS" / "Noise")))
 AAC_CAR_SRC = VAULT_ROOT / "RUNS" / "AAC-Car"
 
@@ -386,6 +386,13 @@ def main() -> None:
     parser.add_argument("--src", default=str(AAC_CAR_SRC), help="Source AAC-Car root")
     parser.add_argument("--out", default=str(AAC_CAR_OUT), help="Output root")
     args = parser.parse_args()
+    from_vault = (
+        not os.environ.get("ORPHEUS_NOISE_DIR")
+        or args.src == str(AAC_CAR_SRC)
+        or args.out == str(AAC_CAR_OUT)
+    )
+    if from_vault and not os.environ.get("MUSAEUS_VAULT_ROOT"):  # before anything is written
+        sys.exit("Set MUSAEUS_VAULT_ROOT, or ORPHEUS_NOISE_DIR with --src and --out")
 
     src_root = Path(args.src)
     dst_root = Path(args.out)

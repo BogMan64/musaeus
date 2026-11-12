@@ -1,6 +1,6 @@
 # P0-19 — fixture-only P0 release rehearsal: evidence index
 
-**Run:** 2026-09-08, worktree `/mnt/FORGE2TB/Projects/MUSAEUS-kiro`, branch
+**Run:** 2026-09-08, worktree `<repo>-kiro`, branch
 `spec/p0-19-rehearsal`. **No commits made. No live data read or written.**
 
 Test file: `tests/test_p0_19_release_rehearsal.py` — 12 tests, all passing.
@@ -60,7 +60,7 @@ evidence the P0 consumer-ready claim is blocked.
 | MCR | Gates behind it | Status |
 |---|---|---|
 | **MCR-001** — preview makes no change, no network | G1 (`G1.txt`), G2 (`G2.txt`), G10 (`G10.txt`) | **Partially met.** G1 holds. G2 fails on the letter: the preview creates `musaeus.db-shm` and `musaeus.db-wal` while printing "No files were written… no directory was made". G10's contribution is blocked. |
-| **MCR-002** — recovery cap, authority, scope | G3 (`G3.txt`), G9 (`G9.txt`), I3 (`I1-I5.txt`) | **Met as a primitive, not as behaviour.** The cap blocks correctly when asked; the only CLI caller asks with all estimates at zero. `/home/grey/Projects/MUSAEUS_RECOVERY` confirmed still absent. |
+| **MCR-002** — recovery cap, authority, scope | G3 (`G3.txt`), G9 (`G9.txt`), I3 (`I1-I5.txt`) | **Met as a primitive, not as behaviour.** The cap blocks correctly when asked; the only CLI caller asks with all estimates at zero. `~/Projects/MUSAEUS_RECOVERY` confirmed still absent. |
 | **MCR-003** — no permanent deletion, restorable | G8 (`G8.txt`) | **Met as a primitive.** Rollback restores the tree by digest and leaves quarantine residue retrievable. Nothing in the CLI calls `rollback()`. |
 | **MCR-004** — schema, events, rebuild, duplicates | G4 (`G4.txt`), G6 (`G6.txt`), I1 (`I1-I5.txt`) | **NOT met in the running system.** All three rest on `migrate()`, which has zero callers; a live database is unversioned and has none of the P0 state tables. G4 additionally shows the P0-14 `duplicates` schema is incompatible with the legacy table of the same name. |
 | **MCR-005** — failed stage, cancellation, lock | G5 (`G5.txt`), G7 (`G7.txt`), G8, G10, I2 (`I1-I5.txt`) | **Partially met.** G5 holds through the real CLI. G7 fails and is unreachable. I2's cancellation gate works and no stage passes one. |

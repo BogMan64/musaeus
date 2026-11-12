@@ -8,7 +8,7 @@ not a check.
 
 The whole suite runs under the P0-01 PathGuard, which raises on any
 access under PROTECTED_REAL_ROOTS -- including
-/home/grey/Projects/MUSAEUS_RECOVERY. "Fixtures never create or probe the
+~/Projects/MUSAEUS_RECOVERY. "Fixtures never create or probe the
 future recovery root" is therefore enforced by the harness rather than
 promised by a comment.
 """

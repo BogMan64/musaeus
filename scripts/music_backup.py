@@ -11,6 +11,7 @@ scripts/music_backup_monthly.sh (systemd user timer musaeus-music-backup.timer).
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -25,7 +26,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--root", type=Path, default=Path("/mnt/NUC8TB_BACKUP"))
+    ap.add_argument(
+        "--root", type=Path,
+        help="the backup drive (default: MUSAEUS_MASTERS_BACKUP_ROOT in settings.env)",
+    )  # fmt: skip
     ap.add_argument("--keep", type=int, default=KEEP)
     ap.add_argument("--execute", action="store_true")
     ap.add_argument(
@@ -33,6 +37,13 @@ def main() -> int:
         help="accept a copy with far fewer files than the last one (masters really were removed)",
     )  # fmt: skip
     args = ap.parse_args()
+    if args.root is None:  # before the lock: nothing is touched without a drive
+        named = os.environ.get("MUSAEUS_MASTERS_BACKUP_ROOT", "").strip()
+        if not named:
+            print("NOT RUN: no --root, and MUSAEUS_MASTERS_BACKUP_ROOT is not set in "
+                  "~/.config/musaeus/settings.env")  # fmt: skip
+            return 2
+        args.root = Path(named).expanduser()
     if args.execute:  # the masters lock (review of #87, findings 9 and 10)
         from musaeus.masters_lock import hold_for_process
 

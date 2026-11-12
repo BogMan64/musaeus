@@ -14,7 +14,7 @@ been there. It wasn't.
 A hash cross-reference against ALAC-Library/_history/hash_index.db
 (Finalize's own independent ledger of every audio_hash ever finalized,
 untouched by this incident) plus an exhaustive full-filesystem
-audio_hash scan of every file on /mnt/FORGE2TB confirmed:
+audio_hash scan of every file on the music drive confirmed:
   - 10,644 DUPE_REVIEW rows: audio content verified alive on disk,
     misfiled as "duplicate of" a file that no longer exists anywhere.
   - Every one of those 10,644 was individually checked against its own
@@ -58,14 +58,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from musaeus.config import get_config  # noqa: E402  (the vault comes from settings.env)
 from musaeus.stages.organize import (  # noqa: E402
     build_track_filename,
     sanitize_path_component,
     unique_path,
 )
 
-VAULT_ROOT = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT")
-DB_PATH = VAULT_ROOT / "musaeus.db"
+VAULT_ROOT = get_config().vault_root
+DB_PATH = get_config().db_path
 HASH_INDEX_PATH = VAULT_ROOT / "ALAC-Library" / "_history" / "hash_index.db"
 ALAC_LIBRARY = VAULT_ROOT / "ALAC-Library"
 
