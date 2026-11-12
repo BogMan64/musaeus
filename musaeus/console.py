@@ -30,6 +30,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
+from . import __version__
 from .config import MusicConfig, get_config
 from .context import RunContext, elision
 from .db import open_db, snapshot_db_before_wipe
@@ -214,7 +215,7 @@ class Console:
         con.run()
     """
 
-    VERSION = "0.1.0"
+    VERSION = __version__
 
     def __init__(self) -> None:
         self._config: MusicConfig | None = None
@@ -241,7 +242,7 @@ class Console:
         cfg = self._load_config()
         if cfg is None:
             _err("Cannot start — MUSAEUS_VAULT_ROOT is not set.")
-            _info("Set it in ~/.config/musaeus/settings.env and restart.")
+            _info("Run `musaeus setup`, or set it in ~/.config/musaeus/settings.env, and restart.")
             return False
         self._config = cfg
 

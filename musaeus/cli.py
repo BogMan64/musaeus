@@ -7,8 +7,11 @@ Usage:
 
 Pipeline commands:
     preflight        Environment checks (commands, packages, disk, DB) — report-only
-    run              Run the default pipeline (Preflight → Ingest → Sentinel → Scholar)
-    run --full       Run the full pipeline  (+ Normalize → Forge → Tagger)
+    run              Run the whole pipeline: intake, duplicates, convert and file,
+                     enrichment (Acts 1-3). It changes files at once: preview
+                     with --dry-run, or stop after one Act with --act
+    run --full       Older short chain: catalogue + Normalize → Forge → Tagger
+                     (no duplicates, no filing)
     run --maintain   Run the maintenance pipeline (Ghost→Health→Normalize→Enrich→MBEnrich→NearDupe)
     dry-run          Preview the default pipeline without any mutations
     ingest           Run Ingest stage only
@@ -17,7 +20,7 @@ Pipeline commands:
     normalize        Article-suffix fix + ALL-CAPS repair on archived metadata
     canonicalize     Lossless→ALAC / sub-lossless→AAC, both as .m4a (Act 3)
     finalize         Move canonicalized files INBOX → ALAC-Library (Act 3)
-    audit            Physical-presence gate before DB snapshot+wipe (Act 3)
+    audit            Check every filed row against the disk and the hash index (Act 3)
     dupe-resolver    Physically relocate duplicate losers to review folder (Act 2)
     cross-dupe       Flag files already in ALAC-Library from a prior batch (Act 2)
     deep-scan        Decode-verify masters for silent truncation (idle-only)
@@ -1788,7 +1791,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", metavar="command")
 
     # ── run ──────────────────────────────────────────────────────────────────
-    run_p = sub.add_parser("run", help="Run pipeline (Ingest→Sentinel→Scholar)")
+    run_p = sub.add_parser(
+        "run",
+        help="Run the whole pipeline (Acts 1-3 + enrichment); changes files at once, "
+        "preview with --dry-run",
+    )
     run_p.add_argument("--dry-run", action="store_true", help="Preview only, no mutations")
     run_p.add_argument(
         "--skip",
@@ -1895,7 +1902,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # audit
     audit_p = sub.add_parser(
-        "audit", help="Physical-presence verification gate before DB snapshot+wipe"
+        "audit", help="Check every filed row against the disk and the hash index"
     )
     audit_p.add_argument(
         "--dry-run", action="store_true", help="Same as run -- audit is inherently read-only"

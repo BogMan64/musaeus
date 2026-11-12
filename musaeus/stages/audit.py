@@ -323,10 +323,12 @@ class AuditStage(BaseStage):
             result.success = False
             result.notes.append(
                 f"AUDIT FAILED: {len(problems)} problem(s) found. "
-                f"Do NOT wipe the DB until these are resolved."
+                f"The catalogue and the disk disagree: look at these before the next run."
             )
         else:
-            result.notes.append("AUDIT PASSED: safe to snapshot and wipe the DB.")
+            # Not "safe to wipe the DB": the catalogue is never wiped (Grey,
+            # 2026-09-30) and cannot be rebuilt from the event log.
+            result.notes.append("AUDIT PASSED: the catalogue, the disk and the hash index agree.")
 
         ctx.record_stage(result)
         return result
