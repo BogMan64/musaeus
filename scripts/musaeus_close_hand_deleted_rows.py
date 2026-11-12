@@ -23,6 +23,9 @@ record shape and order:
   3. delete the archive_tier_hashes rows for the path;
   4. delete the archive row.
 
+Kept as the record of that run; changed after it only to take its folders
+from the settings and to refuse a missing database (review of #322).
+
 The first run (2026-11-11 18:17) counted a sibling row that the same run
 closed as a survivor, so two hashes (three copies each, all held) were not
 denied; they were denied by hand straight after and the check is fixed here.
@@ -120,6 +123,11 @@ def main() -> int:
     ap.add_argument("--execute", action="store_true")
     args = ap.parse_args()
 
+    # sqlite3.connect() makes an empty database where none is: a missing ledger
+    # would be created blank and the denies written into it (Codex on #322).
+    for db in (DB, HASH_INDEX):
+        if not db.is_file():
+            sys.exit(f"not found: {db} -- nothing written")
     conn = sqlite3.connect(str(DB), timeout=30)
     conn.row_factory = sqlite3.Row
     report(plan_for(conn, still_gone(conn)))
