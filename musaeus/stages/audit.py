@@ -2,9 +2,10 @@
 """
 MUSAEUS — Audit Stage (Act 3)
 
-The final gate before a batch's musaeus.db can be snapshotted and wiped
-(task 8). Report-only: never mutates the archive table, never moves or
-deletes a file. Its only job is to answer one question honestly:
+The last check of Act 3. It was written as the gate before a batch's
+musaeus.db was snapshotted and wiped (task 8); the catalogue has not been
+wiped since 2026-09-30 and cannot be rebuilt, so it is now only the check.
+Report-only: never mutates the archive table, never moves or deletes a file. Its only job is to answer one question honestly:
 "does ALAC-Library on disk actually contain what the DB thinks it
 finalized?" -- the same physical-presence-over-DB-trust principle
 Finalize is built on, applied one more time as an explicit checkpoint

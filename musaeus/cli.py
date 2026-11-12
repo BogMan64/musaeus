@@ -1822,7 +1822,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--enrich",
         action="store_true",
-        help="Run Enrich + MBEnrich + AcousticID + Reviewer pipeline",
+        help="Run Enrich + MBEnrich + AcousticID + MBWork + AlbumFill",
     )
     run_p.add_argument(
         "--reset",
@@ -2135,7 +2135,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("health-report", help="Print validation issues summary")
 
     # rebuild-db
-    rebuild_p = sub.add_parser("rebuild-db", help="Rebuild archive table from event log")
+    rebuild_p = sub.add_parser(
+        "rebuild-db", help="DISABLED: says why (the event log cannot rebuild the archive)"
+    )
     rebuild_p.add_argument("--dry-run", action="store_true", help="Preview only")
 
     # curator
@@ -2179,7 +2181,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # review-report
-    sub.add_parser("review-report", help="Show AI reviewer issues summary")
+    sub.add_parser("review-report", help="Not implemented: there is no reviewer stage")
 
     # upgrade-check
     upgrade_p = sub.add_parser(
@@ -2220,7 +2222,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # overnight
     overnight_p = sub.add_parser(
         "overnight",
-        help="Automated nightly self-heal: Ghost→Health→Normalize→Enrich→MBEnrich→NearDupe→Reviewer",
+        help="Automated nightly self-heal: Ghost→Health→Normalize→Enrich→MBEnrich→NearDupe",
     )
     overnight_p.add_argument("--dry-run", action="store_true", help="Preview only")
 
