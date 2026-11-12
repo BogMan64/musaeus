@@ -1,7 +1,7 @@
 # P0-19 — completion evidence, in the style of its neighbours in `tasks.md`
 
 Written here rather than into
-`/mnt/FORGE2TB/.kiro/specs/musaeus-consumer-readiness/tasks.md` because
+`<music drive>/.kiro/specs/musaeus-consumer-readiness/tasks.md` because
 another session was editing that file concurrently. Paste into `tasks.md`
 under P0-19 after review.
 
@@ -13,14 +13,14 @@ consumer-ready P0 claim unless every required gate passes.
 
 - [ ] **P0-19 — Perform fixture-only P0 release rehearsal and collect exit evidence**
   - **Completion evidence:** Executed 2026-09-08 in an isolated worktree
-    (`/mnt/FORGE2TB/Projects/MUSAEUS-kiro`, branch `spec/p0-19-rehearsal`) so
+    (`<repo>-kiro`, branch `spec/p0-19-rehearsal`) so
     it could not collide with concurrent work on
     `fix/dedupe-policy-and-permissions-sweep`. **No commit, no branch change,
     no push.** Fixture-only throughout: nothing under
-    `/mnt/FORGE2TB/Projects/MUSAEUS_VAULT`, `/home/grey/Music`,
-    `/home/grey/.config/musaeus` or
-    `/mnt/FORGE2TB/Projects/MUSAEUS_TEST_VAULT` was read or written,
-    `/home/grey/Projects/MUSAEUS_RECOVERY` was neither created nor probed and
+    `<vault>`, `~/Music`,
+    `~/.config/musaeus` or
+    `<test vault>` was read or written,
+    `~/Projects/MUSAEUS_RECOVERY` was neither created nor probed and
     is confirmed still absent, no crontab was read-modify-written, no
     provider/ORPHEUS/Thunderbird/mail/Docker path was touched, and zero
     outbound connections were attempted. `tests/conftest.py`'s P0-01
@@ -46,7 +46,7 @@ consumer-ready P0 claim unless every required gate passes.
     `settings.env` present, the documented `ValueError` does fire. So the
     documented failure path is reachable only in the situation nobody is
     actually in, and on Grey's machine the same code path yields
-    `/mnt/FORGE2TB/Projects/MUSAEUS_VAULT` — the live library — per the
+    `<vault>` — the live library — per the
     dispatch brief's §2.1 reproduction, which this rehearsal cites rather
     than repeating against real configuration. Asserting the variable is
     *unset* is therefore actively dangerous, not merely insufficient. Every gate therefore asserts the four **resolved**
@@ -100,7 +100,7 @@ consumer-ready P0 claim unless every required gate passes.
       `reason_code=recovery_capacity_exceeded` (cap: measured
       100,000,090,113 against a required 100,000,000,000; capacity: 1.26 GB
       safely usable against 4.26 GB required); the fixture recovery root
-      was not created by the refused request; `/home/grey/Projects/
+      was not created by the refused request; `~/Projects/
       MUSAEUS_RECOVERY` confirmed absent. **Correction to the dispatch
       brief:** there *is* a CLI path (`cli.py:389` → `cli_gate.
       enforce_execution_gate` → `run_preflight`). But
@@ -209,11 +209,11 @@ consumer-ready P0 claim unless every required gate passes.
       scheduled default is full execution of the canonical chain. The module
       implementing preview/review-only-by-default, `musaeus/scheduling.py`,
       has **zero importers**. Also: `musaeus_overnight.sh:67`'s
-      `VAULT_ROOT="${MUSAEUS_VAULT_ROOT:-/mnt/FORGE2TB/Projects/
+      `VAULT_ROOT="${MUSAEUS_VAULT_ROOT:-<music drive>/Projects/
       MUSAEUS_VAULT}"` is fail-open in the same shape as the Python side.
     - **G11 explicit no-live-data-operation audit — PASS with a qualified
       DB-size line, run last, `stat` only.** All 5 protected roots asserted;
-      `/home/grey/Projects/MUSAEUS_RECOVERY` confirmed absent;
+      `~/Projects/MUSAEUS_RECOVERY` confirmed absent;
       `PathGuard.enabled` still `True` and the transport harness still
       installed at the end; **0** blocked-access attempts recorded; **0**
       connection attempts. The live database moved from 1,018,736,640 bytes

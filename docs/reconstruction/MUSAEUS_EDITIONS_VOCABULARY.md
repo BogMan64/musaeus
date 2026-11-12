@@ -63,9 +63,9 @@ before any code, because the naming is the part that has to survive.
 >   for them: building from the −18 Lossless Edition would be building one
 >   edition from another, which this document forbids.
 > - **Correction:** the Lossless Edition table below says it "lives at
->   `/home/grey/Music`". It does not, and must not: it lives in the vault at
+>   `~/Music`". It does not, and must not: it lives in the vault at
 >   `Libraries/ALAC_Library`, and MUSAEUS is never to be pointed at
->   `/home/grey/Music`.
+>   `~/Music`.
 
 > **Reviewed 2026-10-03: the four words held again, and the machinery under
 > them was rebuilt.** Read this note before the tables below, which are kept
@@ -73,7 +73,7 @@ before any code, because the naming is the part that has to survive.
 >
 > - **One file per track (Grey, 2026-09-25, PR #36).** A catalogue row
 >   points at its **master** in `Libraries/ALAC-Archival`, in the vault on
->   FORGE2TB. The "long-term home `/mnt/NUC8TB_BACKUP`" below is superseded:
+>   FORGE2TB. The "long-term home `<backup drive>`" below is superseded:
 >   the NUC holds *backups* of the masters, not the masters. No row may point
 >   at an edition copy, and the audit fails one that does. The "413 tracks
 >   with no master" problem above went with the 2026-09-24 rebuild: every row
@@ -108,7 +108,7 @@ before any code, because the naming is the part that has to survive.
 >   what the Android head unit chose for itself after rejecting GPT+exFAT on
 >   2026-09-04. Copy with `--no-format` onto the stick as the head unit left
 >   it; never reformat it. Grey's stick from 2026-10-03 is the 257 GB volume
->   at `/media/grey/5651-0F05`. FAT32 forbids some characters, which the
+>   at `/media/<user>/5651-0F05`. FAT32 forbids some characters, which the
 >   shared filing rule already removes, and ignores letter case. A case rule
 >   is planned (see the TODO, 2026-10-03).
 > - The "Location TBD" for the Car Edition at the bottom of this document is
@@ -138,7 +138,7 @@ The **rows**: what the pipeline knows. `archive` plus the event log. Acts
 1-3 and Enrichment build and maintain it.
 
 ### Masters — `ALAC_Archive`
-**Long-term home: `/mnt/NUC8TB_BACKUP`** (7.3 TB, 3.9 TB free).
+**Long-term home: `<backup drive>`** (7.3 TB, 3.9 TB free).
 
 The **canonical audio**. ALAC in .m4a, fully corrected -- canonicalized,
 tagged, organized, identity written to the file -- and deliberately
@@ -171,7 +171,7 @@ rebuildable. **Always physically altered.**
 | Edition | Format | Loudness | Extras | Built by |
 |---|---|---|---|---|
 | **Lossless Edition** | ALAC in .m4a | **-18 LUFS** baked, -1.0 dBTP, 11.0 LRA | playlist | `scripts/alac_library/build_alac_library.py` |
-| *lives at* | `/home/grey/Music` (1.8 TB partition, 647 GB free, ~1.1 TB once the 470 GB of old music clears) | | | |
+| *lives at* | `~/Music` (1.8 TB partition, 647 GB free, ~1.1 TB once the 470 GB of old music clears) | | | |
 | **Car Edition** | AAC 256k in .m4a | **-14 LUFS** baked | noise masking (Y/N), playlist | `scripts/car_library/build_car_library.py` |
 
 Both read from `ALAC_Archive`. Neither reads from the other.
@@ -227,12 +227,12 @@ Masters and editions no longer compete for the same volume:
 
 | tier | volume | size | free |
 |---|---|---|---|
-| **Masters** | `/mnt/NUC8TB_BACKUP` | ~420 GB | **3.9 TB** |
-| **Lossless Edition** | `/home/grey/Music` | ~420 GB | 647 GB now, ~1.1 TB after cleanup |
+| **Masters** | `<backup drive>` | ~420 GB | **3.9 TB** |
+| **Lossless Edition** | `~/Music` | ~420 GB | 647 GB now, ~1.1 TB after cleanup |
 | **Car Edition** | TBD | much smaller (256k AAC) | — |
 
 `/home` is its own 1.8 TB partition (`nvme0n1p4`); the OS sits on a
-separate 28 GB `/`. A large edition on `/home/grey/Music` cannot threaten
+separate 28 GB `/`. A large edition on `~/Music` cannot threaten
 the system volume. An earlier draft of this doc worried about that and
 was wrong.
 
@@ -244,7 +244,7 @@ ALAC, which is exactly the definition of Masters above. It is in the
 wrong place with the wrong name and nothing more.
 
 Masters are therefore produced by **moving** `ALAC-Library` to
-`/mnt/NUC8TB_BACKUP`. No transcoding, no baking, no re-derivation.
+`<backup drive>`. No transcoding, no baking, no re-derivation.
 
 This inverts the direction `build_alac_library.py` assumes (it reads
 `ALAC_Archive` -> writes `ALAC-Library`). The script's *mechanics* are

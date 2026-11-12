@@ -19,7 +19,7 @@ environment variable, because the variable does not fail closed.
   config.py's _load_env() reads it at MODULE IMPORT TIME via
   os.environ.setdefault(). Here that is a decoy path under a temp
   directory. On Grey's machine the same file names
-  /mnt/FORGE2TB/Projects/MUSAEUS_VAULT (per the dispatch brief's §2.1
+  <vault> (per the dispatch brief's §2.1
   reproduction), so the same code path yields the LIVE MUSIC LIBRARY.
   Case 2: the documented ValueError is reachable only when HOME has no
   settings file -- i.e. only in the situation nobody is actually in.

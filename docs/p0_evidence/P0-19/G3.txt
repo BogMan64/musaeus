@@ -5,7 +5,7 @@ MCR                : MCR-002
 VERDICT            : PASS for the primitive (asserted and held); the CLI-driven form is INERT
 REACHABILITY       : cli (opt-in) + import
 reachability detail: There IS a CLI path — cli.py:389 `_run_pipeline` imports and calls `cli_gate.enforce_execution_gate`, which calls `run_preflight`. This corrects the brief's expectation that P0-12 would be import-only. But the path is inert for this gate in two ways: (1) the gate is off unless --safety-gate or MUSAEUS_P0_SAFETY_GATE=1 (cli_gate.gate_enabled has no third branch); and (2) `enforce_execution_gate(cfg, dry_run=...)` passes no request_kwargs, so estimated_checkpoint_bytes, estimated_quarantine_bytes and estimated_items are all 0 — confirmed by the child output above. The required figure therefore reduces to the database file size, and the 100 GB cap block cannot fire from the CLI unless musaeus.db itself exceeds 100 GB. The blocks were exercised by constructing a PreflightRequest directly (import).
-minimum viable cov.: the cap value read as an exact integer, both blocks observed to fire (cap and capacity), the recovery root confirmed not created, and /home/grey/Projects/MUSAEUS_RECOVERY confirmed still absent
+minimum viable cov.: the cap value read as an exact integer, both blocks observed to fire (cap and capacity), the recovery root confirmed not created, and ~/Projects/MUSAEUS_RECOVERY confirmed still absent
 
 ## Coverage (what was actually examined)
   cap_value_bytes_read = 100000000000
@@ -66,7 +66,7 @@ print("CLI_REQUEST_recovery_root", req.recovery_root)
 
 [exit 0]
 --- stdout ---
-CHILD_MUSAEUS_PACKAGE /mnt/FORGE2TB/Projects/MUSAEUS-kiro/musaeus
+CHILD_MUSAEUS_PACKAGE <repo>-kiro/musaeus
 CHILD_RESOLVED_CONFIG {"alac_library": "/tmp/pytest-of-grey/pytest-327/test_g3_recovery_cap_and_space0/vault/Libraries/ALAC-Library", "db_path": "/tmp/pytest-of-grey/pytest-327/test_g3_recovery_cap_and_space0/vault/musaeus.db", "runs_root": "/tmp/pytest-of-grey/pytest-327/test_g3_recovery_cap_and_space0/vault/RUNS", "vault_root": "/tmp/pytest-of-grey/pytest-327/test_g3_recovery_cap_and_space0/vault"}
 CHILD_PRECONDITION_OK fixture_root=/tmp/pytest-of-grey/pytest-327/test_g3_recovery_cap_and_space0/vault
 CLI_GATE_ENABLED_BY_DEFAULT False

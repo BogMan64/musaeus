@@ -20,7 +20,7 @@ anything time-sensitive before acting on it — §7 of the P0-19 brief is the mo
 
 ## 1. P0-19 — the fixture-only release rehearsal
 
-**Brief:** `/mnt/FORGE2TB/.kiro/specs/musaeus-consumer-readiness/P0-19_REHEARSAL_BRIEF.md`
+**Brief:** `<music drive>/.kiro/specs/musaeus-consumer-readiness/P0-19_REHEARSAL_BRIEF.md`
 **Task text:** same directory, `tasks.md`, task P0-19 (line 245). Where the two
 differ, `tasks.md` wins and the discrepancy gets reported, not silently resolved.
 
@@ -51,7 +51,7 @@ the wrapper's `pgrep` branch runs.
 
 This is §2 of the brief and it is not a formality. Unsetting `MUSAEUS_VAULT_ROOT`
 does not raise — `config.py`'s `_load_env()` reads
-`/home/grey/.config/musaeus/settings.env` at **import time**, which sets it to the
+`~/.config/musaeus/settings.env` at **import time**, which sets it to the
 real library. So the failure mode of a mis-scoped rehearsal is not a crash; it is
 a rehearsal that runs against 1.3 TB of real music.
 
@@ -113,7 +113,7 @@ not for a Claude session — it is Grey's prose.
 The unblocking step is one command, Grey's to run:
 
 ```bash
-cd /mnt/FORGE2TB/Projects/MUSAEUS
+cd <repo>
 git add docs/reconstruction/MUSAEUS_RECONSTRUCTION.md && git commit   # keep them
 # or, to set them aside instead:
 git stash push -m "recon doc WIP 2026-09-08" docs/reconstruction/MUSAEUS_RECONSTRUCTION.md
@@ -160,7 +160,7 @@ of guessing wrong here.
 instance of the `bool(os.environ.get(...))` pattern in either repository:
 
 - MUSAEUS: `build_aac_library.py:127` — this line, nothing else.
-- ORPHEUS (`/mnt/FORGE2TB/Projects/ORPHEUS`): zero matches — across **4,891 `.py`
+- ORPHEUS (`<music drive>/Projects/ORPHEUS`): zero matches — across **4,891 `.py`
   files, 43 of which do use `os.environ`**. The coverage figure is given because a
   zero from a grep that reached nothing looks identical to a zero from a grep that
   reached everything, and this project has been bitten by that three times.
@@ -198,10 +198,10 @@ behave sanely. Do M-06 first, or do both in one commit.
 
 ## Boundaries — unchanged from the standing rules
 
-- **Nothing under `/mnt/FORGE2TB/Projects/MUSAEUS_VAULT`.** Not written, and for
+- **Nothing under `<vault>`.** Not written, and for
   P0-19's purposes not read either.
-- Point ORPHEUS work at `/mnt/FORGE2TB/Projects/ORPHEUS`, never at the vault.
-- No crontab changes, no writes to `/home/grey/.config/musaeus/`, no Docker.
+- Point ORPHEUS work at `<music drive>/Projects/ORPHEUS`, never at the vault.
+- No crontab changes, no writes to `~/.config/musaeus/`, no Docker.
 - Do not weaken `tests/conftest.py`'s `PathGuard` to make anything pass. A gate
   that needs the guard off has failed.
 - Strike items through in `docs/reconstruction/MUSAEUS_TODO.md` as you close them.

@@ -237,7 +237,7 @@ than as modesty — see §5, and see the closing note of this section.
 
 ### What runs where
 
-`VAULT_ROOT` (`/mnt/FORGE2TB/Projects/MUSAEUS_VAULT`) holds `INBOX` (arrivals,
+`VAULT_ROOT` (`<vault>`) holds `INBOX` (arrivals,
 mutable), `STAGING`, `QUARANTINE`, `RUNS` (logs and reports), `MetaData` (the
 authorities of §3), and `Libraries/` containing the three editions of §4. Each
 is independently overridable by environment variable — `MUSAEUS_INBOX`,
@@ -649,8 +649,8 @@ was never added to the deny list and the audio was re-ingested the next day.
 > | the masters | `VAULT_ROOT/Libraries/`**`ALAC-Archival`** | 11,554 files, 494 GB | `config.alac_archive` — in the vault, read by the bake |
 > | the managed library | `VAULT_ROOT/Libraries/`**`ALAC_Library`** | 8,734 files, 392 GB | `config.alac_library` — **what MUSAEUS manages** |
 > | the AAC edition | `VAULT_ROOT/Libraries/CAR_Library` | **empty** (0 files) | derived; currently unbuilt |
-> | the off-site backup | `/mnt/NUC8TB_BACKUP/MUSAEUS_ALAC_Archive_20260905` | 14,436 files, 557 GB | read-only reference copy, taken 2026-09-05 |
-> | the owner's active files | `/home/grey/Music` | — | **MUSAEUS must never know this exists** |
+> | the off-site backup | `<backup drive>/MUSAEUS_ALAC_Archive_20260905` | 14,436 files, 557 GB | read-only reference copy, taken 2026-09-05 |
+> | the owner's active files | `~/Music` | — | **MUSAEUS must never know this exists** |
 >
 > **Mind the spelling — it is not consistent and it matters.** The masters
 > directory is `ALAC-Archival` (hyphen); the managed library is
@@ -671,7 +671,7 @@ was never added to the deny list and the audio was re-ingested the next day.
 > text elsewhere in this document implying `VAULT_ROOT/ALAC_Archive/...`
 > describes the older layout.
 >
-> **Do not set `MUSAEUS_ALAC_LIBRARY` to `/home/grey/Music`, and do not add
+> **Do not set `MUSAEUS_ALAC_LIBRARY` to `~/Music`, and do not add
 > it to any scan path.** That folder is the owner's own collection. He
 > decides what enters and leaves it; a pipeline that can see it is a pipeline
 > that can move his files out from under him. The console's library label is

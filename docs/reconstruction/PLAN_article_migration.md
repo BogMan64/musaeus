@@ -120,7 +120,7 @@ the first time.
 ## Deliberately NOT in scope
 
 - renaming folders
-- touching `/home/grey/Music`
+- touching `~/Music`
 - changing `GenreLaw._key()`, which already folds articles correctly
 - the 827 tracks with no CAR file — a separate gap
 
