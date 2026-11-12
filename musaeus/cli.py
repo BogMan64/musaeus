@@ -1676,10 +1676,19 @@ def _scripts_beside_the_package() -> None:
     package. Outside the checkout the name was not found at all, or another
     folder of that name (~/scripts) was found first, and `musaeus report`
     crashed (first run in a clean home folder, 2026-11-11).
+
+    Bound by name, not by the search path: a package called `scripts` (one
+    with an __init__.py) anywhere on the path wins over a plain folder, even
+    one listed first (local CodeRabbit, 2026-11-12).
     """
-    root = str(Path(__file__).resolve().parent.parent)
-    if sys.path[:1] != [root]:
-        sys.path.insert(0, root)
+    import types
+
+    here = str(Path(__file__).resolve().parent.parent / "scripts")
+    known = sys.modules.get("scripts")
+    if known is None or here not in list(getattr(known, "__path__", [])):
+        package = types.ModuleType("scripts")
+        package.__path__ = [here]
+        sys.modules["scripts"] = package
 
 
 def _cmd_upgrade_check(write_csv: bool = False, min_gap: int = 0) -> int:

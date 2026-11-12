@@ -71,14 +71,20 @@ def test_an_abandoned_setup_is_not_a_success(tmp_path, monkeypatch, argv):
     assert stop.value.code == 1
 
 
-def test_a_helper_command_runs_from_another_folder(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("a_real_package", [False, True], ids=["folder", "package"])
+def test_a_helper_command_runs_from_another_folder(tmp_path, monkeypatch, capsys, a_real_package):
     """`musaeus report` crashed outside the checkout: "No module named
     'scripts'", or another folder of that name (~/scripts) was found first.
-    So did upgrade-check, spec-scout and canon-review."""
+    So did upgrade-check, spec-scout and canon-review.
+
+    A package of that name (one with an __init__.py) wins over the folder
+    beside musaeus wherever it sits on the path (local CodeRabbit, 2026-11-12)."""
     from pathlib import Path
 
     elsewhere = tmp_path / "elsewhere"
     (elsewhere / "scripts").mkdir(parents=True)
+    if a_real_package:
+        (elsewhere / "scripts" / "__init__.py").write_text("", encoding="utf-8")
     (tmp_path / "vault").mkdir()
     monkeypatch.chdir(elsewhere)
     root = Path(cli.__file__).resolve().parent.parent
