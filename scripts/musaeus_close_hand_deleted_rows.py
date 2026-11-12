@@ -13,7 +13,8 @@ record shape and order:
 
   1. deny the audio hash in hash_index.db, unless the file sat under
      QUARANTINE/corrupted (a damaged file's replacement is wanted), another
-     archive row carries the same audio, or the row is a DUPE_REVIEW loser
+     archive row that this run does not close carries the same audio, or
+     the row is a DUPE_REVIEW loser
      whose keeper has left the library (hold-expiry would keep that one; we
      close it but do not deny the audio, and list it);
   2. log one event per row: DELETED_BY_REVIEW (the type the earlier
@@ -21,6 +22,10 @@ record shape and order:
      "hand-close", note saying why;
   3. delete the archive_tier_hashes rows for the path;
   4. delete the archive row.
+
+The first run (2026-11-11 18:17) counted a sibling row that the same run
+closed as a survivor, so two hashes (three copies each, all held) were not
+denied; they were denied by hand straight after and the check is fixed here.
 
 Both databases are backed up first to _db_backups with the usual
 *_pre_<name>_<date>.db names. Every row is re-checked at run time: status
@@ -77,6 +82,7 @@ def main() -> int:
     if still_here:
         print("rows whose file is still on disk are left alone")
 
+    gone_ids = {r["id"] for r in gone}
     plan = []  # (row, deny, why_not_denied)
     for r in gone:
         h = r["audio_hash"]
@@ -85,9 +91,11 @@ def main() -> int:
             why = "corrupted: replacement wanted"
         elif not h:
             why = "no audio hash"
-        elif conn.execute(
-            "SELECT 1 FROM archive WHERE audio_hash = ? AND id != ? LIMIT 1", (h, r["id"])
-        ).fetchone():
+        elif any(
+            # A row this batch closes is not a survivor (CodeRabbit).
+            x[0] not in gone_ids
+            for x in conn.execute("SELECT id FROM archive WHERE audio_hash = ?", (h,))
+        ):
             why = "another row carries this audio"
         elif r["status"] == "DUPE_REVIEW" and not keeper_in_library(conn, h):
             why = "keeper has left the library"
@@ -109,6 +117,11 @@ def main() -> int:
     ensure_deny_list(ledger)
     try:
         for r, deny, _ in plan:
+            # Re-check at write time: the file may have come back since planning.
+            now = conn.execute("SELECT status FROM archive WHERE id = ?", (r["id"],)).fetchone()
+            if now is None or now["status"] not in HELD or os.path.exists(r["file_path"]):
+                print(f"  skipped, changed since planning: id={r['id']} {r['file_path']}")
+                continue
             if deny:
                 deny_hash(ledger, r["audio_hash"], NOTE, r["file_path"])
             log_event(
