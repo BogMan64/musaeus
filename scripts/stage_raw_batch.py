@@ -74,14 +74,12 @@ def build_manifest(cfg: MusicConfig, manifest: Path, raw_root: Path) -> list[dic
     # Preserve any settled outcome from a previous manifest.
     previous: dict[str, dict] = {}
     if manifest.exists():
-        # Only this folder's: a file of the same name elsewhere is another file.
-        previous = {
-            r["basename"]: r for r in load(manifest) if Path(r["path"]).is_relative_to(raw_root)
-        }
+        # By full path: a file of the same name in another folder is another file.
+        previous = {r["path"]: r for r in load(manifest)}
 
     rows = []
     for p in sorted(raw_root.rglob("*.m4a"), key=lambda x: x.name):
-        prior = previous.get(p.name)
+        prior = previous.get(str(p))
         if prior and prior["state"] in TERMINAL:
             rows.append(
                 {"path": str(p), "basename": p.name, "state": prior["state"], "why": prior["why"]}
@@ -139,6 +137,10 @@ def main() -> int:
     ap.add_argument("--rebuild-manifest", action="store_true")
     ap.add_argument("--status", action="store_true")
     args = ap.parse_args()
+    args.raw_root = args.raw_root.resolve()  # the manifest keeps full paths
+    if not args.raw_root.is_dir():  # before the manifest is rebuilt from nothing
+        print(f"NOT RUN: {args.raw_root} is not a folder")
+        return 2
 
     cfg = MusicConfig.from_env()
     manifest = cfg.meta_dir / MANIFEST_NAME
