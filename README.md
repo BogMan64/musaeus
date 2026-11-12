@@ -58,12 +58,12 @@ in the checkout, which a plain `pip install .` does not copy.
 
 ### Debian package
 
-`packaging/build-deb.sh` builds `musaeus_0.1.0-1_all.deb` from a checkout
+`packaging/build-deb.sh` builds `musaeus_0.2.0-1_all.deb` from a checkout
 (see [packaging/README.debian.md](packaging/README.debian.md)). No release
 has been published on GitHub yet, so there is nothing to download.
 
 ```bash
-sudo apt install ./musaeus_0.1.0-1_all.deb
+sudo apt install ./musaeus_0.2.0-1_all.deb
 ```
 
 The package does not pull in `rapidfuzz`; see "What it needs".

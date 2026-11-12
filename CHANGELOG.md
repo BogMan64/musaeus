@@ -2,12 +2,12 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-No version has been tagged yet. `pyproject.toml` has said `0.1.0` since July
-2026 while 301 pull requests were merged, so the sections below are by
+`0.2.0` is the first tagged version. `pyproject.toml` said `0.1.0` from July
+2026 while 301 pull requests were merged, so the sections below it are by
 month, newest first, and name the pull requests. The full record is
 `gh pr list --state merged --limit 500`.
 
-## [Unreleased]
+## [0.2.0] - 2026-11-12
 
 Wrap-up check of 2026-11-11: a first run in a clean home folder, on a fresh
 clone, with 13 test files.
@@ -34,6 +34,8 @@ clone, with 13 test files.
 
 ### Changed
 
+- The version is `0.2.0` (`pyproject.toml`, `musaeus --version`, the man
+  page, the Debian package name).
 - `musaeus --help` says what `run` does: the whole pipeline, changing files
   at once. It said "Ingest→Sentinel→Scholar".
 - Audit no longer ends "safe to snapshot and wipe the DB". The catalogue is

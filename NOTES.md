@@ -71,7 +71,8 @@ was only read.
     tested since.
 11. **Linux only.** The Windows port is paused with two Windows tests
     failing on the base.
-12. **No GitHub release exists.** The `.deb` builds from a checkout only.
+12. **No GitHub release page exists.** The `.deb` builds from a checkout
+    only.
 
 13. **The original of a converted file is kept for ten runs, not for a
     time.** `RUNS/recovery/` keeps the newest ten folders of each kind
@@ -104,7 +105,8 @@ was only read.
   one; there is no lock file. The versions in use on 2026-11-11 (mutagen
   1.46.0 and 1.48.1, rapidfuzz 3.14.5, rich 13.9.4, psutil 7.2.2, openpyxl
   3.1.5) have no known vulnerability (`pip-audit`).
-- **The version number has never moved.** `0.1.0` since July 2026.
+- **The version number moved once.** `0.1.0` from July 2026 to this check;
+  `0.2.0` with it.
 
 ## Housekeeping left
 
@@ -132,8 +134,7 @@ In the order I would take them:
 3. Stop the run when a preflight check fails.
 4. Refuse a vault root that does not exist, except in `musaeus setup`.
 5. Close held rows whose file is gone (needs a yes: it deletes rows).
-6. Tag a release and publish the `.deb`, or take the Releases link out of
-   the docs for good.
+6. Publish the `.deb` on a GitHub release for the `0.2.0` tag.
 7. Bring `MUSAEUS_TODO.md` up to date from the handover file, or retire it.
 8. Delete the merged branches and close #143–#147.
 9. From the wishlist: a pre-wipe rehearsal command; a "what lives where"
