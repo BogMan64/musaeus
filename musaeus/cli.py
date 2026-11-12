@@ -32,6 +32,8 @@ Pipeline commands:
                      rows untouched (--dry-run)
     iphone-sync      Put the iPhone edition on the phone: sized to its free space,
                      asks before clearing VLC (Linux: ifuse + rsync)
+    export itunes    Write the file the iTunes Companion reads (the lossless
+                     edition's songs and playlists); read-only otherwise
     forge            Measure EBU R128 loudness + write ReplayGain tags
     tagger           Write normalised DB metadata back to file tags
     auditor          Pre-forge LUFS audit (flags out-of-window files)
@@ -1493,6 +1495,18 @@ def _cmd_edition_build_inner(args) -> int:
                     kind=kind,
                     click_allowed=click_allowed,
                 )
+                index = None
+                if not outcome.stopped:
+                    # Every edition, the lossless one too (Grey, item 8, 2026-10-17).
+                    # The playlists travel with the edition (Grey, 2026-09-17), so
+                    # they are written after every build, as the retired builder did
+                    # (cloud review of #53: a stale index went to the USB). Its
+                    # entries are resolved against the disk; a dead one fails.
+                    # Under the build lock: `export itunes` and the USB transfer
+                    # take it and must never read half-written playlists.
+                    from .edition_index import write_index
+
+                    index = write_index(cfg, edition_root, apply=True)
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
@@ -1517,15 +1531,8 @@ def _cmd_edition_build_inner(args) -> int:
         if outcome.stopped:
             print("  Stopped. Finished copies are kept; run it again to carry on.")
         index_failed = False
-        if not outcome.stopped:
-            # Every edition, the lossless one too (Grey, item 8, 2026-10-17).
-            # The playlists travel with the edition (Grey, 2026-09-17), so
-            # they are written after every build, as the retired builder did
-            # (cloud review of #53: a stale index went to the USB). Its
-            # entries are resolved against the disk; a dead one fails.
-            from .edition_index import write_index
-
-            notes, problems = write_index(cfg, edition_root, apply=True)
+        if index is not None:
+            notes, problems = index
             problems = [p for p in problems if not p.startswith("no playlists were written")]
             playlists = sorted((edition_root / "Playlists").glob("*.m3u8"))
             print(f"  Playlists: {len(playlists):,} in {edition_root / 'Playlists'}")
@@ -2310,6 +2317,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="put only this genre on the phone (a song's first genre; repeatable); yes replaces VLC",
     )
 
+    # export
+    export_p = sub.add_parser(
+        "export", help="export itunes: the file the iTunes Companion reads (read-only otherwise)"
+    )
+    export_p.add_argument("what", choices=("itunes",), help="what to export")
+    export_p.add_argument(
+        "--out",
+        default=None,
+        help="where to write (default: <vault>/Exports/musaeus-itunes-bridge.json)",
+    )
+
     # edition-build
     eb_p = sub.add_parser(
         "edition-build",
@@ -2940,6 +2958,26 @@ def main() -> None:
                     print("Genres: " + ", ".join(sorted(known)), file=sys.stderr)
                     sys.exit(2)
             sys.exit(sync(cfg.iphone_library, Path(args.mount), genres=tuple(args.genre or ())))
+
+        elif command == "export":
+            from . import edition_build, itunes_export
+
+            cfg = get_config()
+            out = Path(args.out or Path(cfg.vault_root) / "Exports" / "musaeus-itunes-bridge.json")
+            try:
+                # No lossless build moves copies while the list is made: the
+                # Companion refuses a list naming a file that is gone.
+                with edition_build.build_lock(cfg.runs_root / "locks", edition_build.EDITION):
+                    manifest = itunes_export.build(cfg)
+                    itunes_export.write(manifest, out)
+            except RuntimeError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                sys.exit(1)
+            moved = sum(1 for t in manifest["tracks"] if t["previous_paths"])
+            print(f"iTunes export: {out}")
+            print(f"  songs     : {len(manifest['tracks']):,} ({moved:,} with an earlier place)")
+            print(f"  playlists : {len(manifest['playlists'])}")
+            sys.exit(0)
 
         elif command == "playlist":
             sys.exit(_run_pipeline([PlaylistStage], dry_run=dry_run))
