@@ -31,9 +31,12 @@ def _this_machines_folders() -> list[str]:
 def test_no_tracked_file_names_this_machines_folders():
     hits = []
     for folder in _this_machines_folders():
-        found = subprocess.run(
-            ["git", "grep", "-IlF", folder], cwd=REPO, capture_output=True, text=True
-        )
+        try:
+            found = subprocess.run(
+                ["git", "grep", "-IlF", folder], cwd=REPO, capture_output=True, text=True
+            )
+        except FileNotFoundError:  # no git installed (the Windows trial PC, 2026-11-12)
+            pytest.skip("git is not installed")
         if found.returncode not in (0, 1):  # 1 = no match
             pytest.skip("not a git checkout (the Windows trial kit is a plain copy)")
         hits += [f"{f}: {folder}" for f in found.stdout.split("\n") if f]
