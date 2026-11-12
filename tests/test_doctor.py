@@ -149,6 +149,17 @@ class TestDiagnose:
         rep = diagnose(vault)
         assert not rep.failed
 
+    def test_a_held_row_whose_file_is_gone_is_a_warning(self, vault):
+        """Hold-expiry walks files, so a set-aside copy removed by hand left a
+        row nothing reported: 1,955 of them on 2026-11-11."""
+        _add(vault, "kept.m4a", artist="Al Green", title="Call Me")
+        _add(
+            vault, "loser.m4a", artist="Al Green", title="Call Me", status="DUPE_REVIEW",
+            on_disk=False,
+        )  # fmt: skip
+        found = [f for f in diagnose(vault).findings if f.check == "held rows with a missing file"]
+        assert [(f.level, f.count) for f in found] == [("warn", 1)]
+
     def test_a_finalized_row_missing_from_the_ledger_is_a_failure(self, vault):
         """Cross-batch dedup silently stops working when this drifts.
 

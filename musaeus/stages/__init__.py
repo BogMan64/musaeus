@@ -78,13 +78,17 @@ duplicate") -- the reversal was paying real ffmpeg cost for a
 correctness problem that didn't actually exist. Canonicalize is back in
 Act 3, its original position:
   Act 1 (Intake & Correction): Preflight → Ingest → Permissions → Sentinel
-         → Scholar → Health → Corrupt → AlbumArt → Normalize → Sanitize →
-         ArtistConsolidate → VariousArtistsFix
-  Act 2 (Dedup & Staging):     CrossDupe → NearDupe → DupeResolver
+         → DenyList → Scholar → AcoustIDName → Health → Corrupt → AlbumArt
+         → Normalize → SpellCheck → Sanitize → ArtistConsolidate →
+         VariousArtistsFix → TributeQuarantine → GenreValidate
+  Act 2 (Dedup & Staging):     CrossDupe → NearDupe → DupeResolver →
+         ClassicalComposer
   Act 3 (Canonicalize/Finalize): Canonicalize → Finalize → BPM → Forge →
-         Tagger → Audit
+         Tagger → Organize → Audit
   Enrichment (default-on, moved from on-demand-only 2026-08-17): Enrich →
-         MBEnrich
+         MBEnrich → AcousticID → MBWork → AlbumFill → TitleComplete →
+         IdentityTag → HoldExpiry
+(Order as run on 2026-11-11; the lists below are the authority.)
 See ACT1_INTAKE_CORRECTION / ACT2_DEDUP_STAGING / ACT3_CANONICALIZE_FINALIZE
 / ENRICHMENT below for the named building blocks and the reasoning behind
 this order.
@@ -129,8 +133,9 @@ Enrich/MBEnrich's isolation-to-the-end already guards against for their
 own network calls. `musaeus various-artists-fix` run standalone still
 defaults to MB lookups on.
 On-demand only (not part of the canonical chain): Auditor, Curator,
-           Playlist, Ghost, AcousticID, Transcode, Reviewer, Organize,
-           IntegrityStage, BitRotStage.
+           Playlist, Ghost, Transcode, Reviewer, IntegrityStage,
+           BitRotStage, OriginalYear. (AcousticID and Organize were in
+           this list; both are in the chain now, see below.)
 TributeQuarantine moved out of that list into Act 1 on 2026-09-01 --
 see the comment at its position for why it sits after VariousArtistsFix
 and before GenreValidate.
