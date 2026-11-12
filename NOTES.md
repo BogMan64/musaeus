@@ -93,8 +93,8 @@ was only read.
 - **`musaeus review-report` is listed and does nothing.** There is no
   reviewer stage; the command prints the help and exits 1. `rebuild-db` is
   listed and disabled on purpose.
-- **`scripts/` holds about 30 one-off repair scripts** with this machine's
-  paths written into them. CI does not lint them (27 small lint findings,
+- **`scripts/` holds about 30 one-off repair scripts.** Their folders come
+  from `~/.config/musaeus/settings.env` since 2026-11-12. CI does not lint them (27 small lint findings,
   left alone: untested code, no gain).
 - **The local suite runner skips 107 tests.** `suite_chunks.sh` runs
   `tests/test_*.py` only; the labs under `scripts/fm_radio/tests` and
@@ -115,13 +115,15 @@ was only read.
   findings were all fixed in October.
 - `docs/reconstruction/MUSAEUS_TODO.md` and `MUSAEUS_PRIORITIES_*.md` stop
   at 2026-10-11. A month of work (#177–#320) is only in the handover file.
-- The scratch folder beside the repository holds about 66 GB (a test image of the
-  car stick is most of it).
+- The scratch folder beside the repository held about 66 GB; the 60 GB
+  stand-in car stick image was deleted on 2026-11-12.
 - The repository is public; the README said "private" until this check.
-- About 220 lines in `scripts/`, `tests/`, `docs/` and
-  `musaeus_overnight.sh` name this machine's own folders. None are in
-  `musaeus/` or `packaging/`. The program does not care; a reader of a
-  public repository learns how this machine is laid out.
+- Personal folders (2026-11-12): about 220 lines in `scripts/`, `tests/`,
+  `docs/` and `musaeus_overnight.sh` named this machine's folders. They now
+  come from settings.env (`MUSAEUS_VAULT_ROOT`, `MUSAEUS_MASTERS_BACKUP_ROOT`,
+  `MUSAEUS_SECRETS_DIR`) or are placeholders, and
+  `tests/test_no_personal_paths.py` keeps them out. Old commits still hold
+  them; only a history rewrite would remove those.
 
 ## Ideas for next steps
 
