@@ -11,8 +11,8 @@ Companion is allowed to touch, in its `musaeus-itunes-bridge/v1` format:
      "playlists": [{"name": ..., "track_paths": [...]}]}
 
 - tracks: every copy the edition ledger records for the lossless edition
-  whose file is on disk. Never a master: the root is the edition, and the
-  Companion refuses any path outside it.
+  whose file is on disk and carries that record's marker. Never a master:
+  the root is the edition, and the Companion refuses any path outside it.
 - previous_paths: where the copy was before MUSAEUS refiled its master
   (ORGANIZE_MOVE / ORGANIZE_RENAME / ARTIST_CONSOLIDATED), mapped into the
   edition, so the Companion can re-link a moved song instead of adding a
@@ -32,7 +32,8 @@ import sqlite3
 from collections import Counter
 from pathlib import Path
 
-from .edition_build import EDITION, _mirror
+from . import edition_bake
+from .edition_build import EDITION, _mirror, marker_for
 from .edition_index import INDEX_DIRNAME
 from .edition_ledger import ledger_path
 
@@ -69,7 +70,13 @@ class _History:
                 continue
             if new and old:
                 self.arrivals.setdefault(new, []).append((eid, kind, old))
-            if old:
+            # Not departures: Sentinel's "duplicate of" names the file already
+            # filed, and a tag fix in place names the file it leaves where it is.
+            if (
+                old
+                and kind != "DUPLICATE_FOUND"
+                and not (kind == "CANONICALIZE" and old == file_path)
+            ):
                 self.departures.setdefault(old, []).append(eid)
 
     def earlier_masters(self, master: str, audio_hash: str) -> list[str]:
@@ -132,7 +139,10 @@ def build(cfg: object) -> dict:
     copies = [
         (os.path.normpath(out), master, audio_hash)
         for out, master, audio_hash in rows
-        if Path(out).is_file() and Path(out).is_relative_to(library)
+        if Path(out).is_relative_to(library)
+        # Its marker, not only a file: a stale record's path may hold another
+        # master's copy (CodeRabbit on #321). No file reads as no marker.
+        and edition_bake.read_marker(Path(out)) == marker_for(audio_hash)
     ]
     current = {out for out, _, _ in copies}
 
@@ -177,5 +187,8 @@ def write(manifest: dict, out: Path) -> None:
     """Write *manifest* to *out*, whole or not at all."""
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(f"{out.name}.{os.getpid()}.tmp")  # one per writer
-    tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
-    os.replace(tmp, out)
+    try:
+        tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, out)
+    finally:
+        tmp.unlink(missing_ok=True)  # gone after a replace; a failed write's leftover

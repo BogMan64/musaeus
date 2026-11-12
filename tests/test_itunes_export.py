@@ -15,6 +15,7 @@ import pytest
 from musaeus import itunes_export
 from musaeus.config import MusicConfig
 from musaeus.db import open_db
+from musaeus.edition_build import marker_for
 from musaeus.edition_ledger import ledger_path, open_ledger
 
 
@@ -35,13 +36,26 @@ def cfg(tmp_path: Path) -> MusicConfig:
     return c
 
 
+@pytest.fixture(autouse=True)
+def _marker_is_the_file_text(monkeypatch):
+    """A test copy's marker is its text (a real copy carries it as an MP4 tag)."""
+
+    def read(p):
+        try:
+            return Path(p).read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+    monkeypatch.setattr("musaeus.edition_bake.read_marker", read)
+
+
 def _copy(cfg, rel: str, *, on_disk: bool = True) -> tuple[Path, Path]:
     """A master and its lossless copy, recorded in the ledger."""
     master = cfg.alac_archive / rel
     out = cfg.alac_library / rel
     if on_disk:
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(b"x")
+        out.write_text(marker_for(rel), encoding="utf-8")
     ledger = open_ledger(ledger_path(cfg))
     ledger.execute(
         "INSERT INTO edition_copies (edition, master_hash, master_path, output_path, built_at) "
@@ -53,15 +67,19 @@ def _copy(cfg, rel: str, *, on_disk: bool = True) -> tuple[Path, Path]:
     return master, out
 
 
-def _moved(cfg, old: Path, new: Path, kind: str = "ORGANIZE_MOVE") -> None:
+def _event(cfg, kind: str, file_path, old, new) -> None:
     conn = open_db(cfg.db_path)
     conn.execute(
         "INSERT INTO events (run_id, event_type, file_path, old_value, new_value) "
         "VALUES ('r', ?, ?, ?, ?)",
-        (kind, str(new), str(old), str(new)),
+        (kind, str(file_path), old and str(old), new and str(new)),
     )
     conn.commit()
     conn.close()
+
+
+def _moved(cfg, old: Path, new: Path, kind: str = "ORGANIZE_MOVE") -> None:
+    _event(cfg, kind, new, old, new)
 
 
 def test_the_lossless_copies_on_disk_are_the_tracks(cfg):
@@ -188,3 +206,45 @@ def test_a_place_visited_twice_does_not_end_the_history(cfg):
         str(lib / "Rock/B/B/B.m4a"),
         str(lib / "Rock/Z/Z/Z.m4a"),
     ]
+
+
+def test_a_recorded_file_holding_another_masters_copy_is_not_its_track(cfg):
+    """CodeRabbit on #321: a stale record whose path holds another copy."""
+    _, out = _copy(cfg, "Rock/A/X/A - One.m4a")
+    out.write_text(marker_for("another master"), encoding="utf-8")
+    assert itunes_export.build(cfg)["tracks"] == []
+
+
+@pytest.mark.parametrize(
+    "kind, where, new, reaches_z",
+    [
+        ("DUPLICATE_FOUND", "INBOX/X.m4a", None, True),  # Sentinel: a copy of X arrived
+        ("CANONICALIZE", None, "PASSTHROUGH", True),  # X's tags fixed in place
+        ("CANONICALIZE", "STAGING/X.m4a", "CONVERTED", False),  # X itself left
+    ],
+)
+def test_only_an_event_that_takes_the_file_away_is_a_departure(cfg, kind, where, new, reaches_z):
+    """CodeRabbit on #321: Z -> X, then an event naming X, then X -> Y."""
+    y_master, _ = _copy(cfg, "Rock/Y/Y/Y.m4a")
+    z, x = (cfg.alac_archive / f"Rock/{n}/{n}/{n}.m4a" for n in "ZX")
+    _moved(cfg, z, x)
+    _event(cfg, kind, cfg.vault_root / where if where else x, x, new)
+    _moved(cfg, x, y_master)
+    (track,) = itunes_export.build(cfg)["tracks"]
+    lib = cfg.alac_library
+    assert track["previous_paths"] == [str(lib / "Rock/X/X/X.m4a")] + (
+        [str(lib / "Rock/Z/Z/Z.m4a")] if reaches_z else []
+    )
+
+
+def test_a_failed_write_leaves_no_temporary_file(cfg, tmp_path, monkeypatch):
+    """CodeRabbit on #321."""
+    out = tmp_path / "Exports" / "bridge.json"
+
+    def boom(*_):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(itunes_export.os, "replace", boom)
+    with pytest.raises(OSError, match="disk full"):
+        itunes_export.write({"tracks": []}, out)
+    assert not list(out.parent.iterdir())
