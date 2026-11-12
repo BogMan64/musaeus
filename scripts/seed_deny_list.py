@@ -34,9 +34,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from musaeus.config import get_config  # noqa: E402  (the vault comes from settings.env)
 from musaeus.db import deny_hash, ensure_deny_list  # noqa: E402
 
-VAULT = get_config().vault_root
-DB = VAULT / "musaeus.db"
-LEDGER = VAULT / "_db_backups" / "hash_index.db"
+CFG = get_config()
+VAULT = CFG.vault_root
+DB = CFG.db_path
+LEDGER = CFG.hash_index_path
 
 
 def main() -> int:

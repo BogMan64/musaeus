@@ -52,9 +52,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from musaeus.config import get_config  # noqa: E402  (the vault comes from settings.env)
 
-VAULT = get_config().vault_root
-DB = VAULT / "musaeus.db"
-LAW = VAULT / "MetaData" / "MasterLaw.csv"
+CFG = get_config()
+VAULT = CFG.vault_root
+DB = CFG.db_path
+LAW = CFG.meta_dir / "MasterLaw.csv"
 
 SOURCE_GENRE = "Pop"
 BOUNDARY = 2000

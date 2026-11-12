@@ -100,7 +100,13 @@ def build_manifest(cfg: MusicConfig, manifest: Path, raw_root: Path) -> list[dic
         w = csv.DictWriter(fh, fieldnames=["path", "basename", "state", "why"])
         w.writeheader()
         w.writerows(rows)
+    _root_file(manifest).write_text(str(raw_root), encoding="utf-8")
     return rows
+
+
+def _root_file(manifest: Path) -> Path:
+    """Beside the manifest: the folder it was built from (an empty one names none)."""
+    return manifest.with_suffix(".root")
 
 
 def load(manifest: Path) -> list[dict]:
@@ -150,8 +156,9 @@ def main() -> int:
         print(f"manifest built: {manifest}")
     else:
         rows = load(manifest)
-        if any(not Path(r["path"]).is_relative_to(args.raw_root) for r in rows):
-            print(f"NOT RUN: {manifest} lists another folder's files; add --rebuild-manifest")
+        built_from = _root_file(manifest)
+        if not built_from.is_file() or built_from.read_text(encoding="utf-8") != str(args.raw_root):
+            print(f"NOT RUN: {manifest} was built for another folder; add --rebuild-manifest")
             return 2
 
     from collections import Counter

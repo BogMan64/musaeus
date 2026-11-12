@@ -18,6 +18,8 @@ from tests.real_roots import REAL_BACKUP_ROOT, REAL_HOME, REAL_SECRETS_DIR, REAL
 REPO = Path(__file__).resolve().parents[1]
 
 
+# shortcut: checks the folders of the machine running it (CI checks the runner's), so
+# it protects the maintainer's machine, where the full suite runs before each push.
 def _this_machines_folders() -> list[str]:
     folders = [str(REAL_HOME), f"/media/{REAL_HOME.name}/"]
     if REAL_VAULT is not None:

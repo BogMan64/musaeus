@@ -65,9 +65,10 @@ from musaeus.stages.organize import (  # noqa: E402
     unique_path,
 )
 
-VAULT = get_config().vault_root
-DB = VAULT / "musaeus.db"
-CANON = VAULT / "MetaData" / "Composer_Canon.tsv"
+CFG = get_config()
+VAULT = CFG.vault_root
+DB = CFG.db_path
+CANON = CFG.meta_dir / "Composer_Canon.tsv"
 
 
 

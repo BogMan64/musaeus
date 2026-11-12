@@ -55,9 +55,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from musaeus.config import get_config  # noqa: E402  (the vault comes from settings.env)
 from musaeus.stages.normalize import ARTICLE_LOOKALIKE_ARTISTS  # noqa: E402
 
-VAULT = get_config().vault_root
-ARTIST_CANON = VAULT / "MetaData" / "artist_canon.tsv"
-DB = VAULT / "musaeus.db"
+CFG = get_config()
+VAULT = CFG.vault_root
+ARTIST_CANON = CFG.meta_dir / "artist_canon.tsv"
+DB = CFG.db_path
 OUT = Path.home() / "Desktop" / "MUSAEUS_Truncated_Artist_Report.csv"
 
 # Names that are legitimately lowercase or punctuation-led. ARTICLE_LOOKALIKE_ARTISTS

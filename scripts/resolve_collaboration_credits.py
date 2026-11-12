@@ -50,10 +50,11 @@ from musaeus.stages.organize import (  # noqa: E402
     unique_path,
 )
 
-VAULT = get_config().vault_root
-DB = VAULT / "musaeus.db"
-PROTECTED = VAULT / "MetaData" / "Protected_Band_Names.txt"
-LAW = VAULT / "MetaData" / "MasterLaw.csv"
+CFG = get_config()
+VAULT = CFG.vault_root
+DB = CFG.db_path
+PROTECTED = CFG.meta_dir / "Protected_Band_Names.txt"
+LAW = CFG.meta_dir / "MasterLaw.csv"
 
 # Mirrors normalize.py's own article list. "Ceresband, De" and
 # "Bravos, Los" are article folds of "De Ceresband" and "Los Bravos" --

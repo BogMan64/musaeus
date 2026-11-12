@@ -68,7 +68,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # neither). No built-in default: unset, the run stops here.
 SETTINGS="${HOME}/.config/musaeus/settings.env"
 if [ -z "${MUSAEUS_VAULT_ROOT:-}" ] && [ -f "$SETTINGS" ]; then
-    MUSAEUS_VAULT_ROOT="$(sed -n 's/^MUSAEUS_VAULT_ROOT=//p' "$SETTINGS" | tail -n 1 | tr -d "\"'")"
+    # Only the enclosing quotes go, as in musaeus/config.py: a quote inside the path stays.
+    MUSAEUS_VAULT_ROOT="$(sed -n 's/^MUSAEUS_VAULT_ROOT=//p' "$SETTINGS" | tail -n 1 | sed -e 's/^[[:space:]"'\'']*//' -e 's/[[:space:]"'\'']*$//')"
 fi
 VAULT_ROOT="${MUSAEUS_VAULT_ROOT:?not set: put MUSAEUS_VAULT_ROOT in ~/.config/musaeus/settings.env}"
 VAULT_ROOT="${VAULT_ROOT/#\~/$HOME}"

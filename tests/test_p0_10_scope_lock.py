@@ -41,14 +41,17 @@ from musaeus.safety.lock import (
     observe,
     scopes_conflict,
 )
+from tests.real_roots import REAL_VAULT
 
 DOMAIN = "library-mutation"
+#: The real, PathGuard-protected vault where there is one, so a probe would raise.
+VAULT = str(REAL_VAULT) if REAL_VAULT else "/example/MUSAEUS_VAULT"
 
 
 @pytest.fixture(autouse=True)
 def configured_real_scope(monkeypatch):
-    monkeypatch.setenv("MUSAEUS_VAULT_ROOT", "/example/MUSAEUS_VAULT")
-    monkeypatch.setenv("MUSAEUS_INBOX", "/example/MUSAEUS_VAULT/INBOX")
+    monkeypatch.setenv("MUSAEUS_VAULT_ROOT", VAULT)
+    monkeypatch.setenv("MUSAEUS_INBOX", f"{VAULT}/INBOX")
 
 
 @pytest.fixture
@@ -77,8 +80,8 @@ class TestScopeIdentity:
         classify() reached for the filesystem, this test would error rather
         than pass -- which is what makes it a check."""
         before = len(path_guard.attempts)
-        assert classify("/example/MUSAEUS_VAULT/ALAC-Library") == CANONICAL
-        assert classify("/example/MUSAEUS_VAULT/INBOX/new") == INBOX
+        assert classify(f"{VAULT}/ALAC-Library") == CANONICAL
+        assert classify(f"{VAULT}/INBOX/new") == INBOX
         assert len(path_guard.attempts) == before
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX roots; Windows: test_windows_scope")
@@ -106,7 +109,7 @@ class TestScopeIdentity:
         folder is a disposable fixture (review of #211)."""
         monkeypatch.delenv("MUSAEUS_VAULT_ROOT")
         monkeypatch.delenv("MUSAEUS_INBOX")
-        assert classify("/example/MUSAEUS_VAULT/ALAC-Library") == CANONICAL
+        assert classify(f"{VAULT}/ALAC-Library") == CANONICAL
         assert classify("/srv/music/vault") == CANONICAL
 
     def test_tmpdir_does_not_make_a_home_folder_a_fixture(self, monkeypatch):
@@ -160,8 +163,8 @@ class TestClassificationIsNotAuthority:
     @pytest.mark.parametrize(
         "root",
         [
-            "/example/MUSAEUS_VAULT/INBOX",
-            "/example/MUSAEUS_VAULT/ALAC-Library",
+            f"{VAULT}/INBOX",
+            f"{VAULT}/ALAC-Library",
         ],
     )
     def test_real_scopes_cannot_be_locked_for_mutation(self, root, lock_dir):
@@ -175,7 +178,7 @@ class TestClassificationIsNotAuthority:
         assert exc.value.details["classification"] in (INBOX, CANONICAL)
 
     def test_refusal_creates_no_lock_artefacts(self, lock_dir):
-        scope = Scope.build("/example/MUSAEUS_VAULT/INBOX", DOMAIN)
+        scope = Scope.build(f"{VAULT}/INBOX", DOMAIN)
         with pytest.raises(ScopeNotLockableError):
             acquire(scope, lock_dir, run_id="run-A")
         assert list(lock_dir.iterdir()) == []

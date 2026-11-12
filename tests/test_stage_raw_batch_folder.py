@@ -71,3 +71,16 @@ def test_a_settled_outcome_is_kept_by_full_path_not_name(tmp_path, monkeypatch):
     rows = srb.build_manifest(cfg, cfg.meta_dir / srb.MANIFEST_NAME, raw)
     states = {r["path"]: r["state"] for r in rows}
     assert states == {str(raw / "A" / "x.m4a"): "verified-new", str(raw / "B" / "x.m4a"): "pending"}
+
+
+def test_an_empty_manifest_of_another_folder_is_refused(tmp_path, monkeypatch):
+    """CodeRabbit on #324: an empty manifest names no folder in its rows."""
+    a, b = tmp_path / "A", tmp_path / "B"
+    a.mkdir()
+    b.mkdir()
+    (b / "y.m4a").write_bytes(b"y")
+    _manifest(tmp_path / "MetaData", [])
+    (tmp_path / "MetaData" / srb.MANIFEST_NAME).with_suffix(".root").write_text(str(a.resolve()))
+    monkeypatch.setenv("MUSAEUS_VAULT_ROOT", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["stage_raw_batch.py", "--raw-root", str(b), "--status"])
+    assert srb.main() == 2

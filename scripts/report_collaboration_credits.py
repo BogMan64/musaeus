@@ -28,9 +28,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from musaeus.config import get_config  # noqa: E402  (the vault comes from settings.env)
 
-VAULT = get_config().vault_root
-DB = VAULT / "musaeus.db"
-PROTECTED = VAULT / "MetaData" / "Protected_Band_Names.txt"
+CFG = get_config()
+VAULT = CFG.vault_root
+DB = CFG.db_path
+PROTECTED = CFG.meta_dir / "Protected_Band_Names.txt"
 OUT = Path.home() / "Desktop" / "MUSAEUS_Collaboration_Credits.csv"
 
 # A band written "A, B & C" tends to end on an ampersand-joined final
