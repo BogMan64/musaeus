@@ -1492,6 +1492,18 @@ def _cmd_edition_build_inner(args) -> int:
                     kind=kind,
                     click_allowed=click_allowed,
                 )
+                index = None
+                if not outcome.stopped:
+                    # Every edition, the lossless one too (Grey, item 8, 2026-10-17).
+                    # The playlists travel with the edition (Grey, 2026-09-17), so
+                    # they are written after every build, as the retired builder did
+                    # (cloud review of #53: a stale index went to the USB). Its
+                    # entries are resolved against the disk; a dead one fails.
+                    # Under the build lock: `export itunes` and the USB transfer
+                    # take it and must never read half-written playlists.
+                    from .edition_index import write_index
+
+                    index = write_index(cfg, edition_root, apply=True)
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
@@ -1516,15 +1528,8 @@ def _cmd_edition_build_inner(args) -> int:
         if outcome.stopped:
             print("  Stopped. Finished copies are kept; run it again to carry on.")
         index_failed = False
-        if not outcome.stopped:
-            # Every edition, the lossless one too (Grey, item 8, 2026-10-17).
-            # The playlists travel with the edition (Grey, 2026-09-17), so
-            # they are written after every build, as the retired builder did
-            # (cloud review of #53: a stale index went to the USB). Its
-            # entries are resolved against the disk; a dead one fails.
-            from .edition_index import write_index
-
-            notes, problems = write_index(cfg, edition_root, apply=True)
+        if index is not None:
+            notes, problems = index
             problems = [p for p in problems if not p.startswith("no playlists were written")]
             playlists = sorted((edition_root / "Playlists").glob("*.m3u8"))
             print(f"  Playlists: {len(playlists):,} in {edition_root / 'Playlists'}")
