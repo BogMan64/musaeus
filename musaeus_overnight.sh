@@ -64,15 +64,11 @@ set -uo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# The vault: the environment, else ~/.config/musaeus/settings.env (cron sets
-# neither). No built-in default: unset, the run stops here.
-SETTINGS="${HOME}/.config/musaeus/settings.env"
-if [ -z "${MUSAEUS_VAULT_ROOT:-}" ] && [ -f "$SETTINGS" ]; then
-    # Only the enclosing quotes go, as in musaeus/config.py: a quote inside the path stays.
-    MUSAEUS_VAULT_ROOT="$(sed -n 's/^MUSAEUS_VAULT_ROOT=//p' "$SETTINGS" | tail -n 1 | sed -e 's/^[[:space:]"'\'']*//' -e 's/[[:space:]"'\'']*$//')"
-fi
-VAULT_ROOT="${MUSAEUS_VAULT_ROOT:?not set: put MUSAEUS_VAULT_ROOT in ~/.config/musaeus/settings.env}"
-VAULT_ROOT="${VAULT_ROOT/#\~/$HOME}"
+# The vault: what MUSAEUS itself reads (the environment, else settings.env),
+# through its own parser, so the wrapper and the stages cannot disagree. Cron
+# sets neither; there is no built-in default: unset, the run stops here.
+VAULT_ROOT="$(cd "$SCRIPT_DIR" && python3 -c 'from musaeus.config import get_config; print(get_config().vault_root)' 2>/dev/null)"
+VAULT_ROOT="${VAULT_ROOT:?not set: put MUSAEUS_VAULT_ROOT in ~/.config/musaeus/settings.env}"
 export MUSAEUS_VAULT_ROOT="$VAULT_ROOT"  # the stages it starts see the same vault
 LOG_DIR="${VAULT_ROOT}/RUNS/LOGS"
 MIN_FREE_GB=50          # minimum free GB required to run the canonical chain

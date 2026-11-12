@@ -109,7 +109,8 @@ class TestScopeIdentity:
         folder is a disposable fixture (review of #211)."""
         monkeypatch.delenv("MUSAEUS_VAULT_ROOT")
         monkeypatch.delenv("MUSAEUS_INBOX")
-        assert classify(f"{VAULT}/ALAC-Library") == CANONICAL
+        # Not VAULT: a real vault under the temp folder would read as a fixture here.
+        assert classify("/example/MUSAEUS_VAULT/ALAC-Library") == CANONICAL
         assert classify("/srv/music/vault") == CANONICAL
 
     def test_tmpdir_does_not_make_a_home_folder_a_fixture(self, monkeypatch):

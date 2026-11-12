@@ -2302,7 +2302,9 @@ def test_g11_no_live_data_operation_audit(path_guard, transport_harness):
             "make the comparison the brief requires and must not claim it did"
         )
 
-        if db_delta not in (0, None):
+        if current_db_size is None:  # no vault set up here, or no catalogue in it
+            gate.verdict = "INCOMPLETE: the live database was not compared"
+        elif db_delta != 0:
             gate.verdict = (
                 "PASS with a qualified DB-size line — the live database changed "
                 "size during the rehearsal, attributable to a concurrent vault job"
