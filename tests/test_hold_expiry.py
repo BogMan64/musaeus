@@ -227,6 +227,21 @@ def test_a_file_grey_said_stays_stays(ctx, past_the_hold):
     assert any("hold_keep.txt" in n for n in result.notes)
 
 
+def test_a_keep_list_saved_by_a_windows_editor_still_keeps_its_files(ctx, past_the_hold):
+    """A byte-order mark hid the first name and a trailing space any other:
+    the file then went after 30 days with no message."""
+    folder = ctx.config.quarantine / "denied"
+    first = _held(ctx, folder, "01. First.flac", "QUARANTINED", "h1")
+    second = _held(ctx, folder, "02. Second.flac", "QUARANTINED", "h2")
+    (ctx.config.meta_dir / "hold_keep.txt").write_bytes(
+        "﻿01. First.flac\r\n02. Second.flac \r\n".encode()
+    )
+
+    HoldExpiryStage().run(ctx)
+
+    assert first.exists() and second.exists()
+
+
 def test_a_file_no_held_row_vouches_for_stays(ctx, past_the_hold):
     folder = ctx.config.dupes_review_dir
     stray = folder / "stray.flac"
