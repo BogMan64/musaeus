@@ -258,7 +258,7 @@ class TestBuildCommands:
 class TestBuildUnmountCommands:
     """2026-09-03: a real run hit wipefs failing with "Device or resource
     busy" because the target was still auto-mounted (e.g. at
-    /media/user/MyTunes from being plugged in) and nothing unmounted it
+    /media/USER/MyTunes from being plugged in) and nothing unmounted it
     first."""
 
     def test_no_mountpoints_means_no_commands(self):
@@ -266,20 +266,20 @@ class TestBuildUnmountCommands:
         assert build_unmount_commands(dev) == []
 
     def test_one_mountpoint_becomes_one_umount(self):
-        dev = _device(mountpoints=["/media/user/MyTunes"])
-        assert build_unmount_commands(dev) == [["umount", "/media/user/MyTunes"]]
+        dev = _device(mountpoints=["/media/USER/MyTunes"])
+        assert build_unmount_commands(dev) == [["umount", "/media/USER/MyTunes"]]
 
     def test_multiple_mountpoints_each_get_their_own_umount(self):
-        dev = _device(mountpoints=["/media/user/MyTunes", "/mnt/other"])
+        dev = _device(mountpoints=["/media/USER/MyTunes", "/mnt/other"])
         assert build_unmount_commands(dev) == [
-            ["umount", "/media/user/MyTunes"],
+            ["umount", "/media/USER/MyTunes"],
             ["umount", "/mnt/other"],
         ]
 
     def test_does_not_execute_anything(self, monkeypatch):
         called = []
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: called.append(a))
-        build_unmount_commands(_device(mountpoints=["/media/user/MyTunes"]))
+        build_unmount_commands(_device(mountpoints=["/media/USER/MyTunes"]))
         assert called == []
 
 
@@ -771,7 +771,7 @@ class TestMainEndToEnd:
         cfg = _cfg(tmp_path)
         cfg.alac_library.mkdir(parents=True)
         (cfg.alac_library / "track.m4a").write_bytes(b"x")
-        dev = _device(path="/dev/sdz", mountpoints=["/media/user/MyTunes"])
+        dev = _device(path="/dev/sdz", mountpoints=["/media/USER/MyTunes"])
         monkeypatch.setattr(usb_mod, "get_config", lambda: cfg)
         monkeypatch.setattr(usb_mod, "list_removable_devices", lambda: [dev])
         monkeypatch.setattr(usb_mod, "critical_backing_disks", lambda *a, **k: set())
@@ -782,7 +782,7 @@ class TestMainEndToEnd:
         assert usb_mod.main() == 0
         assert calls == []
         out = capsys.readouterr().out
-        assert "would run: umount /media/user/MyTunes" in out
+        assert "would run: umount /media/USER/MyTunes" in out
 
     def test_execute_unmounts_a_busy_device_before_wiping(self, tmp_path, monkeypatch):
         """The real failure this guards against: wipefs refuses on a
@@ -791,7 +791,7 @@ class TestMainEndToEnd:
         cfg = _cfg(tmp_path)
         cfg.alac_library.mkdir(parents=True)
         (cfg.alac_library / "track.m4a").write_bytes(b"x")
-        dev = _device(path="/dev/sdz", mountpoints=["/media/user/MyTunes"])
+        dev = _device(path="/dev/sdz", mountpoints=["/media/USER/MyTunes"])
 
         monkeypatch.setattr(usb_mod, "get_config", lambda: cfg)
         monkeypatch.setattr(usb_mod, "list_removable_devices", lambda: [dev])
@@ -827,7 +827,7 @@ class TestMainEndToEnd:
         cmd_names = [c[0] for c in subprocess_calls]
         assert cmd_names[0] == "umount", "must unmount before wipefs, not after"
         assert cmd_names[1] == "wipefs"
-        assert subprocess_calls[0] == ["umount", "/media/user/MyTunes"]
+        assert subprocess_calls[0] == ["umount", "/media/USER/MyTunes"]
 
     def test_execute_unmounts_using_freshly_refetched_mount_state(self, tmp_path, monkeypatch):
         """Mount state can change between the initial listing and the
@@ -838,7 +838,7 @@ class TestMainEndToEnd:
         cfg.alac_library.mkdir(parents=True)
         (cfg.alac_library / "track.m4a").write_bytes(b"x")
         stale = _device(path="/dev/sdz", mountpoints=[])
-        fresh = _device(path="/dev/sdz", mountpoints=["/media/user/MyTunes"])
+        fresh = _device(path="/dev/sdz", mountpoints=["/media/USER/MyTunes"])
 
         listings = iter([[stale], [fresh]])
         monkeypatch.setattr(usb_mod, "get_config", lambda: cfg)
@@ -871,7 +871,7 @@ class TestMainEndToEnd:
         )
 
         assert usb_mod.main() == 0
-        assert subprocess_calls[0] == ["umount", "/media/user/MyTunes"]
+        assert subprocess_calls[0] == ["umount", "/media/USER/MyTunes"]
 
     def test_execute_still_umounts_after_copy_raises(self, tmp_path, monkeypatch):
         """finally: must run even if copy_with_verification itself blows up --

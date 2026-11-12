@@ -171,7 +171,7 @@ class TestTheChecks:
 class TestThePasteIsSafe:
     """Review of #88, finding 13 (2026-10-07): the paste had no && between its
     commands and no quoting. If ifuse failed, rsync filled the plain folder on
-    the PC with tens of GB; with --mount '/media/user/My Phone' the wipe would
+    the PC with tens of GB; with --mount '/media/USER/My Phone' the wipe would
     have been rm -rf on the wrong paths."""
 
     def test_a_failed_step_stops_the_rest_and_paths_are_quoted(self, vault):

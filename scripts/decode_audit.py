@@ -233,6 +233,7 @@ def main() -> int:
         out = Path.home() / "Desktop" / (
             "MUSAEUS_decode_failures_%s.csv" % datetime.date.today().isoformat()
         )
+        out.parent.mkdir(parents=True, exist_ok=True)
         with out.open("w", newline="", encoding="utf-8") as fh:
             w = csv.DictWriter(fh, fieldnames=["DELETE? (y/n)"] + list(failures[0].keys()))
             w.writeheader()

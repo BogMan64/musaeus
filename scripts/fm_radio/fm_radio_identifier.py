@@ -89,7 +89,11 @@ def library_songs(limit: int, *, only_multi: bool) -> list[tuple[str, str, str]]
 
     Both databases are opened mode=ro. Nothing here writes to the vault.
     """
-    from musaeus.config import get_config
+    try:  # the lab stands alone; only the library's place comes from MUSAEUS
+        from musaeus.config import get_config
+    except ImportError:
+        log("MUSAEUS is not importable, so the library's place is unknown")
+        return []
 
     cfg = get_config()
     if not cfg.db_path.exists():

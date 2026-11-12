@@ -72,6 +72,7 @@ if [ -z "${MUSAEUS_VAULT_ROOT:-}" ] && [ -f "$SETTINGS" ]; then
 fi
 VAULT_ROOT="${MUSAEUS_VAULT_ROOT:?not set: put MUSAEUS_VAULT_ROOT in ~/.config/musaeus/settings.env}"
 VAULT_ROOT="${VAULT_ROOT/#\~/$HOME}"
+export MUSAEUS_VAULT_ROOT="$VAULT_ROOT"  # the stages it starts see the same vault
 LOG_DIR="${VAULT_ROOT}/RUNS/LOGS"
 MIN_FREE_GB=50          # minimum free GB required to run the canonical chain
 CURATOR_MIN_FREE_GB=400 # minimum free GB required to run Curator

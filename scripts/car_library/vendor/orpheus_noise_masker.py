@@ -49,10 +49,7 @@ from pathlib import Path
 # default for the case where nothing else has set it, not a forced value.
 # Repointed 2026-08-21 from the retired ORPHEUS project folder. See the note above: the override was already
 # doing the real work, because the old default directory did not exist.
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-import musaeus.config  # noqa: E402,F401  -- puts settings.env's MUSAEUS_VAULT_ROOT in os.environ
-
-# No built-in default: the vault comes from the settings or the caller.
+# No built-in default: the caller passes the vault (vendored: no MUSAEUS import).
 VAULT_ROOT = Path(os.environ.get("MUSAEUS_VAULT_ROOT", ""))
 NOISE_DIR = Path(os.environ.get("ORPHEUS_NOISE_DIR", str(VAULT_ROOT / "RUNS" / "Noise")))
 AAC_CAR_SRC = VAULT_ROOT / "RUNS" / "AAC-Car"
@@ -389,8 +386,13 @@ def main() -> None:
     parser.add_argument("--src", default=str(AAC_CAR_SRC), help="Source AAC-Car root")
     parser.add_argument("--out", default=str(AAC_CAR_OUT), help="Output root")
     args = parser.parse_args()
-    if not os.environ.get("MUSAEUS_VAULT_ROOT"):  # before anything is written
-        sys.exit("MUSAEUS_VAULT_ROOT is not set: put it in ~/.config/musaeus/settings.env")
+    from_vault = (
+        not os.environ.get("ORPHEUS_NOISE_DIR")
+        or args.src == str(AAC_CAR_SRC)
+        or args.out == str(AAC_CAR_OUT)
+    )
+    if from_vault and not os.environ.get("MUSAEUS_VAULT_ROOT"):  # before anything is written
+        sys.exit("Set MUSAEUS_VAULT_ROOT, or ORPHEUS_NOISE_DIR with --src and --out")
 
     src_root = Path(args.src)
     dst_root = Path(args.out)

@@ -66,7 +66,7 @@ from musaeus.stages.organize import (  # noqa: E402
 )
 
 VAULT_ROOT = get_config().vault_root
-DB_PATH = VAULT_ROOT / "musaeus.db"
+DB_PATH = get_config().db_path
 HASH_INDEX_PATH = VAULT_ROOT / "ALAC-Library" / "_history" / "hash_index.db"
 ALAC_LIBRARY = VAULT_ROOT / "ALAC-Library"
 

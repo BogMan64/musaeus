@@ -117,7 +117,7 @@ def test_the_live_library_spellings_are_all_protected() -> None:
     against the real library it is the check that actually matters.
     """
     assert REAL_VAULT is not None
-    conn = sqlite3.connect(f"file:{REAL_VAULT / 'musaeus.db'}?mode=ro", uri=True)
+    conn = sqlite3.connect((REAL_VAULT / "musaeus.db").as_uri() + "?mode=ro", uri=True)
     keys = {GenreLaw._key(n) for n in PROTECTED_ARTIST_NAMES}
     unprotected = [
         a

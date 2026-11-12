@@ -44,7 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from musaeus.config import get_config  # noqa: E402  (the vault comes from settings.env)
 
 VAULT_ROOT = get_config().vault_root
-DB_PATH = VAULT_ROOT / "musaeus.db"
+DB_PATH = get_config().db_path
 
 _COMMIT_EVERY = 500
 

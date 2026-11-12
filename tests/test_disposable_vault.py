@@ -245,13 +245,13 @@ class TestEnvLeakClosed:
     def test_cli_resume_file_is_not_real_home(self):
         import musaeus.cli as cli_mod
 
-        assert not Path(cli_mod._RESUME_FILE).is_relative_to(REAL_HOME)
+        assert Path(cli_mod._RESUME_FILE).is_relative_to(Path.home())  # the fake one
 
     def test_wizard_settings_files_are_not_real_home(self):
         import musaeus.setup.wizard as wizard_mod
 
-        assert not Path(wizard_mod._SETTINGS_FILE).is_relative_to(REAL_HOME)
-        assert not Path(wizard_mod._CREDENTIALS_FILE).is_relative_to(REAL_HOME)
+        assert Path(wizard_mod._SETTINGS_FILE).is_relative_to(Path.home())  # the fake one
+        assert Path(wizard_mod._CREDENTIALS_FILE).is_relative_to(Path.home())
 
     def test_get_config_singleton_does_not_resolve_to_real_vault(self):
         """

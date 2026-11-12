@@ -17,7 +17,10 @@ FILE_NAME = "listenbrainz.env"
 
 def secrets_file() -> Path | None:
     """listenbrainz.env in MUSAEUS_SECRETS_DIR, or None when that is not set."""
-    import musaeus.config  # noqa: F401  -- puts settings.env's values in os.environ
+    try:  # puts settings.env's values in os.environ; the lab also runs without MUSAEUS
+        import musaeus.config  # noqa: F401
+    except ImportError:
+        pass
 
     folder = (os.environ.get("MUSAEUS_SECRETS_DIR") or "").strip()
     return Path(folder).expanduser() / FILE_NAME if folder else None

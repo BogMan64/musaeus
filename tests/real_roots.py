@@ -44,7 +44,7 @@ REAL_SECRETS_DIR = _setting("MUSAEUS_SECRETS_DIR")
 
 #: Nothing under these may be created, read, renamed or deleted by a test.
 PROTECTED_REAL_ROOTS: tuple[str, ...] = tuple(
-    str(p)
+    os.path.abspath(p)  # as the guard normalises what it checks
     for p in (
         REAL_HOME / "Music",  # the personal music library
         REAL_HOME / ".config" / "musaeus",  # settings.env / credentials.env / resume_state.json

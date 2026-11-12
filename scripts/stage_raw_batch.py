@@ -18,6 +18,7 @@ Copies are written to a .part file, verified by size, then renamed. A 15-min
 timeout once killed a bare shutil.copy2 mid-write and left a truncated 4 MB
 file that looked finished; existence is not completeness.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -51,10 +52,11 @@ def build_manifest(cfg: MusicConfig, manifest: Path, raw_root: Path) -> list[dic
     import sqlite3
 
     db = sqlite3.connect(cfg.db_path, timeout=300)
-    original = {r[0] for r in db.execute(
-        "SELECT filename FROM archive WHERE filename IS NOT NULL")}
-    renamed = {os.path.basename(r[0]) for r in db.execute(
-        "SELECT file_path FROM archive WHERE file_path IS NOT NULL")}
+    original = {r[0] for r in db.execute("SELECT filename FROM archive WHERE filename IS NOT NULL")}
+    renamed = {
+        os.path.basename(r[0])
+        for r in db.execute("SELECT file_path FROM archive WHERE file_path IS NOT NULL")
+    }
     db.close()
 
     led_path = cfg.vault_root / "_db_backups" / "hash_index.db"
@@ -64,21 +66,26 @@ def build_manifest(cfg: MusicConfig, manifest: Path, raw_root: Path) -> list[dic
         denied_names = {
             os.path.basename(r[0])
             for r in led.execute(
-                "SELECT source_path FROM denied_hashes WHERE source_path IS NOT NULL")
+                "SELECT source_path FROM denied_hashes WHERE source_path IS NOT NULL"
+            )
         }
         led.close()
 
     # Preserve any settled outcome from a previous manifest.
     previous: dict[str, dict] = {}
     if manifest.exists():
-        previous = {r["basename"]: r for r in load(manifest)}
+        # Only this folder's: a file of the same name elsewhere is another file.
+        previous = {
+            r["basename"]: r for r in load(manifest) if Path(r["path"]).is_relative_to(raw_root)
+        }
 
     rows = []
     for p in sorted(raw_root.rglob("*.m4a"), key=lambda x: x.name):
         prior = previous.get(p.name)
         if prior and prior["state"] in TERMINAL:
-            rows.append({"path": str(p), "basename": p.name,
-                         "state": prior["state"], "why": prior["why"]})
+            rows.append(
+                {"path": str(p), "basename": p.name, "state": prior["state"], "why": prior["why"]}
+            )
             continue
         if p.name in original:
             state, why = "done", "archive.filename matches (original name)"
@@ -125,7 +132,9 @@ def copy_verified(src: Path, dest: Path) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--raw-root", type=Path, required=True, help="the folder of raw .m4a files to stage")
+    ap.add_argument(
+        "--raw-root", type=Path, required=True, help="the folder of raw .m4a files to stage"
+    )
     ap.add_argument("--count", type=int, default=0, help="how many to stage (0 = all pending)")
     ap.add_argument("--rebuild-manifest", action="store_true")
     ap.add_argument("--status", action="store_true")
@@ -139,8 +148,12 @@ def main() -> int:
         print(f"manifest built: {manifest}")
     else:
         rows = load(manifest)
+        if any(not Path(r["path"]).is_relative_to(args.raw_root) for r in rows):
+            print(f"NOT RUN: {manifest} lists another folder's files; add --rebuild-manifest")
+            return 2
 
     from collections import Counter
+
     counts = Counter(r["state"] for r in rows)
     print(f"  total {len(rows):,}  " + "  ".join(f"{k} {v:,}" for k, v in sorted(counts.items())))
     if args.status:

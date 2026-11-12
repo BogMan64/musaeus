@@ -34,10 +34,7 @@ from pathlib import Path
 # override was keeping this working. Named VAULT_ROOT now because that is
 # what it actually is, and env-overridable so the next move needs no code
 # change.
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-import musaeus.config  # noqa: E402,F401  -- puts settings.env's MUSAEUS_VAULT_ROOT in os.environ
-
-# No built-in default: the vault comes from the settings or the caller.
+# No built-in default: the caller passes the vault (vendored: no MUSAEUS import).
 VAULT_ROOT = Path(os.environ.get("MUSAEUS_VAULT_ROOT", ""))
 NOISE_DIR = Path(os.environ.get("ORPHEUS_NOISE_DIR", str(VAULT_ROOT / "RUNS" / "Noise")))
 
@@ -354,8 +351,8 @@ def main() -> None:
         help="Generate only 30-minute tracks (skip 60-minute)",
     )
     args = parser.parse_args()
-    if not os.environ.get("MUSAEUS_VAULT_ROOT"):  # before anything is written
-        sys.exit("MUSAEUS_VAULT_ROOT is not set: put it in ~/.config/musaeus/settings.env")
+    if not os.environ.get("ORPHEUS_NOISE_DIR") and not os.environ.get("MUSAEUS_VAULT_ROOT"):
+        sys.exit("Set ORPHEUS_NOISE_DIR or MUSAEUS_VAULT_ROOT: there is no built-in folder")
     if not args.apply:
         print("\n>>> DRY-RUN: NO changes will be written.")
         try:
