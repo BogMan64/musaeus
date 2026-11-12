@@ -116,6 +116,10 @@ was only read.
 - The scratch folder beside the repository holds about 66 GB (a test image of the
   car stick is most of it).
 - The repository is public; the README said "private" until this check.
+- About 220 lines in `scripts/`, `tests/`, `docs/` and
+  `musaeus_overnight.sh` name this machine's own folders. None are in
+  `musaeus/` or `packaging/`. The program does not care; a reader of a
+  public repository learns how this machine is laid out.
 
 ## Ideas for next steps
 

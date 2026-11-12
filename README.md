@@ -287,6 +287,11 @@ options. The ones used most:
 | `genre-suggest`, `genre-validate`, `canon-review` | genres and names |
 | `report`, `upgrade-check`, `spec-scout` | reports |
 | `reset` | wipe the database (you type RESET to confirm; files are not touched) |
+| `ingest`, `sentinel`, `scholar`, `health`, `corrupt`, `albumart`, `normalize`, `spellcheck`, `sanitize`, `permissions`, `artist-consolidate`, `various-artists-fix`, `tribute-quarantine`, `cross-dupe`, `neardupe`, `dupe-resolver`, `canonicalize`, `finalize`, `bpm`, `forge`, `tagger`, `organize`, `audit`, `enrich`, `mb-enrich`, `acousticid` | one stage of the pipeline on its own |
+| `ghost`, `integrity`, `auditor`, `original-year`, `convergence`, `db-tune`, `review`, `overnight` | occasional jobs: rows whose file is gone; a decode test; a loudness audit before Forge; first release years from MusicBrainz; did the last pass change less; tidy the database; approve albums and artists; an older nightly chain |
+| `curator`, `transcode` | older exports, from before `edition-build` |
+| `console`, `dry-run`, `version` | the menu; the same as `run --dry-run`; the version |
+| `rebuild-from-disk`, `rebuild-db`, `review-report` | recreate rows from the files and their tags; disabled; not implemented |
 
 Global options go before the command: `musaeus --no-progress run`.
 
