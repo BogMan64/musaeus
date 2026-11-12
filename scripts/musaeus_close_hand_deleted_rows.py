@@ -43,21 +43,23 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, "/mnt/FORGE2TB/Projects/MUSAEUS")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from musaeus.config import get_config  # noqa: E402
 from musaeus.db import deny_hash, ensure_deny_list, log_event, open_hash_index  # noqa: E402
 from musaeus.stages.hold_expiry import keeper_in_library  # noqa: E402
 
-VAULT = Path("/mnt/FORGE2TB/Projects/MUSAEUS_VAULT")
-DB = VAULT / "musaeus.db"
-HASH_INDEX = VAULT / "_db_backups" / "hash_index.db"
-BACKUPS = VAULT / "_db_backups"
+# The folders come from the MUSAEUS settings (no personal paths in the repository).
+CFG = get_config()
+DB = CFG.db_path
+HASH_INDEX = CFG.hash_index_path
+BACKUPS = CFG.db_history_dir
 TAG = "hand_delete_close_20261111"
 HELD = ("DUPE_REVIEW", "TRIBUTE_REVIEW", "QUARANTINED")
 NOTE = "file removed by hand by Grey on 2026-11-11; row closed on Grey's instruction"
 # Only files under the three folders Grey emptied; a held file missing from
 # anywhere else is not this incident and stays (CodeRabbit).
 EMPTIED = tuple(
-    str(VAULT / d) + "/" for d in ("REVIEW/DUPES_MOVED", "REVIEW/TRIBUTE_REMOVED", "QUARANTINE")
+    str(d) + os.sep for d in (CFG.dupes_review_dir, CFG.tribute_review_dir, CFG.quarantine)
 )
 
 
