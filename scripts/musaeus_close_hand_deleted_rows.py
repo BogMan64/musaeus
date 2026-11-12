@@ -28,8 +28,9 @@ closed as a survivor, so two hashes (three copies each, all held) were not
 denied; they were denied by hand straight after and the check is fixed here.
 
 Both databases are backed up first to _db_backups with the usual
-*_pre_<name>_<date>.db names. Every row is re-checked at run time: status
-still held, file still missing. Dry run by default; --execute writes.
+*_pre_<name>_<date>.db names. The row set and the deny decisions are worked out again after the
+backups, inside the write transaction, from the live database. Dry run by
+default; --execute writes.
 """
 
 from __future__ import annotations
@@ -64,27 +65,21 @@ def backup(src: Path, name: str) -> Path:
     return dst
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--execute", action="store_true")
-    args = ap.parse_args()
-
-    conn = sqlite3.connect(str(DB), timeout=30)
-    conn.row_factory = sqlite3.Row
+def still_gone(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Held rows whose file is missing, read fresh from the live database."""
     rows = conn.execute(
         "SELECT id, status, file_path, audio_hash, artist, title FROM archive "
         "WHERE status IN (?,?,?) ORDER BY id",
         HELD,
     ).fetchall()
-    gone = [r for r in rows if not os.path.exists(r["file_path"])]
-    still_here = len(rows) - len(gone)
-    print(f"held rows {len(rows)}, file missing {len(gone)}, file present {still_here}")
-    if still_here:
-        print("rows whose file is still on disk are left alone")
+    return [r for r in rows if not os.path.exists(r["file_path"])]
 
-    gone_ids = {r["id"] for r in gone}
-    plan = []  # (row, deny, why_not_denied)
-    for r in gone:
+
+def plan_for(conn: sqlite3.Connection, closing: list[sqlite3.Row]) -> list[tuple]:
+    """(row, deny, why_not_denied) for exactly the rows that will close now."""
+    closing_ids = {r["id"] for r in closing}
+    plan = []
+    for r in closing:
         h = r["audio_hash"]
         why = ""
         if "/corrupted/" in r["file_path"]:
@@ -93,20 +88,32 @@ def main() -> int:
             why = "no audio hash"
         elif any(
             # A row this batch closes is not a survivor (CodeRabbit).
-            x[0] not in gone_ids
+            x[0] not in closing_ids
             for x in conn.execute("SELECT id FROM archive WHERE audio_hash = ?", (h,))
         ):
             why = "another row carries this audio"
         elif r["status"] == "DUPE_REVIEW" and not keeper_in_library(conn, h):
             why = "keeper has left the library"
         plan.append((r, not why, why))
+    return plan
 
+
+def report(plan: list[tuple]) -> None:
     n_deny = sum(1 for _, d, _ in plan if d)
     print(f"to close {len(plan)}; deny hash for {n_deny}; not denied {len(plan) - n_deny}")
     for r, _d, why in plan:
         if why == "keeper has left the library":
             print(f"  not denied (keeper gone): id={r['id']} {r['artist']} - {r['title']}")
 
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--execute", action="store_true")
+    args = ap.parse_args()
+
+    conn = sqlite3.connect(str(DB), timeout=30)
+    conn.row_factory = sqlite3.Row
+    report(plan_for(conn, still_gone(conn)))
     if not args.execute:
         print("[DRY] nothing written; rerun with --execute")
         return 0
@@ -116,12 +123,13 @@ def main() -> int:
     ledger = open_hash_index(HASH_INDEX)
     ensure_deny_list(ledger)
     try:
+        # Planned again after the backups, inside the write transaction, so a
+        # file that came back meanwhile is neither closed nor counted as closed
+        # when its siblings' deny is decided (CodeRabbit).
+        conn.execute("BEGIN IMMEDIATE")
+        plan = plan_for(conn, still_gone(conn))
+        report(plan)
         for r, deny, _ in plan:
-            # Re-check at write time: the file may have come back since planning.
-            now = conn.execute("SELECT status FROM archive WHERE id = ?", (r["id"],)).fetchone()
-            if now is None or now["status"] not in HELD or os.path.exists(r["file_path"]):
-                print(f"  skipped, changed since planning: id={r['id']} {r['file_path']}")
-                continue
             if deny:
                 deny_hash(ledger, r["audio_hash"], NOTE, r["file_path"])
             log_event(
