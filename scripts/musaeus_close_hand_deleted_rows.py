@@ -54,6 +54,11 @@ BACKUPS = VAULT / "_db_backups"
 TAG = "hand_delete_close_20261111"
 HELD = ("DUPE_REVIEW", "TRIBUTE_REVIEW", "QUARANTINED")
 NOTE = "file removed by hand by Grey on 2026-11-11; row closed on Grey's instruction"
+# Only files under the three folders Grey emptied; a held file missing from
+# anywhere else is not this incident and stays (CodeRabbit).
+EMPTIED = tuple(
+    str(VAULT / d) + "/" for d in ("REVIEW/DUPES_MOVED", "REVIEW/TRIBUTE_REMOVED", "QUARANTINE")
+)
 
 
 def backup(src: Path, name: str) -> Path:
@@ -72,7 +77,9 @@ def still_gone(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         "WHERE status IN (?,?,?) ORDER BY id",
         HELD,
     ).fetchall()
-    return [r for r in rows if not os.path.exists(r["file_path"])]
+    return [
+        r for r in rows if r["file_path"].startswith(EMPTIED) and not os.path.exists(r["file_path"])
+    ]
 
 
 def plan_for(conn: sqlite3.Connection, closing: list[sqlite3.Row]) -> list[tuple]:
@@ -147,6 +154,10 @@ def main() -> int:
         ledger.rollback()
         conn.rollback()
         raise
+    # shortcut: two databases, two commits, ledger first as HoldExpiryStage._delete
+    # does. A crash between them leaves denies without the row deletes, which is
+    # the safe side: the rows stay held and a rerun (after moving the backups
+    # aside) closes them. Upgrade only if MUSAEUS ever gets a shared ledger.
     ledger.commit()
     conn.commit()
     ledger.close()
