@@ -301,13 +301,11 @@ def test_with_no_catalogue_the_copies_still_go_out(cfg):
     assert not cfg.db_path.exists()
 
 
+@pytest.mark.needs_symlinks
 def test_a_copy_behind_a_symlink_out_of_the_library_is_left_out(cfg, tmp_path):
     """CodeRabbit on #321: a link inside the library to a folder outside it."""
     outside = tmp_path / "Elsewhere"
     outside.mkdir()
-    try:
-        (cfg.alac_library / "Linked").symlink_to(outside, target_is_directory=True)
-    except OSError:
-        pytest.skip("this system cannot make a symlink")
+    (cfg.alac_library / "Linked").symlink_to(outside, target_is_directory=True)
     _copy(cfg, "Linked/A/X/A - Out.m4a")
     assert itunes_export.build(cfg)["tracks"] == []

@@ -81,6 +81,7 @@ import logging
 import os
 import re
 import sqlite3
+import sys
 import unicodedata
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -90,6 +91,7 @@ from ..canon.protected_artists import PROTECTED_ARTIST_NAMES
 from ..context import RunContext, StageResult
 from ..filing import load as filing_load
 from ..filing import ruling_for
+from ..windows_paths import MAX_PATH_CHARS
 from .base import BaseStage
 from .normalize import stored_artist
 from .sanitize import SMART_QUOTE_MAP
@@ -627,6 +629,41 @@ def destination_root(current_path: Path, roots: Iterable[Path]) -> Path | None:
     return best
 
 
+#: Room kept free for the temporary name a stage writes beside the target
+#: before the swap: ".finalize_tmp" and ".mutation_tmp" are 13 characters
+#: (CodeRabbit on #326). 16 leaves a little over.
+_WINDOWS_TEMP_RESERVE = 16
+
+
+def fit_path(target: Path) -> Path:
+    """*target* with its song name cut to fit a Windows path; unchanged off
+    Windows. Callers that compare a wanted path with where a file already is
+    must fit it first, or a file stored under its fitted name never matches
+    (CodeRabbit on #326: --force bumped it to " (2)")."""
+    if sys.platform != "win32":
+        return target
+    name = _fit_windows_path(target.parent, target.stem, target.suffix)
+    return target.parent / f"{name}{target.suffix}"
+
+
+def _fit_windows_path(parent: Path, stem: str, tail: str) -> str:
+    """*stem* cut so that parent/stem+tail fits in a Windows path. Windows
+    counts UTF-16 units. A folder too long to leave room for any name is left
+    alone: no name can mend it, and preflight warns about it."""
+
+    def units(text: str) -> int:
+        return len(text.encode("utf-16-le")) // 2
+
+    # abspath: Windows counts the whole path, so a relative one is measured
+    # from the folder the program runs in.
+    room = MAX_PATH_CHARS - _WINDOWS_TEMP_RESERVE - units(os.path.abspath(parent)) - 1 - units(tail)
+    if room < 1:
+        return stem
+    while units(stem) > room:
+        stem = stem[:-1]
+    return stem.rstrip(". ") or stem
+
+
 def unique_path(target: Path, *, exists: Callable[[Path], bool] | None = None) -> Path:
     """
     Return a unique path by appending (N) if target already exists.
@@ -636,25 +673,33 @@ def unique_path(target: Path, *, exists: Callable[[Path], bool] | None = None) -
       → "Beatles, The/Abbey Road/Beatles, The - Come Together (2).m4a"
     """
     exists = exists or Path.exists
+    # Windows also caps the WHOLE path (Grey's work PC, 2026-11-12). The
+    # folders follow Grey's naming rules, so only the song name gives way.
+    target = fit_path(target)
     if not exists(target):
         return target
 
-    stem = target.stem
-    suffix = target.suffix
-    parent = target.parent
-
     counter = 2
     while True:
-        # Re-truncate per attempt rather than trusting the caller. The counter
-        # grows ("(9)" -> "(10)"), so the budget shrinks as it does, and this
-        # function is reached from seven stages -- it must be unable to emit an
-        # over-long name regardless of what it was handed.
-        tag = f" ({counter})"
-        budget = _MAX_COMPONENT_BYTES - len((tag + suffix).encode("utf-8"))
-        new_path = parent / f"{truncate_to_bytes(stem, budget)}{tag}{suffix}"
+        new_path = _numbered_path(target, counter)
         if not exists(new_path):
             return new_path
         counter += 1
+
+
+def _numbered_path(target: Path, counter: int) -> Path:
+    """The name unique_path gives *target*'s Nth holder: "stem (N).ext"."""
+    # Re-truncate per attempt rather than trusting the caller. The counter
+    # grows ("(9)" -> "(10)"), so the budget shrinks as it does, and
+    # unique_path is reached from seven stages -- it must be unable to emit an
+    # over-long name regardless of what it was handed.
+    tag = f" ({counter})"
+    suffix = target.suffix
+    budget = _MAX_COMPONENT_BYTES - len((tag + suffix).encode("utf-8"))
+    short = truncate_to_bytes(target.stem, budget)
+    if sys.platform == "win32":
+        short = _fit_windows_path(target.parent, short, tag + suffix)
+    return target.parent / f"{short}{tag}{suffix}"
 
 
 def _taken_by_another(path: Path, current: Path) -> bool:
@@ -748,16 +793,16 @@ def _is_collision_name_for(
     exists = exists or Path.exists
     if current.parent != candidate.parent or current.suffix != candidate.suffix:
         return False
-    stem, base = current.stem, candidate.stem
-    if not (stem.startswith(base + " (") and stem.endswith(")")):
+    # Built as unique_path builds it, not by "starts with the wanted stem":
+    # a long stem is cut again to make room for " (N)" (CodeRabbit on #326).
+    stem = current.stem
+    digits = stem[stem.rfind(" (") + 2 : -1] if " (" in stem and stem.endswith(")") else ""
+    # isascii: "²".isdigit() is true and int("²") raises (CodeRabbit on #326).
+    if not (digits.isascii() and digits.isdigit()) or int(digits) < 2:
         return False
-    digits = stem[len(base) + 2 : -1]
-    if not digits.isdigit() or int(digits) < 2 or not exists(candidate):
+    if current != _numbered_path(candidate, int(digits)) or not exists(candidate):
         return False
-    return all(
-        exists(candidate.with_name(f"{base} ({k}){candidate.suffix}"))
-        for k in range(2, int(digits))
-    )
+    return all(exists(_numbered_path(candidate, k)) for k in range(2, int(digits)))
 
 
 # ── Stage ──────────────────────────────────────────────────────────────────────
@@ -890,15 +935,18 @@ class OrganizeStage(BaseStage):
             if root is None:
                 outside += 1
                 continue
-            candidate = root / library_relpath(
-                row["artist"],
-                row["mb_artist_name"],
-                row["genre"],
-                row["album"],
-                row["title"],
-                current.suffix,
-                filing,
-                row["audio_hash"],
+            candidate = fit_path(
+                root
+                / library_relpath(
+                    row["artist"],
+                    row["mb_artist_name"],
+                    row["genre"],
+                    row["album"],
+                    row["title"],
+                    current.suffix,
+                    filing,
+                    row["audio_hash"],
+                )
             )
             if str(candidate) == str(current) or _is_collision_name_for(
                 current, candidate, exists=exists
@@ -1197,7 +1245,7 @@ class OrganizeStage(BaseStage):
                 filing,
                 row["audio_hash"] if "audio_hash" in set(row.keys()) else None,
             )
-            candidate_path = dest_root / rel
+            candidate_path = fit_path(dest_root / rel)
             target_dir = candidate_path.parent
 
             # unique_path() checks disk existence to avoid collisions, but

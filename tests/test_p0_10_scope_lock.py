@@ -251,14 +251,17 @@ class TestAcquireAndObserve:
 
 _HOLDER = textwrap.dedent(
     """
-    import sys, time
+    import os, sys, time
     sys.path.insert(0, {repo!r})
     from pathlib import Path
     from musaeus.safety.lock import Scope, acquire
 
     scope = Scope.build({root!r}, {domain!r})
     handle = acquire(scope, Path({lock_dir!r}), run_id="holder-run")
-    Path({ready!r}).write_text("held")
+    # Its own pid, not Popen's: a Windows venv python.exe is a launcher that
+    # runs the real interpreter as a child (Grey's PC, 2026-11-12).
+    Path({ready!r} + ".tmp").write_text(str(os.getpid()))
+    os.replace({ready!r} + ".tmp", {ready!r})
     while not Path({stop!r}).exists():
         time.sleep(0.02)
     handle.release()
@@ -298,7 +301,7 @@ class TestMultiprocessConflict:
             assert exc.value.reason_code == "lock_conflict"
             owner = exc.value.details["owner"]
             assert owner["run_id"] == "holder-run"
-            assert owner["pid"] == holder.pid
+            assert owner["pid"] == int(ready.read_text(encoding="utf-8"))
             assert "holder-run" in str(exc.value)
         finally:
             stop.write_text("stop", encoding="utf-8")

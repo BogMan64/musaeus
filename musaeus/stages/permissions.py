@@ -29,9 +29,12 @@ reviving that file.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import stat
+import sys
+import tempfile
 from pathlib import Path
 
 from ..context import RunContext, StageResult, elision
@@ -94,7 +97,13 @@ def _scan_permissions(root: Path) -> tuple[list[Path], list[Path]]:
             continue
 
         mode = stat.S_IMODE(st.st_mode)
-        if stat.S_ISDIR(st.st_mode):
+        if sys.platform == "win32":
+            # Windows has no POSIX permission bits: every file reads 0o666 and
+            # would look wrong for ever (Windows trial 2026-11-12). The one
+            # thing to mend there is the read-only flag, which stops tagging.
+            if stat.S_ISREG(st.st_mode) and not mode & stat.S_IWRITE:
+                bad_files.append(path)
+        elif stat.S_ISDIR(st.st_mode):
             if mode != DIR_MODE:
                 bad_dirs.append(path)
         elif stat.S_ISREG(st.st_mode) and mode != FILE_MODE:
@@ -114,18 +123,62 @@ def _chmod_no_follow(path: Path, mode: int, want_dir: bool) -> None:
         raise OSError(f"no longer a {'folder' if want_dir else 'file'}: {path}")
     try:
         os.chmod(path, mode, follow_symlinks=False)
-    except NotImplementedError as exc:  # a link swapped in after the lstat
-        raise OSError(
-            f"could not chmod without following links (a link, or no support here): {path}"
-        ) from exc
+    except NotImplementedError as exc:
+        # A link swapped in after the lstat -- or Windows before Python 3.13,
+        # where chmod cannot be told not to follow one. The lstat above has
+        # just seen a real file, so there the plain call is the one left.
+        if sys.platform != "win32":
+            raise OSError(
+                f"could not chmod without following links (a link, or no support here): {path}"
+            ) from exc
+        os.chmod(path, mode)
 
 
-def _scan_all(ctx: RunContext) -> tuple[list[Path], list[Path]]:
-    """Scan every swept root, merging the results."""
+def _disk_has_modes(folder: Path) -> bool:
+    """Does the disk holding *folder* keep Unix permissions? Asked of a file
+    of our own, made and removed here: exFAT, NTFS and vfat take their modes
+    from the mount, so chmod there does nothing or is refused. One real file
+    is no evidence -- it may be immutable, another user's, or swapped mid-run
+    (CodeRabbit, 2026-11-13). When no probe can be made, assume it does: the
+    failure then stays an error on that one file."""
+    try:
+        fd, name = tempfile.mkstemp(prefix=".musaeus-permcheck-", dir=folder)
+    except OSError:
+        return True
+    try:
+        # On the open descriptor, never by name: a name can be swapped for a
+        # link, and chmod would then change the link's target (CodeRabbit on #326).
+        for mode in (0o600, 0o644):
+            os.fchmod(fd, mode)
+            if stat.S_IMODE(os.fstat(fd).st_mode) != mode:
+                return False
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+        with contextlib.suppress(OSError):
+            os.unlink(name)
+
+
+def _device(path: Path) -> int | None:
+    """Which disk *path* is on; None when it cannot be read."""
+    try:
+        return path.lstat().st_dev
+    except OSError:
+        return None
+
+
+def _scan_all(ctx: RunContext, skip: frozenset[int] = frozenset()) -> tuple[list[Path], list[Path]]:
+    """Scan every swept root, merging the results. *skip* names disks (st_dev)
+    already found to have no Unix permissions; what is on them is left out."""
     all_files: list[Path] = []
     all_dirs: list[Path] = []
     for root in _sweep_roots(ctx):
         f, d = _scan_permissions(root)
+        if skip:
+            f = [p for p in f if _device(p) not in skip]
+            d = [p for p in d if _device(p) not in skip]
         logger.info("[permissions] %s: %d file(s), %d dir(s) to fix", root.name, len(f), len(d))
         all_files.extend(f)
         all_dirs.extend(d)
@@ -138,6 +191,14 @@ class PermissionsStage(BaseStage):
     """
 
     NAME = "permissions"
+
+    def __init__(self) -> None:
+        super().__init__()
+        #: Disks (st_dev) with no Unix permissions, found by this run. A disk,
+        #: not a swept root: a root can hold a mounted stick beside a Unix disk.
+        self._no_modes: set[int] = set()
+        #: Disks a probe has shown do keep them, so each is asked only once.
+        self._has_modes: set[int] = set()
 
     # ── Validate ──────────────────────────────────────────────────────────────
 
@@ -182,7 +243,7 @@ class PermissionsStage(BaseStage):
         or already-correct almost always, so it reported success for a
         month without its chmod path ever executing.
         """
-        bad_files, bad_dirs = _scan_all(ctx)
+        bad_files, bad_dirs = _scan_all(ctx, frozenset(self._no_modes))
         remaining = len(bad_files) + len(bad_dirs)
         if remaining == 0:
             return []
@@ -193,58 +254,71 @@ class PermissionsStage(BaseStage):
 
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)
+        self._no_modes.clear()
+        self._has_modes.clear()
+        fixed = {False: 0, True: 0}  # by "is a folder"
 
         # Live re-scan -- never trust a snapshot taken earlier.
-        bad_files, bad_dirs = _scan_all(ctx)
-        result.files_processed = len(bad_files) + len(bad_dirs)
-
-        fixed_files = 0
-        fixed_dirs = 0
-
-        for f in bad_files:
-            try:
-                _chmod_no_follow(f, FILE_MODE, want_dir=False)
-                fixed_files += 1
+        for root in _sweep_roots(ctx):
+            bad_files, bad_dirs = _scan_permissions(root)
+            todo = [(f, FILE_MODE, False) for f in bad_files] + [
+                (d, DIR_MODE, True) for d in bad_dirs
+            ]
+            result.files_processed += len(todo)
+            left_alone = 0
+            for path, mode, is_dir in todo:
+                if _device(path) in self._no_modes:
+                    left_alone += 1
+                    continue
+                error: OSError | None = None
+                try:
+                    _chmod_no_follow(path, mode, want_dir=is_dir)
+                    if sys.platform != "win32" and stat.S_IMODE(path.lstat().st_mode) != mode:
+                        error = OSError(f"the mode did not change: {path}")
+                except OSError as e:
+                    error = e
+                device = _device(path)
+                if error is not None and sys.platform != "win32" and device is not None:
+                    if device not in self._has_modes and not _disk_has_modes(path.parent):
+                        # exFAT, NTFS, vfat: every file looked wrong and every
+                        # fix failed, run after run. Leave the whole disk alone.
+                        logger.warning(
+                            "[permissions] no Unix permissions on this disk; first failure: %s: %s",
+                            path,
+                            error,
+                        )
+                        self._no_modes.add(device)
+                        left_alone += 1
+                        continue
+                    self._has_modes.add(device)
+                if error is not None:
+                    logger.warning("[permissions] could not fix %s: %s", path, error)
+                    result.files_errored += 1
+                    result.errors.append(f"{path}: {error}")
+                    continue
+                fixed[is_dir] += 1
                 result.files_changed += 1
                 ctx.log_event(
                     "PERMISSION_FIXED",
-                    file_path=str(f),
-                    new_value=oct(FILE_MODE),
+                    file_path=str(path),
+                    new_value=oct(mode),
                     stage=self.NAME,
-                    note="file permission corrected",
+                    note=f"{'directory' if is_dir else 'file'} permission corrected",
                 )
-            except OSError as e:
-                logger.warning("[permissions] could not fix %s: %s", f, e)
-                result.files_errored += 1
-                result.errors.append(f"{f}: {e}")
-
-            if result.files_processed and (fixed_files + fixed_dirs) % _COMMIT_EVERY == 0:
-                ctx.conn.commit()
-
-        for d in bad_dirs:
-            try:
-                _chmod_no_follow(d, DIR_MODE, want_dir=True)
-                fixed_dirs += 1
-                result.files_changed += 1
-                ctx.log_event(
-                    "PERMISSION_FIXED",
-                    file_path=str(d),
-                    new_value=oct(DIR_MODE),
-                    stage=self.NAME,
-                    note="directory permission corrected",
+                # After a fix only: a failure used to commit every time.
+                if result.files_changed % _COMMIT_EVERY == 0:
+                    ctx.conn.commit()
+            if left_alone:
+                result.notes.append(
+                    f"{root}: {left_alone} item(s) are on a disk with no Unix permissions; "
+                    "left alone."
                 )
-            except OSError as e:
-                logger.warning("[permissions] could not fix %s: %s", d, e)
-                result.files_errored += 1
-                result.errors.append(f"{d}: {e}")
 
-            if (fixed_files + fixed_dirs) % _COMMIT_EVERY == 0:
-                ctx.conn.commit()
-
-        if fixed_files == 0 and fixed_dirs == 0:
+        if result.files_errored or result.files_changed:
+            failed = f" Could not fix {result.files_errored}." if result.files_errored else ""
+            result.notes.append(f"Fixed {fixed[False]} file(s) and {fixed[True]} dir(s).{failed}")
+        elif not self._no_modes:
             result.notes.append("✓ All file/folder permissions correct.")
-        else:
-            result.notes.append(f"Fixed {fixed_files} file(s) and {fixed_dirs} dir(s).")
 
         ctx.record_stage(result)
         return result

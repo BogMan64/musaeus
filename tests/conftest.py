@@ -217,3 +217,33 @@ def disposable_vault(tmp_path: Path) -> DisposableVault:
     API (open_db(), new_context(), etc).
     """
     return make_disposable_vault(tmp_path)
+
+
+# ── Tests that need symlinks ─────────────────────────────────────────────────
+# Windows lets an account create symlinks only with admin rights or Developer
+# Mode (WinError 1314 otherwise; Grey's work PC, 2026-11-12). Such tests are
+# marked needs_symlinks and skip there instead of failing.
+
+
+def _can_symlink(where: str | None) -> bool:
+    """Probed where the tests will write: --basetemp may be another disk."""
+    if where:
+        os.makedirs(where, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=where) as d:
+        try:
+            os.symlink(d, os.path.join(d, "probe"), target_is_directory=True)
+        except OSError:
+            return False
+    return True
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "needs_symlinks: the test creates symlinks")
+
+
+def pytest_collection_modifyitems(config, items):
+    marked = [item for item in items if "needs_symlinks" in item.keywords]
+    if marked and not _can_symlink(config.option.basetemp):
+        skip = pytest.mark.skip(reason="this account may not create symlinks")
+        for item in marked:
+            item.add_marker(skip)

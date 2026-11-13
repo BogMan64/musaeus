@@ -182,6 +182,7 @@ def test_5_dotted_initials_are_all_capitals(given, want):
 # ── 7: the emptied-folder cleanup through a symlinked root ───────────────────
 
 
+@pytest.mark.needs_symlinks
 def test_7_the_old_folder_is_removed_when_the_tier_is_reached_by_a_symlink(tmp_path):
     real = tmp_path / "disk" / "ALAC-Archival"
     real.mkdir(parents=True)

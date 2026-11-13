@@ -9,6 +9,7 @@ which is the failure mode this project keeps finding.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 
 import pytest
@@ -31,6 +32,8 @@ def _git(args, cwd):
 @pytest.fixture
 def repo(tmp_path):
     """A real repo on `main` with one commit."""
+    if shutil.which("git") is None:  # Grey's work PC has no git (2026-11-12)
+        pytest.skip("git is not installed")
     root = tmp_path / "repo"
     root.mkdir()
     _git(["init", "-q", "-b", "main"], root)

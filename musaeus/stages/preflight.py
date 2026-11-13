@@ -74,6 +74,7 @@ from pathlib import Path
 from .. import loudness
 from ..context import RunContext, StageResult
 from ..install_hint import install_hint
+from ..windows_paths import LONG_PATHS_OFF, long_paths_on
 from . import corrupt
 from .base import BaseStage
 
@@ -607,8 +608,14 @@ class PreflightStage(BaseStage):
         self._check_db_integrity(ctx, ok, warn, fail)
         self._check_stale_wal(ctx, ok, warn, fail)
         self._check_edit_guard_hook(ok, warn, fail)
+        self._check_windows_long_paths(ok, warn, fail)
 
         return ok, warn, fail
+
+    def _check_windows_long_paths(self, ok: list, warn: list, fail: list) -> None:
+        """Say so before the run starts (Grey, 2026-11-13), not only in doctor."""
+        if long_paths_on() is False:
+            warn.append(LONG_PATHS_OFF)
 
     def _report(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)

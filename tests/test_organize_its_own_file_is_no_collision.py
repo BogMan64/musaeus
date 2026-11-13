@@ -18,9 +18,7 @@ from musaeus.stages import OrganizeStage
 
 from .test_review_of_38 import _ctx, _row
 
-needs_symlink = pytest.mark.skipif(
-    os.name == "nt", reason="needs a symlink, which Windows allows only in Developer Mode"
-)
+needs_symlink = pytest.mark.needs_symlinks
 
 
 def _symlinked_archive(tmp_path: Path):

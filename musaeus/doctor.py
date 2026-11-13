@@ -45,6 +45,7 @@ from pathlib import Path
 from .brackets import base_title
 from .config import MusicConfig
 from .install_hint import install_hint
+from .windows_paths import LONG_PATHS_OFF, long_paths_on
 
 _NOISE_RE = re.compile(r"[^a-z0-9]")
 
@@ -770,6 +771,7 @@ def diagnose(cfg: MusicConfig) -> Report:
     _artist_tag_is_natural_form(cfg, rep)
     _catalogued_tracks_reach_the_car(cfg, rep)
     _external_tools_present(cfg, rep)
+    _windows_long_paths(rep)
 
     conn.close()
     return rep
@@ -1071,6 +1073,24 @@ _EXTERNAL_TOOLS: tuple[tuple[str, str, str, bool], ...] = (
 )
 #: Their features (iPhone transfer, backup tiers) run on Linux only for now.
 _LINUX_ONLY_TOOLS = frozenset({"idevice_id", "ifuse", "rsync"})
+
+
+def _windows_long_paths(rep: Report) -> None:
+    """Can this Windows machine save a path of 260 characters or more?"""
+    on = long_paths_on()
+    if on is None:
+        return
+    if on:
+        # The setting covers Python. Each program must also accept long paths
+        # itself, and nothing here can tell whether ffmpeg, fdkaac or fpcalc do.
+        rep.add(
+            "ok",
+            "long paths",
+            "on for MUSAEUS itself; ffmpeg, fdkaac and fpcalc may still refuse them",
+            scope="host",
+        )
+        return
+    rep.add("warn", "long paths", LONG_PATHS_OFF, scope="host")
 
 
 def _external_tools_present(cfg: MusicConfig, rep: Report) -> None:

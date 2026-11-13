@@ -47,7 +47,15 @@ def _pair(tmp_path: Path) -> tuple[Path, Path]:
     return song, other
 
 
-@pytest.mark.parametrize("how", ["symlink", "hardlink", "dangling", "stale file"])
+@pytest.mark.parametrize(
+    "how",
+    [
+        pytest.param("symlink", marks=pytest.mark.needs_symlinks),
+        "hardlink",
+        pytest.param("dangling", marks=pytest.mark.needs_symlinks),
+        "stale file",
+    ],
+)
 def test_whatever_is_at_the_copys_name_is_never_written_through(tmp_path, how):
     song, other = _pair(tmp_path)
     tmp = song.with_name(song.name + ".artmp")
@@ -68,6 +76,7 @@ def test_whatever_is_at_the_copys_name_is_never_written_through(tmp_path, how):
     assert not tmp.exists() and not tmp.is_symlink()
 
 
+@pytest.mark.needs_symlinks
 def test_a_refused_change_leaves_both_files_as_they_were(tmp_path):
     song, other = _pair(tmp_path)
     tmp = song.with_name(song.name + ".tagging")
@@ -84,6 +93,7 @@ def test_a_refused_change_leaves_both_files_as_they_were(tmp_path):
 
 
 @pytest.mark.parametrize("dangling", [False, True])
+@pytest.mark.needs_symlinks
 def test_a_cover_is_never_written_through_a_link(tmp_path, dangling):
     song, other = _pair(tmp_path)
     from musaeus.safe_save import write_new
@@ -100,6 +110,7 @@ def test_a_cover_is_never_written_through_a_link(tmp_path, dangling):
     assert {p.name for p in song.parent.iterdir()} == {"cover.jpg", "song.m4a"}, "temp left"
 
 
+@pytest.mark.needs_symlinks
 def test_the_album_art_stage_never_writes_a_cover_through_a_link(tmp_path, monkeypatch):
     # Review of #205: the stage's own two sidecar writes, end to end. A dangling
     # cover.jpg link sent a fetched cover to a new file outside the library.
@@ -147,6 +158,7 @@ def test_the_album_art_stage_never_writes_a_cover_through_a_link(tmp_path, monke
     assert not sidecar.is_symlink() and sidecar.read_bytes() == cover.read_bytes()
 
 
+@pytest.mark.needs_symlinks
 def test_copy_to_new_never_writes_through_and_leaks_nothing(tmp_path):
     # Shared by change_beside, Finalize's .finalize_tmp and the bit-rot repair's
     # .restoring (review of #205: the same pattern lived there too).

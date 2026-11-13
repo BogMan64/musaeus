@@ -723,6 +723,17 @@ def test_a_path_component_never_exceeds_the_filesystem_byte_limit() -> None:
     assert truncate_to_bytes("Neil Young") == "Neil Young"
 
 
+def _skip_without_long_paths(tmp_path: Path) -> None:
+    """Windows refuses a full path over 260 characters unless long paths are
+    on (needs admin; off on Grey's work PC, 2026-11-12). doctor warns."""
+    probe = tmp_path / ("L" * 250)
+    try:
+        probe.write_bytes(b"")
+    except OSError:
+        pytest.skip("this machine refuses paths over 260 characters")
+    probe.unlink()
+
+
 def test_the_cap_survives_the_collision_it_creates(tmp_path: Path) -> None:
     """Capping at exactly 255 put the ENAMETOOLONG crash straight back.
 
@@ -733,6 +744,7 @@ def test_the_cap_survives_the_collision_it_creates(tmp_path: Path) -> None:
     to the same prefix, so for exactly the inputs needing the cap, colliding
     is the normal case. Found in review 2026-09-04, hours after the cap
     shipped."""
+    _skip_without_long_paths(tmp_path)
     from musaeus.stages.organize import build_track_filename, unique_path
 
     name = build_track_filename("A" * 400, "Why Me (Live)", ".flac")
@@ -752,6 +764,7 @@ def test_unique_path_shortens_whatever_it_is_handed(tmp_path: Path) -> None:
     """Seven stages call unique_path. It cannot rely on its caller having
     left room -- finalize, organize, tribute_quarantine, various_artists_fix,
     classical_composer and deny_list all call it with no try/except."""
+    _skip_without_long_paths(tmp_path)
     from musaeus.stages.organize import unique_path
 
     over = tmp_path / ("B" * 250 + ".m4a")  # already at the limit
@@ -759,6 +772,83 @@ def test_unique_path_shortens_whatever_it_is_handed(tmp_path: Path) -> None:
     out = unique_path(over)
     assert len(out.name.encode("utf-8")) <= 255
     assert out.name.endswith(".m4a")
+
+
+@pytest.mark.parametrize("taken", [False, True])
+def test_on_windows_the_whole_path_stays_under_the_limit(
+    tmp_path: Path, monkeypatch, taken
+) -> None:
+    """Grey's work PC, 2026-11-12: with long paths off, Windows refuses a full
+    path of 260 characters or more. Only each NAME was capped (255 bytes), so
+    a long title in a deep folder failed to save."""
+    import sys
+
+    from musaeus.stages.organize import unique_path
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    folder = tmp_path / ("Artist " * 8).strip() / ("Album " * 8).strip()
+    target = folder / ("T" * 200 + ".m4a")
+    assert len(str(target)) > 259, "premise: the path is too long for Windows"
+
+    out = unique_path(
+        target, exists=lambda p: taken and p.name.startswith("T") and "(" not in p.name
+    )
+
+    # 13 spare: finalize writes "<name>.finalize_tmp" beside it (CodeRabbit on #326)
+    assert len(str(out)) + len(".finalize_tmp") <= 259, len(str(out))
+    assert out.parent == folder and out.suffix == ".m4a"
+    assert out.name.endswith(" (2).m4a") is taken
+    if not taken:
+        # a file already stored under its fitted name must match the wanted path
+        from musaeus.stages.organize import fit_path
+
+        assert fit_path(target) == out and fit_path(out) == out
+
+
+def test_a_shortened_collision_name_is_still_known_as_one(tmp_path: Path, monkeypatch) -> None:
+    """CodeRabbit on #326: to add " (2)" to a name already cut to fit, the
+    stem is cut again, so the name no longer starts with the wanted stem. It
+    was not recognised, and a forced run would rename it to " (3)", then back."""
+    import sys
+
+    from musaeus.stages.organize import _is_collision_name_for, fit_path, unique_path
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    folder = tmp_path / ("Artist " * 8).strip() / ("Album " * 8).strip()
+    wanted = fit_path(folder / ("T" * 200 + ".m4a"))
+    second = unique_path(wanted, exists=lambda p: p == wanted)
+    assert not second.stem.startswith(wanted.stem + " ("), "premise: the stem was cut again"
+    on_disk = {wanted, second}
+
+    assert _is_collision_name_for(second, wanted, exists=on_disk.__contains__)
+    assert not _is_collision_name_for(second, wanted, exists=lambda p: p == second)
+
+
+def test_a_superscript_number_in_brackets_is_not_a_collision_name(tmp_path: Path) -> None:
+    """CodeRabbit on #326: "²".isdigit() is true and int("²") raises, which
+    stopped organize on an unrelated file named "Old title (²).m4a"."""
+    from musaeus.stages.organize import _is_collision_name_for
+
+    current = tmp_path / "Old title (²).m4a"
+    assert _is_collision_name_for(current, tmp_path / "New title.m4a") is False
+
+
+def test_on_windows_a_relative_path_is_measured_from_the_drive(tmp_path: Path, monkeypatch) -> None:
+    """CodeRabbit, 2026-11-13: Windows counts the whole path, so the folder
+    the program runs in counts too."""
+    import sys
+
+    from musaeus.stages.organize import unique_path
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    here = tmp_path / ("Deep " * 20).strip()
+    here.mkdir()
+    monkeypatch.chdir(here)
+
+    out = unique_path(Path("Album") / ("T" * 200 + ".m4a"), exists=lambda p: False)
+
+    assert len(str(here / out)) <= 259, len(str(here / out))
+    assert out.parent == Path("Album") and out.suffix == ".m4a"
 
 
 def test_a_multibyte_name_is_never_cut_mid_codepoint(tmp_path: Path) -> None:

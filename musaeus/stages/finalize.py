@@ -114,6 +114,7 @@ from ..safety.recovery import (
 from .base import NO_VERIFICATION, BaseStage, VerifyResult
 from .organize import (
     _is_collision_name_for,
+    fit_path,
     library_relpath,
     refuse_unmatched_person_acts,
     sanitize_path_component,
@@ -489,7 +490,7 @@ class FinalizeStage(BaseStage):
         # edition built from the masters, not a second file this row tracks.
         root = ctx.config.alac_archive
         base = root / batch if batch else root
-        candidate = base / rel
+        candidate = fit_path(base / rel)
 
         # Same self-is-not-a-collision guard organize.py needed: if the
         # file is already exactly where it belongs (e.g. --force on an

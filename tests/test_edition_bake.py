@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -110,14 +111,16 @@ def test_paused_time_does_not_count_towards_a_deadline(monkeypatch):
 
     monkeypatch.setattr(eb, "_DEADLINE_POLL_S", 0.1)
     monkeypatch.setattr(eb, "ACTIVE_THROTTLE", AlwaysPaused())
-    assert eb._run(["sleep", "1.5"], 1).returncode == 0, "a paused child was killed as hung"
+    assert eb._run([sys.executable, "-c", "import time; time.sleep(1.5)"], 1).returncode == 0, (
+        "a paused child was killed as hung"
+    )
 
 
 def test_a_real_hang_still_times_out(monkeypatch):
     monkeypatch.setattr(eb, "_DEADLINE_POLL_S", 0.1)
     monkeypatch.setattr(eb, "ACTIVE_THROTTLE", None)
     with pytest.raises(eb.BakeError, match="no progress"):
-        eb._run(["sleep", "3"], 1)
+        eb._run([sys.executable, "-c", "import time; time.sleep(3)"], 1)
 
 
 def test_every_child_runs_with_stdin_closed(tmp_path, monkeypatch):
