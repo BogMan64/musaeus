@@ -133,10 +133,9 @@ def _chmod_no_follow(path: Path, mode: int, want_dir: bool) -> None:
         os.chmod(path, mode)
 
 
-#: Filesystems whose modes come from the mount, not from the file.
-_NO_MODE_FILESYSTEMS = frozenset(
-    {"vfat", "msdos", "exfat", "ntfs", "ntfs3", "fuseblk", "9p", "drvfs", "cifs", "smb3"}
-)
+#: Local filesystems whose modes come from the mount, not from the file.
+#: Not the network ones: CIFS can hold real Unix modes (CodeRabbit, 2026-11-13).
+_NO_MODE_FILESYSTEMS = frozenset({"vfat", "msdos", "exfat", "ntfs", "ntfs3", "fuseblk", "drvfs"})
 
 
 def _fs_type(path: Path) -> str:
@@ -161,30 +160,42 @@ def _fs_type(path: Path) -> str:
 def _disk_ignores_modes(path: Path, mode: int, error: OSError | None) -> bool:
     """True when the disk under *path* has no Unix permissions to set: exFAT,
     NTFS and vfat take their modes from the mount. chmod there either does
-    nothing, or refuses. A refusal alone is not proof: an immutable file on a
-    Unix disk refuses its owner too, so the disk's own type must say so."""
+    nothing, or refuses. A refusal alone is not proof: another user's file is
+    refused anywhere, and an immutable file refuses its owner too. So it must
+    be our own file AND a disk type known to have no modes."""
     if sys.platform == "win32":
         return False
-    if error is not None:
-        return (
-            error.errno in (errno.EPERM, errno.ENOTSUP) and _fs_type(path) in _NO_MODE_FILESYSTEMS
-        )
     try:
-        return stat.S_IMODE(path.lstat().st_mode) != mode
+        st = path.lstat()
     except OSError:
         return False
+    if error is None:
+        return stat.S_IMODE(st.st_mode) != mode
+    return (
+        error.errno in (errno.EPERM, errno.ENOTSUP)
+        and st.st_uid == os.geteuid()
+        and _fs_type(path) in _NO_MODE_FILESYSTEMS
+    )
 
 
-def _scan_all(
-    ctx: RunContext, skip: frozenset[Path] = frozenset()
-) -> tuple[list[Path], list[Path]]:
-    """Scan every swept root not in *skip*, merging the results."""
+def _device(path: Path) -> int | None:
+    """Which disk *path* is on; None when it cannot be read."""
+    try:
+        return path.lstat().st_dev
+    except OSError:
+        return None
+
+
+def _scan_all(ctx: RunContext, skip: frozenset[int] = frozenset()) -> tuple[list[Path], list[Path]]:
+    """Scan every swept root, merging the results. *skip* names disks (st_dev)
+    already found to have no Unix permissions; what is on them is left out."""
     all_files: list[Path] = []
     all_dirs: list[Path] = []
     for root in _sweep_roots(ctx):
-        if root in skip:
-            continue
         f, d = _scan_permissions(root)
+        if skip:
+            f = [p for p in f if _device(p) not in skip]
+            d = [p for p in d if _device(p) not in skip]
         logger.info("[permissions] %s: %d file(s), %d dir(s) to fix", root.name, len(f), len(d))
         all_files.extend(f)
         all_dirs.extend(d)
@@ -200,8 +211,9 @@ class PermissionsStage(BaseStage):
 
     def __init__(self) -> None:
         super().__init__()
-        #: Roots on a disk with no Unix permissions, found by this run.
-        self._no_modes: set[Path] = set()
+        #: Disks (st_dev) with no Unix permissions, found by this run. A disk,
+        #: not a swept root: a root can hold a mounted stick beside a Unix disk.
+        self._no_modes: set[int] = set()
 
     # ── Validate ──────────────────────────────────────────────────────────────
 
@@ -267,7 +279,11 @@ class PermissionsStage(BaseStage):
                 (d, DIR_MODE, True) for d in bad_dirs
             ]
             result.files_processed += len(todo)
+            left_alone = 0
             for path, mode, is_dir in todo:
+                if _device(path) in self._no_modes:
+                    left_alone += 1
+                    continue
                 error: OSError | None = None
                 try:
                     _chmod_no_follow(path, mode, want_dir=is_dir)
@@ -276,12 +292,11 @@ class PermissionsStage(BaseStage):
                 if _disk_ignores_modes(path, mode, error):
                     # exFAT, NTFS, vfat: every file looked wrong and every fix
                     # failed, run after run. One try is enough to know.
-                    self._no_modes.add(root)
-                    result.notes.append(
-                        f"{root}: this disk has no Unix permissions; "
-                        f"{len(todo)} item(s) left alone."
-                    )
-                    break
+                    device = _device(path)
+                    if device is not None:
+                        self._no_modes.add(device)
+                    left_alone += 1
+                    continue
                 if error is not None:
                     logger.warning("[permissions] could not fix %s: %s", path, error)
                     result.files_errored += 1
@@ -299,6 +314,11 @@ class PermissionsStage(BaseStage):
                 # After a fix only: a failure used to commit every time.
                 if result.files_changed % _COMMIT_EVERY == 0:
                     ctx.conn.commit()
+            if left_alone:
+                result.notes.append(
+                    f"{root}: {left_alone} item(s) are on a disk with no Unix permissions; "
+                    "left alone."
+                )
 
         if result.files_errored or result.files_changed:
             failed = f" Could not fix {result.files_errored}." if result.files_errored else ""
