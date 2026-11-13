@@ -124,3 +124,42 @@ def test_a_file_its_owner_cannot_read_is_still_fixed(ctx):
     own.chmod(0o200)
     PermissionsStage().run(ctx)
     assert _mode(own) == 0o644
+
+
+def test_on_windows_the_sweep_changes_nothing_and_reports_no_errors(ctx, monkeypatch):
+    # Windows trial 2026-11-12: Windows has no POSIX permission bits (every
+    # file reads 0o666), so each file was "wrong", each chmod failed, and
+    # every run ended "with errors" -- 7 errors for 7 songs.
+    own = ctx.inbox / "song.m4a"
+    own.write_bytes(b"audio")
+    own.chmod(0o600)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    result = PermissionsStage().run(ctx)
+
+    assert result.files_errored == 0 and not result.errors
+    assert result.files_changed == 0, "the sweep still tried to chmod on Windows"
+    assert any("Windows" in n for n in result.notes)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The sweep does nothing on Windows, so no chmod can fail there.",
+)
+def test_a_failed_chmod_is_not_reported_as_all_correct(ctx, monkeypatch):
+    # Same trial: "errors=7" printed under "All file/folder permissions correct."
+    from musaeus.stages import permissions
+
+    own = ctx.inbox / "song.m4a"
+    own.write_bytes(b"audio")
+    own.chmod(0o600)
+
+    def refuse(path, mode, want_dir):
+        raise OSError("refused")
+
+    monkeypatch.setattr(permissions, "_chmod_no_follow", refuse)
+
+    result = PermissionsStage().run(ctx)
+
+    assert result.files_errored == 1
+    assert not any("correct" in n for n in result.notes), result.notes

@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 import os
 import stat
+import sys
 from pathlib import Path
 
 from ..context import RunContext, StageResult, elision
@@ -43,6 +44,8 @@ _COMMIT_EVERY = 200
 
 FILE_MODE = 0o644  # rw-r--r--
 DIR_MODE = 0o755  # rwxr-xr-x
+
+_WINDOWS_NOTE = "Windows: no Unix permissions to fix."
 
 
 def _sweep_roots(ctx: RunContext) -> list[Path]:
@@ -122,6 +125,11 @@ def _chmod_no_follow(path: Path, mode: int, want_dir: bool) -> None:
 
 def _scan_all(ctx: RunContext) -> tuple[list[Path], list[Path]]:
     """Scan every swept root, merging the results."""
+    # Windows has no POSIX permission bits: every file reads 0o666 and chmod
+    # can only set read-only, so every file looked wrong and every fix failed
+    # (Windows trial 2026-11-12).
+    if sys.platform == "win32":
+        return [], []
     all_files: list[Path] = []
     all_dirs: list[Path] = []
     for root in _sweep_roots(ctx):
@@ -154,7 +162,9 @@ class PermissionsStage(BaseStage):
         result.files_processed = len(bad_files) + len(bad_dirs)
         result.files_changed = result.files_processed
 
-        if not bad_files and not bad_dirs:
+        if sys.platform == "win32":
+            result.notes.append(_WINDOWS_NOTE)
+        elif not bad_files and not bad_dirs:
             result.notes.append("✓ All file/folder permissions correct.")
         else:
             result.notes.append(f"Would fix {len(bad_files)} file(s) and {len(bad_dirs)} dir(s):")
@@ -241,10 +251,13 @@ class PermissionsStage(BaseStage):
             if (fixed_files + fixed_dirs) % _COMMIT_EVERY == 0:
                 ctx.conn.commit()
 
-        if fixed_files == 0 and fixed_dirs == 0:
+        if sys.platform == "win32":
+            result.notes.append(_WINDOWS_NOTE)
+        elif fixed_files == 0 and fixed_dirs == 0 and not result.files_errored:
             result.notes.append("✓ All file/folder permissions correct.")
         else:
-            result.notes.append(f"Fixed {fixed_files} file(s) and {fixed_dirs} dir(s).")
+            failed = f" Could not fix {result.files_errored}." if result.files_errored else ""
+            result.notes.append(f"Fixed {fixed_files} file(s) and {fixed_dirs} dir(s).{failed}")
 
         ctx.record_stage(result)
         return result
