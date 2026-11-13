@@ -770,6 +770,7 @@ def diagnose(cfg: MusicConfig) -> Report:
     _artist_tag_is_natural_form(cfg, rep)
     _catalogued_tracks_reach_the_car(cfg, rep)
     _external_tools_present(cfg, rep)
+    _windows_long_paths(rep)
 
     conn.close()
     return rep
@@ -1071,6 +1072,37 @@ _EXTERNAL_TOOLS: tuple[tuple[str, str, str, bool], ...] = (
 )
 #: Their features (iPhone transfer, backup tiers) run on Linux only for now.
 _LINUX_ONLY_TOOLS = frozenset({"idevice_id", "ifuse", "rsync"})
+
+
+def _windows_long_paths(rep: Report) -> None:
+    """Can this Windows machine save a path longer than 260 characters?
+
+    Not unless "Win32 long paths" is turned on, which needs admin. It was off
+    on Grey's work PC (2026-11-12). Song names may be up to 255 bytes, so a
+    long name in a deep folder fails to save there.
+    """
+    if sys.platform != "win32":
+        return
+    import winreg
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem"
+        ) as key:
+            on = winreg.QueryValueEx(key, "LongPathsEnabled")[0] == 1
+    except OSError:
+        on = False
+    if on:
+        rep.add("ok", "long paths", "on", scope="host")
+        return
+    rep.add(
+        "warn",
+        "long paths",
+        "OFF: a song whose full path is over 260 characters will fail to save. "
+        "Fix (needs admin): turn on 'Enable Win32 long paths' in Group Policy, or set "
+        r"LongPathsEnabled=1 in HKLM\SYSTEM\CurrentControlSet\Control\FileSystem",
+        scope="host",
+    )
 
 
 def _external_tools_present(cfg: MusicConfig, rep: Report) -> None:

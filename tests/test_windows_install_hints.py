@@ -67,3 +67,38 @@ def test_doctor_on_windows_skips_the_linux_only_tools(cfg, monkeypatch):
     _external_tools_present(cfg, rep)
     (f,) = [f for f in rep.findings if f.check == "external tools"]
     assert f.level == "ok", f.detail
+
+
+@pytest.mark.parametrize(("value", "level"), [(0, "warn"), (1, "ok"), (None, "warn")])
+def test_doctor_on_windows_says_whether_long_paths_are_on(monkeypatch, value, level):
+    # Grey's work PC, 2026-11-12: long paths off, so a 260+ character path failed.
+    import contextlib
+    import types
+
+    from musaeus.doctor import _windows_long_paths
+
+    def query(key, name):
+        if value is None:
+            raise FileNotFoundError(name)  # the value was never set
+        return value, 4
+
+    fake = types.SimpleNamespace(
+        HKEY_LOCAL_MACHINE=object(),
+        OpenKey=lambda root, path: contextlib.nullcontext(),
+        QueryValueEx=query,
+    )
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    monkeypatch.setattr(sys, "platform", "win32")
+    rep = Report()
+    _windows_long_paths(rep)
+    (f,) = [f for f in rep.findings if f.check == "long paths"]
+    assert f.level == level and f.scope == "host"
+
+
+def test_doctor_off_windows_says_nothing_about_long_paths(monkeypatch):
+    from musaeus.doctor import _windows_long_paths
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    rep = Report()
+    _windows_long_paths(rep)
+    assert rep.findings == []

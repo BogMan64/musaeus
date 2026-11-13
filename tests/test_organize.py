@@ -723,6 +723,17 @@ def test_a_path_component_never_exceeds_the_filesystem_byte_limit() -> None:
     assert truncate_to_bytes("Neil Young") == "Neil Young"
 
 
+def _skip_without_long_paths(tmp_path: Path) -> None:
+    """Windows refuses a full path over 260 characters unless long paths are
+    on (needs admin; off on Grey's work PC, 2026-11-12). doctor warns."""
+    probe = tmp_path / ("L" * 250)
+    try:
+        probe.write_bytes(b"")
+    except OSError:
+        pytest.skip("this machine refuses paths over 260 characters")
+    probe.unlink()
+
+
 def test_the_cap_survives_the_collision_it_creates(tmp_path: Path) -> None:
     """Capping at exactly 255 put the ENAMETOOLONG crash straight back.
 
@@ -733,6 +744,7 @@ def test_the_cap_survives_the_collision_it_creates(tmp_path: Path) -> None:
     to the same prefix, so for exactly the inputs needing the cap, colliding
     is the normal case. Found in review 2026-09-04, hours after the cap
     shipped."""
+    _skip_without_long_paths(tmp_path)
     from musaeus.stages.organize import build_track_filename, unique_path
 
     name = build_track_filename("A" * 400, "Why Me (Live)", ".flac")
@@ -752,6 +764,7 @@ def test_unique_path_shortens_whatever_it_is_handed(tmp_path: Path) -> None:
     """Seven stages call unique_path. It cannot rely on its caller having
     left room -- finalize, organize, tribute_quarantine, various_artists_fix,
     classical_composer and deny_list all call it with no try/except."""
+    _skip_without_long_paths(tmp_path)
     from musaeus.stages.organize import unique_path
 
     over = tmp_path / ("B" * 250 + ".m4a")  # already at the limit
