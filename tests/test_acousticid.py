@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 import urllib.error
 from pathlib import Path
 
@@ -353,10 +354,13 @@ class TestShortFileFingerprinting:
         raw = subprocess.run(
             [shutil.which("fpcalc"), "-json", str(src)], capture_output=True, text=True
         )
-        # The premise: this fixture sits under fpcalc's read window. fpcalc
-        # 1.6.2 on Windows exits 0 here (Grey's PC, 2026-11-12): nothing to guard.
-        if raw.returncode == 0:
-            pytest.skip("this fpcalc exits 0 on a short file")
+        # fpcalc 1.6.2 on Windows exits 0 here (Grey's PC, 2026-11-12). The
+        # checks below hold either way; only the premise is Linux's to keep.
+        if sys.platform != "win32":
+            assert raw.returncode != 0, (
+                "premise: this fixture is meant to sit under fpcalc's read window; "
+                "if fpcalc stopped doing this, the guard below is no longer needed"
+            )
 
         duration, fingerprint = acoustic_mod._fpcalc(str(src))
         assert fingerprint, "a usable fingerprint was discarded on the strength of an exit code"

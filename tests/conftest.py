@@ -225,8 +225,11 @@ def disposable_vault(tmp_path: Path) -> DisposableVault:
 # marked needs_symlinks and skip there instead of failing.
 
 
-def _can_symlink() -> bool:
-    with tempfile.TemporaryDirectory() as d:
+def _can_symlink(where: str | None) -> bool:
+    """Probed where the tests will write: --basetemp may be another disk."""
+    if where:
+        os.makedirs(where, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=where) as d:
         try:
             os.symlink(d, os.path.join(d, "probe"), target_is_directory=True)
         except OSError:
@@ -240,7 +243,7 @@ def pytest_configure(config):
 
 def pytest_collection_modifyitems(config, items):
     marked = [item for item in items if "needs_symlinks" in item.keywords]
-    if marked and not _can_symlink():
+    if marked and not _can_symlink(config.option.basetemp):
         skip = pytest.mark.skip(reason="this account may not create symlinks")
         for item in marked:
             item.add_marker(skip)
