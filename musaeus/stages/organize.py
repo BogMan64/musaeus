@@ -629,6 +629,23 @@ def destination_root(current_path: Path, roots: Iterable[Path]) -> Path | None:
     return best
 
 
+#: Room kept free for the temporary name a stage writes beside the target
+#: before the swap: ".finalize_tmp" and ".mutation_tmp" are 13 characters
+#: (CodeRabbit on #326). 16 leaves a little over.
+_WINDOWS_TEMP_RESERVE = 16
+
+
+def fit_path(target: Path) -> Path:
+    """*target* with its song name cut to fit a Windows path; unchanged off
+    Windows. Callers that compare a wanted path with where a file already is
+    must fit it first, or a file stored under its fitted name never matches
+    (CodeRabbit on #326: --force bumped it to " (2)")."""
+    if sys.platform != "win32":
+        return target
+    name = _fit_windows_path(target.parent, target.stem, target.suffix)
+    return target.parent / f"{name}{target.suffix}"
+
+
 def _fit_windows_path(parent: Path, stem: str, tail: str) -> str:
     """*stem* cut so that parent/stem+tail fits in a Windows path. Windows
     counts UTF-16 units. A folder too long to leave room for any name is left
@@ -639,7 +656,7 @@ def _fit_windows_path(parent: Path, stem: str, tail: str) -> str:
 
     # abspath: Windows counts the whole path, so a relative one is measured
     # from the folder the program runs in.
-    room = MAX_PATH_CHARS - units(os.path.abspath(parent)) - 1 - units(tail)
+    room = MAX_PATH_CHARS - _WINDOWS_TEMP_RESERVE - units(os.path.abspath(parent)) - 1 - units(tail)
     if room < 1:
         return stem
     while units(stem) > room:
@@ -659,10 +676,9 @@ def unique_path(target: Path, *, exists: Callable[[Path], bool] | None = None) -
     stem = target.stem
     suffix = target.suffix
     parent = target.parent
-    if sys.platform == "win32":
-        # Windows also caps the WHOLE path (Grey's work PC, 2026-11-12). The
-        # folders follow Grey's naming rules, so only the song name gives way.
-        target = parent / f"{_fit_windows_path(parent, stem, suffix)}{suffix}"
+    # Windows also caps the WHOLE path (Grey's work PC, 2026-11-12). The
+    # folders follow Grey's naming rules, so only the song name gives way.
+    target = fit_path(target)
     if not exists(target):
         return target
 
@@ -916,15 +932,18 @@ class OrganizeStage(BaseStage):
             if root is None:
                 outside += 1
                 continue
-            candidate = root / library_relpath(
-                row["artist"],
-                row["mb_artist_name"],
-                row["genre"],
-                row["album"],
-                row["title"],
-                current.suffix,
-                filing,
-                row["audio_hash"],
+            candidate = fit_path(
+                root
+                / library_relpath(
+                    row["artist"],
+                    row["mb_artist_name"],
+                    row["genre"],
+                    row["album"],
+                    row["title"],
+                    current.suffix,
+                    filing,
+                    row["audio_hash"],
+                )
             )
             if str(candidate) == str(current) or _is_collision_name_for(
                 current, candidate, exists=exists
@@ -1223,7 +1242,7 @@ class OrganizeStage(BaseStage):
                 filing,
                 row["audio_hash"] if "audio_hash" in set(row.keys()) else None,
             )
-            candidate_path = dest_root / rel
+            candidate_path = fit_path(dest_root / rel)
             target_dir = candidate_path.parent
 
             # unique_path() checks disk existence to avoid collisions, but

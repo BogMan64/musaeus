@@ -145,16 +145,18 @@ def _disk_has_modes(folder: Path) -> bool:
         fd, name = tempfile.mkstemp(prefix=".musaeus-permcheck-", dir=folder)
     except OSError:
         return True
-    os.close(fd)
     try:
+        # On the open descriptor, never by name: a name can be swapped for a
+        # link, and chmod would then change the link's target (CodeRabbit on #326).
         for mode in (0o600, 0o644):
-            os.chmod(name, mode)
-            if stat.S_IMODE(os.lstat(name).st_mode) != mode:
+            os.fchmod(fd, mode)
+            if stat.S_IMODE(os.fstat(fd).st_mode) != mode:
                 return False
         return True
     except OSError:
         return False
     finally:
+        os.close(fd)
         with contextlib.suppress(OSError):
             os.unlink(name)
 
@@ -280,6 +282,11 @@ class PermissionsStage(BaseStage):
                     if device not in self._has_modes and not _disk_has_modes(path.parent):
                         # exFAT, NTFS, vfat: every file looked wrong and every
                         # fix failed, run after run. Leave the whole disk alone.
+                        logger.warning(
+                            "[permissions] no Unix permissions on this disk; first failure: %s: %s",
+                            path,
+                            error,
+                        )
                         self._no_modes.add(device)
                         left_alone += 1
                         continue

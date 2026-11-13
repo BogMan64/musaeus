@@ -794,9 +794,15 @@ def test_on_windows_the_whole_path_stays_under_the_limit(
         target, exists=lambda p: taken and p.name.startswith("T") and "(" not in p.name
     )
 
-    assert len(str(out)) <= 259, len(str(out))
+    # 13 spare: finalize writes "<name>.finalize_tmp" beside it (CodeRabbit on #326)
+    assert len(str(out)) + len(".finalize_tmp") <= 259, len(str(out))
     assert out.parent == folder and out.suffix == ".m4a"
     assert out.name.endswith(" (2).m4a") is taken
+    if not taken:
+        # a file already stored under its fitted name must match the wanted path
+        from musaeus.stages.organize import fit_path
+
+        assert fit_path(target) == out and fit_path(out) == out
 
 
 def test_on_windows_a_relative_path_is_measured_from_the_drive(tmp_path: Path, monkeypatch) -> None:
