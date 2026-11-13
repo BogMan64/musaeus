@@ -824,6 +824,15 @@ def test_a_shortened_collision_name_is_still_known_as_one(tmp_path: Path, monkey
     assert not _is_collision_name_for(second, wanted, exists=lambda p: p == second)
 
 
+def test_a_superscript_number_in_brackets_is_not_a_collision_name(tmp_path: Path) -> None:
+    """CodeRabbit on #326: "²".isdigit() is true and int("²") raises, which
+    stopped organize on an unrelated file named "Old title (²).m4a"."""
+    from musaeus.stages.organize import _is_collision_name_for
+
+    current = tmp_path / "Old title (²).m4a"
+    assert _is_collision_name_for(current, tmp_path / "New title.m4a") is False
+
+
 def test_on_windows_a_relative_path_is_measured_from_the_drive(tmp_path: Path, monkeypatch) -> None:
     """CodeRabbit, 2026-11-13: Windows counts the whole path, so the folder
     the program runs in counts too."""

@@ -797,7 +797,8 @@ def _is_collision_name_for(
     # a long stem is cut again to make room for " (N)" (CodeRabbit on #326).
     stem = current.stem
     digits = stem[stem.rfind(" (") + 2 : -1] if " (" in stem and stem.endswith(")") else ""
-    if not digits.isdigit() or int(digits) < 2:
+    # isascii: "²".isdigit() is true and int("²") raises (CodeRabbit on #326).
+    if not (digits.isascii() and digits.isdigit()) or int(digits) < 2:
         return False
     if current != _numbered_path(candidate, int(digits)) or not exists(candidate):
         return False
