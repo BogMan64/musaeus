@@ -210,7 +210,7 @@ def test_a_fully_paused_child_is_never_killed(monkeypatch) -> None:
     not fire on a 3s sleep. Before this, the throttle and the timeout
     fought each other and the timeout won."""
     monkeypatch.setattr(bal, "_ACTIVE_THROTTLE", _FakeThrottle(rate=1.0))
-    out = bal._run_with_deadline(["sleep", "3"], deadline=1)
+    out = bal._run_with_deadline([sys.executable, "-c", "import time; time.sleep(3)"], deadline=1)
     assert out.returncode == 0
 
 
@@ -219,11 +219,11 @@ def test_a_genuinely_hung_child_is_still_killed(monkeypatch) -> None:
     must still catch a real stall -- that is what it is for."""
     monkeypatch.setattr(bal, "_ACTIVE_THROTTLE", None)
     with pytest.raises(subprocess.TimeoutExpired):
-        bal._run_with_deadline(["sleep", "30"], deadline=1)
+        bal._run_with_deadline([sys.executable, "-c", "import time; time.sleep(30)"], deadline=1)
 
 
 def test_output_and_returncode_survive_the_wrapper() -> None:
-    out = bal._run_with_deadline(["sh", "-c", "echo hi; exit 0"], deadline=30)
+    out = bal._run_with_deadline([sys.executable, "-c", "print('hi')"], deadline=30)
     assert out.returncode == 0 and "hi" in out.stdout
 
 
@@ -232,7 +232,9 @@ def test_check_still_raises_calledprocesserror(monkeypatch) -> None:
     line _process_one already knows how to report."""
     monkeypatch.setattr(bal, "_ACTIVE_THROTTLE", None)
     with pytest.raises(subprocess.CalledProcessError):
-        bal._run_with_deadline(["sh", "-c", "exit 3"], deadline=30, check=True)
+        bal._run_with_deadline(
+            [sys.executable, "-c", "raise SystemExit(3)"], deadline=30, check=True
+        )
 
 
 def test_the_throttle_reports_the_time_it_held_children_stopped() -> None:
