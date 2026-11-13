@@ -45,6 +45,7 @@ from pathlib import Path
 from .brackets import base_title
 from .config import MusicConfig
 from .install_hint import install_hint
+from .windows_paths import LONG_PATHS_OFF, long_paths_on
 
 _NOISE_RE = re.compile(r"[^a-z0-9]")
 
@@ -1075,34 +1076,21 @@ _LINUX_ONLY_TOOLS = frozenset({"idevice_id", "ifuse", "rsync"})
 
 
 def _windows_long_paths(rep: Report) -> None:
-    """Can this Windows machine save a path longer than 260 characters?
-
-    Not unless "Win32 long paths" is turned on, which needs admin. It was off
-    on Grey's work PC (2026-11-12). Song names may be up to 255 bytes, so a
-    long name in a deep folder fails to save there.
-    """
-    if sys.platform != "win32":
+    """Can this Windows machine save a path of 260 characters or more?"""
+    on = long_paths_on()
+    if on is None:
         return
-    import winreg
-
-    try:
-        with winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem"
-        ) as key:
-            on = winreg.QueryValueEx(key, "LongPathsEnabled")[0] == 1
-    except OSError:
-        on = False
     if on:
-        rep.add("ok", "long paths", "on", scope="host")
+        # The setting covers Python. Each program must also accept long paths
+        # itself, and nothing here can tell whether ffmpeg, fdkaac or fpcalc do.
+        rep.add(
+            "ok",
+            "long paths",
+            "on for MUSAEUS itself; ffmpeg, fdkaac and fpcalc may still refuse them",
+            scope="host",
+        )
         return
-    rep.add(
-        "warn",
-        "long paths",
-        "OFF: a song whose full path is over 260 characters will fail to save. "
-        "Fix (needs admin): turn on 'Enable Win32 long paths' in Group Policy, or set "
-        r"LongPathsEnabled=1 in HKLM\SYSTEM\CurrentControlSet\Control\FileSystem",
-        scope="host",
-    )
+    rep.add("warn", "long paths", LONG_PATHS_OFF, scope="host")
 
 
 def _external_tools_present(cfg: MusicConfig, rep: Report) -> None:

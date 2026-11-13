@@ -774,6 +774,31 @@ def test_unique_path_shortens_whatever_it_is_handed(tmp_path: Path) -> None:
     assert out.name.endswith(".m4a")
 
 
+@pytest.mark.parametrize("taken", [False, True])
+def test_on_windows_the_whole_path_stays_under_the_limit(
+    tmp_path: Path, monkeypatch, taken
+) -> None:
+    """Grey's work PC, 2026-11-12: with long paths off, Windows refuses a full
+    path of 260 characters or more. Only each NAME was capped (255 bytes), so
+    a long title in a deep folder failed to save."""
+    import sys
+
+    from musaeus.stages.organize import unique_path
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    folder = tmp_path / ("Artist " * 8).strip() / ("Album " * 8).strip()
+    target = folder / ("T" * 200 + ".m4a")
+    assert len(str(target)) > 259, "premise: the path is too long for Windows"
+
+    out = unique_path(
+        target, exists=lambda p: taken and p.name.startswith("T") and "(" not in p.name
+    )
+
+    assert len(str(out)) <= 259, len(str(out))
+    assert out.parent == folder and out.suffix == ".m4a"
+    assert out.name.endswith(" (2).m4a") is taken
+
+
 def test_a_multibyte_name_is_never_cut_mid_codepoint(tmp_path: Path) -> None:
     from musaeus.stages.organize import build_track_filename, unique_path
 

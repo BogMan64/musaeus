@@ -129,25 +129,61 @@ def test_a_file_its_owner_cannot_read_is_still_fixed(ctx):
     assert _mode(own) == 0o644
 
 
-def test_on_windows_the_sweep_changes_nothing_and_reports_no_errors(ctx, monkeypatch):
+def test_on_windows_only_a_read_only_file_is_changed(ctx, monkeypatch):
     # Windows trial 2026-11-12: Windows has no POSIX permission bits (every
-    # file reads 0o666), so each file was "wrong", each chmod failed, and
-    # every run ended "with errors" -- 7 errors for 7 songs.
-    own = ctx.inbox / "song.m4a"
-    own.write_bytes(b"audio")
-    own.chmod(0o600)
+    # file reads 0o666), so each file looked wrong, each fix failed, and every
+    # run ended "with errors" -- 7 errors for 7 songs. The read-only flag is the
+    # one thing the sweep can still mend there: a read-only song cannot be tagged.
+    fine = ctx.inbox / "song.m4a"
+    fine.write_bytes(b"audio")
+    fine.chmod(0o600)
+    locked = ctx.inbox / "from a cd.m4a"
+    locked.write_bytes(b"audio")
+    locked.chmod(0o444)
     monkeypatch.setattr(sys, "platform", "win32")
 
     result = PermissionsStage().run(ctx)
 
     assert result.files_errored == 0 and not result.errors
-    assert result.files_changed == 0, "the sweep still tried to chmod on Windows"
-    assert any("Windows" in n for n in result.notes)
+    assert result.files_changed == 1, result.notes
+    assert _mode(fine) == 0o600, "a writable file was touched on Windows"
+    assert _mode(locked) & stat.S_IWRITE, "the read-only file is still read-only"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize("how", ["ignored", "refused"])
+def test_a_disk_without_unix_permissions_is_left_alone_not_failed(ctx, monkeypatch, how):
+    # INBOX on exFAT, NTFS or vfat: chmod does nothing, or the disk refuses its
+    # own owner. Every file looked wrong and every run ended with N errors.
+    import errno
+
+    from musaeus.stages import permissions
+
+    for name in ("a.m4a", "b.m4a", "c.m4a"):
+        (ctx.inbox / name).write_bytes(b"audio")
+        (ctx.inbox / name).chmod(0o600)
+    calls = []
+
+    def chmod(path, mode, want_dir):
+        calls.append(path)
+        if how == "refused":
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(permissions, "_chmod_no_follow", chmod)
+    stage = PermissionsStage()
+
+    result = stage.run(ctx)
+
+    assert result.files_errored == 0 and not result.errors, result.errors
+    assert result.files_changed == 0
+    assert len(calls) == 1, "it kept trying on a disk that had already shown it cannot"
+    assert any("no Unix permissions" in n for n in result.notes), result.notes
+    assert stage.verify_effect(ctx, result) == []
 
 
 @pytest.mark.skipif(
     sys.platform == "win32",
-    reason="The sweep does nothing on Windows, so no chmod can fail there.",
+    reason="POSIX permission bits",
 )
 def test_a_failed_chmod_is_not_reported_as_all_correct(ctx, monkeypatch):
     # Same trial: "errors=7" printed under "All file/folder permissions correct."

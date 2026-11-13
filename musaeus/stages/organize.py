@@ -81,6 +81,7 @@ import logging
 import os
 import re
 import sqlite3
+import sys
 import unicodedata
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -90,6 +91,7 @@ from ..canon.protected_artists import PROTECTED_ARTIST_NAMES
 from ..context import RunContext, StageResult
 from ..filing import load as filing_load
 from ..filing import ruling_for
+from ..windows_paths import MAX_PATH_CHARS
 from .base import BaseStage
 from .normalize import stored_artist
 from .sanitize import SMART_QUOTE_MAP
@@ -627,6 +629,22 @@ def destination_root(current_path: Path, roots: Iterable[Path]) -> Path | None:
     return best
 
 
+def _fit_windows_path(parent: Path, stem: str, tail: str) -> str:
+    """*stem* cut so that parent/stem+tail fits in a Windows path. Windows
+    counts UTF-16 units. A folder too long to leave room for any name is left
+    alone: no name can mend it, and preflight warns about it."""
+
+    def units(text: str) -> int:
+        return len(text.encode("utf-16-le")) // 2
+
+    room = MAX_PATH_CHARS - units(str(parent)) - 1 - units(tail)
+    if room < 1:
+        return stem
+    while units(stem) > room:
+        stem = stem[:-1]
+    return stem.rstrip(". ") or stem
+
+
 def unique_path(target: Path, *, exists: Callable[[Path], bool] | None = None) -> Path:
     """
     Return a unique path by appending (N) if target already exists.
@@ -636,12 +654,15 @@ def unique_path(target: Path, *, exists: Callable[[Path], bool] | None = None) -
       → "Beatles, The/Abbey Road/Beatles, The - Come Together (2).m4a"
     """
     exists = exists or Path.exists
-    if not exists(target):
-        return target
-
     stem = target.stem
     suffix = target.suffix
     parent = target.parent
+    if sys.platform == "win32":
+        # Windows also caps the WHOLE path (Grey's work PC, 2026-11-12). The
+        # folders follow Grey's naming rules, so only the song name gives way.
+        target = parent / f"{_fit_windows_path(parent, stem, suffix)}{suffix}"
+    if not exists(target):
+        return target
 
     counter = 2
     while True:
@@ -651,7 +672,10 @@ def unique_path(target: Path, *, exists: Callable[[Path], bool] | None = None) -
         # over-long name regardless of what it was handed.
         tag = f" ({counter})"
         budget = _MAX_COMPONENT_BYTES - len((tag + suffix).encode("utf-8"))
-        new_path = parent / f"{truncate_to_bytes(stem, budget)}{tag}{suffix}"
+        short = truncate_to_bytes(stem, budget)
+        if sys.platform == "win32":
+            short = _fit_windows_path(parent, short, tag + suffix)
+        new_path = parent / f"{short}{tag}{suffix}"
         if not exists(new_path):
             return new_path
         counter += 1

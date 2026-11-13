@@ -102,3 +102,17 @@ def test_doctor_off_windows_says_nothing_about_long_paths(monkeypatch):
     rep = Report()
     _windows_long_paths(rep)
     assert rep.findings == []
+
+
+@pytest.mark.parametrize(("on", "warned"), [(False, True), (True, False), (None, False)])
+def test_preflight_warns_before_a_run_when_long_paths_are_off(monkeypatch, on, warned):
+    # Grey, 2026-11-13: warn before the run starts, not only in doctor.
+    monkeypatch.setattr(preflight, "long_paths_on", lambda: on)
+    ok: list[str] = []
+    warn: list[str] = []
+    fail: list[str] = []
+
+    PreflightStage()._check_windows_long_paths(ok, warn, fail)
+
+    assert any("long paths" in w for w in warn) is warned
+    assert not fail
