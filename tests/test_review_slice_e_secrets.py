@@ -111,6 +111,7 @@ def test_the_key_manager_saves_private(config_dir, monkeypatch, capsys):
     assert "MANAGER-NEW-KEY" not in capsys.readouterr().out
 
 
+@pytest.mark.needs_symlinks
 def test_a_symlinked_file_stays_a_symlink(config_dir, tmp_path):
     real = tmp_path / "elsewhere" / "credentials.env"
     real.parent.mkdir()

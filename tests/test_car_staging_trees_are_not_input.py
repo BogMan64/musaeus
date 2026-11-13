@@ -43,6 +43,8 @@ import ast
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "car_library"))
 from build_car_library import find_input_files  # noqa: E402
 
@@ -63,6 +65,7 @@ def test_a_leaked_staging_tree_is_not_input(tmp_path: Path) -> None:
     assert find_input_files(tmp_path) == []
 
 
+@pytest.mark.needs_symlinks
 def test_symlinks_inside_a_staging_tree_are_not_input(tmp_path: Path) -> None:
     """The real trees hold symlinks, and rglob follows them to files."""
     real = _drop(tmp_path, "masters/Artist - Song.m4a")

@@ -50,6 +50,7 @@ def _row(conn, fp: str, car: str = ""):
 
 
 class TestItAsksTheCatalogueWhatIsMissing:
+    @pytest.mark.needs_symlinks
     def test_rows_with_a_car_file_are_excluded(self, conn, tmp_path, monkeypatch):
         done, gap = tmp_path / "done.m4a", tmp_path / "gap.m4a"
         for p in (done, gap):
@@ -88,6 +89,7 @@ class TestItAsksTheCatalogueWhatIsMissing:
         assert seen["n"] == 1, "only the track with no car file should be staged"
         assert files[0].name == "gap.m4a"
 
+    @pytest.mark.needs_symlinks
     def test_without_the_flag_everything_is_staged(self, conn, tmp_path, monkeypatch):
         done, gap = tmp_path / "done.m4a", tmp_path / "gap.m4a"
         for p in (done, gap):

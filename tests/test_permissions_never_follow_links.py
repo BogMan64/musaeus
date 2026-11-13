@@ -44,6 +44,7 @@ def _mode(p: Path) -> int:
     sys.platform == "win32",
     reason="Windows cannot represent the POSIX permission bits this test asserts.",
 )
+@pytest.mark.needs_symlinks
 def test_a_link_to_a_private_file_outside_is_never_changed(ctx, tmp_path):
     secret = tmp_path / "elsewhere" / "credentials.env"
     secret.parent.mkdir()
@@ -68,6 +69,7 @@ def test_a_link_to_a_private_file_outside_is_never_changed(ctx, tmp_path):
     assert result.files_changed == 1
 
 
+@pytest.mark.needs_symlinks
 def test_a_dry_run_does_not_list_a_links_target(ctx, tmp_path):
     secret = tmp_path / "credentials.env"
     secret.write_text("KEY=dummy", encoding="utf-8")
@@ -101,6 +103,7 @@ def test_a_fifo_swapped_in_after_the_scan_does_not_hang_and_is_not_changed(tmp_p
     sys.platform == "win32",
     reason="Windows cannot represent the POSIX permission bits this test asserts.",
 )
+@pytest.mark.needs_symlinks
 def test_a_link_swapped_in_after_the_scan_is_left_alone(tmp_path):
     from musaeus.stages.permissions import _chmod_no_follow
 

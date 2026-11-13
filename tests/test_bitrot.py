@@ -579,6 +579,7 @@ class TestAMissingMasterIsAFailure:
         assert result.success is True, result.notes
         assert not any("MASTERS MISSING" in n for n in result.notes) and sent == []
 
+    @pytest.mark.needs_symlinks
     def test_a_row_written_through_a_linked_path_is_still_checked(self, ctx, monkeypatch):
         # Point 2: the archive's path and the row's must be compared as real paths.
         from musaeus.stages import bitrot as bitrot_mod
