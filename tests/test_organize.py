@@ -805,6 +805,25 @@ def test_on_windows_the_whole_path_stays_under_the_limit(
         assert fit_path(target) == out and fit_path(out) == out
 
 
+def test_a_shortened_collision_name_is_still_known_as_one(tmp_path: Path, monkeypatch) -> None:
+    """CodeRabbit on #326: to add " (2)" to a name already cut to fit, the
+    stem is cut again, so the name no longer starts with the wanted stem. It
+    was not recognised, and a forced run would rename it to " (3)", then back."""
+    import sys
+
+    from musaeus.stages.organize import _is_collision_name_for, fit_path, unique_path
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    folder = tmp_path / ("Artist " * 8).strip() / ("Album " * 8).strip()
+    wanted = fit_path(folder / ("T" * 200 + ".m4a"))
+    second = unique_path(wanted, exists=lambda p: p == wanted)
+    assert not second.stem.startswith(wanted.stem + " ("), "premise: the stem was cut again"
+    on_disk = {wanted, second}
+
+    assert _is_collision_name_for(second, wanted, exists=on_disk.__contains__)
+    assert not _is_collision_name_for(second, wanted, exists=lambda p: p == second)
+
+
 def test_on_windows_a_relative_path_is_measured_from_the_drive(tmp_path: Path, monkeypatch) -> None:
     """CodeRabbit, 2026-11-13: Windows counts the whole path, so the folder
     the program runs in counts too."""

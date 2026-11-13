@@ -673,9 +673,6 @@ def unique_path(target: Path, *, exists: Callable[[Path], bool] | None = None) -
       → "Beatles, The/Abbey Road/Beatles, The - Come Together (2).m4a"
     """
     exists = exists or Path.exists
-    stem = target.stem
-    suffix = target.suffix
-    parent = target.parent
     # Windows also caps the WHOLE path (Grey's work PC, 2026-11-12). The
     # folders follow Grey's naming rules, so only the song name gives way.
     target = fit_path(target)
@@ -684,19 +681,25 @@ def unique_path(target: Path, *, exists: Callable[[Path], bool] | None = None) -
 
     counter = 2
     while True:
-        # Re-truncate per attempt rather than trusting the caller. The counter
-        # grows ("(9)" -> "(10)"), so the budget shrinks as it does, and this
-        # function is reached from seven stages -- it must be unable to emit an
-        # over-long name regardless of what it was handed.
-        tag = f" ({counter})"
-        budget = _MAX_COMPONENT_BYTES - len((tag + suffix).encode("utf-8"))
-        short = truncate_to_bytes(stem, budget)
-        if sys.platform == "win32":
-            short = _fit_windows_path(parent, short, tag + suffix)
-        new_path = parent / f"{short}{tag}{suffix}"
+        new_path = _numbered_path(target, counter)
         if not exists(new_path):
             return new_path
         counter += 1
+
+
+def _numbered_path(target: Path, counter: int) -> Path:
+    """The name unique_path gives *target*'s Nth holder: "stem (N).ext"."""
+    # Re-truncate per attempt rather than trusting the caller. The counter
+    # grows ("(9)" -> "(10)"), so the budget shrinks as it does, and
+    # unique_path is reached from seven stages -- it must be unable to emit an
+    # over-long name regardless of what it was handed.
+    tag = f" ({counter})"
+    suffix = target.suffix
+    budget = _MAX_COMPONENT_BYTES - len((tag + suffix).encode("utf-8"))
+    short = truncate_to_bytes(target.stem, budget)
+    if sys.platform == "win32":
+        short = _fit_windows_path(target.parent, short, tag + suffix)
+    return target.parent / f"{short}{tag}{suffix}"
 
 
 def _taken_by_another(path: Path, current: Path) -> bool:
@@ -790,16 +793,15 @@ def _is_collision_name_for(
     exists = exists or Path.exists
     if current.parent != candidate.parent or current.suffix != candidate.suffix:
         return False
-    stem, base = current.stem, candidate.stem
-    if not (stem.startswith(base + " (") and stem.endswith(")")):
+    # Built as unique_path builds it, not by "starts with the wanted stem":
+    # a long stem is cut again to make room for " (N)" (CodeRabbit on #326).
+    stem = current.stem
+    digits = stem[stem.rfind(" (") + 2 : -1] if " (" in stem and stem.endswith(")") else ""
+    if not digits.isdigit() or int(digits) < 2:
         return False
-    digits = stem[len(base) + 2 : -1]
-    if not digits.isdigit() or int(digits) < 2 or not exists(candidate):
+    if current != _numbered_path(candidate, int(digits)) or not exists(candidate):
         return False
-    return all(
-        exists(candidate.with_name(f"{base} ({k}){candidate.suffix}"))
-        for k in range(2, int(digits))
-    )
+    return all(exists(_numbered_path(candidate, k)) for k in range(2, int(digits)))
 
 
 # ── Stage ──────────────────────────────────────────────────────────────────────
