@@ -140,13 +140,14 @@ def test_on_windows_only_a_read_only_file_is_changed(ctx, monkeypatch):
     locked = ctx.inbox / "from a cd.m4a"
     locked.write_bytes(b"audio")
     locked.chmod(0o444)
+    before = _mode(fine)  # not 0o600 on real Windows: it has no such bits
     monkeypatch.setattr(sys, "platform", "win32")
 
     result = PermissionsStage().run(ctx)
 
     assert result.files_errored == 0 and not result.errors
     assert result.files_changed == 1, result.notes
-    assert _mode(fine) == 0o600, "a writable file was touched on Windows"
+    assert _mode(fine) == before, "a writable file was touched on Windows"
     assert _mode(locked) & stat.S_IWRITE, "the read-only file is still read-only"
 
 
@@ -170,6 +171,7 @@ def test_a_disk_without_unix_permissions_is_left_alone_not_failed(ctx, monkeypat
             raise PermissionError(errno.EPERM, "Operation not permitted")
 
     monkeypatch.setattr(permissions, "_chmod_no_follow", chmod)
+    monkeypatch.setattr(permissions, "_fs_type", lambda path: "exfat")
     stage = PermissionsStage()
 
     result = stage.run(ctx)
@@ -202,3 +204,31 @@ def test_a_failed_chmod_is_not_reported_as_all_correct(ctx, monkeypatch):
 
     assert result.files_errored == 1
     assert not any("correct" in n for n in result.notes), result.notes
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_one_refused_file_on_a_unix_disk_does_not_write_off_the_folder(ctx, monkeypatch):
+    # CodeRabbit, 2026-11-13: an immutable file refuses its owner too. That is
+    # one file's problem; the rest of the folder must still be mended.
+    import errno
+
+    from musaeus.stages import permissions
+
+    for name in ("a.m4a", "b.m4a"):
+        (ctx.inbox / name).write_bytes(b"audio")
+        (ctx.inbox / name).chmod(0o600)
+    real = permissions._chmod_no_follow
+
+    def chmod(path, mode, want_dir):
+        if path.name == "a.m4a":
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        real(path, mode, want_dir)
+
+    monkeypatch.setattr(permissions, "_chmod_no_follow", chmod)
+    monkeypatch.setattr(permissions, "_fs_type", lambda path: "ext4")
+
+    result = PermissionsStage().run(ctx)
+
+    assert result.files_errored == 1 and result.files_changed == 1
+    assert _mode(ctx.inbox / "b.m4a") == 0o644
+    assert not any("no Unix permissions" in n for n in result.notes)

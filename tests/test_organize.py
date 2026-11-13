@@ -799,6 +799,24 @@ def test_on_windows_the_whole_path_stays_under_the_limit(
     assert out.name.endswith(" (2).m4a") is taken
 
 
+def test_on_windows_a_relative_path_is_measured_from_the_drive(tmp_path: Path, monkeypatch) -> None:
+    """CodeRabbit, 2026-11-13: Windows counts the whole path, so the folder
+    the program runs in counts too."""
+    import sys
+
+    from musaeus.stages.organize import unique_path
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    here = tmp_path / ("Deep " * 20).strip()
+    here.mkdir()
+    monkeypatch.chdir(here)
+
+    out = unique_path(Path("Album") / ("T" * 200 + ".m4a"), exists=lambda p: False)
+
+    assert len(str(here / out)) <= 259, len(str(here / out))
+    assert out.parent == Path("Album") and out.suffix == ".m4a"
+
+
 def test_a_multibyte_name_is_never_cut_mid_codepoint(tmp_path: Path) -> None:
     from musaeus.stages.organize import build_track_filename, unique_path
 

@@ -133,19 +133,46 @@ def _chmod_no_follow(path: Path, mode: int, want_dir: bool) -> None:
         os.chmod(path, mode)
 
 
+#: Filesystems whose modes come from the mount, not from the file.
+_NO_MODE_FILESYSTEMS = frozenset(
+    {"vfat", "msdos", "exfat", "ntfs", "ntfs3", "fuseblk", "9p", "drvfs", "cifs", "smb3"}
+)
+
+
+def _fs_type(path: Path) -> str:
+    """The filesystem type of the mount holding *path*; "" when unknown."""
+    try:
+        target = os.path.realpath(path)
+        best, kind = "", ""
+        with open("/proc/self/mounts", encoding="utf-8") as mounts:
+            for line in mounts:
+                fields = line.split()
+                if len(fields) < 3:
+                    continue
+                point = fields[1].replace("\\040", " ")
+                inside = target == point or target.startswith(point.rstrip("/") + "/")
+                if inside and len(point) >= len(best):
+                    best, kind = point, fields[2]
+        return kind
+    except OSError:
+        return ""
+
+
 def _disk_ignores_modes(path: Path, mode: int, error: OSError | None) -> bool:
     """True when the disk under *path* has no Unix permissions to set: exFAT,
     NTFS and vfat take their modes from the mount. chmod there either does
-    nothing, or refuses the file's own owner -- which a Unix disk never does."""
+    nothing, or refuses. A refusal alone is not proof: an immutable file on a
+    Unix disk refuses its owner too, so the disk's own type must say so."""
     if sys.platform == "win32":
         return False
+    if error is not None:
+        return (
+            error.errno in (errno.EPERM, errno.ENOTSUP) and _fs_type(path) in _NO_MODE_FILESYSTEMS
+        )
     try:
-        st = path.lstat()
+        return stat.S_IMODE(path.lstat().st_mode) != mode
     except OSError:
         return False
-    if error is None:
-        return stat.S_IMODE(st.st_mode) != mode
-    return error.errno in (errno.EPERM, errno.ENOTSUP) and st.st_uid == os.geteuid()
 
 
 def _scan_all(

@@ -637,7 +637,9 @@ def _fit_windows_path(parent: Path, stem: str, tail: str) -> str:
     def units(text: str) -> int:
         return len(text.encode("utf-16-le")) // 2
 
-    room = MAX_PATH_CHARS - units(str(parent)) - 1 - units(tail)
+    # abspath: Windows counts the whole path, so a relative one is measured
+    # from the folder the program runs in.
+    room = MAX_PATH_CHARS - units(os.path.abspath(parent)) - 1 - units(tail)
     if room < 1:
         return stem
     while units(stem) > room:
