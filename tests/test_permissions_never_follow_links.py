@@ -171,7 +171,7 @@ def test_a_disk_without_unix_permissions_is_left_alone_not_failed(ctx, monkeypat
             raise PermissionError(errno.EPERM, "Operation not permitted")
 
     monkeypatch.setattr(permissions, "_chmod_no_follow", chmod)
-    monkeypatch.setattr(permissions, "_fs_type", lambda path: "exfat")
+    monkeypatch.setattr(permissions, "_disk_has_modes", lambda folder: False)
     stage = PermissionsStage()
 
     result = stage.run(ctx)
@@ -225,10 +225,17 @@ def test_one_refused_file_on_a_unix_disk_does_not_write_off_the_folder(ctx, monk
         real(path, mode, want_dir)
 
     monkeypatch.setattr(permissions, "_chmod_no_follow", chmod)
-    monkeypatch.setattr(permissions, "_fs_type", lambda path: "ext4")
 
     result = PermissionsStage().run(ctx)
 
     assert result.files_errored == 1 and result.files_changed == 1
     assert _mode(ctx.inbox / "b.m4a") == 0o644
     assert not any("no Unix permissions" in n for n in result.notes)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_the_disk_probe_says_yes_on_a_unix_disk_and_leaves_nothing_behind(tmp_path):
+    from musaeus.stages.permissions import _disk_has_modes
+
+    assert _disk_has_modes(tmp_path) is True
+    assert list(tmp_path.iterdir()) == []

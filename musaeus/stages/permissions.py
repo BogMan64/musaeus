@@ -29,11 +29,12 @@ reviving that file.
 
 from __future__ import annotations
 
-import errno
+import contextlib
 import logging
 import os
 import stat
 import sys
+import tempfile
 from pathlib import Path
 
 from ..context import RunContext, StageResult, elision
@@ -133,49 +134,29 @@ def _chmod_no_follow(path: Path, mode: int, want_dir: bool) -> None:
         os.chmod(path, mode)
 
 
-#: Local filesystems whose modes come from the mount, not from the file.
-#: Not the network ones: CIFS can hold real Unix modes (CodeRabbit, 2026-11-13).
-_NO_MODE_FILESYSTEMS = frozenset({"vfat", "msdos", "exfat", "ntfs", "ntfs3", "fuseblk", "drvfs"})
-
-
-def _fs_type(path: Path) -> str:
-    """The filesystem type of the mount holding *path*; "" when unknown."""
+def _disk_has_modes(folder: Path) -> bool:
+    """Does the disk holding *folder* keep Unix permissions? Asked of a file
+    of our own, made and removed here: exFAT, NTFS and vfat take their modes
+    from the mount, so chmod there does nothing or is refused. One real file
+    is no evidence -- it may be immutable, another user's, or swapped mid-run
+    (CodeRabbit, 2026-11-13). When no probe can be made, assume it does: the
+    failure then stays an error on that one file."""
     try:
-        target = os.path.realpath(path)
-        best, kind = "", ""
-        with open("/proc/self/mounts", encoding="utf-8") as mounts:
-            for line in mounts:
-                fields = line.split()
-                if len(fields) < 3:
-                    continue
-                point = fields[1].replace("\\040", " ")
-                inside = target == point or target.startswith(point.rstrip("/") + "/")
-                if inside and len(point) >= len(best):
-                    best, kind = point, fields[2]
-        return kind
+        fd, name = tempfile.mkstemp(prefix=".musaeus-permcheck-", dir=folder)
     except OSError:
-        return ""
-
-
-def _disk_ignores_modes(path: Path, mode: int, error: OSError | None) -> bool:
-    """True when the disk under *path* has no Unix permissions to set: exFAT,
-    NTFS and vfat take their modes from the mount. chmod there either does
-    nothing, or refuses. A refusal alone is not proof: another user's file is
-    refused anywhere, and an immutable file refuses its owner too. So it must
-    be our own file AND a disk type known to have no modes."""
-    if sys.platform == "win32":
-        return False
+        return True
+    os.close(fd)
     try:
-        st = path.lstat()
+        for mode in (0o600, 0o644):
+            os.chmod(name, mode)
+            if stat.S_IMODE(os.lstat(name).st_mode) != mode:
+                return False
+        return True
     except OSError:
         return False
-    if error is None:
-        return stat.S_IMODE(st.st_mode) != mode
-    return (
-        error.errno in (errno.EPERM, errno.ENOTSUP)
-        and st.st_uid == os.geteuid()
-        and _fs_type(path) in _NO_MODE_FILESYSTEMS
-    )
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(name)
 
 
 def _device(path: Path) -> int | None:
@@ -214,6 +195,8 @@ class PermissionsStage(BaseStage):
         #: Disks (st_dev) with no Unix permissions, found by this run. A disk,
         #: not a swept root: a root can hold a mounted stick beside a Unix disk.
         self._no_modes: set[int] = set()
+        #: Disks a probe has shown do keep them, so each is asked only once.
+        self._has_modes: set[int] = set()
 
     # ── Validate ──────────────────────────────────────────────────────────────
 
@@ -270,6 +253,7 @@ class PermissionsStage(BaseStage):
     def run(self, ctx: RunContext) -> StageResult:
         result = self._make_result(dry_run=False)
         self._no_modes.clear()
+        self._has_modes.clear()
         fixed = {False: 0, True: 0}  # by "is a folder"
 
         # Live re-scan -- never trust a snapshot taken earlier.
@@ -287,16 +271,19 @@ class PermissionsStage(BaseStage):
                 error: OSError | None = None
                 try:
                     _chmod_no_follow(path, mode, want_dir=is_dir)
+                    if sys.platform != "win32" and stat.S_IMODE(path.lstat().st_mode) != mode:
+                        error = OSError(f"the mode did not change: {path}")
                 except OSError as e:
                     error = e
-                if _disk_ignores_modes(path, mode, error):
-                    # exFAT, NTFS, vfat: every file looked wrong and every fix
-                    # failed, run after run. One try is enough to know.
-                    device = _device(path)
-                    if device is not None:
+                device = _device(path)
+                if error is not None and sys.platform != "win32" and device is not None:
+                    if device not in self._has_modes and not _disk_has_modes(path.parent):
+                        # exFAT, NTFS, vfat: every file looked wrong and every
+                        # fix failed, run after run. Leave the whole disk alone.
                         self._no_modes.add(device)
-                    left_alone += 1
-                    continue
+                        left_alone += 1
+                        continue
+                    self._has_modes.add(device)
                 if error is not None:
                     logger.warning("[permissions] could not fix %s: %s", path, error)
                     result.files_errored += 1
