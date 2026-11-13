@@ -104,6 +104,9 @@ class TestItPrintsUsableSteps:
         for step in ("idevicepair pair", "ifuse --documents", "rsync -a", "fusermount -u"):
             assert step in out, f"missing step: {step}"
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="the paste is a Linux terminal guide (ifuse, rsync)"
+    )
     def test_the_paste_parses_as_bash(self, tmp_path, vault):
         """A guide whose commands do not parse is worse than no guide -- the
         console menu already shipped one hint that was a bash syntax error."""
@@ -174,6 +177,9 @@ class TestThePasteIsSafe:
     the PC with tens of GB; with --mount '/media/USER/My Phone' the wipe would
     have been rm -rf on the wrong paths."""
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="the paste is a Linux terminal guide (ifuse, rsync)"
+    )
     def test_a_failed_step_stops_the_rest_and_paths_are_quoted(self, vault):
         out = run("--wipe", "--mount", "/tmp/My Phone", vault=vault).stdout
         chain = out[out.index("Copy and paste") : out.index("If it stops")]  # the paste only
