@@ -14,6 +14,11 @@ UNDENIED_BY_REVIEW event carrying the ruling it lifted -- reason and date --
 into the event log. Without that, the reason the audio had been denied would
 simply be gone.
 
+A TRACK WITH NO ROW. A line "hash:<fingerprint>" lifts that fingerprint
+itself. For a track whose row is gone: removed by hand and its row closed, so
+there is no id to name (Grey, 2026-11-13: three songs wanted back). The event
+carries the path the deny entry recorded.
+
     python3 scripts/undeny_hashes.py ids.txt --reason "..."
     python3 scripts/undeny_hashes.py ids.txt --reason "..." --execute
 """
@@ -35,13 +40,17 @@ from musaeus.db import undeny_hash  # noqa: E402
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("ids", type=Path, help="file of archive ids, one per line")
+    ap.add_argument(
+        "ids", type=Path, help="file of archive ids, or hash:<fingerprint> lines, one per line"
+    )
     ap.add_argument("--reason", required=True, help="why the ruling is being reversed; recorded on every event")
     ap.add_argument("--execute", action="store_true", help="actually lift (default: dry run)")
     args = ap.parse_args()
 
-    ids = [int(x) for x in args.ids.read_text(encoding="utf-8").split() if x.strip().isdigit()]
-    if not ids:
+    words = args.ids.read_text(encoding="utf-8").split()
+    ids = [int(x) for x in words if x.strip().isdigit()]
+    hashes = [x[5:] for x in words if x.startswith("hash:") and len(x) > 5]
+    if not ids and not hashes:
         print(f"no ids in {args.ids}")
         return 1
     cfg = MusicConfig.from_env()
@@ -78,6 +87,27 @@ def main() -> int:
                 "VALUES (?,?,?,?,?,?,?)",
                 (run_id, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), "UNDENIED_BY_REVIEW",
                  row["file_path"], h, "", f"{args.reason} [was denied: {was}]"),
+            )
+        n_lifted += 1
+    for h in hashes:
+        denied = led.execute(
+            "SELECT reason, denied_at, source_path FROM denied_hashes WHERE audio_hash=?", (h,)
+        ).fetchone()
+        if denied is None:
+            print(f"  hash {h[:16]}: not on the deny list -- nothing to lift")
+            n_not_denied += 1
+            continue
+        print(
+            f"  hash {h[:16]}  {denied[2] or ''}: "
+            f"{'LIFT' if args.execute else 'would lift'}  [was: {denied[0]}]"
+        )
+        if args.execute:
+            undeny_hash(led, h)
+            conn.execute(
+                "INSERT INTO events (run_id, ts, event_type, file_path, old_value, new_value, note) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (run_id, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), "UNDENIED_BY_REVIEW",
+                 denied[2] or "", h, "", f"{args.reason} [was denied: {denied[0]} ({denied[1]})]"),
             )
         n_lifted += 1
     if args.execute:

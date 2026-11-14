@@ -130,3 +130,57 @@ class TestTheScript:
         c = sqlite3.connect(vault / "musaeus.db")
         assert c.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
         c.close()
+
+
+class TestATrackWithNoRow:
+    """Grey, 2026-11-13: three songs removed on 11-11 are wanted back. Their
+    rows were closed, so there is no id to name -- only the fingerprint."""
+
+    def _run_lines(self, vault, lines, execute=True):
+        f = vault / "ids.txt"
+        f.write_text("\n".join(lines), encoding="utf-8")
+        cmd = [sys.executable, str(SCRIPT), str(f), "--reason", "wanted back"]
+        if execute:
+            cmd.append("--execute")
+        return subprocess.run(
+            cmd, capture_output=True, text=True, timeout=120, cwd=str(SCRIPT.parents[1])
+        )
+
+    def _deny_rowless(self, vault):
+        led = _ledger(vault / "_db_backups" / "hash_index.db")
+        deny_hash(led, "f" * 64, "file removed by hand by Grey", "/review/gone.m4a")
+        led.commit()
+        led.close()
+
+    def test_a_fingerprint_line_lifts_a_track_that_has_no_row(self, vault):
+        self._deny_rowless(vault)
+        r = self._run_lines(vault, ["hash:" + "f" * 64])
+        assert r.returncode == 0, r.stderr
+        assert _denied(vault) == {"hA", "hB"}
+        c = sqlite3.connect(vault / "musaeus.db")
+        row = c.execute(
+            "SELECT file_path, old_value, note FROM events WHERE event_type='UNDENIED_BY_REVIEW'"
+        ).fetchone()
+        c.close()
+        assert row is not None, "the lift left no record"
+        assert row[0] == "/review/gone.m4a" and row[1] == "f" * 64
+        assert "removed by hand" in row[2]
+
+    def test_a_fingerprint_dry_run_changes_nothing(self, vault):
+        self._deny_rowless(vault)
+        r = self._run_lines(vault, ["hash:" + "f" * 64], execute=False)
+        assert r.returncode == 0, r.stderr
+        assert "would lift" in r.stdout
+        assert "f" * 64 in _denied(vault)
+
+    def test_a_fingerprint_that_is_not_denied_is_said_so(self, vault):
+        r = self._run_lines(vault, ["hash:" + "e" * 64])
+        assert r.returncode == 0, r.stderr
+        assert "not on the deny list" in r.stdout
+        assert _denied(vault) == {"hA", "hB"}
+
+    def test_ids_and_fingerprints_may_share_a_file(self, vault):
+        self._deny_rowless(vault)
+        r = self._run_lines(vault, ["1", "hash:" + "f" * 64])
+        assert r.returncode == 0, r.stderr
+        assert _denied(vault) == {"hB"}
