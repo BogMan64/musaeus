@@ -102,12 +102,19 @@ def main() -> int:
             f"{'LIFT' if args.execute else 'would lift'}  [was: {denied[0]}]"
         )
         if args.execute:
-            undeny_hash(led, h)
+            # The event records what THIS call lifted, not the earlier look
+            # (CodeRabbit on #327): another job may have changed it between.
+            lifted = undeny_hash(led, h)
+            if lifted is None:
+                print(f"  hash {h[:16]}: gone from the deny list meanwhile -- nothing lifted")
+                n_not_denied += 1
+                continue
             conn.execute(
                 "INSERT INTO events (run_id, ts, event_type, file_path, old_value, new_value, note) "
                 "VALUES (?,?,?,?,?,?,?)",
                 (run_id, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), "UNDENIED_BY_REVIEW",
-                 denied[2] or "", h, "", f"{args.reason} [was denied: {denied[0]} ({denied[1]})]"),
+                 lifted.get("source_path") or "", h, "",
+                 f"{args.reason} [was denied: {lifted['reason']} ({lifted['denied_at']})]"),
             )
         n_lifted += 1
     if args.execute:
