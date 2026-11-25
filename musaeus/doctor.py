@@ -769,12 +769,46 @@ def diagnose(cfg: MusicConfig) -> Report:
     _sort_titles_that_disagree(cfg, rep)
     _one_picture_many_artists(cfg, rep)
     _artist_tag_is_natural_form(cfg, rep)
+    _archive_lock_state(cfg, rep)
     _catalogued_tracks_reach_the_car(cfg, rep)
     _external_tools_present(cfg, rep)
     _windows_long_paths(rep)
 
     conn.close()
     return rep
+
+
+def _archive_lock_state(cfg: MusicConfig, rep: Report) -> None:
+    """Is the archive locked, and therefore refusing every tag change?
+
+    The immutable flag (+i) is the archive's protection: no tool, and no
+    mistake of this one, can rewrite or delete a master. It also stops the
+    five tag writers, which finish by renaming a written copy over the master
+    (safe_save.change_beside). Whether that is a problem depends on intent,
+    so this is a WARN and it names the unlock and re-lock commands rather
+    than reporting a fault.
+
+    Measured 2026-11-25: 7,975 of 7,975 masters locked. The fault it hid was
+    silent -- write_beside swallowed the refused rename and the stage printed
+    a bare error count (see safe_save.MastersLocked).
+    """
+    archive = getattr(cfg, "alac_archive", None)
+    if archive is None or not Path(archive).is_dir():
+        return
+    from .immutability import locked_in
+
+    n, examples = locked_in(archive)
+    if not n:
+        rep.add("ok", "archive lock flag", "no immutable files: tag changes can be written")
+        return
+    rep.add(
+        "warn",
+        "archive lock flag",
+        f"{n:,} master file(s) are immutable, so tagger, forge, bpm, "
+        f"identity_tags and albumart cannot write them (e.g. {examples[0].name}). "
+        f"To change tags: sudo chattr -R -i {archive}, run, then sudo chattr -R +i {archive}",
+        n,
+    )
 
 
 def _artist_tag_is_natural_form(cfg: MusicConfig, rep: Report) -> None:

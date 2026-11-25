@@ -13,6 +13,7 @@ CLAUDE.md: existence is not completeness -- write aside, verify, then rename.
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 import shutil
 import stat
@@ -21,6 +22,39 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
+
+from .immutability import is_immutable
+
+
+class MastersLocked(RuntimeError):
+    """A finished file refused the change because it is locked (+i).
+
+    Raised BEFORE the copy is made, so a locked archive costs one failed open
+    per file instead of one full copy per file. The stage runner shows this
+    message as the stage's error, which is the whole point: before
+    2026-11-25 the rename failed inside change_beside, write_beside returned
+    "not written", and the stage printed `errors: 7,975` with no reason.
+    """
+
+
+def _locked_message(path: Path) -> str:
+    return (
+        f"cannot change {path.name}: the file is immutable (chattr +i), so no "
+        "rewrite can take its place. This is the archive's protection, not a "
+        "fault. To change master tags: unlock its folder (or the whole archive) "
+        f"with `sudo chattr -R -i {path.parent}`, run the stage, then lock it "
+        f"again with `sudo chattr -R +i {path.parent}`."
+    )
+
+
+def _refused_message(path: Path, exc: OSError) -> str:
+    return (
+        f"could not put the rewritten copy in place at {path.name}: {exc.strerror or exc}. "
+        "The usual causes are the immutable flag (lsattr shows i) or a file owned "
+        f"by another user; check with `lsattr '{path}'`. If it is locked, unlock "
+        f"its folder (or the whole archive) with `sudo chattr -R -i {path.parent}`, "
+        f"run the stage, then lock it again with `sudo chattr -R +i {path.parent}`."
+    )
 
 
 def fsync_file(path: Path | str) -> None:
@@ -121,6 +155,10 @@ def change_beside(
     many files say so before they run.
     """
     tmp = path.with_name(path.name + suffix)
+    # Before the copy, not after: a locked archive then costs one failed open
+    # per file instead of a full copy per file thrown away (2026-11-25).
+    if is_immutable(path):
+        raise MastersLocked(_locked_message(path))
     try:
         # Inside the try: a copy cut short (disk full) is removed too
         # (review of #135-#139, finding 6). Never written through what was at
@@ -130,7 +168,15 @@ def change_beside(
         if check is not None:
             check(tmp)
         fsync_file(tmp)
-        os.replace(tmp, path)
+        try:
+            os.replace(tmp, path)
+        except OSError as exc:
+            # The pre-check answers only where the ioctl works. An ACL, a
+            # read-only mount or another owner arrives here instead, and the
+            # bare "[Errno 1] Operation not permitted" never said which.
+            if exc.errno in (errno.EPERM, errno.EACCES):
+                raise MastersLocked(_refused_message(path, exc)) from exc
+            raise
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp)
@@ -212,6 +258,10 @@ def write_beside(
         change_beside(path, change, suffix=suffix, check=same_length)
     except _WriterRefused:
         return result[-1]
+    except MastersLocked:
+        # Not "the copy failed, file unchanged": the file IS unchanged because
+        # the archive refused the rename, and the stage must say so (2026-11-25).
+        raise
     except Exception:
         if raised:
             raise  # the writer's own error, as callers already handle it
