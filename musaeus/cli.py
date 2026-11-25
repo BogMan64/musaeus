@@ -172,7 +172,7 @@ from .stages import (
     TranscodeStage,
 )
 from .stages.base import BaseStage
-from .stages.preflight import stops_the_run
+from .stages.preflight import stop_message, stops_the_run
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 
@@ -549,6 +549,7 @@ def _run_pipeline_inner(
 
     stage_names = [cls.__name__ for cls in stages]
     completed_names: list[str] = []
+    stopped = False
 
     # Check for resume
     vault_key = str(cfg.db_path)
@@ -674,8 +675,10 @@ def _run_pipeline_inner(
             exit_code = 1
             failed_before = True
 
-        if stops_the_run(stage):
-            print("  STOPPED: ffmpeg self-test failed; no later stage was run.", file=sys.stderr)
+        if stops_the_run(stage, dry_run=ctx.dry_run, more_stages=idx + 1 < len(stages)):
+            print(f"  {stop_message(stage)}", file=sys.stderr)
+            exit_code = 1
+            stopped = True
             break
 
         # An Act's report, written the moment that Act ends rather than at
@@ -699,7 +702,7 @@ def _run_pipeline_inner(
                 print(f"  Full problem list (spreadsheet): {problems_path}")
 
     print()
-    all_ok = all(r.success for r in ctx.stage_results)
+    all_ok = not stopped and all(r.success for r in ctx.stage_results)
     if all_ok:
         _clear_resume()
         print(f"  Pipeline complete.  run_id={ctx.run_id}")

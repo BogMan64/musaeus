@@ -53,7 +53,7 @@ from .stages import (
     TributeQuarantineStage,
 )
 from .stages.base import BaseStage
-from .stages.preflight import stops_the_run
+from .stages.preflight import stop_message, stops_the_run
 from .workspace import doc_root, list_docs, list_worktrees, unmerged_commits
 
 logger = logging.getLogger(__name__)
@@ -541,9 +541,10 @@ class Console:
 
                 run_log = RunLog(self._config.runs_root, ctx.run_id)
                 stages: list[BaseStage] = [cls() for cls in selected]
+                stopped = False
 
                 with _network_authority(dry_run):
-                    for stage in stages:
+                    for i, stage in enumerate(stages):
                         print()
                         print(_c(f"  ── {stage.NAME.upper()} ──", _BOLD, _BLUE))
                         result = stage.execute(ctx)
@@ -558,12 +559,13 @@ class Console:
                         for err in result.errors:
                             _err(f"  ERROR: {err}")
 
-                        if stops_the_run(stage):
-                            _err("  STOPPED: ffmpeg self-test failed; no later stage was run.")
+                        if stops_the_run(stage, dry_run=dry_run, more_stages=i + 1 < len(stages)):
+                            _err(f"  {stop_message(stage)}")
+                            stopped = True
                             break
 
                 print()
-                all_ok = all(r.success for r in ctx.stage_results)
+                all_ok = not stopped and all(r.success for r in ctx.stage_results)
                 if all_ok:
                     _ok(f"{label} complete  run_id={ctx.run_id}")
                 else:

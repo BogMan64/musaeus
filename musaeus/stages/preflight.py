@@ -137,6 +137,9 @@ class PreflightStage(BaseStage):
         # unsafe to let a pipeline alter files. The runner checks this narrow
         # flag after it has printed the report.
         self.ffmpeg_selftest_failed = False
+        #: The FAIL lines of the report just made, kept so the runner can stop
+        #: before a later stage changes a file (Grey, 2026-11-25).
+        self.failures: list[str] = []
 
     def validate(self, ctx: RunContext) -> None:
         # Nothing to validate before validating -- if ctx/config didn't
@@ -661,6 +664,10 @@ class PreflightStage(BaseStage):
             self._offer_installs(ok, warn, fail)
             self._offer_api_keys(ok)
 
+        # Read after the install offers, so a dependency that could not be
+        # installed counts as the FAIL it is.
+        self.failures = list(fail)
+
         result.files_processed = len(ok) + len(warn) + len(fail)
         result.files_changed = len(ok)
         result.files_skipped = len(warn)
@@ -699,12 +706,45 @@ class PreflightStage(BaseStage):
         return self._report(ctx, dry_run=False)
 
 
-def stops_the_run(stage: object) -> bool:
+def failing_checks(stage: object) -> list[str]:
+    """The FAIL lines a finished preflight reported; empty for any other stage."""
+    if not isinstance(stage, PreflightStage):
+        return []
+    return list(stage.failures)
+
+
+def stops_the_run(stage: object, *, dry_run: bool = False, more_stages: bool = True) -> bool:
     """True when a finished stage must stop the pipeline before the next one.
 
-    Preflight is report-only, with one exception: a failed ffmpeg self-test,
-    because later stages must not change files while damage checks are
-    untrusted. The CLI and the console both ask this, so neither runner can
-    forget it.
+    Preflight used to be report-only with one exception: a failed ffmpeg
+    self-test. Every other FAIL -- a read-only archive, a critically full
+    disk, a corrupt catalogue, a missing command -- was printed and the
+    pipeline went on to change files anyway (Grey, 2026-11-25).
+
+    A FAIL is a measured reason the next stage cannot be trusted with the
+    files, so a real run now stops there. Three things are not a stop:
+
+    - a dry run, which changes nothing and asks for the preview;
+    - a preflight that is the last stage, as `musaeus preflight` is: there is
+      nothing after it to protect, and the command stays the report it says;
+    - a WARN, such as the archive's lock: a note for the operator, not a
+      measured reason the next stage cannot run.
     """
-    return isinstance(stage, PreflightStage) and stage.ffmpeg_selftest_failed
+    if not isinstance(stage, PreflightStage) or dry_run or not more_stages:
+        return False
+    return bool(stage.failures) or stage.ffmpeg_selftest_failed
+
+
+def stop_message(stage: object) -> str:
+    """One line naming why the pipeline stopped after this stage."""
+    if not isinstance(stage, PreflightStage):
+        return "STOPPED: no later stage was run."
+    fails = stage.failures
+    if not fails:
+        return "STOPPED: the ffmpeg self-test failed; no later stage was run."
+    more = f" (and {len(fails) - 1} more)" if len(fails) > 1 else ""
+    return (
+        f"STOPPED: preflight reported FAIL: {fails[0]}{more}. "
+        "No later stage was run, so nothing was changed. Fix the FAIL line(s) "
+        "above, then run again."
+    )
