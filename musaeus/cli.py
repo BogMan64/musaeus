@@ -806,6 +806,37 @@ def _end_of_run_records(cfg, ctx: RunContext, run_log: RunLog) -> bool:  # type:
 # ── Reset command ─────────────────────────────────────────────────────────────
 
 
+def _cmd_lock() -> int:
+    """Say who is running, and who holds the masters lock. Exit 1 if anyone is.
+
+    Replaces the pgrep-style gate: that looked only for a musaeus subcommand,
+    so a repair script holding the masters lock was invisible, and a build
+    running from the main folder looked idle (2026-11-25). A script that takes
+    the lock leaves a holder record; this reads it, so the gate and the lock
+    finally answer the same question.
+
+    Read-only by construction: no vault directory is created, so it is safe to
+    ask before the first run and on a path that does not exist.
+    """
+    import os
+
+    from .config import get_config
+    from .edition_build import _proc_table, busy_musaeus
+    from .masters_lock import describe_holders
+
+    cfg = get_config()
+    busy: list[str] = [f"masters lock: {h}" for h in describe_holders(cfg.runs_root)]
+    for pid in busy_musaeus(_proc_table(), os.getpid()):
+        busy.append(f"musaeus job: pid {pid}")
+    if not busy:
+        print("clear: no MUSAEUS job is running and no script holds the masters lock")
+        return 0
+    print("busy:")
+    for line in busy:
+        print(f"  {line}")
+    return 1
+
+
 def _cmd_reset() -> int:
     """Wipe the MUSAEUS database for a completely fresh start."""
     try:
@@ -1849,6 +1880,19 @@ def _build_parser() -> argparse.ArgumentParser:
     # dry-run shortcut
     sub.add_parser("dry-run", help="Alias for: run --dry-run")
 
+    # who is running, and who holds the masters lock (read-only, creates nothing)
+    lock_p = sub.add_parser(
+        "lock",
+        help="Who is running MUSAEUS, and who holds the masters lock (read-only)",
+    )
+    lock_p.add_argument(
+        "what",
+        nargs="?",
+        default="status",
+        choices=("status",),
+        help="status (the default); exits 1 when any job is running",
+    )
+
     # preflight
     preflight_p = sub.add_parser(
         "preflight", help="Environment checks (commands, packages, disk, DB) — report-only"
@@ -2592,6 +2636,12 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(2)
+
+    # ── Who is running? Before the first-run wizard, before any mkdir ─────────
+    # A shell or an AI runs this before starting work. It must answer on a
+    # vault that does not exist yet, and must not create one (2026-11-25).
+    if command == "lock":
+        sys.exit(_cmd_lock())
 
     # ── First-run check: trigger wizard if no config exists ───────────────────
     from .setup import needs_setup

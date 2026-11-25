@@ -163,16 +163,24 @@ class MastersBusy(RuntimeError):
     """Another job holds the masters lock in a mode this one cannot share."""
 
 
-def _lock_dir(runs_root: Path | str) -> Path:
+def _lock_dir(runs_root: Path | str, *, create: bool = True) -> Path:
     d = Path(runs_root) / "locks"
-    os.makedirs(d, exist_ok=True)
+    if create:
+        os.makedirs(d, exist_ok=True)
     return d
 
 
 def holders(runs_root: Path | str) -> list[dict]:
-    """Who holds the lock now, as far as their records say (dead ones dropped)."""
-    out = []
-    for f in sorted((_lock_dir(runs_root) / _HOLDERS).glob("*.json")):
+    """Who holds the lock now, as far as their records say (dead ones dropped).
+
+    Asks without creating anything: a status check must be safe to run
+    against a path that does not exist (2026-11-25).
+    """
+    out: list[dict] = []
+    d = _lock_dir(runs_root, create=False)
+    if not d.is_dir():
+        return out
+    for f in sorted((d / _HOLDERS).glob("*.json")):
         try:
             h = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -180,6 +188,14 @@ def holders(runs_root: Path | str) -> list[dict]:
         if process_alive(int(h.get("pid", 0))):
             out.append(h)
     return out
+
+
+def describe_holders(runs_root: Path | str) -> list[str]:
+    """One line per live holder: what it is, its pid, its mode and when it began."""
+    return [
+        f"{h.get('what', '?')} (pid {h.get('pid')}, {h.get('mode')}, since {h.get('since', '?')})"
+        for h in holders(runs_root)
+    ]
 
 
 def _describe(hs: list[dict]) -> str:
