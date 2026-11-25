@@ -9,6 +9,15 @@ month, newest first, and name the pull requests. The full record is
 
 ## [Unreleased]
 
+### Fixed
+
+- A locked archive is named, not silently skipped. `chattr +i` on the masters
+  made every tag write fail, and `write_beside` reported the refusal as "not
+  written": a stage printed `errors: 7,975` with no cause, after copying every
+  master once for nothing. `safe_save` now refuses a locked file before the
+  copy and says which `chattr` commands unlock it; preflight warns before the
+  run and `doctor` reports the state.
+
 ### Changed
 
 - No personal folders in the repository. The helper scripts, the nightly
