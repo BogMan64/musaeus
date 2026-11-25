@@ -63,6 +63,8 @@ Review commands:
     health-report    Show validation issues summary
     status           Show library status
     runs             List recent pipeline runs
+    lock             Who is running MUSAEUS and who holds the masters lock
+                     (read-only; exit 1 when any job is running)
 
 Options:
     --dry-run        Preview mode (no mutations)
