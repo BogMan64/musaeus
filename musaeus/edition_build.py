@@ -762,8 +762,8 @@ READ_ONLY_COMMANDS = frozenset(
 )
 
 
-def _musaeus_subcommand(argv: list[str]) -> str | None:
-    """The subcommand of a musaeus invocation, "" for none, None if not musaeus."""
+def _musaeus_words(argv: list[str]) -> list[str] | None:
+    """The non-flag words after the musaeus command; None if this is not musaeus."""
     for i, word in enumerate(argv):
         if word == "-m" and i + 1 < len(argv) and argv[i + 1] in ("musaeus", "musaeus.cli"):
             rest = argv[i + 2 :]
@@ -771,8 +771,33 @@ def _musaeus_subcommand(argv: list[str]) -> str | None:
             rest = argv[i + 1 :]
         else:
             continue
-        return next((w for w in rest if not w.startswith("-")), "")
+        return [w for w in rest if not w.startswith("-")]
     return None
+
+
+def _musaeus_subcommand(argv: list[str]) -> str | None:
+    """The subcommand of a musaeus invocation, "" for none, None if not musaeus."""
+    words = _musaeus_words(argv)
+    if words is None:
+        return None
+    return words[0] if words else ""
+
+
+def is_read_only(argv: list[str]) -> bool:
+    """True when this invocation cannot move masters.
+
+    `musaeus lock` and `musaeus lock status` only read, so two of them must
+    not report each other as active work (CodeRabbit, #332). The SECOND word
+    is read for `lock` rather than the command name alone: a future
+    `lock <something-else>` may write, and adding "lock" to
+    READ_ONLY_COMMANDS would exempt it in advance.
+    """
+    words = _musaeus_words(argv)
+    if not words:
+        return False
+    if words[0] in READ_ONLY_COMMANDS:
+        return True
+    return words[0] == "lock" and (len(words) == 1 or words[1] == "status")
 
 
 def busy_musaeus(procs: Iterable[tuple[int, int, str, list[str]]], me: int) -> list[int]:
@@ -793,8 +818,7 @@ def busy_musaeus(procs: Iterable[tuple[int, int, str, list[str]]], me: int) -> l
     for pid, (_, name, argv) in table.items():
         if pid in mine or not (name.startswith("python") or name == "musaeus"):
             continue
-        sub = _musaeus_subcommand(argv)
-        if sub is not None and sub not in READ_ONLY_COMMANDS:
+        if _musaeus_words(argv) is not None and not is_read_only(argv):
             found.append(pid)
     return found
 

@@ -9,6 +9,14 @@ month, newest first, and name the pull requests. The full record is
 
 ## [Unreleased]
 
+### Added
+
+- `musaeus lock status`: names every live holder of the masters lock
+  (what, pid, mode, since) and every running MUSAEUS job, and exits 1 when
+  there is any. Read-only, and it creates nothing. The shell gate
+  (`any_musaeus.py`) reads the same records, so a repair script holding the
+  lock is no longer invisible to it.
+
 ### Fixed
 
 - A locked archive is named, not silently skipped. `chattr +i` on the masters
