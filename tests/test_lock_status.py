@@ -82,3 +82,44 @@ def test_asking_creates_no_directories(tmp_path, monkeypatch, capsys):
 
     assert cli._cmd_lock() == 0
     assert not cfg.exists(), "lock status must not create the vault"
+
+
+# ── Two status runs must not see each other, and only `lock status` is free ──
+
+
+def _procs(*argvs: list[str]) -> list[tuple[int, int, str, list[str]]]:
+    return [(10 + i, 1, "python3", argv) for i, argv in enumerate(argvs)]
+
+
+def test_asking_twice_does_not_make_either_run_busy():
+    """A status run reads the process table; it must not count its twin."""
+    from musaeus.edition_build import busy_musaeus
+
+    procs = _procs(
+        ["python3", "-m", "musaeus", "lock", "status"],
+        ["/usr/bin/python3", "/usr/local/bin/musaeus", "lock"],
+        ["python3", "-m", "musaeus.cli", "lock", "status"],
+    )
+    assert busy_musaeus(procs, me=99) == []
+
+
+def test_a_real_job_is_still_busy_beside_a_status_run():
+    from musaeus.edition_build import busy_musaeus
+
+    procs = _procs(
+        ["python3", "-m", "musaeus", "lock", "status"],
+        ["python3", "-m", "musaeus", "run"],
+    )
+    assert busy_musaeus(procs, me=99) == [11]
+
+
+def test_a_future_writing_lock_subcommand_is_not_exempt_in_advance():
+    """If `lock` grows a writing verb, it is busy until it is listed as read-only."""
+    from musaeus.edition_build import is_read_only
+
+    assert is_read_only(["python3", "-m", "musaeus", "lock", "status"]) is True
+    assert is_read_only(["python3", "-m", "musaeus", "lock"]) is True
+    assert is_read_only(["python3", "-m", "musaeus", "lock", "acquire"]) is False
+    assert is_read_only(["python3", "-m", "musaeus", "run"]) is False
+    assert is_read_only(["python3", "-m", "musaeus"]) is False
+    assert is_read_only(["python3", "-m", "pytest"]) is False
