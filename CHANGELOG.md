@@ -51,7 +51,12 @@ month, newest first, and name the pull requests. The full record is
   became an empty vault and the run filed music into it. The pipeline and
   the console now stop and name the missing path; `musaeus setup` is the
   command that makes a vault.
-
+- Seven more scripts take the masters lock before they write:
+  `backfill_identity_tags`, `musaeus_migrate_to_archive`,
+  `musaeus_relink_recovered_dupes`, `prune_recovery`,
+  `repair_album_artist`, `repair_artist_casing` and
+  `split_artist_sort_form`. Each took nothing before, so a second job
+  could change the masters beside it. A dry run stays lock-free.
 
 ### Changed
 
