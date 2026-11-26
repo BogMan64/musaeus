@@ -171,6 +171,37 @@ class PreflightStage(BaseStage):
             except OSError as exc:
                 fail.append(f"{label}: not writable ({path}): {exc}")
 
+    def _check_archive_lock(self, ctx: RunContext, ok: list, warn: list, fail: list) -> None:
+        """Say the archive is immutable BEFORE five writers fail on it.
+
+        tagger, forge, bpm, identity_tags and albumart all put a written copy
+        in place of the master (safe_save.change_beside), which the kernel
+        refuses while the file carries the immutable flag. Measured
+        2026-11-25: 7,975 of 7,975 masters carry it, and the last tagger run
+        had 0 changes -- so the fault was one album fix away and invisible.
+
+        A WARN, not a FAIL: a run with nothing to change needs no unlock, and
+        stopping every run because the archive is protected would be wrong.
+        """
+        archive = getattr(ctx.config, "alac_archive", None)
+        if archive is None or not Path(archive).is_dir():
+            return  # nothing to read; the directories check owns the missing archive
+        from ..immutability import lock_hint, locked_in, unlock_hint
+
+        n, examples = locked_in(archive)
+        if not n:
+            # Not "writable": a file that could not be opened is counted as
+            # unlocked, so the scan supports only this narrower claim.
+            ok.append(f"archive lock flag: no immutable files detected under {archive}")
+            return
+        warn.append(
+            f"archive is locked: {n:,} master file(s) carry the immutable flag "
+            f"(e.g. {examples[0].name}). tagger, forge, bpm, identity_tags and "
+            "albumart cannot write them, and will stop with 'the file is "
+            f"immutable'. To change master tags: {unlock_hint(archive)}, "
+            f"run the stage, then {lock_hint(archive)}."
+        )
+
     def _check_commands(self, ok: list, warn: list, fail: list) -> None:
         for cmd, used_by, apt_pkg in _REQUIRED_COMMANDS:
             found = shutil.which(cmd)
@@ -596,6 +627,7 @@ class PreflightStage(BaseStage):
         fail: list[str] = []
 
         self._check_directories(ctx, ok, warn, fail)
+        self._check_archive_lock(ctx, ok, warn, fail)
         self._check_commands(ok, warn, fail)
         # A preview is intentionally zero-mutation. The canary writes its
         # version cache on success, so reserve it for a real preflight run.

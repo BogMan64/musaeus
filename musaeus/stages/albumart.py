@@ -186,7 +186,19 @@ def _image_format(data: bytes) -> str | None:
     return None
 
 
-def _embed_art(audio_path: str, art_path: Path) -> bool:
+def _embed_failure_note(failed: list[str], reasons: list[str]) -> str:
+    """The stage's line for failed embeds: the count and the first cause.
+
+    "check logs" alone hid a locked archive behind "7,975 embed failures"
+    (2026-11-25). The first reason is the one worth reading; the rest are
+    per-file and would bury it.
+    """
+    because = next((r for r in reasons if r), "")
+    tail = f": {because[:200]}" if because else " — check logs."
+    return f"{len(failed)} embed failure(s){tail}"
+
+
+def _embed_art(audio_path: str, art_path: Path, why: list[str] | None = None) -> bool:
     """Put the cover at *art_path* into *audio_path*. True on success; on any
     failure the file is as it was.
 
@@ -262,6 +274,11 @@ def _embed_art(audio_path: str, art_path: Path) -> bool:
         change_beside(src, put, suffix=_ART_SUFFIX, check=check)
     except Exception as exc:  # noqa: BLE001 -- art is a nicety; the file is as it was
         logger.warning("[albumart] could not add the cover to %s: %s", src.name, exc)
+        if why is not None:
+            # The stage summary says why, not only how many: a locked archive
+            # (safe_save.MastersLocked) must be named in the run output
+            # (CodeRabbit, #331).
+            why.append(str(exc))
         return False
     return True
 
@@ -542,6 +559,9 @@ class AlbumArtStage(BaseStage):
         missing_art: list[str] = []
         embedded_count = 0
         embed_failed: list[str] = []
+        #: Why each embed failed, in order -- the first one names the cause
+        #: in the stage summary instead of "check logs".
+        embed_reasons: list[str] = []
         undersized: list[str] = []
         upgraded_count = 0
 
@@ -590,7 +610,7 @@ class AlbumArtStage(BaseStage):
                         except OSError as exc:
                             logger.warning("[albumart] could not write %s: %s", target, exc)
                         else:
-                            if _embed_art(fp, target):
+                            if _embed_art(fp, target, embed_reasons):
                                 upgraded_count += 1
                                 new_px = max(image_dimensions(blob) or (0, 0))
                                 ctx.conn.execute(
@@ -627,7 +647,7 @@ class AlbumArtStage(BaseStage):
                             sidecar.name,
                             Path(fp).name,
                         )
-                        ok = _embed_art(fp, sidecar)
+                        ok = _embed_art(fp, sidecar, embed_reasons)
                         if ok:
                             embedded_count += 1
                             result.files_changed += 1
@@ -668,7 +688,7 @@ class AlbumArtStage(BaseStage):
         if embedded_count:
             result.notes.append(f"Embedded sidecar art in {embedded_count} file(s).")
         if embed_failed:
-            result.notes.append(f"{len(embed_failed)} embed failure(s) — check logs.")
+            result.notes.append(_embed_failure_note(embed_failed, embed_reasons))
         if undersized:
             result.notes.append(
                 f"{len(undersized)} file(s) carried art under {MIN_EDGE_PX}px; "
