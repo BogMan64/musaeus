@@ -162,6 +162,8 @@ def test_selftest_failure_stops_pipeline_before_next_stage(disposable_vault, mon
     monkeypatch.setattr(cli, "get_config", lambda: disposable_vault.cfg)
     monkeypatch.setattr(cli, "_RESUME_FILE", disposable_vault.config_home / "resume.json")
     monkeypatch.setattr(preflight.PreflightStage, "_check_ffmpeg_selftest", forced_failure)
+    # The pipeline runs inside a vault that exists; making one is setup's job.
+    disposable_vault.cfg.ensure_dirs()
 
     assert cli._run_pipeline_inner([preflight.PreflightStage, WouldChangeFiles], dry_run=False) == 1
     assert not called
