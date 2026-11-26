@@ -366,6 +366,15 @@ class DisposableVault:
     def new_context(self, conn: sqlite3.Connection, dry_run: bool = False) -> RunContext:
         return RunContext.new(self.cfg, conn, dry_run=dry_run)
 
+    def make_root(self) -> None:
+        """Lay out the vault root only, as `musaeus setup` would.
+
+        Since #336 a run works inside a vault that exists and never makes
+        one, so a test that exercises a real run has to say the vault is
+        there. The subdirectories are still the run's own job.
+        """
+        self.root.mkdir(parents=True, exist_ok=True)
+
 
 def make_disposable_vault(tmp_path: Path, name: str = "vault") -> DisposableVault:
     """Build a DisposableVault rooted entirely under *tmp_path*."""

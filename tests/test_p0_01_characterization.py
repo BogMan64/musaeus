@@ -227,6 +227,11 @@ class TestResumeRecordsFailedStageAsCompleteCharacterization:
 
         monkeypatch.setattr(NearDupeStage, "validate", _always_fail_validate)
 
+        # A run works inside a vault that exists and never makes one
+        # (Grey, 2026-11-25, #336). The subject here is resume, so the vault
+        # is laid out first.
+        disposable_vault.make_root()
+
         # The subject here is resume, not preflight. A real run now stops on a
         # preflight FAIL, and this test machine's /tmp (5.8 GB free) and the CI
         # runner (no fpcalc) both produce one -- so NearDupeStage would never
