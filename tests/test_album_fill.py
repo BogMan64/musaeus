@@ -445,13 +445,183 @@ def test_itunes_earliest_exact_studio_album_wins():
 
 @pytest.mark.parametrize(
     ("album", "count"),
-    [("Rosanna - Single", 2), ("Rosanna - EP", 4), ("Toto IV (Deluxe Edition)", 20), ("Toto IV (Remastered)", 10),
-     ("Greatest Hits", 18), ("Toto IV", 3)],
+    [("Rosanna - Single", 2), ("Rosanna - EP", 4), ("Greatest Hits", 18), ("Toto IV", 3)],
 )  # fmt: skip
-def test_itunes_skips_singles_eps_reissues_compilations(album, count):
+def test_itunes_skips_singles_eps_compilations_and_short_albums(album, count):
     assert (
         af.choose_from_itunes(
             [_it("Rosanna", album, "1982-03-01", count=count)], "Toto", "Rosanna"
+        )[0]
+        is None
+    )
+
+
+# ── Grey, 2026-11-26: the two refusals that were too strict ──────────────────
+
+
+def test_a_single_version_candidate_is_the_same_song():
+    """A single version is the same studio performance cut for radio, so its
+    album may answer for the song. The album is still held to every other
+    rule: this one is a plain album, and MusicBrainz confirms it later."""
+    items = [_it("Rosanna (Single Version)", "Toto IV", "1982-03-01")]
+    assert af.choose_from_itunes(items, "Toto", "Rosanna")[0] == "Toto IV"
+
+    dz = {
+        "artist": {"name": "Toto"},
+        "title": "Rosanna (Single Version)",
+        "album": {"title": "Toto IV"},
+    }
+    assert af.choose_from_deezer([dz], "Toto", "Rosanna")[0] == "Toto IV"
+
+
+def test_our_own_title_naming_a_single_version_is_still_the_song():
+    """ "Knock On Wood (Single Version)" is a studio recording: text sources
+    may answer for it. A live or remixed title still may not."""
+    assert af._names_a_version("Knock On Wood (Single Version)") is False
+    assert af._names_a_version("Knock On Wood (Live)") is True
+    assert af._names_a_version("Knock On Wood (Remix)") is True
+
+
+@pytest.mark.parametrize(
+    "album",
+    [
+        "Toto IV (Deluxe Edition)",
+        "Toto IV (Remastered)",
+        "Toto IV [Remastered 2015]",
+        "Toto IV {Deluxe Edition}",
+        "Toto IV - Deluxe Edition",
+    ],
+)  # fmt: skip
+def test_a_reissue_album_confirms_the_plain_name(album):
+    """The album is the same record; the edition label is what is dropped."""
+    assert (
+        af.choose_from_itunes([_it("Rosanna", album, "1982-03-01")], "Toto", "Rosanna")[0]
+        == "Toto IV"
+    )
+
+
+def test_deezer_writes_the_plain_album_not_its_edition_label():
+    dz = {
+        "artist": {"name": "Toto"},
+        "title": "Rosanna",
+        "album": {"title": "Toto IV (Deluxe Edition)"},
+    }
+    assert af.choose_from_deezer([dz], "Toto", "Rosanna")[0] == "Toto IV"
+
+
+def test_a_reissue_label_we_cannot_remove_whole_is_refused_not_half_written():
+    """Half a name is worse than none, and writing the suffix is not allowed.
+
+    A bare trailing "Remastered", with no bracket and no " - ", is not a label
+    we can lift off whole -- so the row is left empty."""
+    assert (
+        af.choose_from_itunes(
+            [_it("Rosanna", "Toto IV Remastered", "1982-03-01")], "Toto", "Rosanna"
+        )[0]
+        is None
+    )
+    assert (
+        af.choose_from_itunes(
+            [_it("Rosanna", "(Deluxe Edition)", "1982-03-01")], "Toto", "Rosanna"
+        )[0]
+        is None
+    )
+
+
+def test_a_reissue_of_a_collection_is_still_a_collection():
+    """Stripping the label must not smuggle a compilation past its own rule."""
+    assert (
+        af.choose_from_itunes(
+            [_it("Africa", "The Essential Toto (Remastered)", "1982-01-01", count=30)],
+            "Toto",
+            "Africa",
+        )[0]
+        is None
+    )
+    assert (
+        af.choose_from_itunes(
+            [_it("Africa", "Absolutely Live (Deluxe Edition)", "1982-01-01", count=30)],
+            "Toto",
+            "Africa",
+        )[0]
+        is None
+    )
+
+
+def test_an_edition_word_never_truncates_the_album_name():
+    """The first cut of this rule read the " - " tail too greedily and turned
+    "The Supremes Sing Holland - Dozier - Holland (Expanded Edition)" into
+    "The Supremes Sing Holland - Dozier" (found auditing the 4,226 album names
+    in the catalogue, 2026-11-26). Only a whole bracket, or a whole edition
+    label after the last " - ", is removed."""
+    album = "The Supremes Sing Holland - Dozier - Holland (Expanded Edition)"
+    assert (
+        af.choose_from_itunes([_it("Baby Love", album, "1964-01-01")], "Toto", "Baby Love")[0]
+        == "The Supremes Sing Holland - Dozier - Holland"
+    )
+
+
+@pytest.mark.parametrize(
+    ("album", "expected"),
+    [
+        ("Abbey Road (Remastered 2009)", "Abbey Road"),
+        ("Blood, Sweat & Tears (Expanded Edition)", "Blood, Sweat & Tears"),
+        (
+            "Country Music - A Film By Ken Burns (The Soundtrack) [Deluxe]",
+            "Country Music - A Film By Ken Burns (The Soundtrack)",
+        ),
+        # A tail with words of its own is part of the name, not a label.
+        ("Pretty Woman - Special Edition Motion Picture Soundtrack", None),
+        # A marker that is the whole name is not a label to lift off.
+        ("Capitol 50th Anniversary The Collectors Series", None),
+        ("Toto IV Remastered", None),
+    ],
+)  # fmt: skip
+def test_real_catalogue_album_names_are_kept_whole(album, expected):
+    """Six of the 4,226 album names already in the catalogue, chosen for the
+    traps: a rule word inside the name, a tail that is not a label, and a name
+    that is only a label."""
+    assert (
+        af.choose_from_itunes([_it("Baby Love", album, "1964-01-01")], "Toto", "Baby Love")[0]
+        == expected
+    )
+
+
+def test_a_bracket_naming_a_recording_is_not_an_edition_label():
+    """CodeRabbit on #335, 2026-11-26: a bracket was stripped because it
+    CONTAINED an edition word, so "Rattle And Hum (Live, Remastered)" became
+    "Rattle And Hum" -- a live record wearing a studio name, and the live
+    filter could no longer see it. Only a bracket whose whole content is an
+    edition label is removed."""
+    album = "Rattle And Hum (Live, Remastered)"
+    items = [_it("Desire", album, "1988-10-10", artist="U2")]
+    assert af.choose_from_itunes(items, "U2", "Desire")[0] is None
+
+
+def test_a_dash_label_may_hold_a_hyphen_of_its_own():
+    """ " - Re-issue" was unreachable: the tail pattern excluded hyphens, so
+    the label could never be read. Every dash is tried in turn now."""
+    assert (
+        af.choose_from_itunes(
+            [_it("Rosanna", "Toto IV - Re-issue", "1982-03-01")], "Toto", "Rosanna"
+        )[0]
+        == "Toto IV"
+    )
+    # Earlier dashes belong to the name, and stay.
+    assert (
+        af.choose_from_itunes(
+            [_it("Rosanna", "Toto IV - Part 1 - Remastered", "1982-03-01")],
+            "Toto",
+            "Rosanna",
+        )[0]
+        == "Toto IV - Part 1"
+    )
+
+
+def test_an_album_that_is_only_the_title_plus_a_label_is_still_not_an_album():
+    assert (
+        af.choose_from_itunes(
+            [_it("Rosanna", "Rosanna (Deluxe Edition)", "1982-03-01")], "Toto", "Rosanna"
         )[0]
         is None
     )

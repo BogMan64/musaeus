@@ -22,9 +22,11 @@ their rules unchanged:
   3. Deezer     exact artist + exact title, studio albums only (no greatest
                 hits, collections, live-at...), one unambiguous album.
   4. iTunes     the same strict rules (Grey, 2026-10-03): exact artist and
-                title, no single/EP/compilation/reissue/live album, earliest
-                release (iTunes alone picked "Built for Speed", dated 1974,
-                for a 1981 Stray Cats song).
+                title, no single/EP/compilation/live album, earliest release
+                (iTunes alone picked "Built for Speed", dated 1974, for a
+                1981 Stray Cats song). A reissue label -- "(Deluxe Edition)",
+                "(Remastered)" -- is removed and the plain album confirmed
+                (Grey, 2026-11-26); the label itself is never written.
 
 The album a text source (2, 3, 4) names is taken only if MusicBrainz confirms
 the song is on that official studio album; otherwise the next source is asked.
@@ -96,9 +98,13 @@ _COMMIT_EVERY = 25
 _MB_CANDIDATES_MAX = 6  # cap MusicBrainz calls per track
 
 _DISCOGS_BAD = {"single", "ep", "compilation", "unofficial release", "promo", "sampler"}
+#: A title naming a DIFFERENT recording: a live take, a remix, a demo ...
+#: A ``Single Version`` is deliberately NOT here (Grey, 2026-11-26): it is the
+#: same studio performance cut for radio, so a source naming it is answering
+#: about our song. Its album is still held to every other rule.
 _VERSION_QUALIFIER = re.compile(
     r"\b(live|unplugged|in concert|remix|re-?recorded|acoustic|demo|"
-    r"radio edit|single version|extended|instrumental|karaoke|reprise|"
+    r"radio edit|extended|instrumental|karaoke|reprise|"
     r"mono|stereo version|alternate)\b",
     re.I,
 )
@@ -203,12 +209,98 @@ _DEEZER_BAD_ALBUM = re.compile(
 )
 
 
-#: An iTunes album that is a reissue, not the original (Grey: the original wins).
-_ITUNES_REISSUE = re.compile(
-    r"\b(deluxe|remaster(ed)?|anniversary|expanded|re-?issue|bonus|special edition|"
-    r"legacy edition|collector'?s)\b",
+#: Words that label an EDITION of an album, not a different album (Grey: the
+#: original wins). Grey, 2026-11-26: such a name may confirm the plain album,
+#: but the suffix is never written into a tag.
+_REISSUE_WORDS = (
+    r"deluxe|remaster(?:ed)?|anniversary|expanded|re-?issue|bonus|"
+    r"special edition|legacy edition|collector'?s"
+)
+_REISSUE_MARKER = re.compile(rf"\b(?:{_REISSUE_WORDS})\b", re.I)
+
+#: A bracketed group that holds an edition word: "(Deluxe Edition)",
+#: "[Remastered 2015]", "101(remaster)". Only a whole bracketed group is
+#: removed -- never a word of the album's own name, which is how a first cut
+#: turned "The Supremes Sing Holland - Dozier - Holland (Expanded Edition)"
+#: into "The Supremes Sing Holland - Dozier" (found 2026-11-26).
+_REISSUE_BRACKET = re.compile(
+    rf"[{OPEN}]\s*([^{OPEN}{CLOSE}]*\b(?:{_REISSUE_WORDS})\b[^{OPEN}{CLOSE}]*)[{CLOSE}]",
     re.I,
 )
+
+#: A " - " tail that IS the label and nothing else: " - Deluxe Edition",
+#: " - Remastered", " - 2015 Remaster", " - 50th Anniversary Edition". A tail
+#: with words of its own (" - Special Edition Motion Picture Soundtrack") is
+#: part of the name, so it is left alone and the name is refused instead.
+_DASH_LABEL = re.compile(
+    r"^(?:super\s+)?(?:(?:deluxe|expanded|special|legacy|collector'?s)\s+version"
+    r"|(?:deluxe|expanded|special|legacy|collector'?s)\s+edition"
+    r"|deluxe(?:\s+edition)?"
+    r"|(?:digitally\s+)?remaster(?:ed)?(?:\s+(?:version|\d{4}))?"
+    r"|\d{4}\s+remaster(?:ed)?"
+    r"|re-?issue(?:\s+edition)?"
+    r"|\d{1,2}(?:st|nd|rd|th)\s+anniversary(?:\s+(?:edition|deluxe(?:\s+edition)?))?"
+    r")$",
+    re.I,
+)
+
+
+#: What may remain inside a bracket once the edition words are taken out:
+#: "Expanded Edition", "Super Deluxe / 2024 Remaster", "50th Anniversary
+#: Edition", "Reissue Edition With Bonus Tracks". Anything else -- "Live,
+#: Remastered", "The Original Movie Soundtrack Deluxe Edition" -- is part of
+#: the album's name, and stripping it would turn a live record into a
+#: studio-looking name (CodeRabbit on #335, 2026-11-26).
+_EDITION_FILLER = re.compile(
+    rf"\b(?:{_REISSUE_WORDS}|edition|version|tracks?|super|digitally|definitive|"
+    r"the|of|with|and|deluxe)\b|\d{4}|\d{1,2}(?:st|nd|rd|th)|[\s/&,+.'\-]",
+    re.I,
+)
+
+
+def _is_pure_label(inner: str) -> bool:
+    """True when a bracketed group holds edition words and nothing else."""
+    return not _EDITION_FILLER.sub("", inner or "").strip(" .-")
+
+
+def plain_album(name: str) -> str | None:
+    """The album's own name, with an edition label removed; None if unsure.
+
+    "Toto IV (Deluxe Edition)" is the album "Toto IV" reissued, so its plain
+    name may be used to confirm the album -- but "… (Deluxe Edition)" is never
+    written into a tag (Grey, 2026-11-26). A marker that is not a label of its
+    own ("Toto IV Remastered", "For Collectors Only") makes the name unusable:
+    half a name is worse than none, and the suffix may not be written.
+    """
+    n = (name or "").strip()
+    if not n:
+        return None
+    if not _REISSUE_MARKER.search(n):
+        return n
+    plain = n
+    while True:
+        m = _REISSUE_BRACKET.search(plain)
+        if m and _is_pure_label(m.group(1)):
+            plain = f"{plain[: m.start()]} {plain[m.end() :]}"
+            continue
+        # The tail after a " - " may hold a hyphen of its own (" - Re-issue"),
+        # so every dash is tried in turn and the first whole label wins.
+        tail = next(
+            (
+                (d.start(), plain[d.end() :])
+                for d in re.finditer(r"\s+-\s+", plain)
+                if _DASH_LABEL.match(plain[d.end() :].strip())
+            ),
+            None,
+        )
+        if tail:
+            plain = plain[: tail[0]]
+            continue
+        break
+    plain = re.sub(r"\s{2,}", " ", plain).strip(" -")
+    if not plain or plain == n or _REISSUE_MARKER.search(plain):
+        return None
+    return plain
 
 
 class Unavailable(Exception):
@@ -512,7 +604,7 @@ def choose_from_deezer(items: list[dict], artist: str, title: str) -> tuple[str 
             continue
         if _names_a_version(t.get("title") or ""):
             continue  # norm() drops brackets: "Rosanna (Live)" would match "Rosanna"
-        alb = (t.get("album") or {}).get("title") or ""
+        alb = plain_album((t.get("album") or {}).get("title") or "")
         if not alb or _DEEZER_BAD_ALBUM.search(alb) or norm(alb) == want_t:
             continue
         names.append(alb)
@@ -539,10 +631,10 @@ def choose_from_itunes(items: list[dict], artist: str, title: str) -> tuple[str 
             continue
         if _names_a_version(t.get("trackName") or ""):
             continue  # norm() drops brackets: "Rosanna (Live)" would match "Rosanna"
-        alb = (t.get("collectionName") or "").strip()
+        alb = plain_album(t.get("collectionName") or "")
         if not alb or norm(alb) == want_t:
             continue
-        if _DEEZER_BAD_ALBUM.search(alb) or _ITUNES_REISSUE.search(alb):
+        if _DEEZER_BAD_ALBUM.search(alb):
             continue
         if re.search(r"\s-\s(single|ep)$", alb, re.I) or (t.get("trackCount") or 0) < 4:
             continue
