@@ -706,13 +706,6 @@ class PreflightStage(BaseStage):
         return self._report(ctx, dry_run=False)
 
 
-def failing_checks(stage: object) -> list[str]:
-    """The FAIL lines a finished preflight reported; empty for any other stage."""
-    if not isinstance(stage, PreflightStage):
-        return []
-    return list(stage.failures)
-
-
 def stops_the_run(stage: object, *, dry_run: bool = False, more_stages: bool = True) -> bool:
     """True when a finished stage must stop the pipeline before the next one.
 
