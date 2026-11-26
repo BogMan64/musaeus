@@ -140,6 +140,10 @@ class PreflightStage(BaseStage):
         #: The FAIL lines of the report just made, kept so the runner can stop
         #: before a later stage changes a file (Grey, 2026-11-25).
         self.failures: list[str] = []
+        #: The FAIL lines that mean this run cannot safely write. Only these
+        #: stop a run; a missing tool is reported and the run goes on, because
+        #: a stage that needs the tool fails and names it (Grey, 2026-11-26).
+        self.blocking_failures: list[str] = []
         #: The FAIL lines the dependency checks wrote. A repair re-runs those
         #: checks, so the old line has to go with them: keeping it stopped the
         #: run on a dependency the machine had just installed (CodeRabbit, #333).
@@ -165,7 +169,7 @@ class PreflightStage(BaseStage):
                     path.mkdir(parents=True, exist_ok=True)
                     ok.append(f"{label}: created {path}")
                 except OSError as exc:
-                    fail.append(f"{label}: cannot create {path} ({exc})")
+                    self._block(fail, f"{label}: cannot create {path} ({exc})")
                     continue
             else:
                 ok.append(f"{label}: exists ({path})")
@@ -176,7 +180,7 @@ class PreflightStage(BaseStage):
                 probe.write_text("ok", encoding="utf-8")
                 probe.unlink()
             except OSError as exc:
-                fail.append(f"{label}: not writable ({path}): {exc}")
+                self._block(fail, f"{label}: not writable ({path}): {exc}")
 
     def _check_archive_lock(self, ctx: RunContext, ok: list, warn: list, fail: list) -> None:
         """Say the archive is immutable BEFORE five writers fail on it.
@@ -418,7 +422,7 @@ class PreflightStage(BaseStage):
 
             ok.append(f"mutagen: available (v{mutagen.version_string})")
         except ImportError:
-            self._dependency_fail(
+            self._block(
                 fail,
                 "mutagen: not installed -- required by forge, tagger. Fix: pip install mutagen",
             )
@@ -445,7 +449,7 @@ class PreflightStage(BaseStage):
             free_gb = usage.free / (1024**3)
             label = f"disk free on {ctx.vault_root}: {free_gb:.1f} GB"
             if free_gb < FAIL_FREE_GB:
-                fail.append(f"{label} (< {FAIL_FREE_GB} GB -- critically low)")
+                self._block(fail, f"{label} (< {FAIL_FREE_GB} GB -- critically low)")
             elif free_gb < WARN_FREE_GB:
                 warn.append(f"{label} (< {WARN_FREE_GB} GB -- getting tight)")
             else:
@@ -460,16 +464,16 @@ class PreflightStage(BaseStage):
             if integrity == "ok":
                 ok.append(f"db integrity_check: ok ({ctx.config.db_path})")
             else:
-                fail.append(f"db integrity_check FAILED: {integrity} ({ctx.config.db_path})")
+                self._block(fail, f"db integrity_check FAILED: {integrity} ({ctx.config.db_path})")
         except sqlite3.Error as exc:
-            fail.append(f"db integrity_check could not run: {exc}")
+            self._block(fail, f"db integrity_check could not run: {exc}")
             return
 
         try:
             count = ctx.conn.execute("SELECT COUNT(*) FROM archive").fetchone()[0]
             ok.append(f"archive table: accessible, {count} row(s)")
         except sqlite3.Error as exc:
-            fail.append(f"archive table not accessible: {exc}")
+            self._block(fail, f"archive table not accessible: {exc}")
 
     def _check_stale_wal(self, ctx: RunContext, ok: list, warn: list, fail: list) -> None:
         """
@@ -501,6 +505,17 @@ class PreflightStage(BaseStage):
         if not val:
             return default
         return val in ("y", "yes")
+
+    def _block(self, fail: list, line: str) -> None:
+        """Record a FAIL that means this run cannot safely write.
+
+        Only these stop a run. A missing command-line tool is a FAIL in the
+        report and nothing more: `_offer_installs` offers to install it when
+        someone is at the keyboard, and its `Fix:` line is printed when nobody
+        is (Grey, 2026-11-26).
+        """
+        fail.append(line)
+        self.blocking_failures.append(line)
 
     def _dependency_fail(self, fail: list, line: str) -> None:
         """Record a dependency FAIL, remembering it so a repair can withdraw it."""
@@ -670,6 +685,7 @@ class PreflightStage(BaseStage):
 
     def _report(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
+        self.blocking_failures = []
         ok, warn, fail = self._run_checks(ctx, dry_run)
 
         # Interactive-only, and only for a real run -- dry_run() must stay
@@ -705,6 +721,11 @@ class PreflightStage(BaseStage):
             )
 
         result.notes.append(f"Preflight: {len(ok)} OK, {len(warn)} WARN, {len(fail)} FAIL")
+        if self.blocking_failures:
+            result.notes.append(
+                f"Preflight: {len(self.blocking_failures)} FAIL stop(s) the run; "
+                "the rest are reported only"
+            )
 
         # Report-only: preflight itself never fails the stage result over a
         # FAIL condition -- it's a report, and the caller (interactive CLI,
@@ -741,14 +762,14 @@ def stops_the_run(stage: object, *, dry_run: bool = False, more_stages: bool = T
     """
     if not isinstance(stage, PreflightStage) or dry_run or not more_stages:
         return False
-    return bool(stage.failures) or stage.ffmpeg_selftest_failed
+    return bool(stage.blocking_failures) or stage.ffmpeg_selftest_failed
 
 
 def stop_message(stage: object) -> str:
     """One line naming why the pipeline stopped after this stage."""
     if not isinstance(stage, PreflightStage):
         return "STOPPED: no later stage was run."
-    fails = stage.failures
+    fails = stage.blocking_failures
     if not fails:
         return "STOPPED: the ffmpeg self-test failed; no later stage was run."
     more = f" (and {len(fails) - 1} more)" if len(fails) > 1 else ""

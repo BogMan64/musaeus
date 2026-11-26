@@ -20,7 +20,7 @@ FORCED = "disk free on the vault: 1.0 GB (< 50 GB -- critically low)"
 
 
 def _forced_fail(self, _ctx, _ok, _warn, fail):
-    fail.append(FORCED)
+    self._block(fail, FORCED)
 
 
 class WouldChangeFiles(BaseStage):
@@ -88,7 +88,7 @@ def test_a_preview_is_never_stopped_by_a_fail():
     preview mode cannot stop halfway through a preview.
     """
     stage = PreflightStage()
-    stage.failures = [FORCED]
+    stage.blocking_failures = [FORCED]
 
     assert stops_the_run(stage, dry_run=True) is False
     assert stops_the_run(stage, dry_run=False) is True
@@ -154,7 +154,7 @@ def test_a_warning_alone_does_not_stop_the_run(disposable_vault, monkeypatch):
     stage.run(ctx)
     conn.close()
 
-    assert stage.failures == []
+    assert stage.blocking_failures == []
     assert stops_the_run(stage, dry_run=False) is False
 
 
@@ -162,7 +162,7 @@ def test_the_stop_message_names_the_first_failure():
     from musaeus.stages.preflight import stop_message
 
     stage = PreflightStage()
-    stage.failures = [FORCED, "db integrity_check FAILED: boom"]
+    stage.blocking_failures = [FORCED, "db integrity_check FAILED: boom"]
 
     assert stops_the_run(stage, dry_run=False) is True
     message = stop_message(stage)
@@ -258,3 +258,51 @@ def test_a_repair_that_works_leaves_no_stale_fail(disposable_vault, monkeypatch)
     assert state["ffmpeg"] is True, "the install was never offered"
     stale = [line for line in stage.failures if line.startswith("ffmpeg: not found")]
     assert stale == [], stale
+
+
+# ── A missing tool is not a reason to refuse the whole run (Grey, 2026-11-26) ──
+
+TOOL_FAIL = (
+    "fpcalc: not found on PATH -- required by acousticid. "
+    "Fix: sudo apt install libchromaprint-tools"
+)
+
+
+def test_a_missing_tool_does_not_stop_the_rule():
+    """fpcalc is used by acousticid alone, a stage this run does not include.
+
+    Reported as a FAIL with its install line, and the run goes on: the stage
+    that needs the tool fails and names it.
+    """
+    stage = PreflightStage()
+    stage.failures = [TOOL_FAIL]
+    stage.blocking_failures = []
+
+    assert stops_the_run(stage, dry_run=False) is False
+
+
+def test_a_missing_tool_does_not_stop_the_pipeline(disposable_vault, monkeypatch, ran, capsys):
+    cli = _cli(disposable_vault, monkeypatch)
+    monkeypatch.setattr(
+        PreflightStage, "_run_checks", lambda self, ctx, dry_run: ([], [], [TOOL_FAIL])
+    )
+
+    code = cli._run_pipeline_inner([PreflightStage, WouldChangeFiles], dry_run=False)
+
+    assert ran == [True], "the later stage should still have run"
+    assert code == 0, "a missing on-demand tool must not fail the run"
+    assert "STOPPED" not in capsys.readouterr().err
+
+
+def test_a_write_unsafe_fail_stops_even_beside_a_missing_tool():
+    """The stop names the real reason, not the tool that was listed first."""
+    from musaeus.stages.preflight import stop_message
+
+    stage = PreflightStage()
+    stage.failures = [TOOL_FAIL, FORCED]
+    stage.blocking_failures = [FORCED]
+
+    assert stops_the_run(stage, dry_run=False) is True
+    message = stop_message(stage)
+    assert FORCED in message
+    assert "fpcalc" not in message
