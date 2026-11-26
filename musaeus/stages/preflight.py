@@ -137,6 +137,17 @@ class PreflightStage(BaseStage):
         # unsafe to let a pipeline alter files. The runner checks this narrow
         # flag after it has printed the report.
         self.ffmpeg_selftest_failed = False
+        #: The FAIL lines of the report just made, kept so the runner can stop
+        #: before a later stage changes a file (Grey, 2026-11-25).
+        self.failures: list[str] = []
+        #: The FAIL lines that mean this run cannot safely write. Only these
+        #: stop a run; a missing tool is reported and the run goes on, because
+        #: a stage that needs the tool fails and names it (Grey, 2026-11-26).
+        self.blocking_failures: list[str] = []
+        #: The FAIL lines the dependency checks wrote. A repair re-runs those
+        #: checks, so the old line has to go with them: keeping it stopped the
+        #: run on a dependency the machine had just installed (CodeRabbit, #333).
+        self._dependency_fails: set[str] = set()
 
     def validate(self, ctx: RunContext) -> None:
         # Nothing to validate before validating -- if ctx/config didn't
@@ -158,7 +169,7 @@ class PreflightStage(BaseStage):
                     path.mkdir(parents=True, exist_ok=True)
                     ok.append(f"{label}: created {path}")
                 except OSError as exc:
-                    fail.append(f"{label}: cannot create {path} ({exc})")
+                    self._block(fail, f"{label}: cannot create {path} ({exc})")
                     continue
             else:
                 ok.append(f"{label}: exists ({path})")
@@ -169,7 +180,7 @@ class PreflightStage(BaseStage):
                 probe.write_text("ok", encoding="utf-8")
                 probe.unlink()
             except OSError as exc:
-                fail.append(f"{label}: not writable ({path}): {exc}")
+                self._block(fail, f"{label}: not writable ({path}): {exc}")
 
     def _check_archive_lock(self, ctx: RunContext, ok: list, warn: list, fail: list) -> None:
         """Say the archive is immutable BEFORE five writers fail on it.
@@ -208,9 +219,10 @@ class PreflightStage(BaseStage):
             if found:
                 ok.append(f"{cmd}: found ({found})")
             else:
-                fail.append(
+                self._dependency_fail(
+                    fail,
                     f"{cmd}: not found on PATH -- required by {used_by}. "
-                    f"Fix: {install_hint(apt_pkg)}"
+                    f"Fix: {install_hint(apt_pkg)}",
                 )
                 if sys.platform != "win32":  # no apt there to offer
                     self._missing_apt[cmd] = apt_pkg
@@ -410,8 +422,9 @@ class PreflightStage(BaseStage):
 
             ok.append(f"mutagen: available (v{mutagen.version_string})")
         except ImportError:
-            fail.append(
-                "mutagen: not installed -- required by forge, tagger. Fix: pip install mutagen"
+            self._block(
+                fail,
+                "mutagen: not installed -- required by forge, tagger. Fix: pip install mutagen",
             )
             self._missing_pip.append("mutagen")
 
@@ -436,7 +449,7 @@ class PreflightStage(BaseStage):
             free_gb = usage.free / (1024**3)
             label = f"disk free on {ctx.vault_root}: {free_gb:.1f} GB"
             if free_gb < FAIL_FREE_GB:
-                fail.append(f"{label} (< {FAIL_FREE_GB} GB -- critically low)")
+                self._block(fail, f"{label} (< {FAIL_FREE_GB} GB -- critically low)")
             elif free_gb < WARN_FREE_GB:
                 warn.append(f"{label} (< {WARN_FREE_GB} GB -- getting tight)")
             else:
@@ -451,16 +464,16 @@ class PreflightStage(BaseStage):
             if integrity == "ok":
                 ok.append(f"db integrity_check: ok ({ctx.config.db_path})")
             else:
-                fail.append(f"db integrity_check FAILED: {integrity} ({ctx.config.db_path})")
+                self._block(fail, f"db integrity_check FAILED: {integrity} ({ctx.config.db_path})")
         except sqlite3.Error as exc:
-            fail.append(f"db integrity_check could not run: {exc}")
+            self._block(fail, f"db integrity_check could not run: {exc}")
             return
 
         try:
             count = ctx.conn.execute("SELECT COUNT(*) FROM archive").fetchone()[0]
             ok.append(f"archive table: accessible, {count} row(s)")
         except sqlite3.Error as exc:
-            fail.append(f"archive table not accessible: {exc}")
+            self._block(fail, f"archive table not accessible: {exc}")
 
     def _check_stale_wal(self, ctx: RunContext, ok: list, warn: list, fail: list) -> None:
         """
@@ -492,6 +505,22 @@ class PreflightStage(BaseStage):
         if not val:
             return default
         return val in ("y", "yes")
+
+    def _block(self, fail: list, line: str) -> None:
+        """Record a FAIL that means this run cannot safely write.
+
+        Only these stop a run. A missing command-line tool is a FAIL in the
+        report and nothing more: `_offer_installs` offers to install it when
+        someone is at the keyboard, and its `Fix:` line is printed when nobody
+        is (Grey, 2026-11-26).
+        """
+        fail.append(line)
+        self.blocking_failures.append(line)
+
+    def _dependency_fail(self, fail: list, line: str) -> None:
+        """Record a dependency FAIL, remembering it so a repair can withdraw it."""
+        fail.append(line)
+        self._dependency_fails.add(line)
 
     def _offer_installs(self, ok: list, warn: list, fail: list) -> None:
         """
@@ -539,7 +568,12 @@ class PreflightStage(BaseStage):
                 fail.append(f"pip install: {', '.join(pip_pkgs)} -- could not run pip: {exc}")
 
         # Re-run the two checks to confirm the install actually worked,
-        # rather than trusting the installer's exit code alone.
+        # rather than trusting the installer's exit code alone. The first
+        # pass's lines go first: a dependency the repair fixed must not leave
+        # a FAIL behind that stops the run anyway. A dependency still missing
+        # is re-added by the re-check, so it still stops.
+        fail[:] = [line for line in fail if line not in self._dependency_fails]
+        self._dependency_fails.clear()
         self._missing_apt.clear()
         self._missing_pip.clear()
         self._check_commands(ok, warn, fail)
@@ -651,6 +685,7 @@ class PreflightStage(BaseStage):
 
     def _report(self, ctx: RunContext, dry_run: bool) -> StageResult:
         result = self._make_result(dry_run=dry_run)
+        self.blocking_failures = []
         ok, warn, fail = self._run_checks(ctx, dry_run)
 
         # Interactive-only, and only for a real run -- dry_run() must stay
@@ -660,6 +695,10 @@ class PreflightStage(BaseStage):
         if not dry_run and sys.stdin.isatty():
             self._offer_installs(ok, warn, fail)
             self._offer_api_keys(ok)
+
+        # Read after the install offers, so a dependency that could not be
+        # installed counts as the FAIL it is.
+        self.failures = list(fail)
 
         result.files_processed = len(ok) + len(warn) + len(fail)
         result.files_changed = len(ok)
@@ -682,6 +721,11 @@ class PreflightStage(BaseStage):
             )
 
         result.notes.append(f"Preflight: {len(ok)} OK, {len(warn)} WARN, {len(fail)} FAIL")
+        if self.blocking_failures:
+            result.notes.append(
+                f"Preflight: {len(self.blocking_failures)} FAIL stop(s) the run; "
+                "the rest are reported only"
+            )
 
         # Report-only: preflight itself never fails the stage result over a
         # FAIL condition -- it's a report, and the caller (interactive CLI,
@@ -699,12 +743,38 @@ class PreflightStage(BaseStage):
         return self._report(ctx, dry_run=False)
 
 
-def stops_the_run(stage: object) -> bool:
+def stops_the_run(stage: object, *, dry_run: bool = False, more_stages: bool = True) -> bool:
     """True when a finished stage must stop the pipeline before the next one.
 
-    Preflight is report-only, with one exception: a failed ffmpeg self-test,
-    because later stages must not change files while damage checks are
-    untrusted. The CLI and the console both ask this, so neither runner can
-    forget it.
+    Preflight used to be report-only with one exception: a failed ffmpeg
+    self-test. Every other FAIL -- a read-only archive, a critically full
+    disk, a corrupt catalogue, a missing command -- was printed and the
+    pipeline went on to change files anyway (Grey, 2026-11-25).
+
+    A FAIL is a measured reason the next stage cannot be trusted with the
+    files, so a real run now stops there. Three things are not a stop:
+
+    - a dry run, which changes nothing and asks for the preview;
+    - a preflight that is the last stage, as `musaeus preflight` is: there is
+      nothing after it to protect, and the command stays the report it says;
+    - a WARN, such as the archive's lock: a note for the operator, not a
+      measured reason the next stage cannot run.
     """
-    return isinstance(stage, PreflightStage) and stage.ffmpeg_selftest_failed
+    if not isinstance(stage, PreflightStage) or dry_run or not more_stages:
+        return False
+    return bool(stage.blocking_failures) or stage.ffmpeg_selftest_failed
+
+
+def stop_message(stage: object) -> str:
+    """One line naming why the pipeline stopped after this stage."""
+    if not isinstance(stage, PreflightStage):
+        return "STOPPED: no later stage was run."
+    fails = stage.blocking_failures
+    if not fails:
+        return "STOPPED: the ffmpeg self-test failed; no later stage was run."
+    more = f" (and {len(fails) - 1} more)" if len(fails) > 1 else ""
+    return (
+        f"STOPPED: preflight reported FAIL: {fails[0]}{more}. "
+        "No later stage was run, so nothing was changed. Fix the FAIL line(s) "
+        "above, then run again."
+    )
