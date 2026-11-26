@@ -488,6 +488,7 @@ def test_our_own_title_naming_a_single_version_is_still_the_song():
         "Toto IV (Deluxe Edition)",
         "Toto IV (Remastered)",
         "Toto IV [Remastered 2015]",
+        "Toto IV {Deluxe Edition}",
         "Toto IV - Deluxe Edition",
     ],
 )  # fmt: skip

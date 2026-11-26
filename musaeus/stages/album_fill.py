@@ -224,7 +224,7 @@ _REISSUE_MARKER = re.compile(rf"\b(?:{_REISSUE_WORDS})\b", re.I)
 #: turned "The Supremes Sing Holland - Dozier - Holland (Expanded Edition)"
 #: into "The Supremes Sing Holland - Dozier" (found 2026-11-26).
 _REISSUE_BRACKET = re.compile(
-    rf"\s*[\(\[]([^\(\)\[\]]*\b(?:{_REISSUE_WORDS})\b[^\(\)\[\]]*)[\)\]]",
+    rf"[{OPEN}]\s*([^{OPEN}{CLOSE}]*\b(?:{_REISSUE_WORDS})\b[^{OPEN}{CLOSE}]*)[{CLOSE}]",
     re.I,
 )
 
