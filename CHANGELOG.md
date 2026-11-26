@@ -30,6 +30,11 @@ month, newest first, and name the pull requests. The full record is
 
 ### Changed
 
+- Artist tags spell "and" as "&". Grey, 2026-11-26: "&" for artists and
+  groups, "and" for everything else. Folders have spelled it that way since
+  2026-10-12, so the folder said "Huey Lewis & The News" while the `artist`
+  tag said "And". The tag now follows the folder, `albumartist` follows the
+  tag, and titles stay as released. 10 names, 31 rows in the catalogue.
 - No personal folders in the repository. The helper scripts, the nightly
   `musaeus_overnight.sh` and the noise tools read the vault from
   `~/.config/musaeus/settings.env` and stop when it is unset;
