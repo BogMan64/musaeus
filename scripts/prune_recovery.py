@@ -181,6 +181,14 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true", help="actually delete")
     args = ap.parse_args()
 
+    if args.apply:
+        # This script writes to the masters. The lock is what makes two
+        # jobs on the archive impossible, and a dry run stays lock-free
+        # so it can always be asked (gate/lock gap, 2026-11-25).
+        from musaeus.masters_lock import hold_for_process
+
+        hold_for_process(exclusive=True, what="scripts/prune_recovery.py")
+
     root = args.root
     if root is None:
         from musaeus.config import MusicConfig
