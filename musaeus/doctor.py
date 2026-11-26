@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import itertools
 import re
-import shlex
 import shutil
 import sqlite3
 import sys
@@ -796,7 +795,7 @@ def _archive_lock_state(cfg: MusicConfig, rep: Report) -> None:
     archive = getattr(cfg, "alac_archive", None)
     if archive is None or not Path(archive).is_dir():
         return
-    from .immutability import locked_in
+    from .immutability import lock_hint, locked_in, unlock_hint
 
     n, examples = locked_in(archive)
     if not n:
@@ -808,13 +807,12 @@ def _archive_lock_state(cfg: MusicConfig, rep: Report) -> None:
             "no immutable files detected: tag changes were not blocked by one",
         )
         return
-    quoted = shlex.quote(str(archive))
     rep.add(
         "warn",
         "archive lock flag",
         f"{n:,} master file(s) are immutable, so tagger, forge, bpm, "
         f"identity_tags and albumart cannot write them (e.g. {examples[0].name}). "
-        f"To change tags: sudo chattr -R -i {quoted}, run, then sudo chattr -R +i {quoted}",
+        f"To change tags: {unlock_hint(archive)}, run, then {lock_hint(archive)}",
         n,
     )
 

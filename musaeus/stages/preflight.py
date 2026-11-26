@@ -63,7 +63,6 @@ import json
 import logging
 import os
 import platform
-import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -187,7 +186,7 @@ class PreflightStage(BaseStage):
         archive = getattr(ctx.config, "alac_archive", None)
         if archive is None or not Path(archive).is_dir():
             return  # nothing to read; the directories check owns the missing archive
-        from ..immutability import locked_in
+        from ..immutability import lock_hint, locked_in, unlock_hint
 
         n, examples = locked_in(archive)
         if not n:
@@ -195,13 +194,12 @@ class PreflightStage(BaseStage):
             # unlocked, so the scan supports only this narrower claim.
             ok.append(f"archive lock flag: no immutable files detected under {archive}")
             return
-        quoted = shlex.quote(str(archive))
         warn.append(
             f"archive is locked: {n:,} master file(s) carry the immutable flag "
             f"(e.g. {examples[0].name}). tagger, forge, bpm, identity_tags and "
             "albumart cannot write them, and will stop with 'the file is "
-            f"immutable'. To change master tags: sudo chattr -R -i {quoted}, "
-            f"run the stage, then sudo chattr -R +i {quoted}."
+            f"immutable'. To change master tags: {unlock_hint(archive)}, "
+            f"run the stage, then {lock_hint(archive)}."
         )
 
     def _check_commands(self, ok: list, warn: list, fail: list) -> None:

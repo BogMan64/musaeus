@@ -90,6 +90,11 @@ def unlock_hint(path: Path | str) -> str:
     return f"sudo chattr -R -i {shlex.quote(str(path))}"
 
 
+def lock_hint(path: Path | str) -> str:
+    """The command that puts the flag back, quoted for the same reason."""
+    return f"sudo chattr -R +i {shlex.quote(str(path))}"
+
+
 def locked_in(
     root: Path | str, *, suffixes: Iterable[str] | None = AUDIO_SUFFIXES
 ) -> tuple[int, list[Path]]:

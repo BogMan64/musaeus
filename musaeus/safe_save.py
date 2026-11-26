@@ -24,7 +24,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
 
-from .immutability import is_immutable
+from .immutability import is_immutable, lock_hint, unlock_hint
 
 
 class MastersLocked(RuntimeError):
@@ -39,24 +39,22 @@ class MastersLocked(RuntimeError):
 
 
 def _locked_message(path: Path) -> str:
-    folder = shlex.quote(str(path.parent))
     return (
         f"cannot change {path.name}: the file is immutable (chattr +i), so no "
         "rewrite can take its place. This is the archive's protection, not a "
         "fault. To change master tags: unlock its folder (or the whole archive) "
-        f"with `sudo chattr -R -i {folder}`, run the stage, then lock it "
-        f"again with `sudo chattr -R +i {folder}`."
+        f"with `{unlock_hint(path.parent)}`, run the stage, then lock it "
+        f"again with `{lock_hint(path.parent)}`."
     )
 
 
 def _refused_message(path: Path, exc: OSError) -> str:
-    folder = shlex.quote(str(path.parent))
     return (
         f"could not put the rewritten copy in place at {path.name}: {exc.strerror or exc}. "
         "The usual causes are the immutable flag (lsattr shows i) or a file owned "
         f"by another user; check with `lsattr {shlex.quote(str(path))}`. If it is locked, unlock "
-        f"its folder (or the whole archive) with `sudo chattr -R -i {folder}`, "
-        f"run the stage, then lock it again with `sudo chattr -R +i {folder}`."
+        f"its folder (or the whole archive) with `{unlock_hint(path.parent)}`, "
+        f"run the stage, then lock it again with `{lock_hint(path.parent)}`."
     )
 
 

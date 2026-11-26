@@ -93,6 +93,12 @@ def test_the_unlock_hint_quotes_a_path_with_spaces():
     assert hint == "sudo chattr -R -i '/vault/Artist/Album Name'"
 
 
+def test_the_lock_hint_quotes_too():
+    assert imm.lock_hint("/vault/Artist/Album Name") == (
+        "sudo chattr -R +i '/vault/Artist/Album Name'"
+    )
+
+
 def _chattr_works(where: Path) -> bool:
     """Whether this host can set the immutable flag at all.
 
