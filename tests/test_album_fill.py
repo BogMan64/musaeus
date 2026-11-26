@@ -445,13 +445,112 @@ def test_itunes_earliest_exact_studio_album_wins():
 
 @pytest.mark.parametrize(
     ("album", "count"),
-    [("Rosanna - Single", 2), ("Rosanna - EP", 4), ("Toto IV (Deluxe Edition)", 20), ("Toto IV (Remastered)", 10),
-     ("Greatest Hits", 18), ("Toto IV", 3)],
+    [("Rosanna - Single", 2), ("Rosanna - EP", 4), ("Greatest Hits", 18), ("Toto IV", 3)],
 )  # fmt: skip
-def test_itunes_skips_singles_eps_reissues_compilations(album, count):
+def test_itunes_skips_singles_eps_compilations_and_short_albums(album, count):
     assert (
         af.choose_from_itunes(
             [_it("Rosanna", album, "1982-03-01", count=count)], "Toto", "Rosanna"
+        )[0]
+        is None
+    )
+
+
+# ── Grey, 2026-11-26: the two refusals that were too strict ──────────────────
+
+
+def test_a_single_version_candidate_is_the_same_song():
+    """A single version is the same studio performance cut for radio, so its
+    album may answer for the song. The album is still held to every other
+    rule: this one is a plain album, and MusicBrainz confirms it later."""
+    items = [_it("Rosanna (Single Version)", "Toto IV", "1982-03-01")]
+    assert af.choose_from_itunes(items, "Toto", "Rosanna")[0] == "Toto IV"
+
+    dz = {
+        "artist": {"name": "Toto"},
+        "title": "Rosanna (Single Version)",
+        "album": {"title": "Toto IV"},
+    }
+    assert af.choose_from_deezer([dz], "Toto", "Rosanna")[0] == "Toto IV"
+
+
+def test_our_own_title_naming_a_single_version_is_still_the_song():
+    """ "Knock On Wood (Single Version)" is a studio recording: text sources
+    may answer for it. A live or remixed title still may not."""
+    assert af._names_a_version("Knock On Wood (Single Version)") is False
+    assert af._names_a_version("Knock On Wood (Live)") is True
+    assert af._names_a_version("Knock On Wood (Remix)") is True
+
+
+@pytest.mark.parametrize(
+    "album",
+    [
+        "Toto IV (Deluxe Edition)",
+        "Toto IV (Remastered)",
+        "Toto IV [Remastered 2015]",
+        "Toto IV - Deluxe Edition",
+    ],
+)  # fmt: skip
+def test_a_reissue_album_confirms_the_plain_name(album):
+    """The album is the same record; the edition label is what is dropped."""
+    assert (
+        af.choose_from_itunes([_it("Rosanna", album, "1982-03-01")], "Toto", "Rosanna")[0]
+        == "Toto IV"
+    )
+
+
+def test_deezer_writes_the_plain_album_not_its_edition_label():
+    dz = {
+        "artist": {"name": "Toto"},
+        "title": "Rosanna",
+        "album": {"title": "Toto IV (Deluxe Edition)"},
+    }
+    assert af.choose_from_deezer([dz], "Toto", "Rosanna")[0] == "Toto IV"
+
+
+def test_a_reissue_label_we_cannot_remove_whole_is_refused_not_half_written():
+    """Half a name is worse than none, and writing the suffix is not allowed.
+
+    A bare trailing "Remastered", with no bracket and no " - ", is not a label
+    we can lift off whole -- so the row is left empty."""
+    assert (
+        af.choose_from_itunes(
+            [_it("Rosanna", "Toto IV Remastered", "1982-03-01")], "Toto", "Rosanna"
+        )[0]
+        is None
+    )
+    assert (
+        af.choose_from_itunes(
+            [_it("Rosanna", "(Deluxe Edition)", "1982-03-01")], "Toto", "Rosanna"
+        )[0]
+        is None
+    )
+
+
+def test_a_reissue_of_a_collection_is_still_a_collection():
+    """Stripping the label must not smuggle a compilation past its own rule."""
+    assert (
+        af.choose_from_itunes(
+            [_it("Africa", "The Essential Toto (Remastered)", "1982-01-01", count=30)],
+            "Toto",
+            "Africa",
+        )[0]
+        is None
+    )
+    assert (
+        af.choose_from_itunes(
+            [_it("Africa", "Absolutely Live (Deluxe Edition)", "1982-01-01", count=30)],
+            "Toto",
+            "Africa",
+        )[0]
+        is None
+    )
+
+
+def test_an_album_that_is_only_the_title_plus_a_label_is_still_not_an_album():
+    assert (
+        af.choose_from_itunes(
+            [_it("Rosanna", "Rosanna (Deluxe Edition)", "1982-03-01")], "Toto", "Rosanna"
         )[0]
         is None
     )
