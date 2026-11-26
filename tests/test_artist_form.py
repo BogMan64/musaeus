@@ -119,3 +119,33 @@ def test_tag_values_for_a_plain_name_are_identical():
     """The caller can then skip writing a redundant sort tag."""
     v = tag_values("Refused")
     assert v["artist"] == v["sort_artist"] == "Refused"
+
+
+# ── "and" in an artist name is "&" (Grey, 2026-11-26) ──────────────────────
+#
+# Through tag_values(), which exists on both sides of the change: a test that
+# imported the new function would fail on the old code with ImportError, and
+# an import error proves nothing about the rule.
+
+
+def test_a_group_joining_two_names_gets_an_ampersand():
+    assert tag_values("Huey Lewis And The News")["artist"] == "Huey Lewis & The News"
+    assert tag_values("Peter, Paul and Mary")["artist"] == "Peter, Paul & Mary"
+    assert tag_values("Iggy And The Stooges")["artist"] == "Iggy & The Stooges"
+
+
+def test_the_sort_form_still_moves_the_article_first():
+    assert tag_values("Stooges, The")["artist"] == "The Stooges"
+
+
+def test_and_as_a_whole_word_is_left_alone():
+    """Band, Sandman, and a name that STARTS with "And ..." are not joins."""
+    assert tag_values("Band")["artist"] == "Band"
+    assert tag_values("Sandman")["artist"] == "Sandman"
+    assert tag_values("And You Will Know Us by the Trail of Dead")["artist"] == (
+        "And You Will Know Us by the Trail of Dead"
+    )
+
+
+def test_an_ampersand_already_there_is_left_alone():
+    assert tag_values("Simon & Garfunkel")["artist"] == "Simon & Garfunkel"

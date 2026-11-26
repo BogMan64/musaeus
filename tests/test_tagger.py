@@ -117,6 +117,25 @@ class TestTagHelpers:
         assert changes["title"] == "New Title"
         assert changes["genre"] == "Jazz"
 
+    def test_the_artist_tag_spells_and_as_an_ampersand(self, ctx):
+        """Grey, 2026-11-26: "&" for artists and groups. The folder already
+        said "Huey Lewis & The News" while the tag said "And"; titles stay
+        as released, so a title holding "and" is not touched."""
+        stage = TaggerStage()
+        db_row = {
+            "artist": "Huey Lewis And The News",
+            "title": "The Power Of Love And Then Some",
+        }
+        file_tags = {
+            "artist": "Huey Lewis And The News",
+            "title": "The Power Of Love And Then Some",
+        }
+
+        changes = stage._compute_changes(db_row, file_tags)
+
+        assert changes["artist"] == "Huey Lewis & The News"
+        assert "title" not in changes
+
     def test_compute_changes_no_diff(self, ctx):
         stage = TaggerStage()
         db_row = {

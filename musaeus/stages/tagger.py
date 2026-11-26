@@ -32,7 +32,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-from ..artist_form import has_article, natural_form, sort_form
+from ..artist_form import has_article, sort_form, tag_artist
 from ..context import RunContext, StageResult
 from ..playlist_album import is_playlist_album
 from ..safe_save import write_beside
@@ -521,7 +521,7 @@ class TaggerStage(BaseStage):
         # see organize.py, which derives it independently of the tag.
         db_artist = str(db_row.get("artist") or "").strip()
         if db_artist:
-            natural = natural_form(db_artist)
+            natural = tag_artist(db_artist)
             if natural != str(file_tags.get("artist") or "").strip():
                 changes["artist"] = natural
 
@@ -549,7 +549,7 @@ class TaggerStage(BaseStage):
             # The test must stay on _compute_changes rather than on the
             # predicate: the predicate is still right to say "yes, follow",
             # and it is this layer's job not to write what is already there.
-            natural = natural_form(db_artist)
+            natural = tag_artist(db_artist)
             if natural != file_aa:
                 changes["albumartist"] = natural
             if has_article(db_artist):
@@ -622,7 +622,7 @@ class TaggerStage(BaseStage):
                 # check nobody reads, and this one exists to catch the
                 # AlbumArt failure where 10,549 writes silently did nothing.
                 if field == "artist":
-                    want = natural_form(want)
+                    want = tag_artist(want)
                 got = (meta.get(field) or "").strip()
                 if want and got and want.casefold() != got.casefold():
                     problems.append(f"{path.name}: {field} on disk is {got!r}, row says {want!r}")
