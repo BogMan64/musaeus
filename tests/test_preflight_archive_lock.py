@@ -27,7 +27,7 @@ def _stage_report_on_an_empty_archive(disposable_vault, monkeypatch):
 
 def test_preflight_reports_the_archive_lock_state(disposable_vault, monkeypatch):
     notes = _stage_report_on_an_empty_archive(disposable_vault, monkeypatch)
-    assert "archive writable" in notes
+    assert "no immutable files detected" in notes
 
 
 def test_preflight_warns_and_names_the_unlock_command(disposable_vault, monkeypatch):

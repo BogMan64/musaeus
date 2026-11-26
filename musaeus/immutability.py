@@ -26,6 +26,8 @@ warning system, never the thing that protects a file.
 from __future__ import annotations
 
 import os
+import shlex
+import stat
 import sys
 from collections.abc import Iterable
 from pathlib import Path
@@ -37,6 +39,10 @@ FS_IMMUTABLE_FL = 0x00000010
 #: What counts as a music file for a scan. Artwork and playlists are not
 #: written by the tag stages and would only slow the walk down.
 AUDIO_SUFFIXES = frozenset({".m4a", ".mp4", ".alac", ".flac", ".mp3", ".wav", ".aiff"})
+
+#: Windows has no O_NONBLOCK; 0 keeps the flag absent where it does not exist,
+#: so a test that fakes linux on Windows still opens the file.
+_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 
 
 def _get_flags(fd: int) -> int:
@@ -59,10 +65,15 @@ def is_immutable(path: Path | str) -> bool:
     if not sys.platform.startswith("linux"):
         return False
     try:
-        fd = os.open(path, os.O_RDONLY)
+        # O_NONBLOCK: a FIFO named like a song would otherwise block the scan
+        # for ever, waiting for a writer that never comes. The regular-file
+        # check below is what makes the ioctl meaningful anyway.
+        fd = os.open(path, os.O_RDONLY | _NONBLOCK)
     except OSError:
         return False
     try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return False
         return bool(_get_flags(fd) & FS_IMMUTABLE_FL)
     except OSError:
         return False
@@ -71,8 +82,12 @@ def is_immutable(path: Path | str) -> bool:
 
 
 def unlock_hint(path: Path | str) -> str:
-    """The command that unlocks a tree, named with the path it applies to."""
-    return f"sudo chattr -R -i {path}"
+    """The command that unlocks a tree, named with the path it applies to.
+
+    Quoted: an album folder named "Album Name" would otherwise print as two
+    arguments and the copied command would fail (CodeRabbit, #331).
+    """
+    return f"sudo chattr -R -i {shlex.quote(str(path))}"
 
 
 def locked_in(

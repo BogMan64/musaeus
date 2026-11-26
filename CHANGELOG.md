@@ -16,7 +16,9 @@ month, newest first, and name the pull requests. The full record is
   written": a stage printed `errors: 7,975` with no cause, after copying every
   master once for nothing. `safe_save` now refuses a locked file before the
   copy and says which `chattr` commands unlock it; preflight warns before the
-  run and `doctor` reports the state.
+  run, `doctor` reports the state, and albumart's summary names the cause
+  instead of "check logs". The printed commands quote the folder, so an album
+  called "Album Name" does not become two arguments.
 
 ### Changed
 

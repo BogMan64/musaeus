@@ -63,6 +63,7 @@ import json
 import logging
 import os
 import platform
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -190,14 +191,17 @@ class PreflightStage(BaseStage):
 
         n, examples = locked_in(archive)
         if not n:
-            ok.append(f"archive writable: no immutable files under {archive}")
+            # Not "writable": a file that could not be opened is counted as
+            # unlocked, so the scan supports only this narrower claim.
+            ok.append(f"archive lock flag: no immutable files detected under {archive}")
             return
+        quoted = shlex.quote(str(archive))
         warn.append(
             f"archive is locked: {n:,} master file(s) carry the immutable flag "
             f"(e.g. {examples[0].name}). tagger, forge, bpm, identity_tags and "
             "albumart cannot write them, and will stop with 'the file is "
-            f"immutable'. To change master tags: sudo chattr -R -i {archive}, "
-            f"run the stage, then sudo chattr -R +i {archive}."
+            f"immutable'. To change master tags: sudo chattr -R -i {quoted}, "
+            f"run the stage, then sudo chattr -R +i {quoted}."
         )
 
     def _check_commands(self, ok: list, warn: list, fail: list) -> None:
