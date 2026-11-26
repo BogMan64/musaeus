@@ -450,6 +450,16 @@ def _run_pipeline(
         cfg = get_config()
     except ValueError:
         return _run_pipeline_inner(stages, dry_run, stash)  # it reports the error
+    # The vault must be checked HERE as well as inside, because the lock
+    # makes its folder under runs_root: a run refused for a missing vault
+    # would still leave lock directories inside it, and "a run never makes
+    # the vault" would be untrue (CodeRabbit on #336, 2026-11-26).
+    try:
+        cfg.ensure_dirs(create_root=False)
+    except VaultRootMissing as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
     # P0-11 execution-authority gate. OFF unless MUSAEUS_P0_SAFETY_GATE=1
     # or --safety-gate: enabling it by default would make every run stop
     # to ask, and would correctly make the unattended overnight script do

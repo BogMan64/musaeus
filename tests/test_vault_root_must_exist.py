@@ -73,6 +73,27 @@ def test_a_real_run_refuses_a_missing_vault(tmp_path, monkeypatch, capsys):
     assert "musaeus setup" in err
 
 
+def test_the_locked_entry_point_leaves_nothing_behind(tmp_path, monkeypatch, capsys):
+    """CodeRabbit on #336, 2026-11-26: the real --execute entry point takes the
+    masters lock, and the lock makes its folder under runs_root. It did that
+    BEFORE the vault check, so a run refused for a missing vault still put
+    directories inside it -- "a run never makes the vault" was untrue at the
+    one entry point that matters."""
+    import musaeus.cli as cli
+
+    root = tmp_path / "unmounted-drive"
+    cfg = _config_at(root)
+    monkeypatch.setattr(cli, "get_config", lambda: cfg)
+    monkeypatch.setattr(cli, "_RESUME_FILE", tmp_path / "resume.json")
+    monkeypatch.delenv("MUSAEUS_P0_SAFETY_GATE", raising=False)
+
+    code = cli._run_pipeline([PreflightStage], dry_run=False)
+
+    assert code == 2
+    assert not root.exists(), "a refused run created the vault"
+    assert not any(tmp_path.iterdir()), f"a refused run left files: {list(tmp_path.iterdir())}"
+
+
 def test_the_console_refuses_a_missing_vault(tmp_path, monkeypatch):
     from musaeus.console import Console
 
