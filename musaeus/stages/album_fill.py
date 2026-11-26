@@ -245,6 +245,24 @@ _DASH_LABEL = re.compile(
 )
 
 
+#: What may remain inside a bracket once the edition words are taken out:
+#: "Expanded Edition", "Super Deluxe / 2024 Remaster", "50th Anniversary
+#: Edition", "Reissue Edition With Bonus Tracks". Anything else -- "Live,
+#: Remastered", "The Original Movie Soundtrack Deluxe Edition" -- is part of
+#: the album's name, and stripping it would turn a live record into a
+#: studio-looking name (CodeRabbit on #335, 2026-11-26).
+_EDITION_FILLER = re.compile(
+    rf"\b(?:{_REISSUE_WORDS}|edition|version|tracks?|super|digitally|definitive|"
+    r"the|of|with|and|deluxe)\b|\d{4}|\d{1,2}(?:st|nd|rd|th)|[\s/&,+.'\-]",
+    re.I,
+)
+
+
+def _is_pure_label(inner: str) -> bool:
+    """True when a bracketed group holds edition words and nothing else."""
+    return not _EDITION_FILLER.sub("", inner or "").strip(" .-")
+
+
 def plain_album(name: str) -> str | None:
     """The album's own name, with an edition label removed; None if unsure.
 
@@ -262,12 +280,21 @@ def plain_album(name: str) -> str | None:
     plain = n
     while True:
         m = _REISSUE_BRACKET.search(plain)
-        if m:
+        if m and _is_pure_label(m.group(1)):
             plain = f"{plain[: m.start()]} {plain[m.end() :]}"
             continue
-        m = re.search(r"\s+-\s+([^-]+)$", plain)
-        if m and _DASH_LABEL.match(m.group(1).strip()):
-            plain = plain[: m.start()]
+        # The tail after a " - " may hold a hyphen of its own (" - Re-issue"),
+        # so every dash is tried in turn and the first whole label wins.
+        tail = next(
+            (
+                (d.start(), plain[d.end() :])
+                for d in re.finditer(r"\s+-\s+", plain)
+                if _DASH_LABEL.match(plain[d.end() :].strip())
+            ),
+            None,
+        )
+        if tail:
+            plain = plain[: tail[0]]
             continue
         break
     plain = re.sub(r"\s{2,}", " ", plain).strip(" -")

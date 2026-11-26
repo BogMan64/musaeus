@@ -25,8 +25,9 @@ month, newest first, and name the pull requests. The full record is
   "[Remastered 2015]" name the same record, so the plain album is used to
   confirm it and the label is never written into a tag. Every other rule still
   runs on the plain name, so a remastered compilation is still a compilation.
-  Measured on 30 of the 274 empty rows: 2 newly filled, 1 wrong album
-  corrected, 1 compilation no longer written.
+  A lookup-only sample of 30 of the 274 empty rows, judged old rule against
+  new, would have filled 2 and corrected 1 wrong album; nothing was written,
+  so those rows still need a real run.
 - A locked archive is named, not silently skipped. `chattr +i` on the masters
   made every tag write fail, and `write_beside` reported the refusal as "not
   written": a stage printed `errors: 7,975` with no cause, after copying every

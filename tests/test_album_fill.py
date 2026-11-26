@@ -587,6 +587,37 @@ def test_real_catalogue_album_names_are_kept_whole(album, expected):
     )
 
 
+def test_a_bracket_naming_a_recording_is_not_an_edition_label():
+    """CodeRabbit on #335, 2026-11-26: a bracket was stripped because it
+    CONTAINED an edition word, so "Rattle And Hum (Live, Remastered)" became
+    "Rattle And Hum" -- a live record wearing a studio name, and the live
+    filter could no longer see it. Only a bracket whose whole content is an
+    edition label is removed."""
+    album = "Rattle And Hum (Live, Remastered)"
+    items = [_it("Desire", album, "1988-10-10", artist="U2")]
+    assert af.choose_from_itunes(items, "U2", "Desire")[0] is None
+
+
+def test_a_dash_label_may_hold_a_hyphen_of_its_own():
+    """ " - Re-issue" was unreachable: the tail pattern excluded hyphens, so
+    the label could never be read. Every dash is tried in turn now."""
+    assert (
+        af.choose_from_itunes(
+            [_it("Rosanna", "Toto IV - Re-issue", "1982-03-01")], "Toto", "Rosanna"
+        )[0]
+        == "Toto IV"
+    )
+    # Earlier dashes belong to the name, and stay.
+    assert (
+        af.choose_from_itunes(
+            [_it("Rosanna", "Toto IV - Part 1 - Remastered", "1982-03-01")],
+            "Toto",
+            "Rosanna",
+        )[0]
+        == "Toto IV - Part 1"
+    )
+
+
 def test_an_album_that_is_only_the_title_plus_a_label_is_still_not_an_album():
     assert (
         af.choose_from_itunes(
