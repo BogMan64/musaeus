@@ -41,9 +41,20 @@ class WouldChangeFiles(BaseStage):
 
 @pytest.fixture
 def ran(monkeypatch):
-    """A fresh marker, and one deterministic FAIL in preflight."""
+    """A fresh marker, and one deterministic FAIL in preflight.
+
+    The ffmpeg self-test is stubbed as `tests/test_preflight.py` does: it makes
+    a canary and runs a real decoder, so a test that left it live would depend
+    on the installed ffmpeg and could report *its* FAIL first, changing which
+    line the stop message names (CodeRabbit, #333).
+    """
     WouldChangeFiles.ran = []
     monkeypatch.setattr(PreflightStage, "_check_disk_space", _forced_fail)
+    monkeypatch.setattr(
+        PreflightStage,
+        "_check_ffmpeg_selftest",
+        lambda self, ctx, ok, warn, fail: ok.append("ffmpeg self-test: stubbed"),
+    )
     return WouldChangeFiles.ran
 
 
@@ -103,6 +114,13 @@ def test_the_console_stops_too(disposable_vault, monkeypatch, ran):
     con._run_pipeline_inner(False, [PreflightStage, WouldChangeFiles], "Pipeline")
     assert ran == [], "the console ran a stage after preflight had failed"
 
+    conn = disposable_vault.open_db()
+    row = conn.execute(
+        "SELECT note FROM events WHERE event_type='RUN_END' ORDER BY rowid DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    assert row is not None and "interrupted=True" in row[0], row and row[0]
+
 
 def test_a_warning_alone_does_not_stop_the_run(disposable_vault, monkeypatch):
     """Only FAIL stops; a WARN (the archive's lock, say) is a note, not a stop."""
@@ -151,3 +169,92 @@ def test_the_stop_message_names_the_first_failure():
     assert FORCED in message
     assert "1 more" in message
     assert "nothing was changed" in message
+
+
+# ── What a stopped run must not leave behind ─────────────────────────────────
+
+
+def test_a_stopped_preflight_is_not_saved_as_done(disposable_vault, monkeypatch, ran):
+    """Otherwise the next run resumes PAST preflight, onto the same FAIL.
+
+    Preflight still reports `success=True` (it is a report), so the resume
+    save used to catch it before the stop decision and record it as finished
+    (CodeRabbit, #333).
+    """
+    import json
+
+    cli = _cli(disposable_vault, monkeypatch)
+
+    assert cli._run_pipeline_inner([PreflightStage, WouldChangeFiles], dry_run=False) == 1
+
+    if cli._RESUME_FILE.exists():
+        done = json.loads(cli._RESUME_FILE.read_text(encoding="utf-8"))["completed"]
+        assert "PreflightStage" not in done, f"resume would skip preflight: {done}"
+
+
+def test_a_stopped_run_records_that_it_was_cut_short(disposable_vault, monkeypatch, ran):
+    """RUN_END must not say success=True when later stages never ran."""
+    cli = _cli(disposable_vault, monkeypatch)
+
+    assert cli._run_pipeline_inner([PreflightStage, WouldChangeFiles], dry_run=False) == 1
+
+    conn = disposable_vault.open_db()
+    row = conn.execute(
+        "SELECT note FROM events WHERE event_type='RUN_END' ORDER BY rowid DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    assert row is not None, "the run logged no RUN_END at all"
+    assert "interrupted=True" in row[0], row[0]
+
+
+def test_a_repair_that_works_leaves_no_stale_fail(disposable_vault, monkeypatch):
+    """The install re-checks the dependency; the pre-install FAIL must go with it.
+
+    `_offer_installs` re-ran `_check_commands` and `_check_packages`, but the
+    first pass's FAIL line stayed in the report, so the run stopped on a
+    dependency it had just installed (CodeRabbit, #333).
+    """
+    from types import SimpleNamespace
+
+    import musaeus.stages.preflight as preflight
+
+    state = {"ffmpeg": False}
+    real_which = preflight.shutil.which
+
+    def which(cmd):
+        if cmd == "ffmpeg" and state["ffmpeg"]:
+            return "/usr/bin/ffmpeg"
+        if cmd == "ffmpeg":
+            return None
+        return real_which(cmd)
+
+    def fake_run(cmd, *a, **k):
+        state["ffmpeg"] = True
+        return SimpleNamespace(returncode=0)
+
+    for name in (
+        "_check_directories",
+        "_check_ffmpeg_selftest",
+        "_check_disk_space",
+        "_check_db_integrity",
+        "_check_stale_wal",
+        "_check_edit_guard_hook",
+        "_check_windows_long_paths",
+    ):
+        monkeypatch.setattr(PreflightStage, name, lambda self, *a: None)
+    monkeypatch.setattr(preflight.shutil, "which", which)
+    monkeypatch.setattr(preflight.subprocess, "run", fake_run)
+    monkeypatch.setattr(PreflightStage, "_confirm", lambda self, q, default=True: True)
+    monkeypatch.setattr(PreflightStage, "_offer_api_keys", lambda self, ok: None)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    disposable_vault.cfg.ensure_dirs()
+    conn = disposable_vault.open_db()
+    ctx = disposable_vault.new_context(conn, dry_run=False)
+    stage = PreflightStage()
+
+    stage.run(ctx)
+    conn.close()
+
+    assert state["ffmpeg"] is True, "the install was never offered"
+    stale = [line for line in stage.failures if line.startswith("ffmpeg: not found")]
+    assert stale == [], stale

@@ -668,14 +668,19 @@ def _run_pipeline_inner(
         # what counts as resumable-skip changes.
         # Only the unbroken run from the start counts (see _load_resume):
         # after a failed stage, a later success must run again next time.
-        if result.success and not failed_before:
+        stopping = stops_the_run(stage, dry_run=ctx.dry_run, more_stages=idx + 1 < len(stages))
+        # A stopping preflight is NOT "done": preflight still reports its own
+        # result as successful (it is a report), so saving it here would let
+        # the next run auto-resume past preflight and run the later stages on
+        # the FAIL it had just reported (CodeRabbit, #333).
+        if result.success and not failed_before and not stopping:
             completed_names.append(stage_name)
             _save_resume(completed_names, stage_names, vault_key)
         if not result.success:
             exit_code = 1
             failed_before = True
 
-        if stops_the_run(stage, dry_run=ctx.dry_run, more_stages=idx + 1 < len(stages)):
+        if stopping:
             print(f"  {stop_message(stage)}", file=sys.stderr)
             exit_code = 1
             stopped = True
@@ -738,7 +743,10 @@ def _run_pipeline_inner(
     if not _end_of_run_records(cfg, ctx, run_log):
         exit_code = 1
 
-    ctx.finish()
+    # RUN_END says so when the run was cut short, as Ctrl-C does: a
+    # stopped run otherwise logged success=True with later stages never
+    # having run (CodeRabbit, #333).
+    ctx.finish(interrupted=stopped)
     run_log.close()
     return exit_code
 

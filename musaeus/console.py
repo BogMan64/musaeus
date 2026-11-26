@@ -575,7 +575,7 @@ class Console:
 
                 if not _end_of_run_records(self._config, ctx, run_log):
                     _warn("Some run records could not be written (see above).")
-                ctx.finish()
+                ctx.finish(interrupted=stopped)
                 run_log.close()
 
             except KeyboardInterrupt:

@@ -140,6 +140,10 @@ class PreflightStage(BaseStage):
         #: The FAIL lines of the report just made, kept so the runner can stop
         #: before a later stage changes a file (Grey, 2026-11-25).
         self.failures: list[str] = []
+        #: The FAIL lines the dependency checks wrote. A repair re-runs those
+        #: checks, so the old line has to go with them: keeping it stopped the
+        #: run on a dependency the machine had just installed (CodeRabbit, #333).
+        self._dependency_fails: set[str] = set()
 
     def validate(self, ctx: RunContext) -> None:
         # Nothing to validate before validating -- if ctx/config didn't
@@ -211,9 +215,10 @@ class PreflightStage(BaseStage):
             if found:
                 ok.append(f"{cmd}: found ({found})")
             else:
-                fail.append(
+                self._dependency_fail(
+                    fail,
                     f"{cmd}: not found on PATH -- required by {used_by}. "
-                    f"Fix: {install_hint(apt_pkg)}"
+                    f"Fix: {install_hint(apt_pkg)}",
                 )
                 if sys.platform != "win32":  # no apt there to offer
                     self._missing_apt[cmd] = apt_pkg
@@ -413,8 +418,9 @@ class PreflightStage(BaseStage):
 
             ok.append(f"mutagen: available (v{mutagen.version_string})")
         except ImportError:
-            fail.append(
-                "mutagen: not installed -- required by forge, tagger. Fix: pip install mutagen"
+            self._dependency_fail(
+                fail,
+                "mutagen: not installed -- required by forge, tagger. Fix: pip install mutagen",
             )
             self._missing_pip.append("mutagen")
 
@@ -496,6 +502,11 @@ class PreflightStage(BaseStage):
             return default
         return val in ("y", "yes")
 
+    def _dependency_fail(self, fail: list, line: str) -> None:
+        """Record a dependency FAIL, remembering it so a repair can withdraw it."""
+        fail.append(line)
+        self._dependency_fails.add(line)
+
     def _offer_installs(self, ok: list, warn: list, fail: list) -> None:
         """
         One batch Y/n covering everything missing, not a prompt per item
@@ -542,7 +553,12 @@ class PreflightStage(BaseStage):
                 fail.append(f"pip install: {', '.join(pip_pkgs)} -- could not run pip: {exc}")
 
         # Re-run the two checks to confirm the install actually worked,
-        # rather than trusting the installer's exit code alone.
+        # rather than trusting the installer's exit code alone. The first
+        # pass's lines go first: a dependency the repair fixed must not leave
+        # a FAIL behind that stops the run anyway. A dependency still missing
+        # is re-added by the re-check, so it still stops.
+        fail[:] = [line for line in fail if line not in self._dependency_fails]
+        self._dependency_fails.clear()
         self._missing_apt.clear()
         self._missing_pip.clear()
         self._check_commands(ok, warn, fail)
