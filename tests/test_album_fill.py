@@ -547,6 +547,45 @@ def test_a_reissue_of_a_collection_is_still_a_collection():
     )
 
 
+def test_an_edition_word_never_truncates_the_album_name():
+    """The first cut of this rule read the " - " tail too greedily and turned
+    "The Supremes Sing Holland - Dozier - Holland (Expanded Edition)" into
+    "The Supremes Sing Holland - Dozier" (found auditing the 4,226 album names
+    in the catalogue, 2026-11-26). Only a whole bracket, or a whole edition
+    label after the last " - ", is removed."""
+    album = "The Supremes Sing Holland - Dozier - Holland (Expanded Edition)"
+    assert (
+        af.choose_from_itunes([_it("Baby Love", album, "1964-01-01")], "Toto", "Baby Love")[0]
+        == "The Supremes Sing Holland - Dozier - Holland"
+    )
+
+
+@pytest.mark.parametrize(
+    ("album", "expected"),
+    [
+        ("Abbey Road (Remastered 2009)", "Abbey Road"),
+        ("Blood, Sweat & Tears (Expanded Edition)", "Blood, Sweat & Tears"),
+        (
+            "Country Music - A Film By Ken Burns (The Soundtrack) [Deluxe]",
+            "Country Music - A Film By Ken Burns (The Soundtrack)",
+        ),
+        # A tail with words of its own is part of the name, not a label.
+        ("Pretty Woman - Special Edition Motion Picture Soundtrack", None),
+        # A marker that is the whole name is not a label to lift off.
+        ("Capitol 50th Anniversary The Collectors Series", None),
+        ("Toto IV Remastered", None),
+    ],
+)  # fmt: skip
+def test_real_catalogue_album_names_are_kept_whole(album, expected):
+    """Six of the 4,226 album names already in the catalogue, chosen for the
+    traps: a rule word inside the name, a tail that is not a label, and a name
+    that is only a label."""
+    assert (
+        af.choose_from_itunes([_it("Baby Love", album, "1964-01-01")], "Toto", "Baby Love")[0]
+        == expected
+    )
+
+
 def test_an_album_that_is_only_the_title_plus_a_label_is_still_not_an_album():
     assert (
         af.choose_from_itunes(

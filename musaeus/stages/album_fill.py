@@ -218,12 +218,29 @@ _REISSUE_WORDS = (
 )
 _REISSUE_MARKER = re.compile(rf"\b(?:{_REISSUE_WORDS})\b", re.I)
 
-#: The label that carries the marker: "(Deluxe Edition)", "[Remastered 2015]",
-#: " - Deluxe Edition". Only a whole bracketed group or a " - " tail is removed,
-#: so a word inside the album's own name is left alone.
-_REISSUE_LABEL = re.compile(
-    rf"\s*[\(\[]\s*[^\)\]]*?\b(?:{_REISSUE_WORDS})\b[^\)\]]*[\)\]]"
-    rf"|\s+-\s+[^-]*?\b(?:{_REISSUE_WORDS})\b[^-]*$",
+#: A bracketed group that holds an edition word: "(Deluxe Edition)",
+#: "[Remastered 2015]", "101(remaster)". Only a whole bracketed group is
+#: removed -- never a word of the album's own name, which is how a first cut
+#: turned "The Supremes Sing Holland - Dozier - Holland (Expanded Edition)"
+#: into "The Supremes Sing Holland - Dozier" (found 2026-11-26).
+_REISSUE_BRACKET = re.compile(
+    rf"\s*[\(\[]([^\(\)\[\]]*\b(?:{_REISSUE_WORDS})\b[^\(\)\[\]]*)[\)\]]",
+    re.I,
+)
+
+#: A " - " tail that IS the label and nothing else: " - Deluxe Edition",
+#: " - Remastered", " - 2015 Remaster", " - 50th Anniversary Edition". A tail
+#: with words of its own (" - Special Edition Motion Picture Soundtrack") is
+#: part of the name, so it is left alone and the name is refused instead.
+_DASH_LABEL = re.compile(
+    r"^(?:super\s+)?(?:(?:deluxe|expanded|special|legacy|collector'?s)\s+version"
+    r"|(?:deluxe|expanded|special|legacy|collector'?s)\s+edition"
+    r"|deluxe(?:\s+edition)?"
+    r"|(?:digitally\s+)?remaster(?:ed)?(?:\s+(?:version|\d{4}))?"
+    r"|\d{4}\s+remaster(?:ed)?"
+    r"|re-?issue(?:\s+edition)?"
+    r"|\d{1,2}(?:st|nd|rd|th)\s+anniversary(?:\s+(?:edition|deluxe(?:\s+edition)?))?"
+    r")$",
     re.I,
 )
 
@@ -233,19 +250,30 @@ def plain_album(name: str) -> str | None:
 
     "Toto IV (Deluxe Edition)" is the album "Toto IV" reissued, so its plain
     name may be used to confirm the album -- but "… (Deluxe Edition)" is never
-    written into a tag (Grey, 2026-11-26). A marker that cannot be removed as a
-    whole label ("Toto IV Remastered") makes the name unusable: half a name is
-    worse than none, and writing the suffix is not allowed.
+    written into a tag (Grey, 2026-11-26). A marker that is not a label of its
+    own ("Toto IV Remastered", "For Collectors Only") makes the name unusable:
+    half a name is worse than none, and the suffix may not be written.
     """
     n = (name or "").strip()
     if not n:
         return None
     if not _REISSUE_MARKER.search(n):
         return n
-    plain = _REISSUE_LABEL.sub("", n).strip(" -")
-    if plain and plain != n and not _REISSUE_MARKER.search(plain):
-        return plain
-    return None
+    plain = n
+    while True:
+        m = _REISSUE_BRACKET.search(plain)
+        if m:
+            plain = f"{plain[: m.start()]} {plain[m.end() :]}"
+            continue
+        m = re.search(r"\s+-\s+([^-]+)$", plain)
+        if m and _DASH_LABEL.match(m.group(1).strip()):
+            plain = plain[: m.start()]
+            continue
+        break
+    plain = re.sub(r"\s{2,}", " ", plain).strip(" -")
+    if not plain or plain == n or _REISSUE_MARKER.search(plain):
+        return None
+    return plain
 
 
 class Unavailable(Exception):
