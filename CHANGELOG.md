@@ -51,7 +51,11 @@ month, newest first, and name the pull requests. The full record is
   became an empty vault and the run filed music into it. The pipeline and
   the console now stop and name the missing path; `musaeus setup` is the
   command that makes a vault.
-
+- `musaeus doctor` compares every recorded edition copy with its master and
+  reports copies that lost a tag the master still has. The ledger calls a
+  copy current while the master's mtime is unchanged, so a tag stripped
+  from a copy by hand is never restored and nothing said so. Measured
+  2026-11-25: 8,341 of 18,450 copies (track 3,250, comment 5,091, disc 21).
 
 ### Changed
 
