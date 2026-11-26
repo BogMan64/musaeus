@@ -227,18 +227,15 @@ class TestResumeRecordsFailedStageAsCompleteCharacterization:
 
         monkeypatch.setattr(NearDupeStage, "validate", _always_fail_validate)
 
-        # The subject here is resume, not preflight. This vault lives on /tmp,
-        # which on this machine has 5.8 GB free: preflight reports that as a
-        # FAIL, and since #333 a real run stops there -- so NearDupeStage would
-        # never run and the resume file under test would never be written.
-        # Preflight's own checks are exercised in test_preflight.py.
+        # The subject here is resume, not preflight. A real run now stops on a
+        # preflight FAIL, and this test machine's /tmp (5.8 GB free) and the CI
+        # runner (no fpcalc) both produce one -- so NearDupeStage would never
+        # run and the resume file under test would never be written. So
+        # preflight is given nothing to report; its own checks are
+        # exercised in test_preflight.py.
         from musaeus.stages.preflight import PreflightStage
 
-        monkeypatch.setattr(
-            PreflightStage,
-            "_check_disk_space",
-            lambda self, ctx, ok, warn, fail: ok.append("disk space: stubbed"),
-        )
+        monkeypatch.setattr(PreflightStage, "_run_checks", lambda self, ctx, dry_run: ([], [], []))
 
         rc1 = cli_mod._run_pipeline(DEFAULT_PIPELINE, dry_run=False)
         assert rc1 == 1  # pipeline reports failure the first time
