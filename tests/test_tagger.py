@@ -136,6 +136,38 @@ class TestTagHelpers:
         assert changes["artist"] == "Huey Lewis & The News"
         assert "title" not in changes
 
+    def test_albumartist_follows_the_artist_when_only_the_spelling_differs(self, ctx):
+        """CodeRabbit on #334, 2026-11-26: the artist tag is rewritten to
+        "&" while albumartist was left as "And", because both strings equalled
+        the database artist and the albumartist branch never ran. The two tags
+        diverged, and no later run corrected it."""
+        stage = TaggerStage()
+        db_row = {"artist": "Huey Lewis And The News", "title": "The Power Of Love"}
+        file_tags = {
+            "artist": "Huey Lewis And The News",
+            "albumartist": "Huey Lewis And The News",
+            "title": "The Power Of Love",
+        }
+
+        changes = stage._compute_changes(db_row, file_tags)
+
+        assert changes["artist"] == "Huey Lewis & The News"
+        assert changes["albumartist"] == "Huey Lewis & The News"
+
+    def test_the_albumartist_guards_still_hold(self):
+        """Only an and/& difference opens the door: a name with no "and" to
+        spell, a compilation, and classical are all still refused."""
+        from musaeus.stages.tagger import albumartist_should_follow
+
+        assert albumartist_should_follow("The Stooges", "The Stooges") is False
+        assert albumartist_should_follow("Huey Lewis And The News", "Various Artists") is False
+        assert (
+            albumartist_should_follow(
+                "Huey Lewis And The News", "Huey Lewis And The News", genre="Classical"
+            )
+            is False
+        )
+
     def test_compute_changes_no_diff(self, ctx):
         stage = TaggerStage()
         db_row = {

@@ -32,7 +32,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-from ..artist_form import has_article, sort_form, tag_artist
+from ..artist_form import ampersand, has_article, sort_form, tag_artist
 from ..context import RunContext, StageResult
 from ..playlist_album import is_playlist_album
 from ..safe_save import write_beside
@@ -149,8 +149,8 @@ def albumartist_should_follow(
     artist = (db_artist or "").strip()
     aa = (file_albumartist or "").strip()
 
-    # Nothing to source a value from, or nothing to fix.
-    if not artist or not aa or aa == artist:
+    # Nothing to source a value from.
+    if not artist or not aa:
         return False
 
     # A compilation's albumartist is genuinely not the track artist.
@@ -161,6 +161,15 @@ def albumartist_should_follow(
     # performer, which is the only place that information exists.
     if genre.strip().lower() == "classical" or _ENSEMBLE.search(aa):
         return False
+
+    if aa == artist:
+        # Both fields hold the same string, but it may not be the spelling the
+        # tag should carry: "Huey Lewis And The News" in both, where the tag
+        # reads "Huey Lewis & The News" (Grey, 2026-11-26). The artist field
+        # is rewritten, so albumartist must follow or the two diverge and no
+        # later run corrects it. Only an and/& difference opens this door --
+        # a moved article or a case-only difference is judged below.
+        return ampersand(aa) != aa and tag_artist(artist) != aa
 
     # Same name, different spelling -- but NOT when the only difference is
     # letter case. Measured 2026-08-29: 181 such files, and in most of them
