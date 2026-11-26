@@ -32,7 +32,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-from ..artist_form import has_article, natural_form, sort_form
+from ..artist_form import ampersand, has_article, sort_form, tag_artist
 from ..context import RunContext, StageResult
 from ..playlist_album import is_playlist_album
 from ..safe_save import write_beside
@@ -149,8 +149,8 @@ def albumartist_should_follow(
     artist = (db_artist or "").strip()
     aa = (file_albumartist or "").strip()
 
-    # Nothing to source a value from, or nothing to fix.
-    if not artist or not aa or aa == artist:
+    # Nothing to source a value from.
+    if not artist or not aa:
         return False
 
     # A compilation's albumartist is genuinely not the track artist.
@@ -161,6 +161,15 @@ def albumartist_should_follow(
     # performer, which is the only place that information exists.
     if genre.strip().lower() == "classical" or _ENSEMBLE.search(aa):
         return False
+
+    if aa == artist:
+        # Both fields hold the same string, but it may not be the spelling the
+        # tag should carry: "Huey Lewis And The News" in both, where the tag
+        # reads "Huey Lewis & The News" (Grey, 2026-11-26). The artist field
+        # is rewritten, so albumartist must follow or the two diverge and no
+        # later run corrects it. Only an and/& difference opens this door --
+        # a moved article or a case-only difference is judged below.
+        return ampersand(aa) != aa and tag_artist(artist) != aa
 
     # Same name, different spelling -- but NOT when the only difference is
     # letter case. Measured 2026-08-29: 181 such files, and in most of them
@@ -521,7 +530,7 @@ class TaggerStage(BaseStage):
         # see organize.py, which derives it independently of the tag.
         db_artist = str(db_row.get("artist") or "").strip()
         if db_artist:
-            natural = natural_form(db_artist)
+            natural = tag_artist(db_artist)
             if natural != str(file_tags.get("artist") or "").strip():
                 changes["artist"] = natural
 
@@ -549,7 +558,7 @@ class TaggerStage(BaseStage):
             # The test must stay on _compute_changes rather than on the
             # predicate: the predicate is still right to say "yes, follow",
             # and it is this layer's job not to write what is already there.
-            natural = natural_form(db_artist)
+            natural = tag_artist(db_artist)
             if natural != file_aa:
                 changes["albumartist"] = natural
             if has_article(db_artist):
@@ -622,7 +631,7 @@ class TaggerStage(BaseStage):
                 # check nobody reads, and this one exists to catch the
                 # AlbumArt failure where 10,549 writes silently did nothing.
                 if field == "artist":
-                    want = natural_form(want)
+                    want = tag_artist(want)
                 got = (meta.get(field) or "").strip()
                 if want and got and want.casefold() != got.casefold():
                     problems.append(f"{path.name}: {field} on disk is {got!r}, row says {want!r}")

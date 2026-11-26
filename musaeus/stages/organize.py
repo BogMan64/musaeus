@@ -86,7 +86,7 @@ import unicodedata
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from ..artist_form import folder_artist, sort_form
+from ..artist_form import ampersand, folder_artist, sort_form
 from ..canon.protected_artists import PROTECTED_ARTIST_NAMES
 from ..context import RunContext, StageResult
 from ..filing import load as filing_load
@@ -504,9 +504,6 @@ _PATH_COLUMNS = (
     ("metadata_cache", "file_path"),
 )
 
-_AND_WORD = re.compile(r"\s+and\s+", re.I)
-
-
 #: How close a listed act must come to an act that HAS songs to be read as its
 #: typo. "Bob Segre & The Silver Bullet Band" scores 97 against the real band;
 #: two real acts score lower ("Miles Davis Quintet" vs the Quartet: 88).
@@ -594,7 +591,7 @@ def folder_spelling(name: str) -> str:
     two others: "Band", "Sandman" and a name that starts "And ..." are left.
     The file name keeps the tag's spelling.
     """
-    return _AND_WORD.sub(" & ", name)
+    return ampersand(name)
 
 
 def destination_root(current_path: Path, roots: Iterable[Path]) -> Path | None:

@@ -181,6 +181,28 @@ def act_key(name: str) -> str:
     return re.sub(r"[^0-9a-z]", "", n)
 
 
+#: "and" standing as a word between two names: "Peter, Paul and Mary". A
+#: space on each side is what leaves "Band", "Sandman" and a name that starts
+#: "And ..." alone.
+_AND_WORD = re.compile(r"\s+and\s+", re.I)
+
+
+def ampersand(name: str) -> str:
+    """Spell the word "and" as "&": how Grey wants an artist name written.
+
+    Grey, 2026-11-26: "&" for artists and groups, "and" for everything else.
+    Folders have spelled it this way since 2026-10-12; the artist TAG did
+    not, so the folder said "Huey Lewis & The News" while the tag said
+    "Huey Lewis And The News". Titles are untouched -- they stay as released.
+    """
+    return _AND_WORD.sub(" & ", name or "")
+
+
+def tag_artist(stored_artist: str) -> str:
+    """The `artist` tag for a stored name: natural form, spelled with "&"."""
+    return ampersand(natural_form(stored_artist))
+
+
 def tag_values(stored_artist: str) -> dict[str, str]:
     """What the artist and sort-artist tags should hold for a stored name.
 
@@ -191,7 +213,7 @@ def tag_values(stored_artist: str) -> dict[str, str]:
     n = (stored_artist or "").strip()
     if not n:
         return {}
-    return {"artist": natural_form(n), "sort_artist": sort_form(n)}
+    return {"artist": tag_artist(n), "sort_artist": sort_form(n)}
 
 
 #: Markers that always mean "this credit names more than one act". Unlike a
