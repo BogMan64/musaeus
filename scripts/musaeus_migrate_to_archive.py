@@ -162,6 +162,14 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if args.execute:
+        # This script writes to the masters. The lock is what makes two
+        # jobs on the archive impossible, and a dry run stays lock-free
+        # so it can always be asked (gate/lock gap, 2026-11-25).
+        from musaeus.masters_lock import hold_for_process
+
+        hold_for_process(exclusive=True, what="scripts/musaeus_migrate_to_archive.py")
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
 
