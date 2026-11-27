@@ -31,9 +31,10 @@ month, newest first, and name the pull requests. The full record is
   change is now told, instead of being silently skipped with success
   reported. The script is a dry run by default, writes through `write_beside`,
   keeps a journal for `--undo`, and refuses a locked archive before touching a
-  file rather than stopping on file one of 7,975. Disc numbers and comments
-  are left alone: no sampled master has a disc number, and 5,091 edition
-  copies lost a comment their master still has.
+  file rather than stopping on file one of 7,975. It runs in batches
+  (`--max-strip 20`), each with its own journal and its own summary of what is
+  left, so a mistake is caught after 20 files rather than 1,402. Disc numbers
+  are left alone (9 files carry one) and so are comments (2,229 carry one).
 - Album fill reads through an edition label and accepts a single version. A
   title ending "(Single Version)" is the same studio performance, so its album
   may answer for the song; "(Deluxe Edition)", "(Remastered)" and

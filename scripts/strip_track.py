@@ -284,6 +284,13 @@ def main() -> int:
     ap.add_argument("--root", type=Path, help="library root (default: the vault's ARCHIVE)")
     ap.add_argument("--apply", action="store_true", help="write; without this nothing changes")
     ap.add_argument("--limit", type=int, help="stop after this many audio files")
+    ap.add_argument(
+        "--max-strip",
+        type=int,
+        metavar="N",
+        help="stop after removing N track numbers (a batch); the next run "
+        "carries on where this one stopped",
+    )
     ap.add_argument("--journal", type=Path, help="where to record the numbers removed")
     ap.add_argument("--undo", type=Path, metavar="JOURNAL", help="put recorded numbers back")
     args = ap.parse_args()
@@ -378,10 +385,14 @@ def main() -> int:
     not_removed = 0
     with open(journal_path, "w", encoding="utf-8") as fh:
         for path, track in numbered:
+            if args.max_strip is not None and changed >= args.max_strip:
+                break
             try:
                 journal(fh, path, track)  # durable before the file is touched
                 if strip_one(path, apply=True):
                     changed += 1
+                    if args.max_strip is not None:
+                        print(f"  removed {changed:>4}  {path.relative_to(root)}")
                 else:
                     not_removed += 1
             except Exception as exc:
@@ -392,6 +403,10 @@ def main() -> int:
     print(f"\nTrack numbers removed: {changed:,}")
     if not_removed:
         print(f"Not removed: {not_removed:,}  (the write was refused; the file is as it was)")
+    left = len(numbered) - changed
+    print(f"Still numbered after this run: {left:,}")
+    if args.max_strip is not None and left:
+        print(f"Batch limit reached ({args.max_strip}). Run again to carry on.")
     print(f"Journal: {journal_path}")
     return 0
 

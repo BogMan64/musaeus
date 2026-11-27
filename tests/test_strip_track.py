@@ -10,6 +10,7 @@ tmp_path, because a --apply run places the masters lock there.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -222,3 +223,74 @@ def test_the_cli_counts_an_unreadable_file_and_keeps_going(tmp_path, monkeypatch
     assert "Unreadable: 1" in out and "NOT examined" in out
     assert "broken.m4a" in out
     assert good.stat().st_mtime_ns == before, "a dry run rewrote a readable file"
+
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def _cli(root: Path, tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run the script as a real process: a batch run takes the masters lock,
+    and the lock belongs to the process, not to this test."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MUSAEUS_")}
+    env.update(
+        {
+            "MUSAEUS_VAULT_ROOT": str(tmp_path / "vault"),
+            "MUSAEUS_RUNS_ROOT": str(tmp_path / "RUNS"),
+            "PYTHONPATH": str(REPO),
+        }
+    )
+    return subprocess.run(
+        [sys.executable, str(REPO / "scripts" / "strip_track.py"), "--root", str(root), *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=180,
+        check=False,
+    )
+
+
+def test_a_batch_stops_at_the_limit_and_the_next_run_carries_on(tmp_path):
+    """Grey, 2026-11-27: "20 files first, fix any error in the code, run
+    another 20 files, and repeat, then 100 files, same process".
+
+    A batch must stop at its limit, say what is left, and leave the rest
+    readable by the next run -- not silently stop at a file count.
+    """
+    root = tmp_path / "vault"
+    root.mkdir(parents=True)
+    songs = []
+    for i in range(1, 6):
+        p = root / f"song{i}.m4a"
+        _make_m4a(p, track=i)
+        songs.append(p)
+
+    first = _cli(
+        root, tmp_path, "--apply", "--max-strip", "2", "--journal", str(tmp_path / "j1.jsonl")
+    )
+    assert first.returncode == 0, first.stderr[-400:]
+    assert "Track numbers removed: 2" in first.stdout
+    assert "Still numbered after this run: 3" in first.stdout
+    assert "Batch limit reached (2)" in first.stdout
+    left = [p for p in songs if MP4(str(p)).tags.get("trkn")]
+    assert len(left) == 3, "the batch removed more or fewer than its limit"
+
+    second = _cli(
+        root, tmp_path, "--apply", "--max-strip", "2", "--journal", str(tmp_path / "j2.jsonl")
+    )
+    assert second.returncode == 0, second.stderr[-400:]
+    assert "Track numbers removed: 2" in second.stdout
+    assert "Still numbered after this run: 1" in second.stdout
+    assert len([p for p in songs if MP4(str(p)).tags.get("trkn")]) == 1
+
+    third = _cli(
+        root, tmp_path, "--apply", "--max-strip", "2", "--journal", str(tmp_path / "j3.jsonl")
+    )
+    assert third.returncode == 0, third.stderr[-400:]
+    assert "Track numbers removed: 1" in third.stdout
+    assert "Still numbered after this run: 0" in third.stdout
+    assert not [p for p in songs if MP4(str(p)).tags.get("trkn")]
+
+    # Every batch keeps its own journal, so any batch can be undone alone.
+    for name, count in (("j1.jsonl", 2), ("j2.jsonl", 2), ("j3.jsonl", 1)):
+        lines = (tmp_path / name).read_text().splitlines()
+        assert len(lines) == count, f"{name} recorded {len(lines)} entries, not {count}"
