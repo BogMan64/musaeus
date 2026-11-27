@@ -37,10 +37,26 @@ month, newest first, and name the pull requests. The full record is
   change is now told, instead of being silently skipped with success
   reported. The script is a dry run by default, writes through `write_beside`,
   keeps a journal for `--undo`, and refuses a locked archive before touching a
-  file rather than stopping on file one of 7,975. It runs in batches
-  (`--max-strip 20`), each with its own journal and its own summary of what is
-  left, so a mistake is caught after 20 files rather than 1,402. Disc numbers
-  are left alone (9 files carry one) and so are comments (2,229 carry one).
+  file rather than stopping on file one of 7,975. It runs in batches of 20 by
+  default (`--max-strip`), each with its own journal and its own summary of
+  what is left, so a mistake is caught after 20 files rather than 1,402. Disc
+  numbers are left alone (9 files carry one) and so are comments (2,229 carry
+  one).
+
+  Review of #340 (2026-11-27) found ten defects, and they are fixed: an apply
+  run with no batch size stripped all 1,402 at once; `--limit 0` still selected
+  a file; a second batch sharing a `--journal` path deleted the first batch's
+  recovery records; the journal was flushed but never fsynced, so a crash could
+  keep the stripped file and lose the number; `--undo` returned before taking
+  the masters lock, and stopped on the first deleted file because
+  `counts["missing"]["path"]` raised TypeError; it followed a symlink and would
+  have put another song at the recorded path; it recorded a relative path, so
+  undo from another directory could miss the file; on MP3 it read a v2.3 tag as
+  v2.4, which drops frames only v2.3 defines (RVAD among them), and the journal
+  records the track number alone, so the frame was gone for good; and a dry run
+  demanded a vault it does not need while the error told the operator to pass
+  `--root`, which cannot supply one. MP3 is now read and written at its own ID3
+  version, and `--root` alone is enough for a dry run.
 - Album fill reads through an edition label and accepts a single version. A
   title ending "(Single Version)" is the same studio performance, so its album
   may answer for the song; "(Deluxe Edition)", "(Remastered)" and
