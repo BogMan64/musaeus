@@ -228,6 +228,14 @@ def main() -> int:
     ap.add_argument("--journal", type=Path)
     args = ap.parse_args()
 
+    if args.apply or args.undo:
+        # This script writes to the masters. The lock is what makes two
+        # jobs on the archive impossible, and a dry run stays lock-free
+        # so it can always be asked (gate/lock gap, 2026-11-25).
+        from musaeus.masters_lock import hold_for_process
+
+        hold_for_process(exclusive=True, what="scripts/split_artist_sort_form.py")
+
     if args.undo:
         if not args.undo.is_file():
             print(f"No such journal: {args.undo}", file=sys.stderr)
