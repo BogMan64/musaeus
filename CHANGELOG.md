@@ -19,6 +19,19 @@ month, newest first, and name the pull requests. The full record is
 
 ### Fixed
 
+- The tagger no longer writes the track number, and `scripts/strip_track.py`
+  removes the ones already in the files. Grey, 2026-11-27: "Strip them. and
+  have tagger stop writting them back", which reverses the 2026-10-03 request
+  that brought them back. Measured that day: 1,402 of 7,975 catalogue rows
+  carry a track number and 113 of 401 sampled masters have one in the file.
+  The tagger wrote the row's number into every file on every pass, so any
+  strip was undone by the next run. A caller that still asks for a track
+  change is now told, instead of being silently skipped with success
+  reported. The script is a dry run by default, writes through `write_beside`,
+  keeps a journal for `--undo`, and refuses a locked archive before touching a
+  file rather than stopping on file one of 7,975. Disc numbers and comments
+  are left alone: no sampled master has a disc number, and 5,091 edition
+  copies lost a comment their master still has.
 - Album fill reads through an edition label and accepts a single version. A
   title ending "(Single Version)" is the same studio performance, so its album
   may answer for the song; "(Deluxe Edition)", "(Remastered)" and
