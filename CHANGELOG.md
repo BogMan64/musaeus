@@ -36,6 +36,22 @@ month, newest first, and name the pull requests. The full record is
   run, `doctor` reports the state, and albumart's summary names the cause
   instead of "check logs". The printed commands quote the folder, so an album
   called "Album Name" does not become two arguments.
+- A preflight FAIL stops a real run. It used to be a line on the screen while
+  the next stage wrote to the masters: only a failed ffmpeg self-test
+  stopped. Now the run stops with one line naming the first FAIL, and reports
+  itself as stopped rather than complete. Only a FAIL that makes writing
+  unsafe stops it — a vault or run folder that cannot be written, a
+  critically low disk, a broken database, a stale WAL, a failed ffmpeg
+  self-test, `mutagen` missing. A missing tool such as `fpcalc` is reported
+  with its `Fix:` line, offered for install when someone is at the keyboard,
+  and the run continues. A dry run and a lone `musaeus preflight` still only
+  report.
+- A run never creates the vault. `ensure_dirs()` made the vault root
+  unconditionally, so a mistyped or not-yet-mounted `MUSAEUS_VAULT_ROOT`
+  became an empty vault and the run filed music into it. The pipeline and
+  the console now stop and name the missing path; `musaeus setup` is the
+  command that makes a vault.
+
 
 ### Changed
 

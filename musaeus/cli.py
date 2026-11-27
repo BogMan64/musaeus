@@ -128,7 +128,7 @@ import traceback
 from pathlib import Path
 
 from . import __version__
-from .config import AUDIO_EXTENSIONS, get_config
+from .config import AUDIO_EXTENSIONS, VaultRootMissing, get_config
 from .context import RunContext, elision, head_with_remainder
 from .db import open_db, snapshot_db_before_wipe
 from .handoff import act_of, problem_summary, write_act_handoff, write_handoff_doc
@@ -450,6 +450,16 @@ def _run_pipeline(
         cfg = get_config()
     except ValueError:
         return _run_pipeline_inner(stages, dry_run, stash)  # it reports the error
+    # The vault must be checked HERE as well as inside, because the lock
+    # makes its folder under runs_root: a run refused for a missing vault
+    # would still leave lock directories inside it, and "a run never makes
+    # the vault" would be untrue (CodeRabbit on #336, 2026-11-26).
+    try:
+        cfg.ensure_dirs(create_root=False)
+    except VaultRootMissing as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
     # P0-11 execution-authority gate. OFF unless MUSAEUS_P0_SAFETY_GATE=1
     # or --safety-gate: enabling it by default would make every run stop
     # to ask, and would correctly make the unattended overnight script do
@@ -520,7 +530,15 @@ def _run_pipeline_inner(
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    cfg.ensure_dirs()
+    # A run works inside a vault that exists; it never makes one. A mistyped
+    # or not-yet-mounted MUSAEUS_VAULT_ROOT used to become an empty vault and
+    # the run then filed music into it (Grey, 2026-11-25). `musaeus setup` is
+    # the command that makes a vault.
+    try:
+        cfg.ensure_dirs(create_root=False)
+    except VaultRootMissing as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
     conn = open_db(cfg.db_path)
     ctx = RunContext.new(cfg, conn, dry_run=dry_run)

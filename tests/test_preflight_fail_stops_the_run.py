@@ -61,6 +61,9 @@ def ran(monkeypatch):
 def _cli(disposable_vault, monkeypatch):
     import musaeus.cli as cli
 
+    # A real run happens inside a vault that already exists; the guard that
+    # refuses a missing one has its own test file.
+    disposable_vault.cfg.ensure_dirs()
     monkeypatch.setattr(cli, "get_config", lambda: disposable_vault.cfg)
     monkeypatch.setattr(cli, "_RESUME_FILE", disposable_vault.config_home / "resume.json")
     return cli

@@ -108,6 +108,16 @@ def _expand(value: str) -> Path:
     return Path(os.path.expandvars(os.path.expanduser(value.strip()))).resolve()
 
 
+class VaultRootMissing(RuntimeError):
+    """The configured vault root does not exist, and was not created.
+
+    Raised instead of creating the vault: a mistyped or not-yet-mounted
+    MUSAEUS_VAULT_ROOT used to become a brand-new empty vault, and the run
+    then filed music into it. `musaeus setup` is the one command that makes a
+    vault (Grey, 2026-11-25).
+    """
+
+
 @dataclass
 class MusicConfig:
     """All resolved paths for a Musaeus run. No hardcodes."""
@@ -312,8 +322,24 @@ class MusicConfig:
         tests/test_tunemymusic_has_one_home.py keeps it that way."""
         return self.meta_dir / "TuneMyMusic.csv"
 
-    def ensure_dirs(self) -> None:
-        """Create all required directories if they don't exist."""
+    def ensure_dirs(self, *, create_root: bool = True) -> None:
+        """Create the required directories, inside an existing vault root.
+
+        With create_root=False (what the pipeline asks for) a missing vault root
+        is a VaultRootMissing, never a new folder: the run stops and says which
+        path is missing instead of building a vault where the real one should be.
+        The default stays True so setup, scripts and tests that mean to lay out a
+        fresh vault are unchanged.
+        """
+        if not self.vault_root.exists():
+            if not create_root:
+                raise VaultRootMissing(
+                    f"the vault root does not exist: {self.vault_root}. Nothing was created. "
+                    "If a drive is not mounted, mount it and run again. If this is a new "
+                    "vault, run `musaeus setup`. Check MUSAEUS_VAULT_ROOT in "
+                    "~/.config/musaeus/settings.env."
+                )
+            self.vault_root.mkdir(parents=True, exist_ok=True)
         for d in (
             self.vault_root,
             self.inbox,

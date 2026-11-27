@@ -143,6 +143,7 @@ class TestDryRunGuardBlocksDirsAndDB:
         later dry-run must not open a writable connection or append a
         new RUN_START/STAGE_COMPLETE/RUN_END event to it."""
         cli_mod = _patch_cli_for_vault(monkeypatch, disposable_vault)
+        disposable_vault.make_root()
 
         rc_real = cli_mod._run_pipeline([PreflightStage], dry_run=False)
         assert rc_real == 0
@@ -314,12 +315,18 @@ class TestRealRunIsNotBlockedByTheGuard:
 
     def test_real_run_creates_dirs_and_db_and_is_not_blocked(self, disposable_vault, monkeypatch):
         cli_mod = _patch_cli_for_vault(monkeypatch, disposable_vault)
-        assert not disposable_vault.root.exists()
+        # Since #336 a run works inside a vault that exists and never makes
+        # one, so the root is a precondition. Everything INSIDE it is still
+        # this run's job, and is asserted below.
+        disposable_vault.make_root()
+        assert not disposable_vault.cfg.inbox.exists()
+        assert not disposable_vault.cfg.db_path.exists()
 
         rc = cli_mod._run_pipeline([PreflightStage], dry_run=False)
 
         assert rc != 2, "a real (non-dry-run) invocation must never be previewed by the P0-02 guard"
-        assert disposable_vault.root.exists()
+        assert disposable_vault.cfg.inbox.exists()
+        assert disposable_vault.cfg.runs_root.exists()
         assert disposable_vault.cfg.db_path.exists()
 
     def test_real_run_of_default_pipeline_against_empty_inbox_is_not_blocked(
@@ -329,6 +336,7 @@ class TestRealRunIsNotBlockedByTheGuard:
         against an empty disposable inbox completes normally -- not
         blocked by the P0-02 guard, which only concerns dry_run=True."""
         cli_mod = _patch_cli_for_vault(monkeypatch, disposable_vault)
+        disposable_vault.make_root()
 
         rc = cli_mod._run_pipeline(DEFAULT_PIPELINE, dry_run=False)
 
@@ -348,6 +356,7 @@ class TestRealRunIsNotBlockedByTheGuard:
         previewed by _reject_unsafe_dry_run.
         """
         cli_mod = _patch_cli_for_vault(monkeypatch, disposable_vault)
+        disposable_vault.make_root()
 
         from musaeus.stages.base import StageError
 

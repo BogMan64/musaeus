@@ -31,7 +31,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .config import MusicConfig, get_config
+from .config import MusicConfig, VaultRootMissing, get_config
 from .context import RunContext, elision
 from .db import open_db, snapshot_db_before_wipe
 from .hasher import ffmpeg_available, ffprobe_available
@@ -261,13 +261,16 @@ class Console:
         else:
             _warn("ffprobe   : NOT FOUND — Scholar stage will fail")
 
-        # Ensure directories exist
+        # Ensure directories exist, inside a vault that already exists: the
+        # console never makes the vault itself (Grey, 2026-11-25).
         try:
-            cfg.ensure_dirs()
+            cfg.ensure_dirs(create_root=False)
+        except VaultRootMissing as exc:
+            _err(str(exc))
+            return False
         except OSError as exc:
             _err(f"Cannot create directories: {exc}")
             return False
-
         return ok
 
     # ── DB helpers ────────────────────────────────────────────────────────────
