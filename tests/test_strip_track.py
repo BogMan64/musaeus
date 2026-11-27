@@ -65,8 +65,9 @@ def test_the_track_number_goes_and_the_audio_does_not(tmp_path):
 
 
 def test_the_disc_number_and_the_comment_are_left_alone(tmp_path):
-    """Zero of 401 sampled masters carry a disc number, and 5,091 edition
-    copies lost a comment their master still has -- neither is junk."""
+    """Nine of the 7,975 masters carry a disc number, and 2,229 carry a
+    comment (5,091 edition copies lost a comment their master still has) --
+    neither is junk."""
     song = tmp_path / "song.m4a"
     _make_m4a(song, track=5)
     audio = MP4(str(song))

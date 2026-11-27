@@ -22,8 +22,10 @@ month, newest first, and name the pull requests. The full record is
 - The tagger no longer writes the track number, and `scripts/strip_track.py`
   removes the ones already in the files. Grey, 2026-11-27: "Strip them. and
   have tagger stop writting them back", which reverses the 2026-10-03 request
-  that brought them back. Measured that day: 1,402 of 7,975 catalogue rows
-  carry a track number and 113 of 401 sampled masters have one in the file.
+  that brought them back. Measured on the whole ARCHIVE that day, read-only:
+  1,402 of 7,975 files carry a track number, nine carry a disc number and
+  2,229 carry a comment. The numbers are not album positions -- the median is
+  184 and 941 are above 99 -- they are export IDs from the old library.
   The tagger wrote the row's number into every file on every pass, so any
   strip was undone by the next run. A caller that still asks for a track
   change is now told, instead of being silently skipped with success

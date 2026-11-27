@@ -6,10 +6,16 @@ Grey, 2026-11-27: "Strip them. and have tagger stop writting them back".
 
 The track number was put INTO the files on purpose from 2026-10-03 ("Track
 numbers please return"), and the tagger did that on every pass. Measured
-2026-11-26, read-only:
+2026-11-27 on the whole ARCHIVE with mutagen, read-only:
 
     1,402 of 7,975 catalogue rows carry a track number
-      113 of  401 sampled masters carry one in the file (28%)
+    1,402 of 7,975 files carry one in the tag  (median 184, max 857)
+          9 files carry a disc number
+      2,229 files carry a comment
+
+Those numbers are not album positions: the median is 184 and 941 of the 1,402
+are above 99. They are export IDs from the old library, which is the case for
+removing them rather than renaming anything.
 
 So the tagger had to change first, or a strip would be undone by the next
 run. Both halves are in this branch: the tagger no longer proposes a track
@@ -20,8 +26,8 @@ What is stripped
 The track number only: `trkn` on MP4, `tracknumber` on FLAC and MP3.
 
 NOT stripped:
-  - the disc number (`disk`). Zero of the 401 sampled masters carry one, and
-    it is the only thing that records disc order in a multi-disc set.
+  - the disc number (`disk`). Nine files carry one, and it is the only thing
+    that records disc order in a multi-disc set.
   - the track TOTAL (`trkn`'s second value, `tracktotal`). It is part of the
     same tag on MP4, so it goes with it; on FLAC and MP3 the separate total
     tag is left alone.
