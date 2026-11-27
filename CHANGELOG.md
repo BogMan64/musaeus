@@ -19,6 +19,12 @@ month, newest first, and name the pull requests. The full record is
 
 ### Fixed
 
+- The "Platinum & Gold Collection" and "Gold Collection" series count as
+  compilations. The Pointer Sisters' "He's So Shy" has "Special Things" hidden
+  behind "(Bonus Track Version)" and "Platinum & Gold Collection: The Pointer
+  Sisters" as its only other exact match, so the row was a tie and stayed
+  empty -- and before the edition-label change that series was being written
+  as the album. "Gold" alone is still allowed: it is a real album name.
 - Album fill reads through an edition label and accepts a single version. A
   title ending "(Single Version)" is the same studio performance, so its album
   may answer for the song; "(Deluxe Edition)", "(Remastered)" and
