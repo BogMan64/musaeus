@@ -53,6 +53,11 @@ def _env(tmp_path: Path) -> dict[str, str]:
         **inherited,
         "MUSAEUS_VAULT_ROOT": str(tmp_path / "vault"),
         "MUSAEUS_RUNS_ROOT": str(tmp_path / "RUNS"),
+        # Pinned for the same reason, and it matters most: musaeus_migrate_to_
+        # archive connects to the catalogue at import time, before it looks at
+        # --execute, so an unpinned database path means a dry run opens the
+        # developer's real catalogue (CodeRabbit on #337, 2026-11-27).
+        "MUSAEUS_DB_PATH": str(tmp_path / "musaeus.db"),
         # Pinned, not just unset: a dry run of backfill_identity_tags,
         # repair_album_artist, repair_artist_casing or split_artist_sort_form
         # walks the library with rglob, so the walk must be inside tmp_path.
@@ -97,30 +102,99 @@ def test_a_write_run_refuses_while_another_job_holds_the_lock(script, holder_exc
     assert "NOT RUN" in r.stderr
 
 
+#: These two open the catalogue at import time and cannot finish a dry run
+#: against an empty one. What the dry-run test proves for them is the lock:
+#: no EXIT_BUSY and no "NOT RUN", which happens before any of that.
+NEEDS_A_CATALOGUE = {"musaeus_migrate_to_archive", "musaeus_relink_recovered_dupes"}
+
+
 @pytest.mark.parametrize("script", sorted(WRITE_FLAGS))
 def test_a_dry_run_is_not_blocked_by_the_lock(script, tmp_path):
     runs = tmp_path / "RUNS"
     runs.mkdir(parents=True)
+    # A real, empty library: without it backfill_identity_tags refuses at its
+    # root check (exit 2) before it scans, and the test used to accept that as
+    # a dry run that worked (CodeRabbit on #337, 2026-11-27).
+    (tmp_path / "ALAC_Library").mkdir()
+    (tmp_path / "ALAC-Archival").mkdir()
     with masters_lock(runs, exclusive=True, what="test holder"):
         r = _run(script, tmp_path=tmp_path)
 
     assert r.returncode != EXIT_BUSY, f"{script} took the lock on a dry run"
     assert "NOT RUN" not in r.stderr
+    if script not in NEEDS_A_CATALOGUE:
+        assert r.returncode == 0, (
+            f"{script} dry run stopped early (exit {r.returncode}) instead of "
+            f"reporting nothing to do\nstdout: {r.stdout[-400:]}\n"
+            f"stderr: {r.stderr[-400:]}"
+        )
+
+
+def test_the_subprocess_environment_is_a_temporary_one(tmp_path):
+    """A test that can reach real music, or the real catalogue, is not a test.
+
+    ``musaeus.config`` restores any absent MUSAEUS_* key from settings.env,
+    credentials.env and the project .env with os.environ.setdefault, so an
+    unset key is not the same as a removed one (CodeRabbit on #337,
+    2026-11-27). Every path these subprocesses can write to is pinned here.
+    """
+    env = _env(tmp_path)
+    keys = (
+        "MUSAEUS_VAULT_ROOT",
+        "MUSAEUS_RUNS_ROOT",
+        "MUSAEUS_DB_PATH",
+        "MUSAEUS_ALAC_LIBRARY",
+        "MUSAEUS_ALAC_ARCHIVE",
+    )
+    # Report the key names, never the mapping: this environment is the
+    # developer's whole environment, API keys included, and pytest prints an
+    # assertion's operands on failure.
+    missing = [k for k in keys if k not in env]
+    assert not missing, f"not pinned, so settings.env can supply the real path: {missing}"
+    outside = {k: env[k] for k in keys if not Path(env[k]).is_relative_to(tmp_path)}
+    assert not outside, f"pinned outside the test: {sorted(outside)}"
+
+
+def _prune_env(tmp_path: Path) -> dict[str, str]:
+    """The environment for prune_recovery with no vault configured.
+
+    ``MUSAEUS_VAULT_ROOT`` is set to an **empty string**, not removed: it is
+    absent from os.environ either way, and musaeus.config restores an absent
+    key from settings.env and the project .env with os.environ.setdefault. An
+    empty value blocks that, and from_env() treats it as unset, so the script
+    still reaches its "no settings" path (CodeRabbit on #337, 2026-11-27).
+    """
+    env = _env(tmp_path)
+    for key in ("MUSAEUS_RUNS_ROOT", "MUSAEUS_DB_PATH"):
+        env.pop(key, None)
+    env["MUSAEUS_VAULT_ROOT"] = ""
+    return env
 
 
 def _run_prune(tmp_path: Path, *flags: str) -> subprocess.CompletedProcess[str]:
     """prune_recovery with NO vault settings, to test what it says then."""
-    env = _env(tmp_path)
-    for key in ("MUSAEUS_VAULT_ROOT", "MUSAEUS_RUNS_ROOT", "MUSAEUS_DB_PATH"):
-        env.pop(key, None)
     return subprocess.run(
         [sys.executable, str(REPO / "scripts" / "prune_recovery.py"), *flags],
         capture_output=True,
         text=True,
-        env=env,
+        env=_prune_env(tmp_path),
         cwd=str(tmp_path),
         timeout=180,
         check=False,
+    )
+
+
+def test_prune_without_settings_cannot_inherit_a_vault(tmp_path):
+    """A removed key is restored from settings.env; an empty one is not.
+
+    Without this the apply case can resolve the developer's real vault, take
+    the real masters lock and never reach the missing-settings message it is
+    supposed to be testing (CodeRabbit on #337, 2026-11-27).
+    """
+    env = _prune_env(tmp_path)
+    assert "MUSAEUS_VAULT_ROOT" in env, "removing the key lets settings.env restore it"
+    assert env["MUSAEUS_VAULT_ROOT"] == "", (
+        "an empty value is how the key is made unset-and-unrestorable"
     )
 
 
