@@ -200,8 +200,9 @@ def main() -> int:
             cfg = MusicConfig.from_env()
         except Exception as exc:
             print(
-                f"Could not resolve config ({exc}). A --apply run needs it to place "
-                f"the masters lock; pass no --root and set MUSAEUS_VAULT_ROOT.",
+                f"Could not resolve config ({exc}). A --apply run needs settings to "
+                f"place the masters lock: set MUSAEUS_VAULT_ROOT. A --root you gave "
+                f"still names the checkpoints to prune -- do not drop it.",
                 file=sys.stderr,
             )
             return 2

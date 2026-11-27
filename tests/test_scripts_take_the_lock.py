@@ -134,6 +134,11 @@ def test_prune_recovery_apply_without_settings_says_so(tmp_path):
     assert r.returncode == 2, f"exit {r.returncode}\nstderr: {r.stderr[-400:]}"
     assert "Could not resolve config" in r.stderr
     assert "Traceback" not in r.stderr
+    # The advice must not send the run somewhere else (CodeRabbit on #337):
+    # dropping --root would prune cfg.runs_root/recovery instead of the folder
+    # that was asked for.
+    assert "set MUSAEUS_VAULT_ROOT" in r.stderr
+    assert "pass no --root" not in r.stderr
 
 
 def test_prune_recovery_dry_run_with_root_needs_no_settings(tmp_path):
