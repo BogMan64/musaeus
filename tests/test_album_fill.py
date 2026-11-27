@@ -1589,3 +1589,16 @@ def test_a_joint_credit_is_asked_again_with_its_title_spelled_out(monkeypatch):
         "Spirit Of The West, Guest Fiddler", "Save This House", "Puttin' Up With The Joneses"
     )
     assert ok
+
+
+@pytest.mark.parametrize("album", ["Platinum & Gold", "Platinum and Gold"])
+def test_an_album_called_platinum_and_gold_is_not_filtered(album):
+    """Only the named series is filtered, and the series says "Collection".
+
+    An album may be called "Platinum & Gold" without being the series; that is
+    the same mistake as refusing "Gold" itself (CodeRabbit on #339,
+    2026-11-27).
+    """
+    assert (
+        af.choose_from_itunes([_it("Rosanna", album, "1982-03-01")], "Toto", "Rosanna")[0] == album
+    )
