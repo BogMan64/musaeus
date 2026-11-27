@@ -763,6 +763,7 @@ def diagnose(cfg: MusicConfig) -> Report:
     #      A single authority can be correct and the system still wrong.
     _authority_disagreements(cfg, rep)
     _editions_come_from_masters(cfg, rep)
+    _edition_copies_lost_master_tags(cfg, rep)
     _names_safe_on_fat(cfg, rep)
     _changed_outside_musaeus(cfg, rep)
     _one_act_two_spellings(cfg, rep)
@@ -915,6 +916,126 @@ def _every_edition_copy(cfg: MusicConfig) -> list:
         return []
     finally:
         ledger.close()
+
+
+def _mp4_tags(path: Path) -> dict | None:
+    """A file's MP4 tags, or None when it cannot be read.
+
+    ``{}`` means "read, and it has no tags". An unreadable file is neither, and
+    saying it is empty made every populated master tag look lost on it
+    (CodeRabbit on #338, 2026-11-27).
+    """
+    from mutagen.mp4 import MP4
+
+    try:
+        return dict(MP4(str(path)).tags or {})
+    except Exception:  # noqa: BLE001 - the caller reports it as not examined
+        return None
+
+
+#: Tags an edition's definition may legitimately remove from its copies.
+#: Empty today: no edition strips anything until the operator chooses which
+#: editions keep track numbers (planned). The hook is here so that choice is
+#: not reported as drift the day it arrives.
+_STRIPPABLE = ("trkn", "disk", "\xa9cmt")
+
+
+def _strips(edition: str) -> set[str]:
+    """The tags this edition is defined to remove. None, today."""
+    return set()
+
+
+def _edition_copies_lost_master_tags(cfg: MusicConfig, rep: Report) -> None:
+    """An edition copy must carry the tags its master has, minus its own rule.
+
+    On 2026-11-24 a hand script removed trkn, disk and ©cmt from the copies
+    in all three editions (measured 2026-11-25: every copy in ALAC_Library,
+    CAR_Library and iPHONE_Library has trkn 0, comment 0, disc 0). The ledger
+    calls a copy current while the MASTER's mtime is unchanged, so the next
+    edition build does not restore them, and nothing said so.
+
+    A rebuild is the fix, and the build must be told the copies are stale:
+    deleting a copy makes it stale by definition. The finding says which tag
+    and one example, so the operator can look before rebuilding anything.
+    """
+    recorded = _every_edition_copy(cfg)
+    if not recorded:
+        rep.add("ok", "edition copies keep master tags", "no edition ledger -- skipped")
+        return
+
+    labels = {"trkn": "track", "disk": "disc", "\xa9cmt": "comment"}
+    lost = dict.fromkeys(_STRIPPABLE, 0)
+    affected = 0
+    missing_master = 0
+    missing_output = 0
+    unreadable = 0
+    compared = 0
+    example: tuple[str, str, str] | None = None
+    masters: dict[str, dict | None] = {}
+
+    for copy in recorded:
+        master, output = Path(copy.master_path), Path(copy.output_path)
+        if not master.exists():
+            missing_master += 1  # reported by _editions_come_from_masters
+            continue
+        if not output.exists():
+            # Never built. It cannot carry the tags because it is not there,
+            # and counting it as checked made the success line claim it did
+            # (CodeRabbit on #338, 2026-11-27).
+            missing_output += 1
+            continue
+        if copy.master_path not in masters:
+            masters[copy.master_path] = _mp4_tags(master)
+        master_tags = masters[copy.master_path]
+        copy_tags = _mp4_tags(output)
+        if master_tags is None or copy_tags is None:
+            unreadable += 1  # not evidence of damage, and not a comparison
+            continue
+        compared += 1
+        strips = _strips(copy.edition)
+        hit = [
+            key
+            for key in _STRIPPABLE
+            if key not in strips and master_tags.get(key) and not copy_tags.get(key)
+        ]
+        if not hit:
+            continue
+        affected += 1
+        for key in hit:
+            lost[key] += 1
+        if example is None:
+            example = (copy.edition, output.name, labels[hit[0]])
+
+    not_examined = [
+        f"{missing_master:,} with no master",
+        f"{missing_output:,} not yet built",
+        f"{unreadable:,} unreadable",
+    ]
+    skipped = [part for part in not_examined if not part.startswith("0 ")]
+    skipped_note = (
+        f" ({len(recorded) - compared:,} not examined: {', '.join(skipped)})" if skipped else ""
+    )
+
+    if not affected:
+        rep.add(
+            "ok",
+            "edition copies keep master tags",
+            f"{compared:,} recorded copy/copies carry every tag their master has{skipped_note}",
+            count=compared,
+        )
+        return
+
+    parts = [f"{labels[key]} {lost[key]:,}" for key in _STRIPPABLE if lost[key]]
+    detail = (
+        f"{affected:,} of {compared:,} compared copy/copies are missing a tag their master "
+        f"still has ({', '.join(parts)}). The build calls such a copy current while the "
+        "master's mtime is unchanged, so it will not restore them: remove those copies "
+        "(or rebuild the edition) once you are ready."
+        f"{skipped_note}"
+    )
+    if example:
+        detail += f" e.g. {example[0]}: {example[1]} lost its {example[2]}"
+    rep.add("warn", "edition copies keep master tags", detail, count=affected)
 
 
 def _catalogued_tracks_reach_the_car(cfg: MusicConfig, rep: Report) -> None:

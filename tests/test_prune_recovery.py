@@ -174,6 +174,13 @@ def test_dry_run_deletes_nothing(tmp_path, monkeypatch, capsys):
 
 
 def test_apply_deletes_only_the_eligible(tmp_path, monkeypatch):
+    # A --apply run places the masters lock under the vault's RUNS, so it
+    # needs settings (CodeRabbit on #337, 2026-11-26). Before this they came
+    # from whatever the machine had configured -- the real vault -- which no
+    # test may depend on.
+    monkeypatch.setenv("MUSAEUS_VAULT_ROOT", str(tmp_path / "vault"))
+    monkeypatch.setenv("MUSAEUS_RUNS_ROOT", str(tmp_path / "RUNS"))
+
     doomed = _checkpoint(tmp_path, "ancient", 400)
     safe = _checkpoint(tmp_path, "recent", 1)
     monkeypatch.setattr(
