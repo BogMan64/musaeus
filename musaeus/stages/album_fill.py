@@ -201,10 +201,25 @@ def _own_soundtrack(credit: list[dict], artist: str) -> set[str]:
     return {"Soundtrack"} if credit and _credits(credit, artist, only_ours=False) else set()
 
 
+#: An album name that is a compilation, not the record the song came from.
+#:
+#: Grey, 2026-11-26: add the "Platinum & Gold Collection" and "Gold
+#: Collection" series. Measured that day on 30 empty rows: the Pointer
+#: Sisters' "He's So Shy" had "Special Things" hidden behind
+#: "(Bonus Track Version)" and "Platinum & Gold Collection: The Pointer
+#: Sisters" as its only other exact match -- a compilation the filter did not
+#: recognise, so the row was a tie and stayed empty. It was writing that
+#: series before. ("Gold" alone is NOT added: "Gold" is a real album name for
+#: some artists, and the series always says "Gold Collection" or "Platinum &
+#: Gold Collection". For the same reason the Platinum alternative REQUIRES
+#: "Collection": an album may be called "Platinum & Gold", and refusing it
+#: would be the same mistake as refusing "Gold" itself.)
 _DEEZER_BAD_ALBUM = re.compile(
     r"\b(greatest hits|best of|the collection|essential|anthology|"
     r"compilation|\blive\b|hits|vol\.? ?\d|now that|"
-    r"ultimate|definitive|platinum collection|super hits)\b",
+    r"ultimate|definitive|platinum collection|"
+    r"platinum\s*(?:&|and)\s*gold\s+collection"
+    r"|gold collection|super hits)\b",
     re.I,
 )
 

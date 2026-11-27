@@ -430,6 +430,64 @@ def _it(track, album, date, artist="Toto", count=10):
     return {"artistName": artist, "trackName": track, "collectionName": album, "releaseDate": date + "T08:00:00Z", "trackCount": count}  # fmt: skip
 
 
+def test_a_gold_collection_series_is_a_compilation():
+    """Grey, 2026-11-26: add the "Platinum & Gold Collection" and "Gold
+    Collection" series.
+
+    Measured on the live catalogue that day: the Pointer Sisters' "He's So
+    Shy" matches exactly two iTunes albums by that artist, "Special Things
+    (Bonus Track Version)" and "Platinum & Gold Collection: The Pointer
+    Sisters". The second is a compilation the filter did not know, so the two
+    were a tie and the row stayed empty -- and before the reissue relaxation
+    it was writing that series into the tag.
+    """
+    items = [
+        _it(
+            "He's So Shy",
+            "Special Things (Bonus Track Version)",
+            "1980-07-23",
+            artist="The Pointer Sisters",
+            count=10,
+        ),
+        _it(
+            "He's So Shy",
+            "Platinum & Gold Collection: The Pointer Sisters",
+            "1980-07-23",
+            artist="The Pointer Sisters",
+            count=12,
+        ),
+    ]
+
+    assert af.choose_from_itunes(items, "The Pointer Sisters", "He's So Shy") == (
+        "Special Things",
+        "unambiguous",
+    )
+
+
+@pytest.mark.parametrize(
+    "album",
+    [
+        "Platinum & Gold Collection: The Pointer Sisters",
+        "Platinum and Gold Collection",
+        "Gold Collection",
+        "The Gold Collection",
+    ],
+)
+def test_the_gold_collection_series_is_never_written(album):
+    assert (
+        af.choose_from_itunes([_it("Rosanna", album, "1982-03-01")], "Toto", "Rosanna")[0] is None
+    )
+
+
+@pytest.mark.parametrize("album", ["Gold", "Golden", "Gold Dust Woman", "Pure Gold"])
+def test_the_word_gold_alone_is_not_a_compilation(album):
+    """Only the series is filtered. "Gold" is a real album name for some
+    artists, and a filter on the bare word would refuse those rows."""
+    assert (
+        af.choose_from_itunes([_it("Rosanna", album, "1982-03-01")], "Toto", "Rosanna")[0] == album
+    )
+
+
 def test_itunes_earliest_exact_studio_album_wins():
     items = [
         _it("Rosanna", "Toto IV", "1982-03-01"),
@@ -1531,3 +1589,16 @@ def test_a_joint_credit_is_asked_again_with_its_title_spelled_out(monkeypatch):
         "Spirit Of The West, Guest Fiddler", "Save This House", "Puttin' Up With The Joneses"
     )
     assert ok
+
+
+@pytest.mark.parametrize("album", ["Platinum & Gold", "Platinum and Gold"])
+def test_an_album_called_platinum_and_gold_is_not_filtered(album):
+    """Only the named series is filtered, and the series says "Collection".
+
+    An album may be called "Platinum & Gold" without being the series; that is
+    the same mistake as refusing "Gold" itself (CodeRabbit on #339,
+    2026-11-27).
+    """
+    assert (
+        af.choose_from_itunes([_it("Rosanna", album, "1982-03-01")], "Toto", "Rosanna")[0] == album
+    )
