@@ -918,14 +918,19 @@ def _every_edition_copy(cfg: MusicConfig) -> list:
         ledger.close()
 
 
-def _mp4_tags(path: Path) -> dict:
-    """A file's MP4 tags, or {} when it cannot be read."""
+def _mp4_tags(path: Path) -> dict | None:
+    """A file's MP4 tags, or None when it cannot be read.
+
+    ``{}`` means "read, and it has no tags". An unreadable file is neither, and
+    saying it is empty made every populated master tag look lost on it
+    (CodeRabbit on #338, 2026-11-27).
+    """
     from mutagen.mp4 import MP4
 
     try:
         return dict(MP4(str(path)).tags or {})
-    except Exception:  # noqa: BLE001 - an unreadable copy is the other check's business
-        return {}
+    except Exception:  # noqa: BLE001 - the caller reports it as not examined
+        return None
 
 
 #: Tags an edition's definition may legitimately remove from its copies.
@@ -962,8 +967,11 @@ def _edition_copies_lost_master_tags(cfg: MusicConfig, rep: Report) -> None:
     lost = dict.fromkeys(_STRIPPABLE, 0)
     affected = 0
     missing_master = 0
+    missing_output = 0
+    unreadable = 0
+    compared = 0
     example: tuple[str, str, str] | None = None
-    masters: dict[str, dict] = {}
+    masters: dict[str, dict | None] = {}
 
     for copy in recorded:
         master, output = Path(copy.master_path), Path(copy.output_path)
@@ -971,12 +979,19 @@ def _edition_copies_lost_master_tags(cfg: MusicConfig, rep: Report) -> None:
             missing_master += 1  # reported by _editions_come_from_masters
             continue
         if not output.exists():
+            # Never built. It cannot carry the tags because it is not there,
+            # and counting it as checked made the success line claim it did
+            # (CodeRabbit on #338, 2026-11-27).
+            missing_output += 1
             continue
-        master_tags = masters.get(copy.master_path)
-        if master_tags is None:
-            master_tags = _mp4_tags(master)
-            masters[copy.master_path] = master_tags
+        if copy.master_path not in masters:
+            masters[copy.master_path] = _mp4_tags(master)
+        master_tags = masters[copy.master_path]
         copy_tags = _mp4_tags(output)
+        if master_tags is None or copy_tags is None:
+            unreadable += 1  # not evidence of damage, and not a comparison
+            continue
+        compared += 1
         strips = _strips(copy.edition)
         hit = [
             key
@@ -991,22 +1006,32 @@ def _edition_copies_lost_master_tags(cfg: MusicConfig, rep: Report) -> None:
         if example is None:
             example = (copy.edition, output.name, labels[hit[0]])
 
-    checked = len(recorded) - missing_master
+    not_examined = [
+        f"{missing_master:,} with no master",
+        f"{missing_output:,} not yet built",
+        f"{unreadable:,} unreadable",
+    ]
+    skipped = [part for part in not_examined if not part.startswith("0 ")]
+    skipped_note = (
+        f" ({len(recorded) - compared:,} not examined: {', '.join(skipped)})" if skipped else ""
+    )
+
     if not affected:
         rep.add(
             "ok",
             "edition copies keep master tags",
-            f"{checked:,} recorded copy/copies carry every tag their master has",
-            count=checked,
+            f"{compared:,} recorded copy/copies carry every tag their master has{skipped_note}",
+            count=compared,
         )
         return
 
     parts = [f"{labels[key]} {lost[key]:,}" for key in _STRIPPABLE if lost[key]]
     detail = (
-        f"{affected:,} of {checked:,} recorded copy/copies are missing a tag their master "
+        f"{affected:,} of {compared:,} compared copy/copies are missing a tag their master "
         f"still has ({', '.join(parts)}). The build calls such a copy current while the "
         "master's mtime is unchanged, so it will not restore them: remove those copies "
         "(or rebuild the edition) once you are ready."
+        f"{skipped_note}"
     )
     if example:
         detail += f" e.g. {example[0]}: {example[1]} lost its {example[2]}"

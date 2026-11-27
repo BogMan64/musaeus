@@ -13,11 +13,15 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
-    # Review the opening push only. This repository is public with fewer than
-    # ten stars, so CodeRabbit has one pull-request review per hour, and a push
-    # made while a review is running supersedes that review and still spends
-    # it. Set to false so a finished pull request costs one review, not one per
-    # push. To re-review after a fix, ask: @coderabbitai review
+    # One review per pull request, not one per push. This repository is public
+    # with fewer than ten stars, so CodeRabbit has one pull-request review per
+    # rolling hour, and a push made during a review supersedes that review and
+    # still spends the allowance. With this false, a finished pull request
+    # costs one review.
+    # To review again after a fix, ask: @coderabbitai review (or the "Trigger
+    # review" action on the pull request). Expect to ask for the opening review
+    # the same way: on this plan it can be skipped for the hourly limit, and
+    # asking costs nothing when the allowance is there.
     auto_incremental_review: false
     base_branches:
       - main

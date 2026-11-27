@@ -148,3 +148,66 @@ def test_a_copy_whose_master_is_gone_is_left_to_the_other_check(cfg, monkeypatch
 
     assert finding is not None
     assert finding.level == "ok"
+
+
+def test_an_unreadable_file_is_not_the_same_as_an_empty_tag_set(tmp_path):
+    """{} means "read, and has no tags". An unreadable file is not that.
+
+    Returning {} for both made every populated master tag look lost on a copy
+    that could not be read at all (CodeRabbit on #338, 2026-11-27). On the real
+    library that is a false alarm per unreadable file, and it looks exactly
+    like the 2026-11-24 damage.
+    """
+    bad = tmp_path / "not-really-audio.m4a"
+    bad.write_bytes(b"this is not an mp4")
+
+    assert doctor._mp4_tags(bad) is None, "unreadable must be distinguishable from empty"
+
+
+def test_an_unreadable_copy_is_not_reported_as_having_lost_its_tags(cfg, monkeypatch):
+    """A copy that cannot be read is not evidence that its tags were stripped."""
+    master = cfg.vault_root / "A" / "B" / "s.m4a"
+    copy = cfg.alac_library / "A" / "B" / "s.m4a"
+    for p in (master, copy):
+        p.parent.mkdir(parents=True, exist_ok=True)
+    master.write_bytes(b"x")
+    copy.write_bytes(b"this is not an mp4")
+
+    real = doctor._mp4_tags
+    monkeypatch.setattr(
+        doctor, "_mp4_tags", lambda p: {"trkn": [(3, 12)]} if Path(p) == master else real(p)
+    )
+    monkeypatch.setattr(doctor, "_every_edition_copy", lambda cfg: [_copy("car", master, copy)])
+
+    finding = _finding(doctor.diagnose(cfg))
+
+    assert finding is not None
+    assert finding.level == "ok", f"an unreadable copy was called damaged: {finding.detail}"
+    assert "unreadable" in finding.detail
+    assert "lost its track" not in finding.detail
+
+
+def test_a_copy_that_was_never_built_is_not_counted_as_checked(cfg, monkeypatch):
+    """A missing output was skipped from the comparison but still counted.
+
+    The success line then claimed a copy that does not exist "carries every
+    tag its master has" (CodeRabbit on #338, 2026-11-27).
+    """
+    master = cfg.vault_root / "A" / "B" / "s.m4a"
+    master.parent.mkdir(parents=True, exist_ok=True)
+    master.write_bytes(b"x")
+    never_built = cfg.alac_library / "A" / "B" / "s.m4a"
+
+    monkeypatch.setattr(doctor, "_mp4_tags", lambda p: {"trkn": [(1, 1)]}, raising=False)
+    monkeypatch.setattr(
+        doctor, "_every_edition_copy", lambda cfg: [_copy("car", master, never_built)]
+    )
+
+    finding = _finding(doctor.diagnose(cfg))
+
+    assert finding is not None
+    assert finding.level == "ok"
+    assert finding.count == 0, (
+        f"a copy that was never built was counted as checked: {finding.count}"
+    )
+    assert "not yet built" in finding.detail
