@@ -125,7 +125,13 @@ def scan(recovery_root: Path) -> list[Checkpoint]:
             )
         )
     # Unreadable ones sort last; they are never candidates anyway.
-    found.sort(key=lambda c: (c.created_at is not None, c.created_at or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
+    found.sort(
+        key=lambda c: (
+            c.created_at is not None,
+            c.created_at or datetime.min.replace(tzinfo=timezone.utc),
+        ),
+        reverse=True,
+    )
     return found
 
 
@@ -181,28 +187,43 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true", help="actually delete")
     args = ap.parse_args()
 
-    if args.apply:
-        # This script writes to the masters. The lock is what makes two
-        # jobs on the archive impossible, and a dry run stays lock-free
-        # so it can always be asked (gate/lock gap, 2026-11-25).
-        from musaeus.masters_lock import hold_for_process
-
-        hold_for_process(exclusive=True, what="scripts/prune_recovery.py")
-
-    root = args.root
-    if root is None:
+    # Settings are needed for a write run even when --root is given: the lock
+    # every other MUSAEUS job honours lives under the vault's RUNS, so a lock
+    # taken anywhere else would only look like one (CodeRabbit on #337,
+    # 2026-11-26). A dry run with --root stays config-free -- asking a
+    # question never needs the vault.
+    cfg = None
+    if args.apply or args.root is None:
         from musaeus.config import MusicConfig
 
         try:
-            root = MusicConfig.from_env().runs_root / "recovery"
+            cfg = MusicConfig.from_env()
         except Exception as exc:
-            print(f"Could not resolve config ({exc}). Pass --root.", file=sys.stderr)
+            print(
+                f"Could not resolve config ({exc}). A --apply run needs it to place "
+                f"the masters lock; pass no --root and set MUSAEUS_VAULT_ROOT.",
+                file=sys.stderr,
+            )
             return 2
+
+    if args.apply:
+        # This script deletes recovery checkpoints, the pre-write copies of the
+        # masters. The lock is what makes two jobs on the archive impossible,
+        # and a dry run stays lock-free so it can always be asked (gate/lock
+        # gap, 2026-11-25).
+        from musaeus.masters_lock import hold_for_process
+
+        assert cfg is not None  # resolved above for every --apply
+        hold_for_process(exclusive=True, what="scripts/prune_recovery.py", runs_root=cfg.runs_root)
+
+    root = args.root if args.root is not None else (cfg.runs_root / "recovery")
 
     checkpoints = scan(root)
     print(f"Root: {root}")
-    print(f"Policy: keep the newest {args.keep_last}, and anything under "
-          f"{args.min_age_days} days old\n")
+    print(
+        f"Policy: keep the newest {args.keep_last}, and anything under "
+        f"{args.min_age_days} days old\n"
+    )
     if not checkpoints:
         print("  No checkpoints.")
         return 0
@@ -210,9 +231,7 @@ def main() -> int:
     total = sum(c.size_bytes for c in checkpoints)
     print(f"  {len(checkpoints)} checkpoint(s), {_human(total)} total\n")
 
-    deletable, kept = select_for_deletion(
-        checkpoints, args.keep_last, args.min_age_days
-    )
+    deletable, kept = select_for_deletion(checkpoints, args.keep_last, args.min_age_days)
 
     for cp in checkpoints:
         if cp.name in kept:
@@ -226,8 +245,10 @@ def main() -> int:
 
     freed = sum(c.size_bytes for c in deletable)
     if not args.apply:
-        print(f"\nDRY RUN — nothing deleted. --apply would remove "
-              f"{len(deletable)} checkpoint(s), freeing {_human(freed)}.")
+        print(
+            f"\nDRY RUN — nothing deleted. --apply would remove "
+            f"{len(deletable)} checkpoint(s), freeing {_human(freed)}."
+        )
         return 0
 
     print(f"\nDeleting {len(deletable)} checkpoint(s)...")
@@ -239,8 +260,7 @@ def main() -> int:
         except OSError as exc:
             failed += 1
             print(f"    FAILED  {cp.name}: {exc}", file=sys.stderr)
-    print(f"\n  {len(deletable) - failed} removed, {failed} failed, "
-          f"~{_human(freed)} freed.")
+    print(f"\n  {len(deletable) - failed} removed, {failed} failed, ~{_human(freed)} freed.")
     return 1 if failed else 0
 
 
