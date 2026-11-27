@@ -189,3 +189,35 @@ def test_the_cli_dry_run_needs_no_apply(tmp_path, monkeypatch, capsys):
     assert st.main() == 0
     assert "DRY RUN" in capsys.readouterr().out
     assert song.stat().st_mtime_ns == before
+
+
+def test_a_file_that_cannot_be_read_is_not_called_clean(tmp_path):
+    """ "No track number" and "could not be read" are different answers.
+
+    A corrupt file used to be read as None, counted as clean, and the run then
+    reported a library it never examined. Grey's rule: say what was not
+    checked.
+    """
+    bad = tmp_path / "broken.m4a"
+    bad.write_bytes(b"this is not an mp4")
+
+    with pytest.raises(st.Unreadable):
+        st.read_track(bad)
+
+
+def test_the_cli_counts_an_unreadable_file_and_keeps_going(tmp_path, monkeypatch, capsys):
+    root = _vault(tmp_path, monkeypatch)
+    good = root / "good.m4a"
+    root.mkdir(parents=True)
+    _make_m4a(good, track=4)
+    (root / "broken.m4a").write_bytes(b"this is not an mp4")
+    before = good.stat().st_mtime_ns
+
+    monkeypatch.setattr(sys, "argv", ["strip_track.py", "--root", str(root)])
+
+    assert st.main() == 0, "one unreadable file must not stop the run"
+    out = capsys.readouterr().out
+    assert "With a track number: 1" in out
+    assert "Unreadable: 1" in out and "NOT examined" in out
+    assert "broken.m4a" in out
+    assert good.stat().st_mtime_ns == before, "a dry run rewrote a readable file"

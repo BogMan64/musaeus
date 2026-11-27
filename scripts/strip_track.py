@@ -67,6 +67,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 _AUDIO_SUFFIXES = (".m4a", ".mp4", ".alac", ".flac", ".mp3")
 
 
+class Unreadable(Exception):
+    """The file's tags could not be read at all.
+
+    Not the same answer as "this file has no track number": a corrupt file
+    would otherwise be counted as clean, and the run would report a library it
+    never read (Grey's rule: say what was not checked).
+    """
+
+
 def _m4a(path: Path) -> Any:
     from mutagen.mp4 import MP4  # type: ignore[import-untyped]
 
@@ -74,7 +83,12 @@ def _m4a(path: Path) -> Any:
 
 
 def read_track(path: Path) -> str | None:
-    """The file's track number as a plain string, or None when it has none."""
+    """The file's track number as a plain string, or None when it has none.
+
+    Raises Unreadable when the tags cannot be read. The two answers are kept
+    apart on purpose: "no number" means the file is already as it should be,
+    and a corrupt file is not that.
+    """
     suffix = path.suffix.lower()
     try:
         if suffix in (".m4a", ".mp4", ".alac"):
@@ -90,8 +104,8 @@ def read_track(path: Path) -> str | None:
 
             v = EasyID3(str(path)).get("tracknumber", [])
             return str(v[0]) if v else None
-    except Exception:
-        return None
+    except Exception as exc:
+        raise Unreadable(f"{path.name}: {exc}") from exc
     return None
 
 
@@ -245,7 +259,12 @@ def undo(journal_path: Path) -> Counter:
         if not write_beside(path, write, failed=False):
             counts["failed"] += 1
             continue
-        if read_track(path) is None:
+        try:
+            restored = read_track(path)
+        except Unreadable:
+            counts["failed"] += 1  # wrote it, and cannot prove it: say so
+            continue
+        if restored is None:
             counts["failed"] += 1  # wrote it, and it is not there: say so
         else:
             counts["restored"] += 1
@@ -315,9 +334,23 @@ def main() -> int:
     for k, v in tally.most_common():
         print(f"  {v:6d}  {k}")
 
-    numbered = [(p, read_track(p)) for p in files]
-    numbered = [(p, t) for p, t in numbered if t]
+    numbered: list[tuple[Path, str]] = []
+    unreadable: list[tuple[Path, str]] = []
+    for p in files:
+        try:
+            t = read_track(p)
+        except Unreadable as exc:
+            unreadable.append((p, str(exc)))
+            continue
+        if t:
+            numbered.append((p, t))
     print(f"With a track number: {len(numbered):,}")
+    if unreadable:
+        print(f"Unreadable: {len(unreadable):,}  (NOT examined; nothing was assumed)")
+        for path, why in unreadable[:10]:
+            print(f"  {path.relative_to(root)}: {why}")
+        if len(unreadable) > 10:
+            print(f"  ... and {len(unreadable) - 10:,} more")
     if not numbered:
         print("\nNothing to do.")
         return 0
