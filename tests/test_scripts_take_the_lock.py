@@ -53,6 +53,11 @@ def _env(tmp_path: Path) -> dict[str, str]:
         **inherited,
         "MUSAEUS_VAULT_ROOT": str(tmp_path / "vault"),
         "MUSAEUS_RUNS_ROOT": str(tmp_path / "RUNS"),
+        # Pinned, not just unset: a dry run of backfill_identity_tags,
+        # repair_album_artist, repair_artist_casing or split_artist_sort_form
+        # walks the library with rglob, so the walk must be inside tmp_path.
+        "MUSAEUS_ALAC_LIBRARY": str(tmp_path / "ALAC_Library"),
+        "MUSAEUS_ALAC_ARCHIVE": str(tmp_path / "ALAC-Archival"),
         "PYTHONPATH": str(REPO),
     }
 
