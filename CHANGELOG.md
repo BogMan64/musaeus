@@ -25,6 +25,52 @@ month, newest first, and name the pull requests. The full record is
   Sisters" as its only other exact match, so the row was a tie and stayed
   empty -- and before the edition-label change that series was being written
   as the album. "Gold" alone is still allowed: it is a real album name.
+- The tagger no longer writes the track number, and `scripts/strip_track.py`
+  removes the ones already in the files. Grey, 2026-11-27: "Strip them. and
+  have tagger stop writting them back", which reverses the 2026-10-03 request
+  that brought them back. Measured on the whole ARCHIVE that day, read-only:
+  1,402 of 7,975 files carry a track number, nine carry a disc number and
+  2,229 carry a comment. The numbers are not album positions -- the median is
+  184 and 941 are above 99 -- they are export IDs from the old library.
+  The tagger wrote the row's number into every file on every pass, so any
+  strip was undone by the next run. A caller that still asks for a track
+  change is now told, instead of being silently skipped with success
+  reported. The script is a dry run by default, writes through `write_beside`,
+  keeps a journal for `--undo`, and refuses a locked archive before touching a
+  file rather than stopping on file one of 7,975. It runs in batches of 20 by
+  default (`--max-strip`), each with its own journal and its own summary of
+  what is left, so a mistake is caught after 20 files rather than 1,402. Disc
+  numbers are left alone (9 files carry one) and so are comments (2,229 carry
+  one).
+
+  Two reviews of #340 (2026-11-27) found twelve defects, and all are fixed: an
+  apply run with no batch size stripped all 1,402 at once; `--limit 0` still
+  selected a file; a second batch sharing a `--journal` path deleted the first
+  batch's recovery records; the journal was flushed but never fsynced, so a
+  crash could keep the stripped file and lose the number; `--undo` returned
+  before taking the masters lock, and stopped on the first deleted file because
+  `counts["missing"]["path"]` raised TypeError; it followed a symlink and would
+  have put another song at the recorded path; it recorded a relative path, so
+  undo from another directory could miss the file; on MP3 it read a v2.3 tag as
+  v2.4, which drops frames only v2.3 defines (RVAD among them), and the journal
+  records the track number alone, so the frame was gone for good; and a dry run
+  demanded a vault it does not need while the error told the operator to pass
+  `--root`, which cannot supply one.
+
+  The second review found two more, both about writing somewhere other than
+  where the operator looked. The journal kept only the MP4 track POSITION, so
+  undo wrote `trkn` back as `[(7, 0)]` and the total was lost -- no master
+  carries a total today (all 1,402 numbered files were measured), but the
+  script would have destroyed one. The journal now records the whole value and
+  the root the run was made against, and undo refuses a record outside that
+  root. Undo also checked only the last name for a symlink: a folder between
+  the root and the file could be a link, and the write would land in a
+  different album that happens to hold a file of the same name. Every folder
+  from the root down is checked now, and `scan` walks with
+  `followlinks=False`, so an apply run cannot enter a linked folder either. The
+  root itself is not checked: where the library lives is the operator's choice.
+  MP3 is read and written at its own ID3 version, and `--root` alone is enough
+  for a dry run.
 - Album fill reads through an edition label and accepts a single version. A
   title ending "(Single Version)" is the same studio performance, so its album
   may answer for the song; "(Deluxe Edition)", "(Remastered)" and

@@ -3,7 +3,14 @@
 MUSAEUS — Tagger Stage
 
 Writes normalised metadata from the archive table back into audio file tags.
-Fields written: artist, album, title, genre, year, track number, albumartist.
+Fields written: artist, album, title, genre, year, albumartist.
+
+The track number is NOT written (Grey, 2026-11-27: "Strip them, and have
+tagger stop writing them back"). It was written from 2026-10-03 to
+2026-11-27 at his earlier request ("Track numbers please return"); that is
+reversed. An existing track tag is left alone by this stage -- removing it
+is `scripts/strip_track.py`'s job, so the tagger never silently rewrites a
+file it was asked only to normalise.
 
 albumartist is a special case. It has no archive column, so unlike every
 other field here it is not driven by the DB -- it is only *repaired*, and
@@ -322,21 +329,14 @@ def _write_tags_in_place(path: Path, changes: dict[str, str], ext: str | None = 
             # file re-saved anyway, success reported -- 1,983 masters "written"
             # on every Act 3 and never converging, each re-tagging its edition
             # copies. An unknown field is now a failure, before anything is saved.
-            unknown = [f for f in changes if f not in _map and f != "track"]
+            # "track" is unknown now too: the tagger no longer writes a track
+            # number (Grey, 2026-11-27), so a caller asking for one is told.
+            unknown = [f for f in changes if f not in _map]
             if unknown:
                 logger.warning("write_tags %s: cannot store %s in MP4", path, unknown)
                 return False
             for field, val in changes.items():
-                if field == "track":
-                    # trkn is [(track, total)]. Keep a total already there;
-                    # the catalogue holds only the number.
-                    m = re.match(r"\s*(\d+)", str(val))
-                    if not m:
-                        logger.warning("write_tags %s: track %r is not a number", path, val)
-                        return False
-                    old = audio.tags.get("trkn") or [(0, 0)]
-                    audio["trkn"] = [(int(m.group(1)), old[0][1] if len(old[0]) > 1 else 0)]
-                elif val == "":
+                if val == "":
                     audio.tags.pop(_map[field], None)  # "" removes the tag
                 else:
                     audio[_map[field]] = [val]
@@ -356,7 +356,6 @@ def _write_tags_in_place(path: Path, changes: dict[str, str], ext: str | None = 
                 "title": "title",
                 "genre": "genre",
                 "year": "date",
-                "track": "tracknumber",
             }
             # As the MP4 branch: a field this format cannot store is a
             # failure, not a silent skip with success reported (review of
@@ -393,7 +392,6 @@ def _write_tags_in_place(path: Path, changes: dict[str, str], ext: str | None = 
                 "title": "title",
                 "genre": "genre",
                 "year": "date",
-                "track": "tracknumber",
             }
             # As the MP4 branch: a field this format cannot store is a
             # failure, not a silent skip with success reported (review of
@@ -485,12 +483,17 @@ class TaggerStage(BaseStage):
         # form written, those files carried the exact spelling that
         # artist_form.py exists to keep OUT of the artist tag -- the one
         # MusicBrainz has never matched (0 of 2,158 hits).
+        # `track` is deliberately NOT in this map (Grey, 2026-11-27: "Strip
+        # them, and have tagger stop writing them back"). It was added on
+        # 2026-10-03 at his request ("Track numbers please return"), and that
+        # is reversed now: 1,402 catalogue rows carry a track number, the
+        # tagger put it into the file on every pass, and a strip was undone by
+        # the next run. Leaving it here would keep the numbers coming back.
         field_map = {
             "album": "album",
             "title": "title",
             "genre": "genre",
             "year": "year",
-            "track": "track",
         }
         for db_field, tag_field in field_map.items():
             db_val = str(db_row.get(db_field) or "").strip()
