@@ -605,3 +605,156 @@ def test_the_cli_refuses_to_overwrite_an_existing_journal(tmp_path):
     assert "already exists" in r.stderr
     assert journal.read_text() == before, "the first batch's records were destroyed"
     assert "trkn" in MP4(str(root / "song.m4a")).tags
+
+
+def test_undo_restores_the_mp4_track_total(tmp_path):
+    """trkn holds a position AND a total, [(7, 12)]. The journal recorded only
+    the position, so undo wrote [(7, 0)] and the total was lost (CodeRabbit on
+    #340, second review)."""
+    song = tmp_path / "song.m4a"
+    _make_m4a(song, track=7)
+    audio = MP4(str(song))
+    audio.tags["trkn"] = [(7, 12)]
+    audio.save()
+    journal = tmp_path / "journal.jsonl"
+    journal.write_text(
+        json.dumps(
+            {
+                "path": str(song),
+                "track": "7/12",
+                "value": [7, 12],
+                "root": str(tmp_path),
+                "when": "2026-11-27T00:00:00+00:00",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert st.strip_one(song, apply=True) is True
+    assert "trkn" not in MP4(str(song)).tags
+    counts = st.undo(journal)
+
+    assert counts["restored"] == 1
+    assert MP4(str(song)).tags["trkn"] == [(7, 12)], "the track total was not restored"
+
+
+def test_the_journal_records_the_whole_track_value(tmp_path):
+    """A scalar cannot describe an MP4 track, so the record keeps the raw
+    value beside the readable one -- and the root the run was made against."""
+    root = tmp_path / "vault"
+    root.mkdir()
+    song = root / "song.m4a"
+    _make_m4a(song, track=7)
+    audio = MP4(str(song))
+    audio.tags["trkn"] = [(7, 12)]
+    audio.save()
+    journal = tmp_path / "j.jsonl"
+
+    applied = _cli(root, tmp_path, "--apply", "--journal", str(journal))
+    assert applied.returncode == 0, applied.stderr[-400:]
+
+    record = json.loads(journal.read_text().splitlines()[0])
+    assert record.get("value") == [7, 12], f"the total was not recorded: {record}"
+    assert record.get("track") == "7/12", "the readable number lost the total"
+    assert record.get("root") == str(root), "the run did not record its own root"
+
+
+def test_a_journal_written_before_the_value_was_recorded_still_undoes(tmp_path):
+    """Older journals carry only "track": "361". Undo must not stop working on
+    them."""
+    song = tmp_path / "song.m4a"
+    _make_m4a(song, track=361)
+    assert st.strip_one(song, apply=True) is True
+    journal = tmp_path / "journal.jsonl"
+    journal.write_text(
+        json.dumps({"path": str(song), "track": "361", "when": "2026-11-27T00:00:00+00:00"}) + "\n",
+        encoding="utf-8",
+    )
+
+    counts = st.undo(journal)
+
+    assert counts["restored"] == 1
+    assert MP4(str(song)).tags["trkn"] == [(361, 0)]
+
+
+def test_undo_refuses_a_path_behind_a_symlinked_folder(tmp_path):
+    """is_file() follows a parent folder too. If an album folder was replaced
+    by a link to somewhere else, undo would write the recorded number into a
+    different file that happens to share the name (CodeRabbit on #340, second
+    review)."""
+    root = tmp_path / "vault"
+    album = root / "album"
+    album.mkdir(parents=True)
+    song = album / "song.m4a"
+    _make_m4a(song, track=7)
+
+    applied = _cli(root, tmp_path, "--apply", "--journal", str(tmp_path / "j.jsonl"))
+    assert applied.returncode == 0, applied.stderr[-400:]
+    journal = tmp_path / "j.jsonl"
+
+    # The album folder becomes a link to a different album with a file of the
+    # same name, and that file has its own number.
+    album.rename(tmp_path / "moved")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    stranger = elsewhere / "song.m4a"
+    _make_m4a(stranger, track=99)
+    album.symlink_to(elsewhere, target_is_directory=True)
+
+    counts = st.undo(journal)
+
+    assert counts["restored"] == 0
+    assert counts["symlinked folder -- refused"] == 1
+    assert MP4(str(stranger)).tags["trkn"] == [(99, 0)], "undo wrote into another album"
+    assert album.is_symlink(), "undo replaced the folder link"
+
+
+def test_undo_refuses_a_record_outside_its_journaled_root(tmp_path):
+    """A journal names the root it was made against; a record pointing outside
+    it is not that run's business."""
+    root = tmp_path / "vault"
+    root.mkdir()
+    outside = tmp_path / "outside.m4a"
+    _make_m4a(outside, track=5)
+    before = outside.stat().st_mtime_ns
+    journal = tmp_path / "j.jsonl"
+    journal.write_text(
+        json.dumps(
+            {
+                "path": str(outside),
+                "track": "5",
+                "root": str(root),
+                "when": "2026-11-27T00:00:00+00:00",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    counts = st.undo(journal)
+
+    assert counts["restored"] == 0
+    assert counts["outside the recorded root -- refused"] == 1
+    assert outside.stat().st_mtime_ns == before
+
+
+def test_scan_does_not_enter_a_symlinked_folder(tmp_path):
+    """A link inside the library is a way for a write to land outside it."""
+    root = tmp_path / "vault"
+    real = root / "album"
+    real.mkdir(parents=True)
+    _make_m4a(real / "song.m4a", track=1)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _make_m4a(elsewhere / "stranger.m4a", track=2)
+    (root / "linked").symlink_to(elsewhere, target_is_directory=True)
+    _make_m4a(root / "linked-file.m4a", track=3)
+    (root / "link.m4a").symlink_to(root / "linked-file.m4a")
+
+    found, tally = st.scan(root, None)
+
+    names = sorted(p.name for p in found)
+    assert names == ["linked-file.m4a", "song.m4a"], f"scan entered a link: {names}"
+    assert tally["symlinked folder -- not entered"] == 1
+    assert tally["symlink -- refused"] == 1

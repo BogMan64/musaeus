@@ -159,6 +159,50 @@ def read_track(path: Path) -> str | None:
     return None
 
 
+def read_track_value(path: Path) -> Any:
+    """The complete track tag as the format stores it, or None.
+
+    `read_track` answers "what number is this?" for the operator. This answers
+    "what would have to be written back?", and they are not the same for MP4:
+    `trkn` holds a position AND a total, [(7, 12)], and the display reader
+    returned only the 7. Undo then wrote [(7, 0)] and the total was gone
+    (CodeRabbit on #340, second review).
+
+    JSON-safe: a list for MP4, a string for FLAC and MP3 (which keep the total
+    in the same tag as text, "7/12").
+    """
+    suffix = path.suffix.lower()
+    try:
+        if suffix in (".m4a", ".mp4", ".alac"):
+            trkn = (_m4a(path).tags or {}).get("trkn")
+            if not trkn or not trkn[0]:
+                return None
+            pair = trkn[0]
+            return [int(v) for v in pair] if len(pair) > 1 else [int(pair[0])]
+        if suffix == ".flac":
+            from mutagen.flac import FLAC  # type: ignore[import-untyped]
+
+            v = FLAC(str(path)).get("tracknumber", [])
+            return str(v[0]) if v else None
+        if suffix == ".mp3":
+            from mutagen.easyid3 import EasyID3  # type: ignore[import-untyped]
+
+            v = EasyID3(str(path)).get("tracknumber", [])
+            return str(v[0]) if v else None
+    except Exception as exc:
+        raise Unreadable(f"{path.name}: {exc}") from exc
+    return None
+
+
+def _display(value: Any) -> str:
+    """The value as one readable number, for the journal's "track" field."""
+    if isinstance(value, (list, tuple)):
+        position = int(value[0])
+        total = int(value[1]) if len(value) > 1 and value[1] else 0
+        return f"{position}/{total}" if total else str(position)
+    return str(value)
+
+
 def read_title(path: Path) -> str | None:
     suffix = path.suffix.lower()
     try:
@@ -234,21 +278,33 @@ def strip_one(path: Path, *, apply: bool) -> bool:
 
 
 def scan(root: Path, limit: int | None) -> tuple[list[Path], Counter]:
-    """Every audio file under *root*, and what was skipped and why."""
+    """Every audio file under *root*, and what was skipped and why.
+
+    os.walk with followlinks=False, not rglob: rglob descends into a symlinked
+    folder, so a link inside the library was a way for a write to land outside
+    the tree the operator named (CodeRabbit on #340, second review).
+    """
     tally: Counter = Counter()
     found: list[Path] = []
-    for path in sorted(root.rglob("*")):
-        if path.is_symlink():
-            tally["symlink -- refused"] += 1
-            continue
-        if not path.is_file() or path.suffix.lower() not in _AUDIO_SUFFIXES:
-            continue
-        # Before appending, not after: with the check afterwards a limit of 0
-        # still selected one file, and an apply run stripped it (CodeRabbit on
-        # #340, 2026-11-27).
-        if limit is not None and len(found) >= limit:
-            break
-        found.append(path)
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        here = Path(dirpath)
+        for name in sorted(dirnames):
+            if (here / name).is_symlink():
+                tally["symlinked folder -- not entered"] += 1
+        dirnames[:] = sorted(d for d in dirnames if not (here / d).is_symlink())
+        for name in sorted(filenames):
+            path = here / name
+            if path.is_symlink():
+                tally["symlink -- refused"] += 1
+                continue
+            if path.suffix.lower() not in _AUDIO_SUFFIXES:
+                continue
+            # Before appending, not after: with the check afterwards a limit of
+            # 0 still selected one file, and an apply run stripped it
+            # (CodeRabbit on #340, 2026-11-27).
+            if limit is not None and len(found) >= limit:
+                return found, tally
+            found.append(path)
     return found, tally
 
 
@@ -263,19 +319,67 @@ def _sync(fh: Any) -> None:
     os.fsync(fh.fileno())
 
 
-def journal(fh: Any, path: Path, track: str) -> None:
-    """Durable before the file is touched, so --undo can put it back."""
+def journal(fh: Any, path: Path, value: Any, root: Path | None = None) -> None:
+    """Durable before the file is touched, so --undo can put it back.
+
+    "track" is the readable number; "value" is the whole tag, because an MP4
+    track is a position AND a total and a scalar cannot restore the second.
+    "root" is what the run was made against, so undo knows where its own tree
+    ends. Older journals have neither, and undo still reads them.
+    """
     fh.write(
         json.dumps(
             {
                 "path": str(_absolute(path)),
-                "track": track,
+                "track": _display(value),
+                "value": value,
+                "root": str(root) if root is not None else None,
                 "when": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             }
         )
         + "\n"
     )
     _sync(fh)
+
+
+def _m4a_track_pair(value: Any) -> tuple[int, int]:
+    """(position, total) from a journal value, old or new."""
+    if isinstance(value, (list, tuple)):
+        position = int(value[0])
+        total = int(value[1]) if len(value) > 1 and value[1] else 0
+        return position, total
+    position, _, total = str(value).partition("/")
+    return int(position), int(total) if total.isdigit() else 0
+
+
+def _track_text(value: Any) -> str:
+    """The value as a FLAC or MP3 track tag: "7", or "7/12" when it had a total."""
+    return _display(value) if isinstance(value, (list, tuple)) else str(value)
+
+
+def _path_refusal(path: Path, root: Path | None) -> str | None:
+    """Why this record must not be restored, or None when it is safe.
+
+    write_beside replaces the file the path resolves to, so a link in the last
+    name OR in a folder between the recorded root and the file makes it write
+    somewhere else -- another album, or another library. The root itself is
+    not checked: where the library lives is the operator's choice
+    (CodeRabbit on #340, second review).
+    """
+    if path.is_symlink():
+        return "symlink -- refused"
+    if root is None:
+        return None  # a journal from before the root was recorded
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return "outside the recorded root -- refused"
+    current = path.parent
+    while current != root and current != current.parent:
+        if current.is_symlink():
+            return "symlinked folder -- refused"
+        current = current.parent
+    return None
 
 
 def undo(journal_path: Path) -> Counter:
@@ -288,11 +392,10 @@ def undo(journal_path: Path) -> Counter:
             continue
         rec = json.loads(line)
         path = Path(rec["path"])
-        if path.is_symlink():
-            # is_file() follows the link; write_beside would then replace the
-            # link with a rewritten copy of whatever it pointed at, putting
-            # another song at the recorded path (CodeRabbit on #340).
-            counts["symlink -- refused"] += 1
+        root = Path(rec["root"]) if rec.get("root") else None
+        refusal = _path_refusal(path, root)
+        if refusal is not None:
+            counts[refusal] += 1
             continue
         if not path.is_file():
             # A direct increment: counts["missing"]["path"] was a TypeError on
@@ -300,29 +403,31 @@ def undo(journal_path: Path) -> Counter:
             # whole undo (CodeRabbit on #340).
             counts["missing"] += 1
             continue
-        track = str(rec["track"])
+        # "value" is the whole tag; "track" alone is a journal from before it
+        # was recorded, and still restores.
+        value = rec.get("value", rec["track"])
 
         suffix = path.suffix.lower()  # NOT tmp's: the copy is "<name>.tagging"
 
-        def write(tmp: Path, track: str = track, suffix: str = suffix) -> bool:
+        def write(tmp: Path, value: Any = value, suffix: str = suffix) -> bool:
             if suffix in (".m4a", ".mp4", ".alac"):
                 audio = _m4a(tmp)
                 if audio.tags is None:
                     return False
-                audio.tags["trkn"] = [(int(track.split("/")[0]), 0)]
+                audio.tags["trkn"] = [_m4a_track_pair(value)]
                 audio.save()
             elif suffix == ".flac":
                 from mutagen.flac import FLAC  # type: ignore[import-untyped]
 
                 audio = FLAC(str(tmp))
-                audio["tracknumber"] = track
+                audio["tracknumber"] = _track_text(value)
                 audio.save()
             elif suffix == ".mp3":
                 from mutagen.id3 import TRCK
 
                 audio, version = _mp3(tmp)
                 audio.delall("TRCK")
-                audio.add(TRCK(encoding=3, text=[track]))
+                audio.add(TRCK(encoding=3, text=[_track_text(value)]))
                 audio.save(v2_version=version)
             else:
                 return False
@@ -480,18 +585,18 @@ def main() -> int:
 
 def _examine(
     root: Path, files: list[Path], tally: Counter
-) -> tuple[list[tuple[Path, str]], list[tuple[Path, str]]]:
+) -> tuple[list[tuple[Path, Any]], list[tuple[Path, str]]]:
     """Print what was found, and what could not be read at all."""
     print(f"Root: {root}")
     print(f"Audio files: {len(files):,}")
     for k, v in tally.most_common():
         print(f"  {v:6d}  {k}")
 
-    numbered: list[tuple[Path, str]] = []
+    numbered: list[tuple[Path, Any]] = []
     unreadable: list[tuple[Path, str]] = []
     for p in files:
         try:
-            t = read_track(p)
+            t = read_track_value(p)  # the whole tag: undo needs all of it
         except Unreadable as exc:
             unreadable.append((p, str(exc)))
             continue
@@ -505,8 +610,8 @@ def _examine(
         if len(unreadable) > 10:
             print(f"  ... and {len(unreadable) - 10:,} more")
     if numbered:
-        for path, track in numbered[:10]:
-            print(f"  {track:>4}  {path.relative_to(root)}")
+        for path, value in numbered[:10]:
+            print(f"  {_display(value):>4}  {path.relative_to(root)}")
         if len(numbered) > 10:
             print(f"  ... and {len(numbered) - 10:,} more")
     else:
@@ -565,11 +670,11 @@ def _apply(root: Path, args: argparse.Namespace, cfg: Any) -> int:
     changed = 0
     not_removed = 0
     with fh:
-        for path, track in numbered:
+        for path, value in numbered:
             if changed >= args.max_strip:
                 break
             try:
-                journal(fh, path, track)  # durable before the file is touched
+                journal(fh, path, value, root)  # durable before the file is touched
                 if strip_one(path, apply=True):
                     changed += 1
                     print(f"  removed {changed:>4}  {path.relative_to(root)}")
